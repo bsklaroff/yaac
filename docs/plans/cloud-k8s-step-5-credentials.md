@@ -2,689 +2,593 @@
 
 Step 5 of docs/plans/cloud-k8s.md. This document plans that step alone.
 
-Goal: the egress proxy pod mounts nothing from the host. The tool credential
-bundles (`claude.json`, `codex.json`, `opencode.json`, `pi.json`) and the
-https git tokens (`github.json`) reach it the way a project's proxied secrets
-already do — pushed over its control API by the server, held in memory,
-re-pushed on every attach — and the proxy's `/data` (the MITM CA, its tor
-state, the persisted registrations and the blocked-host and git-auth-failure
-records) becomes a PersistentVolumeClaim of its own, provisioned by
-`yaac cluster install` the way the registry's is. `.credentials/` then has
-exactly one reader and one writer, the server, and demotes to SERVER-LOCAL.
+Goal: the egress proxy pod mounts nothing from the host and holds no state
+of its own. Everything it needs arrives as Kubernetes objects it watches,
+and everything it reports goes out as objects the server watches — the
+credentials, the project secret values, the ssh keys, the per-worktree
+registrations, the CA, the blocked-host and git-auth-failure records.
+`.credentials/` then has one reader and one writer, the server, and demotes
+to SERVER-LOCAL; `/data` is an emptyDir; nothing about the proxy is on a
+reconcile tick.
 
 Gate, from the plan: the egress e2e tier green, and
 `grep hostPath packages/server/src/drivers/k8s/cluster/proxy-manifests.ts`
 prints nothing. Restated as a procedure at the end.
 
-## What the proxy reads and writes today, and who else touches it
+## Why objects and informers, not a push channel
 
-The one-line description in the plan hides four data flows, and every one
-of them has to move. Naming them is most of the design.
+The proxy's state reaches it today over three channels, and each one is a
+process the server has to keep in sync: `PUT /secrets` and `PUT /agent/keys`
+land in memory and are lost with the pod, so `reconcileProxySecrets` PUTs
+every tick and `reconcileSshKeys` probes for the loss signature on every
+reconnect; `PUT /worktrees/:id` is write-through persisted to a hostPath so
+a replaced pod can reload it; the credential files and the two record files
+are a hostPath in each direction. Carrying the credentials over the same
+HTTP push would add a third reconcile and a third heal.
 
-1. **Credential injection, proxy ← files.** `k8s/proxy/proxy.ts` reads the
-   five files under `/yaac-credentials` on every MITM'd request
-   (`readClaudeCreds`, `readCodexCreds`, `readOpencodeCreds`, `readPiCreds`,
-   `readGitCredentials`), builds the dynamic injection rules from them, and
-   answers the legacy in-worktree `GET yaac.internal/tools` report from the
-   same reads. The server side of that directory is
-   `@yaac/shared/tool-auth` (the four tool files) and
-   `#domain/projects`' `credentials.ts` (`github.json`).
-2. **OAuth capture, proxy → files.** When a worktree's claude or codex
-   refreshes its token through the proxy, the proxy swaps the placeholder
-   refresh token for the real one on the way out and writes the rotated
-   bundle back into `claude.json` / `codex.json` on the way in
-   (`writeClaudeOAuthBundle`, `writeCodexOAuthBundle`). The server then reads
-   the file as the current credential — `plan-usage.ts` spends it, the
-   credential sweep in `#domain/auth` treats "the proxy writes the host store
-   itself" as the reason it is inert under k8s. Losing this flow signs the
-   install out: a refresh token is single-use.
-3. **Proxy state, server ← `/data` files.** `blocked-hosts.json` and
-   `git-auth-failures.json` are written by the proxy and read by the server
-   straight off the hostPath (`egress/blocked-hosts.ts`,
-   `egress/git-auth-failures.ts`), on every snapshot rebuild (`observe.ts`
-   reads `allGitAuthFailures()` once and `blockedHosts(id)` per running
-   workspace). The proxy's `/events` stream carries no state; it says "look
-   again" and the server re-reads the file.
-4. **Proxy state, proxy ↔ `/data`.** The CA key and cert, `worktrees.json`
-   (every registration, reloaded at boot so a replaced pod fails nothing
-   closed), the two record files above, and tor's data dir. All of it is
-   pod-private; only the two record files are read by anyone else.
+The cluster already has a durable, watchable, namespace-scoped store with
+sub-second change delivery, and both sides already run informers against it
+(`pod-watch.ts` in the proxy; `ClusterCache` in the server). Writing the
+proxy's inputs as Secrets and ConfigMaps and reading its outputs the same
+way removes every reconcile step, every heal, every "memory-only, so re-push
+after a replacement" comment, the `/data` claim this step would otherwise
+need, and most of the control API. A replaced pod restores itself from the
+informer's initial list. What is left on HTTP is the one thing that is
+genuinely a request/response between a worktree and the server: the
+`yaac-mama` queue.
 
-Two things already travel the way everything is about to: project secret
-values (`PUT /secrets`, restored by `reconcileProxySecrets` on every tick and
-on the `proxy-reconnect` edge) and the server-generated ssh keys
-(`PUT /agent/keys`, the OpenSSH container encoded from the sealed seed —
-docs/ssh-keys.md — restored by `reconcileSshKeys` when the loss signature
-shows). The credential
-reader for both is handed to the driver at composition time
-(`DriverDeps.sshIdentities` / `proxySecrets` → `configureProxyCredentials`),
-because the driver re-reads on its own schedule and must never import above
-its contract. Step 5 adds two more readers of that shape and one writer.
+## The objects
+
+All in the install namespace, all labelled `app: yaac-proxy`. Who writes
+each is fixed and single, which is the plan's one-writer invariant applied
+to objects.
+
+| object | kind | writer | reader | content |
+|---|---|---|---|---|
+| `yaac-proxy-credentials` | Secret | server | proxy informer | `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `github.json` (each file's JSON, verbatim); `ssh-keys.json` (`[{pattern, host, privateKey, knownHostsEntry}]`, the OpenSSH container `#lib/ssh-key` encodes from the sealed seed) |
+| `yaac-proxy-secrets-<project>` | Secret, one per project | server | proxy informer (label `yaac.proxy-secrets`) | `values.json`: `{ "<slug>/<NAME>": value }` — the opened project secret values behind that project's `secretRef` rules |
+| `yaac-proxy-reg-<worktreeId>` | ConfigMap, one per worktree | server | proxy informer (label `yaac.proxy-registration`) | `registration.json`: the `WorktreeRegistration` payload as `PUT /worktrees/:id` carries it today — rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, test redirects |
+| `yaac-proxy-refreshed` | Secret | proxy | server informer | `claude.json`, `codex.json`: OAuth bundles the proxy captured from a worktree's refresh, in the credentials-file shape |
+| `yaac-proxy-ca` | Secret | proxy | server (get) | `ca.key`, `ca.pem`, `ca-bundle.pem` |
+| `yaac-proxy-state` | ConfigMap | proxy | server informer | `blocked-hosts.json`, `git-auth-failures.json`, the same maps the `/data` files hold |
+
+Names: worktree ids are UUIDs, so `yaac-proxy-reg-<id>` fits the 253-char
+object-name limit; project slugs are not DNS-safe, so the secrets name uses
+the `safeSlug + hash8` shape `projectRegistryName` already uses, lifted into
+a shared helper.
 
 ## Decisions
 
-- **One wholesale push, not per-tool merges.** The tool credentials are one
-  install-wide set, unlike project secrets (one push per project, merged).
-  `PUT /credentials` therefore REPLACES the proxy's whole set: the body
-  carries every tool's current file content or `null`, and a tool missing
-  from the body is a tool the server holds nothing for. That makes the
-  reconcile a single idempotent PUT per tick with no names route, no
-  per-tool DELETE and no loss signature to detect — the same cost profile as
-  `reconcileProxySecrets`, which already PUTs every tick.
-- **The proxy keeps capturing refreshed bundles, and the server collects
-  them.** The proxy cannot dial the server (it is a pod; the server is
-  behind an ingress wall that admits node addresses only), so the capture
-  stays in the proxy's memory and the server pulls it: a `credentials` event
-  on the existing `/events` stream, then `GET /credentials/refreshed`, then
-  the newest-wins compare `#domain/auth` already uses for every other
-  writer (`claudeBundleIsNewer` / `codexBundleIsNewer`) before
-  `saveClaudeOAuthBundle` / `saveCodexOAuthBundle`. Idempotent by
-  construction — the same access token never wins — so the pull needs no
-  acknowledgement and is safe to repeat on every tick.
-- **Proxy state moves to a server-side mirror fed by the control API.**
-  `GET /state` returns both record maps at once; the server keeps an
-  in-memory mirror that is refreshed on the `blocked-hosts` and
-  `git-auth-failures` events and on every reattach, and `blockedHosts(id)` /
-  `gitAuthFailures(slug)` answer from it synchronously. The events keep
-  carrying no state (level-triggered, a reconnect re-reads everything), and
-  a snapshot rebuild costs no proxy round trip at all — cheaper than today's
-  N file reads.
-- **The claim is dynamically provisioned, not a hostPath PV into the data
-  dir.** The plan says "like the registry's": `yaac-proxy-data`, RWO, no
-  `storageClassName`, bound through the cluster's default class, applied by
-  `ensureProxyResources` before the Deployment and by install so it exists
-  (and is seeded, below) before any server runs. On kind that means the CA
-  lives on the node's local-path directory rather than under
-  `<dataDir>/run/proxy-data`, and `yaac cluster delete` takes it with the
-  cluster — which is fine, since a recreated cluster has no worktree pods
-  holding the old CA. `Recreate` on the proxy Deployment is what makes RWO
-  enough, exactly as for the registries.
-- **An upgrade seeds the claim from the old directory, once.** A fresh empty
-  claim on an existing install would regenerate the CA under every running
-  worktree (their mounted ConfigMap updates, but processes that loaded the
-  CA at start and nested containers' baked bundles do not) and, worse, come
-  up with zero registrations, failing every running worktree closed with
-  nothing that re-registers them. So the first ensure that creates the
-  claim copies `<dataDir>/run/proxy-data` into it with a one-shot pod on the
-  node-write-pod pattern. That pod mounts a hostPath — in a module that
-  exists only for the upgrade, deleted with it, and not in
-  `proxy-manifests.ts`, so the gate's grep stays honest about what it
-  measures.
-- **The old-proxy window is tolerated, not closed.** After a server upgrade
-  the proxy Deployment still rolls only on the next worktree launch
-  (`ensureRunning`'s staleness check), so a new server talks to an old proxy
-  for a while. The old proxy still reads the files (they are still there —
-  the tier demotion changes no path on kind), still writes refreshed bundles
-  into them, and answers 404 to the three new routes. The server treats the
-  404s as "not yet" (logged once, like `legacySpawnQueue`), and the only
-  visible cost of the window is blocked-host badges and git-auth flags
-  reading empty until the roll. Rolling the proxy at driver attach would
-  close the window in seconds but costs every running worktree its egress
-  on every `yaac server restart`; it is listed under open questions rather
-  than taken here.
+- **The proxy is stateless.** `/data` becomes an emptyDir; `state-files.ts`,
+  the write-throughs, `loadWorktrees`, `loadBlockedHosts` and
+  `loadGitAuthFailures` are deleted. Tor's state re-bootstraps per pod,
+  which is what `USE_TOR` installs paid on every image upgrade anyway. The
+  RWO claim, the seed pod, the install step and the check gate the previous
+  version of this plan needed all vanish with it.
+- **One writer per object, and the proxy's own writes are pre-created.**
+  RBAC cannot scope `create` by `resourceNames`, so `ensureProxyResources`
+  creates `yaac-proxy-refreshed`, `yaac-proxy-ca` and `yaac-proxy-state`
+  empty, and the proxy's Role grants `get`, `update` and `patch` on exactly
+  those three names. For its reads the proxy gets `get/list/watch` on
+  secrets and configmaps in its namespace: `list` and `watch` cannot be
+  name-scoped either, and the namespace holds nothing but yaac's own
+  objects (the proxy already carries `yaac-proxy-auth` in its env). The
+  informers still pass a `metadata.name` field selector where one object is
+  meant, which client-node's `ListWatch` supports.
+- **Credentials are wholesale; project secrets and registrations are per
+  object.** The tool credential set is one install-wide thing, so it is one
+  Secret replaced whole on every host-store write. Project secret values are
+  edited per project and opened by decryption, so re-rendering every
+  project's values to change one is the work the current code deliberately
+  avoids; one Secret per project keeps that. Registrations are created and
+  deleted with worktrees, so one object per worktree lets the existing
+  per-worktree lifecycle own them and the proxy's index be a plain informer
+  cache keyed by name.
+- **No `ownerReferences` on registrations.** A registration is written in
+  `prepareWorkspaceSubstrate`, before the Job exists, so it cannot be owned
+  at creation. Teardown deletes it where it calls `removeWorktree` today, and
+  the orphan reaper's label sweep covers a teardown that never ran.
+- **Refreshed bundles are durable the moment they are captured.** The proxy
+  writes `yaac-proxy-refreshed` synchronously in the token-response handler,
+  exactly where it writes the file today, so a codex rotation (single-use
+  refresh token) survives the pod dying a millisecond later. The server's
+  informer delivers it; the domain adopts it with the newest-wins compare it
+  already uses for every writer; the next credentials push carries it, and
+  the proxy drops a captured slot when the pushed bundle carries the same
+  access token. Until then the proxy serves the newer of the two.
+- **The record maps are an informer cache, not a mirror.** `blockedHosts(id)`
+  and `gitAuthFailures(slug)` read the `yaac-proxy-state` cache
+  synchronously; the delta is what notifies the snapshot. The proxy debounces
+  its writes (250ms) because a blocked-host burst is common.
+- **Credentials become durable in etcd.** The values project secrets and
+  ssh keys were deliberately kept out of any file the pod mounts now sit in
+  namespace Secrets. On kind that is the host's own disk, where
+  `.credentials/` already is; on a managed cluster it is the control plane's
+  store, encrypted at rest by default on EKS, AKS and GKE, and where every
+  Kubernetes workload keeps this. It is strictly better than the RWX export
+  the plan refuses, and the sealing key in `secret.key` keeps protecting the
+  copy in the database. Worktree pods and builder pods mount no
+  service-account token, so no untrusted code can read a Secret. The one
+  reader that widens is the proxy, which already holds all of it in memory.
 - **`.credentials/` demotes to SERVER-LOCAL and moves nowhere.** Every tier
-  root resolves to the data dir today, so `serverLocalPath('.credentials')`
-  is the same bytes at the same path; the demotion is a declaration, and
-  step 1's rename of server-local writers under `<dataDir>/server` picks it
-  up for free (or, if step 1 lands first, this step adds `.credentials/` to
-  its rename set — see risks). `proxyDataHostDir()` is deleted outright:
-  nothing off the pod reads the directory once the mirror exists.
-- **The https git tokens stay a file.** The reason the schema gives for
-  keeping them out of a sealed row ("the proxy pod reads that file off its
-  mount and writes refreshed OAuth bundles back to it") stops being true
-  here, and moving them into `git_ssh_keys`' sibling table becomes possible.
-  It is not this step: the file is SERVER-LOCAL after this and travels to
-  the proxy over the same push, so nothing is on the wire that was not
-  already. Noted as a follow-on; the comments that cite the old reason are
-  rewritten.
-- **The proxy's securityContext does not change.** Images are uid-agnostic
-  now (docs/arbitrary-uid-images.md): `hostUidSecurityContext` stamps the
-  host's `runAsUser`/`runAsGroup` plus `supplementalGroups: [0]` and no
-  `fsGroup`, and `proxyRunAsSecurityContext` adds `fsGroup: runAsGroup` at
-  its call site because the proxy's HOME is an emptyDir, the one volume kind
-  whose ownership the kubelet manages. A claim is another such volume, so
-  the same `fsGroup` is what makes `/data` writable at the host uid and the
-  manifest needs nothing new. What does change is the comment on
-  `proxyRunAsSecurityContext`, which still justifies the shared identity by
-  "the hostPath dirs the server creates (the CA in /data and the 0700
-  credentials dir)" — after this step the proxy writes no host path at all,
-  and the host uid is parity with the server pod until the cloud install
-  sets `runAsUser` per backend (the plan's images decision, step 6).
+  root resolves to the data dir today, so the demotion is a declaration;
+  step 1's rename of server-local writers picks it up (see risks).
+  `proxyDataHostDir()` is deleted; the seed below is its last reader.
+- **The old-proxy window closes on the first create.** After a server
+  upgrade the proxy rolls on the next worktree launch, and
+  `prepareWorkspaceSubstrate` calls `ensureRunning` BEFORE it registers, so
+  a create never registers against a proxy that cannot see the object.
+  Between the upgrade and that create the old proxy keeps reading the files
+  (still there), keeps writing refreshed bundles into them (the server keeps
+  reading those files), and ignores the objects; the server no longer calls
+  its push routes. What that window costs is spelled out in the shim entry.
 
 ## Changes by module
 
 ### `k8s/proxy` (the sidecar)
 
-- **New `credential-store.ts`**, pure and unit-testable like `state-files.ts`:
-  the in-memory set. `replace(payload)` validates each tool's entry with the
-  exact shape rules the five `read*Creds` functions apply today (an
-  opencode/pi entry whose provider is not in the generated host map is
-  unusable; a codex OAuth bundle needs every field; an https token needs a
-  host-prefixed pattern, complained about once per pattern as
-  `complainAboutPattern` does) and stores the parsed views. Readers
-  `claude()`, `codex()`, `opencode()`, `pi()`, `gitTokens()` return what the
-  request path used to read from disk. `recordRefreshed('claude' | 'codex',
-  bundle)` stores a proxy-captured rotation both as the live credential and
-  in a `refreshed` slot; `refreshed()` returns the slots; a `replace` whose
-  bundle carries the same access token as a slot clears that slot (the
-  server has persisted it).
-- **`proxy.ts`**: delete `CREDENTIALS_DIR` and the five `*_CREDS_FILE`
-  constants, the five readers, `readClaudeOAuthBundle` /
-  `readCodexOAuthBundle`, `writeClaudeOAuthBundle`, `writeCodexOAuthBundle`
-  and `readGitCredentials`; every caller (`buildDynamicRules`,
-  `hostNeedsDynamicMitm`, `resolveHttpsCredentialForRepo`,
-  `resolveGithubApiTokenForWorktree`, the token-response handlers,
-  `handleToolsRequest`) reads the store instead. The two capture handlers
-  call `recordRefreshed` and then `emitProxyEvent('credentials')`. The
-  module header loses its "host-mounted credentials" bullets.
-- **Three routes in `handleApiRequest`**, all behind `checkAuth`:
-  - `PUT /credentials` — body `{ claude, codex, opencode, pi, git }`, each
-    the file's JSON or `null`; replaces the set; 400 on a body that is not
-    an object. Values are never logged; the log line counts tools held.
-  - `GET /credentials/refreshed` — `{ claude?: ClaudeOAuthBundle, codex?:
-    CodexOAuthBundle }`, the captured rotations not yet echoed back by a
-    push.
-  - `GET /state` — `{ blockedHosts: Record<worktreeId, string[]>,
-    gitAuthFailures: Record<projectSlug, GitAuthFailure[]> }`, rendered from
-    the two in-memory maps (the same shapes the files hold).
-- **`emitProxyEvent`** gains the `credentials` type. `/data` keeps every
-  file it has; nothing about `state-files.ts`, `loadWorktrees` or the
-  write-throughs changes — they just write to a claim now.
-- **`Dockerfile`**: `COPY credential-store.ts`. The `mkdir -p /data && chown`
-  line stays harmless (the mount replaces the directory) and can go.
-  `.containerignore` already excludes `test`.
-- **`tools-report.ts`** is unchanged; `handleToolsRequest` feeds it the
-  store's views.
-
-### `packages/server/src/drivers/k8s/egress`
-
-- **`proxy-client.ts`** (`ProxyClient`): `putCredentials(bundle)`,
-  `fetchRefreshedCredentials()`, `fetchProxyState()`. Each returns a typed
-  "unsupported" result on a 404 rather than throwing — the old-proxy window
-  above — and throws on any other non-OK status. `syncToolCredentials()`
-  reads the composed source (`proxyToolCredentials()` below; `undefined`
-  means unwired and changes nothing, exactly as `syncSshKeysFromCredentials`
-  treats it) and PUTs. `adoptRefreshedCredentials()` GETs and hands the
-  result to the composed writer. `ensureRunningImpl` detaches both beside
-  the existing ssh and secret syncs.
-- **`credential-providers.ts`**: `ProxyCredentialSources` gains
-  `listToolCredentials: () => Promise<ToolCredentialBundle>` and
-  `adoptRefreshedCredentials: (r: RefreshedToolCredentials) => Promise<void>`;
-  accessors `proxyToolCredentials()` and `adoptRefreshed()` with the same
-  unwired-returns-undefined discipline. The shared types live in
-  `@yaac/shared/types` beside the file shapes they carry.
-- **`proxy-state.ts`** replaces `blocked-hosts.ts` and
-  `git-auth-failures.ts`: a module-level mirror `{ blockedHosts,
-  gitAuthFailures }`, `refreshProxyState()` (attach-only; a 404 or an
-  unreachable proxy leaves the mirror as it was, an empty answer clears it),
-  `readBlockedHosts(id)`, `readGitAuthFailures(slug)`,
-  `readAllGitAuthFailures()` answering from the mirror, and
-  `resetProxyStateForTests()`. Barrel exports keep their names so
-  `drivers/k8s/index.ts` and the contract do not change.
-- **`proxy-events.ts`**: `blocked-hosts` and `git-auth-failures` events call
-  `refreshProxyState()` then `notifyWorktreeListChanged()`; the reattach
-  catch-up does the same before its notify. A `credentials` event raises a
-  new `proxy-credentials` trigger through `onChange`. The header's "/data
-  files remain the data plane" paragraph is rewritten: the proxy's memory is
-  the data plane, `/state` is how it is read.
-- **`proxy-reconcile.ts`**: `reconcileProxySshKeys` becomes
-  `reconcileProxyCredentials`, healing four things in order — ssh keys,
-  secret values, the tool credential set (unconditional PUT), and the
-  refreshed-bundle adoption — each failure logged and the rest continuing.
-- **`steps.ts`**: the `proxy-ssh-keys` step becomes `proxy-credentials`
-  with triggers `['proxy-reconnect', 'proxy-credentials']`; every step also
-  runs on the 60s resync, which is what makes the adoption pull safe to
-  leave edge-driven.
-- **`allow-host.ts`**: after a successful allow, `refreshProxyState()`
-  before `notifyBlockedHostsChanged()`, so the badge clears on the click
-  rather than on the event's round trip.
-- **`secret-refs.ts`** is unchanged (it names a file under
-  `credentialsDir()`, which is the same path).
+- **New `objects.ts`**, pure and unit-testable like `tools-report.ts`:
+  decoders from object `data` to the proxy's in-memory views —
+  `decodeCredentials` (the five file shapes, validated exactly as the
+  `read*Creds` functions validate them today, plus the ssh entries),
+  `decodeProjectSecrets`, `decodeRegistration` — and encoders for what the
+  proxy writes: `encodeRefreshed`, `encodeCa`, `encodeState`.
+- **New `object-watch.ts`**: three informers on the proxy's own client
+  (`pod-watch.ts` has the construction) — the credentials Secret by name,
+  the per-project secrets by label, the registrations by label — each
+  updating the maps `proxy.ts` already keys by worktree id and secret ref.
+  The credentials handler also reconciles the agent: `ssh-add -D`, then
+  `ssh-add -h <host> -` per entry, the routine `PUT /agent/keys` runs today.
+  Fail-closed is preserved: until the initial list lands, no worktree is
+  registered and nothing is injected.
+- **`proxy.ts`**: delete `CREDENTIALS_DIR`, the five `*_CREDS_FILE`
+  constants, the five readers, `readGitCredentials`, the two
+  `write*OAuthBundle` functions and the `/data` file paths; the dynamic-rule
+  and `/tools` code reads the maps. The two token-response handlers write
+  `yaac-proxy-refreshed`. `persistBlockedHosts` / `persistGitAuthFailures`
+  become one debounced write of `yaac-proxy-state`. `loadOrGenerateCA`
+  reads `yaac-proxy-ca` and writes it when `ca.pem` is absent, adding
+  `ca-bundle.pem` from the system roots either way. Routes deleted:
+  `/ca.pem`, `/ca-bundle.pem`, `PUT|DELETE /worktrees/:id`, `/worktrees`,
+  `/worktrees/:id/allow-host`, `/secrets`, `/secrets/names`,
+  `DELETE /secrets/:ref`, `/agent/keys` (all three). Kept: `/healthz`,
+  `/cmd/pending`, `/cmd/results`, `/events` (now `mama` and `ping` only),
+  and the legacy `/spawn` pair with its own shim entry. `emitProxyEvent`
+  loses the two state types.
+- **`state-files.ts`** is deleted. `scopeLegacySecretRefs` moves server-side
+  into the seed (below), because the only bare refs left are in an old
+  `worktrees.json`.
+- **`Dockerfile`**: `COPY objects.ts object-watch.ts`; the `/data` mkdir
+  goes. `.containerignore` already excludes `test`.
 
 ### `packages/server/src/drivers/k8s/cluster`
 
-- **`proxy-manifests.ts`**: `buildProxyDataPvcManifest()` — name
-  `PROXY_DATA_PVC_NAME`, namespace `k8sNamespace()`, `app: yaac-proxy` label
-  plus the data-dir-hash label, RWO, `PROXY_DATA_STORAGE_SIZE` (`1Gi`; the
-  CA and a few JSON files), no `storageClassName`. The Deployment's volumes
-  become `{ name: 'proxy-data', persistentVolumeClaim: { claimName } }` and
-  the `home` emptyDir; the `credentials` volume and its mount are deleted.
-  The two `@yaac/shared/project-paths` imports go with them.
-  `proxyRunAsSecurityContext` keeps its `fsGroup: runAsGroup` (it now covers
-  the claim as well as the emptyDir) and gets the comment the securityContext
-  decision describes.
-- **`proxy-apply.ts`**: `ensureProxyDataClaim()` — `kubectlGetJson` the
-  claim, apply the manifest, and when it did not exist before, run the seed
-  (next bullet) before returning. `ensureProxyResources` calls it before the
-  SA/RBAC/Deployment applies and drops both `fs.mkdir` calls. The rollout
-  wait's error text names the PVC the way `ensureProjectRegistry`'s does
-  (a Pending claim means no default StorageClass).
-- **New `legacy-proxy-data-seed.ts`** (the shim):
-  `legacyProxyDataHostDir()` (`sharedPath('run', 'proxy-data')`, the path
-  `proxyDataHostDir()` returns today), `buildProxyDataSeedPodManifest(runId)`
-  — one-shot pod, `restartPolicy: Never`, infra priority, the registry:2
-  mirror image (already on every node; `sh` and `cp -a` are all it needs),
-  hostPath `legacyProxyDataHostDir()` read-only at `/old` and the claim at
-  `/new`, command `[ -d /old ] && cp -a /old/. /new/` — and
-  `seedProxyDataClaim()`, which runs it to completion with
-  `runPodToCompletion` only when `ca.pem` exists in the old directory as
-  seen by the caller (the server pod mounts the data dir; the CLI is on the
-  host) and logs what it copied. Never deletes the old directory (the bytes
-  are on the user's disk; the entry below says when they can go).
-- **`index.ts`** (barrel): export `ensureProxyDataClaim`; the seed stays
-  internal, covered through it.
+- **`proxy-manifests.ts`**: the Deployment's volumes become the `home`
+  emptyDir and a `proxy-data` emptyDir; both hostPath volumes, their mounts
+  and the two `@yaac/shared/project-paths` imports go. `buildProxyRoleManifest`
+  gains the rules in the RBAC decision. `proxyRunAsSecurityContext` keeps
+  `fsGroup: runAsGroup` (both volumes are emptyDirs) and gets a comment that
+  no longer cites hostPath dirs. New builders, all internal to the folder:
+  `buildProxyCredentialsSecretManifest(bundle)`,
+  `buildProjectSecretsManifest(slug, values)`,
+  `buildRegistrationConfigMapManifest(worktreeId, registration)`, and the
+  three empty proxy-written objects.
+- **`proxy-apply.ts`**: `ensureProxyResources` drops both `fs.mkdir` calls,
+  applies the three empty proxy-written objects before the Deployment, and
+  runs the seed (below) before the first apply that rolls to the new image.
+  `ensureCaConfigMap` reads `yaac-proxy-ca` with one `get` after the rollout
+  instead of two HTTP fetches; the ConfigMap it writes for worktree pods is
+  unchanged. `syncProxyCredentials(bundle)` and `syncProjectSecrets(slug,
+  values)` / `removeProjectSecrets(slug)` apply their objects.
+- **New `legacy-proxy-seed.ts`** (the shim): reads
+  `<dataDir>/run/proxy-data` off the data dir the server pod mounts — no
+  pod, no hostPath — and writes `yaac-proxy-ca` from `ca.key` + `ca.pem`,
+  one registration ConfigMap per `worktrees.json` entry (bare `secretRef`s
+  scoped to their project on the way, the rewrite `scopeLegacySecretRefs`
+  did in the proxy), and `yaac-proxy-state` from the two record files. Runs
+  once, only when `yaac-proxy-ca` is empty and the old dir has a `ca.pem`.
+  Never deletes the directory.
+- **`index.ts`** (barrel): exports the sync verbs; the manifest builders stay
+  internal and are asserted through `ensureProxyResources` and the syncs.
 
-### `packages/server/src/drivers/k8s/substrate/proxy-constants.ts`
+### `packages/server/src/drivers/k8s/egress`
 
-`PROXY_DATA_PVC_NAME = 'yaac-proxy-data'`, `PROXY_DATA_STORAGE_SIZE`.
+- **`proxy-client.ts`**: `ProxyClient` keeps `ensureRunning`,
+  `attachIfRunning`, `isDeployedProxyCurrent`, `getCaTrustEnv`, `openEvents`,
+  the two `/cmd` calls and the legacy spawn fallback, `stop`, `disconnect`.
+  Everything else — `registerWorktree`, `removeWorktree`, `allowHost`,
+  `listWorktrees`, `getCaCert`, `getCaBundle`, the secret trio, the ssh-key
+  trio, `syncSshKeysFromCredentials`, `reconcileSshKeys`,
+  `reconcileProxySecrets` — is deleted. `ensureRunningImpl` no longer
+  detaches any sync: the objects are already there.
+- **Deleted modules**: `credential-providers.ts`, `proxy-reconcile.ts`,
+  `proxy-secrets.ts`, `blocked-hosts.ts`, `git-auth-failures.ts`,
+  `secret-refs.ts` (`proxySecretRef` moves beside the rule builder;
+  `sweepLegacyProxySecretsFile` moves into the seed module, retargeted per
+  the shim entry).
+- **`proxy-registration.ts`**: `registerWorkspace` applies the registration
+  ConfigMap; `deregisterWorkspace` (from `worktrees/teardown.ts`) deletes it;
+  `allowWorktreeHost` in `allow-host.ts` patches `allowedHosts` in it (and
+  the fan-out patches each sibling's), which the proxy's informer applies —
+  the proxy prunes its blocked record on that delta as it does on the POST
+  today.
+- **New `proxy-state.ts`**: `readBlockedHosts`, `readGitAuthFailures`,
+  `readAllGitAuthFailures` answering from the `ClusterCache`'s state cache;
+  `refreshedCredentials()` answering from its refreshed cache. Both
+  synchronous reads of a watch-fed map.
+- **`proxy-events.ts`**: `dispatch` keeps `mama` (and `spawn`); the two
+  state cases go.
+- **`steps.ts`**: the `proxy-ssh-keys` step is deleted. The k8s driver
+  contributes no credential step at all.
 
-### `packages/server/src/drivers/k8s/install`
+### `packages/server/src/drivers/k8s/substrate` (`cluster-cache.ts`)
 
-- **`install.ts`**: a `installProxyClaim(deps)` step after `installRegistry`
-  and before `deployServer`, calling `deps.ensureProxyClaim` (a new
-  `ClusterInstallDeps` entry defaulting to `ensureProxyDataClaim`). It
-  applies the namespace first (the same `ensureNamespace()` the server's
-  ensure uses) so the claim has somewhere to live, and logs "seeded from
-  `<dir>`" when the shim ran. Skipped under `--adopt-cni`? No — an adopted
-  cluster needs the claim too, and it binds through its default class.
-- **`check.ts`**: a `proxy-storage` gate — the claim exists and is `Bound`
-  or `Pending` under `WaitForFirstConsumer` with no consumer yet; `Lost` or
-  absent fails with the fix "run `yaac cluster install`; a claim that never
-  binds means the cluster has no default StorageClass". `VOLUME_NODES_FIX`
-  loses the word "credentials".
-- **`delete.ts`** needs no change: the claim is inside the cluster and its
-  confirmation text already says in-cluster state goes.
+Two more caches beside pods and jobs, built by the same `buildCache`:
+`proxy-state` (the one ConfigMap, by field selector) and `proxy-refreshed`
+(the one Secret). Their deltas are new `DeltaSource`s; `lifecycle.ts` maps
+the first to `notifyWorktreeListChanged()` and the second to a
+`proxy-refreshed` reconcile trigger. The proxy's own pod cache and the
+registration objects need no server-side cache: the server writes
+registrations and never reads them back.
+
+### `packages/server/src/drivers/contract.ts` and both assemblies
+
+- `WorktreeDriver.syncSshIdentities` becomes `syncCredentials(bundle:
+  ToolCredentialBundle)`: handed the whole bundle by the caller — the
+  reader-dep discipline that `configureProxyCredentials` existed for is
+  gone, because nothing re-reads on the driver's schedule any more.
+  `syncProxySecrets(projectSlug)` becomes `syncProjectSecrets(projectSlug,
+  values)` and `removeProjectSecrets(projectSlug)` (called from
+  `destroyProjectSubstrate`). New `refreshedCredentials():
+  RefreshedToolCredentials`. `DriverDeps` loses `sshIdentities`,
+  `proxySecrets` and keeps `legacySecretImportPending` for the sweep.
+  Containerless: `syncCredentials` and `syncProjectSecrets` stay resolved
+  no-ops, `refreshedCredentials` answers `{}`.
+- `k8s/lifecycle.ts` drops `configureProxyCredentials`; `attachNow` wires
+  the two new delta sources.
+
+### `packages/server/src/main`, `#domain/auth`, `#domain/projects`
+
+- **`#domain/auth/runtime-push.ts`** (new): `pushCredentialsToRuntime()`
+  loads the bundle (the four tool files via a new
+  `loadToolCredentialBundle()` in `@yaac/shared/tool-auth`, `github.json`
+  via `loadCredentials()`, the ssh entries via `listSshEntries()`) and calls
+  `worktreeDriver().syncCredentials(bundle)`, swallowing failure the way
+  `syncSshKeysQuietly` does. Every host-store writer calls it: `PUT
+  /auth/:tool` after the fan-out, `POST /auth/clear`, `POST /auth/fake`,
+  `POST /git/credentials` (which syncs nothing today because the proxy read
+  the token off disk), `POST /git/ssh-keys` and `DELETE
+  /git/credentials/:pattern` (which sync ssh today and pick the wider push
+  up by the rename), and `plan-usage.ts` after either
+  `refreshAndPersist*Bundle` saves. `adoptRefreshedToolCredentials(r)` is
+  the compare-and-set `harvestClaude` / `harvestCodex` perform, followed by a
+  push so the proxy sees its own capture echoed.
+- **`domain/reconcile.ts`**: a `credential-adopt` step, `triggers:
+  ['proxy-refreshed']`, reading `worktreeDriver().refreshedCredentials()`
+  and adopting. Edge-driven; on the resync it reads a cache.
+- **`domain/projects/env.ts`** (or wherever project env writes land): after
+  a secret's value or rule changes, `syncProjectSecrets(slug, openedValues)`
+  replaces the old `syncProjectProxySecrets`; `worktrees/create.ts` no
+  longer pushes values before launch, since the object is already current.
+- **`server-run.ts`**: the attach hook calls `pushCredentialsToRuntime()`
+  and, per project, `syncProjectSecrets` once, so a server start converges
+  the objects (cheap: a few applies). `convergence.ts` loses the two
+  reader deps.
 
 ### `packages/shared/src`
 
 - **`project-paths.ts`**: `credentialsDir()` → `serverLocalPath('.credentials')`
-  with its comment rewritten ("SERVER-LOCAL: the server is the only reader
-  and the only writer; the proxy is pushed what it needs"); the five
-  `*CredentialsPath` tags become SERVER-LOCAL; `proxyDataHostDir()` deleted;
-  `secretKeyPath()`'s comment loses its "that directory is bind-mounted into
-  the proxy pod" reason (it stays where it is — a key beside its ciphertext
-  is still the wrong place). `paths.ts`'s tier legend needs no change.
-- **`types.ts`**: `ToolCredentialBundle` (`{ claude: ClaudeCredentialsFile |
-  null; codex: CodexCredentialsFile | null; opencode: OpencodeCredentialsFile
-  | null; pi: PiCredentialsFile | null; git: GitCredentialsFile }`) and
-  `RefreshedToolCredentials` (`{ claude?: ClaudeOAuthBundle; codex?:
-  CodexOAuthBundle }`). The `GitCredentialsFile` comment stops saying the
-  file is bind-mounted into the proxy pod; its other half (ssh keys are
-  generated by the server and live in sealed rows) stays. The same sentence
-  is rewritten on `loadCredentials` in `#domain/projects`' `credentials.ts`
-  ("kept a file because the proxy pod reads it straight off its mount") and
-  on `gitSshKeys` in `db/schema.ts`.
-- **`tool-auth.ts`**: `loadToolCredentialBundle()` composing the four
-  loaders; the git half is composed in by the server (below), since
-  `github.json` is read by `#domain/projects`.
-
-### `packages/server/src/drivers/contract.ts`, `driver.ts`, both assemblies
-
-- `DriverDeps` gains `toolCredentials?: () => Promise<ToolCredentialBundle>`
-  and `adoptRefreshedCredentials?: (r: RefreshedToolCredentials) =>
-  Promise<void>`, documented like `sshIdentities`.
-- `WorktreeDriver.syncSshIdentities` is renamed `syncCredentials`: "bring
-  the egress path's copy of every credential the server holds in line — a
-  resolved no-op for a runtime that injects none". The k8s assembly runs
-  `syncSshKeysFromCredentials` and `syncToolCredentials`; the containerless
-  one stays `Promise.resolve()`.
-- `k8s/lifecycle.ts` passes the two new deps into
-  `configureProxyCredentials`; a caller that wires only the old three gets
-  the old behaviour.
-
-### `packages/server/src/main` and `#domain/auth`
-
-- **`server-run.ts`** wires `toolCredentials` (the shared loader plus
-  `loadCredentials()` for `github.json`) and `adoptRefreshedCredentials`
-  (below) through `convergence.ts` beside `listProxySecrets`.
-- **`#domain/auth`** gains two functions in a new `runtime-push.ts`:
-  - `pushCredentialsToRuntime()` — `worktreeDriver().syncCredentials()`
-    swallowing failure, the way `syncSshKeysQuietly` in the auth routes does
-    today; that helper moves here and every host-store writer calls it:
-    `PUT /auth/:tool` after the fan-out, `POST /auth/clear`, `POST /auth/fake`,
-    `plan-usage.ts` after either `refreshAndPersist*Bundle` saves, and the
-    three git routes. Two of those already sync the ssh-agent
-    (`POST /git/ssh-keys`, `DELETE /git/credentials/:pattern`) and pick the
-    wider push up by the rename; `POST /git/credentials` syncs nothing
-    today because an https token is "read straight off disk by whatever
-    uses it" — the proxy was that reader, and after this step the token
-    reaches it only by push, so that route calls the helper too.
-  - `adoptRefreshedToolCredentials(r)` — for each bundle present, the same
-    compare-and-set `harvestClaude` / `harvestCodex` perform: load the
-    stored file, refuse unless it is `kind: 'oauth'`, adopt only when
-    `*BundleIsNewer(candidate, stored)`, log one line. Under a mediated
-    runtime this is now the harvest, and `credential-sync.ts`'s header
-    paragraph about the proxy "writing the host store itself" is rewritten
-    to say the server adopts what the proxy captured.
-- `docs/server-in-cluster.md` "The credential sweep is inert in here" stays
-  true and gains one sentence: the adoption route is what carries a
-  worktree-driven refresh into the host store under this driver.
+  with its comment rewritten; the five `*CredentialsPath` tags become
+  SERVER-LOCAL; `proxyDataHostDir()` deleted; `secretKeyPath()`'s comment
+  loses the "bind-mounted into the proxy pod" reason.
+- **`types.ts`**: `ToolCredentialBundle` and `RefreshedToolCredentials`; the
+  `GitCredentialsFile` comment stops saying the file is bind-mounted into
+  the proxy pod (its ssh half stays). The same sentence goes from
+  `loadCredentials` in `#domain/projects`' `credentials.ts` and from
+  `gitSshKeys` in `db/schema.ts`.
+- **`tool-auth.ts`**: `loadToolCredentialBundle()`.
 
 ### Documentation
 
-- `docs/worktree-egress.md`: a short section "What the proxy is told, and
-  by whom" — registrations and secrets (already there in spirit), the tool
-  credential set and ssh keys pushed over the control API, refreshed bundles
-  pulled back over it, the record maps read over it; nothing read from a
-  mount.
+- `docs/worktree-egress.md`: a section "What the proxy is told, and how"
+  — the object table above, the one-writer rule, and that the control API
+  carries only the `yaac-mama` queue.
 - `docs/cluster-setup.md`: item 2 of "What it wires up" drops
-  "credentials"; a new item names the proxy claim beside the registry's,
-  with the same no-`storageClassName` note.
-- `docs/server-in-cluster.md`: "Storage is still hostPath" gains the
-  exception (the proxy's `/data` is a claim) and the sentence above.
-- `docs/legacy-compat-shims.md`: the two entries under "Legacy-compat shims"
-  below.
+  "credentials".
+- `docs/server-in-cluster.md`: "Storage is still hostPath" notes that the
+  proxy mounts nothing; "The credential sweep is inert in here" gains the
+  sentence that `credential-adopt` is how a worktree-driven refresh reaches
+  the host store under this driver.
+- `docs/ssh-keys.md`: the "A k8s worktree" bullet changes one clause — the
+  key reaches the proxy in `yaac-proxy-credentials` rather than over the
+  control API, and a replaced pod reloads it from the object rather than
+  being refilled by the driver.
+- `docs/legacy-compat-shims.md`: the entries below, and the paragraph in
+  the `importLegacyProjectConfig` entry about `scopeLegacySecretRefs` living
+  in the proxy is rewritten to say the rewrite happens in the seed.
 - `docs/plans/cloud-k8s.md`: the "Credentials leave the shared tier"
-  decision and step 5 are deleted when this ships, per the docs convention;
-  the "Where things stand" bullet about the proxy mounting `.credentials/`
-  and `run/proxy-data` goes with them. The "Images stop baking a uid"
-  decision names issue #150 as a dependency still to land; it has landed
-  (docs/arbitrary-uid-images.md), and that decision should be rewritten to
-  the present tense in the same edit.
-- `docs/ssh-keys.md` needs no change: its "A k8s worktree" bullet already
-  describes the push-and-refill shape this step generalizes.
+  decision and step 5 are deleted when this ships; the "Where things stand"
+  bullet about the proxy's mounts goes with them; the "Images stop baking a
+  uid" decision is rewritten to the present tense (issue #150 has landed,
+  docs/arbitrary-uid-images.md).
 
 ## Manifests, environment and flags
 
-- **Manifests**: `PersistentVolumeClaim/yaac-proxy-data` (new); the proxy
-  Deployment's volume set (`proxy-data` → PVC; `credentials` removed); the
-  one-shot seed pod (shim only). Nothing else changes shape — the Service,
-  RBAC, the ingress policies and the CA ConfigMap are as they are.
-- **Environment**: none added. The proxy's control routes are the interface;
-  no server env var, no proxy env var.
-- **CLI flags**: none. `yaac cluster install` gains a step and `yaac cluster
-  check` a gate; both are output, not input.
+- **Manifests**: the proxy Deployment's volumes (two emptyDirs, no
+  hostPath); the proxy Role (secrets and configmaps read; three named
+  objects writable); the six object kinds above. No PVC.
+- **Environment**: none added. The proxy's `KUBERNETES_SERVICE_HOST` check
+  already gates its in-cluster client; outside a cluster (the proxy's unit
+  tests) the informers do not start and the maps stay empty.
+- **CLI flags**: none. `yaac cluster install` and `yaac cluster check` are
+  unchanged.
 
 ## Upgrade path and legacy-compat shims
 
-Ordering an upgrade goes through, on an existing kind install:
+On an existing kind install:
 
-1. `yaac cluster install` (new bundle) creates the claim and seeds it from
-   `<dataDir>/run/proxy-data` while the old proxy still serves; then rolls
-   the server. The old proxy keeps its hostPath mounts and keeps working.
-2. The new server attaches, pushes credentials (404 → tolerated), reads
-   `/state` (404 → mirror stays empty).
-3. The next worktree launch finds the proxy stale, applies the new
-   Deployment (claim already seeded), and the new proxy boots with the old
-   CA, every registration and both record files. Its first reconcile tick
-   PUTs credentials and refreshes the mirror.
+1. The server rolls (install or restart). It attaches, writes
+   `yaac-proxy-credentials` and the per-project secrets, and starts its
+   informers on two objects that do not exist yet (an absent object is an
+   empty cache).
+2. The old proxy keeps serving from its hostPath files. The server no
+   longer calls `/secrets`, `/agent/keys`, `/worktrees` or `/allow-host`.
+3. The next worktree create calls `ensureRunning`, which finds the
+   Deployment stale, runs the seed (CA, registrations, records → objects),
+   pre-creates the proxy-written objects, and applies the new Deployment.
+   The new proxy boots with the old CA and every registration, and its
+   informers deliver the credentials and secrets. Registration for the new
+   worktree follows.
 
-An install that skips `yaac cluster install` and only restarts the server
-takes the same path from step 2; the seed then runs from
-`ensureProxyResources` at the launch in step 3, still before the new
-Deployment is applied.
+### `seedProxyObjects` (entry text)
 
-Both shims get an entry, written in the file's own form:
+**What it reads:** `<dataDir>/run/proxy-data` — `ca.key`, `ca.pem`,
+`worktrees.json`, `blocked-hosts.json`, `git-auth-failures.json`, the files
+the proxy's `/data` hostPath held — from the server pod's own mount of the
+data dir, the first time `ensureProxyResources` finds `yaac-proxy-ca` empty
+beside an old `ca.pem`. It writes the CA Secret, one registration ConfigMap
+per entry (rewriting a bare `secretRef` to `<projectSlug>/NAME`, which
+registrations written before refs were scoped still carry), and the state
+ConfigMap. The directory is left in place.
 
-### `seedProxyDataClaim` (entry text)
+**What breaks silently if it is deleted too early:** a proxy that rolls
+onto an empty CA Secret mints a new CA, and every process that loaded the
+old one at start (running agents, nested containers' baked bundles) fails
+TLS against every MITM'd host until its pod restarts; and it comes up with
+no registrations, failing every running worktree closed — nothing
+re-registers a live worktree. No error names either cause.
 
-**What it reads:** `<dataDir>/run/proxy-data` — the hostPath the proxy's
-`/data` was, holding the MITM CA, `worktrees.json` and the two record files
-— copied into the `yaac-proxy-data` claim by a one-shot pod the first time
-the claim is created, and never again. The old directory is left in place.
+**How to tell it is safe to remove:** every k8s install in use has rolled
+its proxy once on a build carrying the objects. Directly checkable:
+`kubectl -n yaac get secret yaac-proxy-ca -o jsonpath='{.data.ca\.pem}'` is
+non-empty on every cluster in use. Then the module goes, and with it
+`proxyDataHostDir()`'s last reader, and the old directory may be deleted on
+each host.
 
-**What breaks silently if it is deleted too early:** an install whose claim
-is created empty gets a proxy with a fresh CA and no registrations. Every
-running worktree fails closed until it is recreated — nothing re-registers
-a live worktree — and every process holding the old CA (a running agent,
-a nested container's baked bundle) gets TLS failures against every MITM'd
-host until its pod restarts. No error names the cause.
+### The pre-object proxy window (entry text)
 
-**How to tell it is safe to remove:** every k8s install in use has a bound
-`yaac-proxy-data` claim. Directly checkable: `kubectl -n yaac get pvc
-yaac-proxy-data` answers on every cluster in use. When it does, the module
-goes, and so may the old directory on each host.
+**What it reads:** nothing. It is the absence of four calls: between a
+server upgrade and the next worktree create, the running proxy is one that
+reads credentials off its mount and takes registrations, secret values and
+ssh keys over HTTP, and the new server makes none of those calls. Ordinary,
+not exotic — the proxy rolls on the next launch, and the launch registers
+only after the roll.
 
-### The pre-push proxy window (entry text)
+**What breaks silently if it goes too early:** nothing goes; this entry
+records the window's cost so it is chosen knowingly. During it, an
+`allow-host` click and a blocked-host record do not reach the server (the
+badge stays until the roll); a `yaac auth update` reaches the old proxy
+only through the files it still reads, which works; and if the old pod is
+REPLACED inside the window (a crash, an eviction), its secret values and
+ssh keys are gone with it and nothing re-pushes them, so those injections
+stop until the first create rolls it. A worktree create is what closes the
+window, so an install that creates nothing after upgrading stays in it.
 
-**What it reads:** nothing on disk. `ProxyClient.putCredentials`,
-`fetchRefreshedCredentials` and `fetchProxyState` each read a 404 from a
-proxy predating the routes as "not yet" rather than as an error, and the
-reconcile and mirror carry on. Ordinary, not exotic: the server upgrades
-first, and the proxy rolls on the next worktree launch, so between the two
-a new server is talking to an old proxy that still reads `.credentials/`
-off its mount and writes refreshed bundles into it — both of which keep
-working because the demotion moved no file.
+**How to tell it is safe to remove:** it is prose, not code; it is removed
+by deleting this entry once no install can still be running a pre-object
+proxy, which drains at the first create after upgrade.
 
-**What breaks silently if it goes too early:** the reconcile step logs a
-failure on every tick and the snapshot's blocked-host and git-auth data
-read empty, until something creates a worktree. Injection itself is
-unaffected either way.
+### `sweepLegacyProxySecretsFile`, retargeted
 
-**How to tell it is safe to remove:** no proxy pod predating the routes is
-still running anywhere, which drains on its own at the first launch after
-an upgrade. Remove together with the proxy-side `/spawn` path entry's
-sibling, since it is the same window.
-
-Two existing entries change wording, not substance: the
-`importLegacyProjectConfig` entry describes `proxy-secrets.json` as sitting
-"in the directory the proxy pod mounts", which stops being true once the
-proxy rolls; its sweep condition is unchanged.
+The sweep keeps its condition (no overlay still carries `envSecretProxy`)
+and moves its proof: it runs at the end of `ensureProxyResources`, after the
+new Deployment's rollout has completed — the old proxy, the last reader of
+the file, is gone by then — rather than after a `/secrets/names` answer.
+Its entry in the `importLegacyProjectConfig` section is updated to say so.
 
 ## Tests
 
 ### Unit (`unit:proxy`, `unit:server`, `unit:shared`)
 
-- **`k8s/proxy/test/credential-store.test.ts`** (new; the module has a
-  public surface, so one `describe` per function): `replace` accepts each
-  tool's valid shapes and rejects the invalid ones the file readers reject
-  today (missing codex fields, an unknown opencode provider, an empty api
-  key, a bare git pattern — complained about once); `replace` with `null`
-  clears a tool; a `replace` carrying a captured bundle's access token
-  clears its refreshed slot; `recordRefreshed` makes the rotation the live
-  credential and reports it from `refreshed()`. `proxy-codex-oauth.test.ts`
-  loses its `readCodexCreds` / `writeCodexOAuthBundle` describes (the copies
-  they mirror are gone); the decode/placeholder cases stay.
-- **`k8s/proxy/test/proxy-event-stream.test.ts`**: the change-line case
-  lists `credentials` among the types.
-- **`packages/server/test/drivers/k8s/egress/proxy-client-credentials.test.ts`**
-  (new, the `stubFetch` pattern of `proxy-client-allow-host.test.ts`):
-  `putCredentials` PUTs the whole bundle with bearer auth and never logs a
-  value; a 404 answers "unsupported" and a 500 throws; the two GETs likewise.
-- **`proxy-reconcile.test.ts`**: `reconcileProxyCredentials` pushes the
-  composed bundle wholesale, adopts what the proxy reports through the
-  composed writer, changes nothing when unwired, and survives any one heal
-  failing. `proxy-reconcile-sweep.test.ts` is renamed for the step.
-- **`proxy-state.test.ts`** replaces `blocked-hosts.test.ts` and
-  `git-auth-failures.test.ts`: the mirror is filled from `GET /state`, drops
-  malformed entries as the file readers did, keeps its last answer on a 404
-  or a dial failure, and answers per worktree / per project / all.
-- **`proxy-events.test.ts`**: a state event refreshes the mirror before the
-  snapshot push; a `credentials` event raises `proxy-credentials`; the
-  reattach catch-up refreshes the mirror.
+- **`k8s/proxy/test/objects.test.ts`** (new; one `describe` per exported
+  function): each decoder accepts the valid shapes and rejects what the file
+  readers reject today (a codex bundle missing a field, an unknown
+  opencode/pi provider, an empty api key, a bare git pattern complained
+  about once, a registration without `tool` or `projectSlug`); each encoder
+  round-trips through its decoder. `proxy-codex-oauth.test.ts` loses its
+  `readCodexCreds` and `writeCodexOAuthBundle` describes;
+  `proxy-state-files.test.ts` is deleted (`scopeLegacySecretRefs`'s cases
+  move to the seed's test); `proxy-event-stream.test.ts`'s type list
+  shrinks to `mama` and `ping`.
+- **`k8s/proxy/test/object-watch.test.ts`** (new): with a fake informer, a
+  credentials update replaces the maps and runs the agent reconcile
+  (`ssh-add` spawned with `-D` then per key); a registration delete removes
+  exactly that worktree; a per-project secrets delete forgets that project's
+  refs; before the initial list nothing is registered.
 - **`cluster/proxy-apply.test.ts`** (`ensureProxyResources` drives the real
-  manifests): the claim is applied before the Deployment; the Deployment's
-  volumes are exactly the claim and the emptyDir, no hostPath, no
-  `/yaac-credentials` mount; no host directory is created; the seed pod
-  runs only when the claim was absent AND `ca.pem` exists under the old dir
-  (the test creates it in its temp data dir), and mounts the old dir
-  read-only. `proxy-manifests.test.ts` is unchanged (the builder-guard pair
-  is the folder's only external manifest).
-- **`install/install.test.ts`**: the claim step runs after the registry and
-  before the server deploy, and is not skipped under `--adopt-cni`.
-  **`install/check.test.ts`**: `proxy-storage` passes on Bound, passes on
-  Pending-with-no-consumer, fails on absent and on Lost with the install
-  pointer.
-- **`domain/auth/runtime-push.test.ts`** (new): the push swallows a driver
-  failure; adoption takes a newer bundle, refuses an older one, a sentinel,
-  and an api-key or signed-out store — the same table
-  `credential-sync.test.ts` uses for the harvest. `plan-usage.test.ts` gains
-  the assertion that a persisted refresh pushes.
-- **`test/api`** (`route-matrix.ts`): no new server routes, so no rows. The
-  auth rows — including `POST /auth/git/credentials` and
-  `POST /auth/git/ssh-keys`, which gain a push — keep their status classes
-  in both columns; the k8s column's setup installs the real driver with no
-  proxy, so `syncCredentials` is an `attachIfRunning` miss there.
-  `write-routes.test.ts` (whose `POST /auth/git/credentials` and
-  `POST /auth/git/ssh-keys` describes assert only on the rows and files
-  today) gains the assertion that each calls the driver's
-  `syncCredentials`.
-- **`packages/shared/test/paths.test.ts`** / `tool-auth.test.ts`: the
-  `credentialsDir()` path assertion is unchanged on kind; add the tier
-  assertion that it hangs off `serverLocalRoot()`.
+  manifests): the Deployment's volumes are two emptyDirs and no hostPath; no
+  host directory is created; the Role carries the read rules and exactly the
+  three named write targets; the three empty objects are applied before the
+  Deployment; the seed runs only when `yaac-proxy-ca` is empty AND
+  `run/proxy-data/ca.pem` exists in the temp data dir, and scopes a bare ref
+  in a seeded registration. `syncProxyCredentials` renders every key and
+  never logs a value; `syncProjectSecrets` names the project safely and
+  `removeProjectSecrets` deletes by name.
+- **`egress/proxy-registration.test.ts`**: `registerWorkspace` applies a
+  ConfigMap whose payload equals today's PUT body; `allowWorktreeHost`
+  patches `allowedHosts` and fans out per sibling pod;
+  `deregisterWorkspace` deletes. `proxy-client-secrets.test.ts`,
+  `proxy-reconcile.test.ts`, `proxy-reconcile-sweep.test.ts`,
+  `blocked-hosts.test.ts`, `git-auth-failures.test.ts`,
+  `proxy-client-allow-host.test.ts` are deleted; `proxy-secrets.test.ts`
+  keeps only `buildRulesFromSecrets` (moved with `proxySecretRef`).
+  `proxy-events.test.ts` loses the state-event case.
+- **`egress/proxy-state.test.ts`** (new): reads answer from a fake cache;
+  malformed entries are dropped as the file readers dropped them.
+- **`substrate/cluster-cache.test.ts`**: the two new caches map their
+  objects and emit their delta sources.
+- **`domain/auth/runtime-push.test.ts`** (new): the push composes the
+  bundle from all three stores and swallows a driver failure; adoption takes
+  a newer bundle, refuses an older one, a sentinel, and an api-key or
+  signed-out store, and pushes after adopting. `plan-usage.test.ts` gains
+  the assertion that a persisted refresh pushes. `domain/reconcile`'s step
+  table test names `credential-adopt` with its trigger.
+- **`test/api`** (`route-matrix.ts`): no new routes, no rows changed.
+  `write-routes.test.ts` gains the assertion that `POST /auth/git/credentials`
+  and `POST /auth/git/ssh-keys` call the driver's `syncCredentials` (today
+  those describes assert only on rows and files).
+- **`packages/shared/test/paths.test.ts`**: `credentialsDir()` hangs off
+  `serverLocalRoot()`.
 
 ### e2e-containerless
 
-No change. The containerless driver's `syncCredentials` is the same resolved
-no-op `syncSshIdentities` was, and the auth cases in `worktree-suite` and
-`remote-cli` exercise the writers unchanged. Stated here because a reader of
-the route diff will look for it.
+No change. `syncCredentials`, `syncProjectSecrets` and
+`refreshedCredentials` are the resolved no-ops `syncSshIdentities` was, and
+the auth cases in `worktree-suite` and `remote-cli` exercise the writers
+unchanged.
 
 ### k8s e2e (the egress tier)
 
-The "egress e2e tier" for the gate is: `test/e2e/transparent-egress`,
+The "egress e2e tier" for the gate is `test/e2e/transparent-egress`,
 `netd-datapath`, `proxy-ssh-agent`, `ssh-agent-forward` (the files that
-drive `ProxyClient` from the host), plus `test/e2e-cli/worktree-create-suite`
-and `nested-containers` (the files that assert the credential swap through a
-real server), plus the `egress` gate of `yaac cluster check`.
+drive the proxy from the host), `test/e2e-cli/worktree-create-suite` and
+`nested-containers` (the files that assert the credential swap through a
+real server), and the `egress` gate of `yaac cluster check`.
 
+- **The harness**: the four host-driven files register worktrees and push
+  keys through `ProxyClient` today. They call the driver's own
+  `registerWorkspace`, `syncProxyCredentials` and `syncProjectSecrets`
+  instead (the modules are importable from tests, as `proxy-apply` already
+  is), and `TEST_PROXY_CONFIG`'s forwarded origin serves only `/healthz` and
+  the mama queue.
 - **`test/e2e/proxy-credentials-suite.test.ts`** — `proxy-ssh-agent.test.ts`
-  renamed and grown, since it now carries the proxy's whole credential
-  subsystem; one `ensureRunning`, one echo pod and one bare worktree pod
-  (the `transparent-egress` helpers, lifted into `@yaac/test-utils`) shared
-  by every case:
-  - **push then inject**: `putCredentials` with a claude api-key and a
-    github token, register the worktree with `api.anthropic.com` redirected
-    to the echo, curl from the pod with the placeholder `x-api-key`, assert
-    the echo saw the real key. The same request before any push is
-    forwarded with the placeholder untouched (the proxy injects nothing it
-    was not given).
-  - **replace semantics**: a second `putCredentials` without `claude` makes
-    the same curl carry the placeholder again.
-  - **capture and collect**: the echo pod's script also answers
-    `/v1/oauth/token` with a token response; push an OAuth claude bundle,
-    redirect `platform.claude.com` to it, POST a refresh from the pod
-    carrying the placeholder refresh token, assert the pod received
-    placeholders back and `fetchRefreshedCredentials()` returns the rotated
-    bundle; a push echoing that access token clears it.
-  - **state over the API**: curl a host outside the allowlist, assert
-    `fetchProxyState()` records it under the worktree; `allowHost` prunes it.
-  - **the claim outlives the pod**: `kubectl delete pod -l app=yaac-proxy`,
-    wait for `/healthz`, assert `/ca.pem` is byte-identical,
-    `listWorktrees()` still names the registration, the blocked-host record
-    survived, and the credential set is empty (memory-only) until the next
-    push. This is the case that proves `/data` is on the claim.
-  - the three existing ssh-agent cases, unchanged, run first.
+  renamed and grown; one `ensureRunning`, one echo pod (its script also
+  answers `/v1/oauth/token`) and one bare worktree pod shared by every case:
+  - **objects then inject**: write the credentials Secret with a claude
+    api-key and a github token, a registration redirecting
+    `api.anthropic.com` to the echo; curl from the pod with the placeholder
+    `x-api-key`; the echo saw the real key. Before the Secret carries
+    `claude.json`, the placeholder is forwarded untouched.
+  - **replace semantics**: rewriting the Secret without `claude.json` puts
+    the placeholder back on the next curl.
+  - **ssh keys from the object**: the three existing agent cases, driven by
+    the Secret's `ssh-keys.json` and asserted with `ssh-add -l` in the pod
+    (the `/agent/keys` list is gone).
+  - **capture**: with an OAuth bundle in the Secret and `platform.claude.com`
+    redirected to the echo, a refresh POST from the pod carrying the
+    placeholder refresh token gets placeholders back, and
+    `yaac-proxy-refreshed` holds the rotated bundle.
+  - **state**: a curl to a host outside the allowlist lands in
+    `yaac-proxy-state`; patching `allowedHosts` in the registration lets the
+    next curl through and prunes the record.
+  - **the pod is replaceable**: `kubectl delete pod -l app=yaac-proxy`, wait
+    for `/healthz`; `yaac-proxy-ca` is unchanged and the pod serves the same
+    CA, the registration still works, the credentials inject again with no
+    server action — the case that proves the proxy is stateless.
 - **`test/e2e-cli/worktree-create-suite.test.ts`**: the seeded credential
-  files still land before the server spawns, and the server's first
-  `ensureRunning` pushes them — so the existing "routes session HTTPS
-  through proxy→redirect→mock with credential injection" case is the proof
-  that the push replaces the mount. Add one case beside it: `PUT
-  /auth/claude` with a new api key through the running server, re-curl from
-  the same pod, and assert the mock saw the new key — no worktree restart,
-  which is the "re-pushed on change" half of the step.
-- **`test/e2e-cli/nested-containers.test.ts`**: no change; its seeding goes
-  through the same startup push.
-- **`test/e2e-cli/cluster-cli.test.ts`**: `yaac cluster check` output names
-  the `proxy-storage` gate (the existing kubectl-missing and unreachable
-  cases already assert on gate lists).
-- **Multi-node**: the suite is also run on a `--nodes 3` kind cluster, per
-  the plan's standing gate; the claim's node affinity under local-path is
-  what the "outlives the pod" case exercises there.
+  files still land before the server spawns, and the attach push carries
+  them, so the existing "routes session HTTPS through proxy→redirect→mock
+  with credential injection" case proves the object replaces the mount. Add
+  one case: `PUT /auth/claude` with a new api key through the running server,
+  re-curl from the same pod, and the mock saw the new key with no restart —
+  and the time between the two is what shows the informer beats the old
+  per-request file read for freshness.
+- **`test/e2e-cli/nested-containers.test.ts`**: no change.
+- **Multi-node**: the suite also runs on a `--nodes 3` kind cluster per the
+  plan's standing gate; with no volume behind the proxy there is nothing
+  node-affine left to exercise, which is the point.
 
 ## Gate, as a procedure
 
 1. `pnpm lint`.
 2. `pnpm vitest run --project unit:proxy --project unit:server --project
    unit:shared` green.
-3. `grep -n hostPath packages/server/src/drivers/k8s/cluster/proxy-manifests.ts`
-   prints nothing. (`legacy-proxy-data-seed.ts` is allowed to; the grep is
-   deliberately narrow.)
+3. `grep -n "hostPath\|persistentVolumeClaim"
+   packages/server/src/drivers/k8s/cluster/proxy-manifests.ts` prints
+   nothing.
 4. On the test rig (`/home/ben/yaac-test`, `KUBECONFIG` exported), an
-   existing install: `yaac cluster install`, then `yaac cluster check` shows
-   `proxy-storage` passing and the install log's "seeded from" line; `kubectl
-   -n yaac get pvc yaac-proxy-data` is Bound; `kubectl -n yaac get deploy
-   yaac-proxy -o yaml` has no `hostPath`. Create a worktree, confirm the
-   CA in `/etc/yaac/certs/proxy-ca.pem` inside it equals the pre-upgrade
-   `<dataDir>/run/proxy-data/ca.pem`.
+   existing install: `yaac server restart`, then a worktree create; the
+   server log shows the seed line; `kubectl -n yaac get secret yaac-proxy-ca
+   -o jsonpath='{.data.ca\.pem}' | base64 -d` equals the pre-upgrade
+   `<dataDir>/run/proxy-data/ca.pem`; `kubectl -n yaac get deploy yaac-proxy
+   -o yaml` shows two emptyDirs and no hostPath; `kubectl -n yaac get
+   configmap -l yaac.proxy-registration` lists every running worktree.
 5. `pnpm vitest run --project e2e test/e2e/proxy-credentials-suite
    test/e2e/transparent-egress test/e2e/netd-datapath
    test/e2e/ssh-agent-forward test/e2e-cli/worktree-create-suite
-   test/e2e-cli/nested-containers test/e2e-cli/cluster-cli` green, on one
-   node and on `--nodes 3`, run in the background and read from the output
-   file.
+   test/e2e-cli/nested-containers` green, on one node and on `--nodes 3`,
+   run in the background and read from the output file.
 6. `yaac cluster delete && yaac cluster install` on the rig, then a worktree
-   create: a fresh claim, a fresh CA, nothing seeded, everything works.
+   create: a fresh CA, nothing seeded, everything works.
 
 ## Open questions and risks
 
-- **Rolling the proxy at driver attach.** Closing the old-proxy window in
-  seconds would let the 404 tolerance go and make an upgrade deterministic
-  (after `yaac server restart`, the proxy is new). The cost is a Recreate
-  rollout — every running worktree loses egress for a few seconds and the
-  ssh-agent and secret heals run — on every server restart that follows an
-  upgrade, at a moment the user did not choose. Today that cost lands on
-  the first create instead. Recommendation: not in this step; revisit when
-  the rollout can be made zero-downtime.
-- **Seed-time race.** The seed copies `/data` while the old proxy still
-  serves, so a blocked-host or registration write in the seconds between
-  the copy and the roll is lost. A lost blocked-host record is a missing
-  badge; a lost registration is a worktree failing closed. The window is
-  the seed pod's runtime (under a second) plus the apply; acceptable, and
-  it is the reason the seed runs immediately before the Deployment apply
-  and not at install time alone.
-- **`WaitForFirstConsumer` and the seed pod.** On kind's local-path class
-  the seed pod is the claim's first consumer and binds it to its node; the
-  proxy Deployment then follows the volume's affinity. Single-node this is
-  invisible; on `--nodes 3` it pins the proxy to whichever node the seed
-  landed on, which is no worse than where the Deployment would have bound
-  it itself. On a byo cluster there is nothing to seed, so the question does
-  not arise.
-- **Ordering against step 1.** If step 1 (storage claims) lands first, its
-  install-time rename of SERVER-LOCAL writers under `<dataDir>/server` must
-  include `.credentials/`, and the server pod's `secretKeyPath()` and the
-  credentials dir then share a claim, which is the intended end state. If
-  this step lands first, nothing moves on disk and step 1 inherits the tier
-  tag. Either order is green; the rename set is the one thing to check.
-- **Secrets on the pod network.** The push carries every tool credential
-  and git token over plain HTTP between the server pod and the proxy
-  Service. That is the channel that already carries ssh private keys and
-  project secret values, admitted by the proxy's ingress policy on the
-  server's pod selector alone — so no new exposure class, but the step
-  widens what that one policy protects, and the policy-manifests comment
-  should say so.
-- **The proxy's `/tools` report** now says "not configured" for a tool the
-  server has not pushed yet, for the seconds between a proxy boot and the
-  first reconcile tick. Cosmetic; the report is the legacy `yaac-spawn
-  --models` surface.
-- **`ensureProxyImage` is a lookup, not a build.** An install that upgrades
-  its bundle without re-running `yaac cluster install` has no new proxy
-  image in its registry; `ensureRunning` then throws at the next launch
-  exactly as today. Unchanged by this step, but the old-proxy window is
-  indefinite for such an install, so the 404 log line should name the
-  command.
+- **A projected Secret mount instead of an informer** would leave the
+  proxy's file readers byte-for-byte intact — the kubelet would put the
+  same five files at `/yaac-credentials`. Rejected: the kubelet refreshes a
+  mounted Secret on its sync period (a minute, sometimes two), where today a
+  `yaac auth update` is live on the next request; and the ssh keys still
+  need an `ssh-add` on change, which means watching the mount. The informer
+  is one mechanism, sub-second, for every object.
+- **The mama queue stays on HTTP.** It could take the same route (one
+  ConfigMap per request, the proxy answering the held-open worktree
+  response from its informer), which would retire `/events` and `/cmd/*`
+  and make the control API `/healthz` alone. Not this step; noted as the
+  last piece of polling-shaped code around the proxy.
+- **Secret list/watch is namespace-wide** for the proxy, because RBAC cannot
+  name-scope those verbs. The install namespace holds only yaac's objects,
+  and the proxy already holds every value in memory, but a future Secret
+  placed in that namespace by anything else would be readable by the proxy.
+  Worth a one-line note in `policy-manifests.ts`'s threat-model comment.
+- **Ordering against step 1.** If step 1 lands first, its install-time
+  rename of SERVER-LOCAL writers under `<dataDir>/server` must include
+  `.credentials/`; if this step lands first, step 1 inherits the tier tag.
+  Either order is green; the rename set is the one thing to check.
+- **The pod-watch fallback.** `resolveWorktree` falls back to a live API
+  read when a new pod's first packet beats its watch event. Registrations
+  have the same race in the other direction — a Job created microseconds
+  after its ConfigMap — and the same cure: `decodeRegistration` on a cache
+  miss does one `get` by name before failing closed.
+- **Blocked-host write bursts** are debounced in the proxy; a crash inside
+  the 250ms loses the last record, which is a badge, not a credential.
+- **Tor bootstrap per pod** for `USE_TOR` installs: a fresh circuit on every
+  proxy replacement, a minute at worst, and the readiness probe already
+  gates on `tor-ready`.
 
 ## Commit ordering
 
-Each commit lints and passes the projects it touches; the e2e tier is run
-on the second, fourth and fifth.
+Each commit lints and passes the projects it touches; the e2e tier is run on
+the second and third.
 
-1. **Proxy: the credential store and the three routes, additive.** New
-   `credential-store.ts` with tests; the routes, the `credentials` event and
-   the `refreshed` capture wired in; the file readers still consulted when
-   the store holds nothing for a tool (one commit's worth of dual-read, so
-   the e2e tier stays green against a server that pushes nothing yet). Image
-   hash changes; nothing on the server side changes.
-2. **Server: push, adopt, mirror.** Contract deps and `syncCredentials`;
-   `ProxyClient` methods; `proxy-state.ts` replacing the two file readers;
-   the event and reconcile changes; `#domain/auth`'s push and adoption with
-   every writer calling the push; `server-run.ts` wiring. Unit tests as
-   listed; `proxy-credentials-suite` lands here with every case but "the
-   claim outlives the pod". The e2e tier is green with the proxy still
-   mounting the files, because the pushed set wins over them.
-3. **Proxy: drop the file readers; `.credentials/` demotes.** The dual-read
-   from commit 1 goes, `/yaac-credentials` and the `credentials` volume go
-   from the manifest, `credentialsDir()` becomes SERVER-LOCAL,
-   `ensureProxyResources` stops creating host dirs, comments and docs that
-   cite the mount are rewritten. `hostPath` count in `proxy-manifests.ts`
-   drops to one.
-4. **The claim, the seed, install and check.** `buildProxyDataPvcManifest`,
-   `ensureProxyDataClaim`, the seed shim with its docs entry, the install
-   step, the `proxy-storage` gate, `proxyDataHostDir()` deleted, the
-   "outlives the pod" e2e case. The grep gate passes here. Run on the rig
-   against an existing install (procedure step 4) before merging.
-5. **The old-proxy window entry and the plan doc.** The
-   docs/legacy-compat-shims.md entry for the 404 tolerance, the
-   docs/plans/cloud-k8s.md edits, and `docs/worktree-egress.md`'s new
-   section — the prose that describes the finished shape, landed once it is
-   true.
+1. **Proxy: object decoders and informers, additive.** `objects.ts`,
+   `object-watch.ts`, the three informers, the three object writes, with
+   tests. The file readers and HTTP routes stay, and a map filled by an
+   object wins over a file; the image hash changes, nothing server-side
+   does, and the e2e tier is green against a server that writes no objects.
+2. **Server: write and watch objects; stop calling the old routes.** The
+   manifest builders and syncs in `cluster`, the two caches, the contract
+   rename, `runtime-push.ts`, the `credential-adopt` step, the registration
+   ConfigMap path, the attach-time push, the deleted egress modules and
+   their tests, the new unit tests, `proxy-credentials-suite` with every
+   case but "the pod is replaceable". The Deployment still mounts the
+   hostPaths, so the old readers keep the tier green while both paths exist.
+3. **Proxy stateless; `.credentials/` demotes.** The file readers, the
+   `/data` files, `state-files.ts` and the HTTP routes go; both hostPath
+   volumes go and `/data` becomes an emptyDir; the seed shim with its docs
+   entry; `credentialsDir()` becomes SERVER-LOCAL and `proxyDataHostDir()`
+   goes; the last e2e case; the comments that cite the mount. The grep gate
+   passes here. Run procedure step 4 on the rig before merging.
+4. **The window entry and the plan doc.** The docs/legacy-compat-shims.md
+   entries for the window and the retargeted sweep, the
+   docs/plans/cloud-k8s.md edits, the `docs/worktree-egress.md` section and
+   the `docs/ssh-keys.md` clause.
