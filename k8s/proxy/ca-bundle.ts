@@ -1,5 +1,6 @@
 /**
- * Combined-trust-bundle helpers for the proxy's /ca-bundle.pem endpoint.
+ * Combined-trust-bundle helpers for the `ca-bundle.pem` the proxy writes
+ * beside its CA into the `yaac-proxy-ca` Secret.
  *
  * Nested containers (in-pod podman) run tools that ship their own CA bundle
  * and ignore SSL_CERT_FILE/SSL_CERT_DIR — curl, Python requests, cargo's

@@ -13,13 +13,22 @@ import {
   type JobInfo,
   type PodInfo,
 } from './pods'
+import {
+  EMPTY_PROXY_STATE,
+  mapProxyRefreshedObject,
+  mapProxyStateObject,
+  proxyOutputSelector,
+  type ProxyState,
+} from './proxy-objects'
 import { serverLog } from '#log'
+import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**
  * Every informer the server runs, in one registry: the install-scoped
- * worktree pods and worktree Jobs watches. Consumers — the reconciler,
- * the status-watcher sync, the display path — read the caches and
- * subscribe to `onDelta` instead of listing the cluster.
+ * worktree pods and worktree Jobs watches, and the two objects the egress
+ * proxy reports through. Consumers — the reconciler, the status-watcher
+ * sync, the display path — read the caches and subscribe to `onDelta`
+ * instead of listing the cluster.
  */
 /** The install-scoped informers: a workspace and the unit holding it. The
  *  two the layers above have their own words for, and so the two anything
@@ -27,7 +36,10 @@ import { serverLog } from '#log'
 export const WORKSPACE_DELTA_SOURCES = ['worktree-pods', 'worktree-jobs'] as const
 
 export type WorkspaceDeltaSource = typeof WORKSPACE_DELTA_SOURCES[number]
-export type DeltaSource = WorkspaceDeltaSource
+/** The proxy's outputs: its record ConfigMap (a snapshot input) and the
+ *  rotations it captured (which the host store has to adopt). */
+export type ProxyDeltaSource = 'proxy-state' | 'proxy-refreshed'
+export type DeltaSource = WorkspaceDeltaSource | ProxyDeltaSource
 
 export interface ClusterCacheDeps {
   /** Threaded to every informer cache (tests inject fakes). */
@@ -39,6 +51,8 @@ export interface ClusterCacheDeps {
 export class ClusterCache {
   private readonly pods: InformerCache<PodInfo>
   private readonly jobs: InformerCache<JobInfo>
+  private readonly proxyState: InformerCache<ProxyState>
+  private readonly proxyRefreshed: InformerCache<RefreshedToolCredentials>
   private readonly listeners = new Set<(source: DeltaSource) => void>()
   private readonly deps: ClusterCacheDeps
 
@@ -61,16 +75,39 @@ export class ClusterCache {
       mapItem: mapJobObject,
       keyOf: (j) => j.jobName,
     })
+    // One object each, selected by label: the proxy's outputs are
+    // pre-created by the server and patched by the proxy, so the cache
+    // holds either the one object or nothing.
+    this.proxyState = this.buildCache('proxy-state', {
+      path: `/api/v1/namespaces/${ns}/configmaps`,
+      labelSelector: proxyOutputSelector('state'),
+      listFn: () => getCoreApi().listNamespacedConfigMap(
+        { namespace: ns, labelSelector: proxyOutputSelector('state') }),
+      mapItem: mapProxyStateObject,
+      keyOf: () => 'state',
+    })
+    this.proxyRefreshed = this.buildCache('proxy-refreshed', {
+      path: `/api/v1/namespaces/${ns}/secrets`,
+      labelSelector: proxyOutputSelector('refreshed'),
+      listFn: () => getCoreApi().listNamespacedSecret(
+        { namespace: ns, labelSelector: proxyOutputSelector('refreshed') }),
+      mapItem: mapProxyRefreshedObject,
+      keyOf: () => 'refreshed',
+    })
   }
 
   start(): void {
     this.pods.start()
     this.jobs.start()
+    this.proxyState.start()
+    this.proxyRefreshed.start()
   }
 
   stop(): void {
     this.pods.stop()
     this.jobs.stop()
+    this.proxyState.stop()
+    this.proxyRefreshed.stop()
   }
 
   /** Subscribe to deltas (multi-listener; errors are isolated). */
@@ -85,6 +122,16 @@ export class ClusterCache {
 
   worktreeJobs(): JobInfo[] {
     return this.jobs.items()
+  }
+
+  /** What the proxy has recorded — empty until (or unless) it has written. */
+  proxyRecords(): ProxyState {
+    return this.proxyState.items()[0] ?? EMPTY_PROXY_STATE
+  }
+
+  /** The rotations the proxy captured and the host store may not hold yet. */
+  refreshedCredentials(): RefreshedToolCredentials {
+    return this.proxyRefreshed.items()[0] ?? {}
   }
 
   healthy(source: WorkspaceDeltaSource): boolean {

@@ -1,5 +1,5 @@
 import { reconcileImageSalvage } from '#drivers/k8s/worktrees'
-import { reconcileProxySshKeys } from '#drivers/k8s/egress'
+import { reconcileRegistrationGc } from '#drivers/k8s/egress'
 import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
 import {
   reconcileBuildCacheGc,
@@ -57,13 +57,10 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // internally; after the salvage, so a just-pushed generation is the
       // one that survives the collect.
       { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
-      // ssh-agent heal only (attach-only probe, never bootstraps): agent
-      // identities are memory-only by design and need the server to re-upload
-      // them after a proxy pod replacement. A replacement necessarily kills
-      // the proxy event stream, so its reattach IS the heal's edge; the step
-      // still checks the loss signature itself, so a merely flaky tunnel
-      // re-uploads nothing.
-      { name: 'proxy-ssh-keys', triggers: ['proxy-reconnect'], run: () => reconcileProxySshKeys() },
+      // Egress registrations whose workspace is gone — the leavings of a
+      // teardown that never ran. Throttled internally; reads the pass's
+      // own workspace set.
+      { name: 'registration-gc', triggers: [], run: (ctx) => reconcileRegistrationGc(ctx) },
       // Registry-side counterpart: retire step-cache tags no build has used
       // in a cache-ttl and collect their blobs. Throttled internally, and it
       // stands down while anything is pushing.

@@ -6,10 +6,10 @@
 #
 # The data dir is the only durable state a yaac install has: the PGlite
 # database, .credentials/, the project git clones and per-session
-# worktrees, the agent homes and transcripts, and the proxy MITM CA under
-# run/proxy-data. Everything in Kubernetes and podman is rebuilt from it —
-# `yaac cluster delete` says so explicitly — so restoring is
-# "unpack, then re-run `yaac cluster install`".
+# worktrees, and the agent homes and transcripts. Everything in Kubernetes
+# and podman is rebuilt from it — `yaac cluster delete` says so explicitly —
+# so restoring is "unpack, then re-run `yaac cluster install`". (The proxy
+# MITM CA lives in the cluster, so a restore mints a new one.)
 #
 # Three things this CANNOT capture, reported by `dump` and reprinted by
 # `restore`:

@@ -21,9 +21,10 @@ import {
   readBlockedHosts,
   readAllGitAuthFailures,
   readGitAuthFailures,
+  refreshedCredentials,
   registerWorkspace,
-  syncProjectProxySecrets,
 } from '#drivers/k8s/egress'
+import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
 import {
   prepareWorkspaceImage,
   retryImageBuild,
@@ -123,9 +124,9 @@ export function createK8sDriver(): WorktreeDriver {
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => k8sReconcileSteps(),
 
-    blockedHosts: (workspaceId) => readBlockedHosts(workspaceId),
-    gitAuthFailures: (projectSlug) => readGitAuthFailures(projectSlug),
-    allGitAuthFailures: () => readAllGitAuthFailures(),
+    blockedHosts: (workspaceId) => Promise.resolve(readBlockedHosts(workspaceId)),
+    gitAuthFailures: (projectSlug) => Promise.resolve(readGitAuthFailures(projectSlug)),
+    allGitAuthFailures: () => Promise.resolve(readAllGitAuthFailures()),
     forwardedPorts: (workspaceId) => Promise.resolve(getWorktreePorts(workspaceId)),
     unforwardedPorts: (workspaceId) => Promise.resolve(getUnforwardedPorts(workspaceId)),
     allowHost: (target, host, opts) => allowWorktreeHost(target, host, opts),
@@ -156,8 +157,9 @@ export function createK8sDriver(): WorktreeDriver {
     ensureRuntimeReachable: () => ensureKubernetes(),
     prepareImage: (opts) => prepareWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
-    syncSshIdentities: () => proxyClient.syncSshKeysFromCredentials(),
-    syncProxySecrets: (projectSlug) => syncProjectProxySecrets(projectSlug),
+    syncCredentials: (bundle) => syncProxyCredentials(bundle),
+    syncProjectSecrets: (projectSlug, values) => syncProjectSecrets(projectSlug, values),
+    refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),
     declareForwards: (workspaceId, forwards) => declareWorktreeForwards(workspaceId, forwards),

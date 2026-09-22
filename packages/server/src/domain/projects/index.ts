@@ -49,6 +49,7 @@ export {
   generateSshCredential,
   listEntries,
   listSshEntries,
+  loadCredentials,
   loadKnownHostsEntryForHost,
   parseGitRemote,
   removeEntryChecked,

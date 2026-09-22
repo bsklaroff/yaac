@@ -181,20 +181,22 @@ is the last copy: importing valueless rows while deleting it would lose them
 outright.
 
 Deleting it is a separate shim with a different trigger,
-`sweepLegacyProxySecretsFile` (`drivers/k8s/egress/proxy-secrets.ts`), called
-from the reconcile that pushes secrets. Nothing rolls the proxy when a server
-starts, so for a while after an upgrade the pod serving live worktrees is the
-OLD one, resolving every injection out of exactly this file — deleting it at
-startup would take every running worktree's credentials with it. A proxy that
-has just answered the `/secrets` routes is a new one, and that is the only
-place the proof exists.
+`sweepLegacyProxySecretsFile` (`drivers/k8s/cluster/legacy-proxy-seed.ts`),
+which `ProxyClient.ensureRunning` calls after the proxy Deployment's rollout
+has completed. Nothing rolls the proxy when a server starts, so for a while
+after an upgrade the pod serving live worktrees is the OLD one, resolving
+every injection out of exactly this file — deleting it at startup would take
+every running worktree's credentials with it. A completed rollout of the new
+Deployment is the proof that the old pod, the last reader, is gone, and the
+sweep runs only then, and only when `legacySecretImportPending` says no
+overlay still has secrets to be imported out of the file.
 
-The proxy carries the third piece: `scopeLegacySecretRefs`
-(`k8s/proxy/proxy.ts`) rewrites a persisted registration's bare `NAME` ref to
-`<projectSlug>/NAME` when it reloads one after a pod replacement. Refs were
-unscoped before; without the rewrite, a registration written by an older
-server names refs the new one never pushes, and its injections stop resolving
-until the worktree is recreated. The rewrite is exact rather than a guess — a
+The third piece is `scopeLegacySecretRefs`, in the seed below: it rewrites
+a persisted registration's bare `NAME` ref to `<projectSlug>/NAME` as the
+seed carries it into a registration ConfigMap. Refs were unscoped before;
+without the rewrite, a registration written by an older server names refs
+the new one never writes, and its injections stop resolving until the
+worktree is recreated. The rewrite is exact rather than a guess — a
 registration carries the project it belongs to.
 
 **What breaks silently if it is deleted too early:** an install that upgrades
@@ -211,13 +213,67 @@ in the directory the proxy pod mounts — which is what storing them encrypted
 was for.
 
 **How to tell it is safe to remove:** every install has started once on a
-build carrying the importer, and — for the sweep and the proxy-side ref
-rewrite — has had its proxy pod replaced at least once since. Nothing records
-either, so in practice this goes at a release boundary. The importer and the
-three env warnings go together; the `bindMounts` warning can outlive them,
-since it imports nothing and is purely a message. The ref rewrite must go
-LAST of the three: dropping it while a pre-upgrade registration is still in
-some proxy's `/data` turns that worktree's injections off silently.
+build carrying the importer, and — for the sweep — has rolled its proxy at
+least once since. Nothing records either, so in practice this goes at a
+release boundary. The importer and the three env warnings go together; the
+`bindMounts` warning can outlive them, since it imports nothing and is
+purely a message. The ref rewrite goes with the seed, whose own entry says
+when.
+
+## `seedProxyObjects`
+
+`seedProxyObjects` (`drivers/k8s/cluster/legacy-proxy-seed.ts`) runs inside
+`ensureProxyResources`, before the proxy Deployment is applied, and carries
+what an older proxy kept on a hostPath into the objects the current one
+reads (docs/worktree-egress.md "What the proxy is told, and how").
+
+**What it reads:** `<dataDir>/run/proxy-data` — `ca.key`, `ca.pem`,
+`worktrees.json`, `blocked-hosts.json`, `git-auth-failures.json`, the files
+the old proxy's `/data` hostPath held — from the server pod's own mount of
+the data dir, the first time `ensureProxyResources` finds the
+`yaac-proxy-ca` Secret empty beside an old `ca.pem`. It writes the CA
+Secret, one registration ConfigMap per entry (rewriting a bare `secretRef`
+to `<projectSlug>/NAME`, which registrations written before refs were
+scoped still carry), and the state ConfigMap. The directory is left in
+place; nothing else reads it.
+
+**What breaks silently if it is deleted too early:** a proxy that rolls
+onto an empty CA Secret mints a new CA, and every process that loaded the
+old one at start (running agents, nested containers' baked bundles) fails
+TLS against every MITM'd host until its pod restarts; and it comes up with
+no registrations, failing every running worktree closed — nothing
+re-registers a live worktree. No error names either cause.
+
+**How to tell it is safe to remove:** every k8s install in use has rolled
+its proxy once on a build carrying the objects. Directly checkable:
+`kubectl -n yaac get secret yaac-proxy-ca -o jsonpath='{.data.ca\.pem}'`
+is non-empty on every cluster in use. Then the module goes, and the old
+directory may be deleted on each host.
+
+## The pre-object proxy window
+
+Between a server upgrade and the next worktree create, the proxy pod
+serving live worktrees is one that reads credentials off its hostPath and
+took registrations, secret values and ssh keys over its control API — and
+the new server makes none of those calls. Ordinary, not exotic: the proxy
+rolls on the next launch (`ensureRunning` finds the Deployment stale), and
+the launch registers only after the roll.
+
+**What it reads:** nothing. It is the absence of four calls.
+
+**What breaks silently if it goes too early:** nothing goes; this entry
+records the window's cost so it is chosen knowingly. During it, an
+allow-host click and a blocked-host record do not reach the server (the
+badge stays until the roll); a `yaac auth update` reaches the old proxy
+only through the files it still reads, which works; and if the old pod is
+REPLACED inside the window (a crash, an eviction), its secret values and
+ssh keys are gone with it and nothing re-pushes them, so those injections
+stop until the first create rolls it. A worktree create is what closes the
+window, so an install that creates nothing after upgrading stays in it.
+
+**How to tell it is safe to remove:** it is prose, not code; it is removed
+by deleting this entry once no install can still be running a pre-object
+proxy, which drains at the first create after upgrade.
 
 ## The `YAAC_SERVER_GIT_*` identity seed
 

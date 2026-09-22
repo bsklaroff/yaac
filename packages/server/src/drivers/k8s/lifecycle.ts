@@ -3,7 +3,7 @@ import {
   ensurePriorityClasses,
   kubectlApply,
   setActiveClusterCache,
-  type DeltaSource,
+  type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
 import {
   buildServerIngressNpManifest,
@@ -20,7 +20,7 @@ import {
 import {
   PROXY_CHANGE_SOURCES,
   ProxyEventStream,
-  configureProxyCredentials,
+  configureLegacySecretSweep,
   proxyClient,
 } from '#drivers/k8s/egress'
 import { runtimeHandleFromPod } from '#drivers/k8s/view'
@@ -53,7 +53,9 @@ import {
 
 /**
  * Every trigger this driver can raise: what the mediators name, plus its
- * own sources, which only its own steps declare.
+ * own sources — the proxy's queue edge, and a rotation the proxy captured
+ * (`proxy-refreshed`, which the mediators' `credential-adopt` step
+ * declares).
  *
  * `ReconcileTrigger` is deliberately open-ended so a driver can watch
  * things the layers above have no word for — the cost of which is silent
@@ -63,6 +65,7 @@ import {
 export const K8S_TRIGGERS = [
   ...MEDIATOR_TRIGGERS,
   ...PROXY_CHANGE_SOURCES,
+  'proxy-refreshed',
 ] as const
 
 export type K8sTrigger = typeof K8S_TRIGGERS[number]
@@ -75,7 +78,7 @@ export type K8sTrigger = typeof K8S_TRIGGERS[number]
  * mediator trigger in the contract and these two literals stop compiling,
  * rather than producing an edge no step answers.
  */
-export function triggerFor(source: DeltaSource): K8sTrigger {
+export function triggerFor(source: WorkspaceDeltaSource): K8sTrigger {
   return source === 'worktree-pods' ? 'workspaces' : 'units'
 }
 
@@ -167,6 +170,17 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
   clusterCache = cache
   portDetector = detector
   cache.onDelta((source) => {
+    // The proxy's records are a snapshot input (a blocked host is a badge,
+    // never reconcile work); a rotation it captured is what the mediators'
+    // `credential-adopt` step is waiting for.
+    if (source === 'proxy-state') {
+      notifyWorktreeListChanged()
+      return
+    }
+    if (source === 'proxy-refreshed') {
+      sinks.trigger('proxy-refreshed')
+      return
+    }
     if (source === 'worktree-pods') {
       const pods = cache.worktreePods()
       // Reported as contract vocabulary: mapping a pod into one is this
@@ -180,9 +194,8 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
     }
     sinks.trigger(triggerFor(source))
   })
-  // The proxy's change stream: blocked hosts and git-auth failures (snapshot
-  // inputs it notifies for itself) plus the spawn queue and the reattach
-  // edge, which dirty a pass.
+  // The proxy's change stream: the yaac-mama queue edge, which dirties a
+  // pass.
   const events = new ProxyEventStream((source: ReconcileTrigger) => sinks.trigger(source))
   proxyEvents = events
   cache.start()
@@ -205,17 +218,10 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
 
 /** See `WorktreeDriver.start`. */
 export async function startK8sDriver(sinks: DriverSinks, deps: DriverDeps): Promise<void> {
-  // Where the egress path reads credential material from. Left unwired when
-  // the caller supplies nothing, which degrades to "no ssh injection" and
-  // "no secret restore" rather than clearing what a live proxy is using.
-  const { sshIdentities, proxySecrets, legacySecretImportPending } = deps
-  if (sshIdentities && proxySecrets && legacySecretImportPending) {
-    configureProxyCredentials({
-      listSshEntries: sshIdentities,
-      listProxySecrets: proxySecrets,
-      legacySecretImportPending,
-    })
-  }
+  // The one reader the egress path still asks for: whether the legacy env
+  // import has secrets left to recover, which gates deleting the file they
+  // are in (docs/legacy-compat-shims.md). Unwired means the file stays.
+  if (deps.legacySecretImportPending) configureLegacySecretSweep(deps.legacySecretImportPending)
 
   await attachNow(sinks)
 }

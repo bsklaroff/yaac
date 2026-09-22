@@ -1,4 +1,14 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+
+// The auth secret is read off the cluster; kubectl is the boundary.
+const mockKubectlGetJson = vi.hoisted(() => vi.fn())
+vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
+  ...(await importOriginal<typeof kubectlModule>()),
+  k8sNamespace: () => 'yaac',
+  kubectlGetJson: mockKubectlGetJson,
+}))
+
 import { ProxyClient, PROXY_CA_PATH, PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 
 describe('ProxyClient.getCaTrustEnv', () => {
@@ -33,39 +43,40 @@ describe('ProxyClient.getCaTrustEnv', () => {
   })
 })
 
-describe('ProxyClient.getCaBundle', () => {
+describe('ProxyClient.attachIfRunning', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = realFetch })
+
   it('dials the proxy Service by name, with no tunnel in between', async () => {
     // The server is a pod of the proxy's own namespace, so the control API
     // is an ordinary Service dial (docs/server-in-cluster.md) — there is no
     // host-side relay to establish first, and so nothing to be "not started".
-    const realFetch = globalThis.fetch
-    const mock = vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve('PEM') })
+    mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3').toString('base64') } })
+    const mock = vi.fn().mockResolvedValue({ ok: true })
     globalThis.fetch = mock as unknown as typeof fetch
-    try {
-      await expect(new ProxyClient({ image: 'yaac-test-proxy' }).getCaBundle())
-        .resolves.toBe('PEM')
-      expect(mock.mock.calls[0][0])
-        .toBe('http://yaac-proxy.yaac.svc.cluster.local:10255/ca-bundle.pem')
-    } finally {
-      globalThis.fetch = realFetch
-    }
+    await expect(new ProxyClient({ image: 'yaac-test-proxy' }).attachIfRunning()).resolves.toBe(true)
+    expect(mock.mock.calls[0][0]).toBe('http://yaac-proxy.yaac.svc.cluster.local:10255/healthz')
   })
 
   it('takes a caller-supplied origin when it is handed one', async () => {
     // The e2e harness drives this client from the HOST, where a ClusterIP
     // names nothing; `controlOrigin` is how it says where to dial instead.
-    const realFetch = globalThis.fetch
-    const mock = vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve('PEM') })
+    mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3').toString('base64') } })
+    const mock = vi.fn().mockResolvedValue({ ok: true })
     globalThis.fetch = mock as unknown as typeof fetch
-    try {
-      const client = new ProxyClient({
-        image: 'yaac-test-proxy',
-        controlOrigin: () => Promise.resolve('http://127.0.0.1:4444'),
-      })
-      await expect(client.getCaBundle()).resolves.toBe('PEM')
-      expect(mock.mock.calls[0][0]).toBe('http://127.0.0.1:4444/ca-bundle.pem')
-    } finally {
-      globalThis.fetch = realFetch
-    }
+    const client = new ProxyClient({
+      image: 'yaac-test-proxy',
+      controlOrigin: () => Promise.resolve('http://127.0.0.1:4444'),
+    })
+    await expect(client.attachIfRunning()).resolves.toBe(true)
+    expect(mock.mock.calls[0][0]).toBe('http://127.0.0.1:4444/healthz')
+  })
+
+  it('answers false, without dialing, when the install has no proxy secret yet', async () => {
+    mockKubectlGetJson.mockResolvedValue(null)
+    const mock = vi.fn()
+    globalThis.fetch = mock as unknown as typeof fetch
+    await expect(new ProxyClient({ image: 'yaac-test-proxy' }).attachIfRunning()).resolves.toBe(false)
+    expect(mock).not.toHaveBeenCalled()
   })
 })

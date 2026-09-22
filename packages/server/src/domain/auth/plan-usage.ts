@@ -14,6 +14,7 @@ import {
   hostMayRefreshCredentials,
   runtimeMediatesEgress,
 } from './credential-sync'
+import { pushCredentialsToRuntime } from './runtime-push'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
@@ -155,6 +156,9 @@ async function refreshAndPersistClaudeBundle(
         || current.accessToken === bundle.accessToken
         || claudeBundleIsNewer(fresh, current)) {
       await saveClaudeOAuthBundle(fresh)
+      // The runtime injects from what it was last handed: the token it
+      // holds was just spent.
+      await pushCredentialsToRuntime()
     }
   } catch (err) {
     // Only the write can throw here (the loads swallow their own failures),
@@ -261,6 +265,7 @@ async function refreshAndPersistCodexBundle(
         || current.accessToken === bundle.accessToken
         || codexBundleIsNewer(fresh, current)) {
       await saveCodexOAuthBundle(fresh)
+      await pushCredentialsToRuntime()
     }
   } catch (err) {
     serverLog(`[server] failed to persist refreshed Codex OAuth bundle: ${String(err)}`)

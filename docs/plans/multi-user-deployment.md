@@ -249,14 +249,14 @@ each:
 
 - Tool OAuth/API-key bundles are flat files, `.credentials/<tool>.json`
   under the data dir, mirrored into each project's tool home; git HTTPS
-  credentials are `.credentials/github.json`. Both stay files because the
-  proxy pod reads them off its `/yaac-credentials` mount per request and
-  writes refreshed bundles back.
-- Git SSH keys are sealed rows (`git_ssh_keys`), handed to the proxy's
-  in-memory ssh-agent, a containerless worktree's agent, or a short-lived
+  credentials are `.credentials/github.json`. The server hands the proxy
+  the whole set as a Secret on every write, and adopts the rotations the
+  proxy captures from another Secret (docs/worktree-egress.md).
+- Git SSH keys are sealed rows (`git_ssh_keys`), handed to the proxy in
+  that same Secret, a containerless worktree's agent, or a short-lived
   host file. Project env and proxied secrets are sealed rows too
-  (`project_env_vars`), pushed to the proxy over `PUT /secrets` and held in
-  its memory — only `secretRef`s persist.
+  (`project_env_vars`), handed to the proxy as one Secret of opened values
+  per project — registrations carry only `secretRef`s.
 
 Two moves, not one:
 
@@ -412,7 +412,8 @@ rather than fixed):
   command queue (`MAMA_MAX_PENDING_TOTAL` across the install, with a
   per-worktree cap beside it) and ssh-agent connection caps (a busy
   worktree can starve siblings — a fairness knob to revisit, not a
-  correctness hole), and the shared state files under `run/proxy-data/`.
+  correctness hole), and the proxy's record ConfigMap, which is one object
+  for the whole install.
   Attribution itself is sound: the pod-watch index maps source IP to
   worktree, filter chains are per pod IP with no default chain, transparent
   ports are node-CIDR-gated, and the relay handshake carries the

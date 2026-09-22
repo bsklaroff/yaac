@@ -280,7 +280,11 @@ export function buildServerFrontIngressNpManifest(
  * below are about which pods need NO egress at all, not about escaping a
  * deny.
  *
- *  - the proxy: the one pod that legitimately reaches the internet.
+ *  - the proxy: the one pod that legitimately reaches the internet. It
+ *    also reads every Secret in this namespace (its Role, in
+ *    proxy-manifests.ts — `list`/`watch` cannot be name-scoped), which is
+ *    fine while the namespace holds only yaac's objects: anything else
+ *    placed here would be readable by it.
  *  - the server: its egress is deliberately unrestricted, matching the
  *    host process it replaces — it clones and fetches git remotes and
  *    calls out for titles directly, and routing its own traffic through

@@ -67,9 +67,13 @@ export {
   ensureProxyAuthSecret,
   ensureProxyResources,
   proxyServiceClusterIp,
+  removeProjectSecrets,
   resetProxyClusterIpCache,
+  syncProjectSecrets,
+  syncProxyCredentials,
   vapAvailable,
 } from './proxy-apply'
+export { sweepLegacyProxySecretsFile } from './legacy-proxy-seed'
 export { BUILDER_LOCAL_TAG, BUILDER_UPSTREAM_IMAGE, ensureBuilderImage } from './builder-image'
 export { ensureProxyImage, resolveProxyImageTag } from './proxy-image'
 export {
@@ -83,6 +87,8 @@ export {
 export {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
+  buildRegistrationConfigMapManifest,
+  proxyRegistrationName,
 } from './proxy-manifests'
 export {
   ensureMainRegistry,

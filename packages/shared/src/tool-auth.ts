@@ -26,6 +26,7 @@ import {
   type CodexOAuthBundle,
   type OpencodeCredentialsFile,
   type PiCredentialsFile,
+  type ToolCredentialBundle,
 } from '#types'
 import {
   parseOpencodeProvider,
@@ -279,6 +280,17 @@ export async function savePiCredentialsFile(creds: PiCredentialsFile): Promise<v
     piCredentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',
   )
+}
+
+/** Every tool's stored credential file, as one value. */
+export async function loadToolCredentialBundle(): Promise<ToolCredentialBundle> {
+  const [claude, codex, opencode, pi] = await Promise.all([
+    loadClaudeCredentialsFile(),
+    loadCodexCredentialsFile(),
+    loadOpencodeCredentialsFile(),
+    loadPiCredentialsFile(),
+  ])
+  return { claude, codex, opencode, pi }
 }
 
 /**

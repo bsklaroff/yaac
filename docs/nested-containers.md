@@ -357,12 +357,12 @@ intercepted hosts and the real upstreams on tunnelled hosts.
 - **Roots source** is the proxy image's own `ca-certificates` bundle, so
   the roots track the package with no separate staleness burden.
   `combineCaBundle(roots, ca)` concatenates them (pure, unit-tested), and
-  the proxy serves the result at `GET /ca-bundle.pem` (the bare CA stays
-  at `GET /ca.pem`).
-- The server fetches it and writes both keys — `proxy-ca.pem` (bare) and
-  `ca-bundle.pem` (combined) — into the existing `yaac-proxy-ca`
-  ConfigMap, skipping the write when both already match, so CA rotation is
-  just a file write, no image rebuild.
+  the proxy writes the result beside its CA into the `yaac-proxy-ca`
+  Secret at every boot (docs/worktree-egress.md).
+- The server reads that Secret and writes both keys — `proxy-ca.pem`
+  (bare) and `ca-bundle.pem` (combined) — into the `yaac-proxy-ca`
+  ConfigMap worktree pods mount, skipping the write when both already
+  match, so a roots refresh is just an object write, no image rebuild.
 - The ConfigMap mounts at `/etc/yaac/certs`; the nestable image's
   `containers.conf` re-exposes both files to nested containers via
   `[containers] volumes`. The env-var split is emitted per shape: additive

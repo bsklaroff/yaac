@@ -15,6 +15,11 @@ import {
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import {
+  applyWorktreeRegistration,
+  deregisterWorkspaceEgress,
+} from '@yaac/server/drivers/k8s/egress/proxy-registration'
+import { syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/drivers/k8s/substrate/pod-spec'
@@ -223,16 +228,20 @@ beforeAll(async () => {
 
   const key = await makeTestKey(keyDir)
   fingerprint = key.fingerprint
-  await client.clearSshKeys()
-  await client.uploadSshKey(SSH_HOST, key.privateKey, key.knownHostsEntry)
+  // The key reaches the proxy's agent through the credentials Secret,
+  // exactly as the server hands it over.
+  await syncProxyCredentials({
+    claude: null, codex: null, opencode: null, pi: null, git: [],
+    ssh: [{ pattern: `${SSH_HOST}/*`, host: SSH_HOST, privateKey: key.privateKey, knownHostsEntry: key.knownHostsEntry }],
+  })
 
   // The entitlement the proxy gates on is the session's registered remote:
   // an SSH one is exactly when session-create provisions SSH_AUTH_SOCK.
-  await client.registerWorktree(sshSession, {
+  await applyWorktreeRegistration(sshSession, {
     rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
     repoUrl: `git@${SSH_HOST}:acme/app.git`,
   })
-  await client.registerWorktree(httpsSession, {
+  await applyWorktreeRegistration(httpsSession, {
     rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
     repoUrl: 'https://github.com/acme/app.git',
   })
@@ -251,9 +260,8 @@ afterAll(async () => {
       '--ignore-not-found', '--wait=false', '--grace-period=1',
     ]).catch(() => { /* ok */ })
   }
-  try { await client.removeWorktree(sshSession) } catch { /* ok */ }
-  try { await client.removeWorktree(httpsSession) } catch { /* ok */ }
-  try { await client.clearSshKeys() } catch { /* ok */ }
+  await deregisterWorkspaceEgress(sshSession)
+  await deregisterWorkspaceEgress(httpsSession)
   try { await client.stop() } catch { /* ok */ }
   restoreNamespace?.()
   restoreNamespace = null

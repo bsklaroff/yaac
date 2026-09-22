@@ -26,7 +26,14 @@ vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),
   reconcileImagePrewarm: vi.fn(),
 }))
-vi.mock('#drivers/k8s/egress/proxy-reconcile', () => ({ reconcileProxySshKeys: vi.fn() }))
+vi.mock('#drivers/k8s/egress/proxy-registration', async (importOriginal) => ({
+  ...(await importOriginal<typeof proxyRegistrationModule>()),
+  reconcileRegistrationGc: vi.fn(),
+}))
+vi.mock('#domain/auth/runtime-push', () => ({
+  adoptRefreshedToolCredentials: vi.fn(),
+  pushCredentialsToRuntime: vi.fn(),
+}))
 vi.mock('#drivers/k8s/cluster/project-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof projectRegistryModule>()),
   reconcileProjectRegistryGc: vi.fn(),
@@ -54,7 +61,9 @@ import { reconcileBuilderPodGc } from '#drivers/k8s/images/builder-pod'
 import { reconcileBuildCacheGc } from '#drivers/k8s/images/build-cache-gc'
 import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
 import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
-import { reconcileProxySshKeys } from '#drivers/k8s/egress/proxy-reconcile'
+import { reconcileRegistrationGc } from '#drivers/k8s/egress/proxy-registration'
+import { adoptRefreshedToolCredentials } from '#domain/auth/runtime-push'
+import type * as proxyRegistrationModule from '#drivers/k8s/egress/proxy-registration'
 import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster/project-registry'
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
@@ -63,8 +72,8 @@ const ALL_STEP_FNS = [
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
-  reconcileProxySshKeys, reconcileBuildCacheGc,
-  gcOrphanEphemeralModuleDirs, reconcileGeneratedTitles,
+  reconcileRegistrationGc, reconcileBuildCacheGc,
+  gcOrphanEphemeralModuleDirs, adoptRefreshedToolCredentials, reconcileGeneratedTitles,
 ] as const
 
 type StepRuns = Array<{ name: string; resync: boolean }>
@@ -340,12 +349,6 @@ describe('defaultReconcileSteps', () => {
     await expectOnly(['mama-requests'], [reconcileMamaRequests])
   })
 
-  // A stream reattach is the one edge that says the proxy pod may have been
-  // replaced — which is what the proxy heal was previously polling for.
-  it('runs only the proxy heal on a stream reattach', async () => {
-    await expectOnly(['proxy-reconnect'], [reconcileProxySshKeys])
-  })
-
   // The conversation sweep is the only substrate step that reads the
   // watcher's live set, and for `acp` that set is where a conversation's id
   // first appears — out of an in-pod handshake no informer can see. Without
@@ -404,9 +407,18 @@ describe('defaultReconcileSteps', () => {
     // mediators' quarter of it: the runtime's own groups are spliced in,
     // which only holds while the REAL runtime is installed. Swap the
     // beforeEach to the fake — whose `reconcileSteps()` returns empty
-    // groups — and the set above quietly shrinks to the mediator steps
-    // while still passing. So assert the runtime's own edge is in it.
-    expect(declared).toContain('proxy-reconnect')
+    // groups — and the list below quietly shrinks to the mediator steps
+    // while still passing. So assert a runtime step is in it, and that the
+    // edge only the k8s runtime raises is declared.
+    expect(defaultReconcileSteps().map((s) => s.name)).toContain('registration-gc')
+    expect(declared).toContain('proxy-refreshed')
+  })
+
+  // A rotation the proxy captured is adopted on its own edge, and on nothing
+  // else: the step reads a cache, so a spurious run is cheap, but an edge
+  // that also ran the reaper would be a reaper on a credential's schedule.
+  it('adopts a captured rotation on its own edge alone', async () => {
+    await expectOnly(['proxy-refreshed'], [adoptRefreshedToolCredentials])
   })
 
   // The image-store rebuild is pinned between its two neighbours: after the

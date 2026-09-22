@@ -44,7 +44,7 @@ function hostEnv(name: string): string | undefined {
  * upgrade resolves every live worktree's injections out of this file, and
  * nothing rolls it at server start — so removing it here would take every
  * running worktree's credentials with it. The delete belongs where the new
- * proxy has proved it is up (`sweepLegacyProxySecretsFile`).
+ * proxy has rolled in (`sweepLegacyProxySecretsFile`).
  */
 export function legacyProxySecretsFile(): string {
   return path.join(credentialsDir(), 'proxy-secrets.json')

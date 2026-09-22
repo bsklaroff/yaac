@@ -1021,6 +1021,50 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(probeCall!.body).toContain('claude-sonnet-4-6')
     }, 60_000)
 
+    it('swaps in a credential updated through the running server, with no restart', async () => {
+      // The store changes under a running worktree: the server hands the
+      // proxy the new set as an object, and its informer applies it — the
+      // next request from the same pod carries the new key. No pod, proxy
+      // or server restarts anywhere in between.
+      const probe = async (): Promise<string | undefined> => {
+        const marker = `rotate-probe-${randomUUID().slice(0, 8)}`
+        await execInJob(jobName, [
+          'curl', '-sS', '-k', '--max-time', '10', '-X', 'POST',
+          '-H', 'x-api-key: yaac-ph-api-key', '-H', 'content-type: application/json',
+          '-d', `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"${marker}"}]}`,
+          'https://api.anthropic.com/v1/messages',
+        ], { timeout: 20_000 })
+        const transcript = await mockLLM!.transcript()
+        const key = transcript.find((e) => e.body.includes(marker))?.headers['x-api-key']
+        return Array.isArray(key) ? key[0] : key
+      }
+      const putKey = async (apiKey: string): Promise<void> => {
+        const res = await fetch(`${base}/auth/claude`, {
+          method: 'PUT',
+          headers: { ...auth, 'content-type': 'application/json' },
+          body: JSON.stringify({ kind: 'api-key', apiKey }),
+        })
+        expect(res.status).toBe(204)
+      }
+      const seen: string[] = []
+      const untilSwapped = async (expected: string): Promise<void> => {
+        const deadline = Date.now() + 30_000
+        for (;;) {
+          const key = await probe()
+          if (key !== undefined) seen.push(key)
+          if (key === expected || Date.now() > deadline) break
+          await new Promise((r) => setTimeout(r, 500))
+        }
+        expect(seen.at(-1), `saw ${seen.join(', ')}`).toBe(expected)
+      }
+
+      await putKey('sk-ant-fake-rotated-key')
+      await untilSwapped('sk-ant-fake-rotated-key')
+      // And back, for the cases that follow.
+      await putKey('sk-ant-fake-real-key')
+      await untilSwapped('sk-ant-fake-real-key')
+    }, 120_000)
+
     it('boots claude-code and round-trips a prompt through the mock LLM', async () => {
       // The strongest test of the mocking infrastructure: the real tool,
       // not a curl stand-in. Onboarding was pre-seeded at create time so

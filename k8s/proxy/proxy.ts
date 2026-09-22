@@ -1,18 +1,23 @@
 /**
  * MITM proxy sidecar for agent session containers.
  *
- * - Generates a self-signed CA on startup (persisted to /data/)
- * - Accepts per-worktree rules and allowlists via HTTP API
- * - Writes per-worktree registrations and blocked-host state through to
- *   /data/ (a hostPath the server reads directly) and reloads both at
- *   boot, so a pod replacement never strands live worktrees
- * - Handles CONNECT tunneling: MITMs TLS when rules match, tunnels otherwise
- * - Reads GitHub / Claude / Codex credentials directly from the host-mounted
- *   `/yaac-credentials/` directory at request time, so updates to tokens via
- *   `yaac auth update` flow into every running worktree without a restart.
- * - Swaps placeholder tokens for real Claude OAuth credentials and writes
- *   refreshed tokens back to the host-mounted credentials file.
+ * Stateless: everything it needs arrives as Kubernetes objects it watches
+ * (object-watch.ts) and everything it reports goes out as objects the
+ * server watches — so a replaced pod restores itself from the informers'
+ * initial lists and nothing here touches a volume that outlives the pod.
  *
+ * - Serves the CA from the `yaac-proxy-ca` Secret, minting one into it the
+ *   first time
+ * - Takes per-worktree rules and allowlists from registration ConfigMaps,
+ *   secret values from per-project Secrets, and the GitHub / Claude /
+ *   Codex / opencode / pi credentials plus ssh keys from the credentials
+ *   Secret, each live: a `yaac auth update` reaches every running worktree
+ *   on its next request
+ * - Handles CONNECT tunneling: MITMs TLS when rules match, tunnels otherwise
+ * - Swaps placeholder tokens for real OAuth credentials and captures
+ *   refreshed tokens into the `yaac-proxy-refreshed` Secret
+ * - Records blocked hosts and rejected git credentials in the
+ *   `yaac-proxy-state` ConfigMap
  */
 
 import http from 'node:http'
@@ -25,7 +30,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
-import { spawn } from 'node:child_process'
 import type { Duplex } from 'node:stream'
 import forge from 'node-forge'
 import { SocksClient } from 'socks'
@@ -36,7 +40,35 @@ import {
   splitHostHeader,
 } from './transparent'
 import { parsePp2Header } from './pp2'
-import { readJsonOrNull, scopeLegacySecretRefs, writeJsonAtomic } from './state-files'
+import {
+  CA_SECRET_NAME,
+  REFRESHED_SECRET_NAME,
+  STATE_CONFIGMAP_NAME,
+  decodeCa,
+  decodeRefreshed,
+  decodeState,
+  encodeCa,
+  encodeRefreshed,
+  encodeState,
+  matchPattern,
+  type ClaudeOAuthBundle,
+  type CodexOAuthBundle,
+  type GitAuthFailureRecord,
+  type HostInjectionRule,
+  type ProxyState,
+  type UpstreamRedirect,
+  type WorktreeRegistration,
+} from './objects'
+import {
+  ProxyObjects,
+  fetchRegistration,
+  readOutputObject,
+  startObjectWatch,
+  writeCa,
+  writeRefreshed,
+  writeState,
+} from './object-watch'
+import { createAgentKeyLoader } from './agent-keys'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, startPodWatch } from './pod-watch'
 import {
@@ -60,8 +92,9 @@ import {
   type ToolCredsView,
 } from './tools-report'
 
-// Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
-// from PORT now that no worktree egress reaches it — it is purely the API.
+// Control-API listener: health, the change stream and the yaac-mama queue.
+// Everything else the server tells the proxy travels as objects
+// (object-watch.ts), so this is purely the request/response API.
 const API_PORT = process.env.API_PORT
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
 // Transparent egress listeners: netd's node-local Envoy forwards
@@ -82,6 +115,7 @@ if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_H
     + 'POD_STREAM_PORT environment variables are required')
   process.exit(1)
 }
+// Pod-local scratch (an emptyDir): Tor's state and its readiness marker.
 const DATA_DIR = '/data'
 // UDP/53 DNS stub: worktree pods point their resolver here. Optional so
 // non-cluster test runs can skip it.
@@ -124,12 +158,23 @@ async function resolveInternalA(name: string): Promise<string | null> {
 const podIndex = new PodWorktreeIndex()
 
 async function resolveWorktree(ip: string): Promise<string | undefined> {
-  const cached = podIndex.resolve(ip)
-  if (cached) return cached
-  // Cache-miss fallback: a new pod's first packet can beat its watch event.
-  try {
-    return await fetchWorktreeByPodIp(podIndex, ip) ?? undefined
-  } catch { return undefined }
+  let worktreeId = podIndex.resolve(ip)
+  if (!worktreeId) {
+    // Cache-miss fallback: a new pod's first packet can beat its watch event.
+    try {
+      worktreeId = await fetchWorktreeByPodIp(podIndex, ip) ?? undefined
+    } catch { return undefined }
+  }
+  // Same race in the other direction — a Job created microseconds after
+  // its registration ConfigMap — and the same cure.
+  if (worktreeId && IN_CLUSTER && !objects.registration(worktreeId)) {
+    try {
+      await fetchRegistration(objects, worktreeId)
+    } catch (err) {
+      console.error(`[proxy] registration lookup failed for ${worktreeId.slice(0, 8)}...:`, (err as Error).message)
+    }
+  }
+  return worktreeId
 }
 
 // When USE_TOR=1, route every upstream connection through the Tor SOCKS
@@ -146,15 +191,10 @@ const torProxy = { host: '127.0.0.1', port: 9050, type: 5 as const }
 // given destination can take longer, so use a higher fixed ceiling.
 const TOR_TUNNEL_TIMEOUT_MS = 120_000
 
-// Host-mounted credentials directory. The entire `~/.yaac/.credentials/`
-// directory is bind-mounted RW so the proxy can read every service's
-// credentials at request time and write refreshed Claude OAuth bundles back.
-const CREDENTIALS_DIR = '/yaac-credentials'
-const GITHUB_CREDS_FILE = path.join(CREDENTIALS_DIR, 'github.json')
-const CLAUDE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'claude.json')
-const CODEX_CREDS_FILE = path.join(CREDENTIALS_DIR, 'codex.json')
-const OPENCODE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'opencode.json')
-const PI_CREDS_FILE = path.join(CREDENTIALS_DIR, 'pi.json')
+// Only in-cluster (a mounted SA) can the proxy watch its objects or the
+// pods. A local/test run without it leaves every map empty, so transparent
+// connections fail closed — which is correct.
+const IN_CLUSTER = Boolean(process.env.KUBERNETES_SERVICE_HOST)
 
 const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
@@ -187,87 +227,16 @@ type CA = {
 
 type LeafEntry = { key: string; cert: string; expires: number }
 
-type ClaudeOAuthBundle = {
-  accessToken: string
-  refreshToken: string
-  expiresAt: number
-  scopes: string[]
-  subscriptionType?: string
-}
-
-type ClaudeCreds =
-  | { kind: 'oauth'; bundle: ClaudeOAuthBundle }
-  | { kind: 'api-key'; apiKey: string }
-
-type CodexOAuthBundle = {
-  accessToken: string
-  refreshToken: string
-  idTokenRawJwt: string
-  expiresAt: number
-  lastRefresh: string
-  accountId?: string
-}
-
-type CodexCreds =
-  | { kind: 'oauth'; bundle: CodexOAuthBundle }
-  | { kind: 'api-key'; apiKey: string }
-
-type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: string }
-
-type PiCreds = { kind: 'api-key'; apiKey: string; provider: string }
-
-// NOTE: keep in sync with packages/shared/src/credentials.ts and
-// packages/server/src/store/projects/credentials.ts. The proxy bundles independently and can't
-// import from src/. SSH entries live in the same file but are irrelevant to
-// the proxy — the server uploads SSH keys directly via PUT /agent/keys, so we
-// only parse out the HTTPS entries here.
-type HttpsCredentialEntry = { pattern: string; token: string }
-
-type ParsedPattern = { host: string; kind: 'any' | 'exact' | 'prefix'; path: string }
-
 type Injection =
   | { action: 'set_header'; name: string; value: string }
   | { action: 'replace_header'; name: string; value: string }
   | { action: 'remove_header'; name: string }
   | { action: 'replace_body_param'; name: string; value: string }
 
-/**
- * Injection as registered via PUT /worktrees/:id. Instead of a literal
- * `value`, it may carry a `secretRef` naming one of the secrets the server
- * pushed to `PUT /secrets` (plus an optional header `prefix`, e.g.
- * "Bearer "). References keep registrations secret-free so they can be
- * persisted to /data; the real value is resolved per request from the
- * in-memory map, which also means a rotation the server pushes applies to
- * live worktrees immediately.
- */
-type RegisteredInjection = {
-  action: Injection['action']
-  name: string
-  value?: string
-  secretRef?: string
-  prefix?: string
-}
-
 type InjectionRule = {
   pathPattern: string
   injections: Injection[]
 }
-
-type HostInjectionRule = {
-  hostPattern: string
-  pathPattern: string
-  injections: RegisteredInjection[]
-}
-
-/**
- * Per-worktree upstream redirect: when the client MITMs `hostname`, forward
- * the inner HTTP request to this target instead of the real upstream. Only
- * applied inside the MITM path — the client still sees a TLS handshake for
- * the original hostname, and credential-injection still runs before forward.
- * Test-only: lets e2e-cli route "api.anthropic.com" to a mock container on
- * the proxy network.
- */
-type UpstreamRedirect = { host: string; port: number; tls?: boolean }
 
 // ── CA Certificate Management ──────────────────────────────────────────
 
@@ -278,27 +247,49 @@ const leafCache = new Map<string, LeafEntry>()
 const LEAF_VALIDITY_MS = 24 * 60 * 60 * 1000
 const LEAF_REFRESH_MS = 60 * 60 * 1000
 
-function loadOrGenerateCA(): CA {
-  const keyPath = path.join(DATA_DIR, 'ca.key')
-  const certPath = path.join(DATA_DIR, 'ca.pem')
-
-  if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
-    const keyPem = fs.readFileSync(keyPath, 'utf8')
-    const certPem = fs.readFileSync(certPath, 'utf8')
-    const key = forge.pki.privateKeyFromPem(keyPem)
-    const cert = forge.pki.certificateFromPem(certPem)
-    // A CA minted before the SKI/AKI issuer-disambiguation fix carries no
-    // subjectKeyIdentifier, so a verifier holding another identically-named
-    // "yaac Proxy CA" can't tell which one signed a leaf and hard-fails on
-    // the wrong key. Regenerate it so new leaves get a matching AKI. See
-    // getLeafCert.
-    if (cert.getExtension('subjectKeyIdentifier')) {
-      console.log('[proxy] Loaded existing CA from disk')
-      return { key, cert, pem: certPem }
+/**
+ * The CA, from the `yaac-proxy-ca` Secret the server pre-created — minted
+ * into it the first time, so every later pod (and every worktree pod's
+ * mounted trust bundle) keeps the same root. The combined bundle
+ * `{system roots} ∪ {CA}` is rewritten either way: the roots are the
+ * image's, and an image upgrade may have refreshed them.
+ *
+ * Outside a cluster (a local run) there is no Secret: a fresh CA per
+ * process, which is all a run without worktrees needs.
+ */
+async function loadOrGenerateCA(): Promise<CA> {
+  let loaded: CA | null = null
+  if (IN_CLUSTER) {
+    const stored = decodeCa(await readOutputObject('secret', CA_SECRET_NAME))
+    if (stored) {
+      const key = forge.pki.privateKeyFromPem(stored.keyPem)
+      const cert = forge.pki.certificateFromPem(stored.certPem)
+      // A CA minted before the SKI/AKI issuer-disambiguation fix carries no
+      // subjectKeyIdentifier, so a verifier holding another identically-named
+      // "yaac Proxy CA" can't tell which one signed a leaf and hard-fails on
+      // the wrong key. Regenerate it so new leaves get a matching AKI. See
+      // getLeafCert.
+      if (cert.getExtension('subjectKeyIdentifier')) {
+        console.log('[proxy] Loaded existing CA')
+        loaded = { key, cert, pem: stored.certPem }
+      } else {
+        console.log('[proxy] Existing CA lacks a subjectKeyIdentifier — regenerating')
+      }
     }
-    console.log('[proxy] Existing CA lacks a subjectKeyIdentifier — regenerating')
   }
+  const result = loaded ?? generateCA()
+  if (IN_CLUSTER) {
+    await writeCa(encodeCa({
+      keyPem: forge.pki.privateKeyToPem(result.key),
+      certPem: result.pem,
+      bundlePem: combineCaBundle(fs.readFileSync(SYSTEM_ROOTS_PATH, 'utf8'), result.pem),
+    }))
+    console.log(`[proxy] CA ${loaded ? 'bundle refreshed in' : 'saved to'} ${CA_SECRET_NAME}`)
+  }
+  return result
+}
 
+function generateCA(): CA {
   console.log('[proxy] Generating new CA...')
   const keys = forge.pki.rsa.generateKeyPair(2048)
   const cert = forge.pki.createCertificate()
@@ -321,16 +312,7 @@ function loadOrGenerateCA(): CA {
     { name: 'subjectKeyIdentifier' },
   ])
   cert.sign(keys.privateKey, forge.md.sha256.create())
-
-  const keyPem = forge.pki.privateKeyToPem(keys.privateKey)
-  const certPem = forge.pki.certificateToPem(cert)
-
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(keyPath, keyPem, { mode: 0o600 })
-  fs.writeFileSync(certPath, certPem)
-  console.log('[proxy] CA generated and saved to disk')
-
-  return { key: keys.privateKey, cert, pem: certPem }
+  return { key: keys.privateKey, cert, pem: forge.pki.certificateToPem(cert) }
 }
 
 function getLeafCert(hostname: string): { key: string; cert: string } {
@@ -376,158 +358,48 @@ function getLeafCert(hostname: string): { key: string; cert: string } {
   return { key: keyPem, cert: certPem }
 }
 
-// ── Credential Readers ─────────────────────────────────────────────────
+// ── The objects the proxy is told through ────────────────────────────
+//
+// Credentials, per-project secret values and per-worktree registrations
+// all arrive over the informers in object-watch.ts and are read from these
+// maps per request, which is what makes a `yaac auth update` or a secret
+// edit live for every running worktree.
 
-/**
- * Parse the host-mounted claude.json. Returns either an OAuth bundle or an
- * api-key entry, depending on the file's `kind` field.
- */
-function readClaudeCreds(): ClaudeCreds | null {
-  try {
-    const raw = fs.readFileSync(CLAUDE_CREDS_FILE, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'oauth' && o.claudeAiOauth && typeof o.claudeAiOauth === 'object') {
-      const b = o.claudeAiOauth as Record<string, unknown>
-      if (typeof b.accessToken === 'string' && typeof b.refreshToken === 'string'
-        && typeof b.expiresAt === 'number' && Array.isArray(b.scopes)) {
-        const bundle: ClaudeOAuthBundle = {
-          accessToken: b.accessToken,
-          refreshToken: b.refreshToken,
-          expiresAt: b.expiresAt,
-          scopes: b.scopes as string[],
-          subscriptionType: typeof b.subscriptionType === 'string' ? b.subscriptionType : undefined,
-        }
-        return { kind: 'oauth', bundle }
+const objects = new ProxyObjects({
+  loadSshKeys: (entries) => agentKeys.reload(entries),
+  // A registration's allowlist widening (the webapp's allow-host click)
+  // prunes the host from the blocked record so the badge clears.
+  onRegistration: (worktreeId, registration) => {
+    const blocked = blockedHostsByWorktree.get(worktreeId)
+    if (!blocked) return
+    if (registration === null) {
+      blockedHostsByWorktree.delete(worktreeId)
+      scheduleStateWrite()
+      return
+    }
+    let pruned = false
+    for (const host of blocked) {
+      if (isHostAllowed(worktreeId, host)) {
+        blocked.delete(host)
+        pruned = true
       }
-      return null
     }
-    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      return { kind: 'api-key', apiKey: o.apiKey }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
+    if (pruned) scheduleStateWrite()
+  },
+})
 
-function readClaudeOAuthBundle(): ClaudeOAuthBundle | null {
-  const creds = readClaudeCreds()
-  return creds && creds.kind === 'oauth' ? creds.bundle : null
+function registrationOf(worktreeId: string): WorktreeRegistration | undefined {
+  return objects.registration(worktreeId)
 }
-
-function readCodexCreds(): CodexCreds | null {
-  try {
-    const raw = fs.readFileSync(CODEX_CREDS_FILE, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'oauth' && o.codexOauth && typeof o.codexOauth === 'object') {
-      const b = o.codexOauth as Record<string, unknown>
-      if (typeof b.accessToken === 'string' && b.accessToken
-        && typeof b.refreshToken === 'string' && b.refreshToken
-        && typeof b.idTokenRawJwt === 'string' && b.idTokenRawJwt
-        && typeof b.expiresAt === 'number'
-        && typeof b.lastRefresh === 'string') {
-        const bundle: CodexOAuthBundle = {
-          accessToken: b.accessToken,
-          refreshToken: b.refreshToken,
-          idTokenRawJwt: b.idTokenRawJwt,
-          expiresAt: b.expiresAt,
-          lastRefresh: b.lastRefresh,
-          accountId: typeof b.accountId === 'string' ? b.accountId : undefined,
-        }
-        return { kind: 'oauth', bundle }
-      }
-      return null
-    }
-    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      return { kind: 'api-key', apiKey: o.apiKey }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-function readCodexOAuthBundle(): CodexOAuthBundle | null {
-  const creds = readCodexCreds()
-  return creds && creds.kind === 'oauth' ? creds.bundle : null
-}
-
-function readOpencodeCreds(): OpencodeCreds | null {
-  try {
-    const raw = fs.readFileSync(OPENCODE_CREDS_FILE, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      // The provider must be recorded and known to this registry: it selects
-      // the host this key is swapped on, so defaulting a missing one would
-      // inject the key on a vendor the user never chose. Validated against the
-      // host map rather than assumed — matching the server, which reads the
-      // same file and treats a credential without a usable provider as
-      // unconfigured. Disagreeing here would report the tool as authed on
-      // /tools while the server thinks it is not.
-      const provider = typeof o.provider === 'string' ? o.provider : ''
-      // hasOwn, not a truthiness index: the map is a plain object, so keys
-      // from its prototype chain ("constructor", "toString", …) would index to
-      // a truthy inherited member and pass. Nothing downstream would inject on
-      // one — the swap sites compare `hostname === MAP[provider]`, which no
-      // Function equals — but this reader would still report the credential as
-      // usable on /tools.
-      if (!Object.hasOwn(OPENCODE_PROVIDER_HOSTS, provider)) return null
-      return { kind: 'api-key', apiKey: o.apiKey, provider }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-function readPiCreds(): PiCreds | null {
-  try {
-    const raw = fs.readFileSync(PI_CREDS_FILE, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      // Missing or unknown provider → unusable, as for opencode above.
-      const provider = typeof o.provider === 'string' ? o.provider : ''
-      if (!Object.hasOwn(PI_PROVIDER_HOSTS, provider)) return null
-      return { kind: 'api-key', apiKey: o.apiKey, provider }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-/**
- * The values behind a registration's `secretRef` rules, keyed
- * `<projectSlug>/<NAME>`.
- *
- * IN MEMORY ONLY, like the ssh-agent's identities and for the same reason:
- * these are a user's own secrets, and a file of them in the mounted
- * credentials dir is a plaintext copy of every one this install proxies,
- * sitting on disk for as long as the install exists. The server pushes them
- * over the control API (`PUT /secrets`) before the registration that
- * references them, and re-pushes after a pod replacement — which it can
- * detect, because a replaced pod comes back with this map empty and says so
- * (`GET /secrets/names`).
- *
- * Registrations themselves stay persistable: they carry the ref, never the
- * value.
- */
-const proxySecrets = new Map<string, string>()
 
 /**
  * Resolve registration-time injections into concrete value injections.
  * Injections whose reference doesn't resolve are dropped — never inject an
- * empty or placeholder credential.
+ * empty or placeholder credential. A ref is only ever resolved within the
+ * registration's own project: the server scopes every ref it writes, and
+ * checking the scope here makes the writer's invariant the reader's too.
  */
-function resolveRegisteredRules(rules: HostInjectionRule[]): InjectionRule[] {
+function resolveRegisteredRules(rules: HostInjectionRule[], projectSlug: string | undefined): InjectionRule[] {
   const out: InjectionRule[] = []
   for (const rule of rules) {
     const injections: Injection[] = []
@@ -537,8 +409,9 @@ function resolveRegisteredRules(rules: HostInjectionRule[]): InjectionRule[] {
         continue
       }
       let value = inj.value
-      if (typeof value !== 'string' && inj.secretRef) {
-        const secret = proxySecrets.get(inj.secretRef)
+      if (typeof value !== 'string' && inj.secretRef
+        && projectSlug !== undefined && inj.secretRef.startsWith(`${projectSlug}/`)) {
+        const secret = objects.secret(inj.secretRef)
         if (secret !== undefined) value = (inj.prefix ?? '') + secret
       }
       if (typeof value !== 'string') {
@@ -565,38 +438,6 @@ function decodeJwtExp(jwt: string): number | null {
   } catch {
     return null
   }
-}
-
-function isHostSegment(s: string): boolean {
-  return s.includes('.') || s === 'localhost'
-}
-
-function parsePattern(pattern: string): ParsedPattern | null {
-  if (!pattern || pattern.includes(' ')) return null
-  const parts = pattern.split('/')
-  if (parts.length < 2) return null
-  const host = parts[0]
-  if (!host || host.includes('*') || !isHostSegment(host)) return null
-  const rest = parts.slice(1)
-  if (rest.length === 1 && rest[0] === '*') {
-    return { host, kind: 'any', path: '' }
-  }
-  if (rest[rest.length - 1] === '*') {
-    const prefixParts = rest.slice(0, -1)
-    if (prefixParts.some((p) => !p || p.includes('*'))) return null
-    return { host, kind: 'prefix', path: prefixParts.join('/') }
-  }
-  if (rest.some((p) => !p || p.includes('*'))) return null
-  return { host, kind: 'exact', path: rest.join('/') }
-}
-
-function matchPattern(pattern: string, host: string, path: string): boolean {
-  const p = parsePattern(pattern)
-  if (!p) return false
-  if (p.host !== host) return false
-  if (p.kind === 'any') return true
-  if (p.kind === 'exact') return path === p.path
-  return path === p.path || path.startsWith(p.path + '/')
 }
 
 /** Parse a git remote URL. Accepts https:// and SCP-style only. */
@@ -627,51 +468,6 @@ function parseGitRemote(remoteUrl: string | undefined): {
 }
 
 /**
- * Patterns already complained about, so a dropped entry is named once rather
- * than on every proxied git request — this file is re-read per request. The
- * server logs the same rejection with the same rewrite (its
- * `patternComplaint`); this side says it too because the proxy is where the
- * request that lost its credential actually dies.
- */
-const complainedPatterns = new Set<string>()
-
-function complainAboutPattern(pattern: string): void {
-  if (complainedPatterns.has(pattern)) return
-  complainedPatterns.add(pattern)
-  const qualified = `github.com/${pattern}`
-  const complaint = parsePattern(qualified)
-    ? `names no host — use "${qualified}" to mean the same thing on github.com`
-    : 'is not a valid <host>/<path> pattern'
-  console.log(`[proxy] ignoring git credential: pattern "${pattern}" ${complaint}`)
-}
-
-function readGitCredentials(): HttpsCredentialEntry[] {
-  try {
-    const raw = fs.readFileSync(GITHUB_CREDS_FILE, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return []
-    const o = parsed as Record<string, unknown>
-    if (!Array.isArray(o.tokens)) return []
-    const result: HttpsCredentialEntry[] = []
-    for (const entry of o.tokens as unknown[]) {
-      if (!entry || typeof entry !== 'object') continue
-      const e = entry as Record<string, unknown>
-      const kind = e.kind ?? 'https'
-      if (kind !== 'https') continue
-      if (typeof e.pattern !== 'string' || typeof e.token !== 'string' || !e.token) continue
-      if (!parsePattern(e.pattern)) {
-        complainAboutPattern(e.pattern)
-        continue
-      }
-      result.push({ pattern: e.pattern, token: e.token })
-    }
-    return result
-  } catch {
-    return []
-  }
-}
-
-/**
  * Resolve the HTTPS credential for a worktree's repoUrl, returning the matched
  * token along with the (host, path) it matched on so callers can guard against
  * cross-host token leakage.
@@ -679,7 +475,7 @@ function readGitCredentials(): HttpsCredentialEntry[] {
 function resolveHttpsCredentialForRepo(repoUrl: string | undefined): {
   token: string; host: string; path: string
 } | null {
-  const creds = readGitCredentials()
+  const creds = objects.credentials.git
   if (creds.length === 0) return null
   const parsed = parseGitRemote(repoUrl)
   if (!parsed || parsed.scheme !== 'https') return null
@@ -691,58 +487,26 @@ function resolveHttpsCredentialForRepo(repoUrl: string | undefined): {
   return null
 }
 
-/** Atomic write via rename — keeps the inode path valid for concurrent readers. */
-function writeClaudeOAuthBundle(bundle: ClaudeOAuthBundle): void {
-  const payload = {
-    kind: 'oauth',
-    savedAt: new Date().toISOString(),
-    claudeAiOauth: bundle,
-  }
-  const tmp = CLAUDE_CREDS_FILE + '.tmp-' + crypto.randomBytes(6).toString('hex')
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 })
-  fs.renameSync(tmp, CLAUDE_CREDS_FILE)
-}
-
-function writeCodexOAuthBundle(bundle: CodexOAuthBundle): void {
-  const payload = {
-    kind: 'oauth',
-    savedAt: new Date().toISOString(),
-    codexOauth: bundle,
-  }
-  const tmp = CODEX_CREDS_FILE + '.tmp-' + crypto.randomBytes(6).toString('hex')
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 })
-  fs.renameSync(tmp, CODEX_CREDS_FILE)
-}
-
-// ── Secret Store ───────────────────────────────────────────────────────
-//
-// Per-tenant state is keyed by worktreeId (the same credential the
-// container sends in the Proxy-Authorization header), except git-auth
-// failures, which are keyed by the worktree's project. A worktree is
-// registered once via PUT /worktrees/:id with its full state payload and
-// removed via DELETE /worktrees/:id when the container is torn down.
-
-/** worktreeId -> injection rules */
-const worktreeRules = new Map<string, HostInjectionRule[]>()
-
-/** worktreeId -> allowed host patterns (absent means block all — fail closed) */
-const worktreeAllowedHosts = new Map<string, string[]>()
-
-/** worktreeId -> repo URL (drives GitHub token resolution against github.json) */
-const worktreeRepoUrl = new Map<string, string>()
-
-/** worktreeId -> active agent tool ('claude' | 'codex') */
-const worktreeTool = new Map<string, string>()
-
-/** worktreeId -> owning project slug (scopes the git-auth-failure records) */
-const worktreeProject = new Map<string, string>()
-
 /**
- * worktreeId -> (hostname -> upstream redirect target). Test-only: redirects
- * the post-MITM upstream call to a mock while leaving TLS termination and
- * credential injection intact.
+ * A rotation captured from a worktree's refresh: durable the moment it is
+ * captured — a codex refresh token is single-use, so the pod dying a
+ * millisecond after the write must not lose it — and served from here
+ * until the server adopts it and the credentials Secret carries it back.
  */
-const worktreeUpstreamRedirects = new Map<string, Record<string, UpstreamRedirect>>()
+function captureRefreshed(bundles: { claude?: ClaudeOAuthBundle; codex?: CodexOAuthBundle }): void {
+  objects.capture(bundles)
+  if (!IN_CLUSTER) return
+  writeRefreshed(encodeRefreshed(bundles)).catch((err: unknown) => {
+    console.error(`[proxy] Failed to persist refreshed OAuth tokens to ${REFRESHED_SECRET_NAME}:`, String(err))
+  })
+}
+
+// ── What only this process observes ─────────────────────────────────
+//
+// Per-tenant records are keyed by worktreeId, except git-auth failures,
+// which are keyed by the worktree's project. Both are written to the
+// `yaac-proxy-state` ConfigMap the server watches; the last pod's records
+// are read back once at boot so a replacement keeps the badges it left.
 
 /** worktreeId -> Set of blocked hostnames */
 const blockedHostsByWorktree = new Map<string, Set<string>>()
@@ -760,148 +524,42 @@ const blockedHostsByWorktree = new Map<string, Set<string>>()
  */
 const gitAuthFailuresByProject = new Map<string, Map<string, GitAuthFailureRecord>>()
 
-interface GitAuthFailureRecord {
-  /** HTTP status the upstream returned (401 or 403). */
-  status: number
-  /** Epoch ms when the failure was first seen. */
-  atMs: number
-}
-
-// ── State persistence (/data write-through) ────────────────────────────
-//
-// /data is a hostPath, so anything written here is directly readable by
-// the server off the host filesystem — no HTTP round-trip. Blocked hosts
-// are written through on change (they're plain hostnames, no secrets);
-// worktree registrations are written through on PUT/DELETE so a replaced
-// proxy pod reloads them at boot and self-heals without server help.
-// Registrations are safe to persist because injection rules carry
-// credential *references* (`secretRef`), never secret values — the values
-// are pushed separately, held in memory, and resolved at injection time.
-
-const BLOCKED_HOSTS_FILE = path.join(DATA_DIR, 'blocked-hosts.json')
-const GIT_AUTH_FAILURES_FILE = path.join(DATA_DIR, 'git-auth-failures.json')
-const WORKTREES_FILE = path.join(DATA_DIR, 'worktrees.json')
-
-/**
- * Atomic write via tmp+rename so a concurrent host-side reader never sees
- * a torn file — same pattern as the OAuth bundle writers.
- */
-function persistBlockedHosts(): void {
-  const result: Record<string, string[]> = {}
+function currentState(): ProxyState {
+  const state: ProxyState = { blockedHosts: {}, gitAuthFailures: {} }
   for (const [sid, hosts] of blockedHostsByWorktree) {
-    if (hosts.size > 0) result[sid] = [...hosts]
+    if (hosts.size > 0) state.blockedHosts[sid] = [...hosts]
   }
-  try {
-    writeJsonAtomic(BLOCKED_HOSTS_FILE, result)
-  } catch (err) {
-    console.error('[proxy] Failed to persist blocked hosts:', (err as Error).message)
-  }
-  // After the write, so a subscriber that re-reads on signal cannot see the
-  // pre-change file.
-  emitProxyEvent('blocked-hosts')
-}
-
-function loadBlockedHosts(): void {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(fs.readFileSync(BLOCKED_HOSTS_FILE, 'utf8'))
-  } catch {
-    return // first boot or unreadable — start empty
-  }
-  if (!parsed || typeof parsed !== 'object') return
-  for (const [sid, hosts] of Object.entries(parsed as Record<string, unknown>)) {
-    if (!Array.isArray(hosts)) continue
-    blockedHostsByWorktree.set(sid, new Set(hosts.filter((h) => typeof h === 'string')))
-  }
-  console.log(`[proxy] Loaded blocked hosts for ${blockedHostsByWorktree.size} worktree(s) from disk`)
-}
-
-function persistGitAuthFailures(): void {
-  const result: Record<string, Array<{ host: string; status: number; atMs: number }>> = {}
   for (const [slug, byHost] of gitAuthFailuresByProject) {
     if (byHost.size === 0) continue
-    result[slug] = [...byHost].map(([host, rec]) => ({ host, ...rec }))
+    state.gitAuthFailures[slug] = [...byHost].map(([host, rec]) => ({ host, ...rec }))
   }
-  try {
-    writeJsonAtomic(GIT_AUTH_FAILURES_FILE, result)
-  } catch (err) {
-    console.error('[proxy] Failed to persist git auth failures:', (err as Error).message)
-  }
-  emitProxyEvent('git-auth-failures')
+  return state
 }
 
-function loadGitAuthFailures(): void {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(fs.readFileSync(GIT_AUTH_FAILURES_FILE, 'utf8'))
-  } catch {
-    return // first boot or unreadable — start empty
+function seedState(state: ProxyState): void {
+  for (const [sid, hosts] of Object.entries(state.blockedHosts)) {
+    blockedHostsByWorktree.set(sid, new Set(hosts))
   }
-  if (!parsed || typeof parsed !== 'object') return
-  for (const [slug, entries] of Object.entries(parsed as Record<string, unknown>)) {
-    if (!Array.isArray(entries)) continue
-    const byHost = new Map<string, GitAuthFailureRecord>()
-    for (const e of entries) {
-      if (!e || typeof e !== 'object') continue
-      const { host, status, atMs } = e as Record<string, unknown>
-      if (typeof host !== 'string' || typeof status !== 'number' || typeof atMs !== 'number') continue
-      byHost.set(host, { status, atMs })
-    }
-    if (byHost.size > 0) gitAuthFailuresByProject.set(slug, byHost)
-  }
-  console.log(`[proxy] Loaded git auth failures for ${gitAuthFailuresByProject.size} project(s) from disk`)
-}
-
-/**
- * Snapshot of everything PUT /worktrees/:id registers. `upstreamRedirects`
- * is test-only state (see UpstreamRedirect) — persisting it is harmless
- * and keeps the snapshot a faithful copy of the registration.
- */
-type PersistedWorktree = {
-  rules: HostInjectionRule[]
-  allowedHosts: string[]
-  repoUrl?: string
-  tool: string
-  projectSlug: string
-  upstreamRedirects?: Record<string, UpstreamRedirect>
-}
-
-function persistWorktrees(): void {
-  const result: Record<string, PersistedWorktree> = {}
-  for (const [sid, allowedHosts] of worktreeAllowedHosts) {
-    result[sid] = {
-      rules: worktreeRules.get(sid) ?? [],
-      allowedHosts,
-      repoUrl: worktreeRepoUrl.get(sid),
-      // Both validated as present by the PUT handler.
-      tool: worktreeTool.get(sid)!,
-      projectSlug: worktreeProject.get(sid)!,
-      upstreamRedirects: worktreeUpstreamRedirects.get(sid),
-    }
-  }
-  try {
-    writeJsonAtomic(WORKTREES_FILE, result)
-  } catch (err) {
-    console.error('[proxy] Failed to persist worktrees:', (err as Error).message)
+  for (const [slug, entries] of Object.entries(state.gitAuthFailures)) {
+    gitAuthFailuresByProject.set(slug, new Map(entries.map(({ host, status, atMs }) => [host, { status, atMs }])))
   }
 }
 
-function loadWorktrees(): void {
-  // first boot or unreadable → null, and the proxy starts empty
-  const parsed = readJsonOrNull(WORKTREES_FILE)
-  if (!parsed || typeof parsed !== 'object') return
-  for (const [sid, raw] of Object.entries(parsed as Record<string, unknown>)) {
-    if (!raw || typeof raw !== 'object') continue
-    const s = raw as PersistedWorktree
-    if (!Array.isArray(s.rules) || !Array.isArray(s.allowedHosts)) continue
-    worktreeRules.set(sid, scopeLegacySecretRefs(s.rules, s.projectSlug))
-    worktreeAllowedHosts.set(sid, s.allowedHosts)
-    if (s.repoUrl) worktreeRepoUrl.set(sid, s.repoUrl)
-    worktreeTool.set(sid, s.tool)
-    worktreeProject.set(sid, s.projectSlug)
-    if (s.upstreamRedirects) worktreeUpstreamRedirects.set(sid, s.upstreamRedirects)
-  }
-  console.log(`[proxy] Loaded ${worktreeAllowedHosts.size} worktree registration(s) from disk`)
+/** Debounce for the state write: a blocked-host burst is common. */
+const STATE_WRITE_DEBOUNCE_MS = 250
+/** Retry after a failed write; the next change also retries it. */
+const STATE_WRITE_RETRY_MS = 5_000
+let stateWriteTimer: NodeJS.Timeout | null = null
+
+function scheduleStateWrite(delayMs = STATE_WRITE_DEBOUNCE_MS): void {
+  if (!IN_CLUSTER || stateWriteTimer) return
+  stateWriteTimer = setTimeout(() => {
+    stateWriteTimer = null
+    writeState(encodeState(currentState())).catch((err: unknown) => {
+      console.error(`[proxy] Failed to write ${STATE_CONFIGMAP_NAME}:`, String(err))
+      scheduleStateWrite(STATE_WRITE_RETRY_MS)
+    })
+  }, delayMs)
 }
 
 // ── Injection Logic ────────────────────────────────────────────────────
@@ -930,15 +588,15 @@ function hostMatches(hostname: string, pattern: string): boolean {
 }
 
 function findRulesForHost(worktreeId: string, hostname: string): HostInjectionRule[] {
-  const rules = worktreeRules.get(worktreeId)
+  const rules = registrationOf(worktreeId)?.rules
   if (!rules) return []
   return rules.filter((r) => hostMatches(hostname, r.hostPattern))
 }
 
 function isHostAllowed(worktreeId: string | null, hostname: string): boolean {
   if (!worktreeId) return false // no worktree = block by default (fail closed)
-  const allowed = worktreeAllowedHosts.get(worktreeId)
-  if (!allowed) return false // no allowlist registered = block by default (fail closed)
+  const allowed = registrationOf(worktreeId)?.allowedHosts
+  if (!allowed) return false // no registration = block by default (fail closed)
   if (allowed.length === 1 && allowed[0] === '*') return true
   return allowed.some((pattern) => hostMatches(hostname, pattern))
 }
@@ -952,9 +610,9 @@ function recordBlockedHost(worktreeId: string | null, hostname: string): void {
   }
   if (hosts.has(hostname)) return
   hosts.add(hostname)
-  // Write-through only when the set actually grew — repeat blocks of the
-  // same host are by far the common case and need no disk traffic.
-  persistBlockedHosts()
+  // Only when the set actually grew — repeat blocks of the same host are by
+  // far the common case and need no write.
+  scheduleStateWrite()
 }
 
 /**
@@ -977,8 +635,8 @@ function isGitSmartHttpPath(requestPath: string): boolean {
  * Track the upstream's verdict on a git smart-HTTP request that carried a
  * yaac-injected credential. A 401/403 means the stored token itself was
  * rejected (expired or revoked) — record it against the worktree's project
- * (write-through, like blocked hosts) so the server surfaces a loud
- * project-wide error. A later 2xx on the same host from any of the
+ * (written like blocked hosts) so the server surfaces a loud project-wide
+ * error. A later 2xx on the same host from any of the
  * project's worktrees clears the record, so the flag self-heals once the
  * user runs `yaac auth update` and git is retried.
  */
@@ -989,21 +647,21 @@ function noteGitUpstreamStatus(
   status: number,
 ): void {
   if (!isGitSmartHttpPath(requestPath)) return
-  const projectSlug = worktreeProject.get(worktreeId)
+  const projectSlug = registrationOf(worktreeId)?.projectSlug
   if (!projectSlug) return // unregistered worktree — can't attribute
   const byHost = gitAuthFailuresByProject.get(projectSlug)
   if (status === 401 || status === 403) {
-    if (byHost?.has(hostname)) return // repeat failure — no disk traffic
+    if (byHost?.has(hostname)) return // repeat failure — nothing new to write
     console.log(`[proxy] GIT AUTH FAILED for ${hostname} (HTTP ${status}, project ${projectSlug})`)
     const hosts = byHost ?? new Map<string, GitAuthFailureRecord>()
     hosts.set(hostname, { status, atMs: Date.now() })
     gitAuthFailuresByProject.set(projectSlug, hosts)
-    persistGitAuthFailures()
+    scheduleStateWrite()
     return
   }
   if (status >= 200 && status < 300 && byHost?.delete(hostname)) {
     console.log(`[proxy] git auth recovered for ${hostname} (project ${projectSlug})`)
-    persistGitAuthFailures()
+    scheduleStateWrite()
   }
 }
 
@@ -1088,9 +746,8 @@ function applyBodyInjections(
 // ── Dynamic Auth (GitHub / Codex / Claude api-key) ─────────────────────
 
 /**
- * Hosts the proxy MITMs so it can inject agent-tool credentials read from
- * the mounted credentials dir, plus any HTTPS host for which the current
- * worktree has a matching git credential. SSH (port 22) is always tunneled,
+ * Hosts the proxy MITMs so it can inject agent-tool credentials, plus any
+ * HTTPS host for which the current worktree has a matching git credential. SSH (port 22) is always tunneled,
  * never MITM'd. Rule-based per-worktree MITM is still applied on top of this.
  */
 function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port: number): boolean {
@@ -1103,13 +760,13 @@ function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port:
   // opencode / pi: MITM the worktree's chosen provider host so the api-key swap
   // in buildDynamicRules can run. Matches that swap's gating exactly — only the
   // one host the registered tool's credential points at.
-  const tool = worktreeId ? worktreeTool.get(worktreeId) : undefined
+  const tool = worktreeId ? registrationOf(worktreeId)?.tool : undefined
   if (tool === 'opencode') {
-    const creds = readOpencodeCreds()
+    const creds = objects.credentials.opencode
     if (creds && hostname === OPENCODE_PROVIDER_HOSTS[creds.provider]) return true
   }
   if (tool === 'pi') {
-    const creds = readPiCreds()
+    const creds = objects.credentials.pi
     if (creds && hostname === PI_PROVIDER_HOSTS[creds.provider]) return true
   }
   if (worktreeId && worktreeHasHttpsCredentialForHost(worktreeId, hostname)) return true
@@ -1121,7 +778,7 @@ function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port:
 }
 
 function worktreeHasHttpsCredentialForHost(worktreeId: string, hostname: string): boolean {
-  const cred = resolveHttpsCredentialForRepo(worktreeRepoUrl.get(worktreeId))
+  const cred = resolveHttpsCredentialForRepo(registrationOf(worktreeId)?.repoUrl)
   return cred?.host === hostname
 }
 
@@ -1142,7 +799,7 @@ function ghApiHostForGitHost(host: string): string | null {
  * unrelated MITM'd hosts.
  */
 function resolveGithubApiTokenForWorktree(worktreeId: string, hostname: string): string | null {
-  const cred = resolveHttpsCredentialForRepo(worktreeRepoUrl.get(worktreeId))
+  const cred = resolveHttpsCredentialForRepo(registrationOf(worktreeId)?.repoUrl)
   if (!cred) return null
   if (ghApiHostForGitHost(cred.host) !== hostname) return null
   return cred.token
@@ -1186,9 +843,9 @@ function swapApiKeyHeader(
 }
 
 /**
- * Build a list of injection rules derived from the host-mounted credentials
- * dir, scoped to the current hostname. Reading on every request means
- * updates via `yaac auth update` propagate without needing to restart
+ * Build a list of injection rules derived from the credentials Secret,
+ * scoped to the current hostname. Reading the live view on every request
+ * means updates via `yaac auth update` propagate without needing to restart
  * containers. The rules slot into the same pipeline as statically-configured
  * rules — no separate mutation path.
  */
@@ -1206,7 +863,7 @@ function buildDynamicRules(
   // host matches the current MITM hostname. The host equality guard keeps a
   // token scoped to e.g. github.com from leaking into a request to
   // chatgpt.com (which is also MITM'd for other reasons).
-  const httpsCred = resolveHttpsCredentialForRepo(worktreeRepoUrl.get(worktreeId))
+  const httpsCred = resolveHttpsCredentialForRepo(registrationOf(worktreeId)?.repoUrl)
   if (httpsCred && httpsCred.host === hostname) {
     const basic = 'Basic ' + Buffer.from(`x-access-token:${httpsCred.token}`).toString('base64')
     rules.push({
@@ -1252,7 +909,7 @@ function buildDynamicRules(
   // resolved — and any agent in any worktree may now spend any credential the
   // host has signed in. That is a real widening, and the intended one.
   if (hostname === ANTHROPIC_API_HOST) {
-    const creds = readClaudeCreds()
+    const creds = objects.credentials.claude
     const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
     const incomingAuth = headerValue(reqHeaders, 'authorization')
     if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY) {
@@ -1267,7 +924,8 @@ function buildDynamicRules(
         injections: [{
           action: 'replace_header',
           name: 'Authorization',
-          value: 'Bearer ' + creds.bundle.accessToken,
+          // The captured rotation while it is newer than the pushed bundle.
+          value: 'Bearer ' + (objects.claudeOAuthBundle() ?? creds.bundle).accessToken,
         }],
       })
     }
@@ -1281,7 +939,7 @@ function buildDynamicRules(
   // real top-level `account_id` in the mounted auth.json, so it passes
   // through unchanged.
   if (hostname === OPENAI_API_HOST || hostname === CHATGPT_HOST) {
-    const creds = readCodexCreds()
+    const creds = objects.credentials.codex
     const incomingAuth = headerValue(reqHeaders, 'authorization')
     if (creds && creds.kind === 'api-key'
       && incomingAuth === 'Bearer ' + PLACEHOLDER_API_KEY) {
@@ -1300,7 +958,7 @@ function buildDynamicRules(
         injections: [{
           action: 'replace_header',
           name: 'Authorization',
-          value: 'Bearer ' + creds.bundle.accessToken,
+          value: 'Bearer ' + (objects.codexOAuthBundle() ?? creds.bundle).accessToken,
         }],
       })
     }
@@ -1316,13 +974,13 @@ function buildDynamicRules(
   // (x-api-key for Anthropic-style, Authorization: Bearer for the rest), so
   // swapApiKeyHeader substitutes wherever the sentinel appears.
   {
-    const creds = readOpencodeCreds()
+    const creds = objects.credentials.opencode
     if (creds && hostname === OPENCODE_PROVIDER_HOSTS[creds.provider]) {
       swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
     }
   }
   {
-    const creds = readPiCreds()
+    const creds = objects.credentials.pi
     if (creds && hostname === PI_PROVIDER_HOSTS[creds.provider]) {
       swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
     }
@@ -1455,9 +1113,9 @@ function rewriteTokenResponseBody(parsed: TokenResponseBody): TokenResponseBody 
 }
 
 /**
- * Buffer a Claude token-endpoint response, persist any refreshed tokens to
- * the host-mounted credentials file, and forward a placeholder-rewritten
- * copy to the container. Upstream headers (including content-type and
+ * Buffer a Claude token-endpoint response, capture any refreshed tokens
+ * (captureRefreshed), and forward a placeholder-rewritten copy to the
+ * container. Upstream headers (including content-type and
  * content-encoding) are preserved so the container sees a response that
  * looks byte-for-byte identical to the real upstream apart from the token
  * values. Falls back to forwarding the raw upstream bytes when the encoding
@@ -1514,7 +1172,7 @@ function handleClaudeTokenResponse(
       passThrough()
       return
     }
-    // Success: capture refreshed tokens on the host.
+    // Success: capture the refreshed tokens.
     try {
       const fresh: ClaudeOAuthBundle = {
         accessToken: body.access_token,
@@ -1527,10 +1185,10 @@ function handleClaudeTokenResponse(
         scopes: typeof body.scope === 'string' ? body.scope.split(' ').filter(Boolean) : claudeTokenBundle.scopes,
         subscriptionType: claudeTokenBundle.subscriptionType,
       }
-      writeClaudeOAuthBundle(fresh)
+      captureRefreshed({ claude: fresh })
       console.log('[proxy] Captured refreshed Claude OAuth tokens (expires in ' + Math.floor((fresh.expiresAt - Date.now()) / 1000) + 's)')
     } catch (err) {
-      console.error('[proxy] Failed to persist refreshed Claude OAuth tokens:', (err as Error).message)
+      console.error('[proxy] Failed to capture refreshed Claude OAuth tokens:', (err as Error).message)
     }
 
     const rewritten = rewriteTokenResponseBody(body)
@@ -1616,10 +1274,10 @@ function handleCodexTokenResponse(
         lastRefresh: new Date().toISOString(),
         accountId: codexTokenBundle.accountId,
       }
-      writeCodexOAuthBundle(fresh)
+      captureRefreshed({ codex: fresh })
       console.log('[proxy] Captured refreshed Codex OAuth tokens (expires in ' + Math.floor((fresh.expiresAt - Date.now()) / 1000) + 's)')
     } catch (err) {
-      console.error('[proxy] Failed to persist refreshed Codex OAuth tokens:', (err as Error).message)
+      console.error('[proxy] Failed to capture refreshed Codex OAuth tokens:', (err as Error).message)
     }
 
     const rewritten = rewriteTokenResponseBody(body)
@@ -1667,29 +1325,30 @@ function handleMitm(
     // OAuth token endpoints need multi-step body capture + response rewrite:
     // swap placeholder refresh_token outbound, then capture real tokens +
     // swap placeholders inbound. Null when this isn't the token endpoint or
-    // no OAuth bundle is on disk (nothing to swap). Not gated on the
+    // no OAuth bundle is held (nothing to swap). Not gated on the
     // worktree's tool: a worktree is tool-agnostic, so any agent in it may
     // drive any signed-in tool's refresh. (The host-side tool sign-in flow
     // never traverses the worktree proxy, so it's unaffected.)
     const claudeTokenBundle =
       hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH
       && worktreeId !== null
-        ? readClaudeOAuthBundle()
+        ? objects.claudeOAuthBundle()
         : null
     const codexTokenBundle =
       hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH
       && worktreeId !== null
-        ? readCodexOAuthBundle()
+        ? objects.codexOAuthBundle()
         : null
 
     // Dynamic rules (GitHub / Codex / Claude auth + OAuth refresh swap) are
-    // derived from the host-mounted credentials dir on every request and
-    // merged into the registered rules (secretRefs resolved per request,
+    // derived from the live credentials on every request and merged into
+    // the registered rules (secretRefs resolved per request,
     // same freshness semantics) so a single injection pipeline handles both.
     const dynamicRules = buildDynamicRules(
       worktreeId, hostname, claudeTokenBundle, codexTokenBundle, req.headers,
     )
-    const allRules: InjectionRule[] = [...resolveRegisteredRules(rules), ...dynamicRules]
+    const projectSlug = worktreeId ? registrationOf(worktreeId)?.projectSlug : undefined
+    const allRules: InjectionRule[] = [...resolveRegisteredRules(rules, projectSlug), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
 
@@ -1818,7 +1477,8 @@ function handleMitm(
     delete headers['proxy-connection']
 
     const dynamicRules = buildDynamicRules(worktreeId, hostname, null, null, req.headers)
-    const allRules: InjectionRule[] = [...resolveRegisteredRules(rules), ...dynamicRules]
+    const projectSlug = worktreeId ? registrationOf(worktreeId)?.projectSlug : undefined
+    const allRules: InjectionRule[] = [...resolveRegisteredRules(rules, projectSlug), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
 
     if (injCount > 0) {
@@ -2003,15 +1663,16 @@ function dispatchToUpstream(
 
   const rules = findRulesForHost(worktreeId, hostname)
 
-  // Always MITM well-known tool-auth hosts so we can inject credentials
-  // read from the host-mounted credentials dir, even when no per-worktree
-  // rule-based injections apply. Port-aware: SSH (22) always tunnels.
+  // Always MITM well-known tool-auth hosts so we can inject credentials,
+  // even when no per-worktree rule-based injections apply. Port-aware:
+  // SSH (22) always tunnels.
   const destPort = parseInt(port ?? '', 10) || 443
   const needsDynMitm = hostNeedsDynamicMitm(worktreeId, hostname, destPort)
 
   // A registered redirect for this hostname forces MITM — without it, the
   // proxy would tunnel bytes unchanged and the redirect could never apply.
-  const redirect = worktreeUpstreamRedirects.get(worktreeId)?.[hostname] ?? null
+  const redirect: UpstreamRedirect | null =
+    registrationOf(worktreeId)?.upstreamRedirects?.[hostname] ?? null
 
   if (opts.writeConnectOk) {
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
@@ -2053,14 +1714,13 @@ const eventSubscribers = new Set<http.ServerResponse>()
 const EVENT_PING_MS = 15_000
 
 /**
- * Tell every subscriber that `type` changed — deliberately WITHOUT the new
- * state. The /data files stay the data plane (they are also how a replaced
- * proxy comes back knowing this state), so the server re-reads truth on
- * signal. That keeps the whole path level-triggered: a dropped connection
- * costs a reconnect, never a lost update, because the reconnecting server
- * re-reads everything anyway.
+ * Tell every subscriber that `type` changed — deliberately WITHOUT the
+ * payload: the queue is drained over its own claim protocol, so the signal
+ * only means "look now". A dropped connection costs a reconnect, never a
+ * lost update, because the reconnecting server drains anyway. Everything
+ * else the proxy observes travels as objects the server watches.
  */
-function emitProxyEvent(type: 'blocked-hosts' | 'git-auth-failures' | 'mama' | 'ping'): void {
+function emitProxyEvent(type: 'mama' | 'ping'): void {
   if (eventSubscribers.size === 0) return
   const line = JSON.stringify({ type }) + '\n'
   for (const res of eventSubscribers) {
@@ -2076,9 +1736,17 @@ setInterval(() => emitProxyEvent('ping'), EVENT_PING_MS).unref()
 
 function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   if (req.method === 'GET' && req.url === '/healthz') {
-    if (USE_TOR && !fs.existsSync('/data/tor-ready')) {
+    if (USE_TOR && !fs.existsSync(path.join(DATA_DIR, 'tor-ready'))) {
       res.writeHead(503)
       res.end('tor not ready')
+      return
+    }
+    // Not Ready until every input object's initial list has landed: a pod
+    // serving before that would fail every worktree closed for want of a
+    // registration it simply has not been told yet.
+    if (IN_CLUSTER && !objects.ready()) {
+      res.writeHead(503)
+      res.end('objects not loaded')
       return
     }
     res.writeHead(200)
@@ -2086,287 +1754,9 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  if (req.method === 'GET' && req.url === '/ca.pem') {
-    if (!ca) {
-      res.writeHead(503)
-      res.end('CA not ready')
-      return
-    }
-    res.writeHead(200, { 'Content-Type': 'application/x-pem-file' })
-    res.end(ca.pem)
-    return
-  }
-
-  // Combined trust bundle for nested containers: the image's public roots
-  // PLUS the proxy MITM CA. The own-bundle tools in nested containers
-  // (curl / requests / cargo / git-libcurl) point CURL_CA_BUNDLE & friends
-  // at this superset, so they trust the proxy on intercepted hosts AND real
-  // upstreams on tunnelled hosts. See k8s/proxy/ca-bundle.ts.
-  if (req.method === 'GET' && req.url === '/ca-bundle.pem') {
-    if (!ca) {
-      res.writeHead(503)
-      res.end('CA not ready')
-      return
-    }
-    let roots = ''
-    try {
-      roots = fs.readFileSync(SYSTEM_ROOTS_PATH, 'utf8')
-    } catch (err) {
-      console.error(`[proxy] cannot read system roots at ${SYSTEM_ROOTS_PATH}: ${(err as Error).message}`)
-      res.writeHead(500)
-      res.end('system roots unavailable')
-      return
-    }
-    res.writeHead(200, { 'Content-Type': 'application/x-pem-file' })
-    res.end(combineCaBundle(roots, ca.pem))
-    return
-  }
-
-  // Register or update all state for a worktree.
-  const registerMatch = req.method === 'PUT' && req.url
-    ? /^\/worktrees\/([^/]+)$/.exec(req.url)
-    : null
-  if (registerMatch) {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const worktreeId = decodeURIComponent(registerMatch[1])
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-    req.on('end', () => {
-      try {
-        const parsed: unknown = JSON.parse(body)
-        if (!parsed || typeof parsed !== 'object') {
-          res.writeHead(400); res.end('Invalid body'); return
-        }
-        const o = parsed as Record<string, unknown>
-        const rules = o.rules
-        if (!Array.isArray(rules)) { res.writeHead(400); res.end('Invalid body: need rules array'); return }
-        if (!Array.isArray(o.allowedHosts)) { res.writeHead(400); res.end('Invalid body: need allowedHosts array'); return }
-        if (typeof o.tool !== 'string' || !o.tool) { res.writeHead(400); res.end('Invalid body: need tool'); return }
-        if (typeof o.projectSlug !== 'string' || !o.projectSlug) { res.writeHead(400); res.end('Invalid body: need projectSlug'); return }
-        worktreeRules.set(worktreeId, rules as HostInjectionRule[])
-        const allowedHosts = o.allowedHosts as string[]
-        worktreeAllowedHosts.set(worktreeId, allowedHosts)
-        if (typeof o.repoUrl === 'string' && o.repoUrl) {
-          worktreeRepoUrl.set(worktreeId, o.repoUrl)
-        } else {
-          worktreeRepoUrl.delete(worktreeId)
-        }
-        worktreeTool.set(worktreeId, o.tool)
-        worktreeProject.set(worktreeId, o.projectSlug)
-        if (o.upstreamRedirects && typeof o.upstreamRedirects === 'object') {
-          const parsed: Record<string, UpstreamRedirect> = {}
-          for (const [host, target] of Object.entries(o.upstreamRedirects as Record<string, unknown>)) {
-            if (!target || typeof target !== 'object') continue
-            const t = target as Record<string, unknown>
-            if (typeof t.host === 'string' && typeof t.port === 'number') {
-              parsed[host] = {
-                host: t.host,
-                port: t.port,
-                tls: typeof t.tls === 'boolean' ? t.tls : undefined,
-              }
-            }
-          }
-          worktreeUpstreamRedirects.set(worktreeId, parsed)
-        } else {
-          worktreeUpstreamRedirects.delete(worktreeId)
-        }
-        // Write-through: registrations are secret-free (rules carry
-        // secretRefs), so a replaced pod reloads them at boot and live
-        // worktrees keep working with zero server involvement.
-        persistWorktrees()
-        const redirectCount = worktreeUpstreamRedirects.get(worktreeId)
-          ? Object.keys(worktreeUpstreamRedirects.get(worktreeId)!).length
-          : 0
-        const redirectSuffix = redirectCount > 0 ? `, ${redirectCount} upstream redirects` : ''
-        console.log(`[proxy] Registered worktree ${worktreeId.slice(0, 8)}... (${rules.length} rules, ${allowedHosts.length} allowed host patterns${redirectSuffix})`)
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
-      } catch (err) {
-        res.writeHead(400); res.end(`Invalid JSON: ${(err as Error).message}`)
-      }
-    })
-    return
-  }
-
-  // Live-widen one worktree's allowlist (webapp "allow blocked host" action).
-  // Appends the host to the in-memory allowlist so the next connect is
-  // permitted immediately, and prunes it from the recorded blocked set so the
-  // webapp badge clears. Write-through both: a replaced pod keeps the widened
-  // allowlist for the worktree's lifetime, and the server reads the pruned
-  // blocked-hosts file straight off /data.
-  const allowHostMatch = req.method === 'POST' && req.url
-    ? /^\/worktrees\/([^/]+)\/allow-host$/.exec(req.url)
-    : null
-  if (allowHostMatch) {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const worktreeId = decodeURIComponent(allowHostMatch[1])
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-    req.on('end', () => {
-      try {
-        const parsed: unknown = JSON.parse(body)
-        const host = parsed && typeof parsed === 'object'
-          ? (parsed as Record<string, unknown>).host
-          : undefined
-        if (typeof host !== 'string' || !host) {
-          res.writeHead(400); res.end('Invalid body: need host string'); return
-        }
-        const allowed = worktreeAllowedHosts.get(worktreeId)
-        // Fail closed: only a registered worktree can be widened. The server
-        // treats this 404 as a soft miss when fanning out over siblings.
-        if (!allowed) { res.writeHead(404); res.end('Unknown worktree'); return }
-        if (!allowed.includes(host)) {
-          allowed.push(host)
-          persistWorktrees()
-        }
-        const blocked = blockedHostsByWorktree.get(worktreeId)
-        if (blocked && blocked.delete(host)) persistBlockedHosts()
-        console.log(`[proxy] Allowed ${host} for worktree ${worktreeId.slice(0, 8)}...`)
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
-      } catch (err) {
-        res.writeHead(400); res.end(`Invalid JSON: ${(err as Error).message}`)
-      }
-    })
-    return
-  }
-
-  // List registered worktree ids. Diagnostic surface — e2e tests use it
-  // to assert a replaced pod reloaded its registrations from /data.
-  if (req.method === 'GET' && req.url === '/worktrees') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify([...worktreeAllowedHosts.keys()]))
-    return
-  }
-
-  // Remove all state for a worktree
-  const removeMatch = req.method === 'DELETE' && req.url
-    ? /^\/worktrees\/([^/]+)$/.exec(req.url)
-    : null
-  if (removeMatch) {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const worktreeId = decodeURIComponent(removeMatch[1])
-    const deleted = worktreeRules.delete(worktreeId)
-    worktreeAllowedHosts.delete(worktreeId)
-    worktreeRepoUrl.delete(worktreeId)
-    worktreeTool.delete(worktreeId)
-    worktreeProject.delete(worktreeId)
-    worktreeUpstreamRedirects.delete(worktreeId)
-    // Git-auth failures are deliberately NOT cleared here: they are keyed by
-    // project, and a bad stored credential outlives any one worktree. The
-    // record clears on the next successful git request from any of the
-    // project's worktrees.
-    const hadBlockedHosts = blockedHostsByWorktree.delete(worktreeId)
-    persistWorktrees()
-    if (hadBlockedHosts) persistBlockedHosts()
-    console.log(`[proxy] Removed worktree ${worktreeId.slice(0, 8)}... (found: ${deleted})`)
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, deleted }))
-    return
-  }
-
-  // Secret values for the registrations' `secretRef` rules. Same posture as
-  // the ssh keys below: pushed by the server, held in memory, gone with the
-  // pod. `GET /secrets/names` is how the server notices a replacement lost
-  // them — it returns the keys, never the values.
-  if (req.method === 'PUT' && req.url === '/secrets') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-    req.on('end', () => {
-      let parsed: { secrets?: unknown }
-      try {
-        parsed = JSON.parse(body) as typeof parsed
-      } catch {
-        res.writeHead(400); res.end('Invalid JSON'); return
-      }
-      if (!parsed.secrets || typeof parsed.secrets !== 'object' || Array.isArray(parsed.secrets)) {
-        res.writeHead(400); res.end('Need {secrets: {ref: value}}'); return
-      }
-      // Merge, not replace: each push carries one project's secrets and must
-      // not drop another project's. A value the server no longer has is
-      // removed by name through DELETE below.
-      let count = 0
-      for (const [ref, value] of Object.entries(parsed.secrets as Record<string, unknown>)) {
-        if (typeof value !== 'string' || value === '') continue
-        proxySecrets.set(ref, value)
-        count++
-      }
-      console.log(`[proxy] Stored ${count} secret value(s)`)
-      res.writeHead(200); res.end('ok')
-    })
-    return
-  }
-
-  if (req.method === 'GET' && req.url === '/secrets/names') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify([...proxySecrets.keys()]))
-    return
-  }
-
-  if (req.method === 'DELETE' && req.url?.startsWith('/secrets/')) {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const ref = decodeURIComponent(req.url.slice('/secrets/'.length))
-    const deleted = proxySecrets.delete(ref)
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, deleted }))
-    return
-  }
-
-  // ssh-agent management. The server uploads keys here at startup and on
-  // every `yaac auth update` SSH add/remove. Key bytes live only in the
-  // agent's memory — never persisted to the proxy filesystem.
-  if (req.method === 'PUT' && req.url === '/agent/keys') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-    req.on('end', () => {
-      let parsed: { host?: unknown; keyPem?: unknown; knownHostsEntry?: unknown }
-      try {
-        parsed = JSON.parse(body) as typeof parsed
-      } catch {
-        res.writeHead(400); res.end('Invalid JSON'); return
-      }
-      if (typeof parsed.host !== 'string' || !parsed.host
-        || typeof parsed.keyPem !== 'string' || !parsed.keyPem
-        || typeof parsed.knownHostsEntry !== 'string' || !parsed.knownHostsEntry) {
-        res.writeHead(400); res.end('Need {host, keyPem, knownHostsEntry}'); return
-      }
-      void sshAddKey(parsed.host, parsed.keyPem, parsed.knownHostsEntry).then(
-        () => { res.writeHead(200); res.end('ok') },
-        (err: Error) => { res.writeHead(400); res.end(err.message) },
-      )
-    })
-    return
-  }
-
-  if (req.method === 'DELETE' && req.url === '/agent/keys') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    void sshClearAgent().then(
-      () => { res.writeHead(200); res.end('ok') },
-      (err: Error) => { res.writeHead(500); res.end(err.message) },
-    )
-    return
-  }
-
-  if (req.method === 'GET' && req.url === '/agent/keys') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    void sshListAgent().then(
-      (rows) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(rows))
-      },
-      (err: Error) => { res.writeHead(500); res.end(err.message) },
-    )
-    return
-  }
-
-  // The change stream the server subscribes to for everything only this
-  // process can see: a worktree's blocked-host set growing, a git
-  // credential being rejected upstream, a queued in-worktree spawn. Held
-  // open; one NDJSON line per change, plus periodic pings.
+  // The change stream the server subscribes to for the one thing it has to
+  // be woken for: a queued in-worktree `yaac-mama` request. Held open; one
+  // NDJSON line per change, plus periodic pings.
   if (req.method === 'GET' && req.url === '/events') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     res.writeHead(200, {
@@ -2429,22 +1819,10 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
   res.end('Not found')
 }
 
-// ── ssh-agent management ──────────────────────────────────────────────
+// ── ssh-agent identities ──────────────────────────────────────────────
 //
-// `ssh-add -h <host>` adds a destination constraint that binds the key to a
-// single hostname. ssh-add encodes the host's *public* key fingerprint into
-// that constraint, so it requires the host's pubkey to be available in a
-// known_hosts file at the moment ssh-add runs. We keep the entries in an
-// in-memory map keyed by host and rewrite the file before each ssh-add /
-// ssh-add -D invocation; the agent itself stores the constraint, so the
-// file's later contents don't matter.
-//
-// The file path is always passed explicitly via `-H`: ssh-add's default
-// known_hosts lookup expands `~` through getpwuid(), NOT $HOME, and the
-// proxy's runtime uid (the server's host uid, set by runAsUser) either maps
-// to the image's `node` user — whose /home/node we never write — or to no
-// passwd entry at all. Both make the default lookup fail with "No host keys
-// found for destination".
+// Loaded from the credentials Secret's `ssh-keys.json` by the credentials
+// handler (agent-keys.ts). Key bytes live only in the agent's memory.
 
 // HOME (deployment) and SSH_AUTH_SOCK (entrypoint.sh) are required env the
 // proxy is always launched with; a missing value means a broken
@@ -2458,103 +1836,26 @@ function requireEnv(name: string): string {
 // $HOME/.ssh — a runtime-uid-writable mount the deployment points HOME at,
 // because the proxy runs as the server's host uid, which need not own the
 // image's /home/node. ssh-add never resolves this path itself; it gets it
-// via -H (see above).
-const SSH_HOME = path.join(requireEnv('HOME'), '.ssh')
-const KNOWN_HOSTS_FILE = path.join(SSH_HOME, 'known_hosts')
-const knownHostsByHost = new Map<string, string>()
+// via -H (see agent-keys.ts).
+const KNOWN_HOSTS_FILE = path.join(requireEnv('HOME'), '.ssh', 'known_hosts')
 
 // The pod-local agent socket (created by entrypoint.sh under $HOME). The
 // proxy talks to it directly; worktree pods reach it through the
 // SSH_AGENT_PORT listener, which splices to this same path.
 const AGENT_SOCK = requireEnv('SSH_AUTH_SOCK')
 
-function writeKnownHostsFile(): void {
-  fs.mkdirSync(SSH_HOME, { recursive: true, mode: 0o700 })
-  const lines = [...knownHostsByHost.values()].map((e) => e.trim()).filter(Boolean)
-  fs.writeFileSync(KNOWN_HOSTS_FILE, lines.length ? lines.join('\n') + '\n' : '', { mode: 0o600 })
-}
-
-function sshAddKey(host: string, keyPem: string, knownHostsEntry: string): Promise<void> {
-  knownHostsByHost.set(host, knownHostsEntry)
-  writeKnownHostsFile()
-  return new Promise((resolve, reject) => {
-    const child = spawn('ssh-add', ['-H', KNOWN_HOSTS_FILE, '-h', host, '-'], {
-      env: {
-        ...process.env,
-        SSH_AUTH_SOCK: AGENT_SOCK,
-        SSH_ASKPASS: '/bin/false',
-        SSH_ASKPASS_REQUIRE: 'force',
-        DISPLAY: 'none:0',
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    let stderr = ''
-    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`ssh-add exited with code ${code ?? '?'}: ${stderr.trim()}`))
-    })
-    child.stdin.end(keyPem)
-  })
-}
-
-function sshClearAgent(): Promise<void> {
-  knownHostsByHost.clear()
-  writeKnownHostsFile()
-  return new Promise((resolve, reject) => {
-    const child = spawn('ssh-add', ['-D'], {
-      env: { ...process.env, SSH_AUTH_SOCK: AGENT_SOCK },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stderr = ''
-    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      // ssh-add -D exits 0 even when empty.
-      if (code === 0) resolve()
-      else reject(new Error(`ssh-add -D exited with code ${code ?? '?'}: ${stderr.trim()}`))
-    })
-  })
-}
-
-function sshListAgent(): Promise<Array<{ fingerprint: string; comment: string }>> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('ssh-add', ['-l'], {
-      env: { ...process.env, SSH_AUTH_SOCK: AGENT_SOCK },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    child.stdout.on('data', (c: Buffer) => { stdout += c.toString('utf8') })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      // Exit 1 = "The agent has no identities." — return empty.
-      if (code !== 0 && code !== 1) {
-        reject(new Error(`ssh-add -l exited with code ${code ?? '?'}`))
-        return
-      }
-      const rows: Array<{ fingerprint: string; comment: string }> = []
-      for (const line of stdout.split('\n')) {
-        const trimmed = line.trim()
-        if (!trimmed || trimmed === 'The agent has no identities.') continue
-        // Format: "<bits> <fingerprint> <comment> (<algo>)"
-        const parts = trimmed.split(/\s+/)
-        if (parts.length < 3) continue
-        rows.push({ fingerprint: parts[1], comment: parts.slice(2, -1).join(' ') })
-      }
-      resolve(rows)
-    })
-  })
-}
+const agentKeys = createAgentKeyLoader({ agentSock: AGENT_SOCK, knownHostsFile: KNOWN_HOSTS_FILE })
 
 // ── Server ─────────────────────────────────────────────────────────────
 
-ca = loadOrGenerateCA()
-// Reload write-through state so a pod replacement (image upgrade, crash,
-// eviction) doesn't 403 live worktrees or lose their blocked-host history.
-loadWorktrees()
-loadBlockedHosts()
-loadGitAuthFailures()
+ca = await loadOrGenerateCA()
+if (IN_CLUSTER) {
+  // What the last pod left: its blocked-host and git-auth records (so a
+  // replacement keeps the badges), and any rotation it captured that the
+  // server has not echoed back yet (so the newer token keeps being served).
+  seedState(decodeState(await readOutputObject('configmap', STATE_CONFIGMAP_NAME)))
+  objects.capture(decodeRefreshed(await readOutputObject('secret', REFRESHED_SECRET_NAME)))
+}
 
 // ── Plain-HTTP Forward ────────────────────────────────────────────────
 
@@ -2610,17 +1911,14 @@ function forwardPlainHttp(
 
 // ── Server ─────────────────────────────────────────────────────────────
 
-// :API_PORT serves only the server control API (CA cert, worktree
-// registrations, ssh-agent keys). Worktree egress never reaches it — all of
-// it (HTTP, HTTPS, SSH) rides the relay-fed transparent listeners, gated by
-// the per-connection PP2 token.
+// :API_PORT serves only the server control API (health, the change stream,
+// the yaac-mama queue). Worktree egress never reaches it — all of it (HTTP,
+// HTTPS, SSH) rides the relay-fed transparent listeners, gated by the
+// per-connection PP2 token.
 const server = http.createServer((req, res) => {
-  // The yaac server reaches this API through an exec+socat relay whose
-  // setup costs an apiserver round trip per TCP connection. Its fetch
-  // pool idles connections out after only 4s by default — shorter than
-  // the ~5s background reconcile tick — so hint it to hold them for 60s
-  // (undici honors the server's Keep-Alive timeout hint), letting one
-  // relay serve many requests instead of a fresh kubectl exec per tick.
+  // Hint the server's fetch pool to hold connections for 60s (undici
+  // honors the server's Keep-Alive timeout hint) rather than its 4s idle
+  // default, so the queue drains ride one connection.
   res.setHeader('Keep-Alive', 'timeout=60')
   handleApiRequest(req, res)
 })
@@ -2898,8 +2196,8 @@ function handleMamaRequest(
  * models` is answered by the SERVER instead, from its own credentials.
  * report which agent tools have host credentials, their provider/host, and —
  * with `?models=1` — their accepted model ids from the baked catalog. Answered
- * synchronously from proxy-local state (mounted creds + the worktree's registered
- * tool); no server round-trip, no network fetch. Like /spawn it runs BEFORE the
+ * synchronously from proxy-local state (the credentials Secret's view + the
+ * worktree's registered tool); no server round-trip, no network fetch. Like /spawn it runs BEFORE the
  * allowlist and is attributed by source pod IP; it exposes tool/provider/model
  * names only, never credential material.
  */
@@ -2920,12 +2218,12 @@ function handleToolsRequest(
   const view = (creds: { kind: 'oauth' | 'api-key'; provider?: string } | null): ToolCredsView =>
     creds ? { authed: true, kind: creds.kind, provider: creds.provider } : { authed: false }
   const creds: Record<AgentTool, ToolCredsView> = {
-    claude: view(readClaudeCreds()),
-    codex: view(readCodexCreds()),
-    opencode: view(readOpencodeCreds()),
-    pi: view(readPiCreds()),
+    claude: view(objects.credentials.claude),
+    codex: view(objects.credentials.codex),
+    opencode: view(objects.credentials.opencode),
+    pi: view(objects.credentials.pi),
   }
-  const report = buildToolsReport({ currentTool: worktreeTool.get(worktreeId) ?? null, creds, includeModels })
+  const report = buildToolsReport({ currentTool: registrationOf(worktreeId)?.tool ?? null, creds, includeModels })
   if (asJson) { respond(200, 'application/json; charset=utf-8', `${JSON.stringify(report, null, 2)}\n`); return }
   respond(200, 'text/plain; charset=utf-8', formatToolsReport(report))
 }
@@ -3221,7 +2519,7 @@ const sshAgentServer = SSH_AGENT_PORT
   ? createSshAgentServer({
     agentSock: AGENT_SOCK,
     resolveWorktree,
-    repoUrlFor: (worktreeId) => worktreeRepoUrl.get(worktreeId),
+    repoUrlFor: (worktreeId) => registrationOf(worktreeId)?.repoUrl,
   })
   : null
 if (sshAgentServer && SSH_AGENT_PORT) {
@@ -3266,18 +2564,19 @@ if (dnsServer && DNS_STUB_PORT) {
   })
 }
 
-// ── Pod-watch (source IP → worktree) ────────────────────────────────────────
-// Only in-cluster (a mounted SA). Local/test runs without it leave the index
-// empty, so transparent connections fail closed — which is correct.
-if (process.env.KUBERNETES_SERVICE_HOST) {
+// ── The watches (source IP → worktree; the objects) ───────────────────────
+// Only in-cluster (a mounted SA). Local/test runs without it leave every
+// map empty, so transparent connections fail closed — which is correct.
+if (IN_CLUSTER) {
   try {
     startPodWatch(podIndex)
+    startObjectWatch(objects)
   } catch (err) {
-    console.error('[proxy] pod-watch failed to start:', (err as Error).message)
+    console.error('[proxy] watches failed to start:', (err as Error).message)
     process.exit(1)
   }
 } else {
-  console.warn('[proxy] no KUBERNETES_SERVICE_HOST — pod-watch disabled (not in-cluster)')
+  console.warn('[proxy] no KUBERNETES_SERVICE_HOST — watches disabled (not in-cluster)')
 }
 
 process.on('SIGTERM', () => {

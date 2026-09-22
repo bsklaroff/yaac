@@ -9,14 +9,6 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   kubectlWithRetry: mockKubectl,
 }))
 
-// The proxy speaks HTTP through an exec tunnel; the client is its process
-// boundary, and a teardown only ever attaches and deletes.
-const mockAttach = vi.hoisted(() => vi.fn())
-const mockRemoveWorktree = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/egress/proxy-client', () => ({
-  proxyClient: { attachIfRunning: mockAttach, removeWorktree: mockRemoveWorktree },
-}))
-
 // Port forwards are live host sockets — the registry is the boundary.
 const mockStopForwarders = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
@@ -31,9 +23,11 @@ vi.mock('#drivers/k8s/images/image-promoter', () => ({ salvageWorktreeImages: mo
 vi.mock('#drivers/k8s/images/store-writer', () => ({ removeNodeImageStore: mockRemoveStore }))
 
 const mockRemoveRegistry = vi.hoisted(() => vi.fn())
+const mockRemoveSecrets = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterModule>()),
   removeProjectRegistry: mockRemoveRegistry,
+  removeProjectSecrets: mockRemoveSecrets,
 }))
 
 import type * as clusterModule from '#drivers/k8s/cluster'
@@ -50,44 +44,45 @@ const TARGET: TeardownTarget = {
   projectSlug: 'proj', workspaceId: 's1', unitName: 'yaac-proj-s1',
 }
 
-/** The `kubectl delete job` call, if one was made. */
-function jobDelete(): string[] | undefined {
+/** The index of the `kubectl delete <kind>` call, if one was made. */
+function deleteCallIndex(kind: string): number {
   return mockKubectl.mock.calls
     .map(([args]) => args as string[])
-    .find((args) => args[0] === 'delete' && args[1] === 'job')
+    .findIndex((args) => args[0] === 'delete' && args[1] === kind)
+}
+
+/** The `kubectl delete job` call, if one was made. */
+function jobDelete(): string[] | undefined {
+  const i = deleteCallIndex('job')
+  return i < 0 ? undefined : mockKubectl.mock.calls[i][0] as string[]
 }
 
 beforeEach(() => {
   mockKubectl.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
-  mockAttach.mockReset().mockResolvedValue(true)
-  mockRemoveWorktree.mockReset().mockResolvedValue(undefined)
   mockStopForwarders.mockReset()
   mockSalvage.mockReset().mockResolvedValue(true)
   mockRemoveStore.mockReset().mockResolvedValue(undefined)
   mockRemoveRegistry.mockReset().mockResolvedValue(undefined)
+  mockRemoveSecrets.mockReset().mockResolvedValue(undefined)
 })
 
 describe('deregisterWorkspace', () => {
-  it('drops the port forwards, then the proxy registration', async () => {
+  it('drops the port forwards, then the egress registration object', async () => {
     await deregisterWorkspace('s1')
 
     expect(mockStopForwarders).toHaveBeenCalledWith('s1')
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('s1')
+    // The registration is a ConfigMap the proxy watches: deleting it is the
+    // whole of the deregistration, proxy or no proxy.
+    expect(mockKubectl).toHaveBeenCalledWith(
+      ['delete', 'configmap', 'yaac-proxy-reg-s1', '-n', 'yaac', '--ignore-not-found'],
+    )
     expect(mockStopForwarders.mock.invocationCallOrder[0])
-      .toBeLessThan(mockRemoveWorktree.mock.invocationCallOrder[0])
-  })
-
-  // The proxy deploys lazily on the first create, so "no proxy" is the
-  // normal state of a fresh install — not something to stand one up for.
-  it('does not talk to an absent proxy', async () => {
-    mockAttach.mockResolvedValue(false)
-    await deregisterWorkspace('s1')
-    expect(mockRemoveWorktree).not.toHaveBeenCalled()
+      .toBeLessThan(mockKubectl.mock.invocationCallOrder[0])
   })
 
   // A workspace that is going away must never be held up by the datapath.
-  it('survives a proxy that fails the removal', async () => {
-    mockRemoveWorktree.mockRejectedValue(new Error('tunnel down'))
+  it('survives a cluster that fails the removal', async () => {
+    mockKubectl.mockRejectedValue(new Error('apiserver down'))
     await expect(deregisterWorkspace('s1')).resolves.toBeUndefined()
     expect(mockStopForwarders).toHaveBeenCalledWith('s1')
   })
@@ -117,9 +112,9 @@ describe('destroyWorkspace', () => {
     // stop before either.
     expect(mockStopForwarders.mock.invocationCallOrder[0])
       .toBeLessThan(mockSalvage.mock.invocationCallOrder[0])
-    expect(mockSalvage.mock.invocationCallOrder[0])
-      .toBeLessThan(mockKubectl.mock.invocationCallOrder[0])
     expect(jobDelete()).toBeDefined()
+    expect(mockSalvage.mock.invocationCallOrder[0])
+      .toBeLessThan(mockKubectl.mock.invocationCallOrder[deleteCallIndex('job')])
   })
 
   // Callers chain a checkout removal off the verdict, so "the unit is gone"
@@ -160,7 +155,7 @@ describe('destroyWorkspace', () => {
       ).resolves.toBe(true)
 
       expect(jobDelete()).toEqual(expect.arrayContaining(['--cascade=foreground']))
-      expect(mockRemoveWorktree).not.toHaveBeenCalled()
+      expect(deleteCallIndex('configmap')).toBe(-1)
       expect(mockStopForwarders).not.toHaveBeenCalled()
     })
 
@@ -196,9 +191,16 @@ describe('detachedTeardownCommand', () => {
 })
 
 describe('destroyProjectSubstrate', () => {
-  it('removes the project registry and the node image stores', async () => {
+  it('removes the project registry, its egress secrets and the node image stores', async () => {
     await destroyProjectSubstrate('proj')
     expect(mockRemoveRegistry).toHaveBeenCalledWith('proj')
+    expect(mockRemoveSecrets).toHaveBeenCalledWith('proj')
+    expect(mockRemoveStore).toHaveBeenCalledWith('proj')
+  })
+
+  it('still removes the rest when the egress secrets will not go', async () => {
+    mockRemoveSecrets.mockRejectedValue(new Error('cluster offline'))
+    await expect(destroyProjectSubstrate('proj')).resolves.toBeUndefined()
     expect(mockRemoveStore).toHaveBeenCalledWith('proj')
   })
 

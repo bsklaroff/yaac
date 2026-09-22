@@ -62,10 +62,13 @@ import {
   ensureProxyAuthSecret,
   ensureProxyResources,
   proxyServiceClusterIp,
+  removeProjectSecrets,
   resetProxyClusterIpCache,
+  syncProjectSecrets,
+  syncProxyCredentials,
   vapAvailable,
 } from '#drivers/k8s/cluster'
-import { proxyDataHostDir } from '@yaac/shared/project-paths'
+import { sharedPath } from '@yaac/shared/project-paths'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import {
   DNS_STUB_PORT,
@@ -92,9 +95,12 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/sub
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { registryHasTag } from '#drivers/k8s/container/registry'
 import { buildImage, registerImageBuild } from '#drivers/k8s/image-engine'
-import { credentialsDir } from '@yaac/shared/project-paths'
+import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
+import path from 'node:path'
+
+vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -116,7 +122,11 @@ interface Manifest {
   kind: string
   metadata: { name: string; namespace?: string; labels?: Record<string, string> }
   spec?: Record<string, unknown>
+  data?: Record<string, string>
+  rules?: Array<{ resources: string[]; resourceNames?: string[]; verbs: string[] }>
 }
+
+const b64d = (s: string): string => Buffer.from(s, 'base64').toString('utf8')
 
 interface Rule {
   to?: Array<Record<string, unknown>>
@@ -265,22 +275,30 @@ describe('resetProxyClusterIpCache', () => {
 })
 
 describe('ensureProxyResources', () => {
-  it('pre-creates host dirs, applies the whole set in order, and waits for both rollouts', async () => {
+  it('creates no host dir, applies the whole set in order, and waits for both rollouts', async () => {
     stageClusterReads()
     await ensureProxyResources('localhost:5000/yaac-proxy:abc')
 
-    // Host dirs exist (DirectoryOrCreate would have made them root-owned).
-    await expect(fs.stat(credentialsDir())).resolves.toBeDefined()
-    await expect(fs.stat(proxyDataHostDir())).resolves.toBeDefined()
+    // Nothing on the host: the proxy mounts no directory of it.
+    await expect(fs.readdir(tmpDir)).resolves.not.toContain('run')
+    await expect(fs.readdir(tmpDir)).resolves.not.toContain('.credentials')
 
     expect(kinds()).toEqual([
-      'ServiceAccount', 'Role', 'RoleBinding', 'Deployment', 'Service',
+      'ServiceAccount', 'Role', 'RoleBinding',
+      // The proxy's three outputs, created empty so its Role can name them —
+      // before the Deployment, so the pod never boots against a name it
+      // cannot patch.
+      'Secret', 'Secret', 'ConfigMap',
+      'Deployment', 'Service',
       // Session egress, session ingress lock, proxy ingress, world-deny.
       'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
       // netd: SA, ClusterRole, ClusterRoleBinding, Role, RoleBinding, DaemonSet.
       'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Role', 'RoleBinding',
       'DaemonSet',
     ])
+    expect(byName('yaac-proxy-refreshed')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'refreshed' })
+    expect(byName('yaac-proxy-ca')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'ca' })
+    expect(byName('yaac-proxy-state')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'state' })
     // The proxy Service ClusterIP is allocator-assigned and never deleted —
     // no pin migration, so ensureProxyResources issues no `delete service`.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
@@ -292,6 +310,105 @@ describe('ensureProxyResources', () => {
       ['rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
       expect.objectContaining({ maxAttempts: 2 }),
     )
+  })
+
+  it('leaves the proxy’s outputs alone once they exist', async () => {
+    // An apply of the empty shape onto a live object would wipe what the
+    // proxy wrote into it — the CA above all.
+    stageClusterReads()
+    mockGetJson.mockImplementation((args: string[]) => {
+      if (args[1] === 'secret' || args[1] === 'configmap') return Promise.resolve({ data: { 'ca.pem': 'x' } })
+      if (args[1] === 'nodes') {
+        return Promise.resolve({ items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }] })
+      }
+      if (args[1] === 'endpoints') return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
+      return Promise.resolve(null)
+    })
+    await ensureProxyResources('img')
+    expect(kinds().filter((k) => k === 'Secret' || k === 'ConfigMap')).toEqual([])
+  })
+
+  it('gives the proxy read on its inputs and write on exactly its three outputs', async () => {
+    stageClusterReads()
+    await ensureProxyResources('img')
+    const role = applied().find((m) => m.kind === 'Role' && m.metadata.name === PROXY_SA_NAME)
+    // `list`/`watch` cannot be name-scoped, so the read grant is
+    // namespace-wide; `create` cannot be either, which is why the outputs
+    // are pre-created and the proxy only updates and patches them.
+    expect(role?.rules).toEqual([
+      { apiGroups: [''], resources: ['pods', 'secrets', 'configmaps'], verbs: ['get', 'list', 'watch'] },
+      { apiGroups: [''], resources: ['secrets'], resourceNames: ['yaac-proxy-refreshed', 'yaac-proxy-ca'], verbs: ['update', 'patch'] },
+      { apiGroups: [''], resources: ['configmaps'], resourceNames: ['yaac-proxy-state'], verbs: ['update', 'patch'] },
+    ])
+  })
+
+  it('carries an older proxy’s CA, registrations and records into the objects, once', async () => {
+    // The old proxy's hostPath, off the data dir the server mounts
+    // (docs/legacy-compat-shims.md). Bare refs in a persisted registration
+    // predate project scoping; the seed scopes them on the way in.
+    const dir = sharedPath('run', 'proxy-data')
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(path.join(dir, 'ca.key'), 'OLD-KEY')
+    await fs.writeFile(path.join(dir, 'ca.pem'), 'OLD-CERT')
+    await fs.writeFile(path.join(dir, 'worktrees.json'), JSON.stringify({
+      w1: {
+        rules: [{ hostPattern: 'h', pathPattern: '/*', injections: [
+          { action: 'set_header', name: 'a', secretRef: 'BARE' },
+          { action: 'set_header', name: 'b', secretRef: 'other/SCOPED' },
+        ] }],
+        allowedHosts: ['h'], tool: 'claude', projectSlug: 'demo',
+      },
+      broken: { rules: 'nope' },
+    }))
+    await fs.writeFile(path.join(dir, 'blocked-hosts.json'), JSON.stringify({ w1: ['evil'] }))
+    stageClusterReads()
+    await ensureProxyResources('img')
+
+    // The empty pre-create first, then the seed's write of the old CA —
+    // carrying the labels the pre-create stamped, since an apply without
+    // them would delete them through the three-way merge and the server's
+    // informers select on exactly those.
+    const ca = applied().filter((m) => m.metadata.name === 'yaac-proxy-ca').at(-1)
+    expect(ca?.kind).toBe('Secret')
+    expect(ca?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'ca' })
+    expect(b64d(ca!.data!['ca.pem'])).toBe('OLD-CERT')
+    expect(b64d(ca!.data!['ca.key'])).toBe('OLD-KEY')
+    const reg = byName('yaac-proxy-reg-w1')
+    expect(reg?.metadata.labels).toMatchObject({ 'yaac.worktree-id': 'w1', 'yaac.project': 'demo' })
+    expect(JSON.parse(reg!.data!['registration.json'])).toMatchObject({
+      rules: [{ injections: [
+        { secretRef: 'demo/BARE' }, { secretRef: 'other/SCOPED' },
+      ] }],
+    })
+    expect(byName('yaac-proxy-reg-broken')).toBeUndefined()
+    const state = applied().filter((m) => m.metadata.name === 'yaac-proxy-state').at(-1)
+    expect(state?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'state' })
+    expect(JSON.parse(state!.data!['blocked-hosts.json'])).toEqual({ w1: ['evil'] })
+    expect(JSON.parse(state!.data!['git-auth-failures.json'])).toEqual({})
+    // The CA is the seed's done-marker, so it is written last: a failure
+    // before it seeds everything again next time rather than leaving a
+    // live worktree out.
+    const names = applied().map((m) => m.metadata.name)
+    expect(names.lastIndexOf('yaac-proxy-ca')).toBeGreaterThan(names.indexOf('yaac-proxy-reg-w1'))
+    expect(names.lastIndexOf('yaac-proxy-ca')).toBeGreaterThan(names.lastIndexOf('yaac-proxy-state'))
+    expect(vi.mocked(serverLog)).toHaveBeenCalledWith(expect.stringContaining('seeded the proxy'))
+    // The directory is left in place; the seed runs on an empty CA alone.
+    await expect(fs.stat(path.join(dir, 'ca.pem'))).resolves.toBeDefined()
+
+    vi.mocked(serverLog).mockClear()
+    mockApply.mockClear()
+    mockGetJson.mockImplementation((args: string[]) => {
+      if (args[1] === 'secret' && args[2] === 'yaac-proxy-ca') return Promise.resolve({ data: { 'ca.pem': 'x' } })
+      if (args[1] === 'secret' || args[1] === 'configmap') return Promise.resolve({})
+      if (args[1] === 'nodes') {
+        return Promise.resolve({ items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }] })
+      }
+      if (args[1] === 'endpoints') return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
+      return Promise.resolve(null)
+    })
+    await ensureProxyResources('img')
+    expect(byName('yaac-proxy-reg-w1')).toBeUndefined()
+    expect(vi.mocked(serverLog)).not.toHaveBeenCalledWith(expect.stringContaining('seeded'))
   })
 
   it('runs one proxy replica on runc under Recreate, wired to its ports and auth secret', async () => {
@@ -347,14 +464,16 @@ describe('ensureProxyResources', () => {
     expect(pod.serviceAccountName).toBe(PROXY_SA_NAME)
     expect(pod.automountServiceAccountToken).toBe(true)
     expect(pod.enableServiceLinks).toBe(false)
-    // Runs as the server host uid, with fsGroup for the emptyDir HOME.
+    // Runs as the server host uid, with fsGroup for the emptyDirs.
     expect(pod.securityContext?.runAsUser).toBe(process.getuid?.())
     expect(pod.securityContext?.fsGroup).toBe(process.getgid?.())
+    // Two emptyDirs and nothing from the host: the proxy is stateless, and a
+    // replacement anywhere in the cluster restores itself from the apiserver.
     expect(pod.volumes).toEqual([
-      { name: 'credentials', hostPath: { path: credentialsDir(), type: 'DirectoryOrCreate' } },
-      { name: 'proxy-data', hostPath: { path: proxyDataHostDir(), type: 'DirectoryOrCreate' } },
+      { name: 'proxy-data', emptyDir: {} },
       { name: 'home', emptyDir: {} },
     ])
+    expect(JSON.stringify(dep)).not.toContain('hostPath')
 
     const c = pod.containers[0]
     expect(c.image).toBe('localhost:5000/yaac-proxy:abc')
@@ -381,7 +500,6 @@ describe('ensureProxyResources', () => {
     expect(c.env).not.toContainEqual({ name: 'USE_TOR', value: '1' })
     expect(c.readinessProbe.httpGet).toEqual({ path: '/healthz', port: PROXY_PORT })
     expect(c.volumeMounts).toEqual([
-      { name: 'credentials', mountPath: '/yaac-credentials' },
       { name: 'proxy-data', mountPath: '/data' },
       { name: 'home', mountPath: '/home/proxy' },
     ])
@@ -587,17 +705,25 @@ describe('ensureProxyResources', () => {
 })
 
 describe('ensureCaConfigMap', () => {
-  it('skips the apply only when both the CA and the bundle already match', async () => {
-    mockGetJson.mockResolvedValue({
-      data: { 'proxy-ca.pem': 'PEM-CONTENT', 'ca-bundle.pem': 'BUNDLE' },
+  const b64 = (s: string): string => Buffer.from(s).toString('base64')
+  /** The CA Secret the proxy wrote, and the ConfigMap as it stands. */
+  function stage(secret: Record<string, string> | null, configMap: Record<string, string> | null): void {
+    mockGetJson.mockImplementation((args: string[]) => {
+      if (args[1] === 'secret') return Promise.resolve(secret ? { data: secret } : null)
+      return Promise.resolve(configMap ? { data: configMap } : null)
     })
-    await ensureCaConfigMap('PEM-CONTENT', 'BUNDLE')
+  }
+
+  it('skips the apply only when both the CA and the bundle already match', async () => {
+    stage({ 'ca.pem': b64('PEM-CONTENT'), 'ca-bundle.pem': b64('BUNDLE') },
+      { 'proxy-ca.pem': 'PEM-CONTENT', 'ca-bundle.pem': 'BUNDLE' })
+    await ensureCaConfigMap()
     expect(mockApply).not.toHaveBeenCalled()
   })
 
-  it('applies the ConfigMap with both keys when absent or stale', async () => {
-    mockGetJson.mockResolvedValue(null)
-    await ensureCaConfigMap('NEW-PEM', 'NEW-BUNDLE')
+  it('applies the ConfigMap with both keys, from the proxy’s Secret, when absent or stale', async () => {
+    stage({ 'ca.pem': b64('NEW-PEM'), 'ca-bundle.pem': b64('NEW-BUNDLE') }, null)
+    await ensureCaConfigMap()
     expect(mockApply).toHaveBeenCalledWith({
       apiVersion: 'v1',
       kind: 'ConfigMap',
@@ -606,17 +732,89 @@ describe('ensureCaConfigMap', () => {
     })
 
     mockApply.mockClear()
-    mockGetJson.mockResolvedValue({ data: { 'proxy-ca.pem': 'OLD-PEM' } })
-    await ensureCaConfigMap('NEW-PEM', 'NEW-BUNDLE')
+    stage({ 'ca.pem': b64('NEW-PEM'), 'ca-bundle.pem': b64('NEW-BUNDLE') }, { 'proxy-ca.pem': 'OLD-PEM' })
+    await ensureCaConfigMap()
     expect(mockApply).toHaveBeenCalledTimes(1)
   })
 
   it('re-applies when the CA matches but the bundle drifted (e.g. roots refresh)', async () => {
-    mockGetJson.mockResolvedValue({
-      data: { 'proxy-ca.pem': 'SAME', 'ca-bundle.pem': 'OLD-BUNDLE' },
-    })
-    await ensureCaConfigMap('SAME', 'NEW-BUNDLE')
+    stage({ 'ca.pem': b64('SAME'), 'ca-bundle.pem': b64('NEW-BUNDLE') },
+      { 'proxy-ca.pem': 'SAME', 'ca-bundle.pem': 'OLD-BUNDLE' })
+    await ensureCaConfigMap()
     expect(mockApply).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for a freshly rolled proxy to have written its CA', async () => {
+    vi.useFakeTimers()
+    try {
+      let reads = 0
+      mockGetJson.mockImplementation((args: string[]) => {
+        if (args[1] !== 'secret') return Promise.resolve(null)
+        reads++
+        return Promise.resolve(reads < 3 ? { data: {} } : { data: { 'ca.pem': b64('P'), 'ca-bundle.pem': b64('B') } })
+      })
+      const done = ensureCaConfigMap()
+      await vi.advanceTimersByTimeAsync(2_000)
+      await done
+      expect(mockApply).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('syncProxyCredentials', () => {
+  it('renders every host-store file and the ssh keys into one Secret, and logs no value', async () => {
+    await syncProxyCredentials({
+      claude: { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' },
+      codex: null,
+      opencode: { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-secret' },
+      pi: null,
+      git: [{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp-secret' }],
+      ssh: [{ pattern: 'g.example/*', host: 'g.example', privateKey: 'KEY-secret', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+    })
+    const secret = applied()[0]
+    expect(secret.kind).toBe('Secret')
+    expect(secret.metadata).toEqual({
+      name: 'yaac-proxy-credentials', namespace: 'test-ns',
+      labels: { app: 'yaac-proxy', 'yaac.proxy-input': 'credentials' },
+    })
+    // A signed-out tool contributes no key: replace semantics carry absence.
+    expect(Object.keys(secret.data!).sort()).toEqual(['claude.json', 'github.json', 'opencode.json', 'ssh-keys.json'])
+    expect(JSON.parse(b64d(secret.data!['claude.json']))).toEqual({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' })
+    expect(JSON.parse(b64d(secret.data!['github.json']))).toEqual({ tokens: [{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp-secret' }] })
+    expect(JSON.parse(b64d(secret.data!['ssh-keys.json']))).toEqual([
+      { pattern: 'g.example/*', host: 'g.example', privateKey: 'KEY-secret', knownHostsEntry: 'g.example ssh-ed25519 A' },
+    ])
+    for (const [msg] of vi.mocked(serverLog).mock.calls) expect(msg).not.toContain('secret')
+  })
+})
+
+describe('syncProjectSecrets', () => {
+  it('names the project safely and scopes every ref, replacing the set whole', async () => {
+    await syncProjectSecrets('My Project/1', { KEY: 'v1', OTHER: '' })
+    const secret = applied()[0]
+    expect(secret.kind).toBe('Secret')
+    // Not DNS-safe as a slug; install-scoped like the registry's name.
+    expect(secret.metadata.name).toMatch(/^yaac-proxy-secrets-my-project-1-[0-9a-f]{8}$/)
+    expect(secret.metadata.labels).toEqual({
+      app: 'yaac-proxy', 'yaac.proxy-input': 'secrets', 'yaac.project': 'My Project/1',
+    })
+    expect(JSON.parse(b64d(secret.data!['values.json']))).toEqual({ 'My Project/1/KEY': 'v1', 'My Project/1/OTHER': '' })
+
+    // An emptied set is applied as such, so a deleted secret stops being injected.
+    mockApply.mockClear()
+    await syncProjectSecrets('My Project/1', {})
+    expect(JSON.parse(b64d(applied()[0].data!['values.json']))).toEqual({})
+  })
+})
+
+describe('removeProjectSecrets', () => {
+  it('deletes the project’s object by its install-scoped name', async () => {
+    await syncProjectSecrets('demo', { A: '1' })
+    const name = applied()[0].metadata.name
+    await removeProjectSecrets('demo')
+    expect(mockRetry).toHaveBeenCalledWith(['delete', 'secret', name, '-n', 'test-ns', '--ignore-not-found'])
   })
 })
 

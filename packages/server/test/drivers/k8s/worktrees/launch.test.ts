@@ -25,19 +25,15 @@ vi.mock('#drivers/k8s/substrate/priority-classes', async (importOriginal) => ({
   ensurePriorityClasses: mockEnsurePriorityClasses,
 }))
 
+// The proxy's bootstrap is a rollout of its own; the registration it is
+// then handed is a ConfigMap, applied through the same kubectl mock as the
+// Job, so what a create tells the proxy is asserted on the manifest.
 const mockEnsureRunning = vi.hoisted(() => vi.fn())
-const mockRegisterWorktree = vi.hoisted(() => vi.fn())
-const mockPushProxySecrets = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/egress/proxy-secrets', () => ({
-  pushProxySecrets: mockPushProxySecrets,
-}))
 vi.mock('#drivers/k8s/egress/proxy-client', () => ({
   proxyClient: {
     ensureRunning: mockEnsureRunning,
-    registerWorktree: mockRegisterWorktree,
     getCaTrustEnv: () => ['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'],
   },
-  buildRulesFromSecrets: () => [],
 }))
 
 // The cluster half is a whole subprocess tree per call (registry pods,
@@ -78,7 +74,6 @@ const INTENT = {
   config: {},
   remoteUrl: 'https://github.com/example/repo.git',
   nestedContainers: false,
-  proxySecrets: {},
   proxySecretRules: {},
 }
 
@@ -141,44 +136,57 @@ function containerEnv(): Record<string, string> {
 beforeEach(() => {
   vi.clearAllMocks()
   mockProxyClusterIp.mockResolvedValue('10.96.0.5')
-  mockPushProxySecrets.mockResolvedValue(undefined)
-  mockRegisterWorktree.mockResolvedValue(undefined)
+  mockEnsureRunning.mockResolvedValue(undefined)
   mockStoreMount.mockResolvedValue(undefined)
 })
 
-describe('prepareWorkspaceSubstrate', () => {
-  it('pushes the caller-resolved secrets before the rules that name them', async () => {
-    // The registration's secretRefs must resolve from the proxy's first
-    // request onward, so the values land first — and the registration
-    // carries only their names and rules, since the proxy persists it.
-    const order: string[] = []
-    mockPushProxySecrets.mockImplementation(() => {
-      order.push('secrets')
-      return Promise.resolve()
-    })
-    mockRegisterWorktree.mockImplementation(() => {
-      order.push('register')
-      return Promise.resolve()
-    })
+/** The registration ConfigMap a prepare applied, decoded. */
+function appliedRegistration(): { name: string; labels: Record<string, string>; payload: Record<string, unknown> } | undefined {
+  const cm = mockApply.mock.calls
+    .map(([m]) => m as { kind: string; metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> })
+    .find((m) => m.kind === 'ConfigMap')
+  return cm && {
+    name: cm.metadata.name,
+    labels: cm.metadata.labels,
+    payload: JSON.parse(cm.data['registration.json']) as Record<string, unknown>,
+  }
+}
 
-    await prepareWorkspaceSubstrate({
+describe('prepareWorkspaceSubstrate', () => {
+  it('rolls the proxy and assembles the registration the launch will write', async () => {
+    // A stale proxy rolls inside ensureRunning, so by the time the launch
+    // writes the registration the proxy can see the object. The prepare
+    // itself writes nothing: a prepare overlaps the image build, and a
+    // registration with no Job behind it for that long is what the orphan
+    // sweep would collect.
+    const substrate = await prepareWorkspaceSubstrate({
       ...INTENT,
       proxySecretRules: { TOKEN: { hosts: ['api.example.com'], header: 'Authorization' } },
-      proxySecrets: { TOKEN: 'sekrit' },
     })
-
-    expect(order).toEqual(['secrets', 'register'])
-    expect(mockPushProxySecrets).toHaveBeenCalledExactlyOnceWith('proj', { TOKEN: 'sekrit' })
     expect(mockEnsureRunning).toHaveBeenCalled()
-    expect(mockRegisterWorktree).toHaveBeenCalledWith('s1', expect.objectContaining({
+    expect(mockApply).not.toHaveBeenCalled()
+
+    // Written right before the Job, in argv order.
+    mockApply.mockImplementation(() => Promise.resolve())
+    await launchWorkspace(specOf(substrate))
+    expect(mockApply.mock.calls.map(([m]) => (m as { kind: string }).kind)).toEqual(['ConfigMap', 'Job'])
+    const reg = appliedRegistration()
+    expect(reg?.name).toBe('yaac-proxy-reg-s1')
+    expect(reg?.labels).toMatchObject({
+      app: 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.worktree-id': 's1', 'yaac.project': 'proj',
+    })
+    expect(reg?.payload).toMatchObject({
       tool: 'claude',
       projectSlug: 'proj',
       repoUrl: 'https://github.com/example/repo.git',
-    }))
-    // The value travels its own way and never enters the payload the proxy
-    // persists. What that payload says instead — a project-scoped secretRef
-    // — is the rule builder's, and asserted where it is built.
-    expect(JSON.stringify(mockRegisterWorktree.mock.calls)).not.toContain('sekrit')
+    })
+    // The rules carry a project-scoped ref, never a value: the object is a
+    // plain ConfigMap precisely because nothing secret is in it.
+    expect(reg?.payload.rules).toEqual([{
+      hostPattern: 'api.example.com',
+      pathPattern: '/*',
+      injections: [{ action: 'set_header', name: 'Authorization', secretRef: 'proj/TOKEN' }],
+    }])
   })
 
   it('skips the project registry and its image store for a plain workspace', async () => {

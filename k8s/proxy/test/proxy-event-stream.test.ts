@@ -9,12 +9,11 @@ import type { AddressInfo } from 'node:net'
  * (same convention as proxy-git-auth-detect.test.ts) and drive it through a
  * real http.Server.
  *
- * The stream exists because the proxy cannot dial the server: it is an
- * in-cluster pod and the server is a host process with no in-cluster
- * address. So the signal rides the control tunnel the server already holds
- * open to us. Events carry NO state — /data stays the data plane, and the
- * server re-reads it on signal — which is what makes a dropped stream cost
- * a reconnect rather than a lost update.
+ * The stream carries the one edge the server has to be woken for — a
+ * queued in-worktree `yaac-mama` request — and nothing else: everything
+ * the proxy observes travels as objects the server watches. Events carry
+ * NO payload (the queue is drained over its own claim protocol), which is
+ * what makes a dropped stream cost a reconnect rather than a lost update.
  */
 
 const SECRET = 'test-secret'
@@ -25,7 +24,7 @@ function checkAuth(req: http.IncomingMessage): boolean {
   return req.headers.authorization === `Bearer ${SECRET}`
 }
 
-function emitProxyEvent(type: 'blocked-hosts' | 'git-auth-failures' | 'spawn' | 'ping'): void {
+function emitProxyEvent(type: 'mama' | 'ping'): void {
   if (eventSubscribers.size === 0) return
   const line = JSON.stringify({ type }) + '\n'
   for (const res of eventSubscribers) {
@@ -119,20 +118,17 @@ describe('GET /events', () => {
   })
 
   // One line per change, in order, and nothing but the type: the server
-  // re-reads /data (or drains the spawn queue) on signal.
+  // drains the queue on signal.
   it('streams one contentless line per change', async () => {
     const sub = await subscribe()
     expect(sub.status).toBe(200)
     await settle()
 
-    emitProxyEvent('blocked-hosts')
-    expect(JSON.parse(await sub.nextLine())).toEqual({ type: 'blocked-hosts' })
+    emitProxyEvent('mama')
+    expect(JSON.parse(await sub.nextLine())).toEqual({ type: 'mama' })
 
-    emitProxyEvent('git-auth-failures')
-    expect(JSON.parse(await sub.nextLine())).toEqual({ type: 'git-auth-failures' })
-
-    emitProxyEvent('spawn')
-    expect(JSON.parse(await sub.nextLine())).toEqual({ type: 'spawn' })
+    emitProxyEvent('mama')
+    expect(JSON.parse(await sub.nextLine())).toEqual({ type: 'mama' })
 
     sub.close()
   })
@@ -156,16 +152,16 @@ describe('GET /events', () => {
     }
     expect(eventSubscribers.size).toBe(2)
 
-    emitProxyEvent('spawn')
-    expect(JSON.parse(await a.nextLine())).toEqual({ type: 'spawn' })
-    expect(JSON.parse(await b.nextLine())).toEqual({ type: 'spawn' })
+    emitProxyEvent('mama')
+    expect(JSON.parse(await a.nextLine())).toEqual({ type: 'mama' })
+    expect(JSON.parse(await b.nextLine())).toEqual({ type: 'mama' })
 
     a.close()
     b.close()
   })
 
   // A server that goes away must not leave the proxy writing into a dead
-  // socket forever — the reconnecting one re-reads everything anyway.
+  // socket forever — the reconnecting one drains the queue anyway.
   it('drops a subscriber when its connection closes', async () => {
     const sub = await subscribe()
     await settle()
@@ -179,6 +175,6 @@ describe('GET /events', () => {
   })
 
   it('is a no-op with nothing subscribed', () => {
-    expect(() => emitProxyEvent('blocked-hosts')).not.toThrow()
+    expect(() => emitProxyEvent('mama')).not.toThrow()
   })
 })

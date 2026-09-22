@@ -161,8 +161,9 @@ export function installFakeWorktreeDriver(
     ensureRuntimeReachable: () => current.ensureRuntimeReachable(),
     prepareImage: (o) => current.prepareImage(o),
     prepareSubstrate: (i) => current.prepareSubstrate(i),
-    syncSshIdentities: () => current.syncSshIdentities(),
-    syncProxySecrets: (slug) => current.syncProxySecrets(slug),
+    syncCredentials: (b) => current.syncCredentials(b),
+    syncProjectSecrets: (slug, values) => current.syncProjectSecrets(slug, values),
+    refreshedCredentials: () => current.refreshedCredentials(),
     launch: (s) => current.launch(s),
     awaitReady: (h) => current.awaitReady(h),
     declareForwards: (w, f) => current.declareForwards(w, f),
@@ -259,8 +260,9 @@ function defaultRuntime(): WorktreeDriver {
     ensureRuntimeReachable: () => Promise.resolve(),
     prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),
     prepareSubstrate: () => Promise.resolve(substrateFixture()),
-    syncSshIdentities: () => Promise.resolve(),
-  syncProxySecrets: () => Promise.resolve(),
+    syncCredentials: () => Promise.resolve(),
+    syncProjectSecrets: () => Promise.resolve(),
+    refreshedCredentials: () => ({}),
     // Echoes the spec back as a handle, the way a real launch does: a
     // mediator that goes on to exec into what it just launched addresses
     // the workspace it asked for rather than the fixture's default one.

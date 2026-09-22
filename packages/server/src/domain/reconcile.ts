@@ -6,7 +6,7 @@ import {
   reconcileStaleWorktrees,
 } from '#domain/worktrees'
 import { reconcileGeneratedTitles } from '#domain/titles'
-import { syncToolCredentialsThrottled } from '#domain/auth'
+import { adoptRefreshedToolCredentials, syncToolCredentialsThrottled } from '#domain/auth'
 import { worktreeDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
 
@@ -51,9 +51,16 @@ export function defaultReconcileSteps(): ReconcileStep[] {
   // drives is already captured to the host store on the way out, so there is
   // nothing to converge and a pass over such a server has no credential
   // vocabulary in it at all.
-  const credentialSync: ReconcileStep[] = driver.kind !== 'containerless' ? [] : [
-    { name: 'credential-sync', triggers: [], run: () => syncToolCredentialsThrottled() },
-  ]
+  //
+  // Its mirror under a mediating runtime: the refresh a worktree drives
+  // transits the proxy, which captures the rotation into an object the
+  // runtime watches, and this is how it reaches the host store. Edge-driven
+  // by that object's delta; on the resync it reads a cache. Dropped where
+  // nothing mediates, for the same reason the sweep is dropped here.
+  const credentialSync: ReconcileStep[] = driver.kind !== 'containerless'
+    ? [{ name: 'credential-adopt', triggers: ['proxy-refreshed'],
+      run: () => adoptRefreshedToolCredentials(driver.refreshedCredentials()) }]
+    : [{ name: 'credential-sync', triggers: [], run: () => syncToolCredentialsThrottled() }]
   const pool: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped worktrees). No-op when the pool size is 0.

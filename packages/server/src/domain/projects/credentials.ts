@@ -70,12 +70,9 @@ function normalizeEntry(raw: Record<string, unknown>): HttpsGitCredentialEntry |
 }
 
 /**
- * The https half: what the credentials file holds.
- *
- * Kept a file because the proxy pod reads it straight off its mount and
- * writes refreshed OAuth bundles back into that directory — moving it into a
- * sealed row means giving the proxy a push channel it does not have yet. The
- * ssh half has no such constraint and lives in the database.
+ * The https half: what the credentials file holds. A file, like the tool
+ * credentials beside it, and handed to the runtime with them on every
+ * change; the ssh half lives in the database.
  */
 export async function loadCredentials(): Promise<GitCredentialsFile> {
   try {

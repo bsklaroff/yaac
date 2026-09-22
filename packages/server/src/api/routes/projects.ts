@@ -17,6 +17,7 @@ import {
   setProjectReferenceBranch,
   writeProjectConfig,
   writeProjectDockerfile,
+  resolveProjectEnv,
 } from '#domain/projects'
 import { removeProject } from '#domain/worktrees'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
@@ -38,12 +39,16 @@ import { worktreeDriver } from '#drivers/driver'
  * told nothing would read a failed delete as "the credential is gone" while
  * the egress path went on injecting it.
  *
- * The reconcile step heals this on its own tick; what the caller needs is to
- * know it has not happened yet.
+ * The next server start converges it; what the caller needs is to know it
+ * has not happened yet.
  */
 async function syncRunningWorktrees(slug: string, applied: string): Promise<void> {
   try {
-    await worktreeDriver().syncProxySecrets(slug)
+    const { secrets } = await resolveProjectEnv(slug)
+    await worktreeDriver().syncProjectSecrets(
+      slug,
+      Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
+    )
   } catch (err) {
     throw new ServerError(
       'RUNTIME_UNAVAILABLE',

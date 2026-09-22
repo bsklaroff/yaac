@@ -4,12 +4,15 @@ import type {
   AgentTool,
   DriverKind,
   GitAuthFailure,
+  HttpsGitCredentialEntry,
   ImageBuildEntry,
   PendingMamaRequest,
   PortForwardConfig,
   PortMapping,
   MamaResultWire,
+  RefreshedToolCredentials,
   SecretProxyRule,
+  ToolCredentialBundle,
   WorktreeChanges,
   WorktreeDeathCause,
   YaacConfig,
@@ -166,8 +169,8 @@ export interface WorkspaceRegistration {
    * own, and only they can say which of them have a value behind them (a
    * rule for a name with nothing behind it would inject an empty header).
    * Values reach the egress path by their own route
-   * (`SubstrateIntent.proxySecrets`), which is what keeps a registration
-   * safe to persist.
+   * (`syncProjectSecrets`), which is what keeps a registration safe to
+   * hold in a plain ConfigMap.
    */
   proxySecretRules: Record<string, SecretProxyRule>
 }
@@ -179,15 +182,27 @@ export interface WorkspaceRegistration {
  * sealed row the server generated (docs/ssh-keys.md), and the only copies
  * outside the database are the ones a runtime puts somewhere a process can
  * use them — the proxy's in-memory ssh-agent, or a per-worktree agent under
- * a driver with no proxy. Which is also why an agent identity does not
- * survive a proxy replacement: nothing on the proxy's filesystem ever held
- * it.
+ * a driver with no proxy.
  */
 export interface SshCredentialEntry {
   pattern: string
   host: string
   privateKey: string
   knownHostsEntry: string
+}
+
+/**
+ * Everything the egress path injects on the user's behalf, as one value:
+ * the four tool credential files, the https git tokens and the ssh keys.
+ *
+ * Handed to the runtime whole, on every change to any of it, rather than
+ * read by the runtime on its own schedule: the host store above the
+ * runtime is the authority, and a runtime holding a copy re-reads nothing
+ * — it is told. A runtime that mediates no egress ignores it.
+ */
+export interface CredentialBundle extends ToolCredentialBundle {
+  git: HttpsGitCredentialEntry[]
+  ssh: SshCredentialEntry[]
 }
 
 /**
@@ -249,25 +264,10 @@ export interface SubstrateIntent {
   remoteUrl: string
   nestedContainers: boolean
   /**
-   * The config's proxied env-var secrets, resolved to values, for the
-   * runtime to put where its egress path resolves them from.
-   *
-   * Values, unlike everything else here, so it is worth saying why they are
-   * on the intent rather than on `WorkspaceRegistration`: the registration
-   * is persisted by the egress path and reloaded after a replacement, and
-   * stays safe to persist only because it carries `secretRef` NAMES. An
-   * intent is in-process and lives exactly as long as the create.
-   *
-   * The caller resolves them because the caller owns where they come from —
-   * the server's own environment today, and a row once they move into the
-   * database. Empty for a project that proxies none.
-   */
-  proxySecrets: Record<string, string>
-  /**
-   * The same secrets' injection rules, which the runtime registers and the
-   * values above resolve against. Two fields rather than one because they
-   * travel differently: rules are persisted by the egress path and reloaded
-   * after a replacement, values never leave memory.
+   * The project's proxied secrets' injection rules, which the runtime
+   * registers. The VALUES they resolve against are not here: they reach
+   * the egress path per project, when they change (`syncProjectSecrets`),
+   * so the registration a create writes names refs that are already live.
    */
   proxySecretRules: Record<string, SecretProxyRule>
   onProgress?: (message: string) => void
@@ -564,31 +564,10 @@ export interface DriverSinks {
  * simply does less.
  */
 export interface DriverDeps {
-  /**
-   * Every configured SSH remote this server may act as, with its key
-   * material.
-   *
-   * A reader rather than a value because it is re-read on the DRIVER's own
-   * schedule — an attach to a replaced egress pod, a reconnect heal — so
-   * there is no caller to hand the answer in. Unwired means "no SSH
-   * injection", which must stay distinguishable from "this install has no
-   * SSH remotes": clearing a live agent's identities on the strength of an
-   * unwired process is destructive, so a driver treats absence as "change
-   * nothing".
-   */
-  sshIdentities?: () => Promise<SshCredentialEntry[]>
-  /**
-   * Every project's proxied secret values, read the same way and for the
-   * same reason: a runtime whose egress path holds them only in memory has
-   * to restore them after a replacement, on its own schedule, with no
-   * caller present to hand them over.
-   */
-  proxySecrets?: (
-    projectSlug?: string,
-  ) => Promise<Array<{ projectSlug: string; secrets: Record<string, string> }>>
   /** Whether any project's config overlay still carries a retired
    *  `envSecretProxy` key — read by the runtime that owns when the old
-   *  plaintext secrets file may finally be deleted. */
+   *  plaintext secrets file may finally be deleted
+   *  (docs/legacy-compat-shims.md). */
   legacySecretImportPending?: () => Promise<boolean>
 }
 
@@ -1012,34 +991,38 @@ export interface WorktreeDriver {
    */
   prepareSubstrate(intent: SubstrateIntent): Promise<WorkspaceSubstrate>
   /**
-   * The set of SSH remotes this server may act as has changed — deliver it
-   * to wherever the runtime injects credentials from.
+   * The host store changed — deliver the whole credential set to wherever
+   * the runtime injects from. The caller hands the bundle in because the
+   * host store is the authority on what the set IS, and a runtime that
+   * re-read it on a schedule of its own would be a second one.
    *
-   * The push half of `DriverDeps.sshIdentities`, which is the pull half: a
-   * runtime re-reads that on its own schedule, and this is the edge saying
-   * "now, because the user just changed one". Nothing is passed: the reader
-   * composed at the root is the authority on what the set IS, and a
-   * caller handing in a list would be a second one.
+   * Wholesale on purpose: the set is one install-wide thing, and replacing
+   * it whole is what makes a sign-out reach a running workspace as surely
+   * as a sign-in does.
    *
-   * A runtime with no egress path of its own, or one composed without that
-   * reader, resolves without doing anything — an unwired process must
-   * degrade, never fail a credential write that already succeeded.
+   * A runtime with no egress path of its own resolves without doing
+   * anything — its workspaces hold the real credential themselves.
    */
-  syncSshIdentities(): Promise<void>
+  syncCredentials(bundle: CredentialBundle): Promise<void>
   /**
    * A project's proxied secrets changed — deliver the new set to wherever
-   * the runtime resolves injections from, and forget what it dropped.
-   *
-   * The push half of `DriverDeps.proxySecrets`, exactly as
-   * `syncSshIdentities` is for the pull half above. Named per project
-   * because that is the granularity of an edit, and because the values of
-   * other projects are none of this call's business.
+   * the runtime resolves injections from, replacing what it held for that
+   * project. Named per project because that is the granularity of an edit,
+   * and because the values of other projects are none of this call's
+   * business.
    *
    * A runtime that mediates no egress resolves without doing anything: it
    * hands the values to the workspace directly at launch, so there is
    * nothing running to update.
    */
-  syncProxySecrets(projectSlug: string): Promise<void>
+  syncProjectSecrets(projectSlug: string, values: Record<string, string>): Promise<void>
+  /**
+   * OAuth rotations the runtime's egress path captured from a workspace's
+   * refresh, which the host store may not hold yet. Synchronous because it
+   * is watch-fed state the runtime already holds; a runtime that captures
+   * none answers empty.
+   */
+  refreshedCredentials(): RefreshedToolCredentials
   /**
    * Start the workspace, and answer with the handle that addresses it.
    *
@@ -1165,8 +1148,9 @@ export interface WorktreeDriver {
    */
   detachedTeardownCommand(target: TeardownTarget): string
   /** Everything the runtime holds for a whole project, beyond its
-   *  workspaces: the caller tears those down first. Best-effort per part,
-   *  so one unreachable piece cannot strand the rest. */
+   *  workspaces — the secret values it was handed included: the caller
+   *  tears the workspaces down first. Best-effort per part, so one
+   *  unreachable piece cannot strand the rest. */
   destroyProjectSubstrate(projectSlug: string): Promise<void>
 
   /**

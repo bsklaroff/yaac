@@ -90,55 +90,37 @@ export function calicoManifestCachePath(version: string): string {
 }
 
 /**
- * SHARED, reluctantly. Top-level directory for all host-side credential
- * files. Split into per-service files and bind-mounted RW into the proxy
- * sidecar so that credential updates (via `yaac auth update`) propagate to
- * every running container without needing to restart worktrees.
- *
- * The server is the only writer, which would make this server-local — but
- * the proxy pod mounts it, and on a multi-node cluster that pod is not on
- * the server's node, so the bytes have to be reachable from anywhere.
- * Handing the proxy its credentials over the API (or a Secret) instead
- * would move this to SERVER-LOCAL, where secrets belong.
+ * SERVER-LOCAL. Top-level directory for all host-side credential files,
+ * one per service. The server is their one reader and one writer: a
+ * runtime that injects them is handed the contents (`syncCredentials`)
+ * and nothing mounts the directory, so the bytes never have to leave the
+ * server's own volume — which is where secrets belong.
  */
 export function credentialsDir(): string {
-  return sharedPath('.credentials')
+  return serverLocalPath('.credentials')
 }
 
-/**
- * Host directory backing the proxy's `/data` (CA key/cert, tor state).
- * Persisting it across pod replacements keeps the MITM CA stable, so
- * worktree pods' mounted CA stays valid through proxy image upgrades.
- *
- * SHARED tier: the proxy pod mounts it and the server reads what the proxy
- * writes there (blocked-hosts, git-auth-failures), so both sides need the
- * same bytes wherever the proxy is scheduled.
- */
-export function proxyDataHostDir(): string {
-  return sharedPath('run', 'proxy-data')
-}
-
-/** SHARED — see {@link credentialsDir}. */
+/** SERVER-LOCAL — see {@link credentialsDir}. */
 export function githubCredentialsPath(): string {
   return path.join(credentialsDir(), 'github.json')
 }
 
-/** SHARED — see {@link credentialsDir}. */
+/** SERVER-LOCAL — see {@link credentialsDir}. */
 export function claudeCredentialsPath(): string {
   return path.join(credentialsDir(), 'claude.json')
 }
 
-/** SHARED — see {@link credentialsDir}. */
+/** SERVER-LOCAL — see {@link credentialsDir}. */
 export function codexCredentialsPath(): string {
   return path.join(credentialsDir(), 'codex.json')
 }
 
-/** SHARED — see {@link credentialsDir}. */
+/** SERVER-LOCAL — see {@link credentialsDir}. */
 export function opencodeCredentialsPath(): string {
   return path.join(credentialsDir(), 'opencode.json')
 }
 
-/** SHARED — see {@link credentialsDir}. */
+/** SERVER-LOCAL — see {@link credentialsDir}. */
 export function piCredentialsPath(): string {
   return path.join(credentialsDir(), 'pi.json')
 }
@@ -147,10 +129,10 @@ export function piCredentialsPath(): string {
  * SERVER-LOCAL. The key the server seals stored secrets with, generated on
  * first use when the operator states none (`YAAC_SECRETS` / `YAAC_SECRET`).
  *
- * Deliberately NOT under {@link credentialsDir}: that directory is
- * bind-mounted into the proxy pod, and a key mounted beside the ciphertext
- * it opens is not a key. This tier is the server's alone — nothing else
- * mounts it, and on a multi-node cluster nothing else needs to.
+ * Deliberately NOT under {@link credentialsDir}, whose contents a runtime
+ * is handed wholesale: a key handed out beside the ciphertext it opens is
+ * not a key. This tier is the server's alone — nothing else mounts it, and
+ * on a multi-node cluster nothing else needs to.
  *
  * Losing this file means every sealed row is unreadable, so it belongs in
  * whatever backs up the data dir (see README, "Secrets at rest").

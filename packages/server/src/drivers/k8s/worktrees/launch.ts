@@ -21,10 +21,11 @@ import {
   proxyServiceClusterIp,
 } from '#drivers/k8s/cluster'
 import {
+  applyWorktreeRegistration,
+  buildWorktreeRegistration,
   proxyClient,
-  registerWorkspace,
-  pushProxySecrets,
   workspaceSshTransport,
+  type WorktreeRegistration,
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
 import type {
@@ -67,6 +68,10 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
   /** The project has its own push registry, so the in-pod engine needs its
    *  registries.conf drop-in. */
   projectRegistry: boolean
+  /** What the proxy is told about this workspace — written by `launch`,
+   *  right before the Job, so a prepare that overlaps a long image build
+   *  never holds a registration with nothing behind it. */
+  registration: WorktreeRegistration
 }
 
 function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
@@ -97,10 +102,10 @@ export async function prepareWorkspaceSubstrate(
   const { projectSlug, workspaceId, config } = intent
   const emit = (m: string): void => intent.onProgress?.(m)
 
-  // The proxy is always required — it reads the host-mounted credentials
-  // dir directly and injects GitHub / Claude / Codex tokens into outbound
-  // HTTPS requests. Credential updates propagate to every running workspace
-  // without restarting pods.
+  // The proxy is always required — it injects GitHub / Claude / Codex
+  // tokens into outbound HTTPS requests. BEFORE the registration below: a
+  // stale proxy rolls here, so a create never registers against one that
+  // cannot see the object.
   emit('Ensuring proxy deployment...')
   await proxyClient.ensureRunning()
 
@@ -148,21 +153,19 @@ export async function prepareWorkspaceSubstrate(
   // proxy reaches streamd, and the token only opens the pod's OWN daemon.
   const streamToken = await podStreamToken(workspaceId)
 
-  // Register this workspace's state (secret-injection rules, allowlist, repo
-  // URL) with the proxy. GitHub / Claude / Codex auth is handled
-  // dynamically by the proxy from the mounted credentials dir — no
-  // per-workspace rule is needed for those. The rules reference their values
-  // by name; the values (resolved by the caller, which owns where they come
-  // from) are pushed into the proxy's memory FIRST so the registration's
-  // secretRefs resolve from the proxy's first request onward.
-  await pushProxySecrets(projectSlug, intent.proxySecrets)
-  await registerWorkspace({
-    workspaceId,
-    projectSlug,
-    tool: intent.tool,
+  // This workspace's registration (secret-injection rules, allowlist, repo
+  // URL), assembled here from the caller's decisions and written by
+  // `launch`. GitHub / Claude / Codex auth is handled dynamically by the
+  // proxy from the credentials it is handed — no per-workspace rule is
+  // needed for those. The rules reference their values by name; the values
+  // are already in the project's secrets object, kept current on every
+  // edit (`syncProjectSecrets`).
+  const registration = buildWorktreeRegistration({
     config,
     remoteUrl: intent.remoteUrl,
-    proxySecretRules: intent.proxySecretRules,
+    tool: intent.tool,
+    projectSlug,
+    secretRules: intent.proxySecretRules,
   })
 
   const receipt: K8sWorkspaceSubstrate = {
@@ -171,6 +174,7 @@ export async function prepareWorkspaceSubstrate(
     streamToken,
     storeMounts,
     projectRegistry,
+    registration,
   }
   return receipt
 }
@@ -276,6 +280,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // upgraded install whose one boot found the cluster unreachable would fail
   // every create until a restart. Idempotent and cheap next to a pod create.
   await ensurePriorityClasses()
+  // The registration right before the Job it serves: idempotent, so a
+  // relaunch after a failed attempt rewrites the same object.
+  await applyWorktreeRegistration(spec.workspaceId, substrate.registration)
   await kubectlApply(manifest)
 
   return {

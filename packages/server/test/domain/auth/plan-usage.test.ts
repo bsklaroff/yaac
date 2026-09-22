@@ -6,8 +6,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // serverLog writes files — silence it.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 vi.mock('#notify', () => ({ notifyWorktreeListChanged: vi.fn() }))
+// The push composes the whole set from three stores (its own test); here
+// only that a persisted rotation is pushed matters.
+vi.mock('#domain/auth/runtime-push', () => ({
+  pushCredentialsToRuntime: vi.fn().mockResolvedValue(undefined),
+  adoptRefreshedToolCredentials: vi.fn(),
+}))
 
 import { notifyWorktreeListChanged } from '#notify'
+import { pushCredentialsToRuntime } from '#domain/auth/runtime-push'
 import {
   planUsageForSnapshot,
   codexPlanUsageForSnapshot,
@@ -420,6 +427,7 @@ describe('planUsageForSnapshot', () => {
 
   it('refreshes an expired token before querying, and persists the fresh bundle', async () => {
     await seedClaude({ expiresAt: Date.now() - 1000 })
+    vi.mocked(pushCredentialsToRuntime).mockClear()
     upstream.always(CLAUDE_PROFILE_URL, json({}))
     upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
     upstream.reply(CLAUDE_TOKEN_URL, json({
@@ -458,6 +466,8 @@ describe('planUsageForSnapshot', () => {
     // The expiry is stamped from the grant's own lifetime when it landed.
     expect(stored?.expiresAt).toBeGreaterThanOrEqual(before + 28800 * 1000)
     expect(stored?.expiresAt).toBeLessThan(before + 28800 * 1000 + 60_000)
+    // …and the runtime was handed it: the token it holds was just spent.
+    expect(pushCredentialsToRuntime).toHaveBeenCalledTimes(1)
   })
 
   it('adopts a live worktree\'s refreshed token instead of rotating it out from under one', async () => {
@@ -929,6 +939,7 @@ describe('codexPlanUsageForSnapshot', () => {
 
   it('refreshes on a 401, retries once, and persists the rotated bundle', async () => {
     await seedCodex()
+    vi.mocked(pushCredentialsToRuntime).mockClear()
     const exp = Math.floor(Date.now() / 1000) + 3600
     upstream.reply(CODEX_USAGE_URL, httpStatus(401), json(CODEX_BODY))
     upstream.reply(CODEX_TOKEN_URL, json({
@@ -957,6 +968,7 @@ describe('codexPlanUsageForSnapshot', () => {
       expiresAt: exp * 1000,
       accountId: 'acc-123',
     })
+    expect(pushCredentialsToRuntime).toHaveBeenCalledTimes(1)
   })
 
   it('keeps stored tokens the grant omits and falls back to the 28-day window', async () => {

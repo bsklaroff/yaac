@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { afterAll } from 'vitest'
+import { afterAll, beforeAll } from 'vitest'
 import { TEST_NAMESPACE } from './setup'
 import { deleteTestServerClusterRbac } from './deployed-server'
 import { installRealWorktreeDriver } from './real-driver'
@@ -19,6 +19,24 @@ const execFileAsync = promisify(execFile)
  * because these tests talk to a real cluster.
  */
 installRealWorktreeDriver()
+
+/**
+ * The install namespace, which the composition root's attach ensures
+ * before any route can write into it and which the api project — building
+ * the app without that root — would otherwise never create. A route that
+ * hands the runtime an object (a project's secret values on an env write)
+ * applies into it, and the answer to "no such namespace" is an honest 503
+ * that these tests are not about.
+ */
+beforeAll(async () => {
+  try {
+    await execFileAsync('kubectl', ['create', 'namespace', TEST_NAMESPACE], { timeout: 30_000 })
+  } catch (err) {
+    // Already there (a file that deployed a server made it), or no cluster —
+    // in which case every route that needs one says so itself.
+    if (!/AlreadyExists|already exists/.test(String(err))) return
+  }
+})
 
 /**
  * Cluster hygiene for the api/e2e projects — NOT loaded by `unit:*`,
