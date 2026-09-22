@@ -146,6 +146,8 @@ describe('ensureGvisorRuntime', () => {
     expect(pod.containers[0].image).toBe(`localhost:5001/${GVISOR_INSTALLER_MIRROR_TAG}`)
     expect(pod.containers[0].command[0]).toBe('sh')
     expect(pod.containers[0].command[2]).toContain('nsenter -t 1 -m -- systemctl restart containerd')
+    // The same pass is the node-tuning mechanism (docs/cluster-setup.md).
+    expect(pod.containers[0].command[2]).toContain('nsenter -t 1 -m -- systemctl daemon-reexec')
     expect(pod.containers[0].env).toEqual([
       { name: 'NODE_NAME', valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } } },
     ])
@@ -154,7 +156,7 @@ describe('ensureGvisorRuntime', () => {
     expect(pod.containers[0].readinessProbe.exec.command)
       .toEqual(['test', '-f', GVISOR_INSTALLER_READY_FILE])
     expect(pod.volumes.filter((v) => v.hostPath).map((v) => v.hostPath!.path))
-      .toEqual(['/usr/local/bin', '/etc/containerd', '/var/lib/yaac/gvisor'])
+      .toEqual(['/usr/local/bin', '/etc/containerd', '/var/lib/yaac/gvisor', '/etc/systemd/system.conf.d'])
 
     // RBAC: label a node, and nothing else.
     const role = ofKind('ClusterRole')[0] as unknown as {

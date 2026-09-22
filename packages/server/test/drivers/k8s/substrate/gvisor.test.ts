@@ -28,6 +28,12 @@ import {
   NODE_RUNSC_CONFIG_PATH,
   NODE_RUNSC_NESTED_CONFIG_PATH,
 } from '#drivers/k8s/substrate/gvisor'
+import {
+  NODE_SYSTEMD_CONF_DIR,
+  NODE_TASKSMAX_CONF,
+  NODE_TASKSMAX_CONTENT,
+  NODE_TUNING_SYSCTLS,
+} from '#drivers/k8s/substrate/node-tuning'
 
 /** Real `sh -n`: the install program is generated shell, so parsing it is
  *  the one property a string assertion cannot cover. */
@@ -43,6 +49,13 @@ function shellLiteralAfter(script: string, prefix: string): string {
   const start = script.indexOf(prefix) + prefix.length + 1
   expect(start).toBeGreaterThan(prefix.length)
   return script.slice(start, script.indexOf("'", start))
+}
+
+/** The body of `name() { ... }` in the script, up to its closing brace. */
+function shellFunction(script: string, name: string): string {
+  const start = script.indexOf(`${name}() {`)
+  expect(start).toBeGreaterThanOrEqual(0)
+  return script.slice(start, script.indexOf('\n}\n', start))
 }
 
 describe('runtimeClassSpec', () => {
@@ -219,6 +232,14 @@ describe('gvisorInstallScript', () => {
     expect(script).toContain('nsenter -t 1 -m -- systemctl restart containerd')
     expect(script.indexOf('nsenter -t 1 -m -- systemctl restart containerd'))
       .toBeLessThan(script.indexOf(': > "$state/installed-$version"'))
+    // `changed` is the RUNTIME callers' flag, set at each call site on a
+    // write; the helper itself only reports. The tuning pass shares the
+    // helper and must never restart containerd for a systemd drop-in.
+    expect(shellFunction(script, 'write_if_changed')).not.toContain('changed=1')
+    expect(script).toContain('    return 1\n  fi\n  mv "$1.yaac-new" "$1"\n}')
+    expect(script).toContain(
+      `if write_if_changed '/host${NODE_RUNSC_CONFIG_PATH}' `)
+    expect(script.match(/; then changed=1; fi$/gm)).toHaveLength(2)
     // A node with no containerd config is an unsupported node, not one to
     // write a fresh (defaults-losing) config onto.
     expect(script).toContain('cannot register the runsc handlers')
@@ -236,7 +257,40 @@ describe('gvisorInstallScript', () => {
     expect(script).toContain(
       `trap 'rm -f "$ready"; if [ "$held" = 1 ]; then rm -rf "$lock"; fi' EXIT`)
     expect(script).toMatch(
-      /while :; do\n {2}take_lock\n {2}install_pass\n {2}drop_lock\n {2}: > "\$ready"/)
+      /while :; do\n {2}take_lock\n {2}tune_pass\n {2}install_pass\n {2}drop_lock\n {2}: > "\$ready"/)
+  })
+
+  it('tunes the node before installing the runtime, and never restarts containerd for it', () => {
+    const script = gvisorInstallScript()
+
+    // The one node-tuning mechanism: every pass re-applies the sysctls and
+    // the TasksMax drop-in, which is what puts them back on a node that
+    // restarted — with no `yaac cluster install` re-run, and on a node yaac
+    // has no shell on. Tuning runs first (cheap, and a node that cannot be
+    // tuned should fail before it downloads a release) and under the lock.
+    expect(script.indexOf('tune_pass() {')).toBeLessThan(script.indexOf('install_pass() {'))
+    // Ceilings are raised, never lowered: an operator who set more keeps it.
+    expect(script).toContain('if [ "$3" = raise ] && [ "$cur" -ge "$2" ]; then return 0; fi')
+    expect(script).toContain('if [ "$3" = set ] && [ "$cur" = "$2" ]; then return 0; fi')
+    expect(script).toContain('echo "$2" > "/proc/sys/$1"')
+    expect(NODE_TUNING_SYSCTLS.length).toBeGreaterThan(0)
+    for (const s of NODE_TUNING_SYSCTLS) {
+      expect(script).toContain(`  tune_sysctl '${s.path}' ${String(s.value)} ${s.mode}`)
+    }
+    // vm.min_free_kbytes is a ceiling, compaction_proactiveness a setting.
+    expect(NODE_TUNING_SYSCTLS.find((s) => s.path === 'vm/min_free_kbytes')?.mode).toBe('raise')
+    expect(NODE_TUNING_SYSCTLS.find((s) => s.path === 'vm/compaction_proactiveness')?.mode)
+      .toBe('set')
+
+    // The drop-in lands on the node through the hostPath mount, and systemd
+    // is told to reexec only when the file changed — on the tuning's OWN
+    // flag, so a first write never restarts containerd.
+    expect(shellLiteralAfter(script, `if write_if_changed '/host${NODE_TASKSMAX_CONF}' `))
+      .toBe(NODE_TASKSMAX_CONTENT)
+    expect(script).toContain('    reexec=1')
+    expect(script.match(/nsenter -t 1 -m -- systemctl daemon-reexec/g)).toHaveLength(1)
+    expect(script).toContain('if [ "$reexec" = 1 ]; then')
+    expect(shellFunction(script, 'tune_pass')).not.toContain('changed=1')
   })
 
   it('serializes passes across installs sharing the node, and breaks a dead one\'s lock', () => {
@@ -275,7 +329,7 @@ describe('gvisorInstallerHostMounts', () => {
 
     const hostPaths = volumes.filter((v) => v.hostPath)
     expect(hostPaths.map((v) => v.hostPath!.path))
-      .toEqual([NODE_BIN_DIR, NODE_CONTAINERD_DIR, NODE_GVISOR_CACHE_DIR])
+      .toEqual([NODE_BIN_DIR, NODE_CONTAINERD_DIR, NODE_GVISOR_CACHE_DIR, NODE_SYSTEMD_CONF_DIR])
     // DirectoryOrCreate: the cache (and, on a bare node, /usr/local/bin) may
     // not exist yet, and a missing hostPath would leave the pod Pending.
     expect(hostPaths.every((v) => v.hostPath!.type === 'DirectoryOrCreate')).toBe(true)
@@ -288,6 +342,7 @@ describe('gvisorInstallerHostMounts', () => {
       `/host${NODE_BIN_DIR}`,
       `/host${NODE_CONTAINERD_DIR}`,
       `/host${NODE_GVISOR_CACHE_DIR}`,
+      `/host${NODE_SYSTEMD_CONF_DIR}`,
       GVISOR_INSTALLER_READY_FILE.replace(/\/[^/]+$/, ''),
     ])
 

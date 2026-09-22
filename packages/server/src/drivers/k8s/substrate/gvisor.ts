@@ -1,4 +1,5 @@
 import { shellQuote } from '#lib/shell'
+import { NODE_SYSTEMD_CONF_DIR, nodeTuningScript } from './node-tuning'
 import type { PodToleration } from './taints'
 
 /**
@@ -133,11 +134,12 @@ export const GVISOR_INSTALL_LOCK_TIMEOUT_S = 900
  * kept here with the paths themselves so the script and the pod that runs
  * it can never disagree about where the node is.
  *
- * Three narrow directories rather than the node root: the installer is a
+ * Four narrow directories rather than the node root: the installer is a
  * privileged pod (it enters PID 1's mount namespace to restart containerd),
  * so this is not a containment boundary — it is an audit one. What yaac
  * writes on a node is exactly the runtime binaries, the two handler flag
- * files plus the containerd config beside them, and its own cache.
+ * files plus the containerd config beside them, its own cache, and one
+ * systemd drop-in (node-tuning.ts).
  */
 export function gvisorInstallerHostMounts(): {
   volumes: Array<Record<string, unknown>>
@@ -147,6 +149,7 @@ export function gvisorInstallerHostMounts(): {
     ['node-bin', NODE_BIN_DIR],
     ['node-containerd', NODE_CONTAINERD_DIR],
     ['gvisor-cache', NODE_GVISOR_CACHE_DIR],
+    ['node-systemd', NODE_SYSTEMD_CONF_DIR],
   ]
   return {
     volumes: [
@@ -301,7 +304,9 @@ export function buildRuntimeClassManifests(
  * The install itself, as a POSIX shell program the installer DaemonSet runs
  * on every node it lands on. It is the ONE install mechanism — a kind node
  * is just a mutable-OS node with the same containerd config — so nothing
- * about it is backend-specific.
+ * about it is backend-specific. It is also the one NODE TUNING mechanism:
+ * every pass first applies the sysctls and the TasksMax drop-in
+ * (node-tuning.ts), which is what puts them back on a node that restarted.
  *
  * Idempotent by construction, because it re-runs on every pod start, on
  * every new node, and on a timer:
@@ -436,16 +441,19 @@ export function gvisorInstallScript(): string {
     '  rm -rf "$tmp"',
     '}',
     '',
-    '# Write $2 to $1 only when it differs, via a temp file + rename.',
+    '# Write $2 to $1 only when it differs, via a temp file + rename. Exits',
+    '# 0 when it wrote, 1 when the file already matched — the caller decides',
+    '# what a change means (a containerd restart, a systemd reexec).',
     'write_if_changed() {',
     `  printf '%s' "$2" > "$1.yaac-new"`,
     '  if cmp -s "$1.yaac-new" "$1" 2>/dev/null; then',
     '    rm -f "$1.yaac-new"',
-    '  else',
-    '    mv "$1.yaac-new" "$1"',
-    '    changed=1',
+    '    return 1',
     '  fi',
+    '  mv "$1.yaac-new" "$1"',
     '}',
+    '',
+    nodeTuningScript(),
     '',
     '# Mark this node as carrying the runtime. The apiserver is reached by',
     '# the injected service IP, so this works before cluster DNS does.',
@@ -477,8 +485,8 @@ export function gvisorInstallScript(): string {
     '    changed=1',
     '  fi',
     '',
-    `  write_if_changed ${q(host(NODE_RUNSC_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor'))}`,
-    `  write_if_changed ${q(host(NODE_RUNSC_NESTED_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor-nested'))}`,
+    `  if write_if_changed ${q(host(NODE_RUNSC_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor'))}; then changed=1; fi`,
+    `  if write_if_changed ${q(host(NODE_RUNSC_NESTED_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor-nested'))}; then changed=1; fi`,
     '',
     '  if [ ! -f "$cfg" ]; then',
     '    echo "yaac-gvisor: no $cfg on this node — cannot register the runsc handlers" >&2',
@@ -530,8 +538,14 @@ export function gvisorInstallScript(): string {
     '  label_node',
     '}',
     '',
+    // Tuning first: it is cheap, it needs the same privilege as the restart
+    // below, and a node that cannot be tuned should fail before it downloads
+    // a release. Under the lock too — two installs sharing a node write the
+    // same file, but a daemon-reexec racing a containerd restart is not
+    // worth having.
     'while :; do',
     '  take_lock',
+    '  tune_pass',
     '  install_pass',
     '  drop_lock',
     '  : > "$ready"',

@@ -33,6 +33,13 @@ export {
   runtimeClassSpec,
 } from './gvisor'
 export {
+  NODE_SYSTEMD_CONF_DIR,
+  NODE_TASKSMAX_CONF,
+  NODE_TUNING_SYSCTLS,
+  sysctlName,
+} from './node-tuning'
+export type { NodeTuningSysctl } from './node-tuning'
+export {
   dataDirHash,
   ensureKubernetes,
   execFileAsync,
