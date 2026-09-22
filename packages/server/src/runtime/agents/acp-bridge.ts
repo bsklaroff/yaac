@@ -95,6 +95,17 @@ export function attachAcp(
           busy: conversation.isBusy,
           events: events.map((event) => ({ ...event, seq: seq++ }) as AcpEvent),
         })
+        // What the record cannot carry and a subscription cannot catch up on:
+        // the handshake's own reports that this conversation is not running the
+        // way it was asked to. They are made before any pane can exist — the id
+        // a pane attaches by is minted by the same handshake — so a pane that
+        // only subscribed would never hear that its `accept-edits` worktree is
+        // running in the adapter's looser default. Sent after `hello` because
+        // hello replaces what the pane holds, and re-sent on a later reset for
+        // the same reason.
+        for (const notice of conversation.standingNotices) {
+          send({ type: 'event', event: { ...notice, seq: seq++ } as AcpEvent })
+        }
         return
       }
       for (const event of events) send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent })

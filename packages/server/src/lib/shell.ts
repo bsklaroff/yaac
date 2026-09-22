@@ -31,3 +31,27 @@ export function shellQuote(arg: string): string {
 export function shellEscape(str: string): string {
   return str.replace(/'/g, `'\\''`)
 }
+
+/**
+ * A `NAME="<json>"` assignment to prefix a launch command with, for the
+ * several tools whose configuration arrives as a JSON environment variable
+ * (`OPENCODE_PERMISSION`, `CODEX_CONFIG`, `OPENCODE_CONFIG_CONTENT`).
+ *
+ * Double-quoted with escaped inner quotes rather than single-quoted, because
+ * every one of these is embedded in `respawn-window '<cmd>'` — a single quote
+ * would end the wrapper early — and bare `{...}` would hit zsh brace
+ * expansion. Serialized rather than hand-written so the escaping cannot drift
+ * from the shape.
+ *
+ * A value whose JSON contains a single quote is refused rather than escaped:
+ * nothing that reaches here has one (model ids are `MODEL_RE`, posture rules
+ * are literals), and the alternative is a quoting dance that would have to be
+ * correct in two shells at once.
+ */
+export function envJsonAssignment(name: string, value: unknown): string {
+  const json = JSON.stringify(value)
+  if (json.includes("'")) {
+    throw new Error(`${name} value contains a single quote, which cannot survive the launch wrapper`)
+  }
+  return `${name}="${json.replace(/"/g, '\\"')}"`
+}

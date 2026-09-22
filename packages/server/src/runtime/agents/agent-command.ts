@@ -12,7 +12,7 @@ import {
   type PermissionMode,
   type YaacConfig,
 } from '@yaac/shared/types'
-import { shellEscape } from '#lib/shell'
+import { envJsonAssignment, shellEscape } from '#lib/shell'
 
 /**
  * Every `tmux` invocation this file authors routes through this prefix so
@@ -199,9 +199,9 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  * it early, and bare `{...}` would hit zsh brace expansion. Serialized rather
  * than hand-written so the escaping cannot drift from the shape.
  */
-function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
+export function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
   const config = { ...OPENCODE_POSTURE[mode], ...(model === undefined ? {} : { model }) }
-  return `OPENCODE_CONFIG_CONTENT="${JSON.stringify(config).replace(/"/g, '\\"')}"`
+  return envJsonAssignment('OPENCODE_CONFIG_CONTENT', config)
 }
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {

@@ -17,7 +17,19 @@ import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-uti
 import type { StreamChild, WorktreeDriver } from '#drivers/contract'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
+import {
+  ACP_SUPPORTED_PERMISSION_MODES,
+  AGENT_TOOLS,
+  PERMISSION_MODES,
+} from '@yaac/shared/types'
+import { _ACP_PROFILES } from '#runtime/agents/acp-adapters'
 import type { PermissionMode } from '@yaac/shared/types'
+import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
+
+/** What a pi conversation runs when the create named no model: the
+ *  authenticated provider's own default, which is also what picks the api-key
+ *  the egress proxy swaps. */
+const PI_DEFAULT_MODEL = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
 
 /**
  * The driver seam, exercised the way the status watcher exercises it: connect,
@@ -217,11 +229,75 @@ describe('agentDriver', () => {
     expect(acp).not.toContain("'")
   })
 
-  it('rejects a tool with no ACP adapter rather than launching a window that exits', () => {
-    expect(() => agentDriver('acp').launchCmd({
-      tool: 'opencode', agentSessionId: 'c', resume: false, windowName: 'opencode',
-      paths: workspacePathsFixture(), permissionMode: 'bypass',
-    })).toThrow(/no ACP adapter/)
+  it('offers a mode id for exactly the postures create will let through', () => {
+    // The two halves of a posture actually being honored. Create refuses a
+    // posture outside the ACP column, and the adapter is told the mode id for
+    // one that is in it — so a posture in the column with NO mode id has to be
+    // carried some other way, and the profile is where that is said: opencode's
+    // ride `OPENCODE_PERMISSION` at launch (asserted in the launch case below),
+    // and pi has no permission system at all.
+    //
+    // The profiles are read here as a policy constant, not as a unit under
+    // test: what drives them is the launch command and the handshakes in this
+    // same describe.
+    for (const tool of AGENT_TOOLS) {
+      const withModeId = PERMISSION_MODES.filter(
+        (m) => _ACP_PROFILES[tool].modeIds[m] !== undefined,
+      )
+      // Never a mode id for a posture create would refuse: that would be one
+      // reachable only by a caller who bypassed the refusal.
+      const supported = ACP_SUPPORTED_PERMISSION_MODES[tool]
+      expect(withModeId.filter((m) => !supported.includes(m)), tool).toEqual([])
+    }
+    // The carried-elsewhere cases, stated so a silent change to either table
+    // has to be deliberate.
+    expect(PERMISSION_MODES.filter((m) => _ACP_PROFILES.claude.modeIds[m] === undefined)).toEqual([])
+    expect(_ACP_PROFILES.opencode.modeIds).toEqual({ plan: 'plan' })
+    expect(_ACP_PROFILES.pi.modeIds).toEqual({})
+  })
+
+  it("launches each tool's adapter the way that adapter takes its configuration", () => {
+    const spec = (tool: 'codex' | 'opencode' | 'pi', over: Record<string, unknown> = {}) =>
+      agentDriver('acp').launchCmd({
+        tool,
+        agentSessionId: 'conv-1',
+        resume: false,
+        windowName: tool,
+        paths: workspacePathsFixture(),
+        permissionMode: 'bypass',
+        ...over,
+      } as never)
+
+    // codex-acp takes no flags at all: a model is merged into the codex
+    // session config through the environment, and the browser login is shut
+    // off because nothing in a worktree could open one.
+    const codex = spec('codex')
+    expect(codex).toContain('NO_BROWSER=1 node /opt/yaac/acpd/main.js')
+    expect(codex).toContain('-- codex-acp')
+    expect(codex).not.toContain('CODEX_CONFIG')
+    expect(spec('codex', { model: 'gpt-5.2-codex' }))
+      .toContain('CODEX_CONFIG="{\\"model\\":\\"gpt-5.2-codex\\"}"')
+
+    // opencode IS its own adapter, and its posture is the same config document
+    // the TUI is launched with, built by the same function — one table, both
+    // modes.
+    const opencode = spec('opencode')
+    expect(opencode).toContain('-- opencode acp')
+    expect(opencode).toContain('OPENCODE_CONFIG_CONTENT=')
+    expect(opencode).toContain('\\"effect\\":\\"allow\\"')
+    expect(spec('opencode', { permissionMode: 'plan' })).toContain('\\"effect\\":\\"ask\\"')
+    // No model in it, even when one was asked for: opencode's ACP path ignores
+    // the config's `model`, so it is named over the protocol instead.
+    expect(spec('opencode', { model: 'opencode/big-pickle' })).not.toContain('big-pickle')
+
+    // pi-acp takes neither: its model is a protocol call after the handshake.
+    const pi = spec('pi')
+    expect(pi).toContain('-- pi-acp')
+    expect(pi.slice(0, pi.indexOf('node '))).toBe('')
+
+    // Every one of them still travels inside a single-quoted respawn-window
+    // wrapper, so none may contain a quote of its own.
+    for (const cmd of [codex, opencode, pi]) expect(cmd).not.toContain("'")
   })
 
   it('observes a tui conversation through tmux control mode', async () => {
@@ -737,12 +813,180 @@ describe('agentDriver', () => {
       .toEqual({ sessionId: 'acp-1', modeId: 'plan' })
   })
 
-  it('leaves the mode alone on a mode the adapter never advertised', async () => {
+  it('reads an adapter that announces its modes as config options, not a modes block', async () => {
+    // opencode v2 answers `session/new` with `configOptions` only — a `mode`
+    // select whose option values are its agent ids — and no `modes` block at
+    // all. Reading one shape would leave a `plan` create in `build`: the gate
+    // would find nothing advertised, skip `session/set_mode`, and post a
+    // standing notice where the restraint should be. The ask-to-act rules from
+    // the launch config would still apply, but not the plan agent's `edit
+    // deny`, so the worktree would be editable.
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => Promise.resolve('plan'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: created.id,
+      result: {
+        sessionId: 'ses_1',
+        configOptions: [
+          { id: 'model', currentValue: 'opencode/big-pickle' },
+          {
+            id: 'mode',
+            currentValue: 'build',
+            options: [{ value: 'build' }, { value: 'plan' }],
+          },
+        ],
+      },
+    })}\n`)
+
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
+    expect(stream.sent().find((m) => m.method === 'session/set_mode')!.params)
+      .toEqual({ sessionId: 'ses_1', modeId: 'plan' })
+  })
+
+  it('leaves a mode alone when the adapter is already in it', async () => {
+    // The guard that makes the case above meaningful: a posture whose mode the
+    // adapter already holds sends nothing, so a record with no
+    // `session/set_mode` is not evidence that a posture was dropped.
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => Promise.resolve('plan'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: created.id,
+      result: {
+        sessionId: 'ses_1',
+        configOptions: [
+          { id: 'mode', currentValue: 'plan', options: [{ value: 'build' }, { value: 'plan' }] },
+        ],
+      },
+    })}\n`)
+
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'ses_1')).toBeDefined())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
+  })
+
+  it('names the model over the protocol for an adapter that takes it no other way', async () => {
+    // pi's adapter has no `--model`, and pi's model id names its PROVIDER —
+    // which decides the api-key the egress proxy swaps. A pi conversation that
+    // never sends one authenticates against whatever pi's shared settings hold.
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'pi\n', stderr: '' })
+    // The launch is what knows the worktree's provider default; the handshake
+    // is where it can be delivered.
+    agentDriver('acp').launchCmd({
+      tool: 'pi',
+      agentSessionId: 'wt-1',
+      resume: false,
+      windowName: 'pi',
+      paths: workspacePathsFixture(),
+      permissionMode: 'bypass',
+    })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => Promise.resolve('bypass'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'pi-1' } })}\n`)
+
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_model')).toBe(true))
+    const setModel = stream.sent().find((m) => m.method === 'session/set_model')!
+    expect(setModel.params).toEqual({ sessionId: 'pi-1', modelId: PI_DEFAULT_MODEL })
+    // pi advertises thinking levels rather than postures, so there is no mode
+    // for `bypass` to be — and sending one would be rejected outright.
+    expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
+
+    // A model the adapter will not take is survived and said out loud: the
+    // conversation runs the adapter's own default, which for pi means a
+    // provider whose api key the egress proxy never swapped — a worktree that
+    // fails at its first turn for a reason nothing else would explain.
+    const events: AcpEventInit[] = []
+    acpConversationByHandle('demo', 'wt-1', 'pi')!.subscribe((e) => events.push(e))
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: setModel.id, error: { code: -32602, message: 'unknown model' },
+    })}\n`)
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'error')).toBe(true))
+    expect((events.find((e) => e.type === 'error') as { message: string }).message)
+      .toContain(PI_DEFAULT_MODEL)
+  })
+
+  it('forwards an adapter question under bypass when the adapter has no permissions to waive', async () => {
+    // pi has no permission system: what arrives on `session/request_permission`
+    // are its extensions' own questions, so auto-answering would answer FOR the
+    // user rather than spare them a prompt they waived.
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'pi\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => Promise.resolve('bypass'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'pi-1' } })}\n`)
+
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 501,
+      method: 'session/request_permission',
+      params: { options: [{ optionId: 'yes', kind: 'allow_once' }, { optionId: 'no', kind: 'reject_once' }] },
+    })}\n`)
+    // Nothing answers it: the conversation holds the request open for a person,
+    // which is what its status says.
+    await vi.waitFor(() => expect(
+      acpConversationByHandle('demo', 'wt-1', 'pi')!.status,
+    ).toBe('waiting'))
+    expect(stream.sent().some((m) => m.id === 501)).toBe(false)
+  })
+
+  it('reports a mode it could not set to the pane, and keeps the conversation', async () => {
     // `bypassPermissions` is withheld by an adapter running as root outside a
     // sandbox, and `auto` by a model with no classifier. Setting one throws at
     // the adapter, and losing the conversation over it would be worse than
     // running in its default — where the bypass auto-answer still applies.
+    //
+    // But it is NOT silent. An adapter's default is not always at least as
+    // strict as what was asked (codex-acp's is `agent`, where a reviewer model
+    // approves most actions), so a conversation running in one has to say so
+    // where the person who chose the posture will see it: the pane.
     const stream = new FakeStream()
+    const events: AcpEventInit[] = []
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: () => stream,
@@ -750,6 +994,8 @@ describe('agentDriver', () => {
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    // Subscribed before the handshake runs, because the report is part of it.
+    acpConversationByHandle('demo', 'wt-1', 'claude')!.subscribe((e) => events.push(e))
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
     const init = stream.sent().find((m) => m.method === 'initialize')!
@@ -765,10 +1011,75 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     await new Promise((r) => setTimeout(r, 20))
     expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
+
+    // The pane is told which mode it is actually in — and only that. What
+    // happens to the asks from here varies (bypass answers them itself, and
+    // codex's fallback has a reviewer model answering most), so the message
+    // deliberately promises nothing about them.
+    const reported = events.filter((e) => e.type === 'error')
+    expect(reported.length).toBe(1)
+    expect((reported[0] as { message: string }).message).toContain('bypassPermissions')
+    expect((reported[0] as { message: string }).message).toContain('default')
+    expect((reported[0] as { message: string }).message).not.toContain('forwarded')
+
     // And the conversation still works: the ask is auto-answered, because
     // bypass is what this posture means however the adapter is running.
     stream.feed(permissionAsk(3))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 3)).toBe(true))
+  })
+
+  it('reports a mode the adapter REFUSED, which is where a codex worktree runs loose', async () => {
+    // The exposed cell, and the reason this path reports rather than only
+    // logs: codex-acp's own default is `agent` — a reviewer model approving
+    // most actions — not the codex CLI's `read-only` preset. So an
+    // `accept-edits` conversation whose `session/set_mode` is refused runs
+    // LOOSER than the create asked for, and the log is not where the person
+    // who asked is looking.
+    const stream = new FakeStream()
+    const events: AcpEventInit[] = []
+    podExec.mockResolvedValue({ stdout: 'codex\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => Promise.resolve('accept-edits'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'codex')).toBeDefined())
+    acpConversationByHandle('demo', 'wt-1', 'codex')!.subscribe((e) => events.push(e))
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: created.id,
+      result: {
+        sessionId: 'acp-1',
+        modes: {
+          currentModeId: 'agent',
+          availableModes: [{ id: 'read-only' }, { id: 'agent' }, { id: 'agent-full-access' }],
+        },
+      },
+    })}\n`)
+
+    // Advertised, so it is asked for — and refused.
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
+    const setMode = stream.sent().find((m) => m.method === 'session/set_mode')!
+    expect(setMode.params).toEqual({ sessionId: 'acp-1', modeId: 'read-only' })
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: setMode.id, error: { code: -32603, message: 'mode unavailable' },
+    })}\n`)
+
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'error')).toBe(true))
+    const message = (events.find((e) => e.type === 'error') as { message: string }).message
+    expect(message).toContain('read-only')
+    // Names the mode it is actually in, which is the whole point: `agent` is
+    // not what was asked for and not stricter than it.
+    expect(message).toContain('agent')
+    // The conversation survives it — losing a worktree over a posture would be
+    // worse than running in the adapter's default and saying so.
+    expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined()
   })
 
   it('gives up on a reattach it cannot address rather than talking to the wrong session', async () => {

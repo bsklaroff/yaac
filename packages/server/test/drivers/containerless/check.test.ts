@@ -94,13 +94,23 @@ describe('runHostCheck', () => {
     expect(agents?.detail).toContain('none found')
   })
 
-  it('reports the ACP adapters, which are separate packages from the agents', async () => {
-    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'claude-agent-acp'))
+  it('reports the ACP adapters per tool, since having one says nothing about the rest', async () => {
+    // A host with claude's adapter and no codex-acp can create a chat worktree
+    // with claude and not with codex, so one list of binaries would answer a
+    // question nobody asked. Named per tool, and the fix names what to install
+    // for the ones that are missing.
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin === 'claude-agent-acp'))
     const adapters = byName(await runHostCheck(), 'ACP adapters')
-    expect(adapters?.status).toBe('warn')
-    // Learned here rather than from a worktree that vanishes seconds after
-    // a create that reported success.
-    expect(adapters?.fix).toMatch(/claude-agent-acp/)
+    expect(adapters?.status).toBe('pass')
+    expect(adapters?.detail).toContain('claude: claude-agent-acp')
+    expect(adapters?.detail).not.toContain('codex')
+    expect(adapters?.fix).toMatch(/codex-acp/)
+    expect(adapters?.fix).toMatch(/pi-acp/)
+
+    mockOnPath.mockImplementation(() => Promise.resolve(false))
+    const none = byName(await runHostCheck(), 'ACP adapters')
+    expect(none?.status).toBe('warn')
+    expect(none?.detail).toContain('none found')
   })
 
   it('reports a host whose own environment re-points a tool home', async () => {
@@ -300,10 +310,21 @@ describe('assertHostCanLaunch', () => {
     await expect(assertHostCanLaunch({ tool: 'claude', mode: 'tui' })).resolves.toBeUndefined()
   })
 
-  it('refuses acp for a tool that has no adapter at all', async () => {
-    present()
+  it('asks for the tool as well when its adapter only drives one', async () => {
+    // codex-acp spawns `codex app-server` and pi-acp spawns `pi --mode rpc`,
+    // so a host with the adapter and no CLI fails at the first prompt rather
+    // than at the launch — later, and with nothing to point at. claude's
+    // adapter bundles its own SDK and is asked for alone (above); opencode IS
+    // its own adapter, so asking twice would be one probe under two names.
+    present('node', 'codex-acp', 'socat')
     await expect(assertHostCanLaunch({ tool: 'codex', mode: 'acp' }))
-      .rejects.toThrow(/no ACP adapter/)
+      .rejects.toThrow(/codex.*not on this host's PATH/)
+
+    present('node', 'codex-acp', 'codex', 'socat')
+    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'acp' })).resolves.toBeUndefined()
+
+    present('node', 'opencode', 'socat')
+    await expect(assertHostCanLaunch({ tool: 'opencode', mode: 'acp' })).resolves.toBeUndefined()
   })
 
   it('installs a missing tool when asked to, then proves it landed', async () => {
