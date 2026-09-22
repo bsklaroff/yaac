@@ -1065,12 +1065,14 @@ export interface WorktreeDriver {
    *
    * A DECLARATION, not a listener: nothing here binds a host port, because
    * the server is not where the listener lives on either substrate. Under
-   * `containerless` the workspace's own processes bind these ports, so the
-   * mapping is the identity and the declaration only states it; under
-   * `k8s` the listener belongs to a client (`yaac forward`, the desktop
-   * app), which binds the answer given here and tunnels each connection
-   * back through `dialPort`. Called before the workspace launches, because
-   * what it answers is stamped into the workspace's own status bar.
+   * `containerless` the workspace's own processes bind these ports on the
+   * server's machine, so the mapping is the identity and the declaration
+   * only states it; under `k8s` the listener belongs to a client (`yaac
+   * forward`, the desktop app), which binds the answer given here and
+   * tunnels each connection back through `dialPort` — as a client on
+   * another machine does against a containerless server too. Called
+   * before the workspace launches, because what it answers is stamped
+   * into the workspace's own status bar.
    *
    * Synchronous, and the runtime's allocator: it is the only thing that
    * knows which host ports its other workspaces were already promised, so
@@ -1085,10 +1087,13 @@ export interface WorktreeDriver {
    * connection's worth, the near end of a forward whose listener is
    * somewhere else.
    *
-   * Rejects when the workspace is gone or nothing answers on the port.
-   * Destroying the returned stream is what closes it; the runtime holds no
-   * registry of these, since a caller that drops one has ended the
-   * connection it stood for.
+   * Rejects when the workspace is gone or nothing answers on the port —
+   * and, under `containerless`, for a port the workspace's own process
+   * tree was not seen listening on: a pod is a sandbox and `k8s` dials
+   * anything in it, while a host is the user's machine and only the
+   * listeners the sweep surfaced are on offer. Destroying the returned
+   * stream is what closes it; the runtime holds no registry of these,
+   * since a caller that drops one has ended the connection it stood for.
    *
    * Handed over PAUSED, and that is part of the contract: a runtime may
    * have had to read from the connection to set it up, so bytes the far

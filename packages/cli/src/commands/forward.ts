@@ -1,6 +1,7 @@
 import { api } from '#commands/api'
 import { resolveServerTarget } from '@yaac/shared/server-api'
-import { createForwardSet } from '@yaac/shared/port-tunnel-set'
+import { createForwardSet, serverNeedsForwarder } from '@yaac/shared/port-tunnel-set'
+import type { DriverKind } from '@yaac/shared/types'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 
 /**
@@ -9,11 +10,13 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
  * A worktree's ports are offered by the server (`forwardedPorts` on the
  * worktree list) but bound by a client: under `k8s` the server is a pod,
  * so a port it bound would be on the pod's loopback and reachable from
- * nowhere the user is. This command is that client — it binds what the
- * server says is on offer and tunnels each connection back over
- * `/forward/attach`, which makes the webapp's `127.0.0.1:<port>` links
- * true for as long as it runs. The desktop app does the same thing
- * resident in its tray; this is the one you run on a headless box.
+ * nowhere the user is, and under `containerless` they are bound on the
+ * server's machine, which is not this one when the server is remote. This
+ * command is that client — it binds what the server says is on offer and
+ * tunnels each connection back over `/forward/attach`, which makes the
+ * webapp's `127.0.0.1:<port>` links true for as long as it runs. The
+ * desktop app does the same thing resident in its tray; this is the one
+ * you run on a headless box.
  *
  * It follows the server rather than snapshotting it: a session created,
  * stopped, or granted a new port while this runs is picked up on the next
@@ -61,36 +64,47 @@ async function offeredForwards(only: string | undefined): Promise<ForwardSpec[]>
 }
 
 /**
- * Refuse to forward against a containerless server.
+ * Refuse to forward against a containerless server on THIS machine.
  *
- * There is nothing to forward there and no way to do it: a workspace's own
- * processes bind the host ports, so what the server offers is the identity
- * mapping over ports something is ALREADY listening on. Binding them fails
- * on this machine (the dev server holds them) and, against a remote
- * containerless server, succeeds only to have every tunnelled connection
- * die — that driver's `dialPort` is a refusal. Left alone it is a retry
- * loop printing a bind error every poll, forever.
+ * There a workspace's own processes bind the host ports, so what the
+ * server offers is the identity mapping over ports something is ALREADY
+ * listening on: every bind here loses to the dev server holding it — or
+ * wins against one that has not booted yet and takes its port. Left alone
+ * it is a retry loop printing a bind error every poll, forever
+ * (`serverNeedsForwarder`). Against a remote containerless server the
+ * same mappings are as unreachable as a pod's, and this command is how
+ * they get here.
+ *
+ * An explicit `--bind` is the one local exception, and it is taken as "I
+ * know what I am binding" — loopback included. The case it exists for is
+ * publishing the ports on another interface (the remote-hosting recipe
+ * run on the server's own host), where each connection relays to loopback
+ * and nothing fights the dev server; `--bind 127.0.0.1` with no `--port`
+ * would, and is left to the user who asked for it.
  *
  * `/health` is auth-exempt and already reports the driver, which is what
  * makes this one request rather than a new mechanism. A server that does
  * not answer, or answers without the field, is left alone: an unreachable
  * server is the next call's error to report, not this one's.
  */
-async function refuseContainerlessForward(baseUrl: string): Promise<void> {
-  let driver: string | undefined
+async function refuseLocalContainerlessForward(baseUrl: string, bind: string | undefined): Promise<void> {
+  if (bind !== undefined) return
+  let driver: DriverKind | undefined
   try {
     const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(5_000) })
     if (!res.ok) return
-    driver = (await res.json() as { driver?: string | null }).driver ?? undefined
+    driver = (await res.json() as { driver?: DriverKind | null }).driver ?? undefined
   } catch {
     return
   }
-  if (driver !== 'containerless') return
+  if (driver === undefined || serverNeedsForwarder(driver, baseUrl)) return
   throw new Error(
-    'this install runs the containerless driver, where a worktree\'s processes '
-    + 'bind the host ports themselves — the ports are already reachable and '
-    + 'there is nothing to tunnel.\n'
-    + '    `yaac worktree list` shows what each one is listening on '
+    'this server runs the containerless driver on this machine, where a '
+    + 'worktree\'s processes bind the host ports themselves — the ports are '
+    + 'already reachable here and there is nothing to tunnel.\n'
+    + '    `yaac worktree list` shows what each one is listening on; from '
+    + 'another machine `yaac forward` tunnels them, and `--bind <addr>` '
+    + 'publishes them on another interface of this one '
     + '(docs/port-forward-tunnel.md).',
   )
 }
@@ -108,7 +122,7 @@ export async function forward(
   // change the answer. Asking about the session first would answer a
   // containerless install with "session not found" for a bad id — the
   // wrong objection to the wrong thing.
-  await refuseContainerlessForward(target.baseUrl)
+  await refuseLocalContainerlessForward(target.baseUrl, options.bind)
   // Resolved once, server-side, so an id prefix or a name means here what
   // it means everywhere else — and so a session that does not exist is an
   // error now rather than an empty forward set that never fills.

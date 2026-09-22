@@ -266,12 +266,28 @@ export async function descendantPids(roots: number[]): Promise<number[]> {
  * without lsof reports nothing rather than failing, and the host check says
  * so up front.
  */
-export async function listeningPorts(pids: number[]): Promise<number[]> {
+/** One TCP listener: its port, and the loopback address this host dials
+ *  to reach it — the bound address itself, or the loopback of the bound
+ *  family for a wildcard. */
+export interface Listener {
+  port: number
+  host: string
+}
+
+export async function listeningPorts(pids: number[]): Promise<Listener[]> {
   if (pids.length === 0) return []
   let out: string
   try {
+    // `-b`: a TCP listing is matched by socket inode from /proc/<pid>/fd
+    // against /proc/net/tcp*, and needs no stat of any path; without it
+    // lsof stats every mount on the host on the way, and one hung network
+    // mount (NFS, 9p, fuse) hangs every sweep past its timeout — reporting
+    // a host with a live dev server as listening on nothing. `-w` drops the
+    // warnings `-b` emits about the mounts it then skipped. The hang itself
+    // has no test; the argv assertion in ports.test.ts is what guards the
+    // flags.
     ({ stdout: out } = await runHost([
-      'lsof', '-a', '-p', pids.join(','), '-iTCP', '-sTCP:LISTEN', '-P', '-n', '-Fn',
+      'lsof', '-b', '-w', '-a', '-p', pids.join(','), '-iTCP', '-sTCP:LISTEN', '-P', '-n', '-Ftn',
     ], { timeoutMs: 10_000 }))
   } catch {
     // Also the ordinary "nothing is listening" case: lsof exits 1 when no
@@ -279,15 +295,27 @@ export async function listeningPorts(pids: number[]): Promise<number[]> {
     // means the same thing either way.
     return []
   }
-  const ports = new Set<number>()
+  // -F emits one field per line, `t` (IPv4/IPv6) before `n` (the name) for
+  // each file: `n*:3000`, `n127.0.0.1:3000`, `n[::1]:3000`. A wildcard is
+  // reachable on its family's loopback — and only `t` tells a `*` bound as
+  // 0.0.0.0 from one bound as `::`.
+  const byPort = new Map<number, Listener>()
+  let family = ''
   for (const line of out.split('\n')) {
-    // -Fn emits one field per line; the name field starts with `n`, e.g.
-    // `n*:3000` or `n127.0.0.1:3000`.
+    if (line.startsWith('t')) {
+      family = line.slice(1)
+      continue
+    }
     if (!line.startsWith('n')) continue
-    const m = /:(\d+)$/.exec(line.slice(1))
-    if (m) ports.add(Number(m[1]))
+    const m = /^(.*):(\d+)$/.exec(line.slice(1))
+    if (!m) continue
+    const port = Number(m[2])
+    const bound = m[1].replace(/^\[|\]$/g, '')
+    const host = bound === '*' ? (family === 'IPv6' ? '::1' : '127.0.0.1') : bound
+    // A dev server listening on both loopbacks is one port; either answers.
+    if (!byPort.has(port)) byPort.set(port, { port, host })
   }
-  return [...ports].sort((a, b) => a - b)
+  return [...byPort.values()].sort((a, b) => a.port - b.port)
 }
 
 /** Signal a set of pids, ignoring the ones that already went away. */

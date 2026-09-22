@@ -488,16 +488,30 @@ appear rather than being made to wait.
 
 A pod's listener is reachable from nowhere until something binds a host port
 and relays it. Here the workspace's processes bind host ports themselves, so
-a detected listener is already reachable and the mapping is the identity.
-Ports surface as `forwardedPorts` (links the webapp can offer directly) and
-`unforwardedPorts` is always empty — there is no "forward this" action
-because there is nothing left to do, and a config's `portForward` entry is
-simply the port the dev server binds.
+a detected listener is already reachable on this machine and the mapping is
+the identity. Ports surface as `forwardedPorts` (links the webapp can offer
+directly) and `unforwardedPorts` is always empty — there is no "forward
+this" action because there is nothing left to do, and a config's
+`portForward` entry is simply the port the dev server binds.
 
 Detection is a poll over each running worktree's own process tree (`lsof`
 against the tmux server's descendants), filtered through the same
 sensitive-port policy the cluster driver uses. Only that tree: every other
 listener on the machine belongs to someone else.
+
+A client on another machine still needs the tunnel, exactly as it would for
+a pod: it binds the identity mapping locally and each connection reaches
+`dialPort`, which connects to the port on this host's loopback (both
+at the address the sweep saw it bound to — `-Ftn` keeps the family, so a
+wildcard is dialled on its own loopback). Only a listener the sweep
+surfaced is dialable, and what keeps the rest of the host out of reach is
+the sweep's scope: the worktree's own process tree, an allowlist with the
+sensitive-port denylist on top. A yaac-dev worktree's inner `yaac server`
+is in that tree, so it surfaces and is dialable, as under k8s. The set is
+the last sweep's, so a port released and re-bound by something else stays
+dialable for up to one poll interval. A client on THIS machine never binds
+against it; which client is where is decided from the origin it resolved
+(docs/port-forward-tunnel.md).
 
 ## What this driver does not do
 

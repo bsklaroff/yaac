@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import net from 'node:net'
 import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+  TEST_CLI_ENTRY,
   createYaacTestEnv,
   spawnYaacServer,
   runYaac,
@@ -74,6 +76,11 @@ const CAN_RUN = await hostReady()
  */
 const CAN_RUN_ACP = CAN_RUN
   && await execFileAsync('sh', ['-c', 'command -v socat']).then(() => true, () => false)
+
+/** Whether the port sweep can see anything here: it is an `lsof` walk, and
+ *  without the binary a worktree runs fine and reports no ports. */
+const CAN_RUN_PORTS = CAN_RUN
+  && await execFileAsync('sh', ['-c', 'command -v lsof']).then(() => true, () => false)
 
 /**
  * A stand-in agent on PATH: it holds its tmux window open the way a real
@@ -166,11 +173,62 @@ function sockFor(id: string): string {
   return containerlessWorkspacePaths(containerlessJobName(SLUG, id)).tmuxSock
 }
 
+interface ListedWorktree {
+  worktreeId: string
+  status: string
+  forwardedPorts: Array<{ containerPort: number; hostPort: number }>
+}
+
 /** The worktrees the server currently reports, newest first. */
-async function listWorktrees(): Promise<Array<{ worktreeId: string; status: string }>> {
+async function listWorktrees(): Promise<ListedWorktree[]> {
   const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
-  const body = await res.json() as { worktrees: Array<{ worktreeId: string; status: string }> }
+  const body = await res.json() as { worktrees: ListedWorktree[] }
   return body.worktrees
+}
+
+/** A port nothing on this host holds right now. */
+async function freePort(): Promise<number> {
+  const srv = net.createServer()
+  await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', () => resolve()))
+  const { port } = srv.address() as net.AddressInfo
+  await new Promise<void>((resolve) => srv.close(() => resolve()))
+  return port
+}
+
+/**
+ * `yaac forward` as a long-lived child, plus a wait for the line it prints
+ * when its listener comes up — the containerless twin of the k8s suite's
+ * fixture.
+ */
+function startForwardCli(...args: string[]): {
+  ready: (timeoutMs?: number) => Promise<void>
+  output: () => string
+  stop: () => Promise<void>
+} {
+  const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'forward', ...args], {
+    env: serverEnv,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  child.stdout.on('data', (c: Buffer) => { out += c.toString('utf8') })
+  child.stderr.on('data', (c: Buffer) => { out += c.toString('utf8') })
+  return {
+    output: () => out,
+    ready: async (timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs
+      while (!out.includes('forwarding ')) {
+        if (child.exitCode !== null || Date.now() > deadline) {
+          throw new Error(`yaac forward never bound its port. Output:\n${out}`)
+        }
+        await new Promise((r) => setTimeout(r, 200))
+      }
+    },
+    stop: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) return
+      child.kill('SIGTERM')
+      await new Promise<void>((resolve) => child.once('close', () => resolve()))
+    },
+  }
 }
 
 /** Create a worktree and answer with its id. The CLI prints none for a tui
@@ -376,6 +434,58 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const windows = await tmux(worktreeId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('shell')
   })
+
+  it.skipIf(!CAN_RUN_PORTS)('tunnels a connection onto a port the worktree is listening on', async () => {
+    // A dev server inside the worktree — a descendant of its tmux server,
+    // which is the tree the port sweep walks — bound to loopback only, the
+    // way dev servers are. It is reachable from this host directly; what is
+    // under test is the OTHER way to reach it, the one a client on another
+    // machine has: `/forward/attach` into the driver's dial.
+    const devPort = await freePort()
+    const script = path.join(testEnv.scratchDir, 'dev-server.cjs')
+    await fs.writeFile(script, `
+      require('http').createServer((req, res) => res.end('hello from the worktree'))
+        .listen(${String(devPort)}, '127.0.0.1')
+    `)
+    await tmux(worktreeId, 'new-window', '-d', '-t', 'yaac', '-n', 'dev',
+      `'${process.execPath}' '${script}'`)
+    // The sweep is a poll; the port shows up on its next tick.
+    await vi.waitFor(async () => {
+      const me = (await listWorktrees()).find((w) => w.worktreeId === worktreeId)
+      expect(me?.forwardedPorts).toEqual([{ containerPort: devPort, hostPort: devPort }])
+    }, { timeout: 20_000, interval: 500 })
+
+    // `--bind` is what lets this run against a server on the same machine:
+    // without it the CLI refuses (see the case at the end of the file),
+    // since binding the identity port here would fight the dev server for
+    // it; an explicit bind is taken as knowing what you bind. A different
+    // host port so that this one really does not.
+    const hostPort = await freePort()
+    const forwarder = startForwardCli(
+      worktreeId, '--bind', '127.0.0.1', '--port', `${String(devPort)}:${String(hostPort)}`,
+    )
+    try {
+      await forwarder.ready()
+      const res = await fetch(`http://127.0.0.1:${String(hostPort)}/`)
+      expect(await res.text()).toBe('hello from the worktree')
+    } finally {
+      await forwarder.stop()
+      await tmux(worktreeId, 'kill-window', '-t', 'yaac:dev')
+    }
+    // A port the worktree is NOT listening on is refused at the dial, not
+    // relayed to whatever else on this host holds it: the tunnel closes
+    // with the dial-failed code and the client's connection dies.
+    const stray = startForwardCli(
+      worktreeId, '--bind', '127.0.0.1', '--port', `${String(server.lock.port)}:${String(hostPort)}`,
+    )
+    try {
+      await stray.ready()
+      await expect(fetch(`http://127.0.0.1:${String(hostPort)}/health`)).rejects.toThrow()
+      expect(stray.output()).toMatch(/dial failed/)
+    } finally {
+      await stray.stop()
+    }
+  }, 60_000)
 
   it('wires the agent-session discovery hook all the way to the worktree log', async () => {
     // The whole chain, because every link of it is substrate-specific and
@@ -950,16 +1060,19 @@ describe.skipIf(!CAN_RUN)('containerless recovery across a server restart', () =
  * provisioned — is only exercised here. Containerless because a real create
  * costs a second here and a pod elsewhere.
  */
-describe.skipIf(!CAN_RUN)('yaac forward against a containerless server', () => {
+describe.skipIf(!CAN_RUN)('yaac forward against a containerless server on this machine', () => {
   it('refuses, because the workspace already binds the host port itself', async () => {
-    // Not a limitation to work around — the ports ARE the host's here, so
-    // what the server offers is the identity mapping over listeners that
-    // already exist. A forwarder would fail every bind against the dev
-    // server holding the port, once per poll, forever
-    // (docs/port-forward-tunnel.md).
-    // No session named: whether this install can be forwarded at all is a
-    // fact about the server, so the refusal must not depend on one — and
-    // this file's worktree has been stopped by the cases above.
+    // The ports ARE this host's here, so what the server offers is the
+    // identity mapping over listeners that already exist. A forwarder
+    // would fail every bind against the dev server holding the port, once
+    // per poll, forever — or take the port from one still booting
+    // (docs/port-forward-tunnel.md). The tunnel itself is real, and the
+    // case above drives it; what is refused is binding on the machine the
+    // dev servers bind on.
+    // No session named: whether this install can be forwarded from here is
+    // a fact about the server and this origin, so the refusal must not
+    // depend on one — and this file's worktree has been stopped by the
+    // cases above.
     const { exitCode, stderr } = await runYaac(serverEnv, 'forward')
     expect(exitCode).toBe(1)
     expect(stderr).toMatch(/containerless driver/)

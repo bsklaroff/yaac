@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const startForward = vi.hoisted(() => vi.fn())
 vi.mock('#port-tunnel', () => ({ startForward }))
 
-import { createForwardSet } from '#port-tunnel-set'
+import { createForwardSet, serverNeedsForwarder } from '#port-tunnel-set'
 import type { ForwardSpec } from '#port-tunnel'
 
 const TARGET = { baseUrl: 'http://127.0.0.1:8787', secret: 's' }
@@ -115,5 +115,27 @@ describe('createForwardSet', () => {
     expect(handles[0].close).toHaveBeenCalledTimes(1)
     expect(set.live()).toEqual([])
     expect(startForward).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('serverNeedsForwarder', () => {
+  it('always binds against a k8s server, wherever it is', () => {
+    // A pod binds nothing anywhere, so a forward is dialable only while a
+    // client holds its listener — a local origin says nothing about that.
+    expect(serverNeedsForwarder('k8s', 'http://127.0.0.1:8787')).toBe(true)
+    expect(serverNeedsForwarder('k8s', 'https://srv.ts.net')).toBe(true)
+  })
+
+  it('never binds against a containerless server on this machine', () => {
+    // The dev servers already hold these ports here; a bind either loses to
+    // one or takes the port from one that has not booted yet.
+    for (const origin of ['http://127.0.0.1:8787', 'http://localhost:8787', 'http://[::1]:8787']) {
+      expect(serverNeedsForwarder('containerless', origin)).toBe(false)
+    }
+  })
+
+  it('binds against a remote containerless server, whose ports are as far away as a pod\'s', () => {
+    expect(serverNeedsForwarder('containerless', 'https://srv.ts.net')).toBe(true)
+    expect(serverNeedsForwarder('containerless', 'http://10.0.0.7:8787')).toBe(true)
   })
 })
