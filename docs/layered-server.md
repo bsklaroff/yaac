@@ -316,8 +316,9 @@ error isolation. There is no poll lane: every source has an edge, and
 the resync is what makes losing one cost latency rather than
 correctness — the same bet the informer's relist makes. Beyond the cache
 deltas the edges are `live-agents` and `status-streams` (in-pod facts,
-from the driver connections) and `spawn-requests` / `proxy-reconnect`,
-which the egress proxy reports over the event stream described below.
+from the driver connections), `mama-requests`, which the egress proxy
+reports over the event stream described below, and `proxy-refreshed`, a
+cache delta over the object the proxy captures OAuth rotations into.
 `domain/reconcile.ts` is the ordered step list:
 the stale reaper first (so counts reflect just-reaped worktrees by the
 time the prewarm pool runs), the conversation sweep, and title generation
@@ -361,24 +362,20 @@ create stages anything.
 
 ## The proxy event stream
 
-Three facts the server needs are visible only inside the egress proxy: a
-worktree's blocked-host set growing, a git credential being rejected
-upstream (the proxy MITMs the git exchange, so pods never hold the
-credential and only it sees the rejection), and an in-worktree
-`yaac-mama` command landing in its queue.
+One fact the server needs is visible only inside the egress proxy and
+has to be answered now: an in-worktree `yaac-mama` command landing in its
+queue, whose caller's HTTP response is held open until the server answers.
+Everything else the proxy observes — a worktree's blocked-host set
+growing, a git credential being rejected upstream, a rotation it captured
+from a worktree's refresh — it writes as objects the `ClusterCache`
+watches (docs/worktree-egress.md "What the proxy is told, and how").
 
-The proxy cannot dial the server — it is an in-cluster pod and the server
-is a host process with no in-cluster address. So the signal rides the
-connection the server already holds: one long-lived `GET /events` over the control
-tunnel, NDJSON, consumed by `ProxyEventStream` in `#drivers/k8s/egress`.
-
-The events carry no state. `/data/blocked-hosts.json` and
-`/data/git-auth-failures.json` stay the data plane — they are also how a
-replaced proxy comes back knowing this state — and the spawn queue keeps
-its own claim protocol. Every event means only "look again", and a
-reconnect re-fires all of them, so a dropped stream costs latency, never
-a lost update. That reconnect is also the only edge that says the proxy
-pod may have been replaced, which is what the ssh-agent heal hangs off.
+The proxy cannot dial the server, so the queue's signal rides the
+connection the server already holds: one long-lived `GET /events`,
+NDJSON, consumed by `ProxyEventStream` in `#drivers/k8s/egress`. The
+events carry no payload — the queue keeps its own claim protocol — so
+every event means only "drain now", and a reconnect re-fires it: a
+dropped stream costs latency, never a lost request.
 
 ## Naming
 

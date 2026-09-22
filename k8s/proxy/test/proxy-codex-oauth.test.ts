@@ -1,15 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import fs from 'node:fs'
-import fsp from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import crypto from 'node:crypto'
+import { describe, it, expect } from 'vitest'
 
 /**
  * Tests for Codex-OAuth-specific proxy helpers. These mirror the logic in
- * podman/proxy-sidecar/proxy.ts — the proxy is bundled separately, so we
- * can't import from it directly. The duplication is acceptable because the
- * functions are small, pure, and fully specified by the tests.
+ * k8s/proxy/proxy.ts — the proxy listens at import time, so it can't be
+ * imported directly. The duplication is acceptable because the functions
+ * are small, pure, and fully specified by the tests. (The credential
+ * decoders are importable and tested in objects.test.ts.)
  */
 
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
@@ -22,55 +18,6 @@ type CodexOAuthBundle = {
   expiresAt: number
   lastRefresh: string
   accountId?: string
-}
-
-type CodexCreds =
-  | { kind: 'oauth'; bundle: CodexOAuthBundle }
-  | { kind: 'api-key'; apiKey: string }
-
-function readCodexCreds(credsFile: string): CodexCreds | null {
-  try {
-    const raw = fs.readFileSync(credsFile, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'oauth' && o.codexOauth && typeof o.codexOauth === 'object') {
-      const b = o.codexOauth as Record<string, unknown>
-      if (typeof b.accessToken === 'string' && b.accessToken
-        && typeof b.refreshToken === 'string' && b.refreshToken
-        && typeof b.idTokenRawJwt === 'string' && b.idTokenRawJwt
-        && typeof b.expiresAt === 'number'
-        && typeof b.lastRefresh === 'string') {
-        const bundle: CodexOAuthBundle = {
-          accessToken: b.accessToken,
-          refreshToken: b.refreshToken,
-          idTokenRawJwt: b.idTokenRawJwt,
-          expiresAt: b.expiresAt,
-          lastRefresh: b.lastRefresh,
-          accountId: typeof b.accountId === 'string' ? b.accountId : undefined,
-        }
-        return { kind: 'oauth', bundle }
-      }
-      return null
-    }
-    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      return { kind: 'api-key', apiKey: o.apiKey }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-function writeCodexOAuthBundle(credsFile: string, bundle: CodexOAuthBundle): void {
-  const payload = {
-    kind: 'oauth',
-    savedAt: new Date().toISOString(),
-    codexOauth: bundle,
-  }
-  const tmp = credsFile + '.tmp-' + crypto.randomBytes(6).toString('hex')
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 })
-  fs.renameSync(tmp, credsFile)
 }
 
 function decodeJwtExp(jwt: string): number | null {
@@ -124,113 +71,6 @@ const SAMPLE_BUNDLE: CodexOAuthBundle = {
   lastRefresh: '2026-04-10T00:00:00.000Z',
   accountId: 'acct-1',
 }
-
-describe('proxy readCodexCreds', () => {
-  let dir: string
-  let credsFile: string
-
-  beforeEach(async () => {
-    dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'yaac-proxy-codex-'))
-    credsFile = path.join(dir, 'codex.json')
-  })
-
-  afterEach(async () => {
-    await fsp.rm(dir, { recursive: true, force: true })
-  })
-
-  it('returns null when the file does not exist', () => {
-    expect(readCodexCreds(credsFile)).toBeNull()
-  })
-
-  it('parses an oauth entry', () => {
-    fs.writeFileSync(credsFile, JSON.stringify({
-      kind: 'oauth',
-      savedAt: '2026-04-10T00:00:00.000Z',
-      codexOauth: SAMPLE_BUNDLE,
-    }))
-    const creds = readCodexCreds(credsFile)
-    expect(creds?.kind).toBe('oauth')
-    if (creds?.kind !== 'oauth') throw new Error('expected oauth')
-    expect(creds.bundle).toEqual(SAMPLE_BUNDLE)
-  })
-
-  it('parses an api-key entry', () => {
-    fs.writeFileSync(credsFile, JSON.stringify({
-      kind: 'api-key',
-      savedAt: '2026-04-10T00:00:00.000Z',
-      apiKey: 'sk-proj-xyz',
-    }))
-    const creds = readCodexCreds(credsFile)
-    expect(creds).toEqual({ kind: 'api-key', apiKey: 'sk-proj-xyz' })
-  })
-
-  it('returns null when oauth bundle is missing required fields', () => {
-    fs.writeFileSync(credsFile, JSON.stringify({
-      kind: 'oauth',
-      savedAt: '2026-04-10T00:00:00.000Z',
-      codexOauth: { accessToken: 'x' },
-    }))
-    expect(readCodexCreds(credsFile)).toBeNull()
-  })
-
-  it('returns null for invalid JSON', () => {
-    fs.writeFileSync(credsFile, 'not-json')
-    expect(readCodexCreds(credsFile)).toBeNull()
-  })
-
-  it('returns null when empty apiKey in api-key entry', () => {
-    fs.writeFileSync(credsFile, JSON.stringify({
-      kind: 'api-key',
-      savedAt: '2026-04-10T00:00:00.000Z',
-      apiKey: '',
-    }))
-    expect(readCodexCreds(credsFile)).toBeNull()
-  })
-})
-
-describe('proxy writeCodexOAuthBundle', () => {
-  let dir: string
-  let credsFile: string
-
-  beforeEach(async () => {
-    dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'yaac-proxy-codex-write-'))
-    credsFile = path.join(dir, 'codex.json')
-  })
-
-  afterEach(async () => {
-    await fsp.rm(dir, { recursive: true, force: true })
-  })
-
-  it('writes the bundle atomically — no tmp files linger', () => {
-    writeCodexOAuthBundle(credsFile, SAMPLE_BUNDLE)
-    const entries = fs.readdirSync(dir)
-    expect(entries).toEqual(['codex.json'])
-  })
-
-  it('round-trips via readCodexCreds', () => {
-    writeCodexOAuthBundle(credsFile, SAMPLE_BUNDLE)
-    const creds = readCodexCreds(credsFile)
-    expect(creds?.kind).toBe('oauth')
-    if (creds?.kind !== 'oauth') throw new Error('expected oauth')
-    expect(creds.bundle).toEqual(SAMPLE_BUNDLE)
-  })
-
-  it('writes with 0600 permissions', () => {
-    writeCodexOAuthBundle(credsFile, SAMPLE_BUNDLE)
-    const stats = fs.statSync(credsFile)
-    expect(stats.mode & 0o777).toBe(0o600)
-  })
-
-  it('overwrites an existing bundle', () => {
-    writeCodexOAuthBundle(credsFile, SAMPLE_BUNDLE)
-    const updated: CodexOAuthBundle = { ...SAMPLE_BUNDLE, accessToken: 'access-refreshed' }
-    writeCodexOAuthBundle(credsFile, updated)
-    const creds = readCodexCreds(credsFile)
-    expect(creds?.kind).toBe('oauth')
-    if (creds?.kind !== 'oauth') throw new Error('expected oauth')
-    expect(creds.bundle.accessToken).toBe('access-refreshed')
-  })
-})
 
 describe('proxy decodeJwtExp', () => {
   it('reads exp claim', () => {

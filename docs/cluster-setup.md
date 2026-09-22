@@ -220,8 +220,8 @@ only kind's provider breaks.
    re-pushes and rebuilds. That is the same self-healing a cluster recreate
    has always relied on. The old hostPath data stays on the nodes under
    `/var/lib/yaac/main-registry/<install-hash>`, recoverable by hand.
-2. **Home-directory extraMount** — worktree pods mount worktrees, caches, and
-   credentials via `hostPath`, which resolves on the *node*. Mounting
+2. **Home-directory extraMount** — worktree pods mount worktrees and caches
+   via `hostPath`, which resolves on the *node*. Mounting
    `$HOME` into the node at the same path makes node == host for everything
    yaac touches. Every node gets it, so the bind holds wherever a worktree
    is scheduled.

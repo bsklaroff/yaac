@@ -382,8 +382,11 @@ The pod mounts the real data dir, by hostPath, at its own absolute path.
 kind binds `$HOME` into every node, so this resolves to the same bytes the
 host process wrote, and `dataDirHash()`, every existing hostPath mount and
 the worktree-pod view of the world are byte-identical either side of the
-move. Splitting the tiers onto claims is docs/plans/cloud-k8s.md; nothing
-above the driver learns anything either way.
+move. The proxy mounts nothing at all: what it needs it is handed as
+objects (docs/worktree-egress.md "What the proxy is told, and how"), so
+`.credentials/` is the server's alone. Splitting the tiers onto claims is
+docs/plans/cloud-k8s.md; nothing above the driver learns anything either
+way.
 
 ## Client state lives beside the data dir, not in it
 
@@ -439,6 +442,12 @@ inert here for reasons rather than by luck:
 Worth stating because the pod inverts the assumptions that code was written
 against: a host with a login keychain and the user's own tool directories. It
 has neither, and the answer is that it never asks for them.
+
+What reaches the host store instead is the `credential-adopt` reconcile
+step: a refresh a worktree drives transits the proxy, which captures the
+rotation into `yaac-proxy-refreshed`, and the step adopts it from the
+server's watch of that object — the same newest-wins compare, driven by
+the object's delta rather than a sweep of tool homes.
 
 ## What a cluster install cannot do for you
 

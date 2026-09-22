@@ -152,6 +152,56 @@ The transport is TCP because a UNIX socket on a shared host directory only
 rendezvous between pods on one node; nothing here assumes the proxy and the
 worktree are co-scheduled.
 
+## What the proxy is told, and how
+
+The proxy pod mounts nothing from the host and holds no state of its
+own. Everything it needs arrives as Kubernetes objects it watches, and
+everything it reports goes out as objects the server watches — all in
+the install namespace, all labelled `app: yaac-proxy`, each with one
+writer and one reader:
+
+| object | kind | writer | reader | content |
+|---|---|---|---|---|
+| `yaac-proxy-credentials` | Secret | server | proxy informer | `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `github.json` (each host-store file's JSON verbatim; a signed-out tool contributes no key) and `ssh-keys.json` (`[{pattern, host, privateKey, knownHostsEntry}]`, OpenSSH-encoded from the sealed seeds) |
+| `yaac-proxy-secrets-<project>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<slug>/<NAME>": value }` — the opened secret values behind that project's `secretRef` rules |
+| `yaac-proxy-reg-<worktreeId>` | ConfigMap, one per worktree | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, test redirects |
+| `yaac-proxy-refreshed` | Secret | proxy | server informer | `claude.json`, `codex.json`: OAuth bundles the proxy captured from a worktree's refresh, in the credentials-file shape |
+| `yaac-proxy-ca` | Secret | proxy | server (one get) | `ca.key`, `ca.pem`, `ca-bundle.pem` |
+| `yaac-proxy-state` | ConfigMap | proxy | server informer | `blocked-hosts.json`, `git-auth-failures.json` |
+
+Inputs carry `yaac.proxy-input=<kind>` and outputs `yaac.proxy-output=
+<kind>`; both sides select by label (`list` and `watch` cannot be
+name-scoped anyway). The server writes the credentials Secret whole on
+every host-store write — a login, a clear, a git credential added or
+removed, a refresh the plan-usage poller persisted — and once per start,
+so the objects converge on the store whatever the last server left. A
+project's values are rewritten when one of its secrets is edited, and go
+with the project. A registration is written before the worktree's Job
+(after `ensureRunning`, so a create never registers against a proxy that
+cannot see the object), rewritten to widen it (the webapp's allow-host
+click, fanned out over the project's registrations by label), deleted at
+teardown, and swept when its worktree is gone and it is an hour old.
+
+The proxy restores itself from its informers' initial lists, and its
+readiness probe holds it out of its Service until they have landed, so
+a replacement never serves a worktree it has not been told about. What it
+observes goes the other way: a blocked host or a rejected git credential
+lands in the state ConfigMap (debounced), which the server's cache turns
+into the snapshot; a refresh a worktree drives is captured into the
+refreshed Secret synchronously, before the response is forwarded — a
+codex rotation is single-use — and the server's `credential-adopt` step
+takes it into the host store under the same newest-wins compare every
+writer uses, then pushes the credentials Secret again so the proxy sees
+its own capture echoed and stops preferring it.
+
+RBAC cannot scope `create` by name, so the server pre-creates the three
+outputs empty and the proxy's Role grants `update`/`patch` on exactly
+those names; its reads are `get`/`list`/`watch` on Secrets and ConfigMaps
+namespace-wide, which is why the install namespace holds nothing but
+yaac's own objects. The control API on the proxy's port carries only
+what is genuinely request/response between a worktree and the server:
+`/healthz`, the change stream and the `yaac-mama` queue.
+
 ## Egress target selection
 
 netd has exactly **one** rule, recomputed on every relevant watch event, so

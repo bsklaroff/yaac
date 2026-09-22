@@ -85,18 +85,12 @@ vi.mock('#commands/ws-terminal', () => ({
 vi.mock('@yaac/server/drivers/k8s/egress/proxy-client', () => ({
   proxyClient: {
     ensureRunning: vi.fn().mockResolvedValue(undefined),
-    registerWorktree: vi.fn().mockResolvedValue(undefined),
-    // The rollback's full teardown deregisters through these two.
-    attachIfRunning: vi.fn().mockResolvedValue(true),
-    removeWorktree: vi.fn().mockResolvedValue(undefined),
     getCaTrustEnv: vi.fn().mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem']),
-    getCaCert: vi.fn().mockResolvedValue('cert'),
   },
-  buildRulesFromSecrets: vi.fn().mockReturnValue([]),
-  collectProxySecrets: vi.fn().mockReturnValue({}),
-  // NOT tsc-guarded: the mocked `proxyClient` is a deliberate 4-method subset
-  // of the 26-member `ProxyClient` class, which `satisfies Partial<…>` rejects
-  // (a partial object value is not assignable to the full property type).
+  // NOT tsc-guarded: the mocked `proxyClient` is a deliberate 2-method subset
+  // of the `ProxyClient` class, which `satisfies Partial<…>` rejects (a
+  // partial object value is not assignable to the full property type). The
+  // registration itself is a ConfigMap, applied through the kubectl mock.
 }))
 
 vi.mock('@yaac/server/lib/allowed-hosts', async (importOriginal) => {
@@ -187,13 +181,6 @@ vi.mock('@yaac/server/domain/projects/credentials', () => ({
   },
   loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
 } satisfies Partial<typeof credentialsModule>))
-
-// The push of secret values to the proxy, at the process boundary: the
-// create runs for real, and what the proxy holds is not this test's subject.
-vi.mock('@yaac/server/drivers/k8s/egress/proxy-secrets', () => ({
-  pushProxySecrets: vi.fn().mockResolvedValue(undefined),
-  syncProjectProxySecrets: vi.fn().mockResolvedValue(undefined),
-}))
 
 vi.mock('@yaac/shared/tool-auth', () => ({
   loadToolAuthEntry: vi.fn().mockResolvedValue(null),
@@ -429,9 +416,6 @@ describe('createWorktree', () => {
     vi.mocked(proxyServiceClusterIp).mockResolvedValue('10.96.0.5')
     /* eslint-disable @typescript-eslint/unbound-method */
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
-    vi.mocked(proxyClient.registerWorktree).mockResolvedValue(undefined)
-    vi.mocked(proxyClient.attachIfRunning).mockResolvedValue(true)
-    vi.mocked(proxyClient.removeWorktree).mockResolvedValue(undefined)
     vi.mocked(proxyClient.getCaTrustEnv).mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'])
     /* eslint-enable @typescript-eslint/unbound-method */
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
@@ -965,19 +949,20 @@ describe('createWorktree', () => {
     // is about to go, so nothing may outlive it; a resume keeps its
     // checkout and its row, so the workspace is still named and the
     // runtime's own sweeps collect the rest.
-    /* eslint-disable @typescript-eslint/unbound-method */
-    const removeWorktree = vi.mocked(proxyClient.removeWorktree)
-    /* eslint-enable @typescript-eslint/unbound-method */
+    const registrationDeletes = (): string[] => mockKubectlRetry.mock.calls
+      .map((c) => c[0])
+      .filter((args) => args[0] === 'delete' && args[1] === 'configmap')
+      .map((args) => args[2])
     mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
 
     await expect(createWorktree('demo', { worktreeId: 'fresh1' })).rejects.toThrow()
-    expect(removeWorktree).toHaveBeenCalledWith('fresh1')
+    expect(registrationDeletes()).toContain('yaac-proxy-reg-fresh1')
 
-    removeWorktree.mockClear()
+    mockKubectlRetry.mockClear()
     await expect(
       createWorktree('demo', { worktreeId: 'prior1', resume: true }),
     ).rejects.toThrow()
-    expect(removeWorktree).not.toHaveBeenCalled()
+    expect(registrationDeletes()).toEqual([])
   })
 
   it('seeds claude.json onboarding flags even for non-Claude sessions (spares are retoolable)', async () => {

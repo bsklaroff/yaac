@@ -30,7 +30,7 @@ import {
   serverLocalRoot,
   clientLocalRoot,
   clientLocalPath,
-  proxyDataHostDir,
+  credentialsDir,
   sharedPath,
   sharedProjectPath,
   nodeLocalProjectPath,
@@ -203,8 +203,10 @@ describe('storage tiers', () => {
 
   it('joins per tier', () => {
     setDataDir('/tmp/yaac-test')
-    expect(sharedPath('.credentials')).toBe('/tmp/yaac-test/.credentials')
-    expect(proxyDataHostDir()).toBe('/tmp/yaac-test/run/proxy-data')
+    expect(sharedPath('projects')).toBe('/tmp/yaac-test/projects')
+    // The credential files are the server's alone: nothing mounts them, a
+    // runtime is handed their contents instead.
+    expect(credentialsDir()).toBe(path.join(serverLocalRoot(), '.credentials'))
     expect(sharedProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
     expect(nodeLocalProjectPath('my-repo', 'opencode-data', 'abc123'))
       .toBe('/tmp/yaac-test/projects/my-repo/opencode-data/abc123')

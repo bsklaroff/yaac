@@ -15,6 +15,11 @@ import {
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import {
+  allowWorktreeHost,
+  applyWorktreeRegistration,
+  deregisterWorkspaceEgress,
+} from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import {
   SSH_TUNNEL_SENTINEL,
@@ -298,14 +303,14 @@ describe('node-level transparent egress (source-IP identity)', () => {
 
     // Session A: MITM api.anthropic.com → the HTTP echo, plus plain HTTP to
     // the echo host. Session B: only the TLS echo (for the tunnel test).
-    await client.registerWorktree(worktreeA, {
+    await applyWorktreeRegistration(worktreeA, {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
       tool: 'claude',
       projectSlug: 'egress-a',
       upstreamRedirects: { [MITM_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
     })
-    await client.registerWorktree(worktreeB, {
+    await applyWorktreeRegistration(worktreeB, {
       rules: [], allowedHosts: [tlsHost], tool: 'claude', projectSlug: 'egress-b',
     })
 
@@ -320,8 +325,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
     await Promise.all(
       [echoName, tlsEchoName, podA, podB].map((n) => deleteTestPod(n)),
     )
-    try { await client.removeWorktree(worktreeA) } catch { /* ok */ }
-    try { await client.removeWorktree(worktreeB) } catch { /* ok */ }
+    await deregisterWorkspaceEgress(worktreeA)
+    await deregisterWorkspaceEgress(worktreeB)
     try { await client.stop() } catch { /* ok */ }
   })
 
@@ -372,8 +377,12 @@ describe('node-level transparent egress (source-IP identity)', () => {
     )
     expect(before.out, before.out).toContain('Blocked by URL allowlist')
 
-    // Widen the running session's allowlist in place (no re-create, no restart).
-    expect(await client.allowHost(worktreeB, echoHost)).toBe(true)
+    // Widen the running session's allowlist in place (no re-create, no
+    // restart): the registration object is rewritten and the proxy's
+    // informer applies it.
+    await allowWorktreeHost(
+      { workspaceId: worktreeB, projectSlug: 'egress-b' }, echoHost, { fanOutToProject: false },
+    )
 
     const after = await curlUntilSuccess(
       podB, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/after"`,

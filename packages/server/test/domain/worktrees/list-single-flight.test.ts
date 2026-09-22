@@ -22,10 +22,6 @@ vi.mock('#runtime/status/liveness', () => ({
   probeTmuxLiveness: vi.fn().mockResolvedValue('alive'),
 }))
 
-vi.mock('#drivers/k8s/egress/blocked-hosts', () => ({
-  readBlockedHosts: vi.fn().mockResolvedValue([]),
-}))
-
 vi.mock('#runtime/agents/agent-tools', async (importOriginal) => ({
   ...(await importOriginal<typeof agentToolsModule>()),
   getAgentSessionFirstMessage: vi.fn().mockResolvedValue(undefined),

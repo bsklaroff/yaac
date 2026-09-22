@@ -10,6 +10,10 @@ import {
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import {
+  applyWorktreeRegistration,
+  deregisterWorkspaceEgress,
+} from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { NETD_APP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
@@ -394,16 +398,16 @@ describe('netd datapath gates', () => {
   beforeAll(async () => {
     await client.ensureRunning()
     proxyHost = await proxyServiceClusterIp()
-    await client.registerWorktree(worktreeA, {
+    await applyWorktreeRegistration(worktreeA, {
       rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-a',
     })
-    await client.registerWorktree(sessionLate, {
+    await applyWorktreeRegistration(sessionLate, {
       rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-late',
     })
     // The forger gets NOTHING on its allowlist, so any success in the
     // spoof case below is a real attribution failure rather than its own
     // legitimate egress.
-    await client.registerWorktree(sessionRaw, {
+    await applyWorktreeRegistration(sessionRaw, {
       rules: [], allowedHosts: [], tool: 'claude', projectSlug: 'netd-raw',
     })
     await startWorktreePod(podA, worktreeA, proxyHost)
@@ -416,9 +420,9 @@ describe('netd datapath gates', () => {
     await setNetdScheduled(true).catch(() => { /* ok */ })
     await waitForNetdReady('all').catch(() => { /* ok */ })
     await Promise.all([deleteTestPod(podA), deleteTestPod(podLate), deleteTestPod(podRaw)])
-    try { await client.removeWorktree(worktreeA) } catch { /* ok */ }
-    try { await client.removeWorktree(sessionLate) } catch { /* ok */ }
-    try { await client.removeWorktree(sessionRaw) } catch { /* ok */ }
+    await deregisterWorkspaceEgress(worktreeA)
+    await deregisterWorkspaceEgress(sessionLate)
+    await deregisterWorkspaceEgress(sessionRaw)
     try { await client.stop() } catch { /* ok */ }
   }, 300_000)
 

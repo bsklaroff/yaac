@@ -1058,9 +1058,6 @@ export async function createWorktree(
     config,
     remoteUrl,
     nestedContainers,
-    proxySecrets: Object.fromEntries(
-      Object.entries(projectEnv.secrets).map(([name, { value }]) => [name, value]),
-    ),
     proxySecretRules: Object.fromEntries(
       Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
     ),

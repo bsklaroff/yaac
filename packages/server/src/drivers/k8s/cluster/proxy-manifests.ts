@@ -1,14 +1,25 @@
+import crypto from 'node:crypto'
 import {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
   LABEL_DATA_DIR_HASH,
+  LABEL_PROJECT,
+  LABEL_PROXY_INPUT,
+  LABEL_PROXY_OUTPUT,
   LABEL_ROLE,
+  LABEL_WORKTREE_ID,
   POD_STREAM_PORT,
   PRIORITY_CLASS_INFRA,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
+  PROXY_CA_SECRET_NAME,
+  PROXY_CREDENTIALS_SECRET_NAME,
   PROXY_PORT,
+  PROXY_PROJECT_SECRETS_PREFIX,
+  PROXY_REFRESHED_SECRET_NAME,
+  PROXY_REGISTRATION_PREFIX,
   PROXY_SA_NAME,
+  PROXY_STATE_CONFIGMAP_NAME,
   RELAY_PORT,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
@@ -21,23 +32,22 @@ import {
   hostUidSecurityContext,
   k8sNamespace,
 } from '#drivers/k8s/substrate'
-import { credentialsDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
-import { proxyDataHostDir } from '@yaac/shared/project-paths'
+import type { CredentialBundle } from '#drivers/contract'
 
 /**
  * Pod securityContext running the proxy as the host's own uid/gid — see
  * `hostUidSecurityContext`, which the server's Deployment shares.
  *
- * The proxy reads and writes hostPath dirs the server creates (the CA in
- * /data and the 0700 credentials dir), so it has to be the same identity
- * the server is. The image's default `node` uid (1000) only worked on
- * applehv, whose virtiofs ignored ownership — libkrun's enforces it, so a
- * uid mismatch is EACCES.
+ * The proxy mounts nothing from the host, so no path it touches is owned
+ * by anyone in particular; it keeps the server's identity so that the two
+ * infra pods read as one principal wherever a uid shows (process listings,
+ * the relay's peer checks). The image's default `node` uid (1000) is not
+ * assumed either way.
  *
  * `fsGroup` on top of that shared identity, as on the server's Deployment
- * and for the same reason: the proxy's HOME is an emptyDir (see the
- * deployment), and emptyDir is the one volume kind whose ownership the
+ * and for the same reason: both of the proxy's volumes are emptyDirs (see
+ * the deployment), and emptyDir is the one volume kind whose ownership the
  * kubelet manages.
  */
 export function proxyRunAsSecurityContext(): Record<string, unknown> {
@@ -74,17 +84,18 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
     },
     spec: {
       replicas: 1,
-      // Recreate, not RollingUpdate: proxy state that is memory-only by
-      // design (the ssh-agent's identities) lives in whichever pod the
-      // Service happens to pick, so an overlap window would hand some
-      // worktrees an agent the server has not loaded keys into.
+      // Recreate, not RollingUpdate: the transparent listeners are
+      // addressed by the Service, and an overlap window would split one
+      // worktree's connections across two pods whose blocked-host records
+      // and captured rotations would each overwrite the other's.
       strategy: { type: 'Recreate' },
       selector: { matchLabels: { app: PROXY_APP_NAME } },
       template: {
         metadata: { labels: podLabels },
         spec: {
-          // The proxy watches pods (source-IP → worktree) via the in-cluster
-          // API, so it needs its SA token mounted — read-only pods access
+          // The proxy watches pods (source-IP → worktree) and its input
+          // objects via the in-cluster API, and writes its three outputs
+          // there, so it needs its SA token mounted — the access is
           // granted by buildProxyRoleManifest.
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
@@ -140,13 +151,11 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 },
                 // The proxy runs as the server's host uid (runAsUser
                 // below), which need not own the image's /home/node — so
-                // point HOME at a dedicated emptyDir (writable via fsGroup)
-                // rather than the CA-bearing /data, keeping ssh material
-                // (the agent socket and the public known_hosts) out of the
-                // persisted secret dir. The entrypoint's ssh-agent socket
-                // and the proxy's known_hosts writer both resolve HOME;
-                // ssh-add expands ~ via getpwuid (not $HOME), so the proxy
-                // hands it the file explicitly with -H.
+                // point HOME at a dedicated emptyDir (writable via fsGroup).
+                // The entrypoint's ssh-agent socket and the proxy's
+                // known_hosts writer both resolve HOME; ssh-add expands ~
+                // via getpwuid (not $HOME), so the proxy hands it the file
+                // explicitly with -H.
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
                 // Split-horizon DNS: the proxy resolves internal names
@@ -160,27 +169,23 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 failureThreshold: 30,
               },
               volumeMounts: [
-                { name: 'credentials', mountPath: '/yaac-credentials' },
                 { name: 'proxy-data', mountPath: '/data' },
                 { name: 'home', mountPath: '/home/proxy' },
               ],
             },
           ],
+          // Nothing from the host: the proxy is stateless. Its inputs are
+          // objects it watches and its outputs objects it writes
+          // (docs/worktree-egress.md), so a pod replacement — anywhere in
+          // the cluster — restores itself from the apiserver alone.
           volumes: [
-            {
-              name: 'credentials',
-              hostPath: { path: credentialsDir(), type: 'DirectoryOrCreate' },
-            },
-            {
-              name: 'proxy-data',
-              hostPath: { path: proxyDataHostDir(), type: 'DirectoryOrCreate' },
-            },
+            // Tor's state and readiness marker, per pod: a circuit is
+            // re-bootstrapped on every replacement.
+            { name: 'proxy-data', emptyDir: {} },
             // Writable HOME for the proxy's ssh-agent socket, ssh-add and
-            // known_hosts. emptyDir (not hostPath) so fsGroup can make it
-            // group-writable by the non-root proxy uid, and so nothing the
-            // proxy writes under HOME persists onto the host. The agent
-            // socket is pod-local now that worktree pods reach the agent
-            // over SSH_AGENT_PORT instead of a shared host directory.
+            // known_hosts. emptyDir so fsGroup can make it group-writable
+            // by the non-root proxy uid. The agent socket is pod-local:
+            // worktree pods reach the agent over SSH_AGENT_PORT.
             { name: 'home', emptyDir: {} },
           ],
         },
@@ -282,14 +287,186 @@ export function buildProxyServiceAccountManifest(): Record<string, unknown> {
   }
 }
 
-/** Read-only Role: the proxy lists/watches pods to resolve source IP→worktree. */
+/**
+ * The proxy's Role: pods, Secrets and ConfigMaps readable (it watches its
+ * inputs), and exactly its three output objects writable.
+ *
+ * `list` and `watch` cannot be name-scoped, so the read grant is
+ * namespace-wide; the install namespace holds nothing but yaac's own
+ * objects (the proxy already carries `yaac-proxy-auth` in its env), and
+ * the proxy already holds every value in memory. `create` cannot be
+ * name-scoped either, which is why the outputs are pre-created by the
+ * server (`ensureProxyResources`) and the proxy only ever `update`s and
+ * `patch`es them.
+ */
 export function buildProxyRoleManifest(): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'Role',
     metadata: { name: PROXY_SA_NAME, namespace: k8sNamespace(), labels: { app: PROXY_APP_NAME } },
-    rules: [{ apiGroups: [''], resources: ['pods'], verbs: ['get', 'list', 'watch'] }],
+    rules: [
+      { apiGroups: [''], resources: ['pods', 'secrets', 'configmaps'], verbs: ['get', 'list', 'watch'] },
+      {
+        apiGroups: [''],
+        resources: ['secrets'],
+        resourceNames: [PROXY_REFRESHED_SECRET_NAME, PROXY_CA_SECRET_NAME],
+        verbs: ['update', 'patch'],
+      },
+      {
+        apiGroups: [''],
+        resources: ['configmaps'],
+        resourceNames: [PROXY_STATE_CONFIGMAP_NAME],
+        verbs: ['update', 'patch'],
+      },
+    ],
   }
+}
+
+// ── The objects the proxy is told through ─────────────────────────────
+
+const proxyLabels = (extra: Record<string, string>): Record<string, string> =>
+  ({ app: PROXY_APP_NAME, ...extra })
+
+function secretData(files: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(files).map(([k, v]) => [k, Buffer.from(v, 'utf8').toString('base64')]),
+  )
+}
+
+/**
+ * The credentials Secret: every host-store file verbatim (a signed-out
+ * tool contributes no key, which the proxy reads as signed out) plus the
+ * ssh keys the agent is loaded from. Replaced whole on every push — the
+ * set is one install-wide thing, and a key's absence is as much a fact as
+ * its presence.
+ */
+export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): Record<string, unknown> {
+  const files: Record<string, string> = {}
+  for (const tool of ['claude', 'codex', 'opencode', 'pi'] as const) {
+    const file = bundle[tool]
+    if (file) files[`${tool}.json`] = JSON.stringify(file)
+  }
+  files['github.json'] = JSON.stringify({ tokens: bundle.git })
+  files['ssh-keys.json'] = JSON.stringify(bundle.ssh)
+  return {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: {
+      name: PROXY_CREDENTIALS_SECRET_NAME,
+      namespace: k8sNamespace(),
+      labels: proxyLabels({ [LABEL_PROXY_INPUT]: 'credentials' }),
+    },
+    type: 'Opaque',
+    data: secretData(files),
+  }
+}
+
+/**
+ * Name of a project's secret-values Secret: `yaac-proxy-secrets-<safeSlug
+ * ≤21>-<hash8>`, the shape the per-project registry uses and for the same
+ * reasons — a slug is not DNS-safe, and the hash spans the data dir so
+ * installs sharing a namespace cannot collide.
+ */
+export function proxyProjectSecretsName(projectSlug: string): string {
+  return installScopedName(PROXY_PROJECT_SECRETS_PREFIX, projectSlug)
+}
+
+export function installScopedName(prefix: string, projectSlug: string): string {
+  const safeSlug = projectSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 21)
+  const hash8 = crypto.createHash('sha256')
+    .update(`${dataDirHash()}/${projectSlug}`)
+    .digest('hex')
+    .slice(0, 8)
+  return `${prefix}-${safeSlug}-${hash8}`.replace(/--+/g, '-')
+}
+
+/**
+ * One project's opened secret values, keyed the way its registration's
+ * `secretRef`s name them (`<slug>/<NAME>`). One object per project because
+ * values are edited per project and opened by decryption — re-rendering
+ * every project's values to change one is work with nothing behind it.
+ */
+export function buildProjectSecretsManifest(
+  projectSlug: string,
+  values: Record<string, string>,
+): Record<string, unknown> {
+  const scoped = Object.fromEntries(
+    Object.entries(values).map(([name, value]) => [`${projectSlug}/${name}`, value]),
+  )
+  return {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: {
+      name: proxyProjectSecretsName(projectSlug),
+      namespace: k8sNamespace(),
+      labels: proxyLabels({ [LABEL_PROXY_INPUT]: 'secrets', [LABEL_PROJECT]: projectSlug }),
+    },
+    type: 'Opaque',
+    data: secretData({ 'values.json': JSON.stringify(scoped) }),
+  }
+}
+
+/** Name of a worktree's registration ConfigMap (ids are UUIDs, so the
+ *  name fits without hashing). */
+export function proxyRegistrationName(worktreeId: string): string {
+  return `${PROXY_REGISTRATION_PREFIX}-${worktreeId}`
+}
+
+/**
+ * One worktree's registration: rules (with `secretRef`s, never values),
+ * allowed hosts, repo URL, tool, project and test redirects — a ConfigMap
+ * precisely because it carries no secret. Labelled with its worktree and
+ * project so the proxy indexes it by worktree and a fan-out finds a
+ * project's set.
+ */
+export function buildRegistrationConfigMapManifest(
+  worktreeId: string,
+  projectSlug: string,
+  registration: object,
+): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: proxyRegistrationName(worktreeId),
+      namespace: k8sNamespace(),
+      labels: proxyLabels({
+        [LABEL_PROXY_INPUT]: 'registration',
+        [LABEL_WORKTREE_ID]: worktreeId,
+        [LABEL_PROJECT]: projectSlug,
+      }),
+    },
+    data: { 'registration.json': JSON.stringify(registration) },
+  }
+}
+
+/**
+ * The three objects the proxy writes, created empty by the server so the
+ * proxy's Role can name them (see `buildProxyRoleManifest`). Applied only
+ * when absent — an apply of the empty shape onto a live one would wipe
+ * what the proxy wrote.
+ */
+export function buildProxyOutputManifests(): Array<Record<string, unknown>> {
+  const output = (kind: string): Record<string, string> =>
+    proxyLabels({ [LABEL_PROXY_OUTPUT]: kind })
+  return [
+    {
+      apiVersion: 'v1', kind: 'Secret', type: 'Opaque',
+      metadata: { name: PROXY_REFRESHED_SECRET_NAME, namespace: k8sNamespace(), labels: output('refreshed') },
+    },
+    {
+      apiVersion: 'v1', kind: 'Secret', type: 'Opaque',
+      metadata: { name: PROXY_CA_SECRET_NAME, namespace: k8sNamespace(), labels: output('ca') },
+    },
+    {
+      apiVersion: 'v1', kind: 'ConfigMap',
+      metadata: { name: PROXY_STATE_CONFIGMAP_NAME, namespace: k8sNamespace(), labels: output('state') },
+    },
+  ]
 }
 
 export function buildProxyRoleBindingManifest(): Record<string, unknown> {

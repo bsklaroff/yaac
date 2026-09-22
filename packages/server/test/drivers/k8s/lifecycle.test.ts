@@ -45,13 +45,13 @@ vi.mock('#drivers/k8s/forwarders', () => ({
   stopAllWorktreeForwarders: vi.fn(() => { order.push('forwarders.released') }),
 }))
 vi.mock('#drivers/k8s/egress', () => ({
-  PROXY_CHANGE_SOURCES: ['proxy-reconnect'],
+  PROXY_CHANGE_SOURCES: ['mama-requests'],
   ProxyEventStream: class {
     constructor(readonly raise: (s: string) => void) {}
     start = (): void => { order.push('proxy.start') }
     stop = vi.fn()
   },
-  configureProxyCredentials: vi.fn(),
+  configureLegacySecretSweep: vi.fn(),
   proxyClient: { disconnect: vi.fn(() => { order.push('proxy.disconnect') }) },
 }))
 vi.mock('#drivers/k8s/view', () => ({
@@ -62,7 +62,8 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { ensureNamespace } from '#drivers/k8s/cluster'
 import { kubectlApply } from '#drivers/k8s/substrate'
-import { configureProxyCredentials } from '#drivers/k8s/egress'
+import { configureLegacySecretSweep } from '#drivers/k8s/egress'
+import { _resetWorktreeListChangedForTests, onWorktreeListChanged } from '#notify'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
 
@@ -124,31 +125,33 @@ describe('startK8sDriver', () => {
     expect(reported.triggers).toContain('workspaces')
   })
 
-  it('wires the supplied credential readers, and leaves them unwired without', async () => {
+  it('wires the legacy-sweep reader, and leaves it unwired without', async () => {
     await startK8sDriver(sinks(), {})
-    expect(configureProxyCredentials).not.toHaveBeenCalled()
-
-    // Half-wired counts as unwired: each of these restores or guards
-    // something a replaced proxy pod lost, and registering one alone would
-    // leave another's absence looking like "this install has none".
-    const sshIdentities = vi.fn().mockResolvedValue([])
-    await startK8sDriver(sinks(), { sshIdentities })
-    expect(configureProxyCredentials).not.toHaveBeenCalled()
-
-    const proxySecrets = vi.fn().mockResolvedValue([])
-    await startK8sDriver(sinks(), { sshIdentities, proxySecrets })
-    expect(configureProxyCredentials).not.toHaveBeenCalled()
+    // Unwired means the old secrets file stays: an entrypoint that composes
+    // a driver without being the server cannot say whether an overlay
+    // still has secrets to recover out of it.
+    expect(configureLegacySecretSweep).not.toHaveBeenCalled()
 
     const legacySecretImportPending = vi.fn().mockResolvedValue(false)
-    await startK8sDriver(sinks(), { sshIdentities, proxySecrets, legacySecretImportPending })
-    // Absent must degrade to "no injection" rather than clearing what a live
-    // proxy is using — which is what an entrypoint that composes a driver
-    // without being the server gets.
-    expect(configureProxyCredentials).toHaveBeenCalledWith({
-      listSshEntries: sshIdentities,
-      listProxySecrets: proxySecrets,
-      legacySecretImportPending,
-    })
+    await startK8sDriver(sinks(), { legacySecretImportPending })
+    expect(configureLegacySecretSweep).toHaveBeenCalledWith(legacySecretImportPending)
+  })
+
+  it('routes the proxy’s outputs: records to the snapshot, a captured rotation to the pass', async () => {
+    _resetWorktreeListChangedForTests()
+    let notified = 0
+    onWorktreeListChanged(() => { notified += 1 })
+    await startK8sDriver(sinks(), {})
+
+    // A blocked host is a badge, never reconcile work.
+    onDeltaHandlers.forEach((fn) => fn('proxy-state'))
+    expect(notified).toBe(1)
+    expect(reported.triggers).not.toContain('proxy-state')
+    // A rotation the proxy captured is what `credential-adopt` waits for.
+    onDeltaHandlers.forEach((fn) => fn('proxy-refreshed'))
+    expect(reported.triggers).toContain('proxy-refreshed')
+    expect(notified).toBe(1)
+    _resetWorktreeListChangedForTests()
   })
 
   it('attaches even when the cluster bootstrap fails', async () => {

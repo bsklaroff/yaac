@@ -2,9 +2,9 @@
  * ssh-agent forwarding: the transport that lets a worktree pod use the
  * proxy's in-memory agent without a shared filesystem.
  *
- * The agent runs in THIS pod, holding keys the server uploaded over PUT
- * /agent/keys — key bytes are never written to the proxy's disk and never
- * leave it at all. A worktree pod runs a small local forwarder that exposes
+ * The agent runs in THIS pod, holding keys loaded from the credentials
+ * Secret (agent-keys.ts) — key bytes are never written to the proxy's disk
+ * and never leave it at all. A worktree pod runs a small local forwarder that exposes
  * this listener as the UNIX socket its SSH_AUTH_SOCK names, so an in-pod
  * `git push` gets signatures, never a key.
  *

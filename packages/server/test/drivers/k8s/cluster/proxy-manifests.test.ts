@@ -10,14 +10,17 @@ vi.mock('#drivers/k8s/substrate/kubectl', () => ({
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
+  buildRegistrationConfigMapManifest,
+  proxyRegistrationName,
 } from '#drivers/k8s/cluster'
 import {
   BUILDER_ROLE_GUARD_NAME,
   SERVER_SA_NAME,
 } from '#drivers/k8s/substrate/proxy-constants'
 
-// The builder-role admission guard is the only pair of manifests outside the
-// folder needs — the image feature installs it around its runsc builder pods.
+// The builder-role admission guard (the image feature installs it around its
+// runsc builder pods) and the registration ConfigMap (the egress feature
+// writes one per worktree) are what the folder exports of its manifests.
 // The proxy's own Deployment, Service, ServiceAccount, RBAC and outer-CA
 // ConfigMap are internal to the feature and asserted where they are applied,
 // through `ensureProxyResources`.
@@ -97,5 +100,34 @@ describe('buildBuilderRoleGuardBindingManifest', () => {
     expect(m.spec.validationActions).toEqual(['Deny'])
     // No matchResources: every namespace is covered.
     expect(m.spec.matchResources).toBeUndefined()
+  })
+})
+
+describe('proxyRegistrationName', () => {
+  it('names a worktree’s registration by its id — a UUID fits without hashing', () => {
+    expect(proxyRegistrationName('3f0c9b8e-1d2a-4c5b-9e7f-8a6b5c4d3e2f'))
+      .toBe('yaac-proxy-reg-3f0c9b8e-1d2a-4c5b-9e7f-8a6b5c4d3e2f')
+  })
+})
+
+describe('buildRegistrationConfigMapManifest', () => {
+  it('labels the object for the proxy’s informer, its worktree and its project', () => {
+    const cm = buildRegistrationConfigMapManifest('w1', 'demo', { rules: [], allowedHosts: ['h'] }) as {
+      kind: string
+      metadata: { name: string; namespace: string; labels: Record<string, string> }
+      data: Record<string, string>
+    }
+    expect(cm.kind).toBe('ConfigMap')
+    expect(cm.metadata).toEqual({
+      name: proxyRegistrationName('w1'),
+      namespace: 'test-ns',
+      labels: {
+        'app': 'yaac-proxy',
+        'yaac.proxy-input': 'registration',
+        'yaac.worktree-id': 'w1',
+        'yaac.project': 'demo',
+      },
+    })
+    expect(JSON.parse(cm.data['registration.json'])).toEqual({ rules: [], allowedHosts: ['h'] })
   })
 })

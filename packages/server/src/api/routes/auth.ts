@@ -6,11 +6,11 @@ import {
   clearAuth,
   fanOutToolCredentials,
   listAuth,
+  pushCredentialsToRuntime,
   requestPlanUsageRefresh,
   runtimeMediatesEgress,
 } from '#domain/auth'
 import { addEntry, generateSshCredential, removeEntryChecked, seedFakeAuth } from '#domain/projects'
-import { worktreeDriver } from '#drivers/driver'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 
@@ -19,16 +19,6 @@ const httpsCredentialSchema = z.object({
   pattern: z.string(),
   token: z.string().min(1),
 })
-
-/** Reload the ssh-agent's identity set, swallowing a failure: the runtime
- *  reconciles it on its own schedule. */
-async function syncSshKeysQuietly(): Promise<void> {
-  try {
-    await worktreeDriver().syncSshIdentities()
-  } catch {
-    // non-fatal — the runtime retries on its own schedule
-  }
-}
 
 export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))
@@ -46,6 +36,9 @@ export const authApp = new Hono()
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
+      // A sign-out reaches running worktrees as surely as a sign-in: the
+      // runtime is handed the set with the credential gone.
+      await pushCredentialsToRuntime()
       return c.body(null, 204)
     },
   )
@@ -59,23 +52,26 @@ export const authApp = new Hono()
       for (const kind of new Set(kinds)) {
         await seedFakeAuth(kind)
       }
+      await pushCredentialsToRuntime()
       return c.body(null, 204)
     },
   )
-  // An https token: read straight off disk by whatever uses it, so nothing
-  // to sync.
+  // Every writer of the host store below hands the runtime the whole set
+  // afterwards — an https token, an ssh key, a removal — because the
+  // runtime injects from what it was last told, never from the disk.
   .post(
     '/git/credentials',
     zv('json', httpsCredentialSchema),
     async (c) => {
       await addEntry(c.req.valid('json'))
+      await pushCredentialsToRuntime()
       return c.body(null, 204)
     },
   )
   // Generate (or replace) the SSH key for a pattern; the answer is the only
   // time the public key is handed out with the host key beside it. The
-  // agent re-sync rides along — a key the proxy's agent has not been told
-  // about is one no in-pod push can use.
+  // push rides along — a key the proxy's agent has not been told about is
+  // one no in-pod push can use.
   .post(
     '/git/ssh-keys',
     zv('json', z.object({
@@ -86,15 +82,13 @@ export const authApp = new Hono()
     })),
     async (c) => {
       const generated = await generateSshCredential(c.req.valid('json'))
-      await syncSshKeysQuietly()
+      await pushCredentialsToRuntime()
       return c.json(generated)
     },
   )
   .delete('/git/credentials/:pattern', async (c) => {
     await removeEntryChecked(decodeURIComponent(c.req.param('pattern')))
-    // Removing any entry may leave a stale identity in the agent.
-    // Clear-and-reload its full set.
-    await syncSshKeysQuietly()
+    await pushCredentialsToRuntime()
     return c.body(null, 204)
   })
   // Whether an auth server (the user's-machine login broker) is connected.
@@ -158,6 +152,7 @@ export const authApp = new Hono()
       // real bundle where nothing would), which is why the fan-out lives
       // here rather than inside the shared persistence call.
       await fanOutToolCredentials(tool, { mediatedEgress: runtimeMediatesEgress() })
+      await pushCredentialsToRuntime()
       return c.body(null, 204)
     },
   )

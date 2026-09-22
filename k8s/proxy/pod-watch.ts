@@ -27,6 +27,7 @@ import {
   CoreV1Api,
   KubeConfig,
   makeInformer,
+  type Informer,
   type KubernetesObject,
 } from '@kubernetes/client-node'
 /**
@@ -156,12 +157,6 @@ const WORKTREE_POD_SELECTOR = LABEL_WORKTREE_ID
 /**
  * Feed `index` from an informer over this namespace's worktree pods, for the
  * proxy's lifetime.
- *
- * The informer owns the list→watch cycle, resourceVersion bookkeeping, and
- * relist-on-410; what it does NOT own is restart, because on any non-410
- * error (a failed initial list included) it emits `error` and stops. Hence
- * the backoff loop below — a proxy whose index stops updating fails every
- * new worktree closed, so giving up is not an option.
  */
 export function startPodWatch(index: PodWorktreeIndex, client = inClusterClient()): void {
   const path = `/api/v1/namespaces/${client.namespace}/pods`
@@ -180,19 +175,39 @@ export function startPodWatch(index: PodWorktreeIndex, client = inClusterClient(
   informer.on('add', feed('ADDED'))
   informer.on('update', feed('MODIFIED'))
   informer.on('delete', feed('DELETED'))
+  superviseInformer(informer, 'pod-watch')
+}
 
+/**
+ * Run an informer for the process's lifetime.
+ *
+ * The informer owns the list→watch cycle, resourceVersion bookkeeping, and
+ * relist-on-410; what it does NOT own is restart, because on any non-410
+ * error (a failed initial list included) it emits `error` and stops. Hence
+ * the backoff loop here — an index that stops updating fails every new
+ * worktree closed, so giving up is not an option.
+ *
+ * `onSeeded` fires once the initial list has been applied (that is what
+ * `start()` resolving means), which is the edge the readiness probe waits
+ * for.
+ */
+export function superviseInformer(
+  informer: Pick<Informer<KubernetesObject>, 'on' | 'start'>,
+  label: string,
+  onSeeded?: () => void,
+): void {
   let backoffMs = 1_000
   let startedAtMs = 0
   let restartTimer: NodeJS.Timeout | null = null
   const begin = (): void => {
     startedAtMs = Date.now()
-    informer.start().catch((err: unknown) => { onError(err) })
+    informer.start().then(() => { onSeeded?.() }, (err: unknown) => { onError(err) })
   }
   const onError = (err: unknown): void => {
     // A watch the apiserver dropped after a long, healthy life is routine;
     // only rapid failures back off.
     if (Date.now() - startedAtMs >= 60_000) backoffMs = 1_000
-    console.error(`[proxy] pod-watch: ${String(err)} — restart in ${backoffMs}ms`)
+    console.error(`[proxy] ${label}: ${String(err)} — restart in ${backoffMs}ms`)
     // One pending restart at a time: a failing start can emit both a
     // rejected promise and an 'error' event, and each stacked timer would
     // start another informer that never stops (same guard as netd's
@@ -205,7 +220,7 @@ export function startPodWatch(index: PodWorktreeIndex, client = inClusterClient(
     backoffMs = Math.min(backoffMs * 2, 30_000)
   }
   informer.on('error', (err: unknown) => { onError(err) })
-  informer.on('connect', () => { console.log('[proxy] pod-watch: connected') })
+  informer.on('connect', () => { console.log(`[proxy] ${label}: connected`) })
   begin()
 }
 

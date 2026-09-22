@@ -1,5 +1,4 @@
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
 import {
   CA_BUNDLE_KEY,
   CA_CONFIGMAP_KEY,
@@ -12,18 +11,25 @@ import {
   PRIVILEGED_PSS_LABELS,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
+  PROXY_CA_SECRET_NAME,
   ROLE_BUILDER,
 } from '#drivers/k8s/substrate'
-import { credentialsDir, proxyDataHostDir } from '@yaac/shared/project-paths'
+import type { CredentialBundle } from '#drivers/contract'
+import { serverLog } from '#log'
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
+  buildProjectSecretsManifest,
+  buildProxyCredentialsSecretManifest,
   buildProxyDeploymentManifest,
+  buildProxyOutputManifests,
   buildProxyRoleBindingManifest,
   buildProxyRoleManifest,
   buildProxyServiceAccountManifest,
   buildProxyServiceManifest,
+  proxyProjectSecretsName,
 } from './proxy-manifests'
+import { seedProxyObjects } from './legacy-proxy-seed'
 import {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
@@ -116,18 +122,27 @@ export function resetProxyClusterIpCache(): void {
 }
 
 export async function ensureProxyResources(imageRef: string): Promise<void> {
-  // Pre-create the credentials dir with tight permissions before any pod
-  // mounts it — DirectoryOrCreate would make it root-owned 0755.
-  await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
-  await fs.mkdir(proxyDataHostDir(), { recursive: true })
-
   // SA + RBAC before the Deployment, which references the SA so the proxy
-  // can watch pods (source-IP → worktree). The Service's ClusterIP is
-  // allocator-assigned and never deleted, so `apply` is a no-op on it after
-  // first creation — no immutable-field migration needed (the pin is gone).
+  // can watch pods and its input objects and write its outputs. The
+  // Service's ClusterIP is allocator-assigned and never deleted, so
+  // `apply` is a no-op on it after first creation — no immutable-field
+  // migration needed (the pin is gone).
   await kubectlApply(buildProxyServiceAccountManifest())
   await kubectlApply(buildProxyRoleManifest())
   await kubectlApply(buildProxyRoleBindingManifest())
+  // The three objects the proxy writes, created empty so its Role can name
+  // them — and only when absent, since an apply of the empty shape onto a
+  // live one would wipe what the proxy wrote. Before the Deployment, so
+  // the pod never boots against a name it cannot patch.
+  for (const manifest of buildProxyOutputManifests()) {
+    const { kind, metadata } = manifest as { kind: string; metadata: { name: string } }
+    const existing = await kubectlGetJson<object>(['get', kind.toLowerCase(), metadata.name, '-n', k8sNamespace()])
+    if (!existing) await kubectlApply(manifest)
+  }
+  // An install upgrading over a proxy that kept its CA and registrations
+  // on a hostPath: carry them into the objects before the roll
+  // (docs/legacy-compat-shims.md).
+  await seedProxyObjects()
   await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
   // The egress lockdown, applied with the proxy so it exists before any
@@ -152,20 +167,46 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   ], { timeout: 190_000, maxAttempts: 2 })
 }
 
-interface RawConfigMap {
+interface RawObject {
   data?: Record<string, string>
 }
 
+/** How long to wait for a freshly rolled proxy to have written its CA. */
+const CA_WAIT_MS = 30_000
+
 /**
- * Upsert the proxy-CA ConfigMap that every worktree pod mounts. Carries two
- * keys: the bare proxy CA (additive trust — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS)
- * and the combined bundle `{public roots} ∪ {proxy CA}` (replace-semantics
- * trust for the own-bundle tools — CURL_CA_BUNDLE & friends). Skips the write
- * when both stored values already match (the common case — the proxy persists
- * its CA in /data and only regenerates when that volume is lost).
+ * Upsert the proxy-CA ConfigMap that every worktree pod mounts, from the
+ * Secret the proxy keeps its CA in. Carries two keys: the bare proxy CA
+ * (additive trust — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS) and the combined
+ * bundle `{public roots} ∪ {proxy CA}` (replace-semantics trust for the
+ * own-bundle tools — CURL_CA_BUNDLE & friends). Skips the write when both
+ * stored values already match (the common case — the CA lives for the
+ * install, and only the bundle moves when the image's roots do).
+ *
+ * The proxy writes the Secret before it starts listening, so a proxy that
+ * answers `/healthz` has written it; the wait covers the moment between.
  */
-export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Promise<void> {
-  const existing = await kubectlGetJson<RawConfigMap>([
+export async function ensureCaConfigMap(): Promise<void> {
+  const deadline = Date.now() + CA_WAIT_MS
+  let caPem: string | undefined
+  let caBundlePem: string | undefined
+  for (;;) {
+    const secret = await kubectlGetJson<RawObject>([
+      'get', 'secret', PROXY_CA_SECRET_NAME, '-n', k8sNamespace(),
+    ])
+    const decode = (key: string): string | undefined => {
+      const encoded = secret?.data?.[key]
+      return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : undefined
+    }
+    caPem = decode('ca.pem')
+    caBundlePem = decode('ca-bundle.pem')
+    if (caPem && caBundlePem) break
+    if (Date.now() >= deadline) {
+      throw new Error(`the proxy has not written its CA to ${PROXY_CA_SECRET_NAME}`)
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  const existing = await kubectlGetJson<RawObject>([
     'get', 'configmap', CA_CONFIGMAP_NAME, '-n', k8sNamespace(),
   ])
   if (
@@ -178,6 +219,37 @@ export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Pro
     metadata: { name: CA_CONFIGMAP_NAME, namespace: k8sNamespace() },
     data: { [CA_CONFIGMAP_KEY]: caPem, [CA_BUNDLE_KEY]: caBundlePem },
   })
+}
+
+/**
+ * Hand the proxy the whole credential set — the host-store files and the
+ * ssh keys — by replacing its credentials Secret. Applied whether or not a
+ * proxy is deployed yet: the object is what the first one boots from.
+ * Never logs a value.
+ */
+export async function syncProxyCredentials(bundle: CredentialBundle): Promise<void> {
+  await kubectlApply(buildProxyCredentialsSecretManifest(bundle))
+  const signedIn = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => bundle[t] !== null)
+  serverLog(`[server] proxy credentials: ${signedIn.length ? signedIn.join(', ') : 'no tools'} signed in, `
+    + `${String(bundle.git.length)} git token(s), ${String(bundle.ssh.length)} ssh key(s)`)
+}
+
+/** Hand the proxy one project's opened secret values, replacing what it
+ *  held for that project. An emptied set is applied as such, so a deleted
+ *  secret stops being injected. */
+export async function syncProjectSecrets(
+  projectSlug: string,
+  values: Record<string, string>,
+): Promise<void> {
+  await kubectlApply(buildProjectSecretsManifest(projectSlug, values))
+}
+
+/** Forget a project's secret values — the object goes with the project. */
+export async function removeProjectSecrets(projectSlug: string): Promise<void> {
+  await kubectlWithRetry([
+    'delete', 'secret', proxyProjectSecretsName(projectSlug),
+    '-n', k8sNamespace(), '--ignore-not-found',
+  ])
 }
 
 /**

@@ -17,6 +17,10 @@
 // the reconcile pass (plus the containerless attach and worktree stop)
 // drives the standing sweep. The comparators and the per-project harvest and
 // push are internal to it, exercised through those four.
+//
+// The runtime link is the other direction: every writer of the host store
+// pushes the whole set to the runtime, and the reconcile pass adopts what a
+// mediating runtime captured from a worktree's refresh.
 
 export { authAgentHub } from './agent'
 export { clearAuth } from './clear'
@@ -28,6 +32,7 @@ export {
   syncToolCredentialsThrottled,
 } from './credential-sync'
 export { listAuth } from './list'
+export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'
 export {
   codexPlanUsageForSnapshot,
   planUsageForSnapshot,

@@ -26,6 +26,7 @@ import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { makeTestApiClient } from '@yaac/test-utils/api'
+import { worktreeDriver } from '@yaac/server/drivers/driver'
 
 vi.mock('@yaac/server/domain/worktrees/create', async () => {
   const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/domain/worktrees/create')
@@ -1040,15 +1041,25 @@ describe('write routes', () => {
       expect(res.status).toBe(400)
     })
 
-    it('adds an https credential', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git.credentials.$post({
-        json: { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
-      })
-      expect(res.status).toBe(204)
-      expect((await loadCredentials()).tokens).toEqual([
-        { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
-      ])
+    it('adds an https credential and hands the runtime the whole set', async () => {
+      // Spied rather than replaced: the driver is the project's, installed
+      // once for the file, and the route is what is under test.
+      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      try {
+        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const res = await client.auth.git.credentials.$post({
+          json: { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
+        })
+        expect(res.status).toBe(204)
+        expect((await loadCredentials()).tokens).toEqual([
+          { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
+        ])
+        // The runtime injects from what it was last told, never from disk.
+        expect(synced).toHaveBeenCalledTimes(1)
+        expect(synced.mock.calls[0][0].git).toEqual([{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' }])
+      } finally {
+        synced.mockRestore()
+      }
     })
 
     it('surfaces invalid patterns as VALIDATION', async () => {
@@ -1071,12 +1082,24 @@ describe('write routes', () => {
 
   describe('POST /auth/git/ssh-keys', () => {
     it('generates a key, answers the public half, and leaves no private material behind', async () => {
+      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git['ssh-keys'].$post({
         json: { pattern: 'git.example.com/*', knownHostsEntry: 'git.example.com ssh-ed25519 AAAA' },
       })
+      // The private half went one place: to the runtime, which loads its
+      // agent from it. (Restoring the spy also clears its calls, so it is
+      // read first.)
+      const pushed = synced.mock.calls.map(([bundle]) => bundle)
+      synced.mockRestore()
       expect(res.status).toBe(200)
       const body = await res.json()
+      expect(pushed).toHaveLength(1)
+      expect(pushed[0].ssh).toEqual([expect.objectContaining({
+        host: 'git.example.com',
+        knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
+        privateKey: expect.stringContaining('OPENSSH PRIVATE KEY') as string,
+      })])
       expect(body).toEqual({
         pattern: 'git.example.com/*',
         publicKey: expect.stringMatching(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ yaac git\.example\.com\/\*$/) as string,
@@ -1089,8 +1112,7 @@ describe('write routes', () => {
         preview: body.publicKey,
         publicKey: body.publicKey,
       }])
-      // Nothing under the credentials dir — the directory the proxy pod
-      // mounts — holds anything about it.
+      // Nothing under the credentials dir holds anything about it.
       expect((await loadCredentials()).tokens).toEqual([])
       const credDir = path.join(tmpDir, '.credentials')
       for (const name of await fs.readdir(credDir).catch(() => [] as string[])) {

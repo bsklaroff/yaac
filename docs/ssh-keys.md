@@ -66,16 +66,18 @@ Three processes ever hold the private half, and none writes it:
   pattern resolved to rather than every key the agent holds against a host
   that may lock the account out.
 - **A k8s worktree** signs through the egress proxy's in-memory agent. The
-  server pushes each key over the proxy's authenticated control API; the
-  proxy pipes it into `ssh-add -h <host> -` (destination-constrained, from
-  stdin); the worktree pod reaches that agent over TCP through its own
+  keys reach the proxy in the `yaac-proxy-credentials` Secret, beside the
+  tool credentials (docs/worktree-egress.md); on every change its informer
+  reloads the agent, piping each key into `ssh-add -h <host> -`
+  (destination-constrained, from stdin); the worktree pod reaches that
+  agent over TCP through its own
   `SSH_AUTH_SOCK` forwarder (docs/worktree-egress.md, `k8s/proxy/
   ssh-agent-relay.ts`). The relay admits three requests — list, sign, and
   the `session-bind@openssh.com` extension, which is how the client tells
   the agent which host it is talking to; an agent will not sign with a
   constrained key on an unbound session, so that one extension is what
   makes the constraint usable rather than a lockout. A replaced proxy pod
-  comes back with an empty agent, which the driver notices and refills.
+  reloads its agent from the object on its own.
 - **A containerless worktree** gets an `ssh-agent` of its own, fed the key
   through `ssh-add -` from the server's stdin pipe; its home holds only the
   public half (docs/containerless-driver.md). A workspace's agent is its
@@ -84,7 +86,7 @@ Three processes ever hold the private half, and none writes it:
 
 The agent's identity answer and the host-key lookup work from the public
 column and the host key alone. A seed is opened in four places: the sign
-handler above; the proxy push and containerless launch that hand a
+handler above; the credentials push and containerless launch that hand a
 worktree's agent its key; a credential resolve, which skips a key that no
 longer opens so the failure lands somewhere visible; and the user-facing
 listing, which marks such a key as needing regeneration.

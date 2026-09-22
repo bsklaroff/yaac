@@ -19,7 +19,7 @@
 // cache and the pod-readiness watch, which is where they are covered.
 
 export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
-export type { DeltaSource } from './cluster-cache'
+export type { DeltaSource, WorkspaceDeltaSource } from './cluster-cache'
 export { containerExec } from './exec'
 export {
   GVISOR_INSTALLER_READY_FILE,
@@ -93,6 +93,8 @@ export {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
+  LABEL_PROXY_INPUT,
+  LABEL_PROXY_OUTPUT,
   LABEL_ROLE,
   NETD_APP_NAME,
   NETD_LISTENER_PORT_BASE,
@@ -102,9 +104,15 @@ export {
   POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
+  PROXY_CA_SECRET_NAME,
+  PROXY_CREDENTIALS_SECRET_NAME,
   PROXY_INGRESS_NP_NAME,
   PROXY_PORT,
+  PROXY_PROJECT_SECRETS_PREFIX,
+  PROXY_REFRESHED_SECRET_NAME,
+  PROXY_REGISTRATION_PREFIX,
   PROXY_SA_NAME,
+  PROXY_STATE_CONFIGMAP_NAME,
   RELAY_PORT,
   ROLE_BUILDER,
   SERVER_APP_NAME,

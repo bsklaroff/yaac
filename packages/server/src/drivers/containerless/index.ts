@@ -103,11 +103,14 @@ export function createContainerlessDriver(): WorktreeDriver {
     gitAuthFailures: () => Promise.resolve([]),
     allGitAuthFailures: () => Promise.resolve({}),
     allowHost: () => Promise.resolve(),
-    syncSshIdentities: () => Promise.resolve(),
-    // No proxy to hold them: a workspace here is handed its secrets' values
-    // in its own environment at launch, so a change reaches it the next time
-    // it is created rather than through a live update.
-    syncProxySecrets: () => Promise.resolve(),
+    // No proxy to hand them to: a workspace here holds the real credential
+    // itself, and is handed its secrets' values in its own environment at
+    // launch, so a change reaches it the next time it is created rather
+    // than through a live update. And nothing captures a rotation on its
+    // way out — the credential sweep harvests it from the tool home.
+    syncCredentials: () => Promise.resolve(),
+    syncProjectSecrets: () => Promise.resolve(),
+    refreshedCredentials: () => ({}),
 
     // A workspace binds host ports itself, so what it is listening on is
     // already reachable on this machine and the mapping is the identity.

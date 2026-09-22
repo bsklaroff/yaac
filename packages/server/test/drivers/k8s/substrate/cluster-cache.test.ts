@@ -20,6 +20,7 @@ const emptyList = (): Promise<KubernetesListObject<KubernetesObject>> =>
 const listNamespacedPodMock: ListMock = vi.fn(emptyList)
 const listNamespacedServiceMock: ListMock = vi.fn(emptyList)
 const listNamespacedConfigMapMock: ListMock = vi.fn(emptyList)
+const listNamespacedSecretMock: ListMock = vi.fn(emptyList)
 const listNamespaceMock: ListMock = vi.fn(emptyList)
 const listNamespacedJobMock: ListMock = vi.fn(emptyList)
 
@@ -31,6 +32,7 @@ vi.mock('@kubernetes/client-node', async (importOriginal) => {
       listNamespacedPod = listNamespacedPodMock
       listNamespacedService = listNamespacedServiceMock
       listNamespacedConfigMap = listNamespacedConfigMapMock
+      listNamespacedSecret = listNamespacedSecretMock
       listNamespace = listNamespaceMock
     },
     BatchV1Api: class {
@@ -154,6 +156,7 @@ beforeEach(async () => {
   listNamespacedPodMock.mockImplementation(emptyList)
   listNamespacedServiceMock.mockImplementation(emptyList)
   listNamespacedConfigMapMock.mockImplementation(emptyList)
+  listNamespacedSecretMock.mockImplementation(emptyList)
   listNamespaceMock.mockImplementation(emptyList)
   listNamespacedJobMock.mockImplementation(emptyList)
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cluster-cache-'))
@@ -219,6 +222,51 @@ describe('ClusterCache', () => {
       jobName: 'yaac-alpha-p1', worktreeId: 'sid-p1', projectSlug: 'alpha',
       createdAtMs: created.getTime(),
     }])
+    cache.stop()
+  })
+
+  it('watches the proxy’s two outputs and maps them into records and rotations', async () => {
+    const { cache, informers, deltas } = makeCache()
+    cache.start()
+    await flush()
+    const state = informers.get(`/api/v1/namespaces/${ns}/configmaps`)
+    const refreshed = informers.get(`/api/v1/namespaces/${ns}/secrets`)
+    // One object each, found by its output label rather than its name.
+    expect(state?.selector).toBe('app=yaac-proxy,yaac.proxy-output=state')
+    expect(refreshed?.selector).toBe('app=yaac-proxy,yaac.proxy-output=refreshed')
+    expect(listNamespacedConfigMapMock).toHaveBeenCalledWith({ namespace: ns, labelSelector: state?.selector })
+    expect(listNamespacedSecretMock).toHaveBeenCalledWith({ namespace: ns, labelSelector: refreshed?.selector })
+    expect(cache.proxyRecords()).toEqual({ blockedHosts: {}, gitAuthFailures: {} })
+    expect(cache.refreshedCredentials()).toEqual({})
+
+    state!.informer.emit('update', {
+      metadata: { name: 'yaac-proxy-state', labels: { 'yaac.proxy-output': 'state' } },
+      data: {
+        'blocked-hosts.json': JSON.stringify({ w1: ['evil.example.com', 3] }),
+        'git-auth-failures.json': JSON.stringify({ demo: [{ host: 'github.com', status: 401, atMs: 1 }, { bad: true }] }),
+      },
+    })
+    expect(cache.proxyRecords()).toEqual({
+      blockedHosts: { w1: ['evil.example.com'] },
+      gitAuthFailures: { demo: [{ host: 'github.com', status: 401, atMs: 1 }] },
+    })
+    expect(deltas).toContain('proxy-state')
+
+    const claude = { accessToken: 'a2', refreshToken: 'r2', expiresAt: 5, scopes: ['user:inference'] }
+    const file = { kind: 'oauth', savedAt: 'x', claudeAiOauth: claude }
+    refreshed!.informer.emit('add', {
+      metadata: { name: 'yaac-proxy-refreshed', labels: { 'yaac.proxy-output': 'refreshed' } },
+      data: {
+        'claude.json': Buffer.from(JSON.stringify(file)).toString('base64'),
+        // A malformed slot is dropped, not guessed at.
+        'codex.json': Buffer.from('{"kind":"oauth","codexOauth":{}}').toString('base64'),
+      },
+    })
+    expect(cache.refreshedCredentials()).toEqual({ claude })
+    expect(deltas).toContain('proxy-refreshed')
+    // An object without the label is not ours.
+    refreshed!.informer.emit('add', { metadata: { name: 'yaac-proxy-auth' }, data: {} })
+    expect(cache.refreshedCredentials()).toEqual({ claude })
     cache.stop()
   })
 

@@ -1,8 +1,8 @@
 import { k8sNamespace, kubectlWithRetry } from '#drivers/k8s/substrate'
-import { proxyClient } from '#drivers/k8s/egress'
+import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorktreeForwarders } from '#drivers/k8s/forwarders'
 import { removeNodeImageStore, salvageWorktreeImages } from '#drivers/k8s/images'
-import { removeProjectRegistry } from '#drivers/k8s/cluster'
+import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluster'
 import type { TeardownTarget } from '#drivers/contract'
 
 /**
@@ -25,33 +25,17 @@ import type { TeardownTarget } from '#drivers/contract'
  */
 
 /**
- * Drop the workspace's state from the egress proxy. If no proxy is running
- * there is nothing registered, so nothing to drop. Failures are swallowed:
- * a sidecar hiccup must never hold up a teardown, and a registration with
- * no workspace behind it reaches nothing anyway.
- */
-async function removeWorkspaceFromProxy(workspaceId: string): Promise<void> {
-  try {
-    if (!await proxyClient.attachIfRunning()) return
-    await proxyClient.removeWorktree(workspaceId)
-  } catch (err) {
-    console.warn(
-      `Failed to remove session ${workspaceId} from proxy: ${(err as Error).message}`,
-    )
-  }
-}
-
-/**
  * Stop routing for a workspace: its host port-forwards come down as one
- * set, then its proxy registration goes.
+ * set, then its egress registration goes (its failures are swallowed
+ * there — a datapath hiccup must never hold up a teardown).
  *
  * Split out of `destroyWorkspace` because a DETACHED teardown wants exactly
- * this half in-process — both parts are fast, both are this process's own
- * state as much as the cluster's, and a detached script could not do either.
+ * this half in-process — both parts are fast, and the forwarders are this
+ * process's own state, which a detached script could not touch.
  */
 export async function deregisterWorkspace(workspaceId: string): Promise<void> {
   stopWorktreeForwarders(workspaceId)
-  await removeWorkspaceFromProxy(workspaceId)
+  await deregisterWorkspaceEgress(workspaceId)
 }
 
 /**
@@ -147,18 +131,25 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
 
 /**
  * Everything the runtime holds for a whole project once its workspaces are
- * gone: the per-project push registry and the node-local image stores.
+ * gone: the per-project push registry, the node-local image stores, and
+ * the secret values the egress proxy was handed.
  *
  * Each part is independently best-effort, because they fail for unrelated
- * reasons and neither is recoverable by the other — a registry that could
- * not be reached must not stop the node stores from going, and a stale
- * store is a cache nothing will ever mount again.
+ * reasons and none is recoverable by another — a registry that could not
+ * be reached must not stop the node stores from going, and a stale store
+ * is a cache nothing will ever mount again.
  */
 export async function destroyProjectSubstrate(projectSlug: string): Promise<void> {
   try {
     await removeProjectRegistry(projectSlug)
   } catch {
     // Unreachable cluster — the server-start orphan GC collects it.
+  }
+  try {
+    await removeProjectSecrets(projectSlug)
+  } catch (err) {
+    // The object lingers, naming a project nothing registers under.
+    console.warn(`Failed to remove the egress secrets of ${projectSlug}: ${(err as Error).message}`)
   }
   try {
     await removeNodeImageStore(projectSlug)

@@ -5,6 +5,7 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
 import {
   authAgentHub,
+  pushCredentialsToRuntime,
   refreshPlanUsage,
   runtimeMediatesEgress,
   syncToolCredentialsThrottled,
@@ -33,11 +34,10 @@ import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
-import { setWorktreeDriver } from '#drivers/driver'
+import { setWorktreeDriver, worktreeDriver } from '#drivers/driver'
 import {
   importLegacyProjectConfig,
   legacySecretImportPending,
-  listSshEntries,
   resolveProjectEnv,
 } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
@@ -700,42 +700,39 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       if (!runtimeMediatesEgress()) {
         void syncToolCredentialsThrottled()
           .catch((err: unknown) => serverLog(`[server] credential sync failed: ${String(err)}`))
+      } else {
+        // The other driver's counterpart: a runtime that injects from what
+        // it is handed is handed everything once per start — the whole
+        // credential set and every project's secret values — so its objects
+        // converge on the store whatever the last server left. Detached: a
+        // few applies, and every later writer pushes again.
+        void convergeRuntimeCredentials()
+          .catch((err: unknown) => serverLog(`[server] credential push failed: ${String(err)}`))
       }
-    },
-    // Where a driver's egress path reads credential material from. SSH
-    // identities live in the credentials store above the runtime but are
-    // re-read on the DRIVER's schedule — an attach to a replaced proxy pod,
-    // a reconnect heal — so no caller can hand the answer in, only the
-    // reader. Handed down rather than reached for: a driver imports nothing
-    // above its contract, and an entrypoint that composes one without being
-    // this process (the api tests build the Hono app in-process) supplies
-    // none and gets "no ssh injection", which is what they want.
-    sshIdentities: listSshEntries,
-    // Same shape of reader, same reason: the values live only in the
-    // proxy's memory, so a replaced pod is restored on the driver's
-    // schedule with no caller present.
-    listProxySecrets: async (projectSlug?: string) => {
-      const out: Array<{ projectSlug: string; secrets: Record<string, string> }> = []
-      // One project when the caller named one: every value has to be
-      // decrypted to be read, so an edit-time sync asking for all of them
-      // would decrypt every project's secrets to use one project's.
-      const slugs = projectSlug !== undefined
-        ? [{ slug: projectSlug }]
-        : await listProjectRows()
-      for (const { slug } of slugs) {
-        const { secrets } = await resolveProjectEnv(slug)
-        const values = Object.fromEntries(
-          Object.entries(secrets).map(([name, { value }]) => [name, value]),
-        )
-        if (Object.keys(values).length > 0) out.push({ projectSlug: slug, secrets: values })
-      }
-      return out
     },
     // What the runtime asks before deleting the old plaintext secrets file:
     // a config too broken to parse is skipped by the import, so a start can
     // finish with values still only written down there.
     legacySecretImportPending,
   })
+}
+
+/** Hand the runtime the credential set and each project's secret values.
+ *  Per project best-effort: one that will not open or apply must not
+ *  strand the values of every project after it until the next start. */
+async function convergeRuntimeCredentials(): Promise<void> {
+  await pushCredentialsToRuntime()
+  for (const { slug } of await listProjectRows()) {
+    try {
+      const { secrets } = await resolveProjectEnv(slug)
+      await worktreeDriver().syncProjectSecrets(
+        slug,
+        Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
+      )
+    } catch (err) {
+      serverLog(`[server] secret push for project "${slug}" failed: ${String(err)}`)
+    }
+  }
 }
 
 /**

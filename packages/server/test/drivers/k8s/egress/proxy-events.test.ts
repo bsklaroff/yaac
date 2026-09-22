@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ProxyEventStream, type ProxyChangeSource } from '#drivers/k8s/egress/proxy-events'
-import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
@@ -38,21 +37,16 @@ function responseOf(
   }
 }
 
-let notified: number
 let changes: ProxyChangeSource[]
 let streams: ProxyEventStream[]
 
 beforeEach(() => {
-  _resetWorktreeListChangedForTests()
-  notified = 0
   changes = []
   streams = []
-  onWorktreeListChanged(() => { notified += 1 })
 })
 
 afterEach(() => {
   for (const s of streams) s.stop()
-  _resetWorktreeListChangedForTests()
 })
 
 /**
@@ -97,49 +91,36 @@ async function run(
 }
 
 describe('ProxyEventStream', () => {
-  // Blocked hosts and git-auth failures are snapshot inputs the server
-  // re-reads off /data. They owe the reconciler nothing, so they must not
-  // dirty a pass — only push.
-  it('turns a state event into a snapshot push and nothing else', async () => {
-    await run(responseOf(['{"type":"blocked-hosts"}\n{"type":"git-auth-failures"}\n']))
-    // Two events, plus the one catch-up push on connect.
-    expect(notified).toBe(3)
-    expect(changes).toEqual(['mama-requests', 'proxy-reconnect'])
+  // A queued request (under either name the proxy has used for it) dirties
+  // a pass: the drain is what answers the pod holding its response open.
+  it('turns a queued request into a reconcile trigger', async () => {
+    await run(responseOf(['{"type":"mama"}\n{"type":"spawn"}\n']))
+    // Plus the one catch-up drain on connect.
+    expect(changes).toEqual(['mama-requests', 'mama-requests', 'mama-requests'])
   })
 
-  it('turns a queued spawn into a reconcile trigger', async () => {
-    await run(responseOf(['{"type":"spawn"}\n']))
-    expect(changes).toEqual(['mama-requests', 'proxy-reconnect', 'mama-requests'])
-  })
-
-  // Attaching says nothing about what happened while we were away, so the
-  // stream assumes everything did. One catch-up per source is what makes a
-  // dropped connection cost latency instead of a lost update.
-  it('fires a full catch-up on every connect', async () => {
+  // Attaching says nothing about what queued while we were away, so the
+  // stream assumes something did. One catch-up per connect is what makes a
+  // dropped connection cost latency instead of a lost request.
+  it('fires a catch-up drain on every connect', async () => {
     const delays = await run(responseOf([]), { stopAfterSleeps: 2 })
     expect(delays).toHaveLength(2)
-    // Once per connect: two connects, two catch-ups.
-    expect(notified).toBe(2)
-    expect(changes).toEqual([
-      'mama-requests', 'proxy-reconnect',
-      'mama-requests', 'proxy-reconnect',
-    ])
+    expect(changes).toEqual(['mama-requests', 'mama-requests'])
   })
 
   // Pings exist so silence is distinguishable from death; they are not a
   // change. Garbage is ignored rather than fatal — a newer proxy may send
-  // event types this server has never heard of.
-  it('ignores pings, unknown types and unparseable lines', async () => {
-    await run(responseOf(['{"type":"ping"}\n{"type":"from-the-future"}\nnot json\n\n']))
-    expect(notified).toBe(1) // the catch-up alone
-    expect(changes).toEqual(['mama-requests', 'proxy-reconnect'])
+  // event types this server has never heard of. The proxy's records travel
+  // as objects now, so a state event from an older proxy is nothing either.
+  it('ignores pings, unknown types, retired types and unparseable lines', async () => {
+    await run(responseOf(['{"type":"ping"}\n{"type":"from-the-future"}\n{"type":"blocked-hosts"}\nnot json\n\n']))
+    expect(changes).toEqual(['mama-requests'])
   })
 
   // The proxy writes whole lines but TCP does not deliver them that way.
   it('reassembles events split across chunks', async () => {
-    await run(responseOf(['{"type":"bl', 'ocked-hosts"}', '\n{"type":"spa', 'wn"}\n']))
-    expect(notified).toBe(2) // catch-up + the reassembled blocked-hosts
-    expect(changes).toEqual(['mama-requests', 'proxy-reconnect', 'mama-requests'])
+    await run(responseOf(['{"type":"ma', 'ma"}', '\n{"type":"spa', 'wn"}\n']))
+    expect(changes).toEqual(['mama-requests', 'mama-requests', 'mama-requests'])
   })
 
   // Bounded so a wedged proxy can't outpace the resync by much: this is the
@@ -179,7 +160,6 @@ describe('ProxyEventStream', () => {
     )
     expect(delays).toEqual([250, 500])
     // Never attached, so nothing is claimed to have caught up.
-    expect(notified).toBe(0)
     expect(changes).toEqual([])
   })
 
@@ -189,14 +169,13 @@ describe('ProxyEventStream', () => {
   it.each([404, 500])('treats status %i as a stream death', async (status) => {
     const delays = await run(responseOf([], { status }), { stopAfterSleeps: 1 })
     expect(delays).toEqual([250])
-    expect(notified).toBe(0)
     expect(changes).toEqual([])
   })
 
   it('reconnects when a dial throws', async () => {
     const delays = await run(() => Promise.reject(new Error('proxy is gone')), { stopAfterSleeps: 2 })
     expect(delays).toEqual([250, 500])
-    expect(notified).toBe(0)
+    expect(changes).toEqual([])
   })
 
   // A tunnel can wedge without TCP noticing — an exec relay whose apiserver
@@ -209,7 +188,7 @@ describe('ProxyEventStream', () => {
     })
     expect(delays).toEqual([250])
     // It got as far as attaching, so the catch-up fired.
-    expect(notified).toBe(1)
+    expect(changes).toEqual(['mama-requests'])
   })
 
   // The held-open request keeps an exec relay (and a kubectl child) alive,

@@ -1,28 +1,25 @@
 import { proxyClient } from './proxy-client'
-import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 
 /**
  * The server's subscription to the egress proxy's change stream.
  *
- * Three things only the proxy process can see are inputs to the server's
- * work: a worktree's blocked-host set growing, a git credential being
- * rejected upstream, and an in-worktree `yaac-mama` landing in its queue.
- * The proxy cannot dial the server (it is an in-cluster pod; the server is
- * a host process with no in-cluster address, and nested it sits inside a
- * pod of the *outer* cluster), so the signal rides the control tunnel the
- * server already holds — one long-lived `GET /events`.
+ * One thing only the proxy process can see is an input to the server's
+ * work that has to be answered now: an in-worktree `yaac-mama` landing in
+ * its queue, whose caller's HTTP response is held open until the server
+ * answers. Everything else the proxy observes (blocked hosts, rejected git
+ * credentials, captured rotations) travels as objects the `ClusterCache`
+ * watches. The proxy cannot dial the server, so the signal rides the
+ * connection the server already holds — one long-lived `GET /events`.
  *
- * The events carry no state, on purpose. `/data/blocked-hosts.json` and
- * `/data/git-auth-failures.json` remain the data plane — they are also how
- * a replaced proxy comes back knowing this state — and the spawn queue is
- * drained over its own claim protocol. So every event means only "look
- * again", and a reconnect re-fires all of them: a dropped stream can cost
- * latency, never a lost update.
+ * The events carry no payload, on purpose: the queue is drained over its
+ * own claim protocol, so every event means only "drain now", and a
+ * reconnect re-fires it: a dropped stream can cost latency, never a lost
+ * request.
  */
 
 /** A change the reconciler owes a pass on, as this stream reports it. */
-export const PROXY_CHANGE_SOURCES = ['mama-requests', 'proxy-reconnect'] as const
+export const PROXY_CHANGE_SOURCES = ['mama-requests'] as const
 export type ProxyChangeSource = typeof PROXY_CHANGE_SOURCES[number]
 
 /** First respawn delay after a stream death; doubles to the cap. */
@@ -92,10 +89,7 @@ export class ProxyEventStream {
   private readonly connectDeadlineMs: number
   private readonly sleep: (ms: number) => Promise<void>
 
-  /**
-   * `onChange` marks the reconciler dirty. Snapshot-only events go straight
-   * to `#notify` instead — the reconciler owes no work on a blocked host.
-   */
+  /** `onChange` marks the reconciler dirty. */
   constructor(
     private readonly onChange: (source: ProxyChangeSource) => void,
     deps: ProxyEventStreamDeps = {},
@@ -144,9 +138,8 @@ export class ProxyEventStream {
       const res = await this.open(controller.signal)
       if (!res.ok) throw new Error(`status ${res.status}`)
 
-      // Attached. Whatever changed while we were away is invisible to us,
-      // so assume everything did: one catch-up per source, which costs a
-      // snapshot rebuild and a reconcile pass and heals any gap.
+      // Attached. Whatever queued while we were away is invisible to us,
+      // so assume something did: one catch-up drain, which heals any gap.
       //
       // Note what does NOT happen here: the backoff is not reset. Attaching
       // is cheap to do wrong — a proxy that accepts and immediately closes
@@ -157,12 +150,7 @@ export class ProxyEventStream {
         serverLog('[server] proxy events: stream reattached')
         this.reportedDown = false
       }
-      notifyWorktreeListChanged()
       this.onChange('mama-requests')
-      // A reattach is also the only edge that says "the proxy pod may have
-      // been replaced" — which is exactly what the ssh-agent heal and the
-      // ssh-key heal is waiting for.
-      this.onChange('proxy-reconnect')
 
       await this.consume(res, controller)
     } catch (err) {
@@ -222,11 +210,6 @@ export class ProxyEventStream {
       return // not ours; ignore rather than tear the stream down
     }
     switch (type) {
-      case 'blocked-hosts':
-      case 'git-auth-failures':
-        // Snapshot inputs the server re-reads off /data. No reconcile work.
-        notifyWorktreeListChanged()
-        return
       // `spawn` is what a proxy predating the yaac-mama command envelope
       // emits for the same edge; both mean "a worktree is waiting on an
       // answer" (docs/legacy-compat-shims.md).

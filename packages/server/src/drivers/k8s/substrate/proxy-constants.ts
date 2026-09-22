@@ -118,6 +118,33 @@ export const ROLE_BUILDER = 'builder'
 export const PROXY_SA_NAME = 'yaac-proxy'
 
 /**
+ * The objects the proxy is told through and reports through
+ * (docs/worktree-egress.md "What the proxy is told, and how"). One writer
+ * per object: the server writes the inputs, the proxy writes the outputs.
+ * The proxy selects and names them by the same strings, copied into
+ * k8s/proxy/objects.ts because it cannot import src/.
+ *
+ * Inputs carry `yaac.proxy-input=<kind>`; outputs carry
+ * `yaac.proxy-output=<kind>`. Labels rather than names because the
+ * informers on both sides select by label, and because `list`/`watch`
+ * cannot be name-scoped anyway.
+ */
+export const LABEL_PROXY_INPUT = 'yaac.proxy-input'
+export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
+/** Secret: the tool credential files and the ssh keys, replaced whole. */
+export const PROXY_CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
+/** Secret the proxy writes captured OAuth rotations into. */
+export const PROXY_REFRESHED_SECRET_NAME = 'yaac-proxy-refreshed'
+/** Secret the proxy keeps its CA (and the combined trust bundle) in. */
+export const PROXY_CA_SECRET_NAME = 'yaac-proxy-ca'
+/** ConfigMap the proxy writes its blocked-host and git-auth records to. */
+export const PROXY_STATE_CONFIGMAP_NAME = 'yaac-proxy-state'
+/** Prefix of the per-worktree registration ConfigMaps (`-<worktreeId>`). */
+export const PROXY_REGISTRATION_PREFIX = 'yaac-proxy-reg'
+/** Prefix of the per-project secret-values Secrets (install-scoped name). */
+export const PROXY_PROJECT_SECRETS_PREFIX = 'yaac-proxy-secrets'
+
+/**
  * Deployment/Service name, ServiceAccount and pod selector label of the
  * yaac server itself, which under this driver is a pod in the install
  * namespace rather than a process beside the cluster

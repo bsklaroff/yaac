@@ -58,9 +58,12 @@ Everything the earlier plans called "the keystone" has shipped on kind:
   peers — with no pod-CIDR snapshot left anywhere.
 - Nothing a user configures names a path on the server any more:
   `bindMounts` is gone, an SSH git credential is ingested as key content,
-  project env and secrets live encrypted in the database, and a project's
-  proxied secrets reach the egress proxy over its control API rather than
-  a file it mounts.
+  and project env and secrets live encrypted in the database.
+- The egress proxy mounts nothing from the host and holds no state: its
+  credentials, secret values and registrations are objects it watches, its
+  CA, captured rotations and records are objects the server watches
+  (docs/worktree-egress.md "What the proxy is told, and how"), and
+  `.credentials/` is SERVER-LOCAL.
 - The NFS-under-gVisor spike ran (branch `nfs-gvisor-storage-spike`,
   `test-storage-probes/`). Verdict: **go, conditional on the tier split.**
   `actimeo=1` on the mount (cross-client visibility 25–57ms), `fsGroup` on
@@ -89,11 +92,10 @@ a foreign cluster needs. Those gaps are the whole of this plan.
   renders — which PersistentVolume backs a claim, what fronts the server's
   Service, which uid the images bake — never a branch in the driver.
 - **Storage is two named claims on every backend.** `yaac-shared` (RWX:
-  the `projects/` tree, `.credentials/`, `run/proxy-data`) and
-  `yaac-server-state` (RWO: the PGlite DB, the lock, logs, `build/`,
-  `models/`, caches). The server pod, every worktree pod and the proxy
-  mount subPaths of `yaac-shared`; only the server mounts
-  `yaac-server-state`. What differs per backend is the PV behind each
+  the `projects/` tree) and `yaac-server-state` (RWO: the PGlite DB, the
+  lock, logs, `.credentials/`, `build/`, `models/`, caches). The server
+  pod and every worktree pod mount subPaths of `yaac-shared`; only the
+  server mounts `yaac-server-state`; the proxy mounts neither. What differs per backend is the PV behind each
   claim:
   - **kind: static hostPath PVs into the data dir**, `reclaimPolicy:
     Retain`, explicit `claimRef`. `yaac-shared` binds `<dataDir>` itself
@@ -182,24 +184,15 @@ a foreign cluster needs. Those gaps are the whole of this plan.
   what only a node container has: the pids-limit on the container and the
   kubelet housekeeping flag (a managed pool's kubelet config is the
   provider's; document the flag as a pool setting).
-- **Images stop baking a uid** — issue #150 (the arbitrary-uid pattern:
-  gid 0 with `g=u` on everything the process writes, an entrypoint that
-  names the running uid in `/etc/passwd`, the uid out of every tag) is a
-  dependency of this plan, not part of it. With it, `runAsUser` is a
-  runtime value install sets per backend: the host's uid on kind, where
-  the virtiofs ceiling on macOS is real, and a fixed `1000` on byo, where
-  NFS passes uids through raw and `fsGroup` on the claims does the rest.
-  One image set per content hash is also what would make published
+- **Images bake no uid** (docs/arbitrary-uid-images.md): gid 0 with
+  `g=u` on everything the process writes, an entrypoint that names the
+  running uid in `/etc/passwd`, the uid out of every tag. `runAsUser` is
+  therefore a runtime value install sets per backend: the host's uid on
+  kind, where the virtiofs ceiling on macOS is real, and a fixed `1000` on
+  byo, where NFS passes uids through raw and `fsGroup` on the claims does
+  the rest. One image set per content hash is also what makes published
   per-architecture images possible, and with them the lifting of the
   architecture restriction on `--byo`.
-- **Credentials leave the shared tier before any cloud install.** The proxy
-  today hostPath-mounts `.credentials/` (the github/claude/codex/opencode
-  bundles) and `run/proxy-data`. On a host-local disk that is fine; on an
-  NFS export it is real credentials on the wire under `sec=sys`. Project
-  secrets already arrive over the proxy's control API; the tool credential
-  bundles take the same route, `.credentials/` demotes to SERVER-LOCAL,
-  and `run/proxy-data` (the CA and its state) becomes the proxy's own RWO
-  claim. This is a prerequisite of the byo storage step, not a follow-up.
 - **The gVisor node install is the portability ceiling, accepted.**
   Mutating a managed node's containerd is vendor-unsupported but works on
   mutable-OS pools (self-managed, EKS AL2023, AKS Ubuntu); it is blocked
@@ -272,17 +265,6 @@ docs/server-in-cluster.md "Reachability" is the current-state reference.
 `--byo` imply it. The tailnet gate (a second device reaching a
 `--tailnet` kind install through `yaac remote set`) runs with the operator
 installed on the test rig.
-
-### 5. Credentials off the shared tier
-
-- The tool credential bundles reach the proxy the way project secrets
-  already do — pushed over its control API, re-pushed on every proxy
-  attach — and the proxy never reads `.credentials/` from disk;
-  `.credentials/` demotes to SERVER-LOCAL; the proxy's `/data` (CA and
-  state) becomes its own RWO claim, provisioned by install like the
-  registry's.
-- Gate: the egress e2e tier green; a grep for hostPath in
-  `proxy-manifests.ts` finds nothing.
 
 ### 6. `--byo`: the cloud install end to end
 

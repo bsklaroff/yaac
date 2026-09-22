@@ -15,6 +15,7 @@ import { createKeyedMutex } from '#lib/keyed-mutex'
 import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
 import { registryHasTag, registryRef } from '#drivers/k8s/container'
 import { nodeIpBlocks } from './cluster-cidrs'
+import { installScopedName } from './proxy-manifests'
 import { projectDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 
@@ -61,16 +62,7 @@ export const REGISTRY_MIRROR_TAG = `yaac-registry2:${REGISTRY_IMAGE_DIGEST.slice
  * 63-char DNS-label cap.
  */
 export function projectRegistryName(projectSlug: string): string {
-  const safeSlug = projectSlug
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 21)
-  const hash8 = crypto.createHash('sha256')
-    .update(`${dataDirHash()}/${projectSlug}`)
-    .digest('hex')
-    .slice(0, 8)
-  return `yaac-reg-${safeSlug}-${hash8}`.replace(/--+/g, '-')
+  return installScopedName('yaac-reg', projectSlug)
 }
 
 /**
