@@ -43,7 +43,9 @@
  *   `OPENCODE_CONFIG` and `OPENCODE_CONFIG_CONTENT` are additional config
  *   INPUTS — the first is pushed onto the list of directories it loads from,
  *   so a host value injects the server user's own opencode config (and any
- *   provider keys in it) no matter what else is set. Its actual homes come
+ *   provider keys in it) no matter what else is set. (The per-worktree
+ *   `OPENCODE_CONFIG_CONTENT` yaac's own launch command sets is assigned on
+ *   that command line, after this clearing.) Its actual homes come
  *   from `XDG_CONFIG_HOME`/`XDG_DATA_HOME`, which is why the XDG family is
  *   here and why nothing can be set in their place: cleared, opencode
  *   resolves `$HOME/.config/opencode` and `$HOME/.local/share/opencode`,

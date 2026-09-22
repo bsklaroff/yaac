@@ -209,9 +209,13 @@ takes the *last* occurrence, scanning backward from EOF so a long conversation
 costs a tail read rather than a walk.
 
 opencode is the exception throughout: it keeps history in a per-worktree sqlite
-DB inside the container and leaves no host transcript, so no hook fires for it,
-its first message comes from an HTTP probe while the pod runs, and it never has
-a model to show at all — there is no probe for that one.
+DB (`opencode-data/`) and leaves no host transcript, so no hook fires for it,
+its first message comes from an `opencode api` probe while the worktree runs,
+and it never has a model to show at all — there is no probe for that one. A
+data dir written by the 1.x line holds its history as JSON under `storage/`
+instead, which opencode 2 has no importer for: such a worktree resumes into a
+fresh, empty session (with an error toast from its own `--continue` lookup),
+and the JSON stays on disk untouched.
 
 `acp` needs none of this. The server *is* the ACP client, so `session/new` hands
 it the id directly and the live set carries it — the mode replaces a whole

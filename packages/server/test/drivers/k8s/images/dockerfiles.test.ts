@@ -101,22 +101,13 @@ describe('Dockerfile.default', () => {
 })
 
 describe('Dockerfile.tools', () => {
-  it('bakes its support files in group-writable too', async () => {
-    const content = await read('Dockerfile.tools')
-    // opencode rewrites this catalog in place when it refreshes, so the
-    // COPY has to land it group-0 writable like everything else — a
-    // `--chown=yaac:yaac` would not even resolve, since the image has no
-    // `yaac` group.
-    expect(content).toContain('COPY --chown=yaac:0 --chmod=0664 opencode-models.json')
-  })
-
   it('installs the agent CLIs as a layer on top of the base', async () => {
     const content = await read('Dockerfile.tools')
     expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
     expect(content).toMatch(/^FROM \$\{BASE_IMAGE\}/m)
     expect(content).toContain('claude.ai/install.sh')
     expect(content).toContain('@openai/codex')
-    expect(content).toContain('opencode-ai')
+    expect(content).toContain('@opencode/cli')
   })
 })
 

@@ -59,8 +59,9 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * Deliberately deferred (unchanged from the originals):
  *   - pnpm cache reuse — exercises pnpm store behavior, not CLI surface.
  *   - nestedContainers — covered by nested-containers.test.ts.
- *   - full opencode turn via mock LLM — its HTTP server runs independently
- *     of any provider; reaching /session/status proves the wiring.
+ *   - full opencode turn via mock LLM — `opencode api` answers from the
+ *     worktree's data dir independently of any provider; a session listing
+ *     proves the wiring.
  */
 
 /** POSIX single-quote escaping for strings embedded in `sh -c '...'`. */
@@ -1623,112 +1624,59 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       jobName = created.jobName
     }, 240_000)
 
-    it('boots opencode and exposes its HTTP API on 127.0.0.1:4096 inside the container', async () => {
-      // The yaac status + first-message helpers in
-      // packages/server/src/features/agents/opencode.ts depend on these endpoints being
-      // reachable via `kubectl exec curl` — without this test the entire
-      // opencode status pipeline is unverified by CI.
-      //
-      // Poll the in-container HTTP server. opencode bootstraps the worker +
-      // SQLite migrations before binding, so allow generous time. -sf
-      // suppresses output on connect-refused. This also doubles as a
-      // wait-for-container-ready barrier — by the time the probe answers,
-      // the tmux session and `opencode` window must be set up.
+    it('boots opencode and answers a session probe from inside the container', async () => {
+      // The server's opencode first-message probe
+      // (packages/server/src/runtime/agents/opencode.ts) runs `opencode api`
+      // over a private server on the worktree's data dir, from the checkout
+      // — without this test the entire opencode status pipeline is
+      // unverified by CI. Polled, which doubles as a wait-for-container-ready
+      // barrier: opencode bootstraps its worker + SQLite migrations first,
+      // so allow generous time. An empty list is fine — no user turn has
+      // been sent yet — what matters is the page shape the probe parses.
       let probeOk = false
-      let lastStdout = ''
-      let lastStderr = ''
+      let last = ''
       for (let i = 0; i < 60 && !probeOk; i++) {
         try {
           const { stdout } = await execInJob(jobName, [
-            'sh', '-c',
-            'curl -sf -o /dev/stdout -w "\\n%{http_code}" http://127.0.0.1:4096/session 2>&1',
+            'sh', '-c', 'opencode api --standalone session.list',
           ])
-          lastStdout = stdout
-          // Expect a 200 status code on the trailing line and a JSON-array
-          // body (empty array is fine — no user turn has been sent yet).
-          const trimmed = stdout.trim()
-          const lastNewline = trimmed.lastIndexOf('\n')
-          const body = lastNewline >= 0 ? trimmed.slice(0, lastNewline) : ''
-          const code = lastNewline >= 0 ? trimmed.slice(lastNewline + 1) : trimmed
-          if (code === '200') {
-            const parsed: unknown = JSON.parse(body || '[]')
-            expect(Array.isArray(parsed)).toBe(true)
-            probeOk = true
-            break
-          }
+          last = stdout
+          const parsed = JSON.parse(stdout.trim()) as { data?: unknown }
+          probeOk = Array.isArray(parsed.data)
         } catch (err) {
-          lastStderr = err instanceof Error ? err.message : String(err)
+          last = err instanceof Error ? err.message : String(err)
         }
-        await sleep(1000)
+        if (!probeOk) await sleep(1000)
       }
-
-      if (!probeOk) {
-        // Diagnostic dump before failing — the most common causes are
-        // opencode crashing at startup (TUI couldn't init, missing native
-        // module, etc.) or the wrong package name in Dockerfile.default.
-        try {
-          const { stdout: pane } = await execInJob(jobName, [
-            'tmux', 'capture-pane', '-p', '-t', 'yaac:opencode',
-          ])
-          console.error('opencode tmux pane:\n' + pane)
-        } catch { /* ignore */ }
-        try {
-          const { stdout: ps } = await execInJob(jobName, [
-            'sh', '-c', 'ps -ef | grep -i opencode | grep -v grep',
-          ])
-          console.error('opencode processes:\n' + ps)
-        } catch { /* ignore */ }
-        console.error('last curl stdout: ' + lastStdout)
-        console.error('last curl stderr: ' + lastStderr)
-      }
+      if (!probeOk) console.error('last probe output: ' + last)
       expect(probeOk).toBe(true)
 
-      // `/session` above is the load-bearing endpoint: it is what the
-      // server's opencode first-message probe (runProbe in
-      // features/agents/opencode.ts) parses; busy/idle status
-      // comes from the tmux pane, not HTTP. `/session/status` is probed
-      // only as a liveness signal — its SHAPE is version-dependent (the
-      // pinned 1.0.142 returns an array; later releases an object), so
-      // assert just that it answers parseable JSON.
-      const { stdout: statusOut } = await execInJob(jobName, [
-        'sh', '-c',
-        'curl -sf http://127.0.0.1:4096/session/status',
-      ])
-      expect(() => { JSON.parse(statusOut.trim()) }).not.toThrow()
+      // The pane itself has to draw: the 1.x line after 1.0.142 never did
+      // under gVisor (its native renderer waits on a terminal-capability
+      // answer the headless tmux never gives), which is what the v2 pin is
+      // for. The prompt box is the one thing every fresh TUI shows.
+      let pane = ''
+      for (let i = 0; i < 30 && !/Ask anything/.test(pane); i++) {
+        const { stdout } = await execInJob(jobName, [
+          'sh', '-c', `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:opencode -p 2>&1`,
+        ])
+        pane = stdout
+        if (!/Ask anything/.test(pane)) await sleep(1000)
+      }
+      if (!/Ask anything/.test(pane)) console.error('opencode tmux pane:\n' + pane)
+      expect(pane).toMatch(/Ask anything/)
     }, 180_000)
 
-    it('mounts the shared opencode-config dir with websearch + provider wiring', async () => {
+    it('mounts the shared opencode-config dir and pins the install', async () => {
       // The shared opencode-config directory persists across sessions so
-      // that model selection, permissions, and other settings written to
-      // ~/.config/opencode/opencode.json via Config.updateGlobal() survive
-      // pod teardown.
+      // that model selection and other settings opencode writes to
+      // ~/.config/opencode/opencode.json survive pod teardown.
       const hostOcConfigDir = path.join(projectPath, 'opencode-config')
       const hostConfigStat = await fs.stat(hostOcConfigDir)
       expect(hostConfigStat.isDirectory()).toBe(true)
 
-      // Websearch wiring: yaac seeds `permission.websearch` into the shared
-      // opencode.json and sets the env var gating the Exa-backed tool
-      // registration. The pinned opencode 1.0.142 PREDATES websearch: it
-      // normalizes opencode.json at boot and drops the (to it) unknown
-      // permission key, so the file's content cannot be asserted here —
-      // only that the shared file survives as valid JSON. The env wiring
-      // below is forward-compat and takes effect when the pin moves past
-      // the gVisor renderer bug (see dockerfiles/Dockerfile.tools).
-      const seededRaw = await fs.readFile(
-        path.join(hostOcConfigDir, 'opencode.json'),
-        'utf8',
-      )
-      expect(() => { JSON.parse(seededRaw) }).not.toThrow()
-
-      const { stdout: envOut } = await execInJob(jobName, [
-        'sh', '-c', 'printenv OPENCODE_ENABLE_EXA',
-      ])
-      expect(envOut.trim()).toBe('true')
-
-      // opencode is pinned to the last release whose TUI renders under gVisor;
-      // this env var stops it from self-upgrading past that pin on launch (a
-      // newer opencode leaves the agent pane blank — its native renderer never
-      // draws in the headless session tmux).
+      // The image pins the opencode release the launch command is written
+      // against; this env var stops it from upgrading itself off that pin.
       const { stdout: autoUpdOut } = await execInJob(jobName, [
         'sh', '-c', 'printenv OPENCODE_DISABLE_AUTOUPDATE',
       ])

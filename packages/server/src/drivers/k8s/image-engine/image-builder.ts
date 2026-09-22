@@ -39,25 +39,11 @@ export async function baseImageHash(dockerfilePath: string): Promise<string> {
 }
 
 /**
- * Support files Dockerfile.tools COPYs from the dockerfiles build context.
- * opencode-models.json is the models.dev catalog emitted by
- * `pnpm gen:providers`, baked in as opencode's catalog cache.
+ * Content hash of the tools layer's one build input. Shared by the server's
+ * layer resolution and the test global setup so both derive identical tags.
  */
-const TOOLS_SUPPORT_FILES = ['opencode-models.json'] as const
-
-/**
- * Content hash of the tools layer's build inputs: Dockerfile.tools plus the
- * support files it COPYs. Folding the support files in means regenerating
- * the catalog re-tags the image just like a Dockerfile edit — a stale image
- * can never be reused. Shared by the server's layer resolution and the test
- * global setup so both derive identical tags.
- */
-export async function toolsContentHash(): Promise<string> {
-  const files = ['Dockerfile.tools', ...TOOLS_SUPPORT_FILES]
-  const hashes = await Promise.all(
-    files.map((f) => fileHash(path.join(DOCKERFILES_DIR, f))),
-  )
-  return stringHash(hashes.join(':'))
+export function toolsContentHash(): Promise<string> {
+  return fileHash(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))
 }
 
 /**

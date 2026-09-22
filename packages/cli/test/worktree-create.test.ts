@@ -224,10 +224,6 @@ vi.mock('@yaac/shared/git', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/runtime/agents/opencode', () => ({
-  ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
-} satisfies Partial<typeof opencodeAgentModule>))
-
 // NOT mocked: declaring a forward is in-memory bookkeeping, so the real
 // allocator runs and what it answers is the honest assertion.
 vi.mock('@yaac/server/drivers/k8s/forwarders/port-forwarders', async (importOriginal) => ({
@@ -709,7 +705,6 @@ describe('createWorktree', () => {
     // A codex session still carries the other tools' placeholders…
     expect(env).toContainEqual({ name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' })
     expect(env).toContainEqual({ name: 'OPENROUTER_API_KEY', value: 'test-placeholder-key' })
-    expect(env).toContainEqual({ name: 'OPENCODE_ENABLE_EXA', value: 'true' })
     expect(env).toContainEqual({ name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
     // …but no OPENAI_API_KEY: codex has no credential here, and for codex
     // OAuth the var would steer it into api-key mode.
@@ -1202,16 +1197,16 @@ describe('buildAgentCmd', () => {
       .toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
   })
 
-  it('launches opencode with --port + --hostname so the in-container HTTP server is reachable', () => {
+  it('launches opencode over a private server of its own, with its posture in the env', () => {
     const fresh = buildAgentCmd({ tool: 'opencode', worktreeId: 'sid-abc', permissionMode: 'bypass' })
-    expect(fresh).toContain('opencode --port 4096 --hostname 127.0.0.1')
+    expect(fresh).toMatch(/^OPENCODE_CONFIG_CONTENT="\{.*\}" opencode --standalone$/)
   })
 
   it('passes --continue when resuming an opencode session', () => {
     const resume = buildAgentCmd({
       tool: 'opencode', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
-    expect(resume).toContain('opencode --port 4096 --hostname 127.0.0.1 --continue')
+    expect(resume).toMatch(/ opencode --standalone --continue$/)
   })
 })
 
@@ -1339,7 +1334,6 @@ describe('resolveInitWindows', () => {
 
 import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
-import type * as opencodeAgentModule from '@yaac/server/runtime/agents/opencode'
 import type * as imageBuilderModule from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import type * as buildCoordinatorModule from '@yaac/server/drivers/k8s/images/build-coordinator'
 import type * as kubectlModule from '@yaac/server/drivers/k8s/substrate/kubectl'

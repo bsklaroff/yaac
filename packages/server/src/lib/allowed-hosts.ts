@@ -28,9 +28,10 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'openrouter.ai',
   'api.neuralwatt.com',
   'opencode.ai',
-  'models.dev',
+  // v2's models.dev mirror, which it refreshes its catalog from in the background
+  'models.opencode.ai',
   'pi.dev',
-  // Exa MCP — backs opencode's websearch tool when OPENCODE_ENABLE_EXA is set
+  // Exa MCP — backs opencode's websearch tool
   'mcp.exa.ai',
 
   // Version control — GitHub

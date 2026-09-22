@@ -10,12 +10,25 @@ import {
   verifyAgentWindowAlive,
   AgentLaunchDeadError,
   initWindowCommand,
+  OPENCODE_ACTIONS,
 } from '#runtime/agents/agent-command'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { AGENT_TOOLS, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 
 import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
+
+interface OpencodeConfig {
+  model?: string
+  default_agent?: string
+  permissions?: Array<{ action: string; resource: string; effect: string }>
+}
+
+/** The config document an opencode launch carries in OPENCODE_CONFIG_CONTENT. */
+function opencodeConfigOf(cmd: string): OpencodeConfig {
+  const json = /OPENCODE_CONFIG_CONTENT="(\{.*\})" opencode /.exec(cmd)?.[1]
+  return JSON.parse((json ?? '{}').replace(/\\"/g, '"')) as OpencodeConfig
+}
 
 // The container paths every case below is written against; the driver
 // answers these for a pod, and a containerless workspace gets its own.
@@ -53,21 +66,23 @@ describe('buildAgentCmd', () => {
   })
 
   describe('opencode tool', () => {
-    it('starts the loopback server and omits model flags by default', () => {
+    // The posture rides in OPENCODE_CONFIG_CONTENT (asserted below); these
+    // cases are about the launch itself.
+    it('runs the TUI over a private server of its own', () => {
       const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', permissionMode: 'bypass' })
-      // The posture rides in OPENCODE_PERMISSION (asserted below); what this
-      // case is about is the loopback server yaac reads status from.
-      expect(cmd).toContain('opencode --port 4096 --hostname 127.0.0.1')
+      expect(cmd).toMatch(/ opencode --standalone$/)
     })
 
     it('appends --continue when resuming', () => {
       const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toContain('opencode --port 4096 --hostname 127.0.0.1 --continue')
+      expect(cmd).toMatch(/ opencode --standalone --continue$/)
     })
 
-    it('inserts a provider/model override', () => {
+    it('carries a provider/model override in the config, never as a flag', () => {
+      // The TUI has no --model flag and refuses an unknown one outright.
       const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', resume: false, model: 'anthropic/claude-opus-4-8', permissionMode: 'bypass' })
-      expect(cmd).toContain('opencode --port 4096 --hostname 127.0.0.1 --model anthropic/claude-opus-4-8')
+      expect(cmd).not.toContain('--model')
+      expect(opencodeConfigOf(cmd).model).toBe('anthropic/claude-opus-4-8')
     })
   })
 
@@ -161,55 +176,65 @@ describe('buildAgentCmd', () => {
       ['codex', 'accept-edits', 'codex'],
       ['codex', 'plan', 'codex --sandbox read-only'],
       ['codex', 'manual', 'codex --ask-for-approval untrusted'],
-      ['opencode', 'plan', 'opencode --agent plan'],
     ]
 
     it.each(CASES)('%s in %s mode', (tool, permissionMode, expected) => {
       expect(buildAgentCmd({ tool, worktreeId: 'sess-1', permissionMode })).toContain(expected)
     })
 
-    // opencode's permission config is a plain zod object over a FIXED key set
-    // (`edit`, `bash`, `webfetch`, `doom_loop`, `external_directory`) and
-    // strips what it does not know — so a posture spelled in any other key is
-    // not a partial posture but an empty one, which opencode then fills with
-    // allow-everything. These assertions are about the key names for that
-    // reason: getting one wrong fails open, silently, on the user's real
-    // filesystem. There is deliberately no posture flag — opencode's TUI has
-    // none, and its parser drops unknown flags without a word.
-    const OPENCODE_KEYS = ['edit', 'bash', 'webfetch', 'doom_loop', 'external_directory']
-
-    it('spells every opencode posture in keys opencode actually reads', () => {
-      const permissionOf = (permissionMode: PermissionMode): Record<string, string> => {
+    // opencode's rules are appended over a base policy whose first rule is
+    // `* allow`, and an action it does not know matches nothing — so a
+    // posture spelled in the wrong action is not a partial posture but no
+    // posture, and it fails open, silently, on the user's real filesystem.
+    // The assertions are exact for that reason. There is deliberately no
+    // posture flag — opencode's TUI has none, and refuses an unknown one
+    // outright, which would leave a dead window.
+    it('spells every opencode posture in rules opencode actually reads', () => {
+      const postureOf = (permissionMode: PermissionMode): OpencodeConfig => {
         const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode })
         // Escaped double quotes, never single ones: the whole command is
         // embedded in `respawn-window '<cmd>'`, and bare braces would hit zsh
         // brace expansion before opencode ever saw them.
         expect(cmd).not.toContain("'")
         expect(cmd).not.toContain('--auto')
-        const json = /OPENCODE_PERMISSION="(\{.*?\})"/.exec(cmd)?.[1]
-        return JSON.parse((json ?? '{}').replace(/\\"/g, '"')) as Record<string, string>
+        expect(cmd).not.toContain('--agent')
+        return opencodeConfigOf(cmd)
       }
+      const rule = (action: string, effect: string) => ({ action, resource: '*', effect })
 
-      // Bypass states allow-everything rather than inheriting opencode's
-      // defaults: `doom_loop` and `external_directory` already default to
-      // `ask`, so an unstated bypass is not one.
-      expect(permissionOf('bypass')).toEqual({
-        edit: 'allow', bash: 'allow', webfetch: 'allow',
-        doom_loop: 'allow', external_directory: 'allow',
-      })
-      // Manual has to name each key: there is no top-level wildcard, and an
-      // unknown key would be stripped, leaving allow-everything behind.
-      expect(permissionOf('manual')).toEqual({
-        edit: 'ask', bash: 'ask', webfetch: 'ask',
-        doom_loop: 'ask', external_directory: 'ask',
-      })
-      // Accept-edits leaves the out-of-worktree pair at opencode's own `ask`,
+      // Bypass states allow-everything rather than inheriting opencode's base
+      // policy, which already asks for out-of-tree access and .env reads: an
+      // unstated bypass is not one.
+      expect(postureOf('bypass')).toEqual({ permissions: [rule('*', 'allow')] })
+      // Accept-edits adds one ask to that base policy — running commands —
       // which is the whole distinction from bypass.
-      expect(permissionOf('accept-edits')).toEqual({
-        edit: 'allow', bash: 'ask', webfetch: 'allow',
-      })
-      for (const mode of ['bypass', 'manual', 'accept-edits'] as const) {
-        expect(Object.keys(permissionOf(mode)).every((k) => OPENCODE_KEYS.includes(k))).toBe(true)
+      expect(postureOf('accept-edits')).toEqual({ permissions: [rule('shell', 'ask')] })
+      // Manual asks before anything that acts, wildcard first so what the
+      // base policy allows without this file naming it (websearch, subagents,
+      // skills, Code Mode, MCP tools) is covered; reads come back to allow,
+      // with the base policy's .env asks restated behind that wildcard.
+      const askToAct = [
+        rule('*', 'ask'),
+        rule('read', 'allow'), rule('glob', 'allow'), rule('grep', 'allow'), rule('question', 'allow'),
+        { action: 'read', resource: '*.env', effect: 'ask' },
+        { action: 'read', resource: '*.env.*', effect: 'ask' },
+      ]
+      expect(postureOf('manual')).toEqual({ permissions: askToAct })
+      // Plan selects opencode's own plan agent for its `edit: deny`, and
+      // carries the same rules because that agent says nothing about shell:
+      // on its own it would run commands unprompted.
+      expect(postureOf('plan')).toEqual({ default_agent: 'plan', permissions: askToAct })
+    })
+
+    // A rule naming an action opencode does not know is accepted with no
+    // diagnostic and matches nothing, so the names are pinned against the
+    // vocabulary read off the pinned binary rather than trusted to read right.
+    it('names only actions the pinned opencode binary knows', () => {
+      for (const mode of ['bypass', 'accept-edits', 'manual', 'plan'] as const) {
+        const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: mode })
+        for (const r of opencodeConfigOf(cmd).permissions ?? []) {
+          expect(OPENCODE_ACTIONS).toContain(r.action)
+        }
       }
     })
 
@@ -217,19 +242,16 @@ describe('buildAgentCmd', () => {
     // cannot show: the command is embedded in a single-quoted
     // `respawn-window '<cmd>'` and then run by a shell, so a quote or brace
     // that does not survive leaves opencode reading a broken value — and a
-    // permission value opencode cannot parse fails OPEN.
+    // config value opencode cannot parse fails OPEN.
     it('delivers the opencode posture through the shell it is embedded in', () => {
       const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'manual' })
-      const env = /^(OPENCODE_PERMISSION=\S+)/.exec(cmd)?.[1] ?? ''
+      const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
       // Exactly how it travels: single-quoted inside the tmux argument, which
       // a shell then unwraps and runs.
-      const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_PERMISSION`], {
+      const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], {
         encoding: 'utf8',
       })
-      expect(JSON.parse(out) as Record<string, string>).toEqual({
-        edit: 'ask', bash: 'ask', webfetch: 'ask',
-        doom_loop: 'ask', external_directory: 'ask',
-      })
+      expect(JSON.parse(out) as OpencodeConfig).toEqual(opencodeConfigOf(cmd))
     })
 
     // A posture the tool does not have can still reach here off a worktree

@@ -15,18 +15,9 @@
  * build), so it gets its own copy of the same content in its build context —
  * one source of truth, no drift.
  *
- * Also emits the raw models.dev response to:
- *   - dockerfiles/opencode-models.json
- * Dockerfile.tools bakes it into the worktree image as opencode's models.dev
- * cache file (~/.cache/opencode/models.json), so the TUI's model list is as
- * fresh as the last regen instead of the catalog compiled into the pinned
- * opencode binary at its release. Kept byte-exact as fetched — it must remain
- * a valid models.dev api.json for opencode to parse.
- *
  * Sources:
  *   - opencode: models.dev (https://models.dev/api.json), the provider/model
- *     database opencode itself uses. Fetched fresh; falls back to opencode's
- *     local cache (~/.cache/opencode/models.json) when offline.
+ *     database opencode itself uses.
  *   - pi: the installed @earendil-works/pi-ai package — its builtinProviders()
  *     (id/label/baseUrl), findEnvKeys() (env var per provider), and
  *     pi-coding-agent's defaultModelPerProvider map. No source parsing: we
@@ -38,14 +29,13 @@
  * swap, so they're skipped-and-logged, not silently dropped. OAuth-only
  * providers are skipped too (this repo is api-key-only for opencode/pi).
  *
- * Requirements to run: network access to models.dev (or a warm opencode cache)
+ * Requirements to run: network access to models.dev
  * and a global `pi` install (`@earendil-works/pi-coding-agent`). This is a
  * dev-time step run when bumping either tool — not part of `pnpm build`.
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import os from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..')
@@ -109,28 +99,13 @@ interface ModelsDevProvider {
   models?: Record<string, unknown>
 }
 
-/** The parsed models.dev database plus the raw response text — the raw form
- *  is committed verbatim as dockerfiles/opencode-models.json. */
-async function fetchModelsDev(): Promise<{ db: Record<string, ModelsDevProvider>; raw: string }> {
+async function fetchModelsDev(): Promise<Record<string, ModelsDevProvider>> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 15_000)
   try {
     const res = await fetch('https://models.dev/api.json', { signal: ctrl.signal })
     if (!res.ok) throw new Error(`models.dev returned ${res.status}`)
-    console.log('  source: models.dev/api.json (live)')
-    const raw = await res.text()
-    return { db: JSON.parse(raw) as Record<string, ModelsDevProvider>, raw }
-  } catch (err) {
-    const cache = path.join(os.homedir(), '.cache', 'opencode', 'models.json')
-    if (fs.existsSync(cache)) {
-      console.log(`  source: ${cache} (models.dev fetch failed: ${err instanceof Error ? err.message : String(err)})`)
-      const raw = fs.readFileSync(cache, 'utf8')
-      return { db: JSON.parse(raw) as Record<string, ModelsDevProvider>, raw }
-    }
-    throw new Error(
-      `Could not load models.dev (${err instanceof Error ? err.message : String(err)}) ` +
-      'and no opencode cache found. Run `opencode models --refresh` or connect to the network.',
-    )
+    return await res.json() as Record<string, ModelsDevProvider>
   } finally {
     clearTimeout(timer)
   }
@@ -476,7 +451,7 @@ ${modelsCatalogMap('PI_MODELS_BY_PROVIDER', piModels)}
 
 async function main(): Promise<void> {
   console.log('Generating tool provider tables…')
-  const { db, raw } = await fetchModelsDev()
+  const db = await fetchModelsDev()
   const [pi, piModels] = await Promise.all([buildPiRows(), buildPiModelsCatalog()])
   const catalog = buildModelsCatalog(db)
   const opencode = buildOpencodeRows(db, catalog)
@@ -491,23 +466,16 @@ async function main(): Promise<void> {
       return '?'
     }
   })()
-  const header = `// Sources: opencode → models.dev (opencode-ai ${opencodeVer}); ` +
+  const header = `// Sources: opencode → models.dev (@opencode/cli ${opencodeVer}); ` +
     `pi → @earendil-works/pi-coding-agent ${pkgVersion(piRoot)}.`
 
   const content = generatedFile(opencode, pi, catalog, piModels, header)
   const sharedPath = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'tool-providers.generated.ts')
   const proxyPath = path.join(REPO_ROOT, 'k8s', 'proxy', 'tool-providers.generated.ts')
-  // Raw catalog for the worktree image: Dockerfile.tools COPYs it in as
-  // opencode's models.dev cache file. Byte-exact as fetched (no reformat) so
-  // it stays a valid api.json; JSON carries no comment, so its provenance is
-  // documented where it's consumed (Dockerfile.tools) and here.
-  const modelsPath = path.join(REPO_ROOT, 'dockerfiles', 'opencode-models.json')
   fs.writeFileSync(sharedPath, content)
   fs.writeFileSync(proxyPath, content)
-  fs.writeFileSync(modelsPath, raw)
   console.log(`Wrote ${path.relative(REPO_ROOT, sharedPath)}`)
   console.log(`Wrote ${path.relative(REPO_ROOT, proxyPath)}`)
-  console.log(`Wrote ${path.relative(REPO_ROOT, modelsPath)}`)
 }
 
 await main()

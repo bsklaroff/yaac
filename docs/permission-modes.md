@@ -5,11 +5,11 @@ How much a worktree's agent may do before it stops to ask. One enum,
 
 | Mode | claude | codex | opencode | pi |
 |---|---|---|---|---|
-| `bypass` | `--permission-mode bypassPermissions` | `--yolo` | `OPENCODE_PERMISSION` all-allow | — |
+| `bypass` | `--permission-mode bypassPermissions` | `--yolo` | `permissions`: `*` allow | — |
 | `auto` | `--permission-mode auto` | `--approve-for-me` | — | — |
-| `accept-edits` | `--permission-mode acceptEdits` | *(its default preset)* | `OPENCODE_PERMISSION` edit=allow, bash=ask | — |
-| `plan` | `--permission-mode plan` | `--sandbox read-only` | `--agent plan` | — |
-| `manual` | `--permission-mode manual` | `--ask-for-approval untrusted` | `OPENCODE_PERMISSION` all-ask | — |
+| `accept-edits` | `--permission-mode acceptEdits` | *(its default preset)* | `permissions`: `shell` ask | — |
+| `plan` | `--permission-mode plan` | `--sandbox read-only` | `default_agent: plan` + the `manual` rules | — |
+| `manual` | `--permission-mode manual` | `--ask-for-approval untrusted` | `permissions`: `*` ask, reads allow | — |
 
 `buildAgentCmd` owns that table. Three things about it are worth knowing.
 
@@ -20,29 +20,42 @@ carries no flag because it *is* codex's own default preset
 what makes codex ask to escalate for anything reaching the network, rather
 than yaac having to arrange it.
 
-**opencode's posture is config, not flags** — it has no posture flag at all,
-and its parser drops unknown flags silently, so inventing one would leave the
-posture at whatever the defaults say. `OPENCODE_PERMISSION` takes the same
-JSON as the config file's `permission` block and is read per process, which
-is what makes it per-worktree — the `opencode.json` session create writes is
-shared by every worktree in the project.
+**opencode's posture is config, not flags** — its TUI has no posture, model
+or agent flag at all, and refuses an unknown one outright (usage, exit), so
+inventing one would leave a dead window rather than a posture. The
+launch carries a config document in `OPENCODE_CONFIG_CONTENT`, read per
+process and merged over the shared `opencode.json` (its own keys win), which
+is what makes it per-worktree — the file is shared by every worktree in the
+project. The TUI runs `--standalone`, over a private server that is its own
+child: the server is what reads the config, so a child inheriting the
+process env is what makes the posture stick, where opencode's background
+service would keep running — and keep the first launch's config — across
+restarts.
 
-Two things about that JSON are load-bearing, because **getting either wrong
-fails open rather than loudly**. Its schema is a plain zod object over
-exactly `edit`, `bash`, `webfetch`, `doom_loop` and `external_directory` —
-there is no top-level wildcard — and a plain zod object *strips* unknown
-keys, so a posture spelled in any other key arrives as an empty one, which
-opencode then fills with `edit: allow`, `webfetch: allow`,
-`bash: {"*": "allow"}`. And the value has to survive the trip: the command is
-embedded in `respawn-window '<cmd>'`, so it is double-quoted with escaped
-inner quotes (a single quote would end the wrapper early, and bare `{...}`
-would hit zsh brace expansion). Both are asserted in
-`agent-command.test.ts`, the second by running the escaped string through a
-real shell — string equality alone would happily lock in a value opencode
-cannot read.
+Rules go in opencode's ordered `permissions` array, over a base policy every
+agent starts from (`*` allow, then ask for `external_directory` and `.env`
+reads) that global rules append to and a built-in agent's own rules append
+after; last match wins. `manual` is therefore wildcard-first — `*` ask, then
+reads back to allow, then the base policy's `.env` asks restated behind that
+wildcard — so what the base policy allows without yaac naming it (websearch,
+subagents, skills, Code Mode, every MCP tool a project's own config adds) is
+covered. `plan` selects opencode's own plan agent by `default_agent` for its
+`edit: deny`, and carries the same rules, because that is *all* the agent's
+rules say: nothing about `shell`, so on its own it runs commands unprompted.
 
-`bypass` states allow-everything rather than sending nothing, for the same
-reason: `doom_loop` and `external_directory` already default to `ask`, so an
+Two things about that document are load-bearing, because **getting either
+wrong fails open rather than loudly**. An action opencode does not know
+matches nothing, so a rule spelled in the wrong action is not a partial
+posture but no posture — the base policy's `*` allow stays in force. And the
+value has to survive the trip: the command is embedded in
+`respawn-window '<cmd>'`, so it is double-quoted with escaped inner quotes (a
+single quote would end the wrapper early, and bare `{...}` would hit zsh
+brace expansion). Both are asserted in `agent-command.test.ts`, the second by
+running the escaped string through a real shell — string equality alone
+would happily lock in a value opencode cannot read.
+
+`bypass` states `*` allow rather than sending nothing, for the same reason:
+the base policy already asks for out-of-tree access and `.env` reads, so an
 unstated bypass is not one, and a future default that tightens would quietly
 stop meaning bypass.
 

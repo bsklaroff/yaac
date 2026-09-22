@@ -24,7 +24,7 @@ import { AGENT_TOOLS, type AgentTool } from '#types'
 export const AGENT_INSTALL: Record<AgentTool, string> = {
   claude: 'npm install -g @anthropic-ai/claude-code',
   codex: 'npm install -g @openai/codex',
-  opencode: 'npm install -g opencode-ai',
+  opencode: 'npm install -g @opencode/cli',
   // --ignore-scripts matches how the image installs it: its postinstall
   // fetches a platform binary yaac does not need.
   pi: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent',
