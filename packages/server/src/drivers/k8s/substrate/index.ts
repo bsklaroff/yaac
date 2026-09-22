@@ -32,6 +32,7 @@ export {
   gvisorInstallerHostMounts,
   runtimeClassSpec,
 } from './gvisor'
+export { NODE_TASKSMAX_LIVE, NODE_TUNING_SYSCTLS } from './node-tuning'
 export {
   dataDirHash,
   ensureKubernetes,

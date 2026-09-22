@@ -14,6 +14,8 @@ import {
   LABEL_WORKTREE_ID,
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
+  NODE_TASKSMAX_LIVE,
+  NODE_TUNING_SYSCTLS,
   PROXY_APP_NAME,
   SERVER_APP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
@@ -35,6 +37,7 @@ import {
 } from '#drivers/k8s/substrate'
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { assessVethSource, probeWorkloadVeths } from './cni-adopt'
+import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
@@ -60,32 +63,18 @@ const KIND_SETUP_FIX = [
   'Create a kind cluster wired for yaac by running:',
   '  yaac cluster install',
   'It provisions the podman machine (macOS), the kind cluster (home',
-  'extraMount), Calico, the node fixups, every built-in image, and the',
-  'in-cluster registry.',
+  'extraMount), Calico, the kind node fixups, every built-in image, and',
+  'the in-cluster registry.',
 ].join('\n')
 
 /**
- * Node-state the install applies and this check verifies. Shared with
- * install.ts (which imports them) so `yaac cluster install` and the
- * node-fixups check below can never drift apart.
+ * The kind-node-container state install applies and the node-fixups check
+ * verifies: what only a node CONTAINER has, and so cannot ride the
+ * installer DaemonSet the way the sysctls and TasksMax do (node-tuning.ts
+ * in the substrate). Shared with install.ts (which imports them) so `yaac
+ * cluster install` and the check can never drift apart.
  */
-export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.conf'
-export const NODE_MIN_FREE_KBYTES = 262144
 export const NODE_PIDS_LIMIT = 32768
-/**
- * inotify ceilings. Unlike everything else here these are host-global
- * rather than per-node — the kind nodes are containers in the host's
- * init user namespace, so all of them draw on the ONE root-uid pool.
- * Every node therefore multiplies the demand against a fixed budget, and
- * the stock 128 instances is not enough for a multi-node cluster: netd's
- * Envoy asserts on `inotify_fd_ >= 0` and dies with SIGSEGV, which
- * presents as every worktree losing its egress redirect rather than as
- * anything mentioning inotify. Applied on each node for the same reason
- * install re-applies the vm sysctls — whichever node runs it, the
- * write lands on the host.
- */
-export const NODE_INOTIFY_MAX_USER_INSTANCES = 1024
-export const NODE_INOTIFY_MAX_USER_WATCHES = 524288
 /**
  * kubelet cAdvisor housekeeping interval (default 10s). Its per-container
  * process stats readlink EVERY open fd of EVERY process in each container
@@ -116,16 +105,21 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *   5. the in-cluster registry answering (through this process's route to
  *      it — a kubectl port-forward, or the outer project registry nested)
  *   6. yaac namespace exists / can be created
- *   6b. node fixups (warn-only, kind nodes only): DefaultTasksMax,
- *      vm.min_free_kbytes, the kubelet housekeeping interval, and node
- *      pids-limit that `yaac cluster install` applies — most live in node/VM
- *      state and vanish on restart — detect and point at
+ *   6b. node fixups (warn-only, kind nodes only): the kubelet housekeeping
+ *      interval and the node container's pids-limit that `yaac cluster
+ *      install` applies through podman — the two settings a node container
+ *      has and a real node does not — detect and point at
  *      `yaac cluster install`
  *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist, at least one
  *      node carries the label they schedule on (the installer DaemonSet
  *      landed the runtime somewhere), AND a pod on the gvisor class is
  *      actually sentry-sandboxed (dmesg fingerprint) — worktree pods cannot
  *      run without all three
+ *   6d. node-tuning (warn-only): the sysctls and systemd's live
+ *      DefaultTasksMax the installer DaemonSet applies on every pass are in
+ *      place on every node it runs on, read back through its pods — so it
+ *      works on a node yaac has no shell on, and a node that restarted
+ *      reads as tuned again once the installer's first pass lands
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
  *      from its cluster ref (on the default gvisor tier) that reads
  *      a nonce file from a hostPath mount of the data dir and writes a
@@ -254,7 +248,7 @@ export async function runClusterCheck(
   // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
   // prerequisites already failed)
   const PROBE_GATES = [
-    'node-fixups', 'gvisor', 'probe', 'egress', 'datapath', 'veth-source',
+    'node-fixups', 'gvisor', 'node-tuning', 'probe', 'egress', 'datapath', 'veth-source',
     ...MULTI_NODE_GATES,
     'nested-mount', 'vap', 'runtime-stamp',
   ] as const
@@ -269,6 +263,9 @@ export async function runClusterCheck(
   }
   add(await runNodeFixupsCheck())
   add(await runGvisorRuntimeCheck())
+  // After the gvisor gate, which is what proves the installer DaemonSet
+  // exists at all; warn-only, so it gates nothing below.
+  add(await runNodeTuningCheck())
 
   // The e2e probe schedules a pod on the gvisor tier — with the
   // RuntimeClass missing it would sit Pending to its full timeout, so a
@@ -466,16 +463,18 @@ function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
 }
 
 const NODE_FIXUPS_FIX =
-  'These fixups live in node/VM state and vanish on a node or VM restart. '
-  + 'Re-apply them with: yaac cluster install'
+  'These are settings of the kind node CONTAINER (podman state, not node '
+  + 'state), which a cluster recreate drops. Re-apply them with: yaac cluster install'
 
 /**
- * Warn-level detection for the node fixups `yaac cluster install` applies. The
- * TasksMax / vm.min_free_kbytes / pids-limit fixups fail late — worktrees die
- * mid-flight under subagent fan-out or virtiofs pressure — so worktrees can
- * look healthy on a cluster that lost them to a restart. Probing is
- * kind-specific (node name == podman container name): a node that is not a
- * podman container self-skips.
+ * Warn-level detection for the kind-only node fixups `yaac cluster install`
+ * applies through podman: the kubelet housekeeping interval and the node
+ * container's pids ceiling. Both fail late — kubelet burns cores, worktrees
+ * die mid-flight under subagent fan-out — so worktrees can look healthy on
+ * a cluster without them. Probing is kind-specific (node name == podman
+ * container name): a node that is not a podman container self-skips, which
+ * is the byo shape. The sysctls and TasksMax are the installer DaemonSet's
+ * and are verified by the node-tuning gate below, on every backend.
  */
 async function runNodeFixupsCheck(): Promise<CheckResult> {
   try {
@@ -491,11 +490,7 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
       let report: string
       try {
         const res = await execFileAsync('podman', ['exec', node, 'sh', '-c',
-          `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
-          + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes); '
-          + 'echo inotifyinst=$(cat /proc/sys/fs/inotify/max_user_instances); '
-          + 'echo inotifywatch=$(cat /proc/sys/fs/inotify/max_user_watches); '
-          + `grep -q -- '--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}' `
+          `grep -q -- '--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}' `
           + `${NODE_KUBELET_FLAGS_ENV} && echo hk=ok || echo hk=missing`,
         ])
         report = res.stdout
@@ -504,19 +499,6 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
           name: 'node-fixups', status: 'skip',
           detail: `node "${node}" is not a podman container — kind node fixups not applicable`,
         }
-      }
-      if (report.includes('tasksmax=missing')) missing.add('DefaultTasksMax (subagent fan-out)')
-      const minfree = Number(/minfree=(\d+)/.exec(report)?.[1] ?? '0')
-      if (minfree < NODE_MIN_FREE_KBYTES) missing.add('vm.min_free_kbytes (virtiofs I/O)')
-      // Host-global, so one node reporting low condemns the whole cluster —
-      // which is right: that is the pool every node's Envoy draws from.
-      const inotifyInst = Number(/inotifyinst=(\d+)/.exec(report)?.[1] ?? '0')
-      if (inotifyInst < NODE_INOTIFY_MAX_USER_INSTANCES) {
-        missing.add('fs.inotify.max_user_instances (netd Envoy startup)')
-      }
-      const inotifyWatch = Number(/inotifywatch=(\d+)/.exec(report)?.[1] ?? '0')
-      if (inotifyWatch < NODE_INOTIFY_MAX_USER_WATCHES) {
-        missing.add('fs.inotify.max_user_watches (netd Envoy startup)')
       }
       // Default-interval cAdvisor housekeeping burns whole kubelet cores
       // against gVisor sandboxes — see NODE_KUBELET_HOUSEKEEPING_INTERVAL.
@@ -528,7 +510,7 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
       ])
       const pids = Number(pidsRaw.trim())
       if (Number.isFinite(pids) && pids > 0 && pids < NODE_PIDS_LIMIT) {
-        missing.add('node pids-limit')
+        missing.add('node pids-limit (subagent fan-out)')
       }
     }
     if (missing.size > 0) {
@@ -540,13 +522,131 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
     }
     return {
       name: 'node-fixups', status: 'pass',
-      detail: 'TasksMax, vm sysctls, kubelet housekeeping, and pids-limit in place',
+      detail: 'kubelet housekeeping and pids-limit in place',
     }
   } catch (err) {
     return {
       name: 'node-fixups', status: 'warn',
       detail: `could not verify node fixups (${truncate(err)})`,
       fix: NODE_FIXUPS_FIX,
+    }
+  }
+}
+
+/**
+ * The node-tuning fix line names the install namespace, so it is a
+ * function like gvisorFix().
+ */
+function nodeTuningFix(): string {
+  return 'The gVisor installer DaemonSet applies these on every pass (on every node '
+    + 'it lands on, and every ten minutes), so a node that just restarted reads '
+    + 'as tuned once its first pass lands. If it stays this way, read the '
+    + `installer's log: kubectl -n ${k8sNamespace()} logs -l app=${GVISOR_INSTALLER_APP_NAME}\n`
+    + 'Re-apply the DaemonSet with: yaac cluster install'
+}
+
+/**
+ * Warn-level verification of the node tuning the installer DaemonSet
+ * applies: the sysctls and systemd's live DefaultTasksMax (node-tuning.ts).
+ * Read back through the installer's own pod on each node — `kubectl exec`,
+ * never podman — so it works on a node yaac has no shell on. The read is
+ * sound for the same reason the write is: none of the sysctls is
+ * namespaced and the pod has no user namespace, so its `/proc/sys` is the
+ * kernel's, and hostPID lets it ask the node's own systemd. A sysctl the
+ * kernel does not have reads as absent and is skipped, as the script
+ * skips it.
+ *
+ * Every node the DaemonSet is meant to cover is accounted for: a pod that
+ * is not Running is reported unverified with its phase, an exec that fails
+ * is unverified, and a node with no pod at all shows up as the gap between
+ * the DaemonSet's desired count and the pods found. None of them passes —
+ * the installer not being there is exactly the state in which nothing
+ * re-applied the tuning.
+ */
+async function runNodeTuningCheck(): Promise<CheckResult> {
+  const ns = k8sNamespace()
+  try {
+    const { stdout } = await execFileAsync('kubectl', [
+      'get', 'pods', '-n', ns, '-l', `app=${GVISOR_INSTALLER_APP_NAME}`, '-o', 'json',
+    ])
+    const pods = ((JSON.parse(stdout) as {
+      items?: Array<{
+        metadata?: { name?: string }
+        spec?: { nodeName?: string }
+        status?: { phase?: string }
+      }>
+    }).items ?? []).filter((p) => p.metadata?.name)
+    const { stdout: desiredRaw } = await execFileAsync('kubectl', [
+      'get', 'daemonset', GVISOR_INSTALLER_APP_NAME, '-n', ns,
+      '-o', 'jsonpath={.status.desiredNumberScheduled}',
+    ])
+    const desired = Number(desiredRaw.trim() || '0')
+    // One line per sysctl (`<path>=<value>`, or `absent`) and one for the
+    // live manager value.
+    const probe = NODE_TUNING_SYSCTLS
+      .map((t) => `echo ${t.path}=$(cat /proc/sys/${t.path} 2>/dev/null || echo absent)`)
+      .concat('echo tasksmax=$(nsenter -t 1 -m -- systemctl show -p DefaultTasksMax --value 2>/dev/null)')
+      .join('; ')
+    const missing: string[] = []
+    const unverified: string[] = []
+    if (pods.length < desired) unverified.push(`${desired - pods.length} node(s) with no installer pod`)
+    let verified = 0
+    for (const pod of pods) {
+      const node = pod.spec?.nodeName ?? '<unscheduled>'
+      if (pod.status?.phase !== 'Running') {
+        unverified.push(`${node} (${pod.status?.phase ?? 'no phase'})`)
+        continue
+      }
+      let report: string
+      try {
+        ({ stdout: report } = await execFileAsync('kubectl', [
+          'exec', pod.metadata!.name!, '-n', ns, '-c', 'install', '--', 'sh', '-c', probe,
+        ], { timeout: 60_000 }))
+      } catch (err) {
+        unverified.push(`${node} (${truncate(err)})`)
+        continue
+      }
+      verified += 1
+      const wrong: string[] = []
+      for (const t of NODE_TUNING_SYSCTLS) {
+        const raw = new RegExp(`^${t.path}=(\\S*)$`, 'm').exec(report)?.[1] ?? ''
+        if (raw === 'absent') continue
+        const live = Number(raw || Number.NaN)
+        const ok = t.mode === 'raise' ? live >= t.value : live === t.value
+        if (!ok) {
+          wrong.push(`${t.path.replaceAll('/', '.')}=${Number.isNaN(live) ? '?' : String(live)} (${t.why})`)
+        }
+      }
+      const tasksMax = /^tasksmax=(.*)$/m.exec(report)?.[1] ?? ''
+      if (tasksMax !== NODE_TASKSMAX_LIVE) {
+        wrong.push(`DefaultTasksMax=${tasksMax || '?'} (subagent fan-out)`)
+      }
+      if (wrong.length > 0) missing.push(`${node}: ${wrong.join(', ')}`)
+    }
+    if (missing.length > 0) {
+      return {
+        name: 'node-tuning', status: 'warn',
+        detail: `not in place on ${missing.join('; ')}`
+          + (unverified.length > 0 ? `; unverified on ${unverified.join(', ')}` : ''),
+        fix: nodeTuningFix(),
+      }
+    }
+    if (unverified.length > 0) {
+      return {
+        name: 'node-tuning', status: 'warn',
+        detail: `in place on ${verified} node(s); unverified on ${unverified.join(', ')}`,
+        fix: nodeTuningFix(),
+      }
+    }
+    return {
+      name: 'node-tuning', status: 'pass',
+      detail: `sysctls and DefaultTasksMax in place on ${verified} node(s)`,
+    }
+  } catch (err) {
+    return {
+      name: 'node-tuning', status: 'warn',
+      detail: `could not verify node tuning (${truncate(err)})`,
+      fix: nodeTuningFix(),
     }
   }
 }

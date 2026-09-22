@@ -33,13 +33,9 @@ import {
 } from './cni-adopt'
 import {
   formatCheckResult,
-  NODE_INOTIFY_MAX_USER_INSTANCES,
-  NODE_INOTIFY_MAX_USER_WATCHES,
   NODE_KUBELET_FLAGS_ENV,
   NODE_KUBELET_HOUSEKEEPING_INTERVAL,
-  NODE_MIN_FREE_KBYTES,
   NODE_PIDS_LIMIT,
-  NODE_TASKSMAX_CONF,
   runClusterCheck,
 } from './check'
 import type { CheckResult } from '@yaac/shared/types'
@@ -57,8 +53,8 @@ import { env } from '@yaac/shared/env'
  * and its cluster to the yaac version that is installed. Brew (or any
  * package manager) can only install binaries; everything per-user and
  * stateful — the rootful libkrun machine, the kind cluster, Calico, the
- * node fixups, every built-in image, the in-cluster layers — happens here,
- * with actionable error messages.
+ * kind node fixups, every built-in image, the in-cluster layers — happens
+ * here, with actionable error messages.
  *
  * It is safe to run at any time, and it is what an upgrade runs: `npm
  * update` then `yaac cluster install`. A cluster that already exists is
@@ -83,13 +79,15 @@ import { env } from '@yaac/shared/env'
  * same in-cluster layers every other run converges.
  *
  * Two kinds of state need re-applying on an existing cluster, and both are
- * unconditional here. The node fixups (sysctls, TasksMax, the pids limit)
- * live in the kind node CONTAINER and vanish on a node or VM restart, with
- * no node-side agent to restore them. The in-cluster layers — the gVisor
- * runtime, the PriorityClasses, netd, the images — change with the yaac
- * version, and re-applying them is how an existing cluster picks up an
- * upgrade. The gVisor install is NOT a node fixup: a DaemonSet reinstalls
- * it on every node that appears, so a replaced node repairs itself.
+ * unconditional here. The kind node fixups — the node container's pids
+ * ceiling and the kubelet housekeeping flag — are podman state and
+ * kubeadm's flags file, which only a node CONTAINER has and which no
+ * in-cluster agent can set. The in-cluster layers — the gVisor runtime,
+ * the PriorityClasses, netd, the images — change with the yaac version,
+ * and re-applying them is how an existing cluster picks up an upgrade.
+ * Node TUNING (the sysctls, DefaultTasksMax) is in-cluster state now: the
+ * gVisor installer DaemonSet applies it on every node it lands on and on a
+ * timer, so a node that restarted repairs itself with no re-run here.
  */
 
 /**
@@ -393,17 +391,20 @@ export async function runClusterInstall(
     // different one — adopt mode is normally the first thing a fresh
     // install runs against a cluster it has never seen.
     resetClusterCidrCache()
-    // Node fixups are kind-node-container state (sysctls, TasksMax, pids
-    // limit). An adopted cluster may still BE a kind cluster — that is the
-    // cheapest way to rehearse this path — so apply them where the nodes
-    // are podman containers and say so where they are not.
+    // The kind node fixups are node-CONTAINER state (the pids ceiling, the
+    // kubelet flag). An adopted cluster may still BE a kind cluster — that
+    // is the cheapest way to rehearse this path — so apply them where the
+    // nodes are podman containers and say so where they are not. The node
+    // tuning needs no such branch: the installer DaemonSet carries it.
     const nodes = await kindNodes(deps, cluster)
-    if (nodes.length > 0) for (const node of nodes) await applyNodeFixups(deps, node)
+    if (nodes.length > 0) for (const node of nodes) await applyKindNodeFixups(deps, node)
     else {
       deps.log(
-        `note: no kind cluster "${cluster}" on this host, so the node fixups are `
-        + 'skipped — they are kind-node-container state and do not apply to nodes yaac '
-        + 'has no shell on.',
+        `note: no kind cluster "${cluster}" on this host, so the kind node fixups `
+        + '(the node container\'s pids-limit and the kubelet housekeeping flag) are '
+        + 'skipped — they are settings of a node container, and these nodes are not '
+        + 'ones. The sysctls and DefaultTasksMax are applied by the gVisor installer '
+        + 'DaemonSet on every node.',
       )
     }
   } else if ((await kindNodes(deps, cluster)).length === 0) {
@@ -415,7 +416,7 @@ export async function runClusterInstall(
     // as world.
     resetClusterCidrCache()
     await installCalico(deps, cluster)
-    for (const node of await kindNodes(deps, cluster)) await applyNodeFixups(deps, node)
+    for (const node of await kindNodes(deps, cluster)) await applyKindNodeFixups(deps, node)
   } else {
     if (opts.nodes !== undefined) {
       deps.log(
@@ -425,12 +426,13 @@ export async function runClusterInstall(
       )
     }
     deps.log(`Converging the existing kind cluster "${cluster}"...`)
-    // Re-applied every run because they live in node/VM state a restart
-    // drops (a podman machine restart is the usual cause) — which is also
-    // why anything this process cached about "the node" must not be reused
-    // below: the node's address may have moved under it.
+    // Re-applied every run: cheap, idempotent, and the one way a cluster
+    // created by an older yaac picks the pair up. Anything this process
+    // cached about "the node" must not be reused below either — a podman
+    // machine restart is the usual reason to be here, and the node's
+    // address may have moved under it.
     resetClusterCidrCache()
-    for (const node of await kindNodes(deps, cluster)) await applyNodeFixups(deps, node)
+    for (const node of await kindNodes(deps, cluster)) await applyKindNodeFixups(deps, node)
   }
   // Once there is a cluster to ask, and before any layer lands on it: an
   // operator that is not there costs the diagnosis and nothing else.
@@ -993,40 +995,30 @@ async function sideloadCalicoImages(
 }
 
 /**
- * The per-node fixups: DefaultTasksMax + VM memory sysctls (subagent
- * fan-out and virtiofs allocations die without them), the kubelet
- * housekeeping interval (see NODE_KUBELET_HOUSEKEEPING_INTERVAL —
- * default-interval cAdvisor stats burned whole cores against gVisor
- * sandboxes), and the node container's own PID ceiling. Most of these live
- * in node/VM state that resets on restart — `yaac cluster install`
- * re-applies them, and `yaac cluster check` warns when they are missing.
+ * The kind-only node fixups: what a node CONTAINER has and a real node
+ * does not, so neither can ride the installer DaemonSet the way the
+ * sysctls and DefaultTasksMax do (node-tuning.ts in the substrate).
+ *
+ *  - The kubelet housekeeping interval (see
+ *    NODE_KUBELET_HOUSEKEEPING_INTERVAL — default-interval cAdvisor stats
+ *    burned whole cores against gVisor sandboxes), edited into kubeadm's
+ *    flags file. A managed pool's kubelet config is the provider's; on a
+ *    byo cluster this is a pool setting, documented per target.
+ *  - The node container's own pids ceiling, a property of the podman
+ *    container that nothing inside it can raise. It persists across a
+ *    container restart and is lost only with the container itself.
  *
  * No registry wiring here: both the main and the per-project registries are
  * in-cluster workloads whose containerd `hosts.toml` is written by one-shot
  * pods that hostPath-mount the node's `certs.d` directory, so nothing about
  * the image path assumes the node is a container on this host's engine.
  */
-async function applyNodeFixups(deps: ClusterInstallDeps, node: string): Promise<void> {
-  deps.log(`Applying node fixups to ${node}...`)
-  await deps.run('podman', ['exec', node, 'sh', '-c',
-    'mkdir -p /etc/systemd/system.conf.d\n'
-    + `printf '[Manager]\\nDefaultTasksMax=infinity\\n' > ${NODE_TASKSMAX_CONF}\n`
-    + 'systemctl daemon-reexec\n'
-    + `echo ${NODE_MIN_FREE_KBYTES} > /proc/sys/vm/min_free_kbytes\n`
-    + 'echo 40 > /proc/sys/vm/compaction_proactiveness\n'
-    // Host-global (see the constants' doc): every node container draws on
-    // the one root-uid inotify pool, so a multi-node cluster starves
-    // netd's Envoy at the stock ceiling. Writing it per node is
-    // idempotent — each write sets the same host value.
-    + `echo ${NODE_INOTIFY_MAX_USER_INSTANCES} > /proc/sys/fs/inotify/max_user_instances\n`
-    + `echo ${NODE_INOTIFY_MAX_USER_WATCHES} > /proc/sys/fs/inotify/max_user_watches\n`,
-  ])
+async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Promise<void> {
+  deps.log(`Applying kind node fixups to ${node}...`)
   // kubelet housekeeping interval: prepend the flag to the kubeadm-written
   // flags env (idempotent — skipped when the exact flag is already there;
   // any stale different-value copy is stripped first) and restart kubelet
-  // only when the file actually changed. The file lives in the node
-  // container's filesystem, so unlike the sysctls above it survives node
-  // restarts.
+  // only when the file actually changed.
   const hkFlag = `--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}`
   await deps.run('podman', ['exec', node, 'sh', '-c',
     `if ! grep -q -- '${hkFlag}' ${NODE_KUBELET_FLAGS_ENV}; then `

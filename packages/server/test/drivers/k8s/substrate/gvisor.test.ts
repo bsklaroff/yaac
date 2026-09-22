@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { execFile } from 'node:child_process'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { promisify } from 'node:util'
 import {
   GVISOR_NODE_LABEL,
@@ -28,6 +31,13 @@ import {
   NODE_RUNSC_CONFIG_PATH,
   NODE_RUNSC_NESTED_CONFIG_PATH,
 } from '#drivers/k8s/substrate/gvisor'
+import {
+  NODE_SYSTEMD_CONF_DIR,
+  NODE_TASKSMAX_CONF,
+  NODE_TASKSMAX_CONTENT,
+  NODE_TASKSMAX_LIVE,
+  NODE_TUNING_SYSCTLS,
+} from '#drivers/k8s/substrate/node-tuning'
 
 /** Real `sh -n`: the install program is generated shell, so parsing it is
  *  the one property a string assertion cannot cover. */
@@ -43,6 +53,13 @@ function shellLiteralAfter(script: string, prefix: string): string {
   const start = script.indexOf(prefix) + prefix.length + 1
   expect(start).toBeGreaterThan(prefix.length)
   return script.slice(start, script.indexOf("'", start))
+}
+
+/** The body of `name() { ... }` in the script, up to its closing brace. */
+function shellFunction(script: string, name: string): string {
+  const start = script.indexOf(`${name}() {`)
+  expect(start).toBeGreaterThanOrEqual(0)
+  return script.slice(start, script.indexOf('\n}\n', start))
 }
 
 describe('runtimeClassSpec', () => {
@@ -219,6 +236,14 @@ describe('gvisorInstallScript', () => {
     expect(script).toContain('nsenter -t 1 -m -- systemctl restart containerd')
     expect(script.indexOf('nsenter -t 1 -m -- systemctl restart containerd'))
       .toBeLessThan(script.indexOf(': > "$state/installed-$version"'))
+    // `changed` is the RUNTIME callers' flag, set at each call site on a
+    // write; the helper itself only reports. The tuning pass shares the
+    // helper and must never restart containerd for a systemd drop-in.
+    expect(shellFunction(script, 'write_if_changed')).not.toContain('changed=1')
+    expect(script).toContain('    return 1\n  fi\n  mv "$1.yaac-new" "$1" || exit 1\n}')
+    expect(script).toContain(
+      `if write_if_changed '/host${NODE_RUNSC_CONFIG_PATH}' `)
+    expect(script.match(/; then changed=1; fi$/gm)).toHaveLength(2)
     // A node with no containerd config is an unsupported node, not one to
     // write a fresh (defaults-losing) config onto.
     expect(script).toContain('cannot register the runsc handlers')
@@ -236,7 +261,117 @@ describe('gvisorInstallScript', () => {
     expect(script).toContain(
       `trap 'rm -f "$ready"; if [ "$held" = 1 ]; then rm -rf "$lock"; fi' EXIT`)
     expect(script).toMatch(
-      /while :; do\n {2}take_lock\n {2}install_pass\n {2}drop_lock\n {2}: > "\$ready"/)
+      /while :; do\n {2}take_lock\n {2}tune_pass\n {2}install_pass\n {2}drop_lock\n {2}: > "\$ready"/)
+  })
+
+  it('tunes the node before installing the runtime, and never restarts containerd for it', () => {
+    const script = gvisorInstallScript()
+
+    // The one node-tuning mechanism: every pass re-applies the sysctls and
+    // the TasksMax drop-in, which is what puts them back on a node that
+    // restarted — with no `yaac cluster install` re-run, and on a node yaac
+    // has no shell on. Tuning runs first (cheap, and a node that cannot be
+    // tuned should fail before it downloads a release) and under the lock.
+    expect(script.indexOf('tune_pass() {')).toBeLessThan(script.indexOf('install_pass() {'))
+    // Ceilings are raised, never lowered: an operator who set more keeps it.
+    expect(script).toContain('if [ "$3" = raise ] && [ "$cur" -ge "$2" ]; then return 0; fi')
+    expect(script).toContain('if [ "$3" = set ] && [ "$cur" = "$2" ]; then return 0; fi')
+    expect(script).toContain('echo "$2" > "/proc/sys/$1" || exit 1')
+    // A knob the kernel does not have (compaction_proactiveness is 5.9+) is
+    // skipped, not fatal: an older byo node must not lose the runtime over
+    // a virtiofs setting.
+    expect(script).toContain('if [ ! -e "/proc/sys/$1" ]; then')
+    expect(script).toContain('is not on this kernel; skipped')
+    expect(NODE_TUNING_SYSCTLS.length).toBeGreaterThan(0)
+    for (const s of NODE_TUNING_SYSCTLS) {
+      expect(script).toContain(`  tune_sysctl '${s.path}' ${String(s.value)} ${s.mode}`)
+    }
+    // vm.min_free_kbytes is a ceiling, compaction_proactiveness a setting.
+    expect(NODE_TUNING_SYSCTLS.find((s) => s.path === 'vm/min_free_kbytes')?.mode).toBe('raise')
+    expect(NODE_TUNING_SYSCTLS.find((s) => s.path === 'vm/compaction_proactiveness')?.mode)
+      .toBe('set')
+
+    // The drop-in lands on the node through the hostPath mount (for the next
+    // boot), and systemd is told to reexec when its LIVE value says it has
+    // not seen it — never keyed on the file diff, which a pass killed between
+    // the write and the reexec would leave looking done; and never on the
+    // flag that restarts containerd.
+    expect(shellLiteralAfter(script, `if write_if_changed '/host${NODE_TASKSMAX_CONF}' `))
+      .toBe(NODE_TASKSMAX_CONTENT)
+    expect(script).toContain(
+      `if [ "$(nsenter -t 1 -m -- systemctl show -p DefaultTasksMax --value)" != '${NODE_TASKSMAX_LIVE}' ]; then`)
+    expect(script.match(/nsenter -t 1 -m -- systemctl daemon-reexec/g)).toHaveLength(1)
+    expect(shellFunction(script, 'tune_pass')).not.toContain('changed=1')
+  })
+
+  it('reexecs systemd once per pod life for a drop-in it can never see applied', async () => {
+    // Keyed on the live value, a manager that never answers `infinity` (an
+    // operator drop-in sorting after ours) would be reexeced every pass,
+    // forever. Driven under a real sh with a fake nsenter that leaves the
+    // value alone: two passes, one reexec, a warning on the second; a
+    // change to the file re-arms exactly one more.
+    const script = gvisorInstallScript()
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tune-'))
+    try {
+      const target = path.join(dir, 'tasksmax.conf')
+      const program = [
+        'set -eu',
+        shellFunction(script, 'write_if_changed') + '\n}',
+        'tasksmax_reexeced=0',
+        shellFunction(script, 'tune_pass').replaceAll(`'/host${NODE_TASKSMAX_CONF}'`, `'${target}'`) + '\n}',
+        // The sysctl half is not under test and would write /proc/sys.
+        'tune_sysctl() { :; }',
+        'nsenter() { case "$*" in *daemon-reexec*) echo REEXEC ;; *) echo 4915 ;; esac; }',
+        'tune_pass; tune_pass',
+        `printf 'changed' > '${target}'`,
+        'tune_pass; tune_pass',
+      ].join('\n')
+      const { stdout, stderr } = await runSh('sh', ['-c', program])
+      expect(stdout.match(/^REEXEC$/gm)).toHaveLength(2)
+      expect(stderr.match(/still not infinity after a reexec/g)).toHaveLength(2)
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('ends the pass when a node file cannot be written, even from an `if` list', async () => {
+    // `set -e` is suspended for a function run as an `if` condition, so the
+    // helper's failures must be explicit: under -e alone an unwritable
+    // target would print an error, return non-zero, read as "unchanged" and
+    // let the pass go on to Ready + label with nothing on the node.
+    const script = gvisorInstallScript()
+    const program = [
+      'set -eu',
+      shellFunction(script, 'write_if_changed') + '\n}',
+      "if write_if_changed /nonexistent-yaac-dir/x 'content'; then echo WROTE; fi",
+      'echo REACHED',
+    ].join('\n')
+    const result = await runSh('sh', ['-c', program]).then(
+      (r) => ({ code: 0, stdout: r.stdout }),
+      (e: { code?: number; stdout?: string }) => ({ code: e.code ?? 1, stdout: e.stdout ?? '' }),
+    )
+    expect(result.code).not.toBe(0)
+    expect(result.stdout).not.toContain('REACHED')
+    expect(result.stdout).not.toContain('WROTE')
+    // ...and the contract the callers rely on, under the same real sh: a
+    // changed file exits 0, an unchanged one exits 1, nothing is left behind.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-wic-'))
+    try {
+      const target = path.join(dir, 'f.toml')
+      const ok = [
+        'set -eu',
+        shellFunction(script, 'write_if_changed') + '\n}',
+        `if write_if_changed '${target}' 'a'; then echo FIRST=wrote; fi`,
+        `if write_if_changed '${target}' 'a'; then echo SECOND=wrote; else echo SECOND=same; fi`,
+        `if write_if_changed '${target}' 'b'; then echo THIRD=wrote; fi`,
+      ].join('\n')
+      const { stdout } = await runSh('sh', ['-c', ok])
+      expect(stdout).toBe('FIRST=wrote\nSECOND=same\nTHIRD=wrote\n')
+      expect(await fs.readFile(target, 'utf8')).toBe('b')
+      expect(await fs.readdir(dir)).toEqual(['f.toml'])
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('serializes passes across installs sharing the node, and breaks a dead one\'s lock', () => {
@@ -275,7 +410,7 @@ describe('gvisorInstallerHostMounts', () => {
 
     const hostPaths = volumes.filter((v) => v.hostPath)
     expect(hostPaths.map((v) => v.hostPath!.path))
-      .toEqual([NODE_BIN_DIR, NODE_CONTAINERD_DIR, NODE_GVISOR_CACHE_DIR])
+      .toEqual([NODE_BIN_DIR, NODE_CONTAINERD_DIR, NODE_GVISOR_CACHE_DIR, NODE_SYSTEMD_CONF_DIR])
     // DirectoryOrCreate: the cache (and, on a bare node, /usr/local/bin) may
     // not exist yet, and a missing hostPath would leave the pod Pending.
     expect(hostPaths.every((v) => v.hostPath!.type === 'DirectoryOrCreate')).toBe(true)
@@ -288,6 +423,7 @@ describe('gvisorInstallerHostMounts', () => {
       `/host${NODE_BIN_DIR}`,
       `/host${NODE_CONTAINERD_DIR}`,
       `/host${NODE_GVISOR_CACHE_DIR}`,
+      `/host${NODE_SYSTEMD_CONF_DIR}`,
       GVISOR_INSTALLER_READY_FILE.replace(/\/[^/]+$/, ''),
     ])
 

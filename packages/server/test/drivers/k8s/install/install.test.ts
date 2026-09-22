@@ -412,16 +412,19 @@ describe('runClusterInstall', () => {
       f === 'kubectl' && a.includes('rollout') && a.includes('daemonset/calico-node'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'kubectl' && a.includes('--for=condition=Ready'))).toBe(true)
 
-    // Node fixups: TasksMax/sysctls via podman exec, then the node
-    // container's pids ceiling. NO registry wiring — neither the kind
-    // network join nor a hosts.toml write survives here; the registries
-    // write their own from in-cluster pods.
+    // The kind node fixups: the kubelet housekeeping flag via podman exec,
+    // then the node container's pids ceiling. NOT the sysctls or TasksMax —
+    // those are the installer DaemonSet's, applied on every node it lands
+    // on — and NO registry wiring: neither the kind network join nor a
+    // hosts.toml write survives here; the registries write their own from
+    // in-cluster pods.
     const execCmds = runCalls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec')
       .map(([, a]) => a[a.length - 1])
     expect(execCmds.some((c) => c.includes('hosts.toml'))).toBe(false)
-    expect(execCmds.some((c) => c.includes('DefaultTasksMax=infinity'))).toBe(true)
-    expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(true)
+    expect(execCmds.some((c) => c.includes('DefaultTasksMax'))).toBe(false)
+    expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(false)
+    expect(execCmds.some((c) => c.includes('inotify'))).toBe(false)
     // kubelet housekeeping interval: idempotent kubeadm-flags.env edit,
     // restarting kubelet only when the flag was absent.
     expect(execCmds.some((c) =>
@@ -577,10 +580,10 @@ describe('runClusterInstall', () => {
 
     const allNodes = ['yaac-control-plane', 'yaac-worker', 'yaac-worker2']
     // The container-side fixups are per-node state: a node missing them
-    // dies under subagent fan-out no matter what the other nodes have.
+    // burns kubelet cores no matter what the other nodes have.
     const fixupWrites = run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec'
-        && String(a[a.length - 1]).includes('DefaultTasksMax=infinity'))
+        && String(a[a.length - 1]).includes('--housekeeping-interval='))
       .map(([, a]) => a[1])
     expect(fixupWrites).toEqual(allNodes)
     // The per-node REGISTRY wiring is deliberately NOT in this loop: both
@@ -789,10 +792,10 @@ describe('runClusterInstall', () => {
     expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
     // Re-applied on every run: that is how an existing cluster picks netd,
     // the PriorityClasses, a runsc version bump and new images up on a yaac
-    // upgrade. The gVisor half no longer repairs node state — the installer
-    // DaemonSet does that on its own whenever a node appears — so what an
-    // install still owns per node is the kind-node-container state with no
-    // agent to re-apply it (sysctls, TasksMax, pids limit).
+    // upgrade. Node state is the installer DaemonSet's — the runtime AND the
+    // tuning, re-applied whenever a node appears — so what an install still
+    // owns per node is the kind-node-container pair no in-cluster agent can
+    // set (the pids ceiling, the kubelet flag).
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
     expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
     expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
@@ -1261,7 +1264,7 @@ describe('runClusterInstall', () => {
     expect(logged(deps)).toContain('No yaac server runs against this cluster')
 
     // An adopted cluster can still be a kind one (the cheapest rehearsal),
-    // so the node-container fixups run where the nodes are podman containers.
+    // so the kind node fixups run where the nodes are podman containers.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
     // The finishing check is what positively probes NetworkPolicy
     // enforcement — "Calico is installed" is not evidence of it.
@@ -1275,6 +1278,21 @@ describe('runClusterInstall', () => {
     expect(log).toContain('192.168.0.0/16')
     expect(log).toContain('veth prefix: cali*')
     expect(log).toMatch(/cali\* resolves 2 workload route\(s\) across all 1 node/)
+  })
+
+  it('--adopt-cni skips the kind node fixups, naming them, where the nodes are not podman containers', async () => {
+    stageAdoptCidrs()
+    const deps = makeDeps({ run: adoptRun({ kind: false }) })
+    await expect(runClusterInstall({ adoptCni: true }, deps)).resolves.toBe(true)
+    // Nothing exec'd — there is no container to exec — and the note says
+    // which two settings that leaves to the operator, and which it does not:
+    // the tuning rides the installer DaemonSet onto every node regardless.
+    expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && (a[0] === 'exec' || a[0] === 'update')))
+      .toBe(false)
+    const log = logged(deps)
+    expect(log).toMatch(/kind node fixups .*pids-limit and the kubelet housekeeping flag.* are skipped/)
+    expect(log).toMatch(/DefaultTasksMax are applied by the gVisor installer DaemonSet/)
+    expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
   })
 
   it('--adopt-cni needs no kind, and refuses the flag that cannot mean anything with it', async () => {

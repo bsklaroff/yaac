@@ -41,6 +41,11 @@ Everything the earlier plans called "the keystone" has shipped on kind:
   already renders `hostPath | pvc+subPath | emptyDir`. Nothing selects
   `pvc` yet.
 - Multi-node kind (`--nodes N`) exists, with per-node readiness gates.
+- Node tuning (the sysctls, `DefaultTasksMax`) is the gVisor installer
+  DaemonSet's, applied on every node it lands on and re-applied after a
+  restart; install's `podman exec` loop holds only the kind-only pair (the
+  node container's pids ceiling, the kubelet housekeeping flag), and
+  `cluster check` reads the tuning back through the installer's pods.
 - The server's fronting is a per-backend manifest set install renders
   (docs/server-in-cluster.md "Reachability"): a ClusterIP plus a
   hostNetwork forwarder behind the port mapping on kind, the Tailscale
@@ -252,15 +257,13 @@ exists.
   same probes the spike used.
 - Gate: e2e green on kind, one node and three.
 
-### 2. Node tuning into the DaemonSet
+### 2. Node tuning into the DaemonSet — shipped
 
-- Sysctls and `DefaultTasksMax` move into `yaac-gvisor-install`; the
-  `podman exec` loop in install keeps only the pids-limit and the kubelet
-  flag, both kind-only and both skipped under `--byo`. The `node-fixups`
-  check narrows to that pair and self-skips on a non-podman node as it
-  already does.
-- Gate: `cluster check` green after a podman-machine restart with no
-  install re-run for the sysctls (the DaemonSet reapplied them).
+docs/cluster-setup.md ("The gVisor runtime and the node tuning", "What
+survives a restart, and what heals itself") is the current-state
+reference. What the `podman exec` loop still applies is decided by whether
+the nodes are podman containers, not by a flag; step 6 decides whether
+`--byo` should refuse to touch a node container it can reach.
 
 ### 4. Server publication and the ingress wall — shipped
 
@@ -294,6 +297,12 @@ installed on the test rig.
   included) — folding `--tailnet` in as implied, and deleting the flag if a
   tailnet-fronted kind install has no users of its own by then.
   Every new argument gets its e2e-cli coverage.
+- **Whether `--byo` touches a node container it can reach.** The kind-only
+  node fixups (the container's pids ceiling, the kubelet housekeeping flag)
+  are applied wherever the nodes are podman containers on this host, which
+  a byo-on-kind rehearsal still needs for the pids ceiling. `--byo` decides
+  here whether that detection stays the switch or the mode refuses to exec
+  a node it did not create.
 - **The architecture probe refuses a mismatch, loudly.** The built-in
   images are built on the deploying machine for its own architecture and
   nothing cross-builds them, so `--byo` reads every node's architecture
@@ -381,7 +390,8 @@ not.
 
 - **Moving off kind** (native k3s on Linux, Lima/minikube krunkit spikes,
   buildkitd-in-cluster as a podman replacement). kind is the local backend;
-  its fixups shrink under step 2 and its host podman stays for the provider.
+  its fixups are down to the kind-only pair and its host podman stays for
+  the provider.
 - **A host NFS export for the local install.** The local data dir stays on
   disk behind static hostPath PVs; NFS is cloud-only.
 - **`yaac cluster attach` as a separate verb**; it is `--byo` on install.
