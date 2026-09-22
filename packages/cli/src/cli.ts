@@ -301,7 +301,7 @@ cluster
 
 cluster
   .command('install')
-  .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
+  .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the kind node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
   .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
   .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
   .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1; the server then requires a credential')

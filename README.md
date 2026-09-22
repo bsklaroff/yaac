@@ -266,8 +266,8 @@ Commands:
 yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
   install           Converge this machine and its cluster to the installed yaac
-                    version: the kind cluster and CNI if there is none, the node
-                    fixups, every built-in image, and the in-cluster layers.
+                    version: the kind cluster and CNI if there is none, the kind
+                    node fixups, every built-in image, and the in-cluster layers.
                     Safe to re-run; never destructive
     --nodes <n>     Nodes to create (default 1; ignored if a cluster exists)
     --adopt-cni     Install into a cluster whose CNI yaac did not install

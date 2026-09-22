@@ -14,8 +14,8 @@ One idempotent verb, safe to run at any time. It bootstraps the podman
 machine on macOS (see below) — or expects a reachable rootful podman on
 Linux (see below) — creates a kind cluster from the bundled
 `k8s/kind-config.yaml` **if there is none**, installs pinned Calico (the CNI
-and NetworkPolicy engine), applies the node fixups to every node, deploys
-the in-cluster image registry, builds and pushes every image yaac ships (see
+and NetworkPolicy engine), applies the kind node fixups to every node,
+deploys the in-cluster image registry, builds and pushes every image yaac ships (see
 "Images are built here, and only here"), applies the in-cluster layers —
 the gVisor runtime, the PriorityClasses, netd — and finally deploys **the
 yaac server itself** (docs/server-in-cluster.md), publishing it at a fixed
@@ -225,16 +225,18 @@ only kind's provider breaks.
    `$HOME` into the node at the same path makes node == host for everything
    yaac touches. Every node gets it, so the bind holds wherever a worktree
    is scheduled.
-3. **Node limits** — `DefaultTasksMax=infinity` + VM memory sysctls inside
-   each node and a raised pids-limit on the node container, so subagent
-   fan-out and virtiofs I/O don't die with
-   `fork: resource temporarily unavailable`. Also `--housekeeping-interval=60s`
-   in the kubelet flags (kubeadm-flags.env): at the 10s default, cAdvisor's
-   per-container process stats readlink every open fd of every process each
-   tick, and gVisor worktree sandboxes concentrate ~9k fds per sentry — kubelet
-   alone burned 1.5–2 cores on a busy node before this.
-4. **The gVisor runtime**, via the `yaac-gvisor-install` DaemonSet — a
-   privileged pod on every node that drops a pinned `runsc` +
+3. **The kind node fixups** — the two settings a node *container* has and
+   a real node does not, applied through podman: a raised pids-limit on the
+   node container (podman's default 2048 is what subagent fan-out would
+   otherwise hit as `fork: resource temporarily unavailable`), and
+   `--housekeeping-interval=300s` in the kubelet flags (kubeadm-flags.env):
+   at the 10s default, cAdvisor's per-container process stats readlink
+   every open fd of every process each tick, and gVisor worktree sandboxes
+   concentrate ~9k fds per sentry — kubelet alone burned 1.5–2 cores on a
+   busy node before this. On a cluster yaac did not create the kubelet
+   config is the pool's, so the flag is a pool setting there.
+4. **The gVisor runtime and the node tuning**, via the `yaac-gvisor-install`
+   DaemonSet — a privileged pod on every node that drops a pinned `runsc` +
    `containerd-shim-runsc-v1` there, registers two runsc handlers in that
    node's containerd config (`runsc` and `runsc-nested`, each with its own
    `/etc/containerd/runsc*.toml` flag file — both set `allow-suid` so the
@@ -245,11 +247,28 @@ only kind's provider breaks.
    whose `scheduling.nodeSelector` is that label — so a sandboxed pod can
    only be scheduled where the shim actually exists.
 
+   Every pass first **tunes the node**: `vm.min_free_kbytes` and the two
+   `fs.inotify` ceilings (raised to yaac's floor, never lowered — an
+   operator who set more keeps it), `vm.compaction_proactiveness` (a 5.9+
+   knob; a sysctl the kernel does not have is logged and skipped), and a
+   `DefaultTasksMax=infinity` drop-in in `/etc/systemd/system.conf.d`
+   followed by a `systemctl daemon-reexec` whenever the node's systemd
+   reports a live `DefaultTasksMax` other than `infinity` — the file is
+   for the next boot, the live value is what this boot is judged by.
+   Subagent fan-out, virtiofs allocations under memory pressure and netd's
+   Envoy (which asserts on an inotify fd at startup) all die without them,
+   on any node. Because the pass re-runs on every node the DaemonSet lands
+   on, on every pod restart and every ten minutes, a node that restarts —
+   a podman machine restart, a host reboot, a recycled cloud node — gets
+   its sysctls back with no `yaac cluster install` re-run. A node the pass
+   cannot tune fails the pass, and so never gets the runtime label: a node
+   whose worktrees would die late is a node yaac does not schedule onto.
+
    A DaemonSet rather than a loop over `podman exec <node>` for two reasons:
    it works on nodes yaac has no shell on (a managed pool, a remote control
-   plane), and a node that is restarted or *replaced* installs itself with
-   nothing to run — which is what makes the install survive node recycling.
-   It is idempotent: the binaries are fetched only when the node-local cache
+   plane), and a node that is restarted or *replaced* installs and tunes
+   itself with nothing to run — which is what makes the install survive
+   node recycling. It is idempotent: the binaries are fetched only when the node-local cache
    does not already hold a copy matching the release's published sha512
    (re-verified on every hit, not just after a download), the config files
    are compared before writing, and containerd is restarted only when
@@ -326,10 +345,11 @@ the containerd `config_path` registry patch, the kubelet swap patch, and
 `disableDefaultCNI`.
 
 Everything else already reached every node and stays that way, by one of
-two mechanisms. Host-side loops over the node list: the node fixups and the
-containerd registry `hosts.toml` (both `podman exec`), and the per-project
-registries' `hosts.toml` writer pods. DaemonSets, which need no list and
-also cover nodes added later: the gVisor installer, Calico, and netd.
+two mechanisms. Host-side loops over the node list: the kind node fixups
+(`podman exec` and `podman update`), and both registries' `hosts.toml`
+writer pods. DaemonSets, which need no list and also cover nodes added
+later: the gVisor installer (the runtime and the node tuning), Calico, and
+netd.
 
 Both registries' blob stores are RWO PVCs, so the store belongs to the
 claim rather than to whatever node the pod last landed on. Under kind's
@@ -468,24 +488,34 @@ Out of scope, deliberately: Cilium in any configuration, and installing
 policy for anyone else's workloads — every yaac policy selects only its own
 pods.
 
-## Node fixups vanish on restart
+## What survives a restart, and what heals itself
 
-The node limits live in node/VM state and **vanish on a node or VM restart**
-(e.g. after restarting the podman machine). Re-apply them without recreating
-the cluster:
+The sysctls are kernel state and **vanish on a node or VM restart** (a
+podman machine restart, a host reboot). Nothing needs re-running for them:
+the installer DaemonSet's pod restarts with the node and its first pass
+puts them back, and `yaac cluster check`'s `node-tuning` gate reads them
+back through that pod (every node the DaemonSet is meant to cover is
+accounted for: a pod that is not Running, an exec that fails, or a node
+with no pod at all is reported unverified, never passed). A node that reads untuned right after a restart is
+one whose installer pod has not passed yet; one that stays untuned is
+diagnosed from the installer's log
+(`kubectl -n yaac logs -l app=yaac-gvisor-install`).
+
+The kind node fixups are podman state and kubeadm's flags file, both kept
+across a node container restart and lost only with the container — a
+cluster recreate. `yaac cluster install` re-applies them on every run
+regardless (cheap, idempotent, and how a cluster made by an older yaac
+picks them up), and `yaac cluster check`'s `node-fixups` gate detects
+their absence and points here:
 
 ```sh
 yaac cluster install
 ```
 
-`yaac cluster check` detects when they're missing and points here.
-
-Install re-applies, on every run, exactly the state that has no node-side
-agent to restore it: the sysctls, `DefaultTasksMax`, the node container's
-pids ceiling and the registry wiring. The gVisor runtime is **not** in that
-set — its installer DaemonSet reinstalls on any node that appears — but the
-DaemonSet itself is re-applied too, which is how an existing cluster picks
-up a runsc version bump on a yaac upgrade.
+The gVisor runtime needs neither: its installer DaemonSet reinstalls on
+any node that appears. The DaemonSet itself is re-applied by install too,
+which is how an existing cluster picks up a runsc version bump on a yaac
+upgrade.
 
 ## What a worktree reserves
 
@@ -549,11 +579,13 @@ not 1000. The README's "Custom images" section spells that out.
 ## Verifying
 
 `yaac cluster check` verifies kubectl, the cluster, the registry, the
-namespace, the PriorityClasses and the node fixups, asserts the
+namespace, the PriorityClasses and the kind node fixups, asserts the
 RuntimeClasses exist, that at least one node carries the `yaac.gvisor`
 label they schedule on, and that a
-`gvisor`-class pod really runs inside the sentry, then runs an end-to-end
-probe pod — on the gvisor tier, like worktree pods — that exercises all of
+`gvisor`-class pod really runs inside the sentry, reads the node tuning
+back through the installer's pod on every node (`node-tuning`, warn-level:
+a node whose installer pod is not Running is reported unverified, never
+passed), then runs an end-to-end probe pod — on the gvisor tier, like worktree pods — that exercises all of
 the wiring above, including a hostPath **write** at the worktree uid. It
 ends with a sweep warning about any untrusted (worktree-labeled) pod running
 without a gvisor-tier `runtimeClassName`. Run it whenever worktrees fail to
