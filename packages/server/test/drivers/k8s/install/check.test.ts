@@ -44,7 +44,7 @@ import type { CheckResult } from '@yaac/shared/types'
 import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { pushImageToRegistry, registryReachable } from '#drivers/k8s/container/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import { podUid } from '#drivers/k8s/substrate'
+import { NODE_TUNING_SYSCTLS, podUid } from '#drivers/k8s/substrate'
 import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#drivers/k8s/substrate'
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
@@ -257,6 +257,24 @@ async function happyResponses(
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-gvisor') {
     return { stdout: 'GVISOR_SANDBOXED\n', stderr: '' }
   }
+  // The node-tuning gate reads the sysctls and the drop-in back through
+  // the installer's pod on each node.
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods'
+    && args.includes('app=yaac-gvisor-install')) {
+    return {
+      stdout: JSON.stringify({
+        items: clusterNodes.map((n, i) => ({
+          metadata: { name: `yaac-gvisor-install-${i}` },
+          spec: { nodeName: (n.metadata as { name: string }).name },
+          status: { phase: 'Running' },
+        })),
+      }),
+      stderr: '',
+    }
+  }
+  if (file === 'kubectl' && args[0] === 'exec' && args[1].startsWith('yaac-gvisor-install-')) {
+    return { stdout: tunedReport(), stderr: '' }
+  }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods'
     && args.includes('app=yaac-netd')) {
     // The veth-source gate reads every netd pod, then execs each one for
@@ -302,11 +320,7 @@ async function happyResponses(
     }
   }
   if (file === 'podman' && args[0] === 'exec') {
-    return {
-      stdout: 'tasksmax=ok\nminfree=262144\n'
-        + 'inotifyinst=1024\ninotifywatch=524288\nhk=ok\n',
-      stderr: '',
-    }
+    return { stdout: 'hk=ok\n', stderr: '' }
   }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
@@ -337,6 +351,14 @@ async function happyResponses(
 
 function happyRun(): RunMock {
   return vi.fn(happyResponses)
+}
+
+/** What a tuned node's installer pod reports: every target met. */
+function tunedReport(overrides: Record<string, string> = {}): string {
+  return NODE_TUNING_SYSCTLS
+    .map((t) => `${t.path}=${overrides[t.path] ?? String(t.value)}`)
+    .concat(overrides.tasksmax ?? 'tasksmax=ok')
+    .join('\n') + '\n'
 }
 
 /** Pod-phase responses: every probe pod completes successfully unless a
@@ -423,6 +445,7 @@ describe('runClusterCheck', () => {
       ['priority-classes', 'pass'],
       ['node-fixups', 'pass'],
       ['gvisor', 'pass'],
+      ['node-tuning', 'pass'],
       ['probe', 'pass'],
       ['egress', 'pass'],
       ['datapath', 'pass'],
@@ -885,6 +908,7 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(false)
     expect(byName(results, 'podman')).toMatchObject({ status: 'fail' })
     expect(byName(results, 'node-fixups')).toMatchObject({ status: 'skip' })
+    expect(byName(results, 'node-tuning')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'datapath')).toMatchObject({ status: 'skip' })
@@ -896,20 +920,12 @@ describe('runClusterCheck', () => {
     expect(appliedKinds).not.toContain('Pod')
   })
 
-  it('warns on node-fixups (pointing at install) when a fixup went missing', async () => {
+  it('warns on node-fixups (pointing at install) when a kind fixup went missing', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
       if (file === 'podman' && args[0] === 'exec') {
-        // Node restarted: the TasksMax conf is gone and the sysctl is back
-        // at its tiny default; a pre-fixup node also lacks the kubelet
-        // housekeeping flag.
-        // The inotify ceilings are the stock kernel defaults, which is
-        // what a multi-node cluster starves netd's Envoy against.
-        return {
-          stdout: 'tasksmax=missing\nminfree=67584\n'
-            + 'inotifyinst=128\ninotifywatch=8192\nhk=missing\n',
-          stderr: '',
-        }
+        // A pre-fixup node: no kubelet housekeeping flag.
+        return { stdout: 'hk=missing\n', stderr: '' }
       }
       if (file === 'podman' && args[0] === 'inspect') {
         return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
@@ -920,13 +936,14 @@ describe('runClusterCheck', () => {
     const { ok, results } = await runClusterCheck()
     const fixups = byName(results, 'node-fixups')
     expect(fixups).toMatchObject({ status: 'warn' })
-    expect(fixups?.detail).toContain('DefaultTasksMax')
-    expect(fixups?.detail).toContain('vm.min_free_kbytes')
     expect(fixups?.detail).toContain('kubelet housekeeping-interval')
     expect(fixups?.detail).toContain('pids-limit')
-    expect(fixups?.detail).toContain('fs.inotify.max_user_instances')
-    expect(fixups?.detail).toContain('fs.inotify.max_user_watches')
+    // The sysctls and TasksMax are the installer DaemonSet's, verified by
+    // the node-tuning gate — never by a podman exec.
+    expect(fixups?.detail).not.toContain('DefaultTasksMax')
+    expect(fixups?.detail).not.toMatch(/sysctl|min_free|inotify/)
     expect(fixups?.fix).toContain('yaac cluster install')
+    expect(byName(results, 'node-tuning')).toMatchObject({ status: 'pass' })
     expect(ok).toBe(true) // warn-only: these fixups fail late, not at pod start
   })
 
@@ -943,6 +960,97 @@ describe('runClusterCheck', () => {
     const fixups = byName(results, 'node-fixups')
     expect(fixups).toMatchObject({ status: 'skip' })
     expect(fixups?.detail).toContain('not a podman container')
+    // The tuning is still verified there: it goes through the installer's
+    // pod, which is the byo shape — a node yaac has no shell on.
+    expect(byName(results, 'node-tuning')).toMatchObject({ status: 'pass' })
+  })
+
+  it('warns on node-tuning, naming the node and the value, when the installer has not re-applied a sysctl', async () => {
+    // Two nodes; one restarted and its installer pod has not passed yet, so
+    // it reads the stock defaults and has no drop-in. Raise-only means a
+    // node tuned ABOVE the target is fine.
+    clusterNodes = [nodeItem('yaac-control-plane'), nodeItem('yaac-worker')]
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'exec' && args[1] === 'yaac-gvisor-install-1') {
+        return {
+          stdout: tunedReport({
+            'vm/min_free_kbytes': '67584',
+            'fs/inotify/max_user_instances': '128',
+            'fs/inotify/max_user_watches': '8192',
+            tasksmax: 'tasksmax=missing',
+          }),
+          stderr: '',
+        }
+      }
+      if (file === 'kubectl' && args[0] === 'exec' && args[1] === 'yaac-gvisor-install-0') {
+        return { stdout: tunedReport({ 'vm/min_free_kbytes': '1048576' }), stderr: '' }
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+    const tuning = byName(results, 'node-tuning')
+    expect(tuning).toMatchObject({ status: 'warn' })
+    expect(tuning?.detail).toContain('yaac-worker: ')
+    expect(tuning?.detail).not.toContain('yaac-control-plane')
+    expect(tuning?.detail).toContain('vm.min_free_kbytes=67584 (virtiofs I/O)')
+    expect(tuning?.detail).toContain('fs.inotify.max_user_instances=128 (netd Envoy startup)')
+    expect(tuning?.detail).toContain('fs.inotify.max_user_watches=8192')
+    expect(tuning?.detail).not.toContain('compaction_proactiveness')
+    expect(tuning?.detail).toContain('DefaultTasksMax drop-in')
+    expect(tuning?.fix).toContain('logs -l app=yaac-gvisor-install')
+    expect(tuning?.fix).toContain('yaac cluster install')
+    expect(ok).toBe(true) // warn-only: the installer's next pass repairs it
+  })
+
+  it('leaves node-tuning unverified, never passed, on a node with no running installer pod', async () => {
+    clusterNodes = [nodeItem('yaac-control-plane'), nodeItem('yaac-worker')]
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods'
+        && args.includes('app=yaac-gvisor-install')) {
+        // The worker's installer pod is still starting: not Running.
+        return {
+          stdout: JSON.stringify({
+            items: [
+              {
+                metadata: { name: 'yaac-gvisor-install-0' },
+                spec: { nodeName: 'yaac-control-plane' },
+                status: { phase: 'Running' },
+              },
+              {
+                metadata: { name: 'yaac-gvisor-install-1' },
+                spec: { nodeName: 'yaac-worker' },
+                status: { phase: 'Pending' },
+              },
+            ],
+          }),
+          stderr: '',
+        }
+      }
+      if (file === 'kubectl' && args[0] === 'exec' && args[1] === 'yaac-gvisor-install-0') {
+        return Promise.reject(new Error('container not ready'))
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { results } = await runClusterCheck()
+    const tuning = byName(results, 'node-tuning')
+    expect(tuning).toMatchObject({ status: 'warn' })
+    expect(tuning?.detail).toContain('unverified on yaac-control-plane')
+
+    // No installer pod anywhere is the same answer, not a pass.
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods'
+        && args.includes('app=yaac-gvisor-install')) {
+        return { stdout: JSON.stringify({ items: [] }), stderr: '' }
+      }
+      return happyResponses(file, args)
+    })
+    const none = byName((await runClusterCheck()).results, 'node-tuning')
+    expect(none).toMatchObject({ status: 'warn' })
+    expect(none?.detail).toContain('unverified')
   })
 
   it('fails priority-classes (and skips the probes) when a class is missing', async () => {
