@@ -56,9 +56,9 @@ Everything the earlier plans called "the keystone" has shipped on kind:
 
 What is NOT there: the tiers are still one directory, every mount is still
 a hostPath resolved through kind's `$HOME` extraMount, the built-in images
-are built for the CLI machine's own architecture and bake its uid, the
-server is published only through a kind port mapping, and `--adopt-cni`
-therefore deploys no server. Those four gaps are the whole of this plan.
+bake the CLI machine's uid, the server is published only through a kind
+port mapping, and `--adopt-cni` therefore deploys no server. Those four
+gaps are the whole of this plan.
 
 ## Decisions
 
@@ -131,16 +131,18 @@ therefore deploys no server. Those four gaps are the whole of this plan.
 - **Built-in images keep building off the cluster.** Every image yaac
   ships is built by podman on the machine running the CLI and pushed
   through the CLI's registry port-forward, on both backends, exactly as
-  today (docs/cluster-setup.md "Images are built here, and only here").
-  What changes is that the image is built for the **node's** architecture,
-  which install reads off the cluster and passes as `--platform`; a
-  mismatched host (an arm64 Mac driving an amd64 pool) pays for emulation
-  once per content hash. That cost is accepted because it is temporary:
-  the end state is **published per-architecture images** for every
-  release, which install pulls (or the nodes pull directly) instead of
-  building — reachable once the images stop baking a uid (below). Nothing
-  in this plan builds an image inside the cluster beyond what the
-  trust-split builder pods already do for project and user layers.
+  today (docs/cluster-setup.md "Images are built here, and only here"),
+  and for the CLI machine's **own** architecture. What keeps those images
+  matching the nodes is a refusal, not a cross-build: `--byo` reads the
+  node architecture off the cluster and refuses, loudly, a pool that is
+  mixed or that differs from the deploying machine's (an arm64 Mac cannot
+  drive an amd64 pool). No `--platform`, no emulation, no platform in the
+  content hash. Lifting that restriction means **published
+  per-architecture images** per release that install pulls instead of
+  building, which needs the images to stop baking a uid (below) and is
+  outside this plan. Nothing in this plan builds an image inside the
+  cluster beyond what the trust-split builder pods already do for project
+  and user layers.
 - **The tailnet is the only way onto a cloud server.** kind keeps
   NodePort + `extraPortMapping` → `127.0.0.1`. byo publishes the server
   through the Tailscale Kubernetes operator — a Service with
@@ -173,8 +175,9 @@ therefore deploys no server. Those four gaps are the whole of this plan.
   runtime value install sets per backend: the host's uid on kind, where
   the virtiofs ceiling on macOS is real, and a fixed `1000` on byo, where
   NFS passes uids through raw and `fsGroup` on the claims does the rest.
-  One image set per content hash is also what makes the published
-  per-architecture images above possible at all.
+  One image set per content hash is also what would make published
+  per-architecture images possible, and with them the lifting of the
+  architecture restriction on `--byo`.
 - **Credentials leave the shared tier before any cloud install.** The proxy
   today hostPath-mounts `.credentials/` (the github/claude/codex/opencode
   bundles) and `run/proxy-data`. On a host-local disk that is fine; on an
@@ -250,23 +253,6 @@ exists.
 - Gate: `cluster check` green after a podman-machine restart with no
   install re-run for the sysctls (the DaemonSet reapplied them).
 
-### 3. Images for the node's architecture
-
-- Depends on issue #150 having landed: no uid in any tag or build arg.
-- Install reads the node architecture off the cluster (and refuses a
-  mixed pool), and `#drivers/k8s/image-engine` builds with `--platform`
-  for it; the platform joins the content hash so an arm64 and an amd64
-  image of one tree never answer for each other. The upstream mirrors
-  (registry:2, Envoy, podman-stable, curl) are copied for that platform.
-  On kind the host and node architecture always agree, so nothing changes
-  there but the tag.
-- Gate: `yaac cluster install` from an arm64 Mac against an amd64 kind
-  cluster on a Linux box (`KUBECONFIG` pointed at it, the registry
-  reached through the port-forward), with every image pulling and a
-  worktree starting.
-- Follow-on, outside this plan's gate: publish per-architecture images per
-  release and have install pull them, retiring the per-machine build.
-
 ### 4. Server publication and the ingress wall
 
 - The Service's fronting is a per-backend manifest: NodePort + port
@@ -299,10 +285,19 @@ exists.
   restart mechanism — k3s embeds containerd), the StorageClass probe
   (`--rwx-storage-class`, `--rwo-storage-class`, refused when absent or
   when the RWX class is not NFS-family), the Tailscale operator probe, the
-  architecture probe that drives step 3's builds, the `runAsUser`
-  decision, the claims and the Retain patch, the server with its tailnet
-  fronting, and the registration.
+  architecture probe, the `runAsUser` decision, the claims and the Retain
+  patch, the server with its tailnet fronting, and the registration.
   Every new argument gets its e2e-cli coverage.
+- **The architecture probe refuses a mismatch, loudly.** The built-in
+  images are built on the deploying machine for its own architecture and
+  nothing cross-builds them, so `--byo` reads every node's architecture
+  off the cluster and refuses to install — naming both architectures in
+  the error — when the pool is mixed or any node differs from the machine
+  running the CLI. The refusal happens before any manifest is applied or
+  any image is built, so a refused install leaves the cluster untouched.
+  `cluster check` repeats the probe, so a pool that later gains a foreign
+  node is reported rather than silently failing to pull. An e2e-cli case
+  covers the refusal against a faked node list.
 - **byo-on-kind**: a kind cluster with Calico installed by hand, an
   in-cluster NFS server behind csi-driver-nfs for the RWX class, and
   `local-path` for RWO, installed with `--byo`. This is the tier that runs
