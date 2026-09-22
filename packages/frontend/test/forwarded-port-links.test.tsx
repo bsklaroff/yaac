@@ -21,8 +21,8 @@ describe('portLinkHref', () => {
   it('builds the link on the host the webapp was loaded from', () => {
     const p = { containerPort: 3000, hostPort: 19500 }
     expect(portLinkHref('localhost', p)).toBe('http://localhost:19500')
-    // Remotely the app is loaded from the tailnet name; the forwarders
-    // bind that same interface (YAAC_FORWARD_BIND), so the link holds.
+    // Remotely the app is loaded from the tailnet name; the link holds
+    // when `yaac forward --bind` on the server host binds that interface.
     expect(portLinkHref('srv.tailnet.ts.net', p)).toBe('http://srv.tailnet.ts.net:19500')
   })
 })
