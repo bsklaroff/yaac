@@ -110,7 +110,7 @@ describe('StoppedWorktreesButton', () => {
     expect(screen.getAllByText('Add tests').length).toBeGreaterThan(0)
   })
 
-  it('renders a died row with its cause in the list, detail, and restart dialog', async () => {
+  it('renders a died row with its cause in the list and detail, and its title in the restart dialog', async () => {
     vi.mocked(getStoppedWorktrees).mockResolvedValue([
       entry({
         worktreeId: 's3',
@@ -127,10 +127,12 @@ describe('StoppedWorktreesButton', () => {
     expect(screen.getByText('Died')).toBeTruthy()
     expect(screen.getByText('Cause')).toBeTruthy()
     expect(screen.getByText(/out of memory \(hit the worktree memory limit\) — exit code 137/)).toBeTruthy()
-    // Restart dialog mentions the death.
+    // The restart dialog names the worktree by its title alone — the cause
+    // is already on screen behind it.
     fireEvent.click(screen.getByRole('button', { name: /Restart/ }))
     const dialog = await screen.findByRole('alertdialog')
-    expect(within(dialog).getByText(/This worktree died: out of memory/)).toBeTruthy()
+    expect(within(dialog).getByText('OOMed run')).toBeTruthy()
+    expect(within(dialog).queryByText(/died/)).toBeNull()
   })
 
   it('flags an unseen abnormal death with a notification dot on the entry point', async () => {

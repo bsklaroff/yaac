@@ -400,7 +400,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     // only the pin create made — and that exemption is what keeps an opencode
     // worktree from going permanently unlabelled.
     podExec.mockResolvedValue({
-      stdout: JSON.stringify([{ id: 'ses_1', title: 'build a thing', time: { updated: 1 } }]),
+      stdout: JSON.stringify({ data: [{ id: 'ses_1', title: 'build a thing', time: { updated: 1 } }] }),
       stderr: '',
     })
     setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'opencode' }])
