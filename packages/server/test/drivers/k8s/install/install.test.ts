@@ -27,7 +27,7 @@ import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/install/check'
 // Setup value: the node end of the server's published port, which the
 // rendered kind config has to reserve.
-import { SERVER_NODE_PORT } from '#drivers/k8s/substrate'
+import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -310,6 +310,30 @@ function stageAdoptCidrs(opts: { pools?: string[]; nodeCidrs?: string[] } = {}):
   vi.mocked(kubectlGetJson).mockImplementation(impl as never)
 }
 
+/**
+ * deps.run for a cluster that already exists, with the Tailscale operator
+ * in one of three states: there, provably absent (kubectl's own NotFound),
+ * or unknowable (an apiserver that does not answer).
+ */
+function tailnetRun(operator: 'present' | 'absent' | 'unreachable'): RunMock {
+  return vi.fn((file: string, args: string[]) => {
+    const operatorRead = file === 'kubectl' && args[0] === 'get'
+      && (args[1] === 'crd' || (args[1] === 'deployment' && args[2] === 'operator'))
+    if (!operatorRead) return happyRun(file, args)
+    if (operator === 'absent') {
+      return Promise.reject(Object.assign(new Error('exit 1'), {
+        stderr: 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "proxyclasses.tailscale.com" not found',
+      }))
+    }
+    if (operator === 'unreachable') {
+      return Promise.reject(Object.assign(new Error('exit 1'), {
+        stderr: 'The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?',
+      }))
+    }
+    return Promise.resolve({ stdout: 'proxyclasses.tailscale.com\n', stderr: '' })
+  }) as RunMock
+}
+
 /** Every line the setup logged, joined — the gate's record lives here. */
 function logged(deps: { log: unknown }): string {
   return vi.mocked(deps.log as (m: string) => void).mock.calls.map(([m]) => m).join('\n')
@@ -361,16 +385,18 @@ describe('runClusterInstall', () => {
     expect(createCall).toBeDefined()
     expect(createCall?.[2]?.input).toContain('/home/tester')
     expect(createCall?.[2]?.input).not.toContain('$HOME')
-    // ...carrying the host end of the server's NodePort. Written HERE and
+    // ...carrying the host end of the server's fronting. Written HERE and
     // only here: kind adds port mappings when a cluster is created, which
     // is why an older cluster is refused rather than converged.
-    expect(createCall?.[2]?.input).toContain(`containerPort: ${String(SERVER_NODE_PORT)}`)
+    expect(createCall?.[2]?.input).toContain(`containerPort: ${String(SERVER_FRONT_PORT)}`)
     expect(createCall?.[2]?.input).toContain('listenAddress: "127.0.0.1"')
 
     // The server itself is deployed, after every layer it depends on: its
     // image comes from the registry, its dials go through the proxy and
     // netd, and it is the one step that starts USING them.
     expect(deps.deployServer).toHaveBeenCalledOnce()
+    // ...fronted the kind way: the forwarder behind the port mapping.
+    expect(vi.mocked(deps.deployServer).mock.calls[0][0].fronting.kind).toBe('kind')
     expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
       .toBeGreaterThan(vi.mocked(deps.ensureNetd).mock.invocationCallOrder[0])
     expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
@@ -1156,6 +1182,43 @@ describe('runClusterInstall', () => {
   })
 
   // -------------------------------------------------------------------
+  // --tailnet: fronting the server on the tailnet through the operator
+  // -------------------------------------------------------------------
+
+  it('--tailnet hands the tailnet fronting to the server deploy', async () => {
+    const deps = makeDeps({ run: tailnetRun('present') })
+    await expect(runClusterInstall({ tailnet: true }, deps)).resolves.toBe(true)
+    expect(vi.mocked(deps.deployServer).mock.calls[0][0].fronting.kind).toBe('tailnet')
+    expect(logged(deps)).toContain('Tailscale operator present')
+  })
+
+  it('--tailnet refuses before anything is applied when the operator is absent', async () => {
+    // A Service of the tailnet class with no operator never gets a
+    // hostname, so install would sit out the publish timeout after
+    // applying every layer. Refusing here costs the diagnosis and the
+    // helm command, and nothing else.
+    const deps = makeDeps({ run: tailnetRun('absent') })
+    const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
+    expect((err as Error).message).toContain('proxyclasses.tailscale.com')
+    expect((err as Error).message).toContain('helm upgrade --install tailscale-operator')
+    expect(deps.ensurePriorityClasses).not.toHaveBeenCalled()
+    expect(deps.ensureRegistry).not.toHaveBeenCalled()
+    expect(deps.deployServer).not.toHaveBeenCalled()
+  })
+
+  it('--tailnet reports an operator it could not evaluate, never as absent', async () => {
+    // An apiserver that does not answer is an unknown. Calling it "not
+    // installed" would send the operator to helm when the fix is the
+    // kubeconfig.
+    const deps = makeDeps({ run: tailnetRun('unreachable') })
+    const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
+    expect((err as Error).message).toContain('could not be evaluated')
+    expect((err as Error).message).not.toContain('helm')
+    expect(deps.ensurePriorityClasses).not.toHaveBeenCalled()
+  })
+
   // --adopt-cni: installing into a cluster whose CNI yaac did not install
   // -------------------------------------------------------------------
 
@@ -1181,10 +1244,9 @@ describe('runClusterInstall', () => {
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
 
     // ...except the server, which is the one layer that cannot work here:
-    // it is published through a kind port mapping written at create time,
-    // and this mode creates nothing. Deploying anyway would fail after 60s
-    // AND leave a NodePort publishing a credential-optional API on every
-    // node address behind it.
+    // its kind fronting is a forwarder behind a port mapping written at
+    // create time, and this mode creates nothing. Deploying anyway would
+    // fail after 60s prescribing a cluster delete on someone else's cluster.
     expect(deps.deployServer).not.toHaveBeenCalled()
 
     // Which leaves adoption with NO server it can run at all — a host

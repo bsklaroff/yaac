@@ -37,6 +37,7 @@ export const MAX_KIND_NODES = 5
 /** The flags these guards read — a structural subset of ClusterInstallOptions. */
 export interface ClusterInstallArgs {
   adoptCni?: boolean
+  tailnet?: boolean
   nodes?: number | string
 }
 

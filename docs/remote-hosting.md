@@ -62,6 +62,23 @@ change the posture; it prints a note that the server now REQUIRES a
 credential and writes the durable token it mints into `server.json`, which
 is what keeps the CLI on that same machine working.
 
+Under `k8s` there is a second way onto the tailnet that needs no
+`tailscale serve` and no exported variables: `yaac cluster install
+--tailnet` publishes the server through the Tailscale Kubernetes operator
+(a `loadBalancerClass: tailscale` Service — docs/server-in-cluster.md
+"Reachability"), sets `YAAC_ALLOWED_HOSTS` on the Deployment itself from
+the name the operator publishes, and registers
+`http://yaac.<tailnet>.ts.net`.
+Install it once (`helm upgrade --install tailscale-operator
+tailscale/tailscale-operator --namespace=tailscale --create-namespace
+--set-string oauth.clientId=… --set-string oauth.clientSecret=…`) and
+`--tailnet` refuses, naming that command, until it is there. The trade
+against `tailscale serve`: the operator path is an L4 exposure, encrypted
+by WireGuard but with no TLS termination, so the browser origin is
+`http://`, the session cookie is not `Secure`, and `YAAC_TRUST_PROXY`
+stays unset (an L4 proxy sanitizes no `X-Forwarded-*` header); `serve`
+gives HTTPS.
+
 Optional — make forwarded dev-server ports reachable from other tailnet
 devices. The server offers the mappings but binds nothing
 (docs/port-forward-tunnel.md), so this is two things: a forwarder running

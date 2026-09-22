@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import { clientLocalPath, ensureClientLocalRoot, serverLocalPath } from '#paths'
 import { readLock } from '#lock'
+import type { ServerLock } from '#server-lock-file'
 import type { DriverKind } from '#types'
 
 /**
@@ -378,13 +379,22 @@ async function checkSavedToken(
  * Mint the durable token for this machine, authenticated with the lock
  * secret (see `registerServer`).
  *
+ * The lock is read through `readLockFn` because it is the SERVER's file
+ * and only sometimes this machine's: a host server writes it here, while
+ * an in-cluster server writes it where its pod mounts it, which on a
+ * cloud cluster is nowhere this machine can open. Install hands in a
+ * reader that asks the pod.
+ *
  * Revoke-then-create: the full token value only ever leaves the server at
  * creation, so a stale one cannot be recovered and is replaced instead.
  * Failures degrade to an empty token, which is exactly right on a
  * credential-optional install where nothing checks it.
  */
-export async function mintLocalClientToken(origin: string): Promise<string> {
-  const lock = await readLock()
+export async function mintLocalClientToken(
+  origin: string,
+  readLockFn: () => Promise<ServerLock | null> = readLock,
+): Promise<string> {
+  const lock = await readLockFn()
   if (!lock) return ''
   const auth = { authorization: `Bearer ${lock.secret}` }
   try {

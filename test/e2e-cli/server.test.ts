@@ -9,7 +9,14 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import { TEST_NAMESPACE } from '@yaac/test-utils/setup'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { readLock } from '@yaac/shared/lock'
+import {
+  RUNTIME_CLASS_GVISOR,
+  SERVER_POD_PORT,
+  runPodToCompletion,
+  worktreeIdLabels,
+} from '@yaac/server/drivers/k8s/substrate'
 
 const execFileAsync = promisify(execFile)
 
@@ -79,6 +86,46 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     const list = await runYaac(testEnv.env, 'project', 'list')
     expect(list.exitCode, list.stderr).toBe(0)
     expect(list.stdout).toContain('No projects found')
+  })
+
+  it('walls the API off from a worktree-labelled pod, while the kubelet still reaches it', async () => {
+    // The server pod's ingress policy is an explicit allow — the node
+    // addresses, plus whatever fronts the Service — and on a
+    // credential-optional install it is the whole of what keeps untrusted
+    // code off the control plane (docs/server-in-cluster.md). So a pod
+    // shaped like a worktree, dialing the pod IP directly, must be dropped.
+    // The other half is already proved by this file's fixture: the
+    // Deployment rolled out, so the readiness probe from the node was
+    // admitted by the same policy.
+    const { stdout: podIp } = await execFileAsync('kubectl', [
+      'get', 'pods', '-n', TEST_NAMESPACE, '-l', 'app=yaac-server',
+      '-o', 'jsonpath={.items[0].status.podIP}',
+    ], { timeout: 30_000 })
+    expect(podIp.trim()).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
+
+    const { phase, logs } = await runPodToCompletion({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: {
+        name: 'yaac-e2e-server-wall-probe',
+        namespace: TEST_NAMESPACE,
+        labels: worktreeIdLabels('e2e-server-wall-probe'),
+      },
+      spec: {
+        restartPolicy: 'Never',
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
+        containers: [{
+          name: 'probe',
+          image: await resolveTestBaseImageRef(),
+          command: ['sh', '-c',
+            `curl -s -m 4 http://${podIp.trim()}:${String(SERVER_POD_PORT)}/health >/dev/null `
+            + '&& echo NP_SERVER_OPEN || echo NP_SERVER_LOCKED'],
+        }],
+      },
+    }, { timeoutMs: 120_000 })
+    expect(phase).toBe('Succeeded')
+    expect(logs).toContain('NP_SERVER_LOCKED')
+    expect(logs).not.toContain('NP_SERVER_OPEN')
   })
 
   it('`server start` against a rolled-out Deployment is idempotent', async () => {

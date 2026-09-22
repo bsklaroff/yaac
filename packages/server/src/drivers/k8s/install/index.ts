@@ -38,8 +38,6 @@ export {
   deployServerWorkload,
   restartClusterServer,
   serverDeploymentExists,
-  serverPublishedOrigin,
   startClusterServer,
   stopClusterServer,
-  waitForPublishedServer,
 } from './server-deploy'

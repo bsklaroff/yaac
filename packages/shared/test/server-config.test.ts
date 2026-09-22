@@ -4,6 +4,7 @@ import path from 'node:path'
 import os from 'node:os'
 import {
   clearServerConfig,
+  mintLocalClientToken,
   normalizeServerUrl,
   probeServer,
   readServerConfig,
@@ -391,5 +392,35 @@ describe('normalizeServerUrl', () => {
     expect(() => normalizeServerUrl('https://srv.ts.net/api')).toThrow(/bare origin/)
     expect(() => normalizeServerUrl('https://srv.ts.net/?x=1')).toThrow(/bare origin/)
     expect(() => normalizeServerUrl('not a url')).toThrow(/invalid server URL/)
+  })
+})
+
+describe('mintLocalClientToken', () => {
+  it('authenticates the mint with the lock reader it is handed', async () => {
+    // The lock is the server's file, and only sometimes this machine's:
+    // install reads an in-cluster server's through the pod. Whatever the
+    // reader answers is the bearer for the revoke-then-create.
+    const seen: Array<{ method: string; auth: string | undefined }> = []
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined
+      seen.push({ method: init?.method ?? 'GET', auth: headers?.authorization })
+      return Promise.resolve(new Response(
+        JSON.stringify(init?.method === 'POST' ? { token: 'durable' } : {}), { status: 200 },
+      ))
+    }))
+    const origin = 'http://127.0.0.1:8787'
+    try {
+      const token = await mintLocalClientToken(origin, () => Promise.resolve({
+        pid: 1, port: 8787, secret: 'from-the-pod', startedAt: 1, buildId: 'b',
+      }))
+      expect(token).toBe('durable')
+      expect(seen.every((s) => s.auth === 'Bearer from-the-pod')).toBe(true)
+      expect(seen.filter((s) => s.method === 'DELETE')).toHaveLength(2)
+      // No lock to read is no mint — an empty token, which a
+      // credential-optional install is fine with.
+      expect(await mintLocalClientToken(origin, () => Promise.resolve(null))).toBe('')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

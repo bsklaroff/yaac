@@ -5,8 +5,8 @@ import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@yaac/test-utils/c
 
 /**
  * Merged e2e coverage for the `yaac cluster` command family: `check` (no
- * options), `install` (and its `--nodes` / `--adopt-cni` options), and
- * `delete` (and its `-y/--yes` option). All three are host-side commands —
+ * options), `install` (and its `--nodes` / `--adopt-cni` / `--tailnet`
+ * options), and `delete` (and its `-y/--yes` option). All three are host-side commands —
  * they talk to kubectl/podman/kind/the registry directly, never to the
  * server — so no server is spawned anywhere in this file and every case
  * runs without a cluster: we sabotage the environment (PATH stripping, a
@@ -198,6 +198,33 @@ describe('yaac cluster install (real CLI)', () => {
       expect(stderr).toContain('10.0.0.0/33')
       // The good entry is not named as a problem.
       expect(stderr).not.toMatch(/CIDRs:[^.]*172\.31\.0\.0\/16/)
+    },
+    120_000,
+  )
+
+  // `--tailnet` needs the Tailscale operator in the cluster, and its probe
+  // runs before the CNI gate under adoption — so against a cluster that
+  // answers nothing it is the first refusal, and it has to be an "unknown"
+  // rather than a "not installed" (which would prescribe helm for a broken
+  // kubeconfig). Needs podman for the same reason the adopt cases do.
+  it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
+    '--tailnet refuses a cluster whose operator it cannot read, before anything is applied',
+    async () => {
+      const env: NodeJS.ProcessEnv = {
+        ...testEnv.env,
+        KUBECONFIG: path.join(testEnv.scratchDir, 'no-such-kubeconfig'),
+      }
+
+      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'install', '--adopt-cni', '--tailnet')
+      expect(exitCode).toBe(1)
+      expect(stdout).toMatch(/Verifying the Tailscale Kubernetes operator/)
+      expect(stderr).toMatch(/--tailnet needs the Tailscale Kubernetes operator/)
+      expect(stderr).toMatch(/could not be evaluated/)
+      expect(stderr).not.toMatch(/helm upgrade/)
+      // Nothing was installed, and the CNI gate never ran.
+      expect(stdout).not.toMatch(/Verifying the CNI this cluster already runs/)
+      expect(stdout).not.toMatch(/Deploying the in-cluster image registry/)
+      expect(stdout).not.toMatch(/Creating kind cluster/)
     },
     120_000,
   )

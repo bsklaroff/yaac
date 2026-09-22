@@ -13,7 +13,14 @@ import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
-import { ensurePriorityClasses, execFileAsync, k8sNamespace } from '#drivers/k8s/substrate'
+import {
+  TAILSCALE_OPERATOR_NAMESPACE,
+  ensurePriorityClasses,
+  execFileAsync,
+  isKubectlAbsentError,
+  k8sNamespace,
+  kubectlErrorSummary,
+} from '#drivers/k8s/substrate'
 import { registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { buildBuiltinImages } from './builtin-images'
@@ -37,8 +44,9 @@ import {
 } from './check'
 import type { CheckResult } from '@yaac/shared/types'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#drivers/k8s/container'
-import { SERVER_NODE_PORT } from '#drivers/k8s/substrate'
+import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
 import { deployServerWorkload } from './server-deploy'
+import { TAILNET_HOSTNAME, kindFronting, tailnetFronting } from './server-fronting'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
 import { resolveServerPort } from '@yaac/shared/server-port'
@@ -172,6 +180,13 @@ export interface ClusterInstallOptions {
    * otherwise fail silently.
    */
   adoptCni?: boolean
+  /**
+   * Publish the server on the machine's Tailscale tailnet through the
+   * Tailscale Kubernetes operator, instead of at this machine's loopback.
+   * The operator is a prerequisite the cluster owner installs; this refuses
+   * up front without it (`verifyTailnetOperator`).
+   */
+  tailnet?: boolean
   /**
    * kind nodes to create: one control-plane plus `nodes - 1` workers.
    * Undefined (the default) means one node. Create-time only — an existing
@@ -370,8 +385,9 @@ export async function runClusterInstall(
   if (!opts.adoptCni) await preflightKindProvider(deps, versions)
 
   if (opts.adoptCni) {
-    // The gate runs FIRST, before anything is applied: an adoption that
+    // The gates run FIRST, before anything is applied: an adoption that
     // cannot work must cost the user nothing but the diagnosis.
+    if (opts.tailnet) await verifyTailnetOperator(deps)
     await verifyAdoptedCni(deps)
     // Whatever this process cached about "the cluster" was learned from a
     // different one — adopt mode is normally the first thing a fresh
@@ -416,6 +432,9 @@ export async function runClusterInstall(
     resetClusterCidrCache()
     for (const node of await kindNodes(deps, cluster)) await applyNodeFixups(deps, node)
   }
+  // Once there is a cluster to ask, and before any layer lands on it: an
+  // operator that is not there costs the diagnosis and nothing else.
+  if (opts.tailnet && !opts.adoptCni) await verifyTailnetOperator(deps)
 
   await installPriorityClasses(deps)
   await installRegistry(deps)
@@ -434,15 +453,14 @@ export async function runClusterInstall(
   // (its images come from the registry, its dials go through the proxy and
   // netd), and it is the one that starts DOING things with them.
   //
-  // Not under adoption. The server is published through a kind
+  // Not under adoption. The kind fronting is a forwarder behind a kind
   // `extraPortMapping` written at cluster-create time, which a cluster yaac
   // did not create does not have — so the Deployment would come up, the
   // published origin would never answer, and install would fail after 60s
-  // prescribing `yaac cluster delete` on someone else's cluster. What it
-  // would leave behind is worse than the failure: a NodePort Service
-  // publishing a credential-optional API on every address the nodes have,
-  // walled only by an ingress policy whose pod-CIDR exclusion was
-  // snapshotted at install time and goes stale as the cluster's IPAM grows.
+  // prescribing `yaac cluster delete` on someone else's cluster. The
+  // tailnet fronting is the one an adopted cluster needs, and selecting it
+  // alone is not an install: the storage, the uid and the architecture a
+  // foreign cluster needs come with it in the bring-your-own mode.
   //
   // Which leaves adoption with NO server it can run, now that a host
   // process is the containerless driver by construction and not a k8s one
@@ -461,10 +479,11 @@ export async function runClusterInstall(
       + 'than on the cluster you just installed into. So `yaac server start` '
       + 'here gives you a containerless install, not this cluster. Until the '
       + 'bring-your-own-cluster mode exists, what this command installed is '
-      + 'the in-cluster layers and nothing that drives them.',
+      + 'the in-cluster layers and nothing that drives them'
+      + (opts.tailnet ? ' — `--tailnet` included; it fronts a server this mode does not deploy.' : '.'),
     )
   } else {
-    await deployServer(deps)
+    await deployServer(deps, opts)
   }
 
   deps.log('\nVerifying with cluster check...')
@@ -526,13 +545,14 @@ export function renderKindConfig(
   opts: { homedir: string; nodes: number; serverHostPort: number },
 ): string {
   const substituted = raw.replaceAll('$HOME', opts.homedir)
-  // The server's published loopback endpoint. HOST-scoped, so it belongs to
-  // exactly one node — the control-plane entry the bundled file holds — and
-  // must not ride the worker copies below, where N nodes would race for one
-  // host port and kind would refuse the cluster.
+  // The server's published loopback endpoint: the host end of the port the
+  // fronting forwarder binds on the control-plane node. HOST-scoped, so it
+  // belongs to exactly one node — the control-plane entry the bundled file
+  // holds — and must not ride the worker copies below, where N nodes would
+  // race for one host port and kind would refuse the cluster.
   const published = `${substituted.trimEnd()}\n`
     + '  extraPortMappings:\n'
-    + `  - containerPort: ${String(SERVER_NODE_PORT)}\n`
+    + `  - containerPort: ${String(SERVER_FRONT_PORT)}\n`
     + `    hostPort: ${String(opts.serverHostPort)}\n`
     + '    listenAddress: "127.0.0.1"\n'
     + '    protocol: TCP\n'
@@ -731,7 +751,7 @@ async function createKindCluster(
   const config = renderKindConfig(raw, {
     homedir: deps.homedir(),
     nodes,
-    // The host end of the server's NodePort, reserved here because kind
+    // The host end of the server's fronting, reserved here because kind
     // writes port mappings only when a cluster is CREATED — which is why an
     // older cluster cannot be converged into publishing one.
     serverHostPort: resolveServerPort(),
@@ -826,6 +846,53 @@ async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
     )
   }
   deps.log('  CNI accepted: Calico in the iptables dataplane, kube-proxy owning ClusterIP DNAT.')
+}
+
+/**
+ * The `--tailnet` gate: the Tailscale Kubernetes operator has to be there
+ * before the tailnet fronting's Service can mean anything, and it is the
+ * cluster owner's to install (one helm command). Two reads, both refusals
+ * rather than warnings — a Service of the tailnet class with no operator
+ * simply never gets a hostname, and install would sit out the publish
+ * timeout and refuse anyway, after applying every layer.
+ *
+ * Absence and "could not ask" are kept apart, the way the adoption gate
+ * keeps them: a kubeconfig pointing nowhere is an unknown, not a missing
+ * operator, and saying "not installed" there would send the operator to
+ * the wrong fix.
+ */
+async function verifyTailnetOperator(deps: ClusterInstallDeps): Promise<void> {
+  deps.log('Verifying the Tailscale Kubernetes operator (--tailnet)...')
+  const reads: Array<[string, string[]]> = [
+    ['the ProxyClass CRD (proxyclasses.tailscale.com)', ['get', 'crd', 'proxyclasses.tailscale.com']],
+    [
+      `the operator Deployment (${TAILSCALE_OPERATOR_NAMESPACE}/operator)`,
+      ['get', 'deployment', 'operator', '-n', TAILSCALE_OPERATOR_NAMESPACE],
+    ],
+  ]
+  for (const [what, args] of reads) {
+    try {
+      await deps.run('kubectl', args)
+    } catch (err) {
+      if (isKubectlAbsentError(err)) {
+        throw new ClusterInstallError(
+          `--tailnet needs the Tailscale Kubernetes operator, and ${what} is not in this cluster.\n`
+          + '    Install it (an OAuth client with the tag its proxies use — see '
+          + 'https://tailscale.com/kb/1236/kubernetes-operator), then re-run:\n'
+          + '      helm repo add tailscale https://pkgs.tailscale.com/helmcharts\n'
+          + '      helm upgrade --install tailscale-operator tailscale/tailscale-operator \\\n'
+          + `        --namespace=${TAILSCALE_OPERATOR_NAMESPACE} --create-namespace \\\n`
+          + '        --set-string oauth.clientId=<id> --set-string oauth.clientSecret=<secret> --wait',
+        )
+      }
+      throw new ClusterInstallError(
+        '--tailnet needs the Tailscale Kubernetes operator, and whether it is installed could not '
+        + `be evaluated: reading ${what} failed (${kubectlErrorSummary(err)}).\n`
+        + '    Fix the cluster access (kubeconfig, kubectl, apiserver) and re-run.',
+      )
+    }
+  }
+  deps.log('  Tailscale operator present: the server will be published on the tailnet.')
 }
 
 /**
@@ -1085,7 +1152,7 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
  * writes the `server.json` every client on this machine resolves through,
  * so `yaac worktree list` talks to the pod without being told to.
  */
-async function deployServer(deps: ClusterInstallDeps): Promise<void> {
+async function deployServer(deps: ClusterInstallDeps, opts: ClusterInstallOptions): Promise<void> {
   const torHostAddr = env.useTor ? await hostAddrOnKindNetwork(deps) : undefined
   if (env.useTor && torHostAddr === undefined) {
     deps.log(
@@ -1095,7 +1162,8 @@ async function deployServer(deps: ClusterInstallDeps): Promise<void> {
       + "instead — a pod's loopback is its own.",
     )
   }
-  const origin = await deps.deployServer({ torHostAddr, log: deps.log })
+  const fronting = opts.tailnet ? tailnetFronting({ hostname: TAILNET_HOSTNAME }) : kindFronting()
+  const origin = await deps.deployServer({ fronting, torHostAddr, log: deps.log })
   deps.log(`The yaac server is serving at ${origin}`)
 }
 

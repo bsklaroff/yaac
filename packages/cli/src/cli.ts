@@ -142,10 +142,10 @@ async function runDeployedServerVerb(verb: 'start' | 'stop' | 'restart'): Promis
     console.error('[yaac] server stopped (Deployment scaled to 0)')
     return true
   }
-  if (verb === 'start') await install.startClusterServer()
-  else await install.restartClusterServer()
-  console.error(`[yaac] server ${verb === 'start' ? 'started' : 'restarted'} at `
-    + install.serverPublishedOrigin())
+  const origin = verb === 'start'
+    ? await install.startClusterServer()
+    : await install.restartClusterServer()
+  console.error(`[yaac] server ${verb === 'start' ? 'started' : 'restarted'} at ${origin}`)
   return true
 }
 
@@ -304,7 +304,8 @@ cluster
   .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
   .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
   .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
-  .action(async (options: { nodes?: string; adoptCni?: boolean }) => {
+  .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1; the server then requires a credential')
+  .action(async (options: { nodes?: string; adoptCni?: boolean; tailnet?: boolean }) => {
     if (await rejectClusterOnContainerless()) return
     if (rejectClusterArgs('install', options)) return
     const { clusterInstall } = await import('#commands/cluster-install')

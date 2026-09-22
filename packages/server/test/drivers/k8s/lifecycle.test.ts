@@ -28,12 +28,15 @@ const cacheStub = {
 vi.mock('#drivers/k8s/substrate', () => ({
   ClusterCache: class { constructor() { return cacheStub } },
   ensurePriorityClasses: vi.fn().mockResolvedValue(undefined),
+  kubectlApply: vi.fn(() => { order.push('wall'); return Promise.resolve() }),
   invalidateRelayAddr: vi.fn(),
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
 }))
 vi.mock('#drivers/k8s/cluster', () => ({
+  buildServerIngressNpManifest: vi.fn((cidrs: string[]) => ({ kind: 'NetworkPolicy', cidrs })),
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   ensureNamespace: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
   sweepLegacyVclusterState: vi.fn().mockResolvedValue(undefined),
 }))
@@ -58,6 +61,7 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { ensureNamespace } from '#drivers/k8s/cluster'
+import { kubectlApply } from '#drivers/k8s/substrate'
 import { configureProxyCredentials } from '#drivers/k8s/egress'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
@@ -94,6 +98,20 @@ describe('startK8sDriver', () => {
     expect(order.indexOf('bootstrap')).toBeLessThan(order.indexOf('recover'))
     expect(order.indexOf('recover')).toBeLessThan(order.indexOf('cache.start'))
     expect(order.indexOf('cache.start')).toBeLessThan(order.indexOf('attached'))
+  })
+
+  it('re-renders the node half of the server wall from the live node list', async () => {
+    await startK8sDriver(sinks(), {})
+
+    // Install applies this policy too, but the node set is the one input
+    // that changes under a running install: a server pod rescheduled onto
+    // a node added since the last install has to admit that node's kubelet
+    // itself, or it never goes Ready. Part of the bootstrap, so it lands
+    // before recovery.
+    expect(vi.mocked(kubectlApply)).toHaveBeenCalledWith({
+      kind: 'NetworkPolicy', cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
+    })
+    expect(order.indexOf('wall')).toBeLessThan(order.indexOf('recover'))
   })
 
   it('reports the workspace set as handles, never as pods', async () => {

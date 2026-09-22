@@ -5,6 +5,8 @@ export interface ClusterInstallCliOptions {
   nodes?: string
   /** `--adopt-cni`: bring-your-own-CNI mode (commander camelCases the flag). */
   adoptCni?: boolean
+  /** `--tailnet`: publish the server through the Tailscale operator. */
+  tailnet?: boolean
 }
 
 /**
@@ -24,14 +26,15 @@ export interface ClusterInstallCliOptions {
  * reporting `NaN` instead of what the user actually typed.
  *
  * `--adopt-cni` adopts the CNI an existing cluster already runs instead of
- * creating one.
-
+ * creating one. `--tailnet` fronts the server on the tailnet instead of at
+ * this machine's loopback.
  */
 export async function clusterInstall(options: ClusterInstallCliOptions = {}): Promise<void> {
   try {
     const ok = await runClusterInstall({
       nodes: options.nodes,
       adoptCni: options.adoptCni,
+      tailnet: options.tailnet,
     })
     if (!ok) process.exitCode = 1
   } catch (err) {

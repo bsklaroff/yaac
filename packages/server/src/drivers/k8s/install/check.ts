@@ -16,6 +16,8 @@ import {
   NETD_APP_NAME,
   PROXY_APP_NAME,
   SERVER_APP_NAME,
+  SERVER_FRONT_INGRESS_NP_NAME,
+  SERVER_INGRESS_NP_NAME,
   SERVER_POD_PORT,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
@@ -1425,9 +1427,10 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       : ''
 
     // Fourth leg, same pod: the SERVER. On a local install the API is
-    // credential-optional and the server pod binds 0.0.0.0, so the ingress
-    // NetworkPolicy — everything EXCEPT the pod CIDRs — is the entire wall
-    // between an untrusted worktree and an unauthenticated control plane
+    // credential-optional and the server pod binds 0.0.0.0, so its ingress
+    // NetworkPolicies — the node addresses, plus whatever fronts its
+    // Service, and nothing pod-shaped — are the entire wall between an
+    // untrusted worktree and an unauthenticated control plane
     // (docs/server-in-cluster.md). That makes it exactly the kind of
     // property to PROVE on every install rather than assume was applied,
     // like the apiserver and forgery-lock denials above. Absent Service →
@@ -1517,12 +1520,11 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         detail: 'a session-labeled pod reached the yaac server directly — on a '
           + 'local install its API is credential-optional, so any session could '
           + 'drive the control plane that manages every other one',
-        fix: 'The server-ingress NetworkPolicy must admit the server port from '
-          + 'everything EXCEPT the pod CIDRs, so a pod dialing the Service or '
-          + 'pod IP is dropped while NodePort traffic is not. Not the node '
-          + 'CIDRs: kube-proxy masquerades in POSTROUTING, after the filter '
-          + 'hook, so policy sees the original off-cluster source. Re-run '
-          + '`yaac cluster install`, which applies it with the Deployment.',
+        fix: `The ${SERVER_INGRESS_NP_NAME} and ${SERVER_FRONT_INGRESS_NP_NAME} `
+          + 'NetworkPolicies must admit the server port from the node addresses '
+          + 'and the fronting alone, so a pod dialing the Service or pod IP is '
+          + 'dropped. Re-run `yaac cluster install`, which applies both with '
+          + 'the Deployment (the server re-applies the node half on start).',
       }
     }
     if (logs.includes('NP_PROXY_OPEN')) {

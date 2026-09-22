@@ -78,13 +78,13 @@ export const env = {
    * optional.
    *
    * The in-cluster server sets `0.0.0.0`, because a pod's loopback is
-   * reachable by nothing at all — its Service and NodePort would have no
-   * backend. What replaces the loopback bind there is the pod's ingress
-   * NetworkPolicy, which admits everything EXCEPT the pod CIDRs (see
-   * docs/server-in-cluster.md): a worktree pod dialing the server pod
-   * directly presents a pod source IP and is dropped. That makes the policy
-   * load-bearing rather than defence in depth, which is why `yaac cluster
-   * check` probes it.
+   * reachable by nothing at all — its Service would have no backend. What
+   * replaces the loopback bind there is the pod's ingress NetworkPolicies,
+   * which admit the node addresses and whatever fronts the Service, and
+   * nothing pod-shaped (see docs/server-in-cluster.md): a worktree pod
+   * dialing the server pod directly presents a pod source IP and is
+   * dropped. That makes the policy load-bearing rather than defence in
+   * depth, which is why `yaac cluster check` probes it.
    */
   get bindAddr(): string {
     const raw = process.env.YAAC_BIND_ADDR

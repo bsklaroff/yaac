@@ -49,19 +49,22 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
 import {
   deployServerWorkload,
   restartClusterServer,
-  waitForPublishedServer,
   serverDeploymentExists,
-  serverPublishedOrigin,
   startClusterServer,
   stopClusterServer,
 } from '#drivers/k8s/install'
+// Setup value: the fronting every case hands the deploy — an argument set,
+// chosen so the kind path (the forwarder, the loopback origin) runs for real.
+import { kindFronting, tailnetFronting } from '#drivers/k8s/install/server-fronting'
 // Setup values: the names and ports the datapath vocabulary fixes, so the
 // assertions below name the same constants the manifests do rather than
 // re-spelling them.
 import {
   SERVER_APP_NAME,
-  SERVER_NODE_PORT,
+  SERVER_FRONT_APP_NAME,
+  SERVER_FRONT_PORT,
   SERVER_POD_PORT,
+  TAILSCALE_OPERATOR_NAMESPACE,
 } from '#drivers/k8s/substrate'
 // Setup value: the real hash function, so the expected tag is derived the
 // way the code derives it rather than pasted as a literal.
@@ -82,11 +85,14 @@ import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 interface Manifest {
   kind: string
   metadata?: Record<string, unknown>
+  data?: Record<string, string>
   rules?: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }>
   spec?: Record<string, unknown> & {
     replicas?: number
     strategy?: unknown
     type?: string
+    loadBalancerClass?: string
+    allocateLoadBalancerNodePorts?: boolean
     podSelector?: unknown
     policyTypes?: string[]
     ingress?: unknown
@@ -98,14 +104,43 @@ interface Manifest {
 
 interface PodSpec {
   runtimeClassName?: string
+  hostNetwork?: boolean
+  dnsPolicy?: string
+  nodeSelector?: Record<string, string>
+  tolerations?: Array<Record<string, string>>
   securityContext?: Record<string, number>
   volumes: Array<{ hostPath?: { path: string } }>
   containers: Array<{
     image: string
+    command?: string[]
     env: Array<{ name: string; value: string }>
+    securityContext?: Record<string, unknown>
     volumeMounts: Array<{ mountPath: string }>
-    securityContext?: { allowPrivilegeEscalation?: boolean }
   }>
+}
+
+/**
+ * A tailnet-fronted Service as the apiserver reports it once the operator
+ * has published — what `get service` answers after `publishedAfter` reads.
+ */
+function tailnetService(hostname: string, publishedAfter = 0): (args: string[]) => unknown {
+  let reads = 0
+  return (args: string[]) => {
+    if (!args.includes('service')) return null
+    reads += 1
+    return {
+      metadata: { annotations: { 'tailscale.com/hostname': 'yaac' } },
+      spec: { type: 'LoadBalancer', loadBalancerClass: 'tailscale' },
+      status: reads > publishedAfter ? { loadBalancer: { ingress: [{ ip: '100.64.0.9', hostname }] } } : {},
+    }
+  }
+}
+
+/** The kind path, unless a case hands another fronting. */
+function deploy(
+  opts: Partial<Parameters<typeof deployServerWorkload>[0]> & { log: (m: string) => void },
+): Promise<string> {
+  return deployServerWorkload({ fronting: kindFronting(), ...opts })
 }
 
 function applied(kind: string): Manifest[] {
@@ -114,11 +149,11 @@ function applied(kind: string): Manifest[] {
     .filter((m) => m.kind === kind)
 }
 
-/** The pod spec of the one Deployment this run applied. */
-function deployedPodSpec(): PodSpec {
-  const [deployment] = applied('Deployment')
-  const template = deployment.spec?.template
-  if (!template) throw new Error('no Deployment pod template was applied')
+/** The pod spec of a Deployment this run applied — the server's by default. */
+function deployedPodSpec(name = SERVER_APP_NAME): PodSpec {
+  const deployment = applied('Deployment').find((m) => (m.metadata as { name: string }).name === name)
+  const template = deployment?.spec?.template
+  if (!template) throw new Error(`no ${name} Deployment pod template was applied`)
   return template.spec
 }
 
@@ -135,8 +170,8 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   mockApply.mockResolvedValue(undefined)
   mockWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  // One node carrying a pod CIDR, so the ingress policy has a concrete
-  // range to EXCLUDE (the shape of the rule is "everything but a pod").
+  // One node with an InternalIP, so the ingress wall has a concrete node
+  // address to admit.
   mockGetJson.mockImplementation((args: string[]) => {
     if (args.includes('nodes')) {
       return Promise.resolve({
@@ -166,7 +201,7 @@ afterEach(async () => {
 
 describe('deployServerWorkload', () => {
   it('applies an identity, a wall and a workload, in that order', async () => {
-    const origin = await deployServerWorkload({ log: vi.fn() })
+    const origin = await deploy({ log: vi.fn() })
 
     // The SA and its ClusterRole exist before the pod that mounts the
     // token, and the ingress policy before the Service publishes the port
@@ -178,6 +213,14 @@ describe('deployServerWorkload', () => {
     expect(order('ClusterRole')).toBeLessThan(order('Deployment'))
     expect(order('ClusterRoleBinding')).toBeLessThan(order('Deployment'))
     expect(order('NetworkPolicy')).toBeLessThan(order('Service'))
+    // And the Service before the Deployment: the origin it publishes is an
+    // input to the Deployment's environment. The forwarder comes last —
+    // on a converging install the Service apply is what releases the old
+    // NodePort on the node before the forwarder binds it.
+    expect(order('Service')).toBeLessThan(order('Deployment'))
+    const frontOrder = (mockApply.mock.calls as Array<[Manifest]>)
+      .findIndex(([m]) => m.kind === 'Deployment' && (m.metadata as { name: string }).name === SERVER_FRONT_APP_NAME)
+    expect(frontOrder).toBeGreaterThan(order('Service'))
 
     // The cluster-scoped pair is namespace-suffixed, like netd's. A
     // ClusterRoleBinding does not belong to a namespace, and one cluster
@@ -240,7 +283,7 @@ describe('deployServerWorkload', () => {
   })
 
   it('hands the pod what it can no longer read off a host, and no host-side shim', async () => {
-    await deployServerWorkload({
+    await deploy({
       log: vi.fn(),
       torHostAddr: '10.89.0.1',
     })
@@ -284,7 +327,7 @@ describe('deployServerWorkload', () => {
     vi.stubEnv('YAAC_FORWARD_BIND', '100.64.0.7')
     const log = vi.fn()
 
-    await deployServerWorkload({ log })
+    await deploy({ log })
 
     const env = Object.fromEntries(
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
@@ -299,7 +342,7 @@ describe('deployServerWorkload', () => {
   })
 
   it('leaves the loopback defaults off the pod entirely', async () => {
-    await deployServerWorkload({ log: vi.fn() })
+    await deploy({ log: vi.fn() })
 
     const names = deployedPodSpec().containers[0].env.map((e) => e.name)
     expect(names).not.toContain('YAAC_ALLOWED_HOSTS')
@@ -315,7 +358,7 @@ describe('deployServerWorkload', () => {
     // prompts for) its own identity per worktree, so only webapp-created
     // worktrees are affected — and they get the error `createWorktree`
     // raises rather than a pod committing as somebody else.
-    await deployServerWorkload({ log: vi.fn() })
+    await deploy({ log: vi.fn() })
 
     const names = deployedPodSpec().containers[0].env.map((e) => e.name)
     expect(names).not.toContain('YAAC_SERVER_GIT_NAME')
@@ -332,7 +375,7 @@ describe('deployServerWorkload', () => {
     vi.stubEnv('YAAC_USE_TOR', '1')
     vi.stubEnv('YAAC_HOST_TOR_SOCKS_URL', 'socks5h://[::1]:9050')
 
-    await deployServerWorkload({ log: vi.fn(), torHostAddr: '10.89.0.1' })
+    await deploy({ log: vi.fn(), torHostAddr: '10.89.0.1' })
 
     const env = Object.fromEntries(
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
@@ -340,34 +383,153 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_HOST_TOR_SOCKS_URL).toBe('socks5h://10.89.0.1:9050')
   })
 
-  it('walls the API off from pods, on a NodePort the host maps', async () => {
-    await deployServerWorkload({ log: vi.fn() })
+  it('walls the API off from pods, and publishes it through the kind forwarder', async () => {
+    await deploy({ log: vi.fn() })
 
-    // Everything EXCEPT the pod CIDRs — not the node CIDRs. kube-proxy
-    // masquerades in POSTROUTING, after the filter hook, so the policy sees
-    // the original off-cluster source and a node-address rule would drop
-    // the only traffic it exists to admit. A worktree pod dialing the
-    // Service or pod IP presents a POD source address and is dropped. On a
-    // credential-optional local install that is the entire wall, which is
-    // why cluster check probes it.
-    const [np] = applied('NetworkPolicy')
-    expect(np.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
-    expect(np.spec?.policyTypes).toEqual(['Ingress'])
-    expect(np.spec?.ingress).toEqual([{
-      from: [{ ipBlock: { cidr: '0.0.0.0/0', except: ['10.244.0.0/24'] } }],
+    // The node addresses and the fronting, and nothing else. A worktree
+    // pod dialing the Service or pod IP presents a POD source address,
+    // which no rule names, and is dropped. On a credential-optional local
+    // install that is the entire wall, which is why cluster check probes
+    // it. The kind fronting adds no peer: its forwarder is host-networked,
+    // so its dial is already one of the node addresses.
+    const [nodeHalf, frontHalf] = applied('NetworkPolicy')
+    expect(nodeHalf.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
+    expect(nodeHalf.spec?.policyTypes).toEqual(['Ingress'])
+    expect(nodeHalf.spec?.ingress).toEqual([{
+      from: [{ ipBlock: { cidr: '10.89.0.2/32' } }],
+      ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
+    }])
+    expect(frontHalf.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
+    expect(frontHalf.spec?.ingress).toEqual([])
+
+    // A ClusterIP, not a NodePort: the API is published on no node address
+    // at all. What reaches it from the host is the forwarder below.
+    const [svc] = applied('Service')
+    expect(svc.spec?.type).toBe('ClusterIP')
+    expect(svc.spec?.ports?.[0]).toMatchObject({ port: SERVER_POD_PORT, targetPort: SERVER_POD_PORT })
+    expect(svc.spec?.ports?.[0]?.nodePort).toBeUndefined()
+
+    // The forwarder: a hostNetwork Envoy on the control-plane node — where
+    // the kind port mapping delivers — binding the mapped port and dialing
+    // the Service by name. In the node's own network namespace, so what
+    // reaches the server pod is sourced from the node, on every platform.
+    const front = deployedPodSpec(SERVER_FRONT_APP_NAME)
+    expect(front.hostNetwork).toBe(true)
+    expect(front.dnsPolicy).toBe('ClusterFirstWithHostNet')
+    expect(front.nodeSelector).toEqual({ 'node-role.kubernetes.io/control-plane': '' })
+    expect(front.tolerations?.[0]).toMatchObject({ key: 'node-role.kubernetes.io/control-plane' })
+    expect(front.runtimeClassName).toBeUndefined()
+    const [envoy] = front.containers
+    expect(envoy.image).toContain('envoyproxy/envoy')
+    expect(envoy.securityContext).toMatchObject({ runAsNonRoot: true, capabilities: { drop: ['ALL'] } })
+    expect(envoy.command).toContain('--use-dynamic-base-id')
+    const [config] = applied('ConfigMap')
+    expect(config.data?.['bootstrap.yaml']).toContain(`port_value: ${String(SERVER_FRONT_PORT)}`)
+    expect(config.data?.['bootstrap.yaml']).toContain(`${SERVER_APP_NAME}.test-ns.svc.cluster.local`)
+    // Rolled out before the origin is probed, like the server itself.
+    expect(retried().some((c) => c.includes(`rollout status deployment/${SERVER_FRONT_APP_NAME}`))).toBe(true)
+  })
+
+  it('publishes through the tailnet when told to', async () => {
+    const svc = tailnetService('yaac.tail1234.ts.net', 1)
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args.includes('nodes')
+        ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
+        : svc(args),
+    ))
+    const log = vi.fn()
+
+    const origin = await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log })
+
+    // The operator's LoadBalancer Service, and no NodePort on the side —
+    // that would publish the API on every node address of a pool behind
+    // nothing but the policy.
+    const [service] = applied('Service')
+    expect(service.spec?.type).toBe('LoadBalancer')
+    expect(service.spec?.loadBalancerClass).toBe('tailscale')
+    expect(service.spec?.allocateLoadBalancerNodePorts).toBe(false)
+    expect((service.metadata as { annotations: Record<string, string> }).annotations)
+      .toEqual({ 'tailscale.com/hostname': 'yaac' })
+    expect(applied('ConfigMap')).toHaveLength(0)
+
+    // The fronting half of the wall selects the operator's proxy pod for
+    // this Service, in the operator's namespace; the node half is as ever.
+    const [nodeHalf, frontHalf] = applied('NetworkPolicy')
+    expect(nodeHalf.spec?.ingress).toEqual([{
+      from: [{ ipBlock: { cidr: '10.89.0.2/32' } }],
+      ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
+    }])
+    expect(frontHalf.spec?.ingress).toEqual([{
+      from: [{
+        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': TAILSCALE_OPERATOR_NAMESPACE } },
+        podSelector: { matchLabels: {
+          'tailscale.com/parent-resource': SERVER_APP_NAME,
+          'tailscale.com/parent-resource-ns': 'test-ns',
+        } },
+      }],
       ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
     }])
 
-    const [svc] = applied('Service')
-    expect(svc.spec?.type).toBe('NodePort')
-    expect(svc.spec?.ports?.[0]).toMatchObject({
-      port: SERVER_POD_PORT,
-      nodePort: SERVER_NODE_PORT,
-    })
+    // The origin is what the operator published, read off the Service
+    // AFTER it was applied and BEFORE the Deployment was rendered — the
+    // Deployment has to admit that name, which is what requires a
+    // credential, since the tailnet is the trust boundary now rather than
+    // this loopback. Not TRUST_PROXY: an L4 exposure sanitizes no header,
+    // so trusting X-Forwarded-* would hand them to any tailnet client.
+    expect(origin).toBe('http://yaac.tail1234.ts.net')
+    const env = Object.fromEntries(deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]))
+    expect(env.YAAC_ALLOWED_HOSTS).toBe('yaac.tail1234.ts.net')
+    expect(env.YAAC_TRUST_PROXY).toBeUndefined()
+    expect(log.mock.calls.flat().join('\n')).toMatch(/REQUIRE a credential/)
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([u]) => (u as string).startsWith(origin))).toBe(true)
+    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true, driver: 'k8s' })
+  })
+
+  it('unions the fronting\'s hosts with the install shell\'s', async () => {
+    // A host-side `tailscale serve` on the same machine is still a valid
+    // way in (docs/remote-hosting.md), so what the shell carries is added
+    // to what the fronting publishes, never replaced by it.
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args.includes('nodes')
+        ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
+        : tailnetService('yaac.tail1234.ts.net')(args),
+    ))
+
+    await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
+
+    const env = Object.fromEntries(deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]))
+    expect(env.YAAC_ALLOWED_HOSTS.split(',').sort()).toEqual(['srv.tailnet.ts.net', 'yaac.tail1234.ts.net'])
+  })
+
+  it('refuses when the operator never publishes a hostname, before the Deployment', async () => {
+    // Only the clock is faked: the deploy reads the host lock off real
+    // disk first, and that I/O has to be able to land between ticks.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+        args.includes('nodes')
+          ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
+          : tailnetService('never', Number.MAX_SAFE_INTEGER)(args),
+      ))
+      const pending = deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
+      const verdict = expect(pending).rejects.toThrow(/Tailscale operator did not publish/)
+      for (let i = 0; i < 130; i += 1) {
+        await new Promise((r) => setImmediate(r))
+        await vi.advanceTimersByTimeAsync(1_000)
+      }
+      await verdict
+      // The Service is there for the operator to act on; nothing that
+      // needs the origin was applied.
+      expect(applied('Service')).toHaveLength(1)
+      expect(applied('Deployment')).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reaches every namespace, because it creates namespaces', async () => {
-    await deployServerWorkload({ log: vi.fn() })
+    await deploy({ log: vi.fn() })
 
     // Per-project registries live in namespaces the server creates at
     // runtime, so a binding into the namespaces that exist today could not
@@ -383,6 +545,35 @@ describe('deployServerWorkload', () => {
     // Enumerated, not `*` on `*`: it holds no reach over CRDs or anything
     // else nobody named.
     expect(rules.every((r) => !r.resources.includes('*'))).toBe(true)
+  })
+
+  it('mints the durable token with the lock the pod holds, never the host\'s', async () => {
+    // The lock is the server's file. On kind the host could still read it;
+    // on a cloud cluster the data dir is not on this machine at all, and a
+    // mint that silently fails there is a lockout on an install that
+    // requires a credential. One path for both: ask the pod.
+    mockWithRetry.mockImplementation((args: string[]) => Promise.resolve(
+      args[0] === 'exec' && args.join(' ').includes('.server.lock')
+        ? { stdout: JSON.stringify({ pid: 1, port: 8787, secret: 'podsecret', startedAt: 1, buildId: 'b' }), stderr: '' }
+        : { stdout: '', stderr: '' },
+    ))
+    const seen: Array<{ url: string; auth: string | undefined; method: string }> = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined
+      seen.push({ url: String(url), auth: headers?.authorization, method: init?.method ?? 'GET' })
+      if (String(url).endsWith('/tokens') && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ token: 'minted-by-pod' }), { status: 200 }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }))
+    }))
+
+    await deploy({ log: vi.fn() })
+
+    const execCall = (mockWithRetry.mock.calls as Array<[string[]]>)
+      .map(([a]) => a).find((a) => a[0] === 'exec')
+    expect(execCall).toContain(`deployment/${SERVER_APP_NAME}`)
+    expect(seen.find((s) => s.method === 'POST')?.auth).toBe('Bearer podsecret')
+    expect((await readServerConfig())?.token).toBe('minted-by-pod')
   })
 
   it('refuses to deploy beside a host server that still holds the data dir', async () => {
@@ -403,7 +594,7 @@ describe('deployServerWorkload', () => {
       new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }),
     )))
 
-    await expect(deployServerWorkload({ log: vi.fn() }))
+    await expect(deploy({ log: vi.fn() }))
       .rejects.toThrow(/already running.*host process[\s\S]*yaac server stop/)
     // Nothing applied: the refusal is before the first manifest, so a
     // failed install leaves the cluster exactly as it found it.
@@ -421,7 +612,7 @@ describe('deployServerWorkload', () => {
       instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
     })
 
-    await expect(deployServerWorkload({ log: vi.fn() }))
+    await expect(deploy({ log: vi.fn() }))
       .rejects.toThrow(/already running.*host process/)
     expect(mockApply).not.toHaveBeenCalled()
   })
@@ -435,7 +626,7 @@ describe('deployServerWorkload', () => {
       instance: 'abc', host: 'yaac-server-77d4f', heartbeatAt: Date.now(),
     })
 
-    await expect(deployServerWorkload({ log: vi.fn() })).resolves.toMatch(/^http:/)
+    await expect(deploy({ log: vi.fn() })).resolves.toMatch(/^http:/)
   })
 
   it('deploys past a host lock whose server is gone', async () => {
@@ -456,41 +647,7 @@ describe('deployServerWorkload', () => {
           JSON.stringify({ ok: true, ready: true }), { status: 200 },
         ))))
 
-    await expect(deployServerWorkload({ log: vi.fn() })).resolves.toMatch(/^http:/)
-  })
-})
-
-describe('waitForPublishedServer', () => {
-  it('turns a rolled-out Deployment that never answers into the one fix for it', async () => {
-    // A Deployment that is Available while 127.0.0.1 refuses is not a
-    // server problem: it is a cluster created before the port mapping
-    // existed, and kind writes mappings only at create time — which cannot
-    // be converged, only recreated.
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
-    await expect(waitForPublishedServer(50)).rejects.toThrow(/yaac cluster delete/)
-  })
-
-  it('waits out an answering-but-still-initializing server', async () => {
-    // /health answers before the DB is open, so `ready` is the gate: a
-    // 200 alone would report a server the next command cannot use.
-    let calls = 0
-    vi.stubGlobal('fetch', vi.fn(() => {
-      calls += 1
-      return Promise.resolve(new Response(
-        JSON.stringify({ ok: true, ready: calls > 2 }),
-        { status: 200 },
-      ))
-    }))
-    await waitForPublishedServer(10_000)
-    expect(calls).toBeGreaterThan(2)
-  })
-})
-
-describe('serverPublishedOrigin', () => {
-  it('is the loopback origin the kind port mapping fronts', () => {
-    vi.stubEnv('YAAC_SERVER_PORT', '9123')
-    expect(serverPublishedOrigin()).toBe('http://127.0.0.1:9123')
-    vi.unstubAllEnvs()
+    await expect(deploy({ log: vi.fn() })).resolves.toMatch(/^http:/)
   })
 })
 
@@ -514,11 +671,58 @@ describe('serverDeploymentExists', () => {
 })
 
 describe('startClusterServer', () => {
-  it('scales the Deployment back up rather than spawning anything', async () => {
-    await startClusterServer()
+  it('scales the Deployment back up rather than spawning anything, and answers the origin', async () => {
+    vi.stubEnv('YAAC_SERVER_PORT', '9123')
+    // The live Service is the record of the fronting: a ClusterIP (or a
+    // NodePort from an install not yet re-converged, or none at all — the
+    // e2e harness) is the kind fronting, so the origin is the loopback one.
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args.includes('service') ? { spec: { type: 'ClusterIP' } } : null,
+    ))
+    await expect(startClusterServer()).resolves.toBe('http://127.0.0.1:9123')
     const calls = retried()
     expect(calls.some((c) => c.includes('scale') && c.includes('--replicas=1'))).toBe(true)
     expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
+  })
+
+  it('waits on the tailnet origin when that is what the live Service records', async () => {
+    mockGetJson.mockImplementation((args: string[]) =>
+      Promise.resolve(tailnetService('yaac.tail1234.ts.net')(args)))
+    await expect(startClusterServer()).resolves.toBe('http://yaac.tail1234.ts.net')
+    expect(vi.mocked(globalThis.fetch).mock.calls.every(([u]) =>
+      (u as string).startsWith('http://yaac.tail1234.ts.net'))).toBe(true)
+  })
+
+  it('turns a rolled-out Deployment that never answers into the fix for it', async () => {
+    // A Deployment that is Available while 127.0.0.1 refuses is not a
+    // server problem: it is a cluster created before the port mapping
+    // existed, and kind writes mappings only at create time — which cannot
+    // be converged, only recreated. The fronting supplies that diagnosis.
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
+      const pending = startClusterServer()
+      const verdict = expect(pending).rejects.toThrow(/yaac cluster delete/)
+      await vi.advanceTimersByTimeAsync(61_000)
+      await verdict
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('waits out an answering-but-still-initializing server', async () => {
+    // /health answers before the DB is open, so `ready` is the gate: a
+    // 200 alone would report a server the next command cannot use.
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(() => {
+      calls += 1
+      return Promise.resolve(new Response(
+        JSON.stringify({ ok: true, ready: calls > 2 }),
+        { status: 200 },
+      ))
+    }))
+    await startClusterServer()
+    expect(calls).toBeGreaterThan(2)
   })
 })
 
@@ -554,7 +758,7 @@ describe('stopClusterServer', () => {
 
 describe('restartClusterServer', () => {
   it('rolls the pod and waits for the published origin to answer again', async () => {
-    await restartClusterServer()
+    await expect(restartClusterServer()).resolves.toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     const calls = retried()
     expect(calls.some((c) => c.includes('rollout restart'))).toBe(true)
     expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
