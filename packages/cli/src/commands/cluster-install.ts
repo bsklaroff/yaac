@@ -10,7 +10,7 @@ export interface ClusterInstallCliOptions {
 /**
  * `yaac cluster install` — converge this machine and its cluster to the
  * yaac version that is installed: the kind cluster and its CNI if there is
- * none yet, the node fixups, every built-in image, and the in-cluster
+ * none yet, the kind node fixups, every built-in image, and the in-cluster
  * layers. Safe to run at any time and after any upgrade; it has no
  * destructive path (`yaac cluster delete` is the only one).
  *

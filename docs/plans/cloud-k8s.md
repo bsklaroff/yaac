@@ -41,6 +41,11 @@ Everything the earlier plans called "the keystone" has shipped on kind:
   already renders `hostPath | pvc+subPath | emptyDir`. Nothing selects
   `pvc` yet.
 - Multi-node kind (`--nodes N`) exists, with per-node readiness gates.
+- Node tuning (the sysctls, `DefaultTasksMax`) is the gVisor installer
+  DaemonSet's, applied on every node it lands on and re-applied after a
+  restart; install's `podman exec` loop holds only the kind-only pair (the
+  node container's pids ceiling, the kubelet housekeeping flag), and
+  `cluster check` reads the tuning back through the installer's pods.
 - Nothing a user configures names a path on the server any more:
   `bindMounts` is gone, an SSH git credential is ingested as key content,
   project env and secrets live encrypted in the database, and a project's
@@ -202,7 +207,7 @@ therefore deploys no server. Those four gaps are the whole of this plan.
 
 Each step lands and pays off on kind before the next starts; the e2e suite
 on kind (single and `--nodes 3`) is the gate for every one of them, and the
-byo-on-kind tier described under step 6 joins that gate as soon as it
+byo-on-kind tier described under step 5 joins that gate as soon as it
 exists.
 
 ### 1. Storage: claims on kind, data dir untouched
@@ -240,17 +245,7 @@ exists.
   same probes the spike used.
 - Gate: e2e green on kind, one node and three.
 
-### 2. Node tuning into the DaemonSet
-
-- Sysctls and `DefaultTasksMax` move into `yaac-gvisor-install`; the
-  `podman exec` loop in install keeps only the pids-limit and the kubelet
-  flag, both kind-only and both skipped under `--byo`. The `node-fixups`
-  check narrows to that pair and self-skips on a non-podman node as it
-  already does.
-- Gate: `cluster check` green after a podman-machine restart with no
-  install re-run for the sysctls (the DaemonSet reapplied them).
-
-### 3. Images for the node's architecture
+### 2. Images for the node's architecture
 
 - Depends on issue #150 having landed: no uid in any tag or build arg.
 - Install reads the node architecture off the cluster (and refuses a
@@ -267,7 +262,7 @@ exists.
 - Follow-on, outside this plan's gate: publish per-architecture images per
   release and have install pull them, retiring the per-machine build.
 
-### 4. Server publication and the ingress wall
+### 3. Server publication and the ingress wall
 
 - The Service's fronting is a per-backend manifest: NodePort + port
   mapping on kind, `loadBalancerClass: tailscale` under `--byo`. Install
@@ -280,7 +275,7 @@ exists.
   tailnet-fronted kind cluster (the operator works on kind) `yaac remote
   set` from a second device reaches the server.
 
-### 5. Credentials off the shared tier
+### 4. Credentials off the shared tier
 
 - The tool credential bundles reach the proxy the way project secrets
   already do — pushed over its control API, re-pushed on every proxy
@@ -291,7 +286,7 @@ exists.
 - Gate: the egress e2e tier green; a grep for hostPath in
   `proxy-manifests.ts` finds nothing.
 
-### 6. `--byo`: the cloud install end to end
+### 5. `--byo`: the cloud install end to end
 
 - `--adopt-cni` is renamed `--byo` outright — no alias, no deprecation
   window; it has no installs to be compatible with. `--byo` adds to what
@@ -299,7 +294,7 @@ exists.
   restart mechanism — k3s embeds containerd), the StorageClass probe
   (`--rwx-storage-class`, `--rwo-storage-class`, refused when absent or
   when the RWX class is not NFS-family), the Tailscale operator probe, the
-  architecture probe that drives step 3's builds, the `runAsUser`
+  architecture probe that drives step 2's builds, the `runAsUser`
   decision, the claims and the Retain patch, the server with its tailnet
   fronting, and the registration.
   Every new argument gets its e2e-cli coverage.
@@ -311,7 +306,7 @@ exists.
   vitest project beside the k8s tiers.
 - Gate: the full e2e suite green on byo-on-kind.
 
-### 7. Real targets
+### 6. Real targets
 
 Run in kill-order on a self-managed k3s + Calico pool (VMs, csi-driver-nfs
 against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
@@ -325,7 +320,7 @@ against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
 - A full worktree life: create, nested containers, prewarm claim, then
   drain the node and resume — every tool including opencode — on another
   (repo, transcripts and the opencode checkpoint are shared; the worktree
-  dir is too until step 9, correct but slow on the first `worktree add`).
+  dir is too until step 8, correct but slow on the first `worktree add`).
 - Reboot and drain: a node drain kills a worktree Job — surface a
   "node draining" worktree state and document that in-flight scratch is
   lost while `repo/.git` and transcripts are not.
@@ -333,7 +328,7 @@ against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
   written as each target passes), with the provider table from
   docs/worktree-egress.md as its envelope.
 
-### 8. Operations
+### 7. Operations
 
 - The pre-migration cold DB snapshot (`db-backup-<buildId>`, last-N).
 - The lease-fenced lock stays; on byo the RWO claim's attach exclusivity
@@ -345,7 +340,7 @@ against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
   both and persists across re-installs (docs/cluster-setup.md "Which nodes
   count as worktree-eligible" describes why today's apply prunes it).
 
-### 9. Node-local worktrees (perf, separable)
+### 8. Node-local worktrees (perf, separable)
 
 The spike showed shared worktrees are correct but ~10x slower on the git
 write paths. Once the cloud install is real: `addWorktree` splits so the
@@ -380,7 +375,8 @@ not.
 
 - **Moving off kind** (native k3s on Linux, Lima/minikube krunkit spikes,
   buildkitd-in-cluster as a podman replacement). kind is the local backend;
-  its fixups shrink under step 2 and its host podman stays for the provider.
+  its fixups are down to the kind-only pair and its host podman stays for
+  the provider.
 - **A host NFS export for the local install.** The local data dir stays on
   disk behind static hostPath PVs; NFS is cloud-only.
 - **`yaac cluster attach` as a separate verb**; it is `--byo` on install.

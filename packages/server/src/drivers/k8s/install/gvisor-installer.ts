@@ -33,7 +33,10 @@ import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
  *  - node recycling is handled for free. A pool upgrade replaces nodes; the
  *    DaemonSet schedules onto each new one and installs before the
  *    RuntimeClass selector lets any worktree pod near it. Nothing has to
- *    notice a node was replaced.
+ *    notice a node was replaced. The same pass is the node-TUNING
+ *    mechanism (the sysctls, DefaultTasksMax — substrate/node-tuning.ts),
+ *    which is why a node that merely restarted gets its kernel state back
+ *    with no `yaac cluster install` re-run.
  *
  * Blast radius is bounded by where the DaemonSet runs: `nodeSelector` is
  * plumbed through so a cluster with a dedicated worktrees pool can install
