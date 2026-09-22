@@ -6,6 +6,7 @@ import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { attachAcp } from '#runtime/agents/acp-bridge'
 import { AcpConversation } from '#runtime/agents/acp-client'
+import { acpAdapterFor } from '#runtime/agents/acp-adapters'
 import { readAcpInFlight, readAcpPendingPermissions } from '#runtime/agents/acp-log'
 import {
   _resetAcpRegistryForTests,
@@ -345,6 +346,85 @@ describe('attachAcp', () => {
     await new Promise((r) => setTimeout(r, 250))
     expect(paneBusy(sock.sent)).toBe(false)
     sock.clientClose()
+  })
+
+  it('greets a pane with a posture that never took, which the handshake had nobody to tell', async () => {
+    // `applyPermissionMode` reports during the HANDSHAKE, and the id a pane
+    // attaches by is minted by that same handshake — so at the moment the
+    // report is made there is nobody subscribed to hear it, and a pane opened
+    // afterwards would show a conversation and no warning. The cell that makes
+    // this matter is codex: its adapter's own default (`agent`, a reviewer
+    // model approving most actions) is LOOSER than the `accept-edits` this
+    // create asked for.
+    conversation.close()
+    transport = new FakeTransport()
+    conversation = new AcpConversation({
+      transport,
+      cwd: '/workspace',
+      // The real profile, so the mode id asked for is the one codex-acp is
+      // actually told.
+      profile: acpAdapterFor('codex'),
+      permissionMode: () => 'accept-edits',
+      onSessionId: () => {},
+      onBusy: () => {},
+      onDown: () => {},
+      log: () => {},
+    })
+    registerAcpConversation('demo', 'wt-1', { handle: 'codex', agentSessionId: 'acp-1' }, conversation)
+    // A probe standing in for the ordering a real pane never gets, used only
+    // to know WHEN the report has been made. Without it the attach below races
+    // the refusal and can be caught by the live subscription instead, which is
+    // the path this test exists to prove is not the only one.
+    const reportedLive: string[] = []
+    const stopProbe = conversation.subscribe((e) => {
+      if (e.type === 'error') reportedLive.push(e.message)
+    })
+    transport.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
+
+    const sent = (method: string): { id: number } | undefined =>
+      transport.written.map((l) => JSON.parse(l) as { id: number; method?: string })
+        .find((m) => m.method === method)
+    const reply = (id: number, body: unknown): void => {
+      transport.feed(`${JSON.stringify({ jsonrpc: '2.0', id, ...body as object })}\n`)
+    }
+
+    await waitFor(() => sent('initialize') !== undefined)
+    reply(sent('initialize')!.id, { result: { protocolVersion: 1, agentCapabilities: {} } })
+    await waitFor(() => sent('session/new') !== undefined)
+    reply(sent('session/new')!.id, {
+      result: {
+        sessionId: 'acp-1',
+        modes: {
+          currentModeId: 'agent',
+          availableModes: [{ id: 'read-only' }, { id: 'agent' }, { id: 'agent-full-access' }],
+        },
+      },
+    })
+    // Advertised, so it is asked for — and refused.
+    await waitFor(() => sent('session/set_mode') !== undefined)
+    reply(sent('session/set_mode')!.id, { error: { code: -32603, message: 'mode unavailable' } })
+
+    // The report has now been made, to an empty room: no pane existed while
+    // the handshake ran, and the live subscription a pane later installs only
+    // forwards what arrives after it.
+    await waitFor(() => reportedLive.length > 0)
+    stopProbe()
+
+    // Only NOW does a pane exist, which is the whole point.
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'error'))
+    const reported = sock.sent
+      .flatMap((m) => (m.type === 'event' && m.event.type === 'error' ? [m.event.message] : []))
+    expect(reported.join(' ')).toContain('read-only')
+    // Names the mode it is actually in — the one nobody chose.
+    expect(reported.join(' ')).toContain('agent')
+    // After the greeting, so it cannot be mistaken for something said earlier
+    // in the conversation.
+    const helloAt = sock.sent.findIndex((m) => m.type === 'hello')
+    const errorAt = sock.sent.findIndex((m) => m.type === 'event' && m.event.type === 'error')
+    expect(errorAt).toBeGreaterThan(helloAt)
   })
 
   it('tells a pane the conversation is not live rather than hanging it open', async () => {

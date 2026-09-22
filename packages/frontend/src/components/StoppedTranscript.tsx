@@ -65,10 +65,13 @@ export function StoppedTranscript({
     [data],
   )
 
-  // Nothing readable: opencode keeps its history inside the container, and
-  // codex/pi transcripts are not translated yet. The founding ask is still
-  // worth showing — it is what this pane showed before there were transcripts
-  // at all.
+  // Nothing readable, which now means one thing: a `tui` conversation of a
+  // tool whose own history the server cannot read once the pod is gone —
+  // opencode's is a sqlite database inside the container, and codex names its
+  // rollouts by a thread id yaac never sees. Every `acp` conversation is
+  // readable whatever ran it, because acpd's record is yaac's own. The
+  // founding ask is still worth showing — it is what this pane showed before
+  // there were transcripts at all.
   if (selected === undefined || data === TRANSCRIPT_UNAVAILABLE) {
     if (!prompt) return null
     // Only say *why* when this tool is the reason — the worktree's

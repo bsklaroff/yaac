@@ -278,11 +278,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     return projectPath
   }
 
-  async function findWorktreePod(slug: string): Promise<PodInfo> {
+  async function findWorktreePod(slug: string, exclude = new Set<string>()): Promise<PodInfo> {
     // listWorktreePods scopes by the data-dir-hash label, so we never trip
     // over pods owned by a concurrent worker. Oldest-first so we always
-    // grab the CLI's session.
-    const pods = await listWorktreePods(slug)
+    // grab the CLI's session — which is the wrong pod for a block whose
+    // `beforeAll` keeps an older worktree alive in the same project, so those
+    // pass the ids they already know and get the one they just made.
+    const pods = (await listWorktreePods(slug)).filter((p) => !exclude.has(p.worktreeId))
     const pod = pods.sort((a, b) => a.createdAtMs - b.createdAtMs)[0]
     if (!pod) throw new Error(`no session pod found for project ${slug}`)
     return pod
@@ -1986,15 +1988,127 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(Array.isArray(hello.events)).toBe(true)
     }, 60_000)
 
-    it('refuses a tool with no ACP adapter before provisioning anything', async () => {
+    /**
+     * The same path for the other three adapters, against the REAL pinned
+     * binaries in a real pod. One worktree each, and only the handshake — no
+     * turn — because what differs per adapter is settled by then: which binary
+     * acpd execs, what the launch command carried to it, the id it minted, and
+     * the posture it was told. A turn would add an LLM round trip and nothing
+     * this tier can check that the unit suites cannot.
+     *
+     * Worth the pods anyway: every one of these facts is a claim about an
+     * upstream package that a version bump can quietly falsify, and the unit
+     * suites assert them against tables rather than against the adapter.
+     */
+    const REAL_ADAPTERS: Array<{
+      tool: 'codex' | 'opencode' | 'pi'
+      posture: string
+      launch: string[]
+      /** The mode id the adapter is told, where it has one for the posture. */
+      modeId?: string
+      /** A protocol call the adapter needs because it takes no model at
+       *  launch. */
+      method?: string
+      /** The mode the adapter reports at `session/new`, where the profile's
+       *  reading of it is load-bearing. */
+      defaultModeId?: string
+    }> = [
+      {
+        // `accept-edits`, not `auto`, and that is the point: codex-acp's own
+        // default is already `agent`, so a create asking for `auto` is in the
+        // mode it wanted the moment `session/new` answers and
+        // `applyPermissionMode` skips the redundant call — there would be no
+        // `session/set_mode` in the record to find. `accept-edits` maps to
+        // `read-only`, which differs from that default, so this exercises the
+        // round trip AND is the cell that matters: the one where failing to
+        // switch would leave the conversation looser than it was asked to be.
+        tool: 'codex',
+        posture: 'accept-edits',
+        launch: ['NO_BROWSER=1', 'codex-acp'],
+        modeId: 'read-only',
+        // Pinned against the real binary, because the whole reason a failed
+        // mode switch is reported in the pane is that THIS is looser than
+        // `accept-edits`. A release that changed it would quietly turn that
+        // fallback into a safe one, or a dangerous one, with nothing else to
+        // notice.
+        defaultModeId: 'agent',
+      },
+      {
+        // opencode's posture is the same config document its TUI is launched
+        // with; its model is not (the ACP path ignores the config's `model`),
+        // so that arrives as a config option after the handshake.
+        tool: 'opencode',
+        posture: 'accept-edits',
+        launch: ['OPENCODE_CONFIG_CONTENT=', 'opencode acp'],
+      },
+      {
+        // pi has no permission system, and no way to be launched with a model
+        // — so the provider default reaches it as a protocol call, which is
+        // what makes the egress proxy swap the right api key.
+        tool: 'pi',
+        posture: 'bypass',
+        launch: ['pi-acp'],
+        method: '"method":"session/set_model"',
+      },
+    ]
+
+    it.each(REAL_ADAPTERS)('drives $tool through its real adapter',
+      async ({ tool, posture, launch, modeId, method, defaultModeId }) => {
+        // The block's own worktree (claude, from `beforeAll`) outlives every
+        // case and is older than all of them, so the pod has to be found by
+        // what is NEW rather than by what is oldest.
+        const older = new Set((await listWorktreePods(SLUG)).map((p) => p.worktreeId))
+        await createWorktree(
+          SLUG, '--tool', tool, '--mode', 'acp', '--permission-mode', posture,
+        )
+        const job = (await findWorktreePod(SLUG, older)).jobName
+        const { stdout: startCmd } = await execInJob(job, [
+          'sh', '-c',
+          `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:${tool} "#{pane_start_command}"`,
+        ])
+        expect(startCmd).toContain('/opt/yaac/acpd/main.js')
+        for (const fragment of launch) expect(startCmd).toContain(fragment)
+
+        // The handshake landing is the whole assertion: a `session/new` reply
+        // carrying an id means the adapter started, spoke ACP, and accepted
+        // the capabilities yaac declines (`fs/*`, `terminal/*`), which is what
+        // an adapter expecting an editor on the other end would refuse.
+        let recorded = ''
+        for (let i = 0; i < 90 && !recorded.includes('"sessionId"'); i++) {
+          recorded = (await execInJob(job, [
+            'sh', '-c', 'cat /home/yaac/.yaac-acp/*.jsonl 2>/dev/null || true',
+          ])).stdout
+          if (!recorded.includes('"sessionId"')) await sleep(2000)
+        }
+        expect(recorded).toContain('"method":"initialize"')
+        expect(recorded).toContain('"sessionId"')
+        if (modeId !== undefined) expect(recorded).toContain(`"modeId":"${modeId}"`)
+        if (method !== undefined) expect(recorded).toContain(method)
+        if (defaultModeId !== undefined) {
+          expect(recorded).toContain(`"currentModeId":"${defaultModeId}"`)
+        }
+      }, 600_000)
+
+    it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
+      // Every tool has an adapter now, so the combination that cannot be
+      // created is a posture rather than a tool: codex-acp collapses codex's
+      // approval × sandbox grid into three modes, and neither `plan` nor
+      // `manual` is among them. Refusing beats launching the nearest
+      // neighbour, which would hand back a worktree with a weaker restraint
+      // than the one that was asked for — and quietly, since nothing in the
+      // pane would say so.
       await setupProject('acp-unsupported')
       const podsBefore = (await listWorktreePods('acp-unsupported')).length
       const bad = await runYaac(
-        serverEnv, 'worktree', 'create', 'acp-unsupported', '--tool', 'opencode', '--mode', 'acp',
+        serverEnv, 'worktree', 'create', 'acp-unsupported',
+        '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'plan',
       )
       expect(bad.exitCode).not.toBe(0)
-      expect(bad.stdout + bad.stderr).toMatch(/no ACP adapter/)
+      expect(bad.stdout + bad.stderr).toMatch(/codex has no "plan" permission mode under acp/)
       // The check runs before the worktree, the Job, or a database row exists.
+      // The same posture through codex's own TUI is accepted — the limit is
+      // the adapter's, not codex's — which the unit suite pins against the
+      // posture matrix rather than spending a pod here.
       expect((await listWorktreePods('acp-unsupported')).length).toBe(podsBefore)
     }, 120_000)
 

@@ -12,8 +12,25 @@ its **mode**, and there are two:
 | Conversation ids from | the in-pod hook's session-starts log | `session/new`'s reply |
 
 Mode is orthogonal to `AgentTool`: it selects the protocol, not which agent
-runs. Only tools with an adapter in the worktree image can use `acp`
-(`ACP_TOOLS` in `@yaac/shared/types`; today, claude).
+runs. Every tool has an adapter, and which one is the shared `ACP_ADAPTERS`
+record in `@yaac/shared/types` — the single table the image's install steps,
+the host preflight, the launch command and the webapp's chat button all derive
+from:
+
+| tool | adapter | notes |
+|---|---|---|
+| claude | `claude-agent-acp` | bundles its own SDK |
+| codex | `codex-acp` | drives `codex app-server`, so the CLI must be there too |
+| opencode | `opencode acp` | the CLI *is* the adapter, as a subcommand |
+| pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be there too |
+
+What differs between them is a profile in `#runtime/agents/acp-adapters.ts`:
+the argv, the environment that carries a posture or a model, the session mode
+ids that express yaac's postures, and whether its asks are permission prompts
+at all. One
+table rather than four branches, because these facts are not independent — a
+tool that cannot take a model on its command line is exactly the one that has
+to be sent one over the protocol.
 
 The choice matters most on a phone. A chat pane is a message list and a
 composer, so it needs nothing a soft keyboard can't provide; a TUI needs Esc,
@@ -121,10 +138,13 @@ watched live. What keeps that true is a version pin: the package the server
 imports must be the one `dockerfiles/Dockerfile.tools` installs, and a unit
 test fails when the two drift.
 
-Only claude has an ACP adapter, so only claude has this second path. A tui
-conversation of any other tool refuses with `NOT_SUPPORTED` — opencode's
-history is a sqlite database inside the container and reaches the host at all
-only while the pod is alive.
+This second path is claude's alone, and that is a fact about TUI transcripts
+rather than about adapters: it exists because claude's adapter exposes its own
+translation as a library. A `tui` conversation of any other tool refuses with
+`NOT_SUPPORTED` — codex names its rollouts by a thread id yaac never sees, and
+opencode's history is a sqlite database inside the container that reaches the
+host at all only while the pod is alive. An `acp` conversation of any tool is
+read from the record, so it needs none of this.
 
 **The record is also the only path by which content reaches a pane.** The
 socket carries the RPC half — our requests and their replies, and the agent's
@@ -187,6 +207,11 @@ projection and starts again, and the pane replaces rather than appends. A
 restart's `session/load` replays the whole conversation, so the fresh file ends
 up complete again rather than double-appending history it already had.
 
+That rests on every adapter replaying on load, which is a fact about the
+adapters rather than a guarantee of the protocol — an adapter that answered
+`session/load` without re-emitting the conversation would come back blank, and
+the fix would be to keep the record rather than truncate it.
+
 The record is named for the *conversation*, not the window: a window name is a
 slot, and a restart that drops an earlier conversation shifts the later ones
 down a slot, which under slot-naming would truncate one conversation's history
@@ -246,6 +271,23 @@ It *removes* more than it adds. A `tui` conversation is discovered — an in-pod
 hook appends a sighting and the reconciler joins recorded handles against the live
 pane set. An `acp` conversation is authored: `session/new` hands the server the
 id directly. No hook, no worktree-starts log, no join.
+
+The row's display fields come from the record too, and for the same reason the
+transcript does: it is the one source that answers for every tool. A TUI
+conversation's model is read from the transcript its tool writes, but under ACP
+three of the four leave nothing this side of the pod can find — codex names its
+rollouts by a thread id yaac never sees, opencode's history is a
+container-side database, and pi's log is named for an id its adapter minted
+rather than the one yaac asked for. So an ACP row records no transcript path at
+all: its opening message, its model and its last-active time are all read from
+the record, which is on disk whether or not anything is attached and outlives
+the pod.
+
+The model is read from the handshake reply and from every change since — both
+shapes, because adapters disagree about which they use (a `models` block, a
+`configOptions` entry with `id: model`, or both), and from the *request* of a
+change rather than its reply, because `session/set_model` answers with an empty
+object. A request whose reply carried an error changed nothing and is ignored.
 
 The row is still written by the reconciler's conversation sweep, and the
 handshake that mints the id moves nothing the informers watch — so the id
@@ -322,6 +364,7 @@ to be restarted mid-turn.
 | Concern | Path |
 |---|---|
 | Driver interface + factory | `packages/server/src/runtime/agents/drivers.ts` |
+| Per-tool adapter profiles | `packages/server/src/runtime/agents/acp-adapters.ts` |
 | tmux driver | `packages/server/src/runtime/agents/tui-driver.ts` |
 | ACP driver | `packages/server/src/runtime/agents/acp-driver.ts` |
 | ACP protocol → `AcpEvent` | `packages/server/src/runtime/agents/acp-protocol.ts` |

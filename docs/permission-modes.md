@@ -68,6 +68,67 @@ gap means shipping a pi extension that denies or prompts on its blocking
 `SUPPORTED_PERMISSION_MODES` is the machine-readable version, and both the
 refusal and the webapp's disabled tool rows read from it.
 
+## Under `acp`, the answer is the adapter's
+
+A posture is a launch flag for a TUI and an advertised session mode for an
+adapter, and the adapters offer fewer — so the table above is the `tui` column
+and `ACP_SUPPORTED_PERMISSION_MODES` is the other one:
+
+| Mode | claude | codex | opencode | pi |
+|---|---|---|---|---|
+| `bypass` | `bypassPermissions` | `agent-full-access` | the TUI's own config | — |
+| `auto` | `auto` | `agent` | — | — |
+| `accept-edits` | `acceptEdits` | `read-only` | the TUI's own config | — |
+| `plan` | `plan` | — | its config, **plus** the `plan` agent over `session/set_mode` | — |
+| `manual` | `default` | — | the TUI's own config | — |
+
+Three things follow from it.
+
+**codex loses two postures over ACP.** codex-acp collapses codex's approval ×
+sandbox grid into three modes, and neither `plan` nor `manual` is among them.
+A create asking for one is refused rather than nudged to a neighbour — the same
+rule the TUI column follows, and the reason the refusal says "under acp": codex
+plainly has plan mode, its adapter does not.
+
+**opencode's postures do not travel as modes at all.** Every posture is the
+same `OPENCODE_CONFIG_CONTENT` document the TUI is launched with, built by the
+same function — opencode reads it per process whichever front end is running.
+Its ACP "modes" are its own agents (`build`, `plan`), and `plan` is the one
+posture that needs both halves: the config's ask-to-act rules, plus the agent
+itself over `session/set_mode`, because the config's `default_agent` is ignored
+on the ACP path. Without the agent, plan would keep the rules but lose its
+`edit deny`.
+
+**pi's asks are not permissions.** It has no permission system in either mode,
+so no posture maps to a mode and none is sent (its `availableModes` are
+thinking levels, and `session/set_mode` rejects anything else). What does arrive
+on `session/request_permission` are its extensions' own questions — a choice a
+person is being asked to make — so those are forwarded to the pane even under
+`bypass`, where every other adapter's asks are answered for them. `bypass`
+waives permission prompts; it does not answer questions.
+
+A mode a conversation could not be put in — one the adapter never advertised,
+or one it refused — is reported **in the pane** as well as the log, naming the
+mode the session is actually in. It has to stand rather than be announced once:
+the report is made during the handshake, and the id a pane attaches by is
+minted by that same handshake, so at the moment it is made there is nobody to
+hear it. The conversation holds it until a later `session/set_mode` succeeds,
+and every pane is given it after its greeting. It is not fatal: losing a worktree over a
+posture would be worse than running in the adapter's default, and the pane says
+which that is.
+
+Reporting it is not a nicety, because an adapter's default is not always at
+least as strict as what was asked. codex-acp's is `agent` — a reviewer model
+approving most actions — not the codex CLI's `read-only` preset, so an
+`accept-edits` codex conversation that lands there is running *looser* than the
+create asked for. That is the one cell where it matters: under `bypass` yaac
+answers the asks itself, and `auto` is the fallback.
+
+The message says only which mode the session is in, and deliberately promises
+nothing about what happens to the asks from there — `bypass` answers them here,
+and codex's `agent` fallback has a reviewer answering most of them, so
+"forwarded to the pane" would be wrong in both.
+
 ## Resolution
 
 `resolvePermissionMode` decides, in three rungs, most specific first:

@@ -32,7 +32,6 @@ import type {
   AcpToolKind,
   AcpToolStatus,
 } from '@yaac/shared/acp'
-import type { PermissionMode } from '@yaac/shared/types'
 
 /** The ACP revision this client negotiates. */
 export const ACP_PROTOCOL_VERSION = 1
@@ -48,6 +47,8 @@ export const ACP = {
   sessionCancel: 'session/cancel',
   sessionUpdate: 'session/update',
   sessionSetMode: 'session/set_mode',
+  sessionSetModel: 'session/set_model',
+  sessionSetConfigOption: 'session/set_config_option',
   requestPermission: 'session/request_permission',
 } as const
 
@@ -73,9 +74,37 @@ export interface AcpSessionModes {
   availableModes?: Array<{ id: string; name?: string }>
 }
 
+/**
+ * The model a session is running, in the two shapes adapters report it: a
+ * `models` block naming the current id, and/or a `configOptions` entry whose
+ * `id` is `model`. Every adapter yaac drives answers with at least one — most
+ * with the config option, which is also what a `session/set_config_option`
+ * changes — so both are read and neither is required.
+ */
+export interface AcpSessionModels {
+  currentModelId?: string
+  availableModels?: Array<{ modelId?: string; name?: string }>
+}
+
+export interface AcpConfigOption {
+  id?: string
+  currentValue?: unknown
+  options?: Array<{ value?: unknown; name?: string }>
+}
+
 export interface AcpNewSessionResult {
   sessionId: string
   modes?: AcpSessionModes
+  models?: AcpSessionModels
+  configOptions?: AcpConfigOption[]
+}
+
+/** `session/load`'s reply: the same session facts, minus an id we already
+ *  hold. */
+export interface AcpLoadSessionResult {
+  modes?: AcpSessionModes
+  models?: AcpSessionModels
+  configOptions?: AcpConfigOption[]
 }
 
 export interface AcpPromptResult {
@@ -103,11 +132,11 @@ const STOP_REASONS: readonly AcpStopReason[] = [
   'end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled',
 ]
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
+export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
 }
 
-function asString(value: unknown): string | undefined {
+export function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
@@ -499,36 +528,26 @@ export function parsePermissionOutcome(result: unknown): {
 }
 
 /**
- * yaac's permission postures as the ACP session mode ids that express them,
- * verified against the pinned adapter's `availableModes`.
- *
- * The one that does not read across is `manual`: ACP's id for "ask me about
- * everything" is `default`, which the adapter labels "Manual". The adapter
- * also offers `dontAsk` (deny anything not pre-approved), which yaac has no
- * posture for and never selects.
- */
-const ACP_MODE_IDS: Record<PermissionMode, string> = {
-  bypass: 'bypassPermissions',
-  auto: 'auto',
-  'accept-edits': 'acceptEdits',
-  plan: 'plan',
-  manual: 'default',
-}
-
-export function acpModeId(mode: PermissionMode): string {
-  return ACP_MODE_IDS[mode]
-}
-
-/**
  * Whether the session can be put in this mode.
  *
  * Asked before setting one because `session/set_mode` throws for a mode the
- * session does not advertise, and both of the adapter's conditional modes are
- * ones yaac asks for: `auto` appears only when the model supports a classifier,
- * and `bypassPermissions` only when the adapter is not running as root outside
- * a sandbox. A missing list means the adapter said nothing about modes, which
- * is not permission to guess.
+ * session does not advertise, and two of claude's modes are conditional on
+ * things yaac cannot see: `auto` appears only when the model supports a
+ * classifier, and `bypassPermissions` only when the adapter is not running as
+ * root outside a sandbox.
+ *
+ * Both shapes an adapter announces its modes in are read — a `modes` block,
+ * and a `configOptions` entry whose `id` is `mode` — because they disagree and
+ * the difference is not a version detail we can wait out: opencode v2 sends
+ * only the second, and reading one shape would leave a `plan` create running
+ * in `build` with a pane error where the restraint should be. Nothing
+ * announced at all is still not permission to guess.
  */
-export function acpModeOffered(modes: AcpSessionModes | undefined, modeId: string): boolean {
-  return modes?.availableModes?.some((m) => m.id === modeId) === true
+export function acpModeOffered(
+  session: { modes?: AcpSessionModes; configOptions?: AcpConfigOption[] } | undefined,
+  modeId: string,
+): boolean {
+  if (session?.modes?.availableModes?.some((m) => m.id === modeId) === true) return true
+  const mode = session?.configOptions?.find((o) => asString(o.id) === 'mode')
+  return mode?.options?.some((o) => asString(o.value) === modeId) === true
 }

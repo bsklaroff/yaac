@@ -56,7 +56,7 @@ import { ServerError } from '@yaac/shared/errors'
 // truncate it on the way to the table, and let two distinct long names
 // sharing a prefix resolve to one group.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { MODEL_RE, PERMISSION_MODES, SUPPORTED_PERMISSION_MODES } from '@yaac/shared/types'
+import { MODEL_RE, PERMISSION_MODES, supportedPermissionModes } from '@yaac/shared/types'
 
 export const worktreeApp = new Hono()
   .get(
@@ -152,6 +152,9 @@ export const worktreeApp = new Hono()
         const permissionMode = await resolvePermissionMode({
           projectSlug: body.project,
           tool,
+          // The postures a tool has are the ADAPTER's under acp, and there are
+          // fewer of them — so the mode has to travel with the question.
+          ...(body.mode !== undefined ? { agentMode: body.mode } : {}),
           ...(body.permissionMode !== undefined ? { requested: body.permissionMode } : {}),
         })
         // A person picked this one; teach it to the project so the next
@@ -164,7 +167,7 @@ export const worktreeApp = new Hono()
         // project runs unrestrained", quietly moving every later claude create
         // on the user's own machine. A pick with no alternative expresses
         // nothing about working style, so it teaches nothing.
-        const forced = SUPPORTED_PERMISSION_MODES[tool].length === 1
+        const forced = supportedPermissionModes(tool, body.mode ?? 'tui').length === 1
         if (body.permissionMode !== undefined && !forced) {
           await recordProjectPermissionMode(body.project, body.permissionMode)
         }

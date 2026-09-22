@@ -49,6 +49,7 @@
  * The file is truncated when acpd starts and its first line records a life id.
  * A restart's `session/load` replays the whole conversation, so the fresh file
  * ends up complete again rather than double-appending history it already had.
+
  *
  * ## Attach semantics
  *
