@@ -171,7 +171,7 @@ try {
   // Row actions must be reachable with no hover.
   const worktreesLayer = shell.locator('> div').nth(1)
   const pin = worktreesLayer.getByLabel('Move to background').first()
-  const del = worktreesLayer.getByLabel('Delete worktree').first()
+  const del = worktreesLayer.getByLabel('Stop worktree').first()
   // Wait for the list to actually settle before deciding whether this env has
   // worktrees — the snapshot arrives over the events socket, and a fixed sleep
   // silently downgrades the whole pane section to "skipped" when it's slow.
@@ -197,7 +197,7 @@ try {
     // rows render above the sections and would open the placeholder overlay
     // instead of the pane.
     await worktreesLayer
-      .locator('.group.relative.mx-2:has([aria-label="Delete worktree"]) > button')
+      .locator('.group.relative.mx-2:has([aria-label="Stop worktree"]) > button')
       .first().tap()
     await page.waitForTimeout(4000)
     check('tapping a worktree shows the pane',

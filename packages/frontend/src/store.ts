@@ -626,13 +626,12 @@ interface UiState {
    *  the worktree alone: an agent session that goes inactive and comes back
    *  with the same id is the same conversation, and keeps its draft. */
   syncChatDrafts: (worktreeIds: string[]) => void
-  /** One-shot "focus the filter box" request naming the pane (`changes` or
-   *  `files`), raised by the find-changes and open-files shortcuts alongside
-   *  opening it. The mounted pane consumes it (focuses its input, then clears
-   *  the request), so a pane mounted later — e.g. opened by the header button
-   *  — never steals focus for a stale press. */
-  findPending: string | null
-  setFindPending: (pane: string | null) => void
+  /** One-shot "focus the explorer's filter" request, raised by the open-files
+   *  shortcut alongside opening it. The mounted explorer consumes it (focuses
+   *  its input, then clears the flag), so one mounted later — e.g. opened by
+   *  the header button — never steals focus for a stale press. */
+  filesFindPending: boolean
+  setFilesFindPending: (pending: boolean) => void
   /** Locally-initiated provisioning rows, shown the instant create/restart is
    *  clicked. The server snapshot's `provisioning[]` is the source of truth;
    *  these only bridge the gap until the first snapshot frame carries the id,
@@ -799,7 +798,7 @@ export const useUiStore = create<UiState>((set) => ({
   activeTabs: {},
   changesBase: {},
   paneView: {},
-  findPending: null,
+  filesFindPending: false,
   dirtyFiles: {},
   chatDrafts: loadChatDrafts(),
   optimisticProvisioning: [],
@@ -960,7 +959,9 @@ export const useUiStore = create<UiState>((set) => ({
     const same = (Object.keys(patch) as Array<keyof PaneView>).every((k) => cur[k] === next[k])
     return same ? s : { paneView: { ...s.paneView, [key]: next } }
   }),
-  setFindPending: (pane) => set((s) => (s.findPending === pane ? s : { findPending: pane })),
+  setFilesFindPending: (pending) => set((s) => (
+    s.filesFindPending === pending ? s : { filesFindPending: pending }
+  )),
   setFileDirty: (worktreeId, path, dirty) => set((s) => {
     const key = fileKey(worktreeId, path)
     if ((s.dirtyFiles[key] === true) === dirty) return s

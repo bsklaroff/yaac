@@ -406,9 +406,9 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       <ConfirmDialog
         open={!!confirmDelete}
         onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}
-        title={`Delete “${worktreeName(confirmDelete)}”?`}
+        title={`Stop “${worktreeName(confirmDelete)}”?`}
         description="Stops and removes the worktree's container. The worktree history and worktree will be saved, and can be restarted."
-        confirmLabel="Delete"
+        confirmLabel="Stop"
         onConfirm={() => {
           if (confirmDelete) stopWorktreeOptimistic(confirmDelete, rowIds)
           setConfirmDelete(null)

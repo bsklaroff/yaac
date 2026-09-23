@@ -112,9 +112,9 @@ try {
   const deleteSelectedRow = async (id) => {
     const i = await selectRow(id)
     await rows.nth(i).hover()
-    await rows.nth(i).locator('[aria-label="Delete worktree"]').click()
-    await page.locator('text=Delete worktree?').waitFor({ state: 'visible', timeout: 5000 })
-    await page.getByRole('button', { name: 'Delete', exact: true }).click()
+    await rows.nth(i).locator('[aria-label="Stop worktree"]').click()
+    await page.locator('text=Stop worktree?').waitFor({ state: 'visible', timeout: 5000 })
+    await page.getByRole('button', { name: 'Stop', exact: true }).click()
     await page.waitForTimeout(500)
   }
   /** Wait for the selection to settle somewhere other than `from`. */

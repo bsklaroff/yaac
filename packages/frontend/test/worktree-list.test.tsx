@@ -238,8 +238,8 @@ describe('WorktreeList', () => {
     fireEvent.click(screen.getByLabelText('Add to group'))
     expect(await screen.findByText('Add to group')).toBeTruthy()
 
-    fireEvent.click(screen.getByLabelText('Delete worktree'))
-    expect(await screen.findByText('Delete worktree?')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Stop worktree'))
+    expect(await screen.findByText('Stop worktree?')).toBeTruthy()
   })
 
   it('says what to do when there is nothing to show', () => {

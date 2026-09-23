@@ -47,7 +47,7 @@ const snapshot = { worktrees: [worktree] } as unknown as ServerSnapshot
 
 const initial = useUiStore.getState()
 beforeEach(() => {
-  useUiStore.setState({ ...initial, selectedWorktreeId: 's1', layouts: {}, activeTabs: {}, findPending: null })
+  useUiStore.setState({ ...initial, selectedWorktreeId: 's1', layouts: {}, activeTabs: {}, filesFindPending: false })
 })
 afterEach(cleanup)
 
@@ -71,7 +71,7 @@ describe('WorktreeView: open-files', () => {
     expect(useUiStore.getState().activeTabs.s1).toBe('files')
     const filter = await screen.findByLabelText('Filter files')
     await waitFor(() => expect(document.activeElement).toBe(filter))
-    expect(useUiStore.getState().findPending).toBeNull()
+    expect(useUiStore.getState().filesFindPending).toBe(false)
   })
 
   it('surfaces an explorer that is already open as a hidden tab', () => {
@@ -79,7 +79,7 @@ describe('WorktreeView: open-files', () => {
     renderView()
     altE()
     expect(useUiStore.getState().layouts.s1).toEqual([{ tabs: ['agent', 'files'], active: 'files' }])
-    expect(useUiStore.getState().findPending).toBe('files')
+    expect(useUiStore.getState().filesFindPending).toBe(true)
   })
 
   it('follows a rebinding, and the old chord no longer opens it', () => {

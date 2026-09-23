@@ -32,7 +32,6 @@ export type ShortcutId =
   | 'delete-worktree'
   | 'kill-terminal'
   | 'open-changes'
-  | 'find-changes'
   | 'open-files'
   | 'open-preview'
   | 'view-tabs'
@@ -75,15 +74,13 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'new-worktree', label: 'New worktree',
     description: 'Create a worktree in the active project.', defaultChord: alt('KeyN') },
   { id: 'new-shell', label: 'New shell',
-    description: 'Open a scratch-shell terminal in the selected worktree.', defaultChord: alt('KeyS') },
-  { id: 'delete-worktree', label: 'Delete worktree',
-    description: 'Delete the selected worktree (asks to confirm).', defaultChord: alt('KeyD') },
+    description: 'Open a scratch-shell terminal in the selected worktree.', defaultChord: alt('KeyT') },
+  { id: 'delete-worktree', label: 'Stop worktree',
+    description: 'Stop the selected worktree (asks to confirm).', defaultChord: alt('KeyD') },
   { id: 'kill-terminal', label: 'Kill terminal',
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
   { id: 'open-changes', label: 'Open changes',
-    description: 'Open the Changes (review-diff) pane.', defaultChord: alt('KeyC') },
-  { id: 'find-changes', label: 'Find in changes',
-    description: 'Open the Changes pane and focus its find box.', defaultChord: alt('KeyF') },
+    description: 'Open the Changes (review-diff) pane.', defaultChord: alt('KeyG') },
   { id: 'open-files', label: 'Open file tree',
     description: 'Open the file tree and focus its filter.', defaultChord: alt('KeyE') },
   { id: 'open-preview', label: 'Open preview',
@@ -144,6 +141,10 @@ export function chordsEqual(a: Chord, b: Chord): boolean {
     && a.shift === b.shift
 }
 
+/** A command with no chord: what `mergeBindings` leaves when a saved override
+ *  claims the command's default. Its empty `code` never matches a keydown. */
+export const UNBOUND: Chord = { code: '', alt: false, ctrl: false, meta: false, shift: false }
+
 /**
  * True when a keydown exactly matches a bound chord — the same physical key and
  * the same four modifier states. Exact modifier equality is what preserves
@@ -152,7 +153,8 @@ export function chordsEqual(a: Chord, b: Chord): boolean {
  * untouched.
  */
 export function chordMatches(binding: Chord, e: ShortcutKey): boolean {
-  return e.code === binding.code
+  return binding.code !== ''
+    && e.code === binding.code
     && e.altKey === binding.alt
     && e.ctrlKey === binding.ctrl
     && e.metaKey === binding.meta
@@ -208,14 +210,30 @@ export function isModifierCode(code: string): boolean {
   return MODIFIER_CODES.has(code)
 }
 
+/** Cmd on macOS, Ctrl elsewhere, plus a physical key. */
+function platformChord(code: string, isMac: boolean): Chord {
+  return { code, alt: false, ctrl: !isMac, meta: isMac, shift: false }
+}
+
 /**
- * The platform's save chord: Cmd-S on macOS, Ctrl-S elsewhere. Not a
- * registry command — like undo, it is part of what an editor is — so it is
- * never rebindable, and it is reserved: the workspace's shortcut listener
- * runs ahead of the file pane, so a command bound to it would swallow saving.
+ * The fixed chords a pane handles on its own root: Cmd/Ctrl-S saves in the
+ * file pane, Cmd/Ctrl-F jumps to the Changes pane's find box. Neither is a
+ * registry command — each is part of what its pane is — so they are never
+ * rebindable, and they are reserved: the workspace's shortcut listener runs
+ * ahead of the panes, so a command bound to one would swallow it.
  */
 export function saveChord(isMac = IS_MAC): Chord {
-  return { code: 'KeyS', alt: false, ctrl: !isMac, meta: isMac, shift: false }
+  return platformChord('KeyS', isMac)
+}
+export function findChord(isMac = IS_MAC): Chord {
+  return platformChord('KeyF', isMac)
+}
+
+/** What a reserved chord is kept for, or null when `chord` is free. */
+function reservedFor(chord: Chord, isMac: boolean): string | null {
+  if (chordsEqual(chord, saveChord(isMac))) return 'saving files'
+  if (chordsEqual(chord, findChord(isMac))) return 'find in changes'
+  return null
 }
 
 /** The outcome of validating a candidate rebind. */
@@ -224,8 +242,8 @@ export type ChordValidation = { ok: true } | { ok: false; reason: string }
 /**
  * Whether `chord` may be bound to `selfId`. Requires a real modifier
  * (Alt/Ctrl/Meta) so a bare key can't shadow terminal typing, rejects a lone
- * modifier keypress, the platform's save chord, and a chord already bound to
- * a different command.
+ * modifier keypress, a reserved chord (save, find), and a chord already bound
+ * to a different command.
  */
 export function validateChord(
   chord: Chord,
@@ -239,9 +257,8 @@ export function validateChord(
   if (!chord.alt && !chord.ctrl && !chord.meta) {
     return { ok: false, reason: 'Hold Alt, Ctrl, or Cmd.' }
   }
-  if (chordsEqual(chord, saveChord(isMac))) {
-    return { ok: false, reason: 'Reserved for saving files.' }
-  }
+  const reserved = reservedFor(chord, isMac)
+  if (reserved) return { ok: false, reason: `Reserved for ${reserved}.` }
   for (const id of SHORTCUT_IDS) {
     if (id === selfId) continue
     if (chordsEqual(bindings[id], chord)) {
@@ -265,14 +282,26 @@ export function isChord(value: unknown): value is Chord {
 
 /**
  * A binding map = the defaults overlaid with `overrides`, but only for known
- * ids carrying a well-formed chord other than the save chord. Unknown ids,
- * malformed chords and a claim on saving (all possible when reading a
- * hand-edited or stale preferences file) are ignored.
+ * ids carrying a well-formed chord that is not reserved. Unknown ids,
+ * malformed chords and a claim on a reserved chord (all possible when reading
+ * a hand-edited or stale preferences file) are ignored.
+ *
+ * An override outranks another command's default it collides with (the
+ * default may be newer than the override): that command is left UNBOUND, so
+ * the user's own choice keeps working and Settings shows the other as unset.
  */
 export function mergeBindings(overrides: Record<string, unknown>, isMac = IS_MAC): BindingMap {
   const merged: BindingMap = { ...DEFAULT_BINDINGS }
+  const overridden = new Set<ShortcutId>()
   for (const [id, chord] of Object.entries(overrides)) {
-    if (isShortcutId(id) && isChord(chord) && !chordsEqual(chord, saveChord(isMac))) merged[id] = chord
+    if (isShortcutId(id) && isChord(chord) && !reservedFor(chord, isMac)) {
+      merged[id] = chord
+      overridden.add(id)
+    }
+  }
+  for (const id of SHORTCUT_IDS) {
+    if (overridden.has(id)) continue
+    if ([...overridden].some((o) => chordsEqual(merged[o], merged[id]))) merged[id] = UNBOUND
   }
   return merged
 }
@@ -296,6 +325,7 @@ export function formatCode(code: string): string {
  * uses the platform glyphs (⌃ ⌥ ⇧ ⌘) in their conventional order.
  */
 export function formatChord(chord: Chord, isMac = false): string {
+  if (chord.code === '') return 'Unset'
   if (isMac) {
     let out = ''
     if (chord.ctrl) out += '⌃'

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   CYCLE_IDS,
   DEFAULT_BINDINGS,
+  findChord,
   SHORTCUTS,
   chordFromEvent,
   chordMatches,
@@ -16,6 +17,7 @@ import {
   mergeBindings,
   resolveCycleTarget,
   saveChord,
+  UNBOUND,
   validateChord,
   type Chord,
   type ShortcutKey,
@@ -97,11 +99,10 @@ describe('chordMatches', () => {
 describe('matchShortcut', () => {
   it('maps each default chord to its command', () => {
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN'))).toBe('new-worktree')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyS'))).toBe('new-shell')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyT'))).toBe('new-shell')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-worktree')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyW'))).toBe('kill-terminal')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyC'))).toBe('open-changes')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyF'))).toBe('find-changes')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyG'))).toBe('open-changes')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyP'))).toBe('open-preview')
     expect(matchShortcut(DEFAULT_BINDINGS, key('Comma'))).toBe('view-tabs')
     expect(matchShortcut(DEFAULT_BINDINGS, key('Period'))).toBe('view-tiles')
@@ -126,8 +127,8 @@ describe('matchShortcut', () => {
   })
 
   it('honors a rebind', () => {
-    const bindings = { ...DEFAULT_BINDINGS, 'new-worktree': chord('KeyG') }
-    expect(matchShortcut(bindings, key('KeyG'))).toBe('new-worktree')
+    const bindings = { ...DEFAULT_BINDINGS, 'new-worktree': chord('KeyY') }
+    expect(matchShortcut(bindings, key('KeyY'))).toBe('new-worktree')
     expect(matchShortcut(bindings, key('KeyN'))).toBeNull()
   })
 })
@@ -182,17 +183,17 @@ describe('validateChord', () => {
   })
 
   it('requires a real modifier — Alt, Ctrl, or Meta', () => {
-    expect(validateChord(chord('KeyG', { alt: false }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
+    expect(validateChord(chord('KeyY', { alt: false }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
     // Shift alone is not enough.
-    expect(validateChord(chord('KeyG', { alt: false, shift: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
-    expect(validateChord(chord('KeyG'), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
-    expect(validateChord(chord('KeyG', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
+    expect(validateChord(chord('KeyY', { alt: false, shift: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
+    expect(validateChord(chord('KeyY'), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
+    expect(validateChord(chord('KeyY', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
   })
 
   it('rejects a chord already bound to a different command, with its label', () => {
     const r = validateChord(chord('KeyD'), DEFAULT_BINDINGS, 'new-worktree')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.reason).toContain('Delete worktree')
+    if (!r.ok) expect(r.reason).toContain('Stop worktree')
   })
 
   it('refuses the platform’s save chord, and only that platform’s', () => {
@@ -204,6 +205,14 @@ describe('validateChord', () => {
     expect(validateChord(ctrlS, DEFAULT_BINDINGS, 'open-files', false).ok).toBe(false)
     expect(validateChord(cmdS, DEFAULT_BINDINGS, 'open-files', false).ok).toBe(true)
     expect(saveChord(false)).toEqual(ctrlS)
+  })
+
+  it('refuses the platform’s find chord too', () => {
+    expect(validateChord(chord('KeyF', { alt: false, meta: true }), DEFAULT_BINDINGS, 'open-files', true))
+      .toEqual({ ok: false, reason: 'Reserved for find in changes.' })
+    expect(validateChord(chord('KeyF', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'open-files', true).ok)
+      .toBe(true)
+    expect(findChord(false)).toEqual(chord('KeyF', { alt: false, ctrl: true }))
   })
 
   it('allows rebinding a command to its own current chord', () => {
@@ -223,23 +232,41 @@ describe('isChord', () => {
 describe('mergeBindings', () => {
   it('overlays known ids and ignores unknown ids and malformed chords', () => {
     const merged = mergeBindings({
-      'new-worktree': chord('KeyG'),
+      'new-worktree': chord('KeyY'),
       'bogus-id': chord('KeyZ'),
       'kill-terminal': { code: 'KeyW' }, // malformed — dropped
     })
-    expect(merged['new-worktree']).toEqual(chord('KeyG'))
+    expect(merged['new-worktree']).toEqual(chord('KeyY'))
     expect(merged['kill-terminal']).toEqual(DEFAULT_BINDINGS['kill-terminal'])
     expect((merged as Record<string, unknown>)['bogus-id']).toBeUndefined()
   })
 
-  it('drops an override that claims the save chord', () => {
+  it('drops an override that claims a reserved chord', () => {
     const merged = mergeBindings({
       'open-files': chord('KeyS', { alt: false, ctrl: true }),
+      'new-shell': chord('KeyF', { alt: false, ctrl: true }),
       'open-changes': chord('KeyS', { alt: false, meta: true }),
     }, false)
     expect(merged['open-files']).toEqual(DEFAULT_BINDINGS['open-files'])
+    expect(merged['new-shell']).toEqual(DEFAULT_BINDINGS['new-shell'])
     // Cmd+S is not the save chord off macOS, so that one stands.
     expect(merged['open-changes']).toEqual(chord('KeyS', { alt: false, meta: true }))
+  })
+
+  it('lets an override win over a default it collides with, leaving that command unbound', () => {
+    // Alt+T / Alt+G became the new-shell / open-changes defaults after
+    // overrides on them could already have been saved.
+    const merged = mergeBindings({ 'new-worktree': chord('KeyT'), 'view-tiles': chord('KeyG') })
+    expect(merged['new-shell']).toEqual(UNBOUND)
+    expect(merged['open-changes']).toEqual(UNBOUND)
+    expect(matchShortcut(merged, key('KeyT'))).toBe('new-worktree')
+    expect(matchShortcut(merged, key('KeyG'))).toBe('view-tiles')
+    // An unbound command matches nothing, even a keydown with an empty code.
+    expect(matchShortcut(merged, key('', { altKey: false }))).toBeNull()
+    expect(formatChord(UNBOUND)).toBe('Unset')
+    // Two overrides never unbind each other's (overridden) command.
+    expect(mergeBindings({ 'new-shell': chord('KeyY'), 'new-worktree': chord('KeyT') })['new-shell'])
+      .toEqual(chord('KeyY'))
   })
 
   it('takes a stored override of open-files over its Alt+E default', () => {

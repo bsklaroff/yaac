@@ -267,9 +267,9 @@ export function WorktreeView({
   // by opening the same server on a phone.
   const tiled = viewMode === 'tiles' && !isMobile
   // The pane to drop focus into when this worktree is selected/opened or a
-  // shortcut switches terminals — only that one terminal gets a live
-  // focusKey, so a bumped focusNonce focuses it without disturbing any
-  // other (kept-alive, off-screen) terminal. Fed the raw stored tab:
+  // shortcut switches panes — only that one terminal (or Changes pane) gets
+  // a live focusKey, so a bumped focusNonce focuses it without disturbing
+  // any other (kept-alive, off-screen) terminal. Fed the raw stored tab:
   // focusPaneTarget validates it and prefers the agent pane in tiles mode
   // when nothing was made active yet.
   const focusTarget = sid ? focusPaneTarget(targets, activeTabs[sid], tiled) : null
@@ -428,15 +428,15 @@ export function WorktreeView({
   // Workspace shortcuts (all rebindable — these are the defaults): Alt+H/Alt+L
   // cycle terminals left/right and Alt+Shift+H/Alt+Shift+L move the active one
   // (its window in tiles mode) — the webapp-level replacement for tmux's prefix
-  // bindings (webapp panes run with `prefix None`) — Alt+S opens a new scratch
-  // shell, Alt+C opens the changes pane (Alt+F opens it and focuses its find
-  // box), Alt+E opens the file tree and focuses its filter, Alt+P opens the
-  // preview pane, Alt+,/Alt+. switch the tabbed/window view, and Alt+W kills
-  // the active terminal through the same confirm dialog as the pane × (Alt+N,
-  // new worktree, and Alt+K/Alt+J, worktree cycle, live in App's Workspace,
-  // which owns project scope). Captured on window so the chord
-  // is swallowed before xterm's textarea handler could forward it to the PTY;
-  // the ref keeps the single listener reading the current render's state.
+  // bindings (webapp panes run with `prefix None`) — Alt+T opens a new scratch
+  // shell, Alt+G opens the changes pane, Alt+E opens the file tree and focuses
+  // its filter, Alt+P opens the preview pane, Alt+,/Alt+. switch the
+  // tabbed/window view, and Alt+W kills the active terminal through the same
+  // confirm dialog as the pane × (Alt+N, new worktree, and Alt+K/Alt+J,
+  // worktree cycle, live in App's Workspace, which owns project scope).
+  // Captured on window so the chord is swallowed before xterm's textarea
+  // handler could forward it to the PTY; the ref keeps the single listener
+  // reading the current render's state.
   const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell, previewPorts, isMobile })
   shortcutCtx.current = { sid, targets, activeTab, terminals, openShell, previewPorts, isMobile }
   useEffect(() => {
@@ -468,21 +468,13 @@ export function WorktreeView({
           setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
           return
         }
-        case 'find-changes':
-          // Open (or surface) the changes pane, then ask its find box to take
-          // focus — WorktreeChanges consumes the pending flag once mounted.
-          e.preventDefault()
-          e.stopPropagation()
-          state.openChanges(ctx.sid)
-          state.setFindPending('changes')
-          return
         case 'open-files':
           // Open (or surface) the explorer and focus its filter — the
           // quick-open: Alt+E, a few letters, Enter.
           e.preventDefault()
           e.stopPropagation()
           state.openFiles(ctx.sid)
-          state.setFindPending('files')
+          state.setFilesFindPending(true)
           return
         case 'open-changes':
           e.preventDefault()
@@ -1070,6 +1062,7 @@ export function WorktreeView({
                         worktreeId={id}
                         projectSlug={cs?.projectSlug ?? ''}
                         baseBranch={cs?.baseBranch}
+                        focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
                       />
                     )
                   })()}

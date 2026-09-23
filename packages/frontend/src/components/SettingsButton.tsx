@@ -929,6 +929,9 @@ function ShortcutsPane(): JSX.Element {
   const resetOne = (id: ShortcutId): void => {
     const def = SHORTCUTS.find((s) => s.id === id)
     if (!def) return
+    // The default may since have been taken by another command's override.
+    const check = validateChord(def.defaultChord, bindings, id)
+    if (!check.ok) { setError(check.reason); return }
     setError(null)
     setBinding(id, def.defaultChord)
     void setShortcutOverride(id, def.defaultChord).catch((err: unknown) => console.error(err))

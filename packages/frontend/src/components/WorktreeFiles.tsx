@@ -105,15 +105,15 @@ export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Eleme
   const matches = useMemo(() => (find ? filterPaths(searchable, find, MAX_MATCHES) : []), [searchable, find])
   const ignoredFiles = useMemo(() => new Set(data?.ignored ?? []), [data?.ignored])
 
-  // The open-files shortcut raises findPending after opening the pane; the
+  // The open-files shortcut raises filesFindPending after opening the pane; the
   // mounted pane consumes it by focusing its filter, which makes Alt-E, a
   // few letters and Enter a quick-open.
-  const findPending = useUiStore((s) => s.findPending === FILES_TARGET)
-  const setFindPending = useUiStore((s) => s.setFindPending)
+  const findPending = useUiStore((s) => s.filesFindPending)
+  const setFindPending = useUiStore((s) => s.setFilesFindPending)
   const findRef = useRef<HTMLInputElement | null>(null)
   useEffect(() => {
     if (!findPending || !findRef.current) return
-    setFindPending(null)
+    setFindPending(false)
     findRef.current.focus()
     findRef.current.select()
   }, [findPending, isLoading, setFindPending])
