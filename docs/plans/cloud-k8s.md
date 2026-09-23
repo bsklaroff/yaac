@@ -335,7 +335,10 @@ tree (tracked, untracked and staged) written to `refs/yaac/checkpoint/<id>`
 in the shared `repo/.git` on stop and on a timer, restored by the init
 container when the node-local dir is absent. Without that, worktrees stay
 shared: slow is acceptable, losing an hour of edits to a node upgrade is
-not.
+not. The webapp's file editor (docs/plans/file-editor.md) reads and writes
+`worktreeDir` from the server's own filesystem, so a node-local checkout
+also needs an in-pod file path for it. A stopped worktree's files would then
+be reachable only through the checkpoint.
 
 ## Invariants to keep
 
