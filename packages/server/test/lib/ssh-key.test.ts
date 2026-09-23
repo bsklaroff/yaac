@@ -52,7 +52,9 @@ describe('encodeOpenSshPrivateKey', () => {
       const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
       expect(stdout.trim()).toBe(key.publicKey)
 
-      const { stdout: agentOut } = await execFileAsync('ssh-agent', ['-c'])
+      // An explicit socket: OpenSSH 10 defaults it under $HOME/.ssh/agent,
+      // which a deep $HOME pushes past the Unix-socket path limit.
+      const { stdout: agentOut } = await execFileAsync('ssh-agent', ['-c', '-a', path.join(dir, 'agent.sock')])
       const sock = /setenv SSH_AUTH_SOCK (\S+);/.exec(agentOut)![1]
       const pid = /setenv SSH_AGENT_PID (\d+);/.exec(agentOut)![1]
       try {

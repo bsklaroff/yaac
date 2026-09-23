@@ -741,6 +741,8 @@ describe('createWorktree', () => {
       'yaac.worktree-id': 'abcd1234',
       'yaac.data-dir-hash': 'ddh0123456789abc',
       'yaac.tool': 'claude',
+      // npmCache defaults on and npmjs is allowed, so the pod is admitted.
+      'yaac.npm-cache': 'true',
     }
     expect(manifest.metadata.labels).toEqual(labels)
     expect(manifest.spec.template.metadata.labels).toEqual(labels)
