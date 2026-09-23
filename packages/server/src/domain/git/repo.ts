@@ -230,8 +230,8 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
       // `gitdir` no longer resolves, writes a fresh `.git` file at whatever
       // path that file names.
       //
-      // Every worktree yaac has ever started has exactly such a `gitdir`,
-      // because the in-pod setup rewrites it to the container's own view
+      // Every worktree last started under k8s has exactly such a `gitdir`,
+      // because its launch rewrites it to the container's own view
       // (`/workspace/.git`, see buildWorktreeLinkExec). So a repair run
       // anywhere that /workspace is a real directory — a nested yaac, or an
       // e2e suite inside a worktree, both supported — resolves those pod
@@ -289,8 +289,9 @@ export interface CheckoutListing {
  *
  * A `worktree` target names the admin dir, the shared repo and the work tree
  * explicitly, which this needs: the checkout's `.git` file names the admin
- * dir as the POD sees it (`/repo/.git/worktrees/<id>`, rewritten by the
- * in-pod setup), which means nothing here. `status` skips submodules
+ * dir as the substrate that last launched it sees it — under k8s the POD's
+ * `/repo/.git/worktrees/<id>` (see buildWorktreeLinkExec), which means
+ * nothing here. `status` skips submodules
  * outright, flag and all, because a `.gitmodules` `ignore` entry would
  * otherwise beat the runner's pin and send git into a pod-written git dir.
  *

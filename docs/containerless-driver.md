@@ -82,10 +82,18 @@ transcript. So this driver names it directly. It is also the one per-worktree
 path that must outlive the state dir, which a stop removes: a stopped
 worktree's conversation stays readable (docs/agent-modes.md).
 
-Because the checkout the agent sees IS the one the server made, there is no
-git plumbing to re-point: the create path skips the in-pod gitdir rewrite
-entirely, and the review diff is host `git` run in that directory rather
-than an exec into anything.
+Because the checkout the agent sees IS the one the server made, the review
+diff is host `git` run in that directory rather than an exec into anything.
+The launch still runs the same gitdir rewrite k8s does (`buildWorktreeLinkExec`
+over this driver's `WorkspacePaths`): on a fresh create it rewrites host
+paths with themselves, but a checkout last started under k8s holds pod
+paths (`/repo/…`, `/workspace/.git`) that it points back at the host.
+The k8s launch does the mirror, so a stopped worktree restarts on either
+substrate. The pointers hold one view at a time, though, so a switch must
+take the outgoing substrate's workspaces down first — a k8s Job or a host
+tmux session left running loses git the moment the other side restarts
+that worktree, and neither server can see the other's workspaces to stop
+them.
 
 ## Storage: the same three folders, no volumes
 

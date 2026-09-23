@@ -169,7 +169,8 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
   return {
     tmuxSock: path.join(tmuxSockDir(), `${shortId(worktreeId)}.sock`),
     // The checkout is a real host path that already exists: `git worktree
-    // add` put it there, and nothing has to re-point its plumbing.
+    // add` put it there. The launch still re-points its plumbing at these
+    // paths, since a checkout last started under k8s holds pod paths.
     workspaceDir: worktreeDir(projectSlug, worktreeId),
     repoGitDir: path.join(repoDir(projectSlug), '.git'),
     scratchDir: path.join(state, 'scratch'),

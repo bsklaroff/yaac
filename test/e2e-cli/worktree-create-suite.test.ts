@@ -1908,9 +1908,22 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // Whatever the node held is discarded on the next start, never merged.
       await execFileAsync('podman', ['exec', node, 'sh', '-c', `mkdir -p ${nodeCopy} && echo junk > ${nodeCopy}/junk.txt`])
 
+      // The git pointers a containerless launch leaves in the data dir —
+      // host paths no pod can resolve. The restart must point them back at
+      // the pod's view, or a switch containerless → k8s strands the agent's
+      // git (see buildWorktreeLinkExec).
+      const admin = path.join(projectPath, 'repo', '.git', 'worktrees', worktreeId)
+      const checkoutGit = path.join(projectPath, 'worktrees', worktreeId, '.git')
+      await fs.writeFile(checkoutGit, `gitdir: ${admin}\n`)
+      await fs.writeFile(path.join(admin, 'gitdir'), `${checkoutGit}\n`)
+
       const restarted = await runYaac(serverEnv, 'worktree', 'restart', worktreeId)
       expect(restarted.exitCode, restarted.stderr).toBe(0)
       jobName = (await findWorktreePod('oc-demo')).jobName
+      expect((await fs.readFile(checkoutGit, 'utf8')).trim())
+        .toBe(`gitdir: /repo/.git/worktrees/${worktreeId}`)
+      expect((await fs.readFile(path.join(admin, 'gitdir'), 'utf8')).trim()).toBe('/workspace/.git')
+      await execInJob(jobName, ['git', '-C', '/workspace', 'status', '--porcelain'])
       await expect(execInJob(jobName, ['test', '-e', '/home/yaac/.local/share/opencode/junk.txt'])).rejects.toThrow()
       let listed = ''
       for (let i = 0; i < 60 && !listed.includes(createdId ?? '\0'); i++) {
