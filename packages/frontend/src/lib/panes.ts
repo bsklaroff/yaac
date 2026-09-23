@@ -23,9 +23,10 @@ export function acpPaneTargets(worktree: WorktreeListEntry | undefined): string[
 /**
  * The pane a worktree opens with. A `tui` worktree attaches a PTY to its agent
  * window; an `acp` one opens its first conversation's chat pane. Falls back to
- * the terminal when a fresh ACP worktree has not reported a conversation yet
- * (its id is minted by the agent, seconds after the pod is up) — the window
- * sync swaps in the chat pane as soon as it appears.
+ * the terminal when an ACP worktree has no conversation to show — its create
+ * holds until the agent has minted one, so only a handshake that outlasted
+ * that wait gets here — and the window sync swaps in the chat pane as soon as
+ * it appears.
  */
 export function defaultPaneTarget(worktree: WorktreeListEntry | undefined): string {
   return acpPaneTargets(worktree)[0] ?? 'agent'
@@ -44,9 +45,9 @@ export function defaultPaneTarget(worktree: WorktreeListEntry | undefined): stri
  *    server refuses for as long as the worktree lives.
  *  - An ACP worktree has no `agent` pane at all: that window runs acpd, so a
  *    PTY on it shows a supervisor's log rather than a conversation. One can
- *    still get opened, because a fresh ACP worktree is in the snapshot for
- *    seconds before its agent mints a conversation id — until then the warm-up
- *    has nothing else to reach for.
+ *    still get opened, because an ACP worktree whose handshake outlasted its
+ *    create is in the snapshot before its agent mints a conversation id —
+ *    until then the warm-up has nothing else to reach for.
  */
 export function paneStillLive(worktree: WorktreeListEntry, target: string): boolean {
   const acp = acpPaneTargets(worktree)
