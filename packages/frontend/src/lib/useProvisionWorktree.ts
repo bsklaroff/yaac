@@ -27,6 +27,8 @@ type ProvisionOp = (
  * `groupId` is the sidebar group the row belongs in — a restart passes the
  * stopped worktree's, so the row renders in that section from the first frame
  * rather than at the top of the list until the server's own entry lands.
+ * `named` is the model a create launches with, so the row names it from the
+ * first frame too.
  */
 export function useProvisionWorktree(): (
   projectSlug: string,
@@ -35,6 +37,7 @@ export function useProvisionWorktree(): (
   worktreeId: string,
   op: ProvisionOp,
   groupId?: string,
+  named?: { model: string; modelName?: string },
 ) => void {
   const addOptimisticProvisioning = useUiStore((s) => s.addOptimisticProvisioning)
   const updateOptimisticProvisioning = useUiStore((s) => s.updateOptimisticProvisioning)
@@ -42,8 +45,8 @@ export function useProvisionWorktree(): (
   const setProvisionRetry = useUiStore((s) => s.setProvisionRetry)
   const openWorktree = useUiStore((s) => s.openWorktree)
 
-  return useCallback(function provision(projectSlug, tool, kind, worktreeId, op, groupId) {
-    const filed = groupId !== undefined ? { groupId } : {}
+  return useCallback(function provision(projectSlug, tool, kind, worktreeId, op, groupId, named) {
+    const filed = { ...(groupId !== undefined ? { groupId } : {}), ...named }
     addOptimisticProvisioning({ worktreeId, projectSlug, tool, kind, ...filed, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
     openWorktree(projectSlug, worktreeId) // auto-open the locally-initiated provision
     // How to run this exact provision again, for a failure that has a
@@ -53,7 +56,7 @@ export function useProvisionWorktree(): (
     // retry it is.
     setProvisionRetry(worktreeId, () => {
       provision(projectSlug, tool, kind, worktreeId,
-        (id, onProgress) => op(id, onProgress, { installMissingTool: true }), groupId)
+        (id, onProgress) => op(id, onProgress, { installMissingTool: true }), groupId, named)
     })
     void op(worktreeId, (message) => updateOptimisticProvisioning(worktreeId, { message }))
       .then((res) => {

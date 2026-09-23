@@ -13,7 +13,6 @@ import {
   ProjectConfigIcon,
   ServerIcon,
   SettingsIcon,
-  TOOL_LABEL,
 } from '#lib/icons'
 import {
   addGitCredential,
@@ -21,7 +20,6 @@ import {
   cancelToolInstall,
   cancelToolLogin,
   clearToolAuth,
-  getDefaultTool,
   getGitIdentity,
   getToolInstall,
   getToolLogin,
@@ -29,7 +27,6 @@ import {
   resetShortcuts,
   saveUserDockerfile,
   sendToolLoginInput,
-  setDefaultTool,
   setGitIdentity as setGitIdentityApi,
   setShortcutOverride,
   setToolApiKey,
@@ -102,7 +99,7 @@ function visibleSections(buildsImages: boolean): typeof SECTIONS {
 
 /**
  * Rail gear → settings. Notion-style modal: a left nav of sections over a
- * scrollable content pane (General: default tool; Credentials: tool sign-in +
+ * scrollable content pane (General: theme and sound; Credentials: tool sign-in +
  * git tokens). Open state lives in the store so other surfaces (the
  * new-worktree menu's "Sign in") can open it onto a specific section.
  */
@@ -120,22 +117,15 @@ export function SettingsButton(
   const setThemePref = useUiStore((s) => s.setThemePref)
   const soundEnabled = useUiStore((s) => s.soundEnabled)
   const setSoundEnabled = useUiStore((s) => s.setSoundEnabled)
-  const [tool, setTool] = useState<AgentTool | null>(null)
   const queryClient = useQueryClient()
   const buildsImages = useSnapshot()?.driver !== 'containerless'
 
-  // On open, re-pull both the default tool and the credentials list — either
-  // may have changed server-side (e.g. via the CLI) since the last look.
+  // On open, re-pull the credentials list — it may have changed server-side
+  // (e.g. via the CLI) since the last look.
   useEffect(() => {
     if (!open) return
-    void getDefaultTool().then(setTool).catch((e: unknown) => console.error(e))
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
   }, [open, queryClient])
-
-  const pickTool = (t: AgentTool): void => {
-    setTool(t)
-    void setDefaultTool(t).catch((e: unknown) => console.error(e))
-  }
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}>
@@ -200,33 +190,6 @@ export function SettingsButton(
             {section === 'general' && (
               <section>
                 <h2 className="text-sm font-semibold">General</h2>
-                <Field
-                  label="Default tool"
-                  hint="The initial pick when creating a worktree."
-                >
-                  <RadioGroup
-                    value={tool ?? undefined}
-                    onValueChange={(value) => pickTool(value as AgentTool)}
-                    className="flex flex-col gap-1"
-                  >
-                    {TOOLS.map((t) => (
-                      <label
-                        key={t}
-                        className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
-                          text-text-dim transition hover:text-text"
-                      >
-                        <Radio.Root
-                          value={t}
-                          className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
-                            transition data-[checked]:border-accent data-[checked]:bg-accent"
-                        >
-                          <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
-                        </Radio.Root>
-                        {TOOL_LABEL[t]}
-                      </label>
-                    ))}
-                  </RadioGroup>
-                </Field>
                 <Field
                   label="Theme"
                   hint="Follows your system appearance unless you pick one."

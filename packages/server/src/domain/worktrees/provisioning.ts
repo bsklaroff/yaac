@@ -37,6 +37,10 @@ interface ProvisioningEntry {
    *  sidebar section while it provisions instead of at the top of the list.
    *  The worktree row carries the durable membership. */
   groupId?: string
+  /** The model a create launches with, and what the catalog calls it — so
+   *  the row names what is coming up before any agent has answered. */
+  model?: string
+  modelName?: string
   startedAt: number
   /** Monotonic insertion order, the sort tiebreak. `startedAt` (a wall-clock
    *  ms read) can tie or straddle a millisecond between two back-to-back
@@ -58,6 +62,8 @@ export function registerProvisioning(input: {
   kind: ProvisioningKind
   message?: string
   groupId?: string
+  model?: string
+  modelName?: string
 }): void {
   entries.set(input.worktreeId, {
     worktreeId: input.worktreeId,
@@ -66,6 +72,8 @@ export function registerProvisioning(input: {
     kind: input.kind,
     message: input.message ?? 'Starting…',
     ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
     startedAt: Date.now(),
     seq: nextSeq++,
   })
@@ -260,6 +268,8 @@ export function listProvisioning(): ProvisioningWorktreeEntry[] {
       ...(e.errorCode !== undefined ? { errorCode: e.errorCode } : {}),
       ...(e.installable !== undefined ? { installable: e.installable } : {}),
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
+      ...(e.model !== undefined ? { model: e.model } : {}),
+      ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       createdAt: formatUtcTimestamp(e.startedAt),
     }))
 }

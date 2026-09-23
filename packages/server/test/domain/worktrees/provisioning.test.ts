@@ -25,7 +25,7 @@ beforeEach(() => {
   notify.mockClear()
 })
 
-function register(id: string, over: Partial<{ projectSlug: string; tool: 'claude' | 'codex' | 'opencode'; kind: 'create' | 'restart'; message: string }> = {}): void {
+function register(id: string, over: Partial<{ projectSlug: string; tool: 'claude' | 'codex' | 'opencode'; kind: 'create' | 'restart'; message: string; model: string; modelName: string }> = {}): void {
   registerProvisioning({ worktreeId: id, projectSlug: 'p', tool: 'claude', kind: 'create', ...over })
 }
 
@@ -236,6 +236,17 @@ describe('listProvisioning', () => {
     // read — the worktreeId tiebreak used to flip this under parallel load.
     expect(list.map((e) => e.worktreeId)).toEqual(['b', 'a'])
     expect(list[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  })
+
+  // A create names its model from the row's first frame, before any agent has
+  // answered; a restart names none, and the row says nothing rather than
+  // something empty.
+  it('carries the model a create launches with, and its name', () => {
+    register('c', { model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
+    register('r')
+    const [c, r] = listProvisioning()
+    expect(c).toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
+    expect('model' in r).toBe(false)
   })
 })
 

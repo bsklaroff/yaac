@@ -385,16 +385,6 @@ export function buildPromptPasteCmd(
   return `sh -c '${promptPasteScript(target, prompt, paths)}'`
 }
 
-/**
- * The tmux target for a tool's primary agent window — where session create's
- * initial ask goes. A *later* message addresses the conversation's pane id
- * instead (see the tui driver's `deliverPrompt`), because a worktree with
- * several conversations has several panes and only one `yaac:<tool>` window.
- */
-export function agentWindowTarget(tool: AgentTool): string {
-  return `yaac:${tool}`
-}
-
 /** The paste-and-submit shell script buildPromptPasteCmd wraps. `paneTarget`
  *  is any tmux target — a window (`yaac:claude`) or a pane id (`%3`). */
 function promptPasteScript(
@@ -444,29 +434,6 @@ export function buildPromptPasteBgCmd(
   const log = `${paths.scratchDir}/yaac-prompt.log`
   return `printf %s ${b64} | base64 -d > ${script}`
     + ` && setsid sh ${script} >${log} 2>&1 </dev/null &`
-}
-
-/**
- * Type `prompt` into a running session's agent pane, fire-and-forget (see
- * buildPromptPasteBgCmd). Rides the stream relay — both callers (session
- * create, the spare-claim route) run after the pod's streamd is up.
- * Single-attempt: RelayDialError also covers reply-read failures AFTER the
- * command ran (readAll timeout, mid-read socket errors), and a retry there
- * would detach a second paste script — duplicated paste or a stray empty
- * submission.
- */
-export async function typeInitialPrompt(
-  jobName: string,
-  tool: AgentTool,
-  prompt: string,
-): Promise<void> {
-  const driver = worktreeDriver()
-  const cmd = buildPromptPasteBgCmd(
-    agentWindowTarget(tool),
-    prompt,
-    driver.workspacePaths(jobName),
-  )
-  await driver.exec(jobName, cmd, { maxAttempts: 1, timeout: 15_000 })
 }
 
 /**

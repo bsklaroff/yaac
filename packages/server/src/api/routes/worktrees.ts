@@ -35,11 +35,12 @@ import {
 } from '#domain/worktrees'
 import {
   createWorktree,
-  resolvePermissionMode,
+  resolveCreate,
   stopWorktree,
   tryClaimPrewarmed,
 } from '#domain/worktrees'
-import { typeInitialPrompt } from '#runtime/agents'
+import { modelDisplayName } from '#domain/auth'
+import { agentDriver, agentWindowName } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 import {
   createWorktreeGroup,
@@ -54,7 +55,7 @@ import {
   setWorktreeGroupPinned,
   setWorktreeTitle,
 } from '#db'
-import { getDefaultTool, recordProjectPermissionMode } from '#db'
+import { recordProjectCreate } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { requireDriverFeature } from '#http'
 import { worktreeDriver } from '#drivers/driver'
@@ -65,7 +66,14 @@ import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 // truncate it on the way to the table, and let two distinct long names
 // sharing a prefix resolve to one group.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { MODEL_RE, PERMISSION_MODES, supportedPermissionModes } from '@yaac/shared/types'
+import { MODEL_RE, PERMISSION_MODES, type AgentTool } from '@yaac/shared/types'
+
+/** A provisioning row's model fields: the id, and what it is called. */
+function modelLabel(tool: AgentTool, model: string | undefined): { model?: string; modelName?: string } {
+  if (model === undefined) return {}
+  const modelName = modelDisplayName(tool, model)
+  return modelName !== undefined ? { model, modelName } : { model }
+}
 
 export const worktreeApp = new Hono()
   .get(
@@ -133,72 +141,52 @@ export const worktreeApp = new Hono()
           ? undefined
           : (await resolveGroup(body.project, body.group, { create: true })).groupId
 
-        // Resolve the tool server-side: explicit --tool wins, else the
-        // configured default (yaac tool set), else claude. This is the tool the
-        // prewarm pool warms, so a bare create matches its spare.
-        const tool = body.tool ?? (await getDefaultTool()) ?? 'claude'
-
-        // Fast path: claim a prewarmed spare for this project + tool. A claim
-        // returns the spare's own id and registers no provisioning row — the
-        // unhidden worktree lists in the very next snapshot. A spare warmed
-        // from a different branch is re-branched inside the claim.
-        // Spares are warmed in tui mode, so an acp create can never claim one
-        // — the spare's agent window already runs a TUI. Skipping the claim is
-        // what keeps it from being retooled into a half-ACP session.
-        //
-        // Any posture but `bypass` skips it for the same shape of reason: a
-        // spare's agent is ALREADY running, started in `bypass` (only a
-        // sandboxed runtime warms spares, where that is the default).
-        // Claiming one would hand back an unrestrained worktree to a user who
-        // asked for `plan`, and silently — the claim never rewrites the row's
-        // posture, so a restart would preserve it too. Cold-creating is the
-        // honest answer; it costs the claim's saving, which is the price of
-        // the posture actually being the one that was asked for.
-        //
-        // Resolved rather than read off the body, because an omitted posture
-        // is not the same as `bypass`: this project may have last been used
-        // in `plan`, and that is what the create below will pick up.
-        const permissionMode = await resolvePermissionMode({
-          projectSlug: body.project,
-          tool,
-          // The postures a tool has are the ADAPTER's under acp, and there are
-          // fewer of them — so the mode has to travel with the question.
-          ...(body.mode !== undefined ? { agentMode: body.mode } : {}),
-          ...(body.permissionMode !== undefined ? { requested: body.permissionMode } : {}),
+        // Every choice resolved here, once: what the request named, else what
+        // this project last used for that agent, else the fallback — the same
+        // answer the webapp's create form shows before submit
+        // (`resolveCreate`). An unnamed mode stays `tui`: only the webapp can
+        // present a chat pane, and it sends the one it remembers.
+        const setup = await resolveCreate(body.project, {
+          ...(body.tool !== undefined ? { tool: body.tool } : {}),
+          ...(body.model !== undefined ? { model: body.model } : {}),
+          ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
+          ...(body.mode !== undefined ? { mode: body.mode } : {}),
         })
-        // A person picked this one; teach it to the project so the next
-        // create — from any client — starts there. Only an explicit choice
-        // writes, so a defaulted create never overwrites what was picked.
-        //
-        // Unless the choice was not really theirs. `bypass` is the only
-        // posture pi can be launched in, so reaching it REQUIRES asking for
-        // it — and recording that would turn "pi needs bypass" into "this
-        // project runs unrestrained", quietly moving every later claude create
-        // on the user's own machine. A pick with no alternative expresses
-        // nothing about working style, so it teaches nothing.
-        const forced = supportedPermissionModes(tool, body.mode ?? 'tui').length === 1
-        if (body.permissionMode !== undefined && !forced) {
-          await recordProjectPermissionMode(body.project, body.permissionMode)
-        }
-        // A spare's agent is already running, and in `bypass` — so it can only
-        // be handed to a create that resolved there. An ACP create is not
-        // excluded for its mode but for its shape: a spare boots a `tui`
-        // window, which is not a conversation this create could adopt.
-        const claimed = body.mode === 'acp' || permissionMode !== 'bypass'
-          ? undefined
-          : await tryClaimPrewarmed(
-            body.project, tool, onProgress, body.branch, body.model,
-          )
+        const { tool } = setup
+        // A person asked for this; it becomes the project's next defaults, from
+        // any client. Only the fields the request named are written, so a
+        // create that took a resolved default never overwrites a pick — and
+        // the agent itself is always recorded, as the one this project was
+        // last created with.
+        await recordProjectCreate(body.project, tool, {
+          ...(body.model !== undefined ? { model: body.model } : {}),
+          ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
+          ...(body.mode !== undefined ? { mode: body.mode } : {}),
+        })
+
+        // Fast path: claim a prewarmed spare. Spares are warmed as this
+        // project's untouched create, so the usual claim hands the running
+        // agent over as-is; one warmed with a different agent, model or
+        // posture has its agent respawned, and one in the other mode is
+        // passed over (see `tryClaimPrewarmed`). A claim returns the spare's
+        // own id and registers no provisioning row — the unhidden worktree
+        // lists in the very next snapshot.
+        const claimed = await tryClaimPrewarmed(body.project, setup, onProgress, body.branch)
         if (claimed) {
           // A claimed spare already has its row, so its group is filed here
           // rather than by the create below.
           if (groupId !== undefined) {
             await setWorktreeGroup(body.project, claimed.worktreeId, groupId)
           }
-          // The spare's agent booted with no prompt; type it in now.
+          // The spare's agent booted with no prompt; deliver it now, the way
+          // its mode takes one.
           if (body.prompt !== undefined) {
             onProgress('Sending initial prompt...')
-            await typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
+            await agentDriver(claimed.mode).deliverPrompt(
+              { slug: body.project, worktreeId: claimed.worktreeId, jobName: claimed.jobName, tool },
+              agentWindowName(tool, 0),
+              body.prompt,
+            )
           }
           return claimed
         }
@@ -210,10 +198,10 @@ export const worktreeApp = new Hono()
         }
         if (body.branch) opts.branch = body.branch
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
-        if (body.model !== undefined) opts.model = body.model
-        if (body.mode !== undefined) opts.mode = body.mode
+        if (setup.model !== undefined) opts.model = setup.model
+        opts.mode = setup.mode
         if (body.installMissingTool === true) opts.installMissingTool = true
-        opts.permissionMode = permissionMode
+        opts.permissionMode = setup.permissionMode
         if (groupId !== undefined) opts.groupId = groupId
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
@@ -223,6 +211,7 @@ export const worktreeApp = new Hono()
           tool,
           kind: 'create',
           ...(groupId !== undefined ? { groupId } : {}),
+          ...modelLabel(tool, setup.model),
         })
         return await createWorktree(body.project, opts)
       })

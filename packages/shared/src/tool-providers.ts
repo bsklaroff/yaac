@@ -39,6 +39,18 @@ export type PiProvider = PiProviderId
 export const OPENCODE_DEFAULT_PROVIDER: OpencodeProvider = 'openrouter'
 export const PI_DEFAULT_PROVIDER: PiProvider = 'openrouter'
 
+/**
+ * The model a claude / codex create runs when its project remembers none for
+ * that tool. Pinned by hand because neither CLI is pinned in the tools image
+ * and nothing generated names a current default for them (pi's registry lags
+ * its own release). Review both whenever the tools image refreshes claude or
+ * codex; a test fails if a regen drops either from the catalog.
+ */
+export const FALLBACK_MODELS = {
+  claude: 'claude-opus-5-5',
+  codex: 'gpt-6-sol',
+} as const
+
 function infoOrDefault(
   list: readonly ToolProviderInfo[],
   id: string,

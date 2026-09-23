@@ -7,6 +7,7 @@ import {
   defaultPermissionMode,
   normalizeTool,
   PERMISSION_MODES,
+  resolveToolCreateDefaults,
   SUPPORTED_PERMISSION_MODES,
   supportedPermissionModes,
   toolSupportsPermissionMode,
@@ -91,6 +92,47 @@ describe('toolSupportsPermissionMode', () => {
         expect(toolSupportsPermissionMode(tool, fallback, 'tui'), `${driver}/${tool}`).toBe(true)
       }
     }
+  })
+})
+
+/**
+ * The one resolution both ends make — the create form to show a field, the
+ * server to launch it — so the form always shows what an untouched create
+ * would run.
+ */
+describe('resolveToolCreateDefaults', () => {
+  const resolve = (args: Partial<Parameters<typeof resolveToolCreateDefaults>[0]> = {}) =>
+    resolveToolCreateDefaults({
+      driver: 'k8s', tool: 'claude', agentMode: 'tui', remembered: undefined, defaultModel: 'fallback', ...args,
+    })
+
+  it('falls back per field when nothing is remembered', () => {
+    expect(resolve()).toEqual({ model: 'fallback', permissionMode: 'bypass' })
+    expect(resolve({ driver: 'containerless' }).permissionMode).toBe('accept-edits')
+  })
+
+  it('takes what is remembered where it still fits', () => {
+    expect(resolve({ remembered: { model: 'claude-sonnet-5', permissionMode: 'plan' } }))
+      .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
+  })
+
+  // Recorded under the terminal, asked for in chat: codex's adapter has no
+  // plan mode, so the remembered posture falls through rather than being
+  // refused — it was a preference, not a demand.
+  it('drops a remembered posture the agent mode does not offer', () => {
+    expect(resolve({ tool: 'codex', agentMode: 'acp', remembered: { permissionMode: 'plan' } }).permissionMode)
+      .toBe('bypass')
+  })
+
+  // A `provider/model` id names the vendor its key authenticates against; one
+  // for a provider the stored credential no longer names would send the
+  // request to a host the proxy swaps no key on.
+  it('drops a remembered model for a provider the credential no longer names', () => {
+    const remembered = { model: 'openrouter/moonshotai/kimi-k2.6' }
+    expect(resolve({ tool: 'opencode', provider: 'openrouter', remembered }).model).toBe(remembered.model)
+    expect(resolve({ tool: 'opencode', provider: 'anthropic', remembered }).model).toBe('fallback')
+    // claude and codex ids carry no provider, and a typed one stands.
+    expect(resolve({ remembered: { model: 'claude-next' } }).model).toBe('claude-next')
   })
 })
 

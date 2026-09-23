@@ -31,7 +31,8 @@ export {
 } from './cleanup'
 export {
   createWorktree,
-  resolvePermissionMode,
+  resolveCreate,
+  type CreateSetup,
   type WorktreeCreateOptions,
   type WorktreeCreateResult,
 } from './create'

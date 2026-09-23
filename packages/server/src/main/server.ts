@@ -19,7 +19,6 @@ import {
 } from '#http'
 import { projectApp } from '#routes/projects'
 import { worktreeApp } from '#routes/worktrees'
-import { toolApp } from '#routes/skills'
 import { authApp } from '#routes/auth'
 import { createTokensApp } from '#routes/tokens'
 import { shortcutsApp } from '#routes/shortcuts'
@@ -154,7 +153,6 @@ export function buildApp(deps: ServerAppDeps) {
     }))
     .route('/project', projectApp)
     .route('/worktree', worktreeApp)
-    .route('/tool', toolApp)
     .route('/tokens', createTokensApp(tokens))
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)

@@ -5,7 +5,7 @@
  * Drives the running yaac server's webapp in real Chromium and exercises the
  * migrated request paths through the actual compiled `hc<AppType>` client:
  *   - initial load        → GET /cluster/check, /auth/list, /auth/web-session
- *   - open Settings       → GET /tool/get, /shortcuts/get, /config/..., /project/...
+ *   - open Settings       → GET /shortcuts/get, /config/..., /project/...
  *   - New session → Claude→ POST /session/create (NDJSON stream, unchanged)
  *   - Rename session      → POST /session/:id/title   (rpc write)
  *   - Delete session      → POST /session/delete       (rpc write)
@@ -149,7 +149,6 @@ async function main() {
     // ---- assert the rpc endpoints answered 2xx --------------------------
     check('GET /cluster/check → 2xx', ok2xx(hit('GET', /^\/cluster\/check$/)))
     check('GET /auth/list → 2xx', ok2xx(hit('GET', /^\/auth\/list$/)))
-    check('GET /tool/get → 2xx', ok2xx(hit('GET', /^\/tool\/get$/)))
     check('GET /shortcuts/get → 2xx', ok2xx(hit('GET', /^\/shortcuts\/get$/)))
     check('POST /session/create → 2xx', ok2xx(hit('POST', /^\/session\/create$/)))
     if (renamed) check('POST /session/:id/title → 2xx', ok2xx(hit('POST', /^\/session\/[^/]+\/title$/)))

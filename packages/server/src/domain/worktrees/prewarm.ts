@@ -10,11 +10,13 @@
  * spare's identity is baked at warm time and can't be re-keyed, so a claim
  * returns the spare's own id; the CLI and webapp adopt it.
  *
- * Spares are tool-agnostic: warm-time provisioning seeds every tool's config
- * and env placeholders, so a claim for a different tool than the one booted
- * just retools the spare (proxy re-registration + agent respawn) instead of
- * falling back to a cold create. What a spare declares — the configured
- * default at warm time — is what a matching claim reads to stay instant.
+ * A spare is warmed as its project's untouched create — the agent it was last
+ * created with, launched with the model, posture and agent mode it last used
+ * — so the usual claim hands that agent over as-is. Spares are otherwise
+ * tool-agnostic: warm-time provisioning seeds every tool's config and env
+ * placeholders, so a claim that asks for something else just retools the
+ * spare (proxy re-registration + agent respawn) instead of falling back to a
+ * cold create. Only the agent mode is fixed at warm time.
  *
  * Spares are branch-agnostic the same way: one warmed on a different
  * reference branch is re-branched at claim time (`rebranchSpare` — worktree
@@ -30,8 +32,9 @@ import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#db'
 import { resolveGitIdentity } from './git-identity'
 import { rebranchSpare, retoolSpare } from './spare-pool'
-import { claimSpareWorktree, restoreSpareWorktree } from '#db'
-import type { WorktreeCreateResult } from './create'
+import { claimSpareWorktree, getWorktreeRow, restoreSpareWorktree } from '#db'
+import { awaitConversationRow, type CreateSetup, type WorktreeCreateResult } from './create'
+import { agentWindowName, parkAcpLaunchModel } from '#runtime/agents'
 import { isTmuxSessionAlive } from '#runtime/status'
 import {
   fetchOrigin,
@@ -45,7 +48,6 @@ import { shellEscape } from '#lib/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
-import type { AgentTool } from '@yaac/shared/types'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /**
@@ -72,7 +74,6 @@ export function clearPrewarmStateForTests(): void {
 
 export interface PrewarmSpawn {
   projectSlug: string
-  tool: AgentTool
 }
 
 export interface PrewarmReapTarget {
@@ -87,47 +88,54 @@ export interface PrewarmPlan {
 }
 
 /**
- * Pure planner: given the current workspaces and the desired pool size +
- * default tool, decide which spares to spawn and which to reap. No side
- * effects (mirrors `classifyWorkspaces`) so the policy is unit-testable
- * without a runtime.
+ * Pure planner: given the current workspaces and the desired pool size,
+ * decide which spares to spawn and which to reap. No side effects (mirrors
+ * `classifyWorkspaces`) so the policy is unit-testable without a runtime.
+ * What a spawned spare runs is decided at spawn time, not here.
  *
  * - "claimed" = running, non-prewarmed workspaces (the real user worktrees).
  * - "spares" = prewarmed workspaces (any state, so a still-starting spare
  *   counts), minus any currently being claimed (never spawn against / reap
  *   one mid-claim).
  * - A project with ≥1 claimed worktree wants `poolSize` spares: spawn to fill
- *   (counting in-flight so we don't stampede) with `defaultTool` booted, and
- *   reap genuine excess. Spares are tool-agnostic — one warmed with a
- *   different tool (e.g. after a `tool set`) is retooled at claim time, so
- *   it still counts toward the pool and is never reaped for its tool.
+ *   (counting in-flight so we don't stampede) and reap genuine excess. A
+ *   spare warmed with a different agent, model or posture than the project
+ *   now uses is still claimable — its agent is respawned at claim time — so
+ *   it counts toward the pool and is never reaped for that.
+ * - A spare in `staleJobNames` is reaped and does not count: it was warmed in
+ *   the other agent mode than the project's creates now ask for, and a claim
+ *   cannot convert it (see `tryClaimPrewarmed`), so left in place it would
+ *   fill the pool with a spare nothing takes.
  * - A project with 0 claimed worktrees drains all its spares.
  */
 export function computePrewarmPlan(
   pods: RuntimeHandle[],
   poolSize: number,
-  defaultTool: AgentTool,
   inFlightCounts: Map<string, number>,
   claimingJobNames: Set<string>,
+  staleJobNames: ReadonlySet<string> = new Set(),
 ): PrewarmPlan {
+  const toSpawn: PrewarmSpawn[] = []
+  const toReap: PrewarmReapTarget[] = []
+  const reap = (p: RuntimeHandle): void => {
+    toReap.push({ jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.workspaceId })
+  }
   const claimedByProject = new Map<string, number>()
   const sparesByProject = new Map<string, RuntimeHandle[]>()
   for (const p of pods) {
     if (!p.projectSlug) continue
     if (p.prewarmed) {
       if (claimingJobNames.has(p.jobName)) continue
+      if (staleJobNames.has(p.jobName)) {
+        reap(p)
+        continue
+      }
       const arr = sparesByProject.get(p.projectSlug)
       if (arr) arr.push(p)
       else sparesByProject.set(p.projectSlug, [p])
     } else if (p.running) {
       claimedByProject.set(p.projectSlug, (claimedByProject.get(p.projectSlug) ?? 0) + 1)
     }
-  }
-
-  const toSpawn: PrewarmSpawn[] = []
-  const toReap: PrewarmReapTarget[] = []
-  const reap = (p: RuntimeHandle): void => {
-    toReap.push({ jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.workspaceId })
   }
 
   const projects = new Set([...claimedByProject.keys(), ...sparesByProject.keys()])
@@ -146,7 +154,7 @@ export function computePrewarmPlan(
     }
     // Spawn to fill, counting in-flight spawns so ticks don't stampede.
     const current = spares.length + (inFlightCounts.get(project) ?? 0)
-    for (let i = current; i < poolSize; i++) toSpawn.push({ projectSlug: project, tool: defaultTool })
+    for (let i = current; i < poolSize; i++) toSpawn.push({ projectSlug: project })
   }
   return { toSpawn, toReap }
 }
@@ -175,7 +183,7 @@ export function resolveRebranchTarget(params: {
 }
 
 /**
- * Try to claim a ready prewarmed spare for `(projectSlug, tool, branch)`.
+ * Try to claim a ready prewarmed spare for `(projectSlug, setup, branch)`.
  * Returns the claimed worktree's result (its own id) or `undefined` to fall
  * through to a full cold create. Never throws on infra failures — those
  * degrade to a cold create. The one exception is a VALIDATION error for a
@@ -183,10 +191,10 @@ export function resolveRebranchTarget(params: {
  * mutation, so the spare is released untouched) because a cold create is
  * doomed to the same user error.
  *
- * Spares are tool- and branch-agnostic, so any running spare is claimable:
- * one warmed on a different reference branch is re-branched first
- * (`rebranchSpare`), one booted with a different tool is retooled
- * (`retoolSpare`). `claimSpare` is the commit point: a crash after it leaves
+ * Any running spare in the setup's agent mode is claimable, one whose agent
+ * already matches the setup first: one warmed on a different reference
+ * branch is re-branched first (`rebranchSpare`), one booted with a different
+ * tool, model or posture is retooled (`retoolSpare`). `claimSpare` is the commit point: a crash after it leaves
  * a normal worktree (no orphaned state); a crash before it leaves the spare
  * reusable — except once re-branch/retool mutations have started, when a
  * failed spare is tainted (worktree, registration, and window names may
@@ -194,15 +202,12 @@ export function resolveRebranchTarget(params: {
  */
 export async function tryClaimPrewarmed(
   projectSlug: string,
-  tool: AgentTool,
+  /** The fully resolved create: which agent, launched how. */
+  setup: CreateSetup,
   emit: (message: string) => void,
   branch?: string,
-  /** Model override for the agent's launch command. Spares boot their
-   *  agent with no model flag, so a model override always respawns the
-   *  claimed spare's agent (via retoolSpare, even when the booted tool
-   *  already matches). */
-  model?: string,
 ): Promise<WorktreeCreateResult | undefined> {
+  const { tool } = setup
   const runtime = worktreeDriver()
   let reserved: string | undefined
   let chosen: RuntimeHandle | undefined
@@ -213,12 +218,27 @@ export async function tryClaimPrewarmed(
   let recordedRow = false
   try {
     const workspaces = await runtime.list(projectSlug)
-    const candidates = workspaces
-      .filter((p) => p.prewarmed && p.running)
+    const spares = workspaces.filter((p) => p.prewarmed && p.running)
+    // What each spare's agent was launched with lives on its row (the tool is
+    // also on the handle). Read before any reservation, since a reservation
+    // must not span an await it does not need.
+    const launched = new Map(await Promise.all(spares.map(async (p) =>
+      [p.jobName, await getWorktreeRow(projectSlug, p.workspaceId).catch(() => undefined)] as const)))
+    const matches = (p: RuntimeHandle): boolean => {
+      const row = launched.get(p.jobName)
+      return row !== undefined && p.tool === tool && row.model === setup.model
+        && row.permissionMode === setup.permissionMode
+    }
+    const candidates = spares
+      // A spare in the other mode cannot be converted: an `acp` pod carries a
+      // mount for acpd's records that a `tui` one lacks, and the pod spec is
+      // fixed at warm time. (A row older than the column names no mode, and
+      // is passed over the same way until the pool replaces it.)
+      .filter((p) => launched.get(p.jobName)?.mode === setup.mode)
       // Prefer a spare whose booted agent already matches (skips the
       // respawn), newest first within each group.
       .sort((a, b) =>
-        Number(b.tool === tool) - Number(a.tool === tool)
+        Number(matches(b)) - Number(matches(a))
         || b.createdAtMs - a.createdAtMs)
 
     for (const c of candidates) {
@@ -236,6 +256,7 @@ export async function tryClaimPrewarmed(
       reserved = undefined
     }
     if (!chosen) return undefined
+    const asWarmed = matches(chosen)
 
     // Every in-pod command below this line — re-branch, retool, the git
     // identity re-apply — rides the spare's agent transport, so gate on it
@@ -290,16 +311,29 @@ export async function tryClaimPrewarmed(
       projectSlug,
       worktreeId: claimedId,
       ...(spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {}),
+      // What the worktree runs once the claim is done — the spare's own
+      // launch when it matched, the respawn's otherwise — so a restart
+      // relaunches it that way.
+      permissionMode: setup.permissionMode,
+      mode: setup.mode,
+      ...(setup.model !== undefined ? { model: setup.model } : {}),
     })
     // The spare's agent is already running, pinned to its own id — report it
     // as the worktree's first conversation, since that is where the
-    // worktree's tool is read from.
-    await applyWorktreeEvent({
-      type: 'sessions-launched',
-      projectSlug,
-      worktreeId: claimedId,
-      sessions: [{ tool, agentSessionId: claimedId }],
-    })
+    // worktree's tool is read from. Not under acp: that conversation has no
+    // id until its handshake mints one, which is when the registry writes it.
+    if (setup.mode === 'tui') {
+      await applyWorktreeEvent({
+        type: 'sessions-launched',
+        projectSlug,
+        worktreeId: claimedId,
+        sessions: [{
+          tool,
+          agentSessionId: claimedId,
+          ...(setup.model !== undefined ? { model: setup.model } : {}),
+        }],
+      })
+    }
 
     if (rebranchTo !== null) {
       // The claim path is otherwise zero-network; a re-branch must fetch so
@@ -321,15 +355,15 @@ export async function tryClaimPrewarmed(
       const sha = (await simpleGit(repo).revparse([`refs/remotes/origin/${rebranchTo}`])).trim()
       emit(`Switching prewarmed session to branch ${rebranchTo}...`)
       mutated = true
-      // Skip the agent respawn when a retool follows — its respawn (with
-      // the new tool, and any model override) supersedes it.
-      await rebranchSpare(chosen, rebranchTo, sha, chosen.tool === tool && model === undefined)
+      // The agent read the old checkout at startup, so it is restarted as
+      // it was — unless a retool follows, whose respawn supersedes this one.
+      await rebranchSpare(chosen, rebranchTo, sha, asWarmed ? setup : null)
     }
 
-    if (chosen.tool !== tool || model !== undefined) {
+    if (!asWarmed) {
       if (chosen.tool !== tool) emit(`Switching prewarmed session to ${tool}...`)
       mutated = true
-      await retoolSpare(chosen, tool, model)
+      await retoolSpare(chosen, setup)
     }
 
     // Commit: the spare stops being one and starts declaring the claimed
@@ -337,6 +371,13 @@ export async function tryClaimPrewarmed(
     // must reap it, not release it back to a pool it no longer belongs to.
     // A lost race throws (the spare was already claimed, or is gone), which
     // takes the same fallback-to-cold-create path as any other failure.
+    //
+    // An acp spare's adapter is told its model at the handshake this commit
+    // lets happen, and what it is told was parked in memory when the spare
+    // was warmed — which a server restart since has lost. Parked again here,
+    // before the watcher can attach, so a spare handed over as warmed still
+    // runs the model its row says.
+    if (setup.mode === 'acp') parkAcpLaunchModel(tool, claimedId, setup.model)
     await runtime.claimSpare(claimedId, tool)
     mutated = true
 
@@ -382,9 +423,14 @@ export async function tryClaimPrewarmed(
     }
 
     emit('Using prewarmed session...')
-    // Always tui: spares are warmed with a TUI agent window, which is exactly
-    // why the route refuses to let an acp create claim one.
-    return { worktreeId: chosen.workspaceId, jobName: chosen.jobName, tool, mode: 'tui', forwardedPorts: [] }
+    // An acp spare's adapter has been waiting with no client: the watcher the
+    // claim just unhid it to attaches now, and the handshake mints the
+    // conversation. Held for its row exactly as a fresh acp create is, so the
+    // worktree opens on its chat pane rather than acpd's log.
+    if (setup.mode === 'acp') {
+      await awaitConversationRow(projectSlug, claimedId, chosen.jobName, agentWindowName(tool, 0))
+    }
+    return { worktreeId: chosen.workspaceId, jobName: chosen.jobName, tool, mode: setup.mode, forwardedPorts: [] }
   } catch (err) {
     // A pre-mutation VALIDATION error (unknown branch) is the user's to
     // see — a cold create would fail identically, so don't degrade to one.

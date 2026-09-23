@@ -480,21 +480,29 @@ describe('createWorktree', () => {
   })
 
   it('records the worktree and its first conversation before the Job', async () => {
-    const result = await createWorktree('demo', { tool: 'codex', branch: 'dev', initialPrompt: 'ship it' })
+    const result = await createWorktree('demo', {
+      tool: 'codex', branch: 'dev', initialPrompt: 'ship it', model: 'gpt-6-sol',
+    })
     expect(vi.mocked(recordWorktreeCreated)).toHaveBeenCalledWith({
       projectSlug: 'demo',
       worktreeId: result?.worktreeId,
       // Recorded with the row: a restart has to relaunch the agents the way
-      // the user asked rather than re-deriving today's default. True here
-      // because the fake driver is a sandboxed one.
+      // the user asked rather than re-deriving today's default, and a spare
+      // claim matches on it. `bypass` because the fake driver is a sandboxed
+      // one.
       permissionMode: 'bypass',
+      mode: 'tui',
+      model: 'gpt-6-sol',
     })
     // The tool and the founding ask live on the conversation create launches,
-    // which is the only reason a worktree can name either.
+    // which is the only reason a worktree can name either — and the model it
+    // launched with names it before the agent has answered.
     expect(vi.mocked(recordAgentSessions)).toHaveBeenCalledWith(
       'demo',
       result?.worktreeId,
-      [{ tool: 'codex', agentSessionId: result?.worktreeId, mode: 'tui', firstPrompt: 'ship it' }],
+      [{
+        tool: 'codex', agentSessionId: result?.worktreeId, mode: 'tui', firstPrompt: 'ship it', model: 'gpt-6-sol',
+      }],
     )
     // Ordering is the point: no pod can exist without a row.
     const recordOrder = vi.mocked(recordWorktreeCreated).mock.invocationCallOrder[0] ?? Infinity
@@ -1254,7 +1262,7 @@ describe('retoolSpare', () => {
   })
 
   it('re-registers the session for the new tool, then renames + respawns the agent window', async () => {
-    await retoolSpare(spare, 'codex')
+    await retoolSpare(spare, { tool: 'codex', permissionMode: 'bypass', mode: 'tui' })
 
     expect(registrations).toEqual([expect.objectContaining({
       workspaceId: 'spare1',
@@ -1276,16 +1284,26 @@ describe('retoolSpare', () => {
   })
 
   it('boots the new agent with the spare\'s own session id', async () => {
-    await retoolSpare({ ...spare, tool: 'codex' }, 'claude')
+    await retoolSpare({ ...spare, tool: 'codex' }, { tool: 'claude', permissionMode: 'bypass', mode: 'tui' })
 
     const respawn = execs.map((c) => c[1]).find((c) => c.includes('respawn-window'))
     expect(respawn).toContain('-t yaac:claude')
     expect(respawn).toContain('--session-id spare1')
   })
 
+  // A claim asking for a posture other than the spare's is served by a
+  // respawn into it, not refused into a cold create.
+  it('respawns the agent with the requested model and posture', async () => {
+    await retoolSpare(spare, { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui' })
+
+    const respawn = execs.map((c) => c[1]).find((c) => c.includes('respawn-window'))
+    expect(respawn).toContain('--model claude-opus-5-5')
+    expect(respawn).toContain('--permission-mode plan')
+  })
+
   it('propagates registration failures without touching the tmux window', async () => {
     installRuntime(() => Promise.reject(new Error('proxy down')))
-    await expect(retoolSpare(spare, 'codex')).rejects.toThrow('proxy down')
+    await expect(retoolSpare(spare, { tool: 'codex', permissionMode: 'bypass', mode: 'tui' })).rejects.toThrow('proxy down')
     expect(execs).toEqual([])
   })
 })

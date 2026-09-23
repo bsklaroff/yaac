@@ -5,19 +5,61 @@ import { resolveProjectConfig, resolveEphemeralModulesPaths, resolveProjectEnv }
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { shellEscape } from '#lib/shell'
 import {
+  agentDriver,
+  agentWindowName,
   resolveInitWindows,
-  buildAgentCmd,
   verifyAgentWindowAlive,
   initWindowCommand,
   tmuxCmd,
 } from '#runtime/agents'
 import { withUpstreamConfigLock } from './create'
 import type { WorkspacePaths } from '#drivers/contract'
-import type { AgentTool, YaacConfig } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode, YaacConfig } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
 
+/** What a spare's agent window runs: which agent, launched how. */
+export interface SpareAgent {
+  tool: AgentTool
+  model?: string
+  permissionMode: PermissionMode
+  mode: AgentMode
+}
+
 /**
- * Swap a prewarmed spare's booted agent for a different tool at claim time.
+ * The exec that replaces a spare's agent window with `agent`, launched fresh
+ * under the spare's own id — the one command a spare's agent is ever
+ * respawned with, whether a claim retools it or a re-branch restarts it. Built
+ * by the mode's own driver, so an `acp` spare respawns acpd on the right
+ * adapter exactly as a create would have launched it.
+ */
+function respawnAgentExec(
+  workspaceId: string,
+  agent: SpareAgent,
+  piProvider: PiProvider | undefined,
+  paths: WorkspacePaths,
+): string {
+  const windowName = agentWindowName(agent.tool, 0)
+  return `${tmuxCmd(paths)} respawn-window -k -t yaac:${windowName} '${agentDriver(agent.mode).launchCmd({
+    tool: agent.tool,
+    agentSessionId: workspaceId,
+    resume: false,
+    windowName,
+    paths,
+    permissionMode: agent.permissionMode,
+    ...(agent.model !== undefined ? { model: agent.model } : {}),
+    ...(piProvider !== undefined ? { piProvider } : {}),
+  })}'`
+}
+
+/** The stored pi provider, which a pi launch needs to name its key's host;
+ *  undefined for every other tool. */
+async function piProviderFor(tool: AgentTool): Promise<PiProvider | undefined> {
+  return tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
+}
+
+/**
+ * Swap a prewarmed spare's booted agent for the one a claim asked for — a
+ * different tool, model or posture, in the mode the spare was warmed in.
  * Spares are provisioned tool-agnostically (mounts, env placeholders, and
  * per-tool config cover every tool), so only three things are keyed to the
  * booted tool: the proxy registration (drives credential injection), the
@@ -34,19 +76,14 @@ import type { PiProvider } from '@yaac/shared/tool-providers'
  */
 export async function retoolSpare(
   spare: { jobName: string; workspaceId: string; projectSlug: string; tool: string },
-  tool: AgentTool,
-  /** Model for the respawned agent (see buildAgentCmd). Also the reason a
-   *  claim may retool a spare to its *own* tool: the booted agent has no
-   *  model flag, so a model override forces this respawn. */
-  model?: string,
+  agent: SpareAgent,
 ): Promise<void> {
+  const { tool } = agent
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
   const remoteUrl = await originRemoteUrl(repoDir(spare.projectSlug))
-  // pi's launch command embeds its provider's default model, so a retool to pi
-  // needs the stored provider (from the single pi.json credential).
-  const piProvider = tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
   const runtime = worktreeDriver()
-  const TMUX = tmuxCmd(runtime.workspacePaths(spare.jobName))
+  const paths = runtime.workspacePaths(spare.jobName)
+  const TMUX = tmuxCmd(paths)
   await runtime.registerWorkspace({
     workspaceId: spare.workspaceId,
     projectSlug: spare.projectSlug,
@@ -71,18 +108,7 @@ export async function retoolSpare(
   )
   await runtime.exec(
     spare.jobName,
-    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd({
-      tool,
-      worktreeId: spare.workspaceId,
-      // A spare only exists on a sandboxed runtime, where the isolation
-      // is what justifies unsupervised action — the same answer
-      // `defaultPermissionMode` gives every worktree there. A claim that
-      // wanted a different posture doesn't reach this path: the route only
-      // claims a spare for a create resolving to `bypass`.
-      permissionMode: 'bypass',
-      ...(piProvider !== undefined ? { piProvider } : {}),
-      ...(model !== undefined ? { model } : {}),
-    })}'`,
+    respawnAgentExec(spare.workspaceId, agent, await piProviderFor(tool), paths),
   )
   await verifyAgentWindowAlive(spare.jobName, [tool])
 }
@@ -134,16 +160,16 @@ export function buildRebranchPrep(params: {
   sha: string
   config: YaacConfig
   worktreeId: string
-  /** Agent window to respawn, or null when a retool follows (its own
-   *  respawn supersedes this one). */
-  respawnTool: AgentTool | null
+  /** The agent to respawn — the one the spare already runs — or null when a
+   *  retool follows (its own respawn supersedes this one). */
+  respawn: SpareAgent | null
   /** pi only — provider for the respawn's `pi --model` (see buildAgentCmd). */
   piProvider?: PiProvider
   /** Where this workspace's things are, in its own world — the commands
    *  below are all addressed inside it. */
   paths: WorkspacePaths
 }): RebranchPrepCommands {
-  const { branch, sha, config, worktreeId, respawnTool, piProvider, paths } = params
+  const { branch, sha, config, worktreeId, respawn, piProvider, paths } = params
   const TMUX = tmuxCmd(paths)
   const wd = paths.workspaceDir
   const windowExecs: string[] = []
@@ -161,16 +187,7 @@ export function buildRebranchPrep(params: {
       `${TMUX} kill-window -t yaac:${win.name} 2>/dev/null; ${initWindowCommand(win, paths)}`,
     )
   }
-  if (respawnTool) {
-    windowExecs.push(
-      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd({
-        tool: respawnTool,
-        worktreeId,
-        permissionMode: 'bypass',
-        ...(piProvider !== undefined ? { piProvider } : {}),
-      })}'`,
-    )
-  }
+  if (respawn) windowExecs.push(respawnAgentExec(worktreeId, respawn, piProvider, paths))
   const cleanExcludes = workspaceMountPaths(config, wd)
     .map((p) => ` -e '${shellEscape(p)}'`)
     .join('')
@@ -199,19 +216,16 @@ export async function rebranchSpare(
   spare: { jobName: string; workspaceId: string; projectSlug: string; tool: string },
   branch: string,
   sha: string,
-  respawnAgent: boolean,
+  respawn: SpareAgent | null,
 ): Promise<void> {
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
-  const piProvider = respawnAgent && spare.tool === 'pi'
-    ? (await loadToolAuthEntry('pi'))?.piProvider
-    : undefined
   const prep = buildRebranchPrep({
     branch,
     sha,
     config,
     worktreeId: spare.workspaceId,
-    respawnTool: respawnAgent ? spare.tool as AgentTool : null,
-    piProvider,
+    respawn,
+    piProvider: respawn !== null ? await piProviderFor(respawn.tool) : undefined,
     paths: worktreeDriver().workspacePaths(spare.jobName),
   })
   // The reset+clean walks the whole worktree, so it gets a wider deadline
@@ -225,5 +239,5 @@ export async function rebranchSpare(
     await runtime.exec(spare.jobName, prep.upstreamExec)
   })
   for (const cmd of prep.windowExecs) await runtime.exec(spare.jobName, cmd)
-  if (respawnAgent) await verifyAgentWindowAlive(spare.jobName, [spare.tool as AgentTool])
+  if (respawn !== null) await verifyAgentWindowAlive(spare.jobName, [respawn.tool])
 }

@@ -179,9 +179,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/worktree/:id/forward-port', request: '/worktree/nope/forward-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
   { method: 'POST', path: '/worktree/:id/dismiss-port', request: '/worktree/nope/dismiss-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
 
-  // ── tools, shortcuts, tokens ──────────────────────────────────────────
-  { method: 'GET', path: '/tool/get', k8s: 200, containerless: 200 },
-  { method: 'POST', path: '/tool/set', body: { tool: 'claude' }, k8s: [200, 204], containerless: [200, 204] },
+  // ── shortcuts, tokens ─────────────────────────────────────────────────
   { method: 'GET', path: '/shortcuts/get', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/shortcuts/set', body: { commandId: 'x', chord: null }, k8s: [200, 204, 400], containerless: [200, 204, 400] },
   { method: 'POST', path: '/shortcuts/reset', body: {}, k8s: [200, 204], containerless: [200, 204] },

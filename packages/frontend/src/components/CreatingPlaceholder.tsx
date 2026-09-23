@@ -1,5 +1,6 @@
 import type { JSX } from 'react'
-import { LoadingIcon, TOOL_LABEL } from '#lib/icons'
+import { LoadingIcon } from '#lib/icons'
+import { agentLabel } from '#lib/agentLabel'
 import { dismissProvisioning } from '#lib/createWorktree'
 import { useUiStore } from '#store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
@@ -64,7 +65,7 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorktr
         <>
           <div className="flex items-center gap-2 text-sm text-text">
             <LoadingIcon size={15} className="animate-spin text-text-dim" />
-            {creating.kind === 'restart' ? 'Restarting' : 'Creating'} {TOOL_LABEL[creating.tool]} worktree
+            {creating.kind === 'restart' ? 'Restarting' : 'Creating'} {agentLabel(creating.tool, creating)} worktree
             in {creating.projectSlug}
           </div>
           <p className="text-xs text-text-faint">{creating.message}</p>

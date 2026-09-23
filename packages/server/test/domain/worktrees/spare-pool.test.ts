@@ -10,7 +10,7 @@ const TMUX = `tmux -S ${PATHS.tmuxSock}`
 describe('buildRebranchPrep', () => {
   it('resets by SHA and cleans without -x, excluding the default node_modules mount', () => {
     const prep = buildRebranchPrep({
-      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null, paths: PATHS,
+      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawn: null, paths: PATHS,
     })
     expect(prep.resetExec).toBe(
       'sh -c "git -C /workspace reset --hard abc123 && git -C /workspace clean -fd'
@@ -33,7 +33,7 @@ describe('buildRebranchPrep', () => {
         },
       },
       worktreeId: 's1',
-      respawnTool: null, paths: PATHS,
+      respawn: null, paths: PATHS,
     })
     expect(prep.resetExec).toContain(" -e 'packages/web/node_modules'")
     expect(prep.resetExec).toContain(" -e '.pip-cache'")
@@ -44,7 +44,7 @@ describe('buildRebranchPrep', () => {
 
   it('rewrites the upstream to the new branch, shell-escaped', () => {
     const prep = buildRebranchPrep({
-      branch: 'release/2.x', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null, paths: PATHS,
+      branch: 'release/2.x', sha: 'abc123', config: {}, worktreeId: 's1', respawn: null, paths: PATHS,
     })
     expect(prep.upstreamExec).toBe(
       "git -C /workspace branch --set-upstream-to 'origin/release/2.x'",
@@ -57,7 +57,7 @@ describe('buildRebranchPrep', () => {
       sha: 'abc123',
       config: { initCommands: [{ name: 'api', commands: ['pnpm dev'] }, { name: 'web', commands: ['pnpm web'], hidePane: true }] },
       worktreeId: 's1',
-      respawnTool: null, paths: PATHS,
+      respawn: null, paths: PATHS,
     })
     expect(prep.windowExecs).toEqual([
       `${TMUX} kill-window -t yaac:api 2>/dev/null; `
@@ -76,23 +76,39 @@ describe('buildRebranchPrep', () => {
       sha: 'abc123',
       config: { initCommands: [{ name: 'api', commands: ['pnpm run "build:dev"'] }] },
       worktreeId: 's1',
-      respawnTool: null, paths: PATHS,
+      respawn: null, paths: PATHS,
     })
     expect(prep.windowExecs[0]).toContain(`'cd /workspace && pnpm run "build:dev"'`)
   })
 
   it('appends the agent respawn last when requested', () => {
     const prep = buildRebranchPrep({
-      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: 'claude', paths: PATHS,
+      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', paths: PATHS,
+      respawn: { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui' },
     })
     expect(prep.windowExecs).toHaveLength(1)
     expect(prep.windowExecs[0]).toContain('respawn-window -k -t yaac:claude')
     expect(prep.windowExecs[0]).toContain('--session-id s1')
+    // Restarted as the spare was warmed — its model and posture included.
+    expect(prep.windowExecs[0]).toContain('--model claude-opus-5-5')
+    expect(prep.windowExecs[0]).toContain('--permission-mode plan')
+  })
+
+  // A chat spare's agent window runs acpd, so its respawn is acpd's command,
+  // built by the acp driver — never the TUI's.
+  it('respawns a chat spare as acpd on the tool\'s adapter', () => {
+    const prep = buildRebranchPrep({
+      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', paths: PATHS,
+      respawn: { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'acp' },
+    })
+    expect(prep.windowExecs[0]).toContain('respawn-window -k -t yaac:claude')
+    expect(prep.windowExecs[0]).toContain('acpd')
+    expect(prep.windowExecs[0]).not.toContain('--session-id')
   })
 
   it('emits no window execs when there are no init commands and no respawn', () => {
     const prep = buildRebranchPrep({
-      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null, paths: PATHS,
+      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawn: null, paths: PATHS,
     })
     expect(prep.windowExecs).toEqual([])
   })

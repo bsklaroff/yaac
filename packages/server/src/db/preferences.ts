@@ -1,8 +1,6 @@
-import { eq, inArray } from 'drizzle-orm'
+import { inArray } from 'drizzle-orm'
 import { getDb } from './client'
 import { preferences, shortcutOverrides } from './schema'
-import { ServerError } from '@yaac/shared/errors'
-import type { AgentTool } from '@yaac/shared/types'
 
 /** A persisted keyboard-shortcut chord: a physical key `code` plus the four
  *  modifier states. Mirrors the frontend `Chord` shape (the server must not
@@ -27,26 +25,9 @@ export function isSerializedChord(value: unknown): value is SerializedChord {
     && typeof c.shift === 'boolean'
 }
 
-/** `preferences` row key for the default session tool. */
-export const DEFAULT_TOOL_KEY = 'default_tool'
-
 /** `preferences` row keys for the git identity worktrees commit under. */
 export const GIT_USER_NAME_KEY = 'git_user_name'
 export const GIT_USER_EMAIL_KEY = 'git_user_email'
-
-export async function getDefaultTool(): Promise<AgentTool | undefined> {
-  const db = await getDb()
-  const rows = await db.select().from(preferences).where(eq(preferences.key, DEFAULT_TOOL_KEY))
-  const value = rows[0]?.value
-  return value !== undefined && isValidTool(value) ? value : undefined
-}
-
-export async function setDefaultTool(tool: AgentTool): Promise<void> {
-  const db = await getDb()
-  await db.insert(preferences)
-    .values({ key: DEFAULT_TOOL_KEY, value: tool })
-    .onConflictDoUpdate({ target: preferences.key, set: { value: tool } })
-}
 
 /** All saved shortcut overrides (empty when none are set). */
 export async function getShortcutOverrides(): Promise<Record<string, SerializedChord>> {
@@ -77,24 +58,6 @@ export async function setShortcutOverride(id: string, chord: SerializedChord): P
 export async function clearShortcutOverrides(): Promise<void> {
   const db = await getDb()
   await db.delete(shortcutOverrides)
-}
-
-const VALID_TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
-
-export function isValidTool(value: string): value is AgentTool {
-  return VALID_TOOLS.includes(value as AgentTool)
-}
-
-/**
- * Validate the incoming string and set the default tool. Throws
- * `VALIDATION` for anything that isn't a known tool name.
- */
-export async function setDefaultToolChecked(toolName: string): Promise<AgentTool> {
-  if (!isValidTool(toolName)) {
-    throw new ServerError('VALIDATION', `Invalid tool "${toolName}". Must be one of: ${VALID_TOOLS.join(', ')}`)
-  }
-  await setDefaultTool(toolName)
-  return toolName
 }
 
 /**

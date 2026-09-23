@@ -1,12 +1,12 @@
 import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { defaultReconcileSteps, type PassContext, type ReconcileStep, type ReconcileTrigger } from '#domain/reconcile'
-import { getDefaultTool, listProjectRows } from '#db'
+import { listProjectRows } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { isWorktreeTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
-import type { AgentTool, YaacConfig } from '@yaac/shared/types'
+import type { YaacConfig } from '@yaac/shared/types'
 
 /**
  * Event-driven reconciler. Steps run when something they watch changes,
@@ -100,7 +100,6 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
       )
       let snapshot: RuntimeSnapshot | null = null
-      let defaultTool: Promise<AgentTool | undefined> | null = null
       let projectSlugs: Promise<string[]> | null = null
       const projectConfigs = new Map<string, Promise<YaacConfig | undefined>>()
       const ctx: PassContext = {
@@ -108,23 +107,16 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         resync,
         signal,
         snapshot: () => (snapshot ??= worktreeDriver().snapshot(resync)),
-        // No catch: a failed preference read rejects the accessor, which
-        // fails (and stands down) exactly the steps that needed the answer
-        // — churning a spare toward a fallback tool on a transient read
-        // failure would be worse than warming nothing for one pass. An
-        // UNSET preference resolves undefined, and the consumer's fallback
-        // is for that case alone.
-        defaultTool: () => (defaultTool ??= getDefaultTool()),
-        // Same arrangement, and for the same reason: which projects exist
-        // is a row question, so it is resolved once here and handed down —
-        // a runtime step never reads db itself. An unreadable list
+        // Which projects exist is a row question, so it is resolved once here
+        // and handed down — a runtime step never reads db itself. An
+        // unreadable list
         // degrades to none rather than failing the pass, because every
         // consumer of it is upkeep that the next pass retries.
         projectSlugs: () => (projectSlugs ??= listProjectRows()
           .then((rows) => rows.map((r) => r.slug))
           .catch(() => [])),
         // Memoized per project rather than per pass, since a pass reads a
-        // handful of different ones. Same reason as the two above: which
+        // handful of different ones. Same reason as the one above: which
         // config a project has is answered by the layers that own disk, so
         // a runtime step is handed the answer.
         //

@@ -19,8 +19,6 @@ import { worktreeAgents } from '#commands/worktree-agents'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
-import { toolGet } from '#commands/tool-get'
-import { toolSet } from '#commands/tool-set'
 /* eslint-disable no-restricted-syntax -- Every `import()` below is a deliberate
    deferral, not a hoisting oversight: the repo bans dynamic import to keep
    import graphs static and readable, but this file is the one place where the
@@ -399,12 +397,12 @@ worktree
   .command('create')
   .description('Create a new worktree for a project')
   .argument('<project>', 'Project slug')
-  .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi)')
+  .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi). Defaults to the agent this project was last created with, else claude')
   .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the worktree is up')
-  .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi')
+  .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi. Defaults to the model this project last used for the tool, else a per-tool default')
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI').choices([...AGENT_MODES]))
-  .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, plan explores read-only, manual asks for everything. Defaults to this project\'s last choice, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
+  .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, plan explores read-only, manual asks for everything. Defaults to this project\'s last choice for the tool, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
   .option('-g, --group <group>', 'File the worktree under this sidebar group (by name; created if it does not exist)')
   .option('--install-missing', 'Install the agent\'s CLI (and, with --mode acp, its ACP adapter) if the server\'s host hasn\'t got it, instead of refusing the create (containerless servers only; a server that runs agents in containers gets its tools from the image)')
   .action(async (project: string, options: Parameters<typeof worktreeCreate>[1]) => {
@@ -468,22 +466,6 @@ worktree
   .action(async (project: string | undefined, options: WorktreeMonitorOptions) => {
     await worktreeMonitor(project, options)
   })
-
-const tool = program
-  .command('tool')
-  .description('Manage default agent tool')
-  .configureHelp({ formatHelp: nestedHelp })
-
-tool
-  .command('get')
-  .description('Show the current default agent tool')
-  .action(toolGet)
-
-tool
-  .command('set')
-  .description('Set the default agent tool')
-  .argument('<tool>', 'Agent tool to use (claude, codex, opencode, or pi)')
-  .action(toolSet)
 
 const config = program
   .command('config')

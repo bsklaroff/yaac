@@ -2,10 +2,17 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { eq } from 'drizzle-orm'
 import { getDb } from './client'
-import { projects } from './schema'
+import { projects, projectToolDefaults } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
 import { getProjectsDir } from '@yaac/shared/project-paths'
-import type { PermissionMode, ProjectMeta } from '@yaac/shared/types'
+import {
+  normalizeTool,
+  type AgentMode,
+  type AgentTool,
+  type PermissionMode,
+  type ProjectMeta,
+  type ToolCreateDefaults,
+} from '@yaac/shared/types'
 
 /**
  * Which projects exist, as the server records them.
@@ -25,22 +32,37 @@ export async function recordProject(meta: ProjectMeta): Promise<void> {
 
 /**
  * A project as this table holds it: its `project.json` identity plus the
- * settings only the row carries. Separate from `ProjectMeta` because that
- * type is also the shape of `project.json` on disk, and a remembered posture
- * is not something the file has ever had.
+ * create form's memory only the rows carry. Separate from `ProjectMeta`
+ * because that type is also the shape of `project.json` on disk, and the
+ * memory is not something the file has ever had.
  */
 export interface ProjectRow extends ProjectMeta {
-  lastPermissionMode?: PermissionMode
+  lastTool?: AgentTool
+  createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
 }
 
-function toProjectRow(r: typeof projects.$inferSelect): ProjectRow {
+type DefaultsRow = typeof projectToolDefaults.$inferSelect
+
+/** Read back with casts, like the worktree posture column: every value here
+ *  is re-checked against the tool before anything launches with it. */
+function toProjectRow(
+  r: typeof projects.$inferSelect,
+  defaults: DefaultsRow[],
+): ProjectRow {
+  const createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>> = {}
+  for (const d of defaults) {
+    createDefaults[normalizeTool(d.tool)] = {
+      ...(d.model !== null ? { model: d.model } : {}),
+      ...(d.permissionMode !== null ? { permissionMode: d.permissionMode as PermissionMode } : {}),
+      ...(d.mode !== null ? { mode: d.mode as AgentMode } : {}),
+    }
+  }
   return {
     slug: r.slug,
     remoteUrl: r.remoteUrl,
     addedAt: r.addedAt,
-    ...(r.lastPermissionMode !== null
-      ? { lastPermissionMode: r.lastPermissionMode as PermissionMode }
-      : {}),
+    ...(r.lastTool !== null ? { lastTool: normalizeTool(r.lastTool) } : {}),
+    createDefaults,
   }
 }
 
@@ -48,52 +70,69 @@ export async function getProjectRow(slug: string): Promise<ProjectRow | undefine
   await adoptProjectDirs()
   const db = await getDb()
   const rows = await db.select().from(projects).where(eq(projects.slug, slug))
-  return rows[0] !== undefined ? toProjectRow(rows[0]) : undefined
+  if (rows[0] === undefined) return undefined
+  const defaults = await db.select().from(projectToolDefaults)
+    .where(eq(projectToolDefaults.projectSlug, slug))
+  return toProjectRow(rows[0], defaults)
 }
 
 export async function listProjectRows(): Promise<ProjectRow[]> {
   await adoptProjectDirs()
   const db = await getDb()
-  return (await db.select().from(projects)).map(toProjectRow)
+  const [rows, defaults] = await Promise.all([
+    db.select().from(projects),
+    db.select().from(projectToolDefaults),
+  ])
+  return rows.map((r) => toProjectRow(r, defaults.filter((d) => d.projectSlug === r.slug)))
 }
 
 /**
- * The permission posture this project's last explicit create asked for, or
- * undefined if every create so far has taken the default.
+ * Remember a create as the project's next defaults: `tool` becomes the agent
+ * this project was last created with, and whichever of model, posture and
+ * mode the request named become that agent's. A field the request left out
+ * is left as it was — a create that took the resolved default for a field
+ * must not overwrite what a person picked for it.
  *
- * The create form's memory. Kept here rather than in the browser so the CLI,
- * the webapp and a second device all resolve the same default, and read back
- * with a cast for the same reason the worktree column is: the launch path
- * re-checks the value against the tool it is about to run.
+ * Called by the create route alone, since only there is the choice known to
+ * be a person's rather than a restart's, a prewarm's or the spawn policy's.
  */
-export async function getProjectLastPermissionMode(
+export async function recordProjectCreate(
   slug: string,
-): Promise<PermissionMode | undefined> {
-  const db = await getDb()
-  const rows = await db.select({ mode: projects.lastPermissionMode })
-    .from(projects).where(eq(projects.slug, slug))
-  const mode = rows[0]?.mode
-  return mode !== null && mode !== undefined ? mode as PermissionMode : undefined
-}
-
-/**
- * Remember a posture as this project's last explicit choice. Called only when
- * the request named one — a create that took the default must not overwrite
- * what the user last picked, or one defaulted create would erase the memory
- * every later create is supposed to read.
- */
-export async function recordProjectPermissionMode(
-  slug: string,
-  mode: PermissionMode,
+  tool: AgentTool,
+  picked: ToolCreateDefaults,
 ): Promise<void> {
   const db = await getDb()
-  await db.update(projects).set({ lastPermissionMode: mode }).where(eq(projects.slug, slug))
+  const set = {
+    ...(picked.model !== undefined ? { model: picked.model } : {}),
+    ...(picked.permissionMode !== undefined ? { permissionMode: picked.permissionMode } : {}),
+    ...(picked.mode !== undefined ? { mode: picked.mode } : {}),
+  }
+  await db.transaction(async (tx) => {
+    const updated = await tx.update(projects).set({ lastTool: tool })
+      .where(eq(projects.slug, slug)).returning({ slug: projects.slug })
+    // No such project (the create is about to fail for it): nothing to
+    // remember, and a row here would be inherited by a later project of the
+    // same name.
+    if (updated.length === 0) return
+    const insert = tx.insert(projectToolDefaults).values({ projectSlug: slug, tool, ...set })
+    // An empty `set` is an error rather than a no-op, so a create that named
+    // nothing but its tool only makes sure the row exists.
+    await (Object.keys(set).length > 0
+      ? insert.onConflictDoUpdate({
+        target: [projectToolDefaults.projectSlug, projectToolDefaults.tool],
+        set,
+      })
+      : insert.onConflictDoNothing())
+  })
   notifyWorktreeListChanged()
 }
 
 export async function deleteProjectRow(slug: string): Promise<void> {
   const db = await getDb()
-  await db.delete(projects).where(eq(projects.slug, slug))
+  await db.transaction(async (tx) => {
+    await tx.delete(projectToolDefaults).where(eq(projectToolDefaults.projectSlug, slug))
+    await tx.delete(projects).where(eq(projects.slug, slug))
+  })
   notifyWorktreeListChanged()
 }
 

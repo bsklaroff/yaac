@@ -358,7 +358,6 @@ describe('reconcileRegistrationGc', () => {
       snapshot: () => ({
         workspaces: () => Promise.resolve(live.map((workspaceId) => ({ workspaceId }))),
       }) as unknown as ReturnType<PassContext['snapshot']>,
-      defaultTool: () => Promise.resolve(undefined),
       projectSlugs: () => Promise.resolve([]),
       projectConfig: () => Promise.resolve(undefined),
       terminating: (id) => terminating.includes(id),

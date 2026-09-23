@@ -11,7 +11,11 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { drizzle } from 'drizzle-orm/pglite'
+import { migrate } from 'drizzle-orm/pglite/migrator'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import { openDb, getDb, closeDb } from '#db/client'
 import { preferences } from '#db/schema'
@@ -57,6 +61,54 @@ describe('openDb', () => {
     await openDb()
     await openDb()
     expect(await getDb()).toBe(await getDb())
+  })
+
+  // The one migration that moves data rather than only reshaping it: the
+  // project's single remembered posture and the global default tool become
+  // per-agent create memory. Nothing else can catch it going wrong — every
+  // other test starts from a database migrated from empty.
+  it('carries the old create memory into per-agent rows', async () => {
+    const migrations = path.resolve(fileURLToPath(import.meta.url), '../../../drizzle')
+    const all = (await fs.readdir(migrations)).filter((d) => /^\d{14}_/.test(d)).sort()
+    const target = all.findIndex((d) => d.endsWith('_per_project_create_defaults'))
+    expect(target).toBeGreaterThan(0)
+    const before = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-migrations-'))
+    dirs.push(before)
+    for (const d of all.slice(0, target)) {
+      await fs.cp(path.join(migrations, d), path.join(before, d), { recursive: true })
+    }
+
+    const db = drizzle({ connection: { dataDir: 'memory://' } })
+    try {
+      await migrate(db, { migrationsFolder: before })
+      await db.$client.exec(`
+        INSERT INTO projects (slug, remote_url, added_at, last_permission_mode)
+          VALUES ('p', 'git@h:o/p.git', 'now', 'auto'), ('q', 'git@h:o/q.git', 'now', NULL);
+        INSERT INTO preferences (key, value) VALUES ('default_tool', 'codex');
+      `)
+      await migrate(db, { migrationsFolder: migrations })
+
+      const memory = await db.$client.query<{ project_slug: string; tool: string; permission_mode: string }>(
+        'SELECT project_slug, tool, permission_mode FROM project_tool_defaults ORDER BY project_slug, tool',
+      )
+      // `auto` reaches the tools that have it — never opencode (no reviewer
+      // posture) and never pi, whose only posture says nothing about taste.
+      expect(memory.rows).toEqual([
+        { project_slug: 'p', tool: 'claude', permission_mode: 'auto' },
+        { project_slug: 'p', tool: 'codex', permission_mode: 'auto' },
+      ])
+      const lastTools = await db.$client.query<{ slug: string; last_tool: string | null }>(
+        'SELECT slug, last_tool FROM projects ORDER BY slug',
+      )
+      expect(lastTools.rows).toEqual([
+        { slug: 'p', last_tool: 'codex' },
+        { slug: 'q', last_tool: 'codex' },
+      ])
+      const prefs = await db.$client.query('SELECT key FROM preferences')
+      expect(prefs.rows).toEqual([])
+    } finally {
+      await db.$client.close()
+    }
   })
 
   it('reopens against the new dir when setDataDir changes it', async () => {

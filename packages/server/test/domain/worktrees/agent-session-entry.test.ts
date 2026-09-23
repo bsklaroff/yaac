@@ -43,6 +43,19 @@ describe('toAgentSessionEntry', () => {
     })
   })
 
+  // Every surface names an agent the way the create form did, so the model
+  // goes out with the catalog's name beside it — when the catalog has one.
+  it('names the model from the catalog, and sends the bare id where it has none', () => {
+    expect(toAgentSessionEntry(link({ model: 'claude-opus-5-5' })))
+      .toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
+    // A dated snapshot a transcript reports resolves through its alias.
+    expect(toAgentSessionEntry(link({ model: 'claude-sonnet-4-5-20250929' })).modelName)
+      .toBe('Sonnet 4.5')
+    const typed = toAgentSessionEntry(link({ model: 'claude-next' }))
+    expect(typed.model).toBe('claude-next')
+    expect('modelName' in typed).toBe(false)
+  })
+
   it('omits the live half entirely for a conversation nothing is observing', () => {
     const entry = toAgentSessionEntry(link({ active: false, ordinal: 2 }))
     expect(entry).toEqual({

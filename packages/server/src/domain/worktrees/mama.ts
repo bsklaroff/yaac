@@ -37,10 +37,7 @@ import {
   type MamaCommand,
   type WorktreeListEntry,
 } from '@yaac/shared/types'
-import {
-  MODELS_BY_PROVIDER,
-  PI_MODELS_BY_PROVIDER,
-} from '@yaac/shared/tool-providers.generated'
+import { modelsForTool } from '#domain/auth'
 
 /** Who is asking — resolved by the transport, never taken from the request. */
 export interface MamaCaller {
@@ -416,25 +413,10 @@ async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
       : 'piProvider' in auth ? auth.piProvider
       : undefined
     const models = modelsForTool(tool, provider)
+      .map((m) => m.name !== undefined ? `${m.id} (${m.name})` : m.id)
     lines.push(`${tool.padEnd(9)} ${auth.kind}${provider ? ` (${provider})` : ''}`)
     if (models.length > 0) lines.push(`          models: ${models.join(', ')}`)
   }
   lines.push('', 'Pass one with: yaac-mama create --tool <tool> --model <model> "<prompt>"')
   return { ok: true, output: lines.join('\n') }
-}
-
-/**
- * Model ids a tool accepts, from the baked models.dev catalog. claude and
- * codex take bare ids; opencode and pi take `provider/model`, and pi reads
- * its own registry rather than models.dev.
- *
- * A convenience, not an allowlist — each tool accepts any id it recognizes,
- * and yaac only shape-checks what it is handed.
- */
-function modelsForTool(tool: AgentTool, provider: string | undefined): string[] {
-  if (tool === 'claude') return MODELS_BY_PROVIDER['anthropic'] ?? []
-  if (tool === 'codex') return MODELS_BY_PROVIDER['openai'] ?? []
-  if (provider === undefined) return []
-  const catalog = tool === 'pi' ? PI_MODELS_BY_PROVIDER : MODELS_BY_PROVIDER
-  return (catalog[provider] ?? []).map((m) => `${provider}/${m}`)
 }

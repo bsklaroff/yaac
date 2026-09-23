@@ -1,16 +1,6 @@
 import { listProjectRows } from '#db'
 import { worktreeDriver } from '#drivers/driver'
-import type { PermissionMode } from '@yaac/shared/types'
-
-export interface ProjectListEntry {
-  slug: string
-  remoteUrl: string
-  addedAt: string
-  worktreeCount: number
-  /** The posture this project's last explicit create asked for, if any —
-   *  what the webapp's create form offers as its default. */
-  lastPermissionMode?: PermissionMode
-}
+import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
  * Every recorded project, with a live worktree count. If the substrate is
@@ -21,7 +11,7 @@ export interface ProjectListEntry {
  * This is the pure data half of `yaac project list`; the CLI renderer
  * lives in `src/commands/project-list.ts`.
  */
-export async function listProjects(): Promise<ProjectListEntry[]> {
+export async function listProjects(): Promise<ProjectSummary[]> {
   const [rows, worktreeCounts] = await Promise.all([
     listProjectRows(),
     worktreeDriver().count(),
@@ -31,8 +21,9 @@ export async function listProjects(): Promise<ProjectListEntry[]> {
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
     worktreeCount: worktreeCounts[meta.slug] ?? 0,
-    ...(meta.lastPermissionMode !== undefined
-      ? { lastPermissionMode: meta.lastPermissionMode }
-      : {}),
+    // The create form's memory, so it opens on what an untouched create
+    // would run (see `resolveToolCreateDefaults`).
+    ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),
+    createDefaults: meta.createDefaults,
   }))
 }

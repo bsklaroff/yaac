@@ -79,9 +79,10 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
     return
   }
 
-  // Tool is sent only when explicit (--tool). The server resolves the
-  // configured default (yaac tool set) when omitted, so a bare create matches
-  // the prewarmed spare the server keeps for that tool.
+  // Each choice is sent only when explicit. The server resolves what is
+  // omitted from what this project last used (the agent, then its model and
+  // posture), so a bare create runs what the webapp's form would show — and
+  // matches the prewarmed spare the server keeps warmed as exactly that.
   const res = await api.worktree.create.$post({
     json: {
       project: projectSlug,

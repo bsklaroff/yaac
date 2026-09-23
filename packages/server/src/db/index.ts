@@ -74,14 +74,10 @@ export {
 export { closeDb, openDb } from './client'
 export { loadTokens, saveTokens, type TokenEntry, type TokenKind } from './token-store'
 export {
-  DEFAULT_TOOL_KEY,
   clearShortcutOverrides,
-  getDefaultTool,
   getGitIdentity,
   getShortcutOverrides,
   isSerializedChord,
-  isValidTool,
-  setDefaultToolChecked,
   setGitIdentity,
   setShortcutOverride,
 } from './preferences'
@@ -102,11 +98,11 @@ export {
 } from './project-env-store'
 export {
   deleteProjectRow,
-  getProjectLastPermissionMode,
   getProjectRow,
   listProjectRows,
   recordProject,
-  recordProjectPermissionMode,
+  recordProjectCreate,
+  type ProjectRow,
 } from './project-store'
 export {
   claimSpareWorktree,

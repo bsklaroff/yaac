@@ -1,5 +1,6 @@
 import { listEntries } from '#domain/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
+import { defaultModelFor, modelsForTool } from './models'
 import type {
   AgentTool,
   AuthListResult,
@@ -13,6 +14,9 @@ function maskKey(key: string): string {
 async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null> {
   const entry = await loadToolAuthEntry(tool)
   if (!entry) return null
+  const provider = entry.tool === 'opencode' ? entry.opencodeProvider
+    : entry.tool === 'pi' ? entry.piProvider
+    : undefined
   return {
     tool,
     kind: entry.kind,
@@ -23,12 +27,17 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
     // tool's optional fields at once.
     opencodeProvider: entry.tool === 'opencode' ? entry.opencodeProvider : undefined,
     piProvider: entry.tool === 'pi' ? entry.piProvider : undefined,
+    // What the create form offers for this credential: its provider decides
+    // the list for the tools whose ids carry one.
+    models: modelsForTool(tool, provider),
+    defaultModel: defaultModelFor(tool, provider),
   }
 }
 
 /**
  * Aggregate the masked view over git credentials and per-tool credentials
- * used by `yaac auth list`. Never returns the raw tokens, key bytes, or
+ * used by `yaac auth list` and the create form (which reads each configured
+ * tool's model list off it). Never returns the raw tokens, key bytes, or
  * API keys.
  */
 export async function listAuth(): Promise<AuthListResult> {

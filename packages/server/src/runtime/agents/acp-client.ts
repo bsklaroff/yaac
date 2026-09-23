@@ -123,7 +123,7 @@ export interface AcpConversationDeps {
    * — which reads as "tell it nothing": no mode is set and no model is sent,
    * leaving the adapter in its own default, which is the strict one.
    */
-  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'modelVia' | 'forwardAsksUnderBypass'>
+  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'forwardAsksUnderBypass'>
   /**
    * The model this conversation was launched to run, for an adapter that can
    * only be told one over the protocol. Sent once, after `session/new` —
@@ -774,15 +774,11 @@ export class AcpConversation {
   private async applyLaunchModel(): Promise<void> {
     const model = this.deps.launchModel
     if (model === undefined || this.sessionId === undefined) return
-    // Which request carries a model is the adapter's answer, not one
-    // spelling for everyone: opencode removed `session/set_model` in v2 and
-    // answers only the config option, while pi-acp implements the method.
-    const ask = this.deps.profile?.modelVia === 'set_config_option'
-      ? this.peer.request(ACP.sessionSetConfigOption,
-        { sessionId: this.sessionId, configId: 'model', value: model })
-      : this.peer.request(ACP.sessionSetModel, { sessionId: this.sessionId, modelId: model })
+    // As the `model` config option, the one route both adapters that take a
+    // model this way answer (see `AcpAdapterProfile.modelVia`).
     try {
-      await ask
+      await this.peer.request(ACP.sessionSetConfigOption,
+        { sessionId: this.sessionId, configId: 'model', value: model })
       this.notices.delete('model')
       this.log(`[server] acp: session model set to ${model}`)
     } catch (err) {

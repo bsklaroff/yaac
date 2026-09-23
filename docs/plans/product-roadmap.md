@@ -46,7 +46,7 @@ Make managing many agents fast and legible.
 - 🚧 Session lifecycle UI: delete (ConfirmDialog), restart, and rename
   shipped; open worktree in editor still pending
 - ✅ New-project flow (rail `+`) and project removal
-- 🚧 Settings → CLI parity: default tool, credentials listing, and GitHub
+- 🚧 Settings → CLI parity: credentials listing and GitHub
   token add shipped; Claude/Codex OAuth UI and the per-project config editor
   (Monaco) still pending
 - 🚧 States: strong empty + onboarding + reconnecting states shipped;

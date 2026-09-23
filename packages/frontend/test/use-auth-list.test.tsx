@@ -15,8 +15,11 @@ import { configuredTools, useAuthList } from '#lib/useAuthList'
 const LIST: AuthListResult = {
   gitCredentials: [],
   toolAuth: [
-    { tool: 'claude', kind: 'oauth', keyPreview: '***host', savedAt: '2026-01-01T00:00:00.000Z' },
-    { tool: 'opencode', kind: 'api-key', keyPreview: '***okey', savedAt: '2026-01-01T00:00:00.000Z', opencodeProvider: 'openrouter' },
+    { tool: 'claude', kind: 'oauth', keyPreview: '***host', savedAt: '2026-01-01T00:00:00.000Z', models: [], defaultModel: 'claude-opus-5-5' },
+    {
+      tool: 'opencode', kind: 'api-key', keyPreview: '***okey', savedAt: '2026-01-01T00:00:00.000Z', opencodeProvider: 'openrouter',
+      models: [], defaultModel: 'openrouter/moonshotai/kimi-k2.6',
+    },
   ],
 }
 

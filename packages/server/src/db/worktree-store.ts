@@ -6,6 +6,7 @@ import { agentSessions, worktreeAgentSessions, worktrees } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type {
+  AgentMode,
   PermissionMode,
   WorktreeDeathCause,
   WorktreeDeathReason,
@@ -70,6 +71,10 @@ export interface WorktreeRow {
   /** The permission posture its agents launch in — what a restart re-reads so
    *  it relaunches them the way the user asked. */
   permissionMode: PermissionMode
+  /** The model and agent mode its first agent launched with — what a spare
+   *  claim matches against. Absent on rows older than the columns. */
+  model?: string
+  mode?: AgentMode
 }
 
 /** Fields `recordWorktreeCreated` stamps on a fresh (or restarted) worktree. */
@@ -92,6 +97,9 @@ export interface WorktreeCreatedInput {
    *  from what the row already holds, so a worktree keeps the answer the
    *  user chose when they made it. */
   permissionMode?: PermissionMode
+  /** The model and agent mode its first agent launches with. */
+  model?: string
+  mode?: AgentMode
 }
 
 type Row = typeof worktrees.$inferSelect
@@ -112,6 +120,8 @@ function toRow(r: Row): WorktreeRow {
     ...(r.lifeStartedAt !== null ? { lifeStartedAt: r.lifeStartedAt } : {}),
     lifeLogBytes: r.lifeLogBytes,
     permissionMode: r.permissionMode as PermissionMode,
+    ...(r.model !== null ? { model: r.model } : {}),
+    ...(r.mode !== null ? { mode: r.mode as AgentMode } : {}),
   }
 }
 
@@ -151,6 +161,8 @@ export async function recordWorktreeCreated(input: WorktreeCreatedInput): Promis
     // worktree looking reapable). A fresh row takes the column default.
     ...(input.spare === true ? { spare: true } : {}),
     ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.mode !== undefined ? { mode: input.mode } : {}),
   }
   await db.insert(worktrees)
     .values({

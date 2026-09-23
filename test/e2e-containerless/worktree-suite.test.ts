@@ -21,8 +21,9 @@ import {
   workspaceHome,
 } from '@yaac/server/drivers/containerless/paths'
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
+import { defaultModelFor } from '@yaac/server/domain/auth'
 import { ACP_ADAPTERS, AGENT_TOOLS, toolSupportsPermissionMode } from '@yaac/shared/types'
-import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
+import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 import { PLACEHOLDER_GH_TOKEN } from '@yaac/shared/tool-auth'
 
@@ -421,6 +422,17 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // driver derives — not a pod, and not the developer's own tmux.
     const windows = await tmux(worktreeId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
+
+    // Every create names a model — here the pinned fallback, nothing being
+    // remembered for the project yet — so the conversation is named from its
+    // launch. The fake agent never answers, so this is the launch's value,
+    // not anything a transcript reported.
+    const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
+    const { worktrees } = await res.json() as {
+      worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
+    }
+    expect(worktrees.find((w) => w.worktreeId === worktreeId)?.agentSessions[0])
+      .toMatchObject({ model: FALLBACK_MODELS.claude, modelName: 'Opus 5.5' })
   }, 120_000)
 
   it('gives the worktree a real checkout on the host, which is what the agent sees', async () => {
@@ -1171,11 +1183,14 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
       posture: 'plan',
       modeId: 'plan',
       launch: ['OPENCODE_CONFIG_CONTENT=', '-- opencode acp'],
-      model: 'e2e-model',
+      // Every create names a model, and opencode's adapter is told it after
+      // the handshake (`session/set_config_option`) — so, like pi below,
+      // the row ends on the launch's model rather than the handshake's.
+      model: defaultModelFor('opencode', undefined),
     },
     {
-      // pi takes no model at launch, so the provider default reaches it as a
-      // `session/set_model` after the handshake — and the row shows THAT,
+      // pi takes no model at launch, so the provider default reaches it as the
+      // `model` config option after the handshake — and the row shows THAT,
       // because the record's later answer is the true one. This is the whole
       // round trip: without it a pi worktree runs whatever pi's shared
       // settings name, against a provider whose key the proxy never swapped.

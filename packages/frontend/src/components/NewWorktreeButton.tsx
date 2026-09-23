@@ -1,26 +1,23 @@
-import { useEffect, useRef, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Popover } from '@base-ui/react/popover'
 import clsx from 'clsx'
 import { AddIcon, PinIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
-import { createWorktree } from '#lib/createWorktree'
+import { Typeahead } from '#components/ui/Typeahead'
 import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type ProjectBranches } from '#lib/projectApi'
-import { useProvisionWorktree } from '#lib/useProvisionWorktree'
-import { randomUUID } from '#lib/uuid'
-import { AUTH_LIST_KEY, configuredTools, useAuthList } from '#lib/useAuthList'
+import { AUTH_LIST_KEY } from '#lib/useAuthList'
+import { useCreateDefaults, useCreateWorktree } from '#lib/useCreateDefaults'
 import { useUiStore } from '#store'
 import { useSnapshot } from '#lib/useSnapshot'
 import {
-  defaultPermissionMode,
+  AGENT_TOOLS,
+  MODEL_RE,
   PERMISSION_MODE_COPY,
-  PERMISSION_MODES,
-  SUPPORTED_PERMISSION_MODES,
+  supportedPermissionModes,
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
-
-const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
+import type { AgentMode, AgentTool, PermissionMode, ToolCreateDefaults } from '@yaac/shared/types'
 
 /** Hover copy for the posture the dropdown is currently showing. */
 const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
@@ -32,34 +29,44 @@ const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
   plan: 'The agent explores and plans read-only; it cannot edit until you approve a plan.',
   manual: 'The agent asks before every action.',
 }
-const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 text-xs outline-none '
-  + 'text-text-dim hover:bg-surface-3 hover:text-text'
+
+const MODE_COPY: Record<AgentMode, string> = { tui: 'Terminal', acp: 'Chat' }
+const MODE_HELP: Record<AgentMode, string> = {
+  tui: 'The agent\'s own terminal UI, in a terminal pane.',
+  acp: 'The agent driven over the Agent Client Protocol, in a chat pane.',
+}
+
+const SELECT = 'min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-1 py-0.5 text-[11px] text-text '
+  + 'outline-none hover:bg-surface-3'
 
 /**
  * "+ New worktree" for the active project: a popover with a branch picker
  * (typeahead over the remote's branches, prefilled with the project's
- * default) above the tool list. Picking a tool fires the create — on the
- * chosen branch — and the popover closes immediately; a provisioning row
- * appears in the sidebar and is auto-opened so progress streams into the
- * main pane. The id is generated up front so the row is selectable and
- * survives a reload.
+ * default), then the agent, its model, its permission posture and its UI,
+ * and a Create button — Enter anywhere but on a button does the same. The
+ * popover closes on create; a provisioning row appears in the sidebar and is
+ * auto-opened so progress streams into the main pane.
+ *
+ * Every field opens on what an untouched create would run: the agent this
+ * project was last created with, and that agent's last model, posture and UI
+ * (`useCreateDefaults`). Changing the agent reloads the other three from its
+ * own memory. Create sends all of them, so they become the next defaults.
  *
  * The branch is sent only when it differs from the project's default
- * resolution, so a default create claims a prewarmed spare with zero prep.
- * The pin persists the picked branch as the project default
+ * resolution. The pin persists the picked branch as the project default
  * (`referenceBranch` in yaac-config.json) for future creates and shortcuts.
  *
- * Tools without a stored credential can't create: their item reads "Sign in"
- * and opens settings → credentials with that tool's form expanded instead.
+ * An agent without a stored credential can't create: picking it turns the
+ * button into "Sign in", which opens settings → credentials on that agent.
  */
 export function NewWorktreeButton(
   { projectSlug, variant = 'icon' }: { projectSlug: string; variant?: 'icon' | 'cta' },
 ): JSX.Element {
-  const provision = useProvisionWorktree()
-  const auth = useAuthList()
-  const configured = configuredTools(auth)
+  const defaults = useCreateDefaults(projectSlug)
+  const createWorktree = useCreateWorktree()
   const openSettings = useUiStore((s) => s.openSettings)
   const queryClient = useQueryClient()
+  const driver = useSnapshot()?.driver
 
   const [open, setOpen] = useState(false)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -67,26 +74,19 @@ export function NewWorktreeButton(
   const [branchInput, setBranchInput] = useState<string | null>(null)
   const [pinPending, setPinPending] = useState(false)
   const [pinError, setPinError] = useState<string | null>(null)
-  // The posture picked in THIS popover, or `undefined` while untouched —
-  // which stays undefined rather than being resolved here, for two reasons.
-  // A create then OMITS the field, so the server applies the resolution it
-  // owns (this project's last choice, else the per-driver default), and the
-  // memory lives there rather than in this browser. And the displayed value
-  // is derived at RENDER: `useSnapshot()` is undefined until the first events
-  // frame lands, so an initializer would read a containerless server as
-  // sandboxed and show the wrong default for the life of the component.
-  const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(undefined)
-  const snapshot = useSnapshot()
-  const driver = snapshot?.driver
-  // What the server WOULD pick, mirrored so the dropdown shows the posture a
-  // create would actually run in. `defaultPermissionMode` is the same
-  // function the server resolves with, and the tool is not known until one is
-  // clicked — claude is the list's first and the server's own fallback, so it
-  // stands in for "what this form would do if submitted now".
-  const remembered = snapshot?.projects.find((p) => p.slug === projectSlug)?.lastPermissionMode
-  const modeShown = permissionMode
-    ?? remembered
-    ?? (driver !== undefined ? defaultPermissionMode(driver, 'claude') : 'bypass')
+  // What was picked in THIS popover; anything unpicked shows the default.
+  const [toolPick, setToolPick] = useState<AgentTool | undefined>(undefined)
+  const [picks, setPicks] = useState<ToolCreateDefaults>({})
+  // null = not editing: the model field shows the chosen model's name.
+  const [modelQuery, setModelQuery] = useState<string | null>(null)
+
+  const tool = toolPick ?? defaults.lastTool
+  const base = defaults.forTool(tool)
+  const model = picks.model ?? base.model
+  const mode = picks.mode ?? base.mode
+  const permissionMode = picks.permissionMode ?? base.permissionMode
+  const modelName = base.models.find((m) => m.id === model)?.name
+  const signedIn = defaults.configured.has(tool)
 
   const branchesKey = projectBranchesKey(projectSlug)
   const { data: branchData } = useQuery({
@@ -111,14 +111,50 @@ export function NewWorktreeButton(
   const branchValue = (branchInput ?? defaultResolved ?? '').trim()
   const isDefault = branchValue === (defaultResolved ?? '')
 
-  const create = (tool: AgentTool, mode: AgentMode = 'tui'): void => {
-    const worktreeId = randomUUID()
-    const branch = branchValue && !isDefault ? branchValue : undefined
-    setOpen(false)
-    provision(projectSlug, tool, 'create', worktreeId,
-      (sid, onProgress, retryOpts) =>
-        createWorktree(projectSlug, tool, onProgress, sid, branch, mode, permissionMode,
-          retryOpts?.installMissingTool))
+  const onOpenChange = (next: boolean): void => {
+    setOpen(next)
+    if (!next) {
+      // Reset per-open state so the next open starts from the defaults —
+      // which include whatever was just created, since a create records them.
+      setBranchInput(null)
+      setPinError(null)
+      setToolPick(undefined)
+      setPicks({})
+      setModelQuery(null)
+    }
+  }
+
+  // Why Create cannot run right now, or null when it can. Mid-edit model text
+  // blocks it: it is a search, not a pick, and creating with the previous
+  // model instead would not be what the field shows.
+  const blocked = !defaults.ready ? 'Loading…'
+    : modelQuery !== null ? 'Pick a model from the list'
+    : !toolSupportsPermissionMode(tool, permissionMode, mode) ? 'Pick a permission mode this UI offers'
+    : null
+
+  const submit = (): void => {
+    if (!signedIn) {
+      onOpenChange(false)
+      openSettings('credentials', tool)
+      return
+    }
+    if (blocked !== null) return
+    onOpenChange(false)
+    createWorktree(projectSlug, tool, {
+      model,
+      ...(modelName !== undefined ? { modelName } : {}),
+      permissionMode,
+      mode,
+    }, branchValue && !isDefault ? branchValue : undefined)
+  }
+
+  // Enter anywhere in the popover creates — except on a button, which has its
+  // own Enter (the pin, a suggestion row, Create itself). A highlighted
+  // suggestion takes Enter before it gets here (see Typeahead).
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.target instanceof HTMLButtonElement) return
+    e.preventDefault()
+    submit()
   }
 
   const pinAsDefault = (): void => {
@@ -137,17 +173,9 @@ export function NewWorktreeButton(
       .finally(() => setPinPending(false))
   }
 
-  const onOpenChange = (next: boolean): void => {
-    setOpen(next)
-    if (!next) {
-      // Reset per-open state so the next open starts from the default.
-      // The posture is reset too, but nothing is lost: an explicit pick was
-      // recorded server-side as the project's default, so the next open shows
-      // it again through `remembered`.
-      setBranchInput(null)
-      setPinError(null)
-      setPermissionMode(undefined)
-    }
+  const pickModel = (id: string): void => {
+    setPicks((p) => ({ ...p, model: id }))
+    setModelQuery(null)
   }
 
   return (
@@ -179,10 +207,11 @@ export function NewWorktreeButton(
           <Popover.Popup
             ref={popupRef}
             // Focus the popup itself, not the branch input — a blinking text
-            // cursor on every open is distracting. Focus stays inside the
-            // dialog so Escape/Tab and focus-return still work.
+            // cursor on every open is distracting, and it is what makes
+            // "open, Enter" a create with every default.
             initialFocus={() => popupRef.current}
-            className="w-[240px] rounded-lg border border-border bg-surface-2 p-1 text-text
+            onKeyDown={onKeyDown}
+            className="w-[280px] rounded-lg border border-border bg-surface-2 p-1 text-text
             shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
             data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
             <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">New worktree</div>
@@ -217,87 +246,129 @@ export function NewWorktreeButton(
               belowInput={pinError && <div className="px-2 pb-1 text-[11px] text-[#d65858]">{pinError}</div>}
             />
 
-            <label
-              className="mx-1 mb-1 flex cursor-default flex-col gap-1 rounded-md px-1 py-1
-                text-[11px] text-text-dim"
-              title={PERMISSION_MODE_HELP[modeShown]}
-            >
-              <span className="flex items-center gap-2">
-                Permissions
-                <select
-                  value={modeShown}
-                  onChange={(e) => setPermissionMode(e.target.value as PermissionMode)}
-                  className="flex-1 rounded-md border border-border bg-surface-2 px-1 py-0.5
-                    text-[11px] text-text outline-none hover:bg-surface-3"
-                >
-                  {PERMISSION_MODES.map((m) => (
-                    <option key={m} value={m}>{PERMISSION_MODE_COPY[m]}</option>
-                  ))}
-                </select>
-              </span>
-              {modeShown === 'bypass' && driver === 'containerless' && (
-                <span className="text-text-faint">no sandbox — acts as you</span>
-              )}
-            </label>
-
-            <div className="mx-1 mb-1 border-t border-border" />
-            {/* A tool that has no such posture is shown but not clickable:
-                the posture is picked before the tool, so the honest signal is
-                which tools can honor the one already chosen (pi, having no
-                permission system at all, only ever offers `bypass`). */}
-            {TOOLS.map((t) => configured.has(t) ? (
-              <div key={t} className="flex items-center">
-                <button
-                  type="button"
-                  className={clsx(ITEM, 'flex-1', !toolSupportsPermissionMode(t, modeShown)
-                    && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-text-dim')}
-                  disabled={!toolSupportsPermissionMode(t, modeShown)}
-                  title={toolSupportsPermissionMode(t, modeShown)
-                    ? undefined
-                    : `${TOOL_LABEL[t]} has no ${PERMISSION_MODE_COPY[modeShown].toLowerCase()} mode`}
-                  onClick={() => create(t)}
-                >
-                  {TOOL_LABEL[t]}
-                  {!toolSupportsPermissionMode(t, modeShown) && (
-                    <span className="ml-auto pl-3 text-[11px] text-text-faint">
-                      {SUPPORTED_PERMISSION_MODES[t].length === 1
-                        ? `${PERMISSION_MODE_COPY[SUPPORTED_PERMISSION_MODES[t][0]].toLowerCase()} only`
-                        : `${modeShown} mode unsupported`}
-                    </span>
-                  )}
-                </button>
-                {/* The same tool, driven over ACP instead of its TUI: the
-                    worktree opens with a chat pane rather than a terminal.
-                    Every tool has an adapter, so what gates this is the
-                    posture alone — against the ACP column, which is a
-                    different answer from the TUI button's: an adapter offers
-                    fewer postures than its CLI (codex-acp has no plan mode),
-                    so under `plan` codex is a terminal worktree only. */}
-                {toolSupportsPermissionMode(t, modeShown, 'acp') && (
-                  <button
-                    type="button"
-                    title={`Run ${TOOL_LABEL[t]} as a chat pane (Agent Client Protocol)`}
-                    className="mr-1 rounded-md px-2 py-1 text-[11px] text-text-faint outline-none transition hover:bg-surface-3 hover:text-accent"
-                    onClick={() => create(t, 'acp')}
-                  >
-                    chat
-                  </button>
-                )}
-              </div>
-            ) : (
-              <button
-                key={t}
-                type="button"
-                className={ITEM}
-                onClick={() => { setOpen(false); openSettings('credentials', t) }}
+            <Row label="Agent">
+              <select
+                aria-label="Agent"
+                value={tool}
+                onChange={(e) => {
+                  // Another agent brings its own memory for the other three.
+                  setToolPick(e.target.value as AgentTool)
+                  setPicks({})
+                  setModelQuery(null)
+                }}
+                className={SELECT}
               >
-                <span className="text-text-faint">{TOOL_LABEL[t]}</span>
-                <span className="ml-auto pl-3 text-[11px] text-accent">Sign in</span>
+                {AGENT_TOOLS.map((t) => (
+                  <option key={t} value={t}>
+                    {TOOL_LABEL[t]}{defaults.configured.has(t) ? '' : ' (sign in)'}
+                  </option>
+                ))}
+              </select>
+            </Row>
+
+            {signedIn ? (
+              <>
+                <Row label="Model">
+                  <div className="min-w-0 flex-1">
+                    <Typeahead
+                      items={base.models.map((m) => ({
+                        value: m.id,
+                        label: m.name ?? m.id,
+                        ...(m.name !== undefined ? { detail: m.id } : {}),
+                      }))}
+                      query={modelQuery ?? modelName ?? model}
+                      onQueryChange={setModelQuery}
+                      onSelect={pickModel}
+                      showList={modelQuery !== null}
+                      ariaLabel="Model"
+                      autoHighlight
+                      freeEntry={(text) => MODEL_RE.test(text)
+                        ? { value: text, label: `Use "${text}" as a model id` }
+                        : null}
+                      tag={(item) => item.value === base.defaultModel && <span>default</span>}
+                      onBlur={() => setModelQuery(null)}
+                    />
+                  </div>
+                </Row>
+
+                <Row label="Permissions" title={PERMISSION_MODE_HELP[permissionMode]}>
+                  <select
+                    aria-label="Permissions"
+                    value={permissionMode}
+                    onChange={(e) => setPicks((p) => ({ ...p, permissionMode: e.target.value as PermissionMode }))}
+                    className={SELECT}
+                  >
+                    {/* The terminal UI's postures are a superset of the chat
+                        adapter's, so the list is per agent and a posture the
+                        chosen UI lacks is shown but not pickable. */}
+                    {supportedPermissionModes(tool, 'tui').map((m) => {
+                      const offered = toolSupportsPermissionMode(tool, m, mode)
+                      return (
+                        <option key={m} value={m} disabled={!offered}>
+                          {PERMISSION_MODE_COPY[m]}{offered ? '' : ' (terminal only)'}
+                        </option>
+                      )
+                    })}
+                  </select>
+                </Row>
+                {permissionMode === 'bypass' && driver === 'containerless' && (
+                  <div className="-mt-1 mb-1 pl-[92px] text-[11px] text-text-faint">no sandbox — acts as you</div>
+                )}
+
+                <Row label="UI" title={MODE_HELP[mode]}>
+                  <select
+                    aria-label="UI"
+                    value={mode}
+                    onChange={(e) => setPicks((p) => ({ ...p, mode: e.target.value as AgentMode }))}
+                    className={SELECT}
+                  >
+                    {(['tui', 'acp'] as const).map((m) => {
+                      // An adapter can offer fewer postures than its CLI
+                      // (codex-acp has no plan mode), so the chat UI is only
+                      // pickable under a posture it has.
+                      const offered = toolSupportsPermissionMode(tool, permissionMode, m)
+                      return (
+                        <option key={m} value={m} disabled={!offered}>
+                          {MODE_COPY[m]}
+                          {offered ? '' : ` (no ${PERMISSION_MODE_COPY[permissionMode].toLowerCase()})`}
+                        </option>
+                      )
+                    })}
+                  </select>
+                </Row>
+              </>
+            ) : (
+              <div className="mx-1 mb-1 px-1 py-1 text-[11px] text-text-faint">
+                {TOOL_LABEL[tool]} has no credentials
+              </div>
+            )}
+
+            <div className="p-1">
+              <button
+                type="button"
+                onClick={submit}
+                disabled={signedIn && blocked !== null}
+                title={signedIn ? blocked ?? undefined : undefined}
+                className="w-full rounded-md bg-accent px-2 py-1.5 text-xs font-medium text-white outline-none
+                  transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {signedIn ? 'Create' : `Sign in to ${TOOL_LABEL[tool]}…`}
               </button>
-            ))}
+            </div>
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
     </Popover.Root>
+  )
+}
+
+/** One field of the form: a fixed label column, then the control (which
+ *  carries its own aria-label). */
+function Row({ label, title, children }: { label: string; title?: string; children: ReactNode }): JSX.Element {
+  return (
+    <div className="mx-1 mb-1 flex items-start gap-2 px-1 py-0.5 text-[11px] text-text-dim" title={title}>
+      <span className="w-[76px] shrink-0 pt-1">{label}</span>
+      {children}
+    </div>
   )
 }

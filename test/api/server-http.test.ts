@@ -89,12 +89,6 @@ describe('yaac server HTTP surface (real server)', () => {
     expect(body.error.code).toBe('NOT_FOUND')
   })
 
-  it('GET /tool/get returns {tool:null} when no default is configured', async () => {
-    const res = await client.tool.get.$get()
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ tool: null })
-  })
-
   it('GET /auth/list returns empty arrays when nothing is configured', async () => {
     const res = await client.auth.list.$get()
     expect(res.status).toBe(200)
