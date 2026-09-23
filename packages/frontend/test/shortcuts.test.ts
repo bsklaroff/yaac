@@ -17,6 +17,7 @@ import {
   mergeBindings,
   resolveCycleTarget,
   saveChord,
+  textSizeStep,
   UNBOUND,
   validateChord,
   type Chord,
@@ -209,10 +210,34 @@ describe('validateChord', () => {
 
   it('refuses the platform’s find chord too', () => {
     expect(validateChord(chord('KeyF', { alt: false, meta: true }), DEFAULT_BINDINGS, 'open-files', true))
-      .toEqual({ ok: false, reason: 'Reserved for find in changes.' })
+      .toEqual({ ok: false, reason: 'Reserved for find.' })
     expect(validateChord(chord('KeyF', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'open-files', true).ok)
       .toBe(true)
     expect(findChord(false)).toEqual(chord('KeyF', { alt: false, ctrl: true }))
+  })
+
+  it('refuses the text-size chords, and drops a stored override naming one', () => {
+    for (const code of ['Equal', 'Minus', 'Digit0', 'NumpadAdd']) {
+      expect(validateChord(chord(code, { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'open-files', false))
+        .toEqual({ ok: false, reason: 'Reserved for text size.' })
+    }
+    expect(validateChord(chord('Equal', { alt: false, ctrl: true, shift: true }), DEFAULT_BINDINGS, 'open-files', false).ok)
+      .toBe(false)
+    expect(validateChord(chord('Equal', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'open-files', true).ok).toBe(true)
+    expect(mergeBindings({ 'open-files': chord('Minus', { alt: false, meta: true }) }, true)['open-files'])
+      .toEqual(DEFAULT_BINDINGS['open-files'])
+  })
+
+  it('reads the text-size keys by character, so they follow the layout', () => {
+    const ctrl = { altKey: false, ctrlKey: true, metaKey: false }
+    expect(textSizeStep({ ...ctrl, key: '=' }, false)).toBe(1)
+    expect(textSizeStep({ ...ctrl, key: '+' }, false)).toBe(1) // QWERTZ, or Shift+=
+    expect(textSizeStep({ ...ctrl, key: '-' }, false)).toBe(-1) // AZERTY's Digit6
+    expect(textSizeStep({ ...ctrl, key: '0' }, false)).toBe(0)
+    expect(textSizeStep({ ...ctrl, key: 'ß' }, false)).toBeNull() // QWERTZ's Minus key
+    expect(textSizeStep({ ...ctrl, key: '=', altKey: true }, false)).toBeNull()
+    expect(textSizeStep({ ...ctrl, key: '=' }, true)).toBeNull() // Cmd on a Mac, not Ctrl
+    expect(textSizeStep({ altKey: false, ctrlKey: false, metaKey: true, key: '=' }, true)).toBe(1)
   })
 
   it('allows rebinding a command to its own current chord', () => {

@@ -17,6 +17,7 @@ const SOUND_LS_KEY = 'yaac.sound.v1'
 const CHAT_DRAFTS_LS_KEY = 'yaac.chatdrafts.v1'
 const MOBILE_SCREEN_LS_KEY = 'yaac.mobilescreen.v1'
 const SIDEBAR_WIDTH_LS_KEY = 'yaac.sidebarwidth.v1'
+const EDITOR_FONT_LS_KEY = 'yaac.editorfontsize.v1'
 
 /** Desktop worktree-sidebar width, in px: the drag handle's resting place and
  *  the bounds it may be dragged between. The floor keeps a row's name and its
@@ -68,6 +69,23 @@ export function persistSoundEnabled(enabled: boolean): void {
   } catch { /* non-fatal */ }
 }
 
+/** File-pane editor font size, in px, and the range the A−/A+ steps stay in. */
+export const DEFAULT_EDITOR_FONT_SIZE = 12
+export const MIN_EDITOR_FONT_SIZE = 9
+export const MAX_EDITOR_FONT_SIZE = 24
+
+const clampEditorFontSize = (px: number): number =>
+  Math.min(MAX_EDITOR_FONT_SIZE, Math.max(MIN_EDITOR_FONT_SIZE, Math.round(px)))
+
+/** Persisted editor font size, clamped; the default when unset or unparseable
+ *  (exported for tests). */
+export function loadEditorFontSize(): number {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(EDITOR_FONT_LS_KEY) : null
+    if (raw && raw.trim() !== '' && Number.isFinite(Number(raw))) return clampEditorFontSize(Number(raw))
+  } catch { /* fall through to the default */ }
+  return DEFAULT_EDITOR_FONT_SIZE
+}
 
 /**
  * Which of the three mobile screens is showing. Below the mobile breakpoint
@@ -572,6 +590,10 @@ interface UiState {
   /** Whether the attention chime plays when a worktree flips to waiting. */
   soundEnabled: boolean
   setSoundEnabled: (enabled: boolean) => void
+  /** File-pane editor font size in px, shared by every file pane. Persisted;
+   *  the setter clamps to MIN/MAX_EDITOR_FONT_SIZE. */
+  editorFontSize: number
+  setEditorFontSize: (px: number) => void
   /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
    *  to tabs). The layout tree stays canonical in both modes. */
   viewMode: ViewMode
@@ -778,6 +800,7 @@ export const useUiStore = create<UiState>((set) => ({
   setMobileScreen: (screen) => set((s) => (s.mobileScreen === screen ? s : { mobileScreen: screen })),
   themePref: loadThemePref(),
   soundEnabled: loadSoundEnabled(),
+  editorFontSize: loadEditorFontSize(),
   viewMode: loadViewMode(),
   pinnedUsageMetric: loadPinnedUsageMetric(),
   activeTabs: {},
@@ -918,6 +941,13 @@ export const useUiStore = create<UiState>((set) => ({
   setSoundEnabled: (enabled) => {
     persistSoundEnabled(enabled)
     set({ soundEnabled: enabled })
+  },
+  setEditorFontSize: (px) => {
+    const size = clampEditorFontSize(px)
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(EDITOR_FONT_LS_KEY, String(size))
+    } catch { /* non-fatal — the size just won't stick */ }
+    set({ editorFontSize: size })
   },
   setViewMode: (mode) => {
     persistViewMode(mode)

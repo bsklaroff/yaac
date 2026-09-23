@@ -6,8 +6,10 @@ import { Menu } from '@base-ui/react/menu'
 import type { FileStatus, SymlinkTarget } from '@yaac/shared/types'
 import { paneViewKey, useUiStore } from '#store'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { PathLabel } from '#components/ui/PathLabel'
 import { FILE_STATUS } from '#lib/gitStatus'
+import { languageForPath } from '#lib/highlight'
+import { formatChord } from '#lib/shortcuts'
+import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
 import {
   FILES_TARGET,
@@ -29,12 +31,38 @@ import {
   type TreeNode,
 } from '#lib/files'
 import {
-  ChevronIcon, FileIcon, FolderIcon, FolderOpenIcon, HideIcon, LoadingIcon, MoreIcon, NewFileIcon,
+  ChevronIcon, CollapseAllIcon, FileCodeIcon, FileConfigIcon, FileIcon, FileImageIcon, FileJsonIcon,
+  FileShellIcon, FileTextIcon, FolderIcon, FolderOpenIcon, HideIcon, LoadingIcon, MoreIcon, NewFileIcon,
   NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, WarningIcon,
 } from '#lib/icons'
 
 /** The most matches the filter lists. */
 const MAX_MATCHES = 200
+
+/** Left padding of a row at `depth`; a guide sits under its chevron. */
+const indent = (depth: number): number => 6 + depth * 12
+
+const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i
+
+/** A file's icon and tint, by what kind of file its name says it is. */
+function fileIcon(path: string): { Icon: typeof FileIcon; className: string } {
+  if (IMAGE.test(path)) return { Icon: FileImageIcon, className: 'text-[#a371f7]' }
+  const language = languageForPath(path)
+  switch (language) {
+    case null: {
+      const base = path.slice(path.lastIndexOf('/') + 1)
+      return base.startsWith('.') || base.endsWith('.lock')
+        ? { Icon: FileConfigIcon, className: 'text-text-faint' }
+        : { Icon: FileIcon, className: 'text-text-faint' }
+    }
+    case 'md': return { Icon: FileTextIcon, className: 'text-[#58a6ff]' }
+    case 'json': return { Icon: FileJsonIcon, className: 'text-[#d29922]' }
+    case 'yaml': case 'toml': case 'xml': case 'dockerfile':
+      return { Icon: FileConfigIcon, className: 'text-[#a371f7]' }
+    case 'shell': return { Icon: FileShellIcon, className: 'text-[#3fb950]' }
+    default: return { Icon: FileCodeIcon, className: 'text-[#58a6ff]' }
+  }
+}
 
 /**
  * One row of the tree. `path` is the path as displayed — under a folder
@@ -87,6 +115,7 @@ export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Eleme
   const view = useUiStore((s) => s.paneView[viewKey])
   const setPaneView = useUiStore((s) => s.setPaneView)
   const openFile = useUiStore((s) => s.openFile)
+  const bindings = useUiStore((s) => s.bindings)
   const expanded = useMemo(() => new Set(view?.expanded ?? []), [view?.expanded])
   const showIgnored = view?.showIgnored === true
   const find = view?.find ?? ''
@@ -111,6 +140,16 @@ export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Eleme
   const findPending = useUiStore((s) => s.filesFindPending)
   const setFindPending = useUiStore((s) => s.setFilesFindPending)
   const findRef = useRef<HTMLInputElement | null>(null)
+  // The highlighted quick-open result: arrows move it, Enter opens it.
+  const [active, setActive] = useState(0)
+  const setFind = (query: string): void => {
+    setActive(0)
+    setPaneView(viewKey, { find: query })
+  }
+  const matchesRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    matchesRef.current?.querySelector('[data-active]')?.scrollIntoView({ block: 'nearest' })
+  }, [active])
   useEffect(() => {
     if (!findPending || !findRef.current) return
     setFindPending(false)
@@ -286,7 +325,7 @@ export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Eleme
   }
 
   const input = (initial: string, depth: number): JSX.Element => (
-    <div style={{ paddingLeft: 8 + depth * 12 }} className="py-0.5 pr-2">
+    <div style={{ paddingLeft: indent(depth) }} className="py-0.5 pr-2">
       <InlineInput
         initial={initial}
         onCommit={(v) => void commitEdit(v)}
@@ -341,50 +380,64 @@ export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Eleme
     </>
   )
 
+  const count = data.paths.length.toLocaleString()
   const header = (
-    <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-hairline px-2 text-[11px] text-text-dim">
-      <span className="shrink-0">
-        {find ? `${matches.length}${matches.length === MAX_MATCHES ? '+' : ''} of ${data.paths.length}` : `${data.paths.length} files`}
-      </span>
-      {data.truncated && <span className="shrink-0 text-text-faint" title="Only the first 50,000 paths are listed.">truncated</span>}
-      <div className="ml-auto flex min-w-0 items-center gap-0.5">
-        <SearchIcon size={11} className="shrink-0 text-text-faint" />
+    <div className="flex h-8 shrink-0 items-center gap-1 border-b border-hairline px-1.5 text-[11px] text-text-dim">
+      <label className="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded border border-border bg-bg pl-1.5 pr-1
+        transition focus-within:border-border-strong">
+        <SearchIcon size={12} className="shrink-0 text-text-faint" />
         <input
           ref={findRef}
           value={find}
-          onChange={(e) => setPaneView(viewKey, { find: e.target.value })}
+          onChange={(e) => setFind(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && matches[0]) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               e.preventDefault()
-              openFile(worktreeId, matches[0])
+              const step = e.key === 'ArrowDown' ? 1 : -1
+              setActive((i) => Math.min(Math.max(i + step, 0), Math.max(matches.length - 1, 0)))
+              return
+            }
+            if (e.key === 'Enter' && matches[active]) {
+              e.preventDefault()
+              openFile(worktreeId, matches[active])
               return
             }
             if (e.key !== 'Escape') return
             // First Escape clears the filter, a second one leaves the box.
             e.stopPropagation()
-            if (find !== '') setPaneView(viewKey, { find: '' })
+            if (find !== '') setFind('')
             else e.currentTarget.blur()
           }}
-          placeholder="go to file"
+          placeholder="Go to file…"
+          title={`Go to file (${formatChord(bindings['open-files'], IS_MAC)})`}
           aria-label="Filter files"
           spellCheck={false}
-          className="w-24 min-w-0 rounded bg-transparent px-1 py-0.5 text-[11px] text-text outline-none
-            transition placeholder:text-text-faint focus:bg-surface-2"
+          className="min-w-0 flex-1 bg-transparent py-0.5 text-[11px] text-text outline-none placeholder:text-text-faint"
         />
-        <HeaderButton
-          label={showIgnored ? 'Hide ignored files' : 'Show ignored files'}
-          pressed={showIgnored}
-          onClick={() => setPaneView(viewKey, { showIgnored: !showIgnored })}
+        <span
+          className="shrink-0 tabular-nums text-text-faint"
+          title={data.truncated ? 'Only the first 50,000 paths are listed.' : undefined}
         >
-          {showIgnored ? <ShowIcon size={12} /> : <HideIcon size={12} />}
-        </HeaderButton>
-        <HeaderButton label="New file" onClick={() => startEdit({ kind: 'file', parent: createParent() })}>
-          <NewFileIcon size={12} />
-        </HeaderButton>
-        <HeaderButton label="New folder" onClick={() => startEdit({ kind: 'folder', parent: createParent() })}>
-          <NewFolderIcon size={12} />
-        </HeaderButton>
-      </div>
+          {find ? `${matches.length}${matches.length === MAX_MATCHES ? '+' : ''} of ${count}` : `${count} files`}
+          {data.truncated && '+'}
+        </span>
+      </label>
+      <HeaderButton
+        label={showIgnored ? 'Hide ignored files' : 'Show ignored files'}
+        pressed={showIgnored}
+        onClick={() => setPaneView(viewKey, { showIgnored: !showIgnored })}
+      >
+        {showIgnored ? <ShowIcon size={13} /> : <HideIcon size={13} />}
+      </HeaderButton>
+      <HeaderButton label="New file" onClick={() => startEdit({ kind: 'file', parent: createParent() })}>
+        <NewFileIcon size={13} />
+      </HeaderButton>
+      <HeaderButton label="New folder" onClick={() => startEdit({ kind: 'folder', parent: createParent() })}>
+        <NewFolderIcon size={13} />
+      </HeaderButton>
+      <HeaderButton label="Collapse all folders" onClick={() => setExpanded(new Set())}>
+        <CollapseAllIcon size={13} />
+      </HeaderButton>
     </div>
   )
 
@@ -397,22 +450,29 @@ export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Eleme
         </div>
       )}
       {find ? (
-        <div className="min-h-0 flex-1 overflow-y-auto py-0.5">
+        <div ref={matchesRef} role="listbox" aria-label="Matching files" className="min-h-0 flex-1 overflow-y-auto py-0.5">
           {matches.length === 0 && <p className="px-3 py-2 text-xs text-text-dim">No files match “{find}”</p>}
-          {matches.map((path) => {
+          {matches.map((path, i) => {
             const status = data.status[path]
-            const ignored = ignoredFiles.has(path)
+            const slash = path.lastIndexOf('/')
+            const { Icon, className } = fileIcon(path)
             return (
               <button
                 key={path}
+                role="option"
+                aria-selected={i === active}
+                data-active={i === active || undefined}
                 onClick={() => openFile(worktreeId, path)}
+                onMouseMove={() => { if (i !== active) setActive(i) }}
                 title={path}
-                className={clsx('flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-xs hover:bg-surface-2',
-                  ignored && 'opacity-50')}
+                className={clsx('flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-xs',
+                  i === active && 'bg-surface-2', ignoredFiles.has(path) && 'opacity-50')}
               >
-                <span className="min-w-0 flex-1 truncate">
-                  <PathLabel path={path} baseClassName={status ? FILE_STATUS[status].className : undefined} />
+                <Icon size={13} className={clsx('shrink-0', className)} />
+                <span className={clsx('shrink-0', status ? FILE_STATUS[status].className : 'text-text')}>
+                  {path.slice(slash + 1)}
                 </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">{path.slice(0, Math.max(slash, 0))}</span>
                 {status && <StatusBadge status={status} />}
               </button>
             )
@@ -469,7 +529,7 @@ function HeaderButton({ label, pressed, onClick, children }: {
       title={label}
       aria-label={label}
       aria-pressed={pressed}
-      className={clsx('flex h-5 w-5 shrink-0 items-center justify-center rounded transition hover:bg-surface-2 hover:text-text',
+      className={clsx('flex h-6 w-6 shrink-0 items-center justify-center rounded transition hover:bg-surface-2 hover:text-text',
         pressed ? 'text-text' : 'text-text-faint')}
     >
       {children}
@@ -498,7 +558,9 @@ function TreeRowView({
 }): JSX.Element {
   const broken = row.symlink !== undefined && row.symlink.target === null
   const meta = row.status && !row.ignored ? FILE_STATUS[row.status] : undefined
-  const Icon = row.dir ? (open ? FolderOpenIcon : FolderIcon) : FileIcon
+  const { Icon, className: iconClass } = row.dir
+    ? { Icon: open ? FolderOpenIcon : FolderIcon, className: 'text-accent/80' }
+    : fileIcon(row.name)
   return (
     <>
       {renaming ? renameInput : (
@@ -510,7 +572,7 @@ function TreeRowView({
             onClick={onClick}
             title={broken ? `${row.path} — broken link, or points outside the worktree` : row.path}
             aria-expanded={row.dir ? open : undefined}
-            style={{ paddingLeft: 8 + depth * 12 }}
+            style={{ paddingLeft: indent(depth) }}
             className={clsx('flex min-w-0 flex-1 items-center gap-1 py-0.5 pr-7 text-left text-xs hover:bg-surface-2',
               (row.ignored || broken) && 'opacity-50', broken && 'cursor-default')}
           >
@@ -518,8 +580,8 @@ function TreeRowView({
               size={11}
               className={clsx('shrink-0 text-text-faint transition-transform', !row.dir && 'invisible', open && 'rotate-90')}
             />
-            <Icon size={12} className="shrink-0 text-text-faint" />
-            <span className={clsx('min-w-0 truncate', meta?.className ?? (row.dir ? 'text-text-dim' : 'text-text'))}>
+            <Icon size={13} className={clsx('shrink-0', iconClass)} />
+            <span className={clsx('min-w-0 truncate', meta?.className ?? 'text-text')}>
               {row.name}
             </span>
             {row.symlink && <SymlinkIcon size={11} aria-label="symlink" className="shrink-0 text-text-faint" />}
@@ -539,7 +601,17 @@ function TreeRowView({
           </button>
         </div>
       )}
-      {children}
+      {children && (
+        <div className="relative">
+          {/* The guide line down the open folder's children, under its chevron. */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 w-px bg-border/60"
+            style={{ left: indent(depth) + 5 }}
+          />
+          {children}
+        </div>
+      )}
     </>
   )
 }

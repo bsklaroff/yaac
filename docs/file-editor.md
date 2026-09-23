@@ -160,7 +160,12 @@ listing; while visible it refetches every 5 seconds. Its view state
 `paneView`, which Changes shares.
 
 - Only rows under expanded folders render, so a large repo with folders
-  collapsed is a handful of nodes and needs no virtualization.
+  collapsed is a handful of nodes and needs no virtualization. Open folders
+  draw an indent guide, files take an icon and tint by kind (from
+  `languageForPath`), and the header's collapse-all empties `expanded`.
+- **Quick-open** replaces the tree while the filter has text: each result
+  reads basename first, folder after, and the arrow keys move a highlighted
+  result that Enter opens.
 - **Links** show a glyph; a broken or escaping one is dimmed and does not
   open. A folder link expands by re-rooting the listing under its target
   (`lib → src/lib` shows `src/lib/*` as `lib/*`), lazily, so a link to an
@@ -172,8 +177,8 @@ listing; while visible it refetches every 5 seconds. Its view state
   never walks into ignored folders.
 - **Create / rename / delete** go through an inline input (a name with `/`
   makes the folders along the way) opened from the header buttons or from a
-  row's menu — right-click, or the hover `⋯` for touch. There are no tree
-  key bindings. A rename first lands every affected pane's unsaved text (a
+  row's menu — right-click, or the hover `⋯` for touch. The tree itself has
+  no key bindings. A rename first lands every affected pane's unsaved text (a
   pane remounts under its new path) and is refused with "resolve unsaved
   changes first" if that cannot land. A delete cancels affected autosaves,
   confirms (counting a folder's files, noting a link is removed alone,
@@ -185,8 +190,36 @@ CodeMirror through `ui/CodeEditor`, with the language from the one table in
 `#lib/highlight` (`languageForPath` → `editorLanguage`, which the diff view
 parses with too) and a theme built on the app's CSS variables, whose `tok-*`
 colors the diff shares — so the editors, the settings editors and the diff
-match in both themes. Kept mounted while hidden, like a terminal: unmounting
-would drop undo history, cursor and unsaved text.
+match in both themes. Long lines wrap. Kept mounted while hidden, like a
+terminal: unmounting would drop undo history, cursor and unsaved text.
+
+- **Text size** is one store value (`editorFontSize`, default 12px,
+  persisted in localStorage) that every file pane shares. It is set the way
+  editors set it — Cmd/Ctrl =/−/0 while focus is in the pane, matched on the
+  character so the keys labelled +/− work on any layout, which then size the
+  text instead of zooming the page — or from the header's one "Aa"
+  button, a reader-app style − / size / + / Reset popover. Below the mobile
+  breakpoint index.css pins editor text at 16px (iOS zooms on focus into
+  anything smaller), so the button is hidden there.
+- **Find** is `ui/FindPanel`, CodeMirror's search panel redrawn as a small
+  React root: the query with a live "3 of 12" count inside it (as a
+  browser's find bar has it) and case / whole-word / regex toggles, previous /
+  next, and a replace row behind a chevron. The two rows share one grid, so
+  the fields line up and each row's buttons sit against its field; every
+  control has a tooltip saying what it does and its key.
+  Typing jumps to the first match from the cursor; Enter / Shift+Enter step,
+  Escape closes back into the editor without reaching `document` (a dialog
+  around a settings editor would close with it). Every `CodeEditor` gets it,
+  the settings editors included.
+- **The count never runs on the main thread.** Counting a 1 MiB file takes
+  ~0.1 s, and a regex that backtracks can take forever — a `RegExp.exec`
+  cannot be interrupted. So `MatchCounter` (`#lib/matchCount`) counts in a
+  Worker, debounced after typing and edits, and terminates it when a newer
+  count supersedes it or it runs past 1.5 s; the typing jump reads the
+  worker's matches. A regex goes one step further: CodeMirror's highlighter
+  and next / previous run it on the main thread, so a typed regex reaches
+  the editor's search state only once the worker has counted it in time.
+  One that times out stays in the bar as "Too slow to count".
 
 - **Polling** runs only while visible, every 2 seconds and at once on
   becoming visible, sending `known`. A clean buffer takes a new version as one
@@ -194,7 +227,8 @@ would drop undo history, cursor and unsaved text.
   dirty one keeps the user's text under a "Changed on disk: Reload ·
   Overwrite" banner.
 - **Saving** is one path with two triggers: 1 second after the last edit, or
-  at once on Cmd/Ctrl-S, the Save button, the pane hiding or losing focus,
+  at once on Cmd/Ctrl-S, the Save button (shown only while the buffer is
+  dirty), the pane hiding or losing focus,
   and the start of a close or rename. One save runs at a time; edits during
   it go out afterwards against the version it returned, so the pane never
   409s against itself, and a poll issued before a save landed is ignored.
@@ -218,8 +252,10 @@ would drop undo history, cursor and unsaved text.
   and keeps its browser meaning elsewhere. Because the workspace's shortcut
   listener runs first in the capture phase, `validateChord` refuses the
   platform's save chord and `mergeBindings` drops a stored override naming it.
-  The Changes pane's Cmd/Ctrl-F (jump to its find box) is fixed and reserved
-  the same way.
+  Cmd/Ctrl-F is fixed and reserved the same way: it opens the file pane's
+  find bar (from the header strip as well as the editor, as does the header's
+  search button) and jumps to the Changes pane's find box. So are the
+  text-size chords, Cmd/Ctrl =/−/0.
 
 Out of scope: preview tabs, per-column widths, LSP, collaborative cursors and
 search across files (the terminal has `rg`).

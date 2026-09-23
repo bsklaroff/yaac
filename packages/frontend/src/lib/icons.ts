@@ -70,6 +70,22 @@ export {
   EyeOff as HideIcon,
   Link2 as SymlinkIcon,
   Save as SaveIcon,
+  CaseSensitive as MatchCaseIcon,
+  WholeWord as WholeWordIcon,
+  Regex as RegexIcon,
+  Replace as ReplaceIcon,
+  ReplaceAll as ReplaceAllIcon,
+  ArrowUp as PrevMatchIcon,
+  ArrowDown as NextMatchIcon,
+  ALargeSmall as TextSizeIcon,
+  Minus as MinusIcon,
+  FileCode as FileCodeIcon,
+  FileBraces as FileJsonIcon,
+  FileText as FileTextIcon,
+  FileImage as FileImageIcon,
+  FileCog as FileConfigIcon,
+  FileTerminal as FileShellIcon,
+  ChevronsDownUp as CollapseAllIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

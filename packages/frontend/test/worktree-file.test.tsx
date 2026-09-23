@@ -158,6 +158,31 @@ describe('WorktreeFile', () => {
     expect(useUiStore.getState().dirtyFiles).toEqual({})
   })
 
+  it('shows Save only while there is something unsaved', async () => {
+    await mount()
+    const save = (): HTMLElement | null => screen.queryByRole('button', { name: 'Save' })
+    expect(save()).toBeNull()
+    type('changed')
+    expect(save()).toBeTruthy()
+    await tick(AUTOSAVE_MS)
+    expect(save()).toBeNull()
+  })
+
+  it('sizes the text with Ctrl =/−/0 instead of zooming the page', async () => {
+    useUiStore.setState({ editorFontSize: 12 })
+    await mount()
+    const key = (k: string): boolean => fireEvent.keyDown(editor(), { key: k, ctrlKey: true })
+    expect(key('=')).toBe(false)
+    expect(useUiStore.getState().editorFontSize).toBe(13)
+    key('-')
+    key('-')
+    expect(useUiStore.getState().editorFontSize).toBe(11)
+    expect(key('0')).toBe(false)
+    expect(useUiStore.getState().editorFontSize).toBe(12)
+    expect(fireEvent.keyDown(editor(), { key: '=', ctrlKey: true, altKey: true })).toBe(true)
+    expect(useUiStore.getState().editorFontSize).toBe(12)
+  })
+
   it('saves at once on Ctrl+S, from the editor or the focused Save button', async () => {
     await mount()
     type('first')
