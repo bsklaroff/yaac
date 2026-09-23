@@ -27,7 +27,8 @@ import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/install/check'
 // Setup value: the node end of the server's published port, which the
 // rendered kind config has to reserve.
-import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
+import { SERVER_FRONT_PORT, nodeLocalNodePath } from '#drivers/k8s/substrate'
+import { nodeLocalRoot } from '@yaac/shared/paths'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -558,6 +559,10 @@ describe('runClusterInstall', () => {
     expect(input.match(/^- role: control-plane$/gm)).toHaveLength(1)
     expect(input.match(/^- role: worker$/gm)).toHaveLength(2)
     expect(input.match(/hostPath: \/home\/tester$/gm)).toHaveLength(3)
+    // And the node-local bind rides the copies too: `<dataDir>/node-local`
+    // onto the install's node path, per node.
+    expect(input.match(new RegExp(`hostPath: ${nodeLocalRoot()}$`, 'gm'))).toHaveLength(3)
+    expect(input.match(new RegExp(`containerPath: ${nodeLocalNodePath()}$`, 'gm'))).toHaveLength(3)
     expect(input).not.toContain('$HOME')
     // Cluster-scoped wiring is NOT duplicated: kind applies it to every node.
     expect(input.match(/config_path/g)).toHaveLength(1)

@@ -58,7 +58,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     await requireCluster()
 
     testEnv = await createYaacTestEnv()
-    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
       tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }],
@@ -100,7 +100,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     // Stage the project as if `yaac project add` had cloned it (the
     // worktree-create-suite pattern: local bare repo, github-shaped remote).
     await seedMockGitRepo(mockGit, SLUG, { files: { 'README.md': '# demo\n' } })
-    const projectPath = path.join(testEnv.dataDir, 'projects', SLUG)
+    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit.reposDir, `${SLUG}.git`), repoPath, null)

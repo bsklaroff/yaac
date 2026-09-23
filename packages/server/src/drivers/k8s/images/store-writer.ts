@@ -78,15 +78,15 @@
  * ── One node today ───────────────────────────────────────────────────────
  *
  * The WRITE side is already per node: the ensure runs one pinned pod per
- * node, so a second node materializes its own generations. The READ side is
- * not — `listStoreGenerations` and `nodeImageStoreMount` enumerate the
- * SERVER's own filesystem, which is the same one the single local node
- * sees. Making this multi-node is the same shape the multi-node storage
- * plan already assumes for node-local caches: ask the node, not the server,
- * which generations it has, and choose the mount after the pod is
- * scheduled. Nothing about the layout or the triggers has to change for it,
- * and until then a project whose worktrees land on a second node simply
- * runs them cold there.
+ * node, each materializing the run's ONE generation name under that
+ * node's own tree (`nodeLocalHostPath`). The READ side is not —
+ * `listStoreGenerations` and `nodeImageStoreMount` enumerate the SERVER's
+ * own node-local mount, which is the server's node's tree, so a pod that
+ * lands on a node whose writer has not finished that generation yet
+ * mounts an empty directory there (`DirectoryOrCreate`) and runs its
+ * engine cold. Making this fully multi-node is the same shape the rest of
+ * the node-local tier assumes: ask the node, not the server, which
+ * generations it has, and choose the mount after the pod is scheduled.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -98,13 +98,15 @@ import {
   k8sNamespace,
   kubectlGetJson,
   kubectlWithRetry,
+  nodeLocalHostPath,
+  nodeLocalNodePath,
   runPodToCompletion,
   type PodMount,
 } from '#drivers/k8s/substrate'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { PROJECT_REGISTRY_PORT, projectRegistryClusterIp } from '#drivers/k8s/cluster'
 import { ensureBuilderImage } from '#drivers/k8s/cluster'
-import { imageStoreDir } from '@yaac/shared/project-paths'
+import { imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'
 
@@ -215,7 +217,10 @@ export async function nodeImageStoreMount(projectSlug: string): Promise<PodMount
   const [newest] = await listStoreGenerations(projectSlug)
   if (!newest) return undefined
   return {
-    source: { kind: 'hostPath', path: path.join(imageStoreDir(projectSlug), newest) },
+    // `DirectoryOrCreate`: on a node whose own writer has not produced
+    // this generation yet, the pod gets an empty directory and runs its
+    // engine cold (see the module doc) rather than sitting in FailedMount.
+    source: { kind: 'hostPath', path: path.join(imageStoreDir(projectSlug), newest), type: 'DirectoryOrCreate' },
     mountPath: SHARED_IMAGES_MOUNT,
     readOnly: true,
   }
@@ -574,20 +579,27 @@ export function buildStoreWriterPodManifest(params: {
       }],
       volumes: [{
         name: 'store',
-        hostPath: { path: imageStoreDir(projectSlug), type: 'DirectoryOrCreate' },
+        // The NODE path: the store's server-side path is under the
+        // node-local root, and this pod writes the node's own tree.
+        hostPath: { path: nodeLocalHostPath(imageStoreDir(projectSlug)), type: 'DirectoryOrCreate' },
       }],
     },
   }
 }
 
+/** Where the cleanup pod mounts the install's node-local tree. */
+const NODE_POD_PATH = '/node'
+
 /**
- * One-shot pod dropping a project's whole store from a node. Its contents
- * are root-owned, so the server cannot remove them itself — the same
- * reason the store lives outside the project tree the server `rm -rf`s
- * (see {@link imageStoreDir}). Mounts the PARENT so the project's own
- * directory can go, matching the registry cleanup pod.
+ * One-shot pod dropping a project's whole NODE-LOCAL tree from a node: its
+ * image store and its `projects/<slug>` (the pnpm store, the opencode
+ * working copies). The store's contents are root-owned, so the server
+ * cannot remove them itself — the same reason the store lives outside the
+ * project tree (see {@link imageStoreDir}) — and the rest lives on a node
+ * the server's filesystem does not reach. Mounts the install's node root,
+ * so both directories can go in one pass.
  */
-export function buildStoreCleanupPodManifest(params: {
+export function buildNodeLocalProjectCleanupPodManifest(params: {
   projectSlug: string
   imageRef: string
   nodeName: string
@@ -595,7 +607,9 @@ export function buildStoreCleanupPodManifest(params: {
   nodeIndex: number
 }): Record<string, unknown> {
   const { projectSlug, imageRef, nodeName, runId } = params
-  const dir = imageStoreDir(projectSlug)
+  const root = nodeLocalNodePath()
+  const targets = [imageStoreDir(projectSlug), nodeLocalProjectPath(projectSlug)]
+    .map((p) => `${NODE_POD_PATH}/${path.posix.relative(root, nodeLocalHostPath(p))}`)
   return {
     apiVersion: 'v1',
     kind: 'Pod',
@@ -615,13 +629,13 @@ export function buildStoreCleanupPodManifest(params: {
         name: 'remove',
         image: imageRef,
         imagePullPolicy: 'IfNotPresent',
-        command: ['sh', '-c', `rm -rf /store-parent/${path.basename(dir)}`],
+        command: ['sh', '-c', `rm -rf ${targets.map((t) => `"${t}"`).join(' ')}`],
         securityContext: { runAsUser: 0 },
-        volumeMounts: [{ name: 'parent', mountPath: '/store-parent' }],
+        volumeMounts: [{ name: 'node', mountPath: NODE_POD_PATH }],
       }],
       volumes: [{
-        name: 'parent',
-        hostPath: { path: path.dirname(dir), type: 'DirectoryOrCreate' },
+        name: 'node',
+        hostPath: { path: root, type: 'DirectoryOrCreate' },
       }],
     },
   }
@@ -660,12 +674,17 @@ interface RawPodList {
  * the authoritative "in use" set — a generation is safe to drop exactly
  * when nothing is pointing at it.
  *
+ * Matched by the trailing `shared-images/<slug>/<gen>` rather than by the
+ * node path outright, so a pod created before the node-local tier moved
+ * (mounting the old host spelling) still pins its generation through the
+ * upgrade window.
+ *
  * A failure to list is treated as "everything is in use": the cost of
  * keeping a stale generation is disk, the cost of dropping a live one is a
  * worktree whose engine loses its store mid-run.
  */
 async function generationsInUse(projectSlug: string): Promise<string[] | null> {
-  const parent = imageStoreDir(projectSlug)
+  const suffix = `/shared-images/${projectSlug}/`
   const pods = await kubectlGetJson<RawPodList>([
     'get', 'pods', '-n', k8sNamespace(), '-l', `${LABEL_PROJECT}=${projectSlug}`,
   ]).catch(() => null)
@@ -674,7 +693,10 @@ async function generationsInUse(projectSlug: string): Promise<string[] | null> {
   for (const pod of pods.items ?? []) {
     for (const vol of pod.spec?.volumes ?? []) {
       const p = vol.hostPath?.path
-      if (p && path.dirname(p) === parent) names.add(path.basename(p))
+      const at = p?.lastIndexOf(suffix) ?? -1
+      if (!p || at < 0) continue
+      const gen = p.slice(at + suffix.length)
+      if (GENERATION_DIR.test(gen)) names.add(gen)
     }
   }
   return [...names]
@@ -758,9 +780,12 @@ async function writeOneStore(projectSlug: string): Promise<boolean> {
     'delete', 'pod', '-l', storeSelector(projectSlug), '-n', k8sNamespace(), '--ignore-not-found',
   ]).catch(() => { /* best effort */ })
 
+  // ONE name per run, on every node: the mount a new pod gets is chosen
+  // from the server's own node's generations, and the pod may land on any
+  // node, so a name has to mean the same generation everywhere.
+  const genName = generationName()
   let published = 0
   for (const [nodeIndex, nodeName] of (await listNodeNames()).entries()) {
-    const genName = generationName()
     const manifest = buildStoreWriterPodManifest({
       projectSlug,
       imageRef,
@@ -799,18 +824,19 @@ export function reconcileNodeImageStores(projectSlugs: string[]): void {
 }
 
 /**
- * Drop a project's store from every node, at project removal. Best-effort
- * per node: a recreated or unreachable cluster took the store with the
- * node it lived on.
+ * Drop a project's node-local tree — its image store and its
+ * `projects/<slug>` — from every node, at project removal. Best-effort per
+ * node: a recreated or unreachable cluster took the tree with the node it
+ * lived on.
  */
-export async function removeNodeImageStore(projectSlug: string): Promise<void> {
+export async function removeNodeLocalProject(projectSlug: string): Promise<void> {
   const imageRef = await ensureBuilderImage().catch(() => null)
   if (!imageRef) return
   const runId = crypto.randomBytes(4).toString('hex')
   const nodes = await listNodeNames().catch(() => [] as string[])
   for (const [nodeIndex, nodeName] of nodes.entries()) {
     await runPodToCompletion(
-      buildStoreCleanupPodManifest({ projectSlug, imageRef, nodeName, runId, nodeIndex }),
+      buildNodeLocalProjectCleanupPodManifest({ projectSlug, imageRef, nodeName, runId, nodeIndex }),
       { timeoutMs: STORE_REMOVE_TIMEOUT_MS, pollMs: 500 },
     ).catch(() => { /* node-side residue is harmless */ })
   }

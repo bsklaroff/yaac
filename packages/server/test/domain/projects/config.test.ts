@@ -11,7 +11,7 @@ let dataDir: string
 
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-config-test-'))
-  await fs.mkdir(path.join(dataDir, 'projects', slug, 'repo'), { recursive: true })
+  await fs.mkdir(path.join(dataDir, 'global', 'projects', slug, 'repo'), { recursive: true })
   setDataDir(dataDir)
 })
 
@@ -44,7 +44,7 @@ describe('resolveProjectConfig', () => {
     // Regression guard: previously the repo working tree was a config
     // source. After the rename, only the per-project config dir is read.
     await fs.writeFile(
-      path.join(dataDir, 'projects', slug, 'repo', 'yaac-config.json'),
+      path.join(dataDir, 'global', 'projects', slug, 'repo', 'yaac-config.json'),
       JSON.stringify({ envPassthrough: ['FOO'] }),
     )
     expect(await resolveProjectConfig(slug)).toBeNull()

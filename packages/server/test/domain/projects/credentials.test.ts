@@ -63,7 +63,7 @@ describe('saveCredentials', () => {
       { kind: 'https', pattern: 'github.com/*', token: 'ghp_test' },
     ] })
 
-    expect(githubCredentialsPath()).toBe(path.join(getDataDir(), '.credentials', 'github.json'))
+    expect(githubCredentialsPath()).toBe(path.join(getDataDir(), 'server-local', '.credentials', 'github.json'))
     expect((await fs.stat(githubCredentialsPath())).mode & 0o777).toBe(0o600)
     expect(await listEntries()).toEqual([
       { kind: 'https', pattern: 'github.com/*', preview: '***test' },

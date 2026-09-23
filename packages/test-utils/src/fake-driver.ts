@@ -174,6 +174,7 @@ export function installFakeWorktreeDriver(
     destroy: (t, o) => current.destroy(t, o),
     detachedTeardownCommand: (t) => current.detachedTeardownCommand(t),
     destroyProjectSubstrate: (s) => current.destroyProjectSubstrate(s),
+    reapNodeLocal: (r) => current.reapNodeLocal(r),
     pendingMamaRequests: () => current.pendingMamaRequests(),
     resolveMamaRequests: (r) => current.resolveMamaRequests(r),
     override(next) { current = { ...current, ...next } },
@@ -292,6 +293,7 @@ function defaultRuntime(): WorktreeDriver {
     destroy: () => Promise.resolve(true),
     detachedTeardownCommand: () => 'true',
     destroyProjectSubstrate: () => Promise.resolve(),
+    reapNodeLocal: () => Promise.resolve(),
     pendingMamaRequests: () => Promise.resolve([]),
     resolveMamaRequests: () => Promise.resolve(),
   }

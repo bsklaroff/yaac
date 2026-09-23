@@ -33,7 +33,7 @@ container and the pod and Job label keys are all worktree-named.
 
 **The on-disk layout.** A worktree's state tree lives under
 `projects/<slug>/sessions/<id>`. The helpers naming it moved
-(`worktreeStateDir`, `worktreeStateRoots`); the path segment did not, because it
+(`worktreeStateDir`); the path segment did not, because it
 names data that already exists on every user's disk.
 
 **Protocol field names.** `legacy_session_id` in a TLS ClientHello (RFC 8446)

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import http from 'node:http'
@@ -8,6 +9,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/domain/git'
+import { reapNodeLocal } from '@yaac/server/drivers/k8s/images'
 import { listWorktreePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   createYaacTestEnv,
@@ -24,6 +26,7 @@ import {
   cleanupWorktreeJobs,
 } from '@yaac/test-utils/setup'
 import { k8sNamespace, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   startMockLLM,
@@ -63,6 +66,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  *     worktree's data dir independently of any provider; a session listing
  *     proves the wiring.
  */
+
+const execFileAsync = promisify(execFile)
 
 /** POSIX single-quote escaping for strings embedded in `sh -c '...'`. */
 function shq(s: string): string {
@@ -137,7 +142,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     // Fake credentials for every tool the suite exercises. The proxy reads
     // these at MITM time and swaps the container-facing placeholders for the
     // "real" values — the mock ignores them, but the swap is what we assert.
-    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
       tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }],
@@ -255,7 +260,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }
     await seedMockGitRepo(mockGit!, slug, { files, extraBranches: opts.extraBranches })
 
-    const projectPath = path.join(testEnv.dataDir, 'projects', slug)
+    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', slug)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
@@ -276,6 +281,16 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       )
     }
     return projectPath
+  }
+
+  /** The kind node a worktree's pod landed on — a podman container name. */
+  async function podNode(worktreeId: string): Promise<string> {
+    const { stdout } = await kubectlWithRetry([
+      'get', 'pods', '-n', k8sNamespace(), '-l', `yaac.worktree-id=${worktreeId}`,
+      '-o', 'jsonpath={.items[0].spec.nodeName}',
+    ])
+    if (!stdout.trim()) throw new Error(`no pod found for worktree ${worktreeId}`)
+    return stdout.trim()
   }
 
   async function findWorktreePod(slug: string, exclude = new Set<string>()): Promise<PodInfo> {
@@ -559,6 +574,27 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await expect(execInJob(jobName, [
         'test', '-f', '/tmp/yaac-prompt',
       ])).rejects.toThrow()
+
+      // Every volume is a subPath of the global claim, the node's own tree,
+      // pod-local scratch, or the CA ConfigMap — nothing under the data dir
+      // by hostPath (docs/server-in-cluster.md "Storage is two claims").
+      const { stdout: jobJson } = await kubectlWithRetry([
+        'get', 'job', jobName, '-n', k8sNamespace(), '-o', 'json',
+      ])
+      const volumes = (JSON.parse(jobJson) as {
+        spec: { template: { spec: {
+          initContainers?: Array<{ name: string }>
+          volumes: Array<{ name: string; hostPath?: { path: string }; persistentVolumeClaim?: { claimName: string }; emptyDir?: unknown; configMap?: unknown }>
+        } } }
+      }).spec.template.spec
+      for (const v of volumes.volumes) {
+        const ok = v.persistentVolumeClaim?.claimName === 'yaac-global'
+          || v.hostPath?.path.startsWith(nodeLocalNodePath()) === true
+          || v.emptyDir !== undefined || v.configMap !== undefined
+        expect(ok, `volume ${v.name}: ${JSON.stringify(v)}`).toBe(true)
+        expect(v.hostPath?.path.startsWith(testEnv.dataDir)).not.toBe(true)
+      }
+      expect(volumes.initContainers?.map((c) => c.name)).toEqual(['node-dirs'])
     }, 60_000)
 
     it('mounts each builtin skill over a mountpoint the SERVER made', async () => {
@@ -1358,16 +1394,25 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(ftype.trim()).toBe('directory')
 
       // Write to the bind mount and confirm the bytes land in the
-      // host-side .cached-packages tree, NOT in the worktree.
+      // node-local .cached-packages tree (this pod's own node, under the
+      // install's node path — node disk for a test hash, which has no kind
+      // extraMount), NOT in the worktree. Read back through the pod's own
+      // store mount, which is the same directory.
       await execInJob(jobName, [
         'sh', '-c',
         'echo hello > /workspace/node_modules/marker.txt',
       ])
-      const hostBacking = path.join(
-        projectPath, '.cached-packages', 'modules', worktreeId, 'root', 'marker.txt',
-      )
-      const hostMarker = await fs.readFile(hostBacking, 'utf8')
+      const { stdout: hostMarker } = await execInJob(jobName, [
+        'cat', `/home/yaac/.cached-packages/modules/${worktreeId}/root/marker.txt`,
+      ])
       expect(hostMarker.trim()).toBe('hello')
+      // And on the node, at the install's node path, owned by the pod's
+      // own uid (the init container's chown) — never root.
+      const nodeModules = `${nodeLocalNodePath()}/projects/kitchen/.cached-packages/modules/${worktreeId}`
+      const { stdout: onNodeOut } = await execFileAsync('podman', [
+        'exec', await podNode(worktreeId), 'sh', '-c', `cat ${nodeModules}/root/marker.txt && stat -c %u ${nodeModules}`,
+      ])
+      expect(onNodeOut.trim().split('\n')).toEqual(['hello', String(process.getuid?.())])
 
       // Host worktree's node_modules has no leaked content — the bind
       // mount shadows it from the container side only.
@@ -1386,10 +1431,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await execInJob(jobName, [
         'sh', '-c', 'echo nested > /workspace/frontends/node_modules/marker.txt',
       ])
-      const nestedBacking = await fs.readFile(path.join(
-        projectPath, '.cached-packages', 'modules', worktreeId,
-        'frontends_node_modules', 'marker.txt',
-      ), 'utf8')
+      const { stdout: nestedBacking } = await execInJob(jobName, [
+        'cat', `/home/yaac/.cached-packages/modules/${worktreeId}/frontends_node_modules/marker.txt`,
+      ])
       expect(nestedBacking.trim()).toBe('nested')
       await expect(
         fs.access(path.join(wtDir, 'frontends', 'node_modules', 'marker.txt')),
@@ -1409,28 +1453,36 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         'mkdir -p /home/yaac/.cached-packages/pnpm-store && echo store-content > /home/yaac/.cached-packages/pnpm-store/src',
       ])
 
-      // Delete the session; modules/<sid> goes away, pnpm-store survives.
+      // Stop the session. The server's own removal of modules/<sid> only
+      // reaches the node it runs on; on any other node the dir is an
+      // orphan the node-local sweep collects. So run that sweep for real
+      // once the pod is gone — sparing every worktree still live in this
+      // file — and read the node: the module dir is gone, the project's
+      // pnpm store is not.
+      const node = await podNode(worktreeId)
       const { exitCode: delExit } = await runYaac(
         serverEnv, 'worktree', 'stop', worktreeId,
       )
       expect(delExit).toBe(0)
 
-      const modulesRoot = path.join(projectPath, '.cached-packages', 'modules', worktreeId)
-      // Cleanup is detached — poll briefly.
-      let gone = false
-      for (let i = 0; i < 40; i++) {
-        try {
-          await fs.access(modulesRoot)
-          await sleep(250)
-        } catch {
-          gone = true
-          break
-        }
+      const onNode = (p: string): Promise<boolean> =>
+        execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)
+      let podGone = false
+      for (let i = 0; i < 240 && !podGone; i++) {
+        podGone = !(await listWorktreePods('kitchen')).some((p) => p.worktreeId === worktreeId)
+        if (!podGone) await sleep(500)
       }
-      expect(gone).toBe(true)
-
-      const pnpmStoreSrc = path.join(projectPath, '.cached-packages', 'pnpm-store', 'src')
-      await expect(fs.access(pnpmStoreSrc)).resolves.toBeUndefined()
+      expect(podGone).toBe(true)
+      const running = new Map<string, Set<string>>()
+      for (const p of await listWorktreePods()) {
+        const ids = running.get(p.projectSlug) ?? new Set<string>()
+        ids.add(p.worktreeId)
+        running.set(p.projectSlug, ids)
+      }
+      // A cutoff in the future: nothing here is a create still staging.
+      await reapNodeLocal(running, { nowMs: Date.now() + 60_000 })
+      expect(await onNode(nodeModules)).toBe(false)
+      expect(await onNode(`${nodeLocalNodePath()}/projects/kitchen/.cached-packages/pnpm-store/src`)).toBe(true)
     }, 120_000)
   })
 
@@ -1701,12 +1753,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // under gVisor (its native renderer waits on a terminal-capability
       // answer the headless tmux never gives), which is what the v2 pin is
       // for. The prompt box is the one thing every fresh TUI shows.
+      // The window is the init script's to create, so a capture can still
+      // fail for a moment after the api probe answers; keep polling.
       let pane = ''
       for (let i = 0; i < 30 && !/Ask anything/.test(pane); i++) {
-        const { stdout } = await execInJob(jobName, [
+        pane = await execInJob(jobName, [
           'sh', '-c', `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:opencode -p 2>&1`,
-        ])
-        pane = stdout
+        ]).then((r) => r.stdout).catch(() => '')
         if (!/Ask anything/.test(pane)) await sleep(1000)
       }
       if (!/Ask anything/.test(pane)) console.error('opencode tmux pane:\n' + pane)
@@ -1752,6 +1805,88 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const inside: unknown = JSON.parse(catOut.trim())
       expect(inside).toEqual({ model: 'anthropic/claude-sonnet-4-5' })
     }, 60_000)
+
+    it('checkpoints its history to the global tier at stop, leaves nothing on the node, and resumes from it', async () => {
+      // LAST opencode test: it stops and restarts the session. The pod
+      // works on a NODE-LOCAL copy of its opencode data and the global
+      // checkpoint is the one durable copy (docs/worktree-storage.md), so a
+      // stop must land the database in the checkpoint, empty the node copy,
+      // and a restart must come back with the same history — and whatever
+      // the node held in the meantime must lose to the checkpoint.
+      const worktreeId = (await findWorktreePod('oc-demo')).worktreeId
+      const node = await podNode(worktreeId)
+      // A session created through the in-pod API, so the database holds a
+      // row this test can look for after the round trip.
+      const { stdout: created } = await execInJob(jobName, [
+        'sh', '-c', 'opencode api --standalone session.create -d \'{"title":"checkpoint-me"}\'',
+      ], { timeout: 60_000 })
+      const sessionId = (JSON.parse(created.trim()) as { data?: { id?: string }; id?: string })
+      const createdId = sessionId.data?.id ?? sessionId.id
+      expect(createdId).toBeTruthy()
+      const nodeCopy = `${nodeLocalNodePath()}/projects/oc-demo/opencode-data/${worktreeId}`
+      const checkpoint = path.join(projectPath, 'opencode-data', worktreeId)
+      const onNode = (p: string): Promise<boolean> =>
+        execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)
+      expect(await onNode(nodeCopy)).toBe(true)
+
+      const stopped = await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
+      expect(stopped.exitCode, stopped.stderr).toBe(0)
+      // A stop returns once the teardown is handed off, so the pod may still
+      // be terminating: the preStop hook checkpoints, then empties the
+      // working copy.
+      let checkpointed = false
+      for (let i = 0; i < 120 && !checkpointed; i++) {
+        checkpointed = (await fs.readdir(checkpoint).catch(() => [] as string[])).some((f) => f.endsWith('.db'))
+        if (!checkpointed) await sleep(500)
+      }
+      expect(checkpointed).toBe(true)
+      let emptied = false
+      for (let i = 0; i < 40 && !emptied; i++) {
+        const { stdout } = await execFileAsync('podman', ['exec', node, 'sh', '-c', `ls -A ${nodeCopy} 2>/dev/null | wc -l`])
+        emptied = stdout.trim() === '0'
+        if (!emptied) await sleep(250)
+      }
+      expect(emptied).toBe(true)
+
+      // A pre-split checkpoint is a data dir opencode wrote directly, so it
+      // commonly holds a WAL with the newest transactions beside the db.
+      // Shape one: a title change committed into the WAL alone (the writer
+      // exits without closing, so nothing folds it into the db file). The
+      // restart has to see it — a restore that skipped the WAL would lose
+      // every upgraded worktree's newest messages, silently.
+      await execFileAsync('python3', ['-c', [
+        'import os, sqlite3, sys',
+        'c = sqlite3.connect(sys.argv[1], isolation_level=None)',
+        "c.execute('pragma journal_mode=wal')",
+        "c.execute('update session_v2 set title = ? where id = ?', ('wal-only-title', sys.argv[2]))",
+        'os._exit(0)',
+      ].join('\n'), path.join(checkpoint, 'opencode.db'), createdId ?? ''])
+      await expect(fs.stat(path.join(checkpoint, 'opencode.db-wal'))).resolves.toBeTruthy()
+
+      // Whatever the node held is discarded on the next start, never merged.
+      await execFileAsync('podman', ['exec', node, 'sh', '-c', `mkdir -p ${nodeCopy} && echo junk > ${nodeCopy}/junk.txt`])
+
+      const restarted = await runYaac(serverEnv, 'worktree', 'restart', worktreeId)
+      expect(restarted.exitCode, restarted.stderr).toBe(0)
+      jobName = (await findWorktreePod('oc-demo')).jobName
+      await expect(execInJob(jobName, ['test', '-e', '/home/yaac/.local/share/opencode/junk.txt'])).rejects.toThrow()
+      let listed = ''
+      for (let i = 0; i < 60 && !listed.includes(createdId ?? '\0'); i++) {
+        listed = await execInJob(jobName, ['sh', '-c', 'opencode api --standalone session.list'], { timeout: 60_000 })
+          .then((r) => r.stdout).catch(() => '')
+        if (!listed.includes(createdId ?? '\0')) await sleep(1000)
+      }
+      expect(listed).toContain(createdId)
+      expect(listed).toContain('wal-only-title')
+      // ...and the checkpoint's stale pair went once a fresh backup replaced it.
+      let sidecarGone = false
+      for (let i = 0; i < 20 && !sidecarGone; i++) {
+        await execInJob(jobName, ['/usr/local/bin/yaac-opencode-checkpoint'], { timeout: 60_000 })
+        sidecarGone = !await fs.stat(path.join(checkpoint, 'opencode.db-wal')).then(() => true, () => false)
+        if (!sidecarGone) await sleep(500)
+      }
+      expect(sidecarGone).toBe(true)
+    }, 300_000)
   })
 
   /**
@@ -1852,8 +1987,8 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // it, and every sweep that could name a leftover works from rows — so
       // whatever survives here survives forever. Counted rather than named
       // because the CLI mints the id server-side.
-      const worktreesRoot = path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees')
-      const adminRoot = path.join(testEnv.dataDir, 'projects', SLUG, 'repo', '.git', 'worktrees')
+      const worktreesRoot = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees')
+      const adminRoot = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git', 'worktrees')
       const ls = async (dir: string): Promise<string[]> =>
         (await fs.readdir(dir).catch((): string[] => [])).sort()
       const [checkoutsBefore, adminBefore] = [await ls(worktreesRoot), await ls(adminRoot)]

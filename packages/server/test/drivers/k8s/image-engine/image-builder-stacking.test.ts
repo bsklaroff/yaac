@@ -7,13 +7,13 @@ describe('resolveImageChain', () => {
   const h = setupStackingHarness()
 
   it('names each dependency step in build order', async () => {
-    const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
+    const repoPath = path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo')
+    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
-    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
-    await fs.writeFile(path.join(h.dataDir, 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
+    await fs.writeFile(path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { resolveImageChain } = await h.load()
     const { layers } = await resolveImageChain('myproject', 'yaac', true)
@@ -24,16 +24,16 @@ describe('resolveImageChain', () => {
     // The chain is a hash chain: every layer's tag folds in its parent's,
     // and the parent tag it will be built FROM is its BASE_IMAGE. Getting
     // either wrong silently produces an image built on the wrong parent.
-    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
-    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
     await fs.writeFile(
       path.join(buildDir, 'Dockerfile.yaac'),
       'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n',
     )
     await fs.writeFile(
-      path.join(h.dataDir, 'build', 'Dockerfile.user'),
+      path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),
       'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n',
     )
 
@@ -65,8 +65,8 @@ describe('resolveImageChain', () => {
   it('skips the shipped layers entirely for a standalone Dockerfile.yaac', async () => {
     // It replaces the canonical base and owns its own toolchain, so neither
     // tools nor nestable applies — even with nestedContainers on.
-    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(
       path.join(buildDir, 'Dockerfile.yaac'),
@@ -82,8 +82,8 @@ describe('resolveImageChain', () => {
   })
 
   it('treats a Dockerfile.yaac with FROM yaac-base (no ARG) as standalone', async () => {
-    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
 
@@ -93,8 +93,8 @@ describe('resolveImageChain', () => {
   })
 
   it('names a standalone Dockerfile.yaac as the project step', async () => {
-    const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
+    const repoPath = path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo')
+    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
@@ -105,9 +105,9 @@ describe('resolveImageChain', () => {
   })
 
   it('folds build-context support files into the project and user layer tags', async () => {
-    const projectBuild = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
-    const userBuild = path.join(h.dataDir, 'build')
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    const projectBuild = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
+    const userBuild = path.join(h.dataDir, 'server-local', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(projectBuild, { recursive: true })
     await fs.mkdir(userBuild, { recursive: true })
     await fs.writeFile(path.join(projectBuild, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')

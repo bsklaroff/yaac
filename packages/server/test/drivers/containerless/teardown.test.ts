@@ -3,7 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import fsp from 'node:fs/promises'
 import { setDataDir } from '@yaac/shared/paths'
+import { cachedPackagesDir, imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
 import { WorkspaceExecError } from '#drivers/contract'
 
 import type * as hostModule from '#drivers/containerless/host'
@@ -20,8 +22,10 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   isSshAgentFor: mockIsSshAgentFor,
 }))
 import {
+  destroyProjectSubstrate,
   destroyWorkspace,
   detachedTeardownCommand,
+  reapNodeLocal,
 } from '#drivers/containerless/teardown'
 import { containerlessJobName, containerlessWorkspacePaths } from '#drivers/containerless/paths'
 import {
@@ -190,6 +194,53 @@ describe('destroyWorkspace ssh-agent', () => {
 
     const signalled = mockKillPids.mock.calls.flatMap(([pids]) => pids as number[])
     expect(signalled).not.toContain(777)
+  })
+})
+
+describe('destroyProjectSubstrate', () => {
+  it('removes the project\'s node-local tree and image store on this host', async () => {
+    const tree = nodeLocalProjectPath('demo')
+    const store = imageStoreDir('demo')
+    await fsp.mkdir(path.join(tree, '.cached-packages', 'pnpm-store'), { recursive: true })
+    await fsp.mkdir(path.join(store, 'gen-1'), { recursive: true })
+    await fsp.mkdir(nodeLocalProjectPath('keeper'), { recursive: true })
+
+    await destroyProjectSubstrate('demo')
+
+    await expect(fsp.access(tree)).rejects.toThrow()
+    await expect(fsp.access(store)).rejects.toThrow()
+    await expect(fsp.access(nodeLocalProjectPath('keeper'))).resolves.toBeUndefined()
+  })
+})
+
+describe('reapNodeLocal', () => {
+  const STALE = new Date(Date.now() - 3_600_000)
+
+  async function seedModules(slug: string, sid: string, when = STALE): Promise<string> {
+    const dir = path.join(cachedPackagesDir(slug), 'modules', sid)
+    await fsp.mkdir(dir, { recursive: true })
+    await fsp.utimes(dir, when, when)
+    return dir
+  }
+
+  it('removes the module dirs of workspaces not in the live set, per project', async () => {
+    const live = await seedModules('proj-a', 'live-1')
+    const dead = await seedModules('proj-a', 'dead-1')
+    const otherProjectSameId = await seedModules('proj-b', 'live-1')
+    const fresh = await seedModules('proj-a', 'staging-1', new Date())
+
+    await reapNodeLocal(new Map([['proj-a', new Set(['live-1'])]]))
+
+    await expect(fsp.access(live)).resolves.toBeUndefined()
+    await expect(fsp.access(dead)).rejects.toThrow()
+    // The live set is per project: proj-b's `live-1` is somebody else's.
+    await expect(fsp.access(otherProjectSameId)).rejects.toThrow()
+    // Written since the sweep started: a create staging into it.
+    await expect(fsp.access(fresh)).resolves.toBeUndefined()
+  })
+
+  it('is a no-op with no node-local tree', async () => {
+    await expect(reapNodeLocal(new Map())).resolves.toBeUndefined()
   })
 })
 

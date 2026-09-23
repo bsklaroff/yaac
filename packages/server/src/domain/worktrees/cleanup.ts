@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { worktreeDriver } from '#drivers/driver'
 import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
-import { inFlightWorktreeIds } from './provisioning'
+import { inFlightWorktreeIds, listProvisioning } from './provisioning'
 import {
   applyWorktreeEvent,
   deleteSpareWorktreeRow,
@@ -18,14 +18,14 @@ import {
 } from '#runtime/status'
 import {
   cachedPackagesDir,
-  opencodeDataDir,
+  globalProjectPath,
+  opencodeCheckpointDir,
   projectsRoots,
   repoDir,
-  worktreeStateRoots,
-  projectWorktreeStateRoots,
   worktreeDir,
   worktreeMetaDir,
   worktreeSessionStartsPath,
+  worktreeStateDir,
 } from '@yaac/shared/project-paths'
 import { deleteSessionStartsLog } from './session-starts'
 import { shellQuote } from '#lib/shell'
@@ -106,8 +106,8 @@ async function checkoutEphemeralPaths(projectSlug: string, worktreeId: string): 
  * in-pod hook's session-starts log, and the
  * per-worktree opencode database. Every one of them is keyed by the worktree
  * id, which is what makes this a single function rather than a list each
- * caller has to remember — and `opencode-data` is here because until now
- * nothing removed it at all.
+ * caller has to remember — the opencode checkpoint included, which is
+ * global; a node-local working copy is the runtime's sweep's.
  *
  * NOT called by an ordinary stop. A stopped worktree is a checkout still on
  * disk, diff and all, waiting to be restarted; this is for the cases where the
@@ -152,7 +152,7 @@ export async function deleteWorktreeState(
     fs.rm(worktreeDir(projectSlug, worktreeId), { recursive: true, force: true }),
     fs.rm(path.join(adminDir, 'locked'), { force: true })
       .then(() => fs.rm(adminDir, { recursive: true, force: true })),
-    fs.rm(opencodeDataDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    fs.rm(opencodeCheckpointDir(projectSlug, worktreeId), { recursive: true, force: true }),
     deleteSessionStartsLog(projectSlug, worktreeId),
   ].map((p) => p.then(() => true, (err: unknown) => {
     serverLog(`[server] delete worktree state ${projectSlug}/${worktreeId}: ${String(err)}`)
@@ -246,10 +246,15 @@ export async function cleanupWorktree(params: {
   // too. Both are idempotent, so the only price is that they go later.
   if (runtimeGone) {
     // No-op when ephemeral modules were disabled for this worktree (the
-    // dir won't exist).
+    // dir won't exist). Best-effort: NODE-LOCAL, so on a cluster this is
+    // the server's own node's tree and the worktree may have run on
+    // another — the node-local sweep (`reapNodeLocal`) is what collects it
+    // wherever it is.
     await fs.rm(worktreeModulesDir(projectSlug, worktreeId), {
       recursive: true,
       force: true,
+    }).catch((err: unknown) => {
+      serverLog(`[server] remove modules dir of ${worktreeId} at stop: ${String(err)}`)
     })
     // Best-effort, like the script's `|| true`: under a pod this is the
     // mount target, and a node still unwinding the mount answers EBUSY.
@@ -258,9 +263,7 @@ export async function cleanupWorktree(params: {
         serverLog(`[server] remove ${p} at stop: ${String(err)}`)
       })
     }
-    for (const dir of worktreeStateRoots(projectSlug, worktreeId)) {
-      await fs.rm(dir, { recursive: true, force: true })
-    }
+    await fs.rm(worktreeStateDir(projectSlug, worktreeId), { recursive: true, force: true })
   }
 
   console.log(`Session ${worktreeId} cleaned up.`)
@@ -338,9 +341,8 @@ export async function cleanupWorktreeDetached(params: {
       ...await checkoutEphemeralPaths(projectSlug, worktreeId),
     ].map((dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`)
 
-    const worktreeDirRms = worktreeStateRoots(projectSlug, worktreeId).map(
-      (dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`,
-    )
+    const worktreeDirRm =
+      `rm -rf ${shellQuote(worktreeStateDir(projectSlug, worktreeId))} 2>/dev/null || true`
 
     // The runtime's own teardown, then the dirs the worktree owns — which is
     // this layer's half, and the reason the script is composed here rather
@@ -349,7 +351,7 @@ export async function cleanupWorktreeDetached(params: {
     const script = [
       runtime.detachedTeardownCommand(target),
       ...ephemeralModulesRms,
-      ...worktreeDirRms,
+      worktreeDirRm,
     ].join('; ')
 
     const spawnDetachedTeardown = (): void => {
@@ -404,18 +406,6 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
   } catch {
     return true
   }
-}
-
-/**
- * Server-startup sweep: remove `.cached-packages/modules/<sid>`
- * directories whose worktree is no longer alive. Catches leftovers from
- * crashes, killed servers, and host reboots.
- */
-let orphanModulesSwept = false
-
-/** Test helper: let the once-per-server-life sweep run again. */
-export function _resetOrphanModulesSweepForTests(): void {
-  orphanModulesSwept = false
 }
 
 /** Suffix of the in-pod hook's log, as `worktreeSessionStartsPath` names it. */
@@ -478,12 +468,17 @@ async function gcOrphanSpares(
   }
 }
 
+/**
+ * The orphan sweep: what a worktree that no longer exists left behind, on
+ * both tiers. The GLOBAL half — dead spares' checkouts, session-starts
+ * logs and `sessions/<id>` dirs — is walked here, on the server's own
+ * filesystem. The NODE-LOCAL half — ephemeral module dirs, opencode
+ * working copies — is handed to the runtime (`reapNodeLocal`) with the
+ * same live set, because on a cluster those bytes are on whichever node
+ * the worktree ran on. Runs every pass; the global walk is a readdir per
+ * project and the runtime throttles its own half.
+ */
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
-  // Once per server life: this collects what a previous process left
-  // behind, so a second pass has nothing new to find.
-  if (orphanModulesSwept) return
-  orphanModulesSwept = true
-
   // Everything this sweep deletes belongs to a worktree that no longer
   // exists — and "no longer exists" is read from a cluster listing taken
   // here, seconds before the removals below. A create that stages its dirs
@@ -514,55 +509,51 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
     return
   }
 
-  // Slugs from BOTH roots: a project whose shared half is already gone can
-  // still have a node-local tree (pnpm store, opencode data) to sweep, and
-  // enumerating only the shared root would never generate its slug.
+  // Slugs from BOTH roots: a project whose global half is already gone can
+  // still have a node-local tree to sweep, and enumerating only the global
+  // root would never generate its slug.
   const slugLists = await Promise.all(
     projectsRoots().map((root) => fs.readdir(root).catch((): string[] => [])),
   )
   const projectSlugs = [...new Set(slugLists.flat())]
   if (!projectSlugs.length) return
 
+  // The node-local half, per slug: a create the process is still
+  // provisioning is spared the same way its global dirs are — its id is
+  // added to the live set, since no listing can vouch for it yet.
+  const running = new Map<string, Set<string>>()
+  for (const slug of projectSlugs) running.set(slug, new Set(liveWorktreeIds))
+  for (const { worktreeId, projectSlug, error } of listProvisioning()) {
+    if (error !== undefined) continue
+    const ids = running.get(projectSlug) ?? new Set<string>()
+    ids.add(worktreeId)
+    running.set(projectSlug, ids)
+  }
+  await worktreeDriver().reapNodeLocal(running).catch((err: unknown) => {
+    console.warn(`Orphan node-local GC failed: ${String(err)}`)
+  })
+
   for (const slug of projectSlugs) {
-    const modulesRoot = path.join(cachedPackagesDir(slug), 'modules')
-    let entries: string[] = []
+    await gcOrphanSpares(slug, liveWorktreeIds, sweepStartedAtMs)
+
+    // Per-session dirs live under `<slug>/sessions/<sid>` on the global
+    // root (the staged skills and worktree bin). The `sessions/` dir is
+    // unique to this feature, so a flat readdir gives the worktree id list
+    // directly.
+    const worktreesRoot = globalProjectPath(slug, 'sessions')
+    let worktreeEntries: string[] = []
     try {
-      entries = await fs.readdir(modulesRoot)
-    } catch { /* missing modules dir → nothing to sweep there */ }
-    for (const sid of entries) {
+      worktreeEntries = await fs.readdir(worktreesRoot)
+    } catch { /* missing sessions dir → nothing to sweep there */ }
+    for (const sid of worktreeEntries) {
       if (liveWorktreeIds.has(sid)) continue
-      const dir = path.join(modulesRoot, sid)
+      const dir = path.join(worktreesRoot, sid)
       if (await inUseBySweep(dir, sid, sweepStartedAtMs)) continue
       try {
         await fs.rm(dir, { recursive: true, force: true })
-        console.log(`Removed orphan ephemeral modules dir ${dir}`)
+        console.log(`Removed orphan session dir ${dir}`)
       } catch (err) {
-        console.warn(`Orphan modules GC: failed to remove ${dir}: ${(err as Error).message}`)
-      }
-    }
-
-    await gcOrphanSpares(slug, liveWorktreeIds, sweepStartedAtMs)
-
-    // Per-session dirs live under `<slug>/sessions/<sid>` on both roots —
-    // shared (the staged skills) and node-local;
-    // `projectWorktreeStateRoots` owns that pairing and collapses to one
-    // entry today. The `worktrees/` dir is unique to
-    // this feature, so a flat readdir gives the worktree id list directly.
-    for (const worktreesRoot of projectWorktreeStateRoots(slug)) {
-      let worktreeEntries: string[] = []
-      try {
-        worktreeEntries = await fs.readdir(worktreesRoot)
-      } catch { /* missing sessions dir → nothing to sweep there */ }
-      for (const sid of worktreeEntries) {
-        if (liveWorktreeIds.has(sid)) continue
-        const dir = path.join(worktreesRoot, sid)
-        if (await inUseBySweep(dir, sid, sweepStartedAtMs)) continue
-        try {
-          await fs.rm(dir, { recursive: true, force: true })
-          console.log(`Removed orphan session dir ${dir}`)
-        } catch (err) {
-          console.warn(`Orphan session GC: failed to remove ${dir}: ${(err as Error).message}`)
-        }
+        console.warn(`Orphan session GC: failed to remove ${dir}: ${(err as Error).message}`)
       }
     }
   }

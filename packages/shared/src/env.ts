@@ -37,6 +37,23 @@ export const env = {
   },
 
   /**
+   * `YAAC_GLOBAL_ROOT`, `YAAC_SERVER_LOCAL_ROOT`, `YAAC_NODE_LOCAL_ROOT` —
+   * where the three storage tiers are mounted inside the server pod (the
+   * tier legend in paths.ts). Set by the server Deployment and by nothing
+   * else: on a host the tiers are three folders of the data dir and the
+   * roots resolve there with no override. Unset → `undefined`.
+   */
+  get globalRootOverride(): string | undefined {
+    return nonEmpty(process.env.YAAC_GLOBAL_ROOT)
+  },
+  get serverLocalRootOverride(): string | undefined {
+    return nonEmpty(process.env.YAAC_SERVER_LOCAL_ROOT)
+  },
+  get nodeLocalRootOverride(): string | undefined {
+    return nonEmpty(process.env.YAAC_NODE_LOCAL_ROOT)
+  },
+
+  /**
    * `YAAC_USE_TOR` with permissive truthy semantics: unset, empty, "0", and
    * "false" (case-insensitive) are off; everything else is on.
    */
@@ -576,6 +593,11 @@ export const testEnv = {
       : tool === 'codex' ? process.env.YAAC_E2E_CODEX_INSTALL_CLI : undefined
     return parseArgvHook(raw)
   },
+}
+
+/** A set-but-empty variable reads as unset. */
+function nonEmpty(raw: string | undefined): string | undefined {
+  return raw === undefined || raw.trim() === '' ? undefined : raw
 }
 
 /** Parse a JSON argv-array hook value; malformed → undefined (real CLI used). */

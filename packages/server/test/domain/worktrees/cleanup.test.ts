@@ -32,7 +32,6 @@ vi.mock('node:child_process', async () => {
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
-  _resetOrphanModulesSweepForTests,
   cleanupWorktree,
   cleanupWorktreeDetached,
   deleteWorktreeState,
@@ -45,7 +44,7 @@ import { isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/statu
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import { _resetWorktreeStatusStoreForTests } from '#runtime/status/status-store'
 import { serverLog } from '#log'
-import { projectConfigDir, setDataDir, worktreeDir, worktreeStateRoots } from '@yaac/shared/project-paths'
+import { projectConfigDir, setDataDir, worktreeDir, worktreeStateDir } from '@yaac/shared/project-paths'
 import type { WorktreeEvent } from '#db'
 import { applyWorktreeEvent } from '#db'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
@@ -269,11 +268,11 @@ describe('cleanupWorktree', () => {
     setDataDir(dataDir)
     try {
       const modules = worktreeModulesDir('p', 's-kept')
-      const stateRoots = worktreeStateRoots('p', 's-kept')
+      const stateDir = worktreeStateDir('p', 's-kept')
       const checkoutModules = path.join(worktreeDir('p', 's-kept'), 'node_modules')
       await fs.mkdir(modules, { recursive: true })
       await fs.mkdir(checkoutModules, { recursive: true })
-      for (const dir of stateRoots) await fs.mkdir(dir, { recursive: true })
+      await fs.mkdir(stateDir, { recursive: true })
       installRuntime({ destroy: () => Promise.resolve(false) })
 
       await expect(cleanupWorktree({
@@ -282,9 +281,7 @@ describe('cleanupWorktree', () => {
 
       await expect(fs.access(modules)).resolves.toBeUndefined()
       await expect(fs.access(checkoutModules)).resolves.toBeUndefined()
-      for (const dir of stateRoots) {
-        await expect(fs.access(dir)).resolves.toBeUndefined()
-      }
+      await expect(fs.access(stateDir)).resolves.toBeUndefined()
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true })
     }
@@ -305,8 +302,8 @@ describe('deleteWorktreeState', () => {
 
   it('removes the checkout, its git admin dir and its log, and confirms it', async () => {
     const slug = 'dws'
-    const wt = path.join(dataDir, 'projects', slug, 'worktrees', 'w1')
-    const admin = path.join(dataDir, 'projects', slug, 'repo', '.git', 'worktrees', 'w1')
+    const wt = path.join(dataDir, 'global', 'projects', slug, 'worktrees', 'w1')
+    const admin = path.join(dataDir, 'global', 'projects', slug, 'repo', '.git', 'worktrees', 'w1')
     await fs.mkdir(wt, { recursive: true })
     await fs.mkdir(admin, { recursive: true })
     // Worktree setup writes this precisely so `git worktree prune` can't reap
@@ -323,7 +320,7 @@ describe('deleteWorktreeState', () => {
   // one resolves to the worktrees ROOT — every worktree of the project.
   it('refuses an empty worktree id instead of resolving to the worktrees root', async () => {
     const slug = 'dws-empty'
-    const root = path.join(dataDir, 'projects', slug, 'worktrees')
+    const root = path.join(dataDir, 'global', 'projects', slug, 'worktrees')
     await fs.mkdir(path.join(root, 'keeper'), { recursive: true })
 
     await expect(deleteWorktreeState(slug, '')).resolves.toBe(false)
@@ -529,18 +526,18 @@ describe('worktreeModulesDir', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  it('returns <dataDir>/projects/<slug>/.cached-packages/modules/<sid>', () => {
+  it('returns <nodeLocal>/projects/<slug>/.cached-packages/modules/<sid>', () => {
+    // NODE-LOCAL: the module dirs live under the pnpm store, which hands
+    // out hardlinks that cannot cross a filesystem.
     const result = worktreeModulesDir('my-proj', 'sess-abc')
     expect(result).toBe(
-      path.join(dataDir, 'projects', 'my-proj', '.cached-packages', 'modules', 'sess-abc'),
+      path.join(dataDir, 'node-local', 'projects', 'my-proj', '.cached-packages', 'modules', 'sess-abc'),
     )
   })
 })
 
 describe('gcOrphanEphemeralModuleDirs', () => {
   let dataDir: string
-  /** How many pass views the sweep took — it must take at most one, ever. */
-  let views: number
 
   /** Register the given ids as creates in flight, in the real registry the
    *  sweep reads. */
@@ -551,10 +548,14 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     }
   }
 
+  /** What the runtime was handed to reap on the node-local side. */
+  let reaped: Array<Map<string, Set<string>>>
+
   /** Install a runtime reporting these workspaces and stray units. */
   function seeRunning(workspaces: RuntimeHandle[], strays: StrayUnit[] = []): void {
     installFakeWorktreeDriver({
-      snapshot: () => { views++; return snapshotFixture(workspaces, strays) },
+      snapshot: () => snapshotFixture(workspaces, strays),
+      reapNodeLocal: (running) => { reaped.push(running); return Promise.resolve() },
     })
   }
 
@@ -562,7 +563,6 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   function seeNothing(): void {
     installFakeWorktreeDriver({
       snapshot: () => {
-        views++
         return {
           resync: true,
           workspaces: () => Promise.reject(new Error('cluster offline')),
@@ -575,9 +575,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   beforeEach(async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
     setDataDir(dataDir)
-    views = 0
+    reaped = []
     seeRunning([])
-    _resetOrphanModulesSweepForTests()
     publishInFlight()
   })
 
@@ -593,49 +592,49 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   const STALE = new Date(Date.now() - 3_600_000)
 
   async function seedModulesDir(slug: string, sid: string): Promise<string> {
-    const dir = path.join(dataDir, 'projects', slug, '.cached-packages', 'modules', sid)
+    const dir = path.join(dataDir, 'node-local', 'projects', slug, '.cached-packages', 'modules', sid)
     await fs.mkdir(dir, { recursive: true })
     await fs.utimes(dir, STALE, STALE)
     return dir
   }
 
   async function seedWorktreesDir(slug: string, sid: string): Promise<string> {
-    const dir = path.join(dataDir, 'projects', slug, 'sessions', sid)
+    const dir = path.join(dataDir, 'global', 'projects', slug, 'sessions', sid)
     await fs.mkdir(dir, { recursive: true })
     await fs.utimes(dir, STALE, STALE)
     return dir
   }
 
-  it('removes dirs whose workspace is gone and leaves live ones', async () => {
+  // The node-local half is the runtime's: the module dirs and working
+  // copies live on whichever node the worktree ran on, which may not be
+  // this filesystem. What the domain owns is the live set it hands over —
+  // every project it can see, with the workspaces, the stray units and the
+  // creates in flight, and nothing removed here.
+  it('hands the runtime the live set per project, and removes no node-local dir itself', async () => {
     const live = await seedModulesDir('proj-a', 'live-1')
-    const deadA = await seedModulesDir('proj-a', 'dead-1')
-    const deadB = await seedModulesDir('proj-b', 'dead-2')
+    const dead = await seedModulesDir('proj-a', 'dead-1')
+    const strayOnly = await seedModulesDir('proj-b', 'job-only-1')
+    await fs.mkdir(path.join(dataDir, 'global', 'projects', 'proj-c'), { recursive: true })
+    publishInFlight(['creating-1'])
 
-    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
-
-    await gcOrphanEphemeralModuleDirs()
-
-    await expect(fs.access(live)).resolves.toBeUndefined()
-    await expect(fs.access(deadA)).rejects.toThrow()
-    await expect(fs.access(deadB)).rejects.toThrow()
-  })
-
-  // A unit mid-recreate (its workspace evicted, the replacement not scheduled
-  // yet) shows up ONLY as a stray, and its dirs are what the replacement is
-  // about to mount.
-  it('keeps dirs whose workspace survives only as a stray unit', async () => {
-    const strayOnly = await seedModulesDir('proj-a', 'job-only-1')
-
-    seeRunning([], [{
-      workspaceId: 'job-only-1',
-      unitName: 'yaac-proj-a-job-only-1',
-      projectSlug: 'proj-a',
-      createdAtMs: 0,
-    }])
+    seeRunning(
+      [handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })],
+      // A unit mid-recreate (its workspace evicted, the replacement not
+      // scheduled yet) shows up ONLY as a stray, and its dirs are what the
+      // replacement is about to mount.
+      [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectSlug: 'proj-b', createdAtMs: 0 }],
+    )
 
     await gcOrphanEphemeralModuleDirs()
 
-    await expect(fs.access(strayOnly)).resolves.toBeUndefined()
+    expect(reaped).toHaveLength(1)
+    const [running] = reaped
+    expect([...running.keys()].sort()).toEqual(['proj-a', 'proj-b', 'proj-c'])
+    expect(running.get('proj-a')).toEqual(new Set(['live-1', 'job-only-1', 'creating-1']))
+    expect(running.get('proj-b')).toEqual(new Set(['live-1', 'job-only-1']))
+    for (const dir of [live, dead, strayOnly]) {
+      await expect(fs.access(dir)).resolves.toBeUndefined()
+    }
   })
 
   it('also removes orphan per-session tmux dirs', async () => {
@@ -650,14 +649,9 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(deadTmux)).rejects.toThrow()
   })
 
-  it('is a no-op when the projects dir does not exist', async () => {
+  it('is a no-op when neither projects dir exists, and asks the runtime for nothing', async () => {
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
-  })
-
-  it('skips projects that have no modules dir', async () => {
-    // Seed only the project dir, not .cached-packages/modules/.
-    await fs.mkdir(path.join(dataDir, 'projects', 'proj-empty'), { recursive: true })
-    await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
+    expect(reaped).toHaveLength(0)
   })
 
   it('spares a session the process is still provisioning', async () => {
@@ -665,26 +659,11 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     // launched yet — so no listing can vouch for it. Sweeping here deletes
     // the dirs the starting workspace is about to mount.
     const staging = await seedWorktreesDir('proj-a', 'creating-1')
-    const modules = await seedModulesDir('proj-a', 'creating-1')
     publishInFlight(['creating-1'])
 
     await gcOrphanEphemeralModuleDirs()
 
     await expect(fs.access(staging)).resolves.toBeUndefined()
-    await expect(fs.access(modules)).resolves.toBeUndefined()
-  })
-
-  // It collects what a PREVIOUS process left behind, so a second pass has
-  // nothing new to find — and it runs from the reconcile loop, which would
-  // otherwise re-walk the tree on every tick forever.
-  it('sweeps once per server life', async () => {
-    await seedWorktreesDir('proj-a', 'dead-1')
-
-    await gcOrphanEphemeralModuleDirs()
-    const taken = views
-    await gcOrphanEphemeralModuleDirs()
-
-    expect(views).toBe(taken)
   })
 
   it('spares a dir written since the sweep took its listing', async () => {
@@ -699,12 +678,14 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   })
 
   // "I could not see" must never read as "nothing is there": the view
-  // rejects rather than resolving empty, and the sweep stands down.
+  // rejects rather than resolving empty, and the sweep stands down — the
+  // runtime included, which is handed no keep-list to reap against.
   it('returns quietly when the runtime view cannot be read', async () => {
-    const dead = await seedModulesDir('proj-a', 'would-be-removed')
+    const dead = await seedWorktreesDir('proj-a', 'would-be-removed')
     seeNothing()
 
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
     await expect(fs.access(dead)).resolves.toBeUndefined()
+    expect(reaped).toHaveLength(0)
   })
 })

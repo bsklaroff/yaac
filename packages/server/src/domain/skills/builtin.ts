@@ -357,7 +357,7 @@ async function pruneRetiredLinks(root: string, names: string[]): Promise<void> {
 /** Read-only mounts placing each staged skill at `<root>/<name>` in every
  *  tool's personal skills dir. The skill content rides in via the mount, so it
  *  is never written into the persisted per-project config dirs. The staging dir
- *  is SHARED (under `worktreeStateDir`) — server-written, pod-read — so it takes the
+ *  is GLOBAL (under `worktreeStateDir`) — server-written, pod-read — so it takes the
  *  shared tier's source. */
 export function builtinSkillMounts(stagingDir: string, names: string[]): WorkspaceMount[] {
   const mounts: WorkspaceMount[] = []

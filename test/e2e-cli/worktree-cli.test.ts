@@ -408,7 +408,7 @@ describe('with seeded projects', () => {
 
     async function seedTranscript(slug: string, worktreeId: string, body: string): Promise<void> {
       const dir = path.join(
-        testEnv.dataDir, 'projects', slug, 'claude', 'projects', '-workspace',
+        testEnv.dataDir, 'global', 'projects', slug, 'claude', 'projects', '-workspace',
       )
       await fs.mkdir(dir, { recursive: true })
       await fs.writeFile(path.join(dir, `${worktreeId}.jsonl`), body)
@@ -843,7 +843,7 @@ describe('with seeded projects', () => {
       // Override the cloned origin with a URL-shaped value so parseGitRemote
       // succeeds; the credential lookup against an empty store is the real
       // assertion target.
-      await simpleGit(path.join(testEnv.dataDir, 'projects', 'repo-demo', 'repo'))
+      await simpleGit(path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo', 'repo'))
         .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo.git'])
 
       const { stderr, exitCode } = await runYaac(
@@ -879,7 +879,7 @@ describe('with seeded projects', () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo-opencode')
       await createTestRepo(repo)
       await addTestProject(repo)
-      await simpleGit(path.join(testEnv.dataDir, 'projects', 'repo-demo-opencode', 'repo'))
+      await simpleGit(path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo-opencode', 'repo'))
         .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo-opencode.git'])
 
       const { stderr, exitCode } = await runYaac(
@@ -897,7 +897,7 @@ describe('with seeded projects', () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
       await createTestRepo(repo)
       await addTestProject(repo)
-      await simpleGit(path.join(testEnv.dataDir, 'projects', 'repo-demo-model-tool', 'repo'))
+      await simpleGit(path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo-model-tool', 'repo'))
         .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo-model-tool.git'])
 
       const { stderr, exitCode } = await runYaac(

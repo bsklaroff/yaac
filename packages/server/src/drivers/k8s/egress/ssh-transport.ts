@@ -46,7 +46,7 @@ export function workspaceSshTransport(
   ])
 
   return {
-    // SHARED: written under the project dir by the server, read in-pod.
+    // GLOBAL: written under the project dir by the server, read in-pod.
     mounts: [{
       source: { kind: 'hostPath', path: knownHostsFile, type: 'File' },
       mountPath: CONTAINER_KNOWN_HOSTS,

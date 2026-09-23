@@ -8,7 +8,9 @@
  * actually receive.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import fs from 'node:fs/promises'
 import os from 'node:os'
+import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 import type * as registryModule from '#drivers/k8s/container/registry'
@@ -109,13 +111,17 @@ interface PodSpec {
   nodeSelector?: Record<string, string>
   tolerations?: Array<Record<string, string>>
   securityContext?: Record<string, number>
-  volumes: Array<{ hostPath?: { path: string } }>
+  volumes: Array<{
+    name: string
+    hostPath?: { path: string; type?: string }
+    persistentVolumeClaim?: { claimName: string }
+  }>
   containers: Array<{
     image: string
     command?: string[]
     env: Array<{ name: string; value: string }>
     securityContext?: Record<string, unknown>
-    volumeMounts: Array<{ mountPath: string }>
+    volumeMounts: Array<{ name: string; mountPath: string }>
   }>
 }
 
@@ -134,6 +140,20 @@ function tailnetService(hostname: string, publishedAfter = 0): (args: string[]) 
       status: reads > publishedAfter ? { loadBalancer: { ingress: [{ ip: '100.64.0.9', hostname }] } } : {},
     }
   }
+}
+
+/**
+ * A storage claim as the apiserver reports it once the static pair has
+ * bound — what every deploy waits on after applying it. Absent on the
+ * first read (so the pair is applied), Bound to its own volume after.
+ */
+const claimReads = new Map<string, number>()
+function claimRead(args: string[]): unknown {
+  if (args[1] !== 'pvc') return null
+  const n = (claimReads.get(args[2]) ?? 0) + 1
+  claimReads.set(args[2], n)
+  if (n === 1) return null
+  return { spec: { volumeName: `${args[2]}-ddh16` }, status: { phase: 'Bound' } }
 }
 
 /** The kind path, unless a case hands another fronting. */
@@ -166,6 +186,7 @@ let tmpDir: string
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  claimReads.clear()
   resetClusterCidrCache()
   tmpDir = await createTempDataDir()
   mockApply.mockResolvedValue(undefined)
@@ -181,7 +202,7 @@ beforeEach(async () => {
         }],
       })
     }
-    return Promise.resolve(null)
+    return Promise.resolve(claimRead(args))
   })
   // The image is already in the registry, so no build is attempted: this
   // suite is about the workload, and podman is not a process boundary it
@@ -254,8 +275,7 @@ describe('deployServerWorkload', () => {
       runAsGroup: process.getgid?.(),
       supplementalGroups: [0],
     })
-    // No fsGroup: the data dir is the only volume, and hostPath ownership
-    // is not the kubelet's to manage.
+    // No fsGroup: hostPath ownership is not the kubelet's to manage.
     expect(pod.securityContext).not.toHaveProperty('fsGroup')
     // And no setuid path to real root: group 0 plus a group-writable
     // /etc/passwd would otherwise reach it through `su`.
@@ -266,11 +286,27 @@ describe('deployServerWorkload', () => {
       `reg.local:5000/yaac-server:${stringHash('bundlehash')}`,
     )
 
-    // The whole data dir, at its own absolute path: phase 2 moves the
-    // process, not the storage, so everything inside the pod resolves
-    // exactly as it did on the host.
-    expect(pod.volumes[0].hostPath?.path).toBe(tmpDir)
-    expect(pod.containers[0].volumeMounts[0].mountPath).toBe(tmpDir)
+    // The three tiers as three mounts: the two claims install bound, and
+    // this node's own node-local tree. Nothing under the data dir by
+    // hostPath.
+    const mountOf = (name: string): string | undefined =>
+      pod.containers[0].volumeMounts.find((m) => m.name === name)?.mountPath
+    expect(pod.volumes.find((v) => v.name === 'global')?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
+    expect(mountOf('global')).toBe('/yaac/global')
+    expect(pod.volumes.find((v) => v.name === 'server-local')?.persistentVolumeClaim).toEqual({ claimName: 'yaac-server-local' })
+    expect(mountOf('server-local')).toBe('/yaac/server-local')
+    expect(pod.volumes.find((v) => v.name === 'node-local')?.hostPath)
+      .toEqual({ path: '/var/lib/yaac/node/ddh16', type: 'DirectoryOrCreate' })
+    expect(mountOf('node-local')).toBe('/yaac/node-local')
+    expect(pod.volumes.some((v) => v.hostPath?.path.startsWith(tmpDir))).toBe(false)
+    // And the claims were applied — PV then PVC per tier — before the
+    // Deployment that names them, into the data dir's own folders.
+    const pvs = applied('PersistentVolume') as unknown as Array<{ spec: { hostPath: { path: string } } }>
+    expect(pvs.map((p) => p.spec.hostPath.path)).toEqual([
+      path.join(tmpDir, 'global'), path.join(tmpDir, 'server-local'),
+    ])
+    expect(order('PersistentVolume')).toBeLessThan(order('PersistentVolumeClaim'))
+    expect(order('PersistentVolumeClaim')).toBeLessThan(order('Deployment'))
 
     // The published origin, and the `server.json` that makes every client on
     // this machine resolve it without being told — including the record that
@@ -306,8 +342,12 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_BIND_ADDR).toBe('0.0.0.0')
     expect(env.YAAC_SERVER_PORT).toBe(String(SERVER_POD_PORT))
     // The same absolute data dir, so dataDirHash() and every label carry
-    // over unchanged into the pod.
+    // over unchanged into the pod — an identity string there, since what
+    // the pod MOUNTS are the three tier roots it is told about here.
     expect(env.YAAC_DATA_DIR).toBe(tmpDir)
+    expect(env.YAAC_GLOBAL_ROOT).toBe('/yaac/global')
+    expect(env.YAAC_SERVER_LOCAL_ROOT).toBe('/yaac/server-local')
+    expect(env.YAAC_NODE_LOCAL_ROOT).toBe('/yaac/node-local')
     expect(env.YAAC_DRIVER).toBe('k8s')
     // The two in-cluster shortcuts: the relay dials the proxy Service
     // instead of a port-forward, and IN_CLUSTER is what makes the registry
@@ -435,7 +475,7 @@ describe('deployServerWorkload', () => {
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
       args.includes('nodes')
         ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-        : svc(args),
+        : claimRead(args) ?? svc(args),
     ))
     const log = vi.fn()
 
@@ -493,7 +533,7 @@ describe('deployServerWorkload', () => {
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
       args.includes('nodes')
         ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-        : tailnetService('yaac.tail1234.ts.net')(args),
+        : claimRead(args) ?? tailnetService('yaac.tail1234.ts.net')(args),
     ))
 
     await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
@@ -510,11 +550,16 @@ describe('deployServerWorkload', () => {
       mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
         args.includes('nodes')
           ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-          : tailnetService('never', Number.MAX_SAFE_INTEGER)(args),
+          : claimRead(args) ?? tailnetService('never', Number.MAX_SAFE_INTEGER)(args),
       ))
+      let settled = false
       const pending = deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
+        .finally(() => { settled = true })
       const verdict = expect(pending).rejects.toThrow(/Tailscale operator did not publish/)
-      for (let i = 0; i < 130; i += 1) {
+      // Tick until it settles: the deploy does real disk I/O (the lock read,
+      // the layout migration) before it reaches the publish wait, and each
+      // of those needs a turn of the loop between clock advances.
+      for (let i = 0; i < 1_000 && !settled; i += 1) {
         await new Promise((r) => setImmediate(r))
         await vi.advanceTimersByTimeAsync(1_000)
       }
@@ -574,6 +619,56 @@ describe('deployServerWorkload', () => {
     expect(execCall).toContain(`deployment/${SERVER_APP_NAME}`)
     expect(seen.find((s) => s.method === 'POST')?.auth).toBe('Bearer podsecret')
     expect((await readServerConfig())?.token).toBe('minted-by-pod')
+  })
+
+  it('stops the pod that is there, then moves the data dir into the tier layout, then deploys', async () => {
+    // An install upgrading from before the storage tiers were folders: the
+    // old pod holds PGlite open at `<dataDir>/db` and heartbeats its lock
+    // there. The order is the whole safety argument — the rename runs only
+    // once the pod is gone (docs/legacy-compat-shims.md).
+    mockGetJson.mockImplementation((args: string[]) => {
+      if (args.includes('nodes')) {
+        return Promise.resolve({
+          items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }],
+        })
+      }
+      if (args[1] === 'deployment') return Promise.resolve({ metadata: { name: SERVER_APP_NAME } })
+      return Promise.resolve(claimRead(args))
+    })
+    await fs.mkdir(path.join(tmpDir, 'projects', 'demo'), { recursive: true })
+    await fs.mkdir(path.join(tmpDir, 'db'), { recursive: true })
+    await fs.writeFile(path.join(tmpDir, 'secret.key'), 'k')
+    const log = vi.fn()
+
+    await deploy({ log })
+
+    const calls = retried()
+    const stopAt = calls.findIndex((c) => c.includes('scale') && c.includes('--replicas=0'))
+    expect(stopAt).toBeGreaterThanOrEqual(0)
+    // Waited on the pod's deletion, not just the scale.
+    expect(calls[stopAt + 1]).toMatch(/wait pod .*--for=delete/)
+    // The Deployment was applied after the stop.
+    const deployOrder = mockApply.mock.invocationCallOrder[
+      (mockApply.mock.calls as Array<[Manifest]>).findIndex(([m]) => m.kind === 'Deployment')]
+    expect(mockWithRetry.mock.invocationCallOrder[stopAt]).toBeLessThan(deployOrder)
+    // And the move landed in between: the log says so in order.
+    const lines = log.mock.calls.map(([m]) => String(m))
+    const stopLine = lines.findIndex((l) => /Stopping the running server pod/.test(l))
+    const moveLine = lines.findIndex((l) => /\[layout\] moved .*\/db ->/.test(l))
+    const deployLine = lines.findIndex((l) => /Deploying the yaac server/.test(l))
+    expect(stopLine).toBeGreaterThanOrEqual(0)
+    expect(stopLine).toBeLessThan(moveLine)
+    expect(moveLine).toBeLessThan(deployLine)
+    await expect(fs.access(path.join(tmpDir, 'server-local', 'db'))).resolves.toBeUndefined()
+    await expect(fs.access(path.join(tmpDir, 'server-local', 'secret.key'))).resolves.toBeUndefined()
+    await expect(fs.access(path.join(tmpDir, 'global', 'projects', 'demo'))).resolves.toBeUndefined()
+  })
+
+  it('skips the stop when there is no Deployment yet, and still migrates', async () => {
+    await fs.mkdir(path.join(tmpDir, 'projects', 'demo'), { recursive: true })
+    await deploy({ log: vi.fn() })
+    expect(retried().some((c) => c.includes('--replicas=0'))).toBe(false)
+    await expect(fs.access(path.join(tmpDir, 'global', 'projects', 'demo'))).resolves.toBeUndefined()
   })
 
   it('refuses to deploy beside a host server that still holds the data dir', async () => {

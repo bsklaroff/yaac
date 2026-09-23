@@ -95,7 +95,7 @@ export async function resetShortcuts(): Promise<void> {
   await api.shortcuts.reset.$post()
 }
 
-/** Read the global user Dockerfile (~/.yaac/Dockerfile.user); '' when unset. */
+/** Read the global user Dockerfile (~/.yaac/server-local/build/Dockerfile.user); '' when unset. */
 export async function getUserDockerfile(): Promise<string> {
   const { content } = await api.config['user-dockerfile'].$get()
   return content

@@ -177,11 +177,41 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(list.exitCode, list.stderr).toBe(0)
   })
 
-  it('`server logs` prints the log the pod wrote into the shared data dir', async () => {
+  it('the server pod mounts the two claims and the node tree, and nothing under the data dir by hostPath', async () => {
+    const { stdout } = await execFileAsync('kubectl', [
+      'get', 'deployment', 'yaac-server', '-n', TEST_NAMESPACE, '-o', 'json',
+    ])
+    const pod = (JSON.parse(stdout) as {
+      spec: { template: { spec: {
+        volumes: Array<{ name: string; hostPath?: { path: string }; persistentVolumeClaim?: { claimName: string } }>
+        containers: Array<{ volumeMounts: Array<{ name: string; mountPath: string }> }>
+      } } }
+    }).spec.template.spec
+    const claims = pod.volumes.filter((v) => v.persistentVolumeClaim).map((v) => v.persistentVolumeClaim?.claimName)
+    expect(claims.sort()).toEqual(['yaac-global', 'yaac-server-local'])
+    expect(pod.volumes.find((v) => v.name === 'node-local')?.hostPath?.path).toMatch(/^\/var\/lib\/yaac\/node\//)
+    // The harness adds its scratch base as a fourth mount (the mock remotes
+    // and source repos live beside the data dir); the data dir itself is
+    // reached only through the claims.
+    for (const v of pod.volumes) {
+      expect(v.hostPath?.path.startsWith(testEnv.dataDir)).not.toBe(true)
+    }
+    const mounts = Object.fromEntries(pod.containers[0].volumeMounts.map((m) => [m.name, m.mountPath]))
+    expect(mounts).toMatchObject({
+      global: '/yaac/global', 'server-local': '/yaac/server-local', 'node-local': '/yaac/node-local',
+    })
+    // And both claims bound their static volumes into this file's data dir.
+    const { stdout: pvcs } = await execFileAsync('kubectl', [
+      'get', 'pvc', '-n', TEST_NAMESPACE, '-o', 'jsonpath={range .items[*]}{.metadata.name}={.status.phase}{"\\n"}{end}',
+    ])
+    expect(pvcs.trim().split('\n').sort()).toEqual(['yaac-global=Bound', 'yaac-server-local=Bound'])
+  })
+
+  it('`server logs` prints the log the pod wrote into the server-local claim', async () => {
     // The one verb that needs no cluster awareness at all: the server writes
-    // `server.log` under the data dir, which the pod hostPath-mounts from
-    // this host — so the same command reads the same file either side of the
-    // move.
+    // `server.log` under its server-local root, which on kind is the static
+    // PV into `<dataDir>/server-local` on this host — so the same command
+    // reads the same file either side of the cluster boundary.
     const logs = await runYaac(testEnv.env, 'server', 'logs')
     expect(logs.exitCode, logs.stderr).toBe(0)
     // Bound on the pod interface, not a loopback: a pod's loopback has no

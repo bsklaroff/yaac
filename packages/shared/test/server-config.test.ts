@@ -15,7 +15,7 @@ import {
   writeServerConfig,
 } from '#server-config'
 import { recordedDriver } from '#install-driver'
-import { clientLocalPath, clientLocalRoot, serverLocalPath, setDataDir } from '#paths'
+import { clientLocalPath, clientLocalRoot, setDataDir } from '#paths'
 
 describe('server config store', () => {
   let dir: string
@@ -82,8 +82,10 @@ describe('server config store', () => {
     // named by it, and lived in the data dir itself before the client-local
     // tier existed. Losing either silently would leave every client unable
     // to reach a running server with no hint why — docs/legacy-compat-shims.md.
+    // The data dir ROOT, spelled out: that is where a pre-client-local
+    // install wrote it, and no tier helper names the root any more.
     await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(serverLocalPath('remote.json'), JSON.stringify({
+    await fs.writeFile(path.join(dir, 'remote.json'), JSON.stringify({
       url: 'https://oldest.ts.net', token: 'tok', enabled: true,
     }))
     expect((await readServerConfig())?.url).toBe('https://oldest.ts.net')
@@ -99,7 +101,7 @@ describe('server config store', () => {
     // a live credential left behind would outlive `clearServerConfig`.
     await writeServerConfig({ url: 'https://new.ts.net', token: 't2', enabled: true, saved: [] })
     expect((await readServerConfig())?.url).toBe('https://new.ts.net')
-    await expect(fs.access(serverLocalPath('remote.json'))).rejects.toThrow()
+    await expect(fs.access(path.join(dir, 'remote.json'))).rejects.toThrow()
     await expect(fs.access(clientLocalPath('remote.json'))).rejects.toThrow()
 
     // And the new location wins outright while both exist.
@@ -182,7 +184,7 @@ describe('recordedDriver', () => {
     // An install that has not re-registered since the record moved into
     // server.json — docs/legacy-compat-shims.md.
     await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(serverLocalPath('driver'), 'k8s\n')
+    await fs.writeFile(path.join(dir, 'driver'), 'k8s\n')
     expect(await recordedDriver()).toBe('k8s')
 
     await fs.mkdir(clientLocalRoot(), { recursive: true })

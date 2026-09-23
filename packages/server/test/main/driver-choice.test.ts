@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { clientLocalPath, ensureClientLocalRoot, serverLocalPath, setDataDir } from '@yaac/shared/paths'
+import { clientLocalPath, ensureClientLocalRoot, getDataDir, setDataDir } from '@yaac/shared/paths'
 import { writeServerConfig } from '@yaac/shared/server-config'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 
@@ -84,9 +84,9 @@ describe('assertHostServerAllowed', () => {
   it('still refuses one recorded in the standalone file, at both its paths', async () => {
     // Upgrading must not quietly re-enable the second writer this guard
     // exists to stop — see docs/legacy-compat-shims.md.
-    await fs.writeFile(serverLocalPath('driver'), 'k8s\n')
+    await fs.writeFile(path.join(getDataDir(), 'driver'), 'k8s\n')
     await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
-    await fs.rm(serverLocalPath('driver'))
+    await fs.rm(path.join(getDataDir(), 'driver'))
     await recordLegacyFile('k8s')
     await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
   })

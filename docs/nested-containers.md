@@ -129,11 +129,16 @@ of the 12GiB sentry graphroot spent on layers it did not build. Concurrent
 worktrees on a node share one copy of the bytes.
 
 `store-writer.ts` owns it. A **generation** is a complete store under
-`<node-local root>/shared-images/<project>/gen-<stamp>/`, written by a
+`<node-local root>/shared-images/<project>/gen-<stamp>/` — on the node,
+that is `/var/lib/yaac/node/<install hash>/shared-images/<project>/…`, the
+install's node-local tree, which is what the writer and cleanup pods mount
+(docs/server-in-cluster.md "Storage is two claims") — written by a
 node-side pod and made publishable only by the `.yaac-store-done` marker
 written last. It sits outside the project tree, alone among per-project
 paths, because a node-side pod writes it as root and the server's own uid
-could not `rm -rf` it at project removal; a one-shot pod does that instead. Generations are write-once: worktree create pins the newest
+could not `rm -rf` it at project removal; the one-shot pod that removes a
+project's whole node-local tree does that instead. Generations are
+write-once: worktree create pins the newest
 complete generation's *path* into the pod, so a running worktree's store
 can never change underneath it, and the writer's GC can read the live set
 straight off pod specs — a generation is droppable exactly when no pod
@@ -144,8 +149,8 @@ holds and rearranges it on a node path — which is why it is not one of the
 trust-split *builder* pods and carries none of their identity; it borrows
 only their pinned `quay.io/podman/stable` image. Its shape is the
 registry's `hosts.toml` writers': runc, plain root, `nodeName`, tolerating
-everything, store parent hostPath-mounted rw. Two of its properties are
-deliberate:
+everything, the store's node path hostPath-mounted rw. Two of its
+properties are deliberate:
 
 - **hostNetwork**, because the project registry's ingress policy already
   admits the node's own address range for containerd's pulls. In the host

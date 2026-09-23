@@ -9,7 +9,7 @@ import { listWorktreeRows, recordWorktreeCreated } from '#db/worktree-store'
 import { listProjectRows } from '#db/project-store'
 import { listProjectEnvVars, upsertProjectEnvVar } from '#db/project-env-store'
 import { closeDb } from '#db/client'
-import { projectDir, projectRoots } from '@yaac/shared/project-paths'
+import { nodeLocalProjectPath, projectDir } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 vi.mock('#domain/worktrees/project-purge', () => ({ purgeProjectBytes: vi.fn() }))
@@ -36,7 +36,7 @@ beforeEach(async () => {
     // Erasing the clone is what the real purge does, and it matters here:
     // the adoption shim would otherwise re-adopt the project from the
     // directory the moment its row was deleted.
-    for (const root of projectRoots(slug)) {
+    for (const root of [projectDir(slug), nodeLocalProjectPath(slug)]) {
       await fs.rm(root, { recursive: true, force: true })
     }
   })

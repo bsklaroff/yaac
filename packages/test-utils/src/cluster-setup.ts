@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import { afterAll, beforeAll } from 'vitest'
 import { TEST_NAMESPACE } from './setup'
 import { deleteTestServerClusterRbac } from './deployed-server'
+import { deleteTestStorageVolumes } from './storage-claims'
 import { installRealWorktreeDriver } from './real-driver'
 
 const execFileAsync = promisify(execFile)
@@ -64,6 +65,9 @@ afterAll(async () => {
   // problem), so a file that deployed a server would otherwise leave a
   // binding per run behind for the global sweep to find.
   await deleteTestServerClusterRbac(TEST_NAMESPACE)
+  // The PVs behind this file's claim pair are cluster-scoped too, and
+  // `Retain` means deleting them touches none of the file's bytes.
+  await deleteTestStorageVolumes(TEST_NAMESPACE)
   try {
     await execFileAsync(
       'kubectl',

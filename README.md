@@ -306,7 +306,7 @@ yaac tool <command>
 yaac config <command>
   edit <project>              Open the project's yaac-config.json in $EDITOR
   edit-dockerfile <project>   Open the project's Dockerfile.yaac in $EDITOR
-  edit-user-dockerfile        Open the global ~/.yaac/Dockerfile.user in $EDITOR
+  edit-user-dockerfile        Open the global ~/.yaac/server-local/build/Dockerfile.user in $EDITOR
 
 yaac auth <command>
   list                List configured credentials (masked)
@@ -333,13 +333,13 @@ shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-
 
 ## Authentication
 
-yaac centralizes credentials on the host and injects them into worktree traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/.credentials/` (directory permissions `0700`, files `0600`), split by service:
+yaac centralizes credentials on the host and injects them into worktree traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/server-local/.credentials/` (directory permissions `0700`, files `0600`), split by service:
 
-- `~/.yaac/.credentials/github.json` — GitHub tokens
-- `~/.yaac/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
-- `~/.yaac/.credentials/codex.json` — Codex credentials
-- `~/.yaac/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
-- `~/.yaac/.credentials/pi.json` — Pi credentials (OpenRouter, Anthropic, or OpenAI API key)
+- `~/.yaac/server-local/.credentials/github.json` — GitHub tokens
+- `~/.yaac/server-local/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
+- `~/.yaac/server-local/.credentials/codex.json` — Codex credentials
+- `~/.yaac/server-local/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
+- `~/.yaac/server-local/.credentials/pi.json` — Pi credentials (OpenRouter, Anthropic, or OpenAI API key)
 
 A worktree is tool-agnostic — it holds whatever agent sessions you open in it,
 in any mix — so injection is not scoped to one tool: **any agent in any
@@ -387,32 +387,31 @@ For Claude Code OAuth, each project's `.claude/.credentials.json` inside the con
 
 ## Worktree layout
 
-Each worktree runs as a single-pod Kubernetes Job with the following hostPath mounts:
+Each worktree runs as a single-pod Kubernetes Job with the following mounts. The data dir (`~/.yaac`) has three tier folders — `global/` (what the server and every worktree pod share), `node-local/` (per-node caches and working copies) and `server-local/` (the server's own state: database, credentials, log) — and the tier a path lives in decides how the pod sees it:
 
 | Host | Container | Description |
 |------|-----------|-------------|
-| `~/.yaac/projects/<project>/worktrees/<worktree-id>` | `/workspace` | Project code (working directory) |
-| `~/.yaac/projects/<project>/repo/.git` | `/repo/.git` | Repository metadata |
-| `~/.yaac/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
-| `~/.yaac/projects/<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
-| `~/.yaac/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
-| `~/.yaac/projects/<project>/opencode-config/` | `/home/yaac/.config/opencode` | OpenCode configuration (shared per project) |
-| `~/.yaac/projects/<project>/opencode-data/<worktree-id>` | `/home/yaac/.local/share/opencode` | OpenCode session data (per worktree) |
-| `~/.yaac/projects/<project>/pi-sessions/<worktree-id>` | `/home/yaac/.pi/agent/sessions` | Pi session logs (per worktree) |
-| `~/.yaac/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches |
+| `~/.yaac/global/projects/<project>/worktrees/<worktree-id>` | `/workspace` | Project code (working directory) |
+| `~/.yaac/global/projects/<project>/repo/.git` | `/repo/.git` | Repository metadata |
+| `~/.yaac/global/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
+| `~/.yaac/global/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
+| `~/.yaac/global/projects/<project>/opencode-config/` | `/home/yaac/.config/opencode` | OpenCode configuration (shared per project) |
+| `~/.yaac/global/projects/<project>/opencode-data/<worktree-id>` | `/home/yaac/.yaac/opencode-checkpoint` | OpenCode session checkpoint (per worktree; the pod works on a node-local copy at `/home/yaac/.local/share/opencode` and checkpoints here) |
+| `~/.yaac/global/projects/<project>/pi/` | `/home/yaac/.pi` | Pi home and session logs |
+| `~/.yaac/node-local/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches (node disk) |
 
-The worktree container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all worktrees within a project (but isolated between projects), so those worktrees can inspect each other's history; OpenCode and Pi session data are per-worktree (OpenCode to avoid concurrent-write issues in its database, Pi so `pi --continue` resumes only that worktree's log).
+The worktree container runs as user `yaac` with home directory `/home/yaac`. Project data lives under `~/.yaac/global/projects/<repo-name>/` on the host, which the server pod and every worktree pod mount through the `yaac-global` claim (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all worktrees within a project (but isolated between projects), so those worktrees can inspect each other's history; OpenCode session data is per-worktree (to avoid concurrent-write issues in its database), and pi resumes a worktree by its session id.
 
-The `.cached-packages` directory is shared by every worktree within the project, so package-manager caches survive worktree teardown and are reused across worktrees. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
+The `.cached-packages` directory is shared by every worktree of the project on a node, so package-manager caches survive worktree teardown and are reused across worktrees. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
 
 ## Project configuration
 
 Per-machine, per-project configuration lives under each project's data dir:
 
 ```
-~/.yaac/projects/<repo-name>/config/yaac-config.json
-~/.yaac/projects/<repo-name>/config/Dockerfile.yaac
-~/.yaac/Dockerfile.user
+~/.yaac/global/projects/<repo-name>/config/yaac-config.json
+~/.yaac/global/projects/<repo-name>/config/Dockerfile.yaac
+~/.yaac/server-local/build/Dockerfile.user
 ```
 
 The easiest way to populate these is in `$EDITOR`:
@@ -420,7 +419,7 @@ The easiest way to populate these is in `$EDITOR`:
 ```
 yaac config edit <project>             # yaac-config.json
 yaac config edit-dockerfile <project>  # Dockerfile.yaac
-yaac config edit-user-dockerfile       # ~/.yaac/Dockerfile.user (global)
+yaac config edit-user-dockerfile       # ~/.yaac/server-local/build/Dockerfile.user (global)
 ```
 
 Example `yaac-config.json` with all options:
@@ -437,7 +436,7 @@ Example `yaac-config.json` with all options:
 }
 ```
 
-- **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across worktrees. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across worktrees), so you don't need a `cacheVolumes` entry for pnpm's store.
+- **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/global/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across worktrees. Note: a per-project `~/.yaac/node-local/projects/<project>/.cached-packages` directory is already mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across worktrees), so you don't need a `cacheVolumes` entry for pnpm's store.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every worktree, not just the first. Accepts two shapes (cannot be mixed):
   - **String list** — all commands are chained with `&&` and run in a single tmux window named `init`, parallel to the agent:
     ```json
@@ -489,7 +488,7 @@ XChaCha20-Poly1305 with a random nonce per value, keyed by the SHA-256 of a
 secret string, and a versioned envelope so a key can be rotated without
 re-encrypting anything.
 
-By default the server generates a key for itself at `~/.yaac/secret.key`
+By default the server generates a key for itself at `~/.yaac/server-local/secret.key`
 (mode 0600) on first use. **Back that file up with the data dir** — without
 it every stored secret is unreadable, and the UI will ask you to enter them
 again. To keep the key somewhere else instead, set `YAAC_SECRET` to it, or
@@ -497,7 +496,7 @@ again. To keep the key somewhere else instead, set `YAAC_SECRET` to it, or
 
 ```sh
 # Rotate: state the new key first, keep the old one so existing rows open.
-export YAAC_SECRETS="1:$(openssl rand -base64 32),0:$(cat ~/.yaac/secret.key)"
+export YAAC_SECRETS="1:$(openssl rand -base64 32),0:$(cat ~/.yaac/server-local/secret.key)"
 ```
 
 ## Environment variables
@@ -518,7 +517,7 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
 | `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
 | `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the webapp claims a worktree's forwarded ports are reachable at; a remote-hosting server sets its tailnet IP. The server binds nothing itself — match this with `yaac forward --bind <same address>` on that machine. |
-| `YAAC_SECRET` | _(unset)_ | Key the server encrypts stored secrets with. Unset → it generates one into `~/.yaac/secret.key` (see "Secrets at rest"). |
+| `YAAC_SECRET` | _(unset)_ | Key the server encrypts stored secrets with. Unset → it generates one into `~/.yaac/server-local/secret.key` (see "Secrets at rest"). |
 | `YAAC_SECRETS` | _(unset)_ | Versioned keys, `"<version>:<secret>,…"`, newest first — how a key is rotated without re-encrypting anything. `YAAC_SECRET` alongside it opens payloads written before versioning. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
 | `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
@@ -557,8 +556,8 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
     ```
   - **Any other `FROM`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code yourself, since the default Dockerfile is skipped, and must create its user the way the default image does (below).
 
-  Place at `~/.yaac/projects/<repo-name>/config/Dockerfile.yaac`, or open it in `$EDITOR` with `yaac config edit-dockerfile <project>`.
-- **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization). Must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` so the parent image is injected via `--build-arg`:
+  Place at `~/.yaac/global/projects/<repo-name>/config/Dockerfile.yaac`, or open it in `$EDITOR` with `yaac config edit-dockerfile <project>`.
+- **`~/.yaac/server-local/build/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization). Must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` so the parent image is injected via `--build-arg`:
   ```dockerfile
   ARG BASE_IMAGE
   FROM ${BASE_IMAGE}

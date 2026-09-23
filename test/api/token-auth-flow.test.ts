@@ -61,7 +61,7 @@ describe('durable token auth flow (real server)', () => {
     // Persisted for the next server boot: the DB dir exists at 0700 (the
     // server is a separate process holding the single-process PGlite, so
     // the rows themselves are asserted via behavior, not read here).
-    const stat = await fs.stat(path.join(testEnv.dataDir, 'db'))
+    const stat = await fs.stat(path.join(testEnv.dataDir, 'server-local', 'db'))
     expect(stat.isDirectory()).toBe(true)
     expect(stat.mode & 0o777).toBe(0o700)
 

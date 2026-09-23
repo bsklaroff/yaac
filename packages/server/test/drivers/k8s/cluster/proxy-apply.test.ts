@@ -68,7 +68,7 @@ import {
   syncProxyCredentials,
   vapAvailable,
 } from '#drivers/k8s/cluster'
-import { sharedPath } from '@yaac/shared/project-paths'
+import { globalPath, globalRoot } from '@yaac/shared/project-paths'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import {
   DNS_STUB_PORT,
@@ -280,7 +280,7 @@ describe('ensureProxyResources', () => {
     await ensureProxyResources('localhost:5000/yaac-proxy:abc')
 
     // Nothing on the host: the proxy mounts no directory of it.
-    await expect(fs.readdir(tmpDir)).resolves.not.toContain('run')
+    await expect(fs.readdir(globalRoot()).catch(() => [])).resolves.not.toContain('run')
     await expect(fs.readdir(tmpDir)).resolves.not.toContain('.credentials')
 
     expect(kinds()).toEqual([
@@ -346,7 +346,7 @@ describe('ensureProxyResources', () => {
     // The old proxy's hostPath, off the data dir the server mounts
     // (docs/legacy-compat-shims.md). Bare refs in a persisted registration
     // predate project scoping; the seed scopes them on the way in.
-    const dir = sharedPath('run', 'proxy-data')
+    const dir = globalPath('run', 'proxy-data')
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(path.join(dir, 'ca.key'), 'OLD-KEY')
     await fs.writeFile(path.join(dir, 'ca.pem'), 'OLD-CERT')

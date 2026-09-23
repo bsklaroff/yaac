@@ -65,6 +65,50 @@ fi
 # socket lives on the host-mounted tmux dir so host-side probes can find it.
 TMUX="tmux -S /tmp/yaac-tmux/server"
 
+# opencode's history: restore the NODE-LOCAL working copy from the GLOBAL
+# checkpoint. The checkpoint is the only source of truth: whatever the
+# node held — the leftovers of another worktree that once had this id, or
+# the copy an unclean stop left — is discarded, never merged. One exception
+# keeps an unclean stop from costing anything on a node that survived it:
+# a working copy whose database (or its WAL) is NEWER than the checkpoint's
+# is checkpointed first; the copy of an earlier life on another node is
+# older, and loses. The checkpoint's own sidecars (`-wal`, `-shm`,
+# `-journal`) are restored with it: a pre-split data dir is one opencode
+# wrote directly, and its WAL holds the newest transactions. A pod that
+# runs no opencode has an empty checkpoint and this costs it two `rm`s.
+# Keep the paths in sync with CONTAINER_OPENCODE_DATA /
+# CONTAINER_OPENCODE_CHECKPOINT (packages/shared/src/paths.ts) and with
+# yaac-opencode-checkpoint.
+OPENCODE_DATA="$HOME/.local/share/opencode"
+OPENCODE_CHECKPOINT="$HOME/.yaac/opencode-checkpoint"
+# How often the running pod checkpoints; a killed pod loses at most this
+# much of a conversation (docs/worktree-storage.md "opencode").
+OPENCODE_CHECKPOINT_INTERVAL_SECONDS=300
+if [ -d "$OPENCODE_DATA" ]; then
+  if [ -d "$OPENCODE_CHECKPOINT" ]; then
+    for wdb in "$OPENCODE_DATA"/*.db; do
+      [ -f "$wdb" ] || continue
+      cdb="$OPENCODE_CHECKPOINT/$(basename "$wdb")"
+      newer=0
+      for f in "$wdb" "$wdb-wal"; do
+        if [ -e "$f" ] && { [ ! -e "$cdb" ] || [ "$f" -nt "$cdb" ]; }; then newer=1; fi
+      done
+      if [ "$newer" = 1 ]; then
+        yaac-opencode-checkpoint || echo "yaac: could not salvage $wdb into the checkpoint" >&2
+      fi
+      break
+    done
+  fi
+  rm -rf "$OPENCODE_DATA"/* "$OPENCODE_DATA"/.[!.]* 2>/dev/null || true
+  if [ -d "$OPENCODE_CHECKPOINT" ]; then
+    for entry in "$OPENCODE_CHECKPOINT"/* "$OPENCODE_CHECKPOINT"/.[!.]*; do
+      [ -e "$entry" ] || continue
+      case "$(basename "$entry")" in .tmp-*.db) continue ;; esac
+      cp -a "$entry" "$OPENCODE_DATA"/ || echo "yaac: could not restore $entry" >&2
+    done
+  fi
+fi
+
 # Run from /, never the container's /workspace workingDir: the host-side
 # `git worktree add` populates /workspace CONCURRENTLY with this hook, and
 # its `.git` link file names the HOST admin path until the in-pod rewrite
@@ -222,5 +266,14 @@ fi
 # daemon exits on EADDRINUSE); the status watcher's self-heal re-runs the
 # same command via kubectl exec if it ever dies.
 setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &
+
+# The opencode checkpoint timer, after streamd because it gates nothing.
+# Backgrounded with setsid like the daemons above, so the hook's exec
+# stream can close while it keeps running under the pod's init; the pod's
+# preStop hook runs the same script one last time with `stop`.
+if [ -d "$OPENCODE_DATA" ] && [ -d "$OPENCODE_CHECKPOINT" ]; then
+  setsid sh -c "while sleep $OPENCODE_CHECKPOINT_INTERVAL_SECONDS; do yaac-opencode-checkpoint; done" \
+    >>/tmp/opencode-checkpoint.log 2>&1 </dev/null &
+fi
 
 exit 0

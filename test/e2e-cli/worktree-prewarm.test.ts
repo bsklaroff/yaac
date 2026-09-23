@@ -86,7 +86,7 @@ describe('yaac prewarmed sessions', () => {
 
   /** Stage a yaac project + fake creds on disk (same shape as `project add`). */
   async function stageProject(): Promise<void> {
-    const projectDir = path.join(testEnv.dataDir, 'projects', 'repo-demo')
+    const projectDir = path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo')
     const repoDir = path.join(projectDir, 'repo')
     await fs.mkdir(path.join(projectDir, 'claude'), { recursive: true })
 
@@ -98,7 +98,7 @@ describe('yaac prewarmed sessions', () => {
       JSON.stringify({ slug: 'repo-demo', remoteUrl: fakeRemote, addedAt: new Date().toISOString() }) + '\n',
     )
 
-    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(
       path.join(credsDir, 'github.json'),
@@ -214,7 +214,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     const { stdout: devFile } = await execInJob(retooled!.jobName, ['cat', '/workspace/dev-only.txt'])
     expect(devFile).toBe('dev content\n')
     expect(await worktreeUpstreamBranch(
-      path.join(testEnv.dataDir, 'projects', 'repo-demo', 'repo'),
+      path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo', 'repo'),
       `agent/${retooled!.worktreeId}`,
     )).toBe('dev')
 

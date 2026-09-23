@@ -133,13 +133,14 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
       )
     }
   } catch { /* kubectl or cluster absent — nothing to sweep */ }
-  // netd's and the test server's ClusterRole/Binding are cluster-scoped, so
-  // deleting the namespace above leaves them behind. Filter on the owning
-  // install namespace — a bare `app=yaac-netd` selector would also match the
-  // REAL install's RBAC and break the developer's own cluster.
+  // netd's and the test server's ClusterRole/Binding, and the PVs behind
+  // each file's storage claims, are cluster-scoped, so deleting the
+  // namespace above leaves them behind. Filter on the owning install
+  // namespace — a bare `app=yaac-netd` selector would also match the REAL
+  // install's objects and break the developer's own cluster.
   try {
     const { stdout } = await execFileAsync('kubectl', [
-      'get', 'clusterrole,clusterrolebinding', '-l', 'app in (yaac-netd,yaac-server)',
+      'get', 'clusterrole,clusterrolebinding,pv', '-l', 'app in (yaac-netd,yaac-server)',
       '-o', "jsonpath={range .items[*]}{.kind}/{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
     ], { timeout: 10_000 })
     const leaked = stdout

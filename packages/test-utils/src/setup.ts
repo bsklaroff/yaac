@@ -7,7 +7,7 @@ import simpleGit from 'simple-git'
 // Test infrastructure: re-exported below so tests can ASSERT against the
 // install root. Not a storage path — tests that write pick a tier helper.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { setDataDir, getDataDir, clientLocalRoot, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
+import { setDataDir, getDataDir, clientLocalRoot, ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import {
@@ -186,8 +186,11 @@ export async function cleanupWorktreeJobs(timeoutMs = 120_000): Promise<void> {
  */
 export async function createTempDataDir(): Promise<string> {
   const dir = await e2eMkdtemp('yaac-test-')
-  await fs.mkdir(path.join(dir, 'projects'), { recursive: true })
   setDataDir(dir)
+  // The tier folders, through the same helper a server start uses — so a
+  // test that writes a server-local file directly (a lock, a credential)
+  // finds its parent the way production would have made it.
+  await ensureDataDir()
   // The CLIENT-LOCAL root is a SIBLING of the data dir, so mkdtemp does not
   // make it. Created here rather than by each caller because a test that
   // seeds a client-local file directly (a remote, a driver record) would

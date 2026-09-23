@@ -1114,7 +1114,7 @@ describe('write routes', () => {
       }])
       // Nothing under the credentials dir holds anything about it.
       expect((await loadCredentials()).tokens).toEqual([])
-      const credDir = path.join(tmpDir, '.credentials')
+      const credDir = path.join(tmpDir, 'server-local', '.credentials')
       for (const name of await fs.readdir(credDir).catch(() => [] as string[])) {
         expect(await fs.readFile(path.join(credDir, name), 'utf8')).not.toContain('ssh-ed25519')
       }

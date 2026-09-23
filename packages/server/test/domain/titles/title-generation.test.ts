@@ -106,8 +106,8 @@ async function seedCache(): Promise<string> {
   const dir = path.join(homeDir, '.cache', 'yaac', 'llama-cpp', `llama-${LLAMA_CPP_TAG}`)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(path.join(dir, 'llama-completion'), '')
-  await fs.mkdir(path.join(dataDir, 'models'), { recursive: true })
-  await fs.writeFile(path.join(dataDir, 'models', MODEL_FILE), '')
+  await fs.mkdir(path.join(dataDir, 'server-local', 'models'), { recursive: true })
+  await fs.writeFile(path.join(dataDir, 'server-local', 'models', MODEL_FILE), '')
   return path.join(dir, 'llama-completion')
 }
 
@@ -172,7 +172,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(release).toContain('.tmp')
     expect(release).toContain('mv ')
     // The model pin: Qwen2.5-0.5B-Instruct at IQ4_XS, fetched into <dataDir>/models.
-    const target = path.join(dataDir, 'models', MODEL_FILE)
+    const target = path.join(dataDir, 'server-local', 'models', MODEL_FILE)
     expect(model).toContain('huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF')
     expect(model).toContain(`-o '${target}.tmp'`)
     expect(model).toContain(`mv '${target}.tmp' '${target}'`)

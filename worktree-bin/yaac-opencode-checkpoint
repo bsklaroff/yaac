@@ -1,0 +1,79 @@
+#!/bin/sh
+# yaac-opencode-checkpoint [stop] — copy opencode's node-local working copy
+# into the worktree's GLOBAL checkpoint (staged and File-mounted like every
+# worktree-bin script; docs/worktree-storage.md "opencode").
+#
+# A pod runs opencode against a NODE-LOCAL copy of its history, because
+# SQLite is unusable on a network filesystem; the global tier holds the one
+# durable copy. This script is what keeps that copy current: the init
+# script runs it on a timer, and the pod runs it once more as its preStop
+# hook with `stop`, which — only when every step succeeded — also empties
+# the working copy, so a cleanly stopped worktree leaves nothing on its
+# node. A failure leaves the copy in place and exits nonzero: the next
+# start restores from the checkpoint regardless, and the node-local sweep
+# collects what is left.
+#
+# A checkpoint is the data dir copied file-for-file, except the SQLite
+# database, which is produced by sqlite's backup API (consistent under a
+# live writer) into a temp file and renamed into place. That plain-copy
+# format is what makes a pre-split `opencode-data/<id>` directory a valid
+# checkpoint with nothing to convert.
+#
+# No-op unless the data dir holds a SQLite file: every other tool's pod
+# runs this too, and has nothing to save.
+set -u
+
+# A preStop hook's environment is the container's, which need not carry
+# HOME; the pod user is fixed either way (CONTAINER_HOME in paths.ts).
+HOME="${HOME:-/home/yaac}"
+DATA="$HOME/.local/share/opencode"
+CHECKPOINT="$HOME/.yaac/opencode-checkpoint"
+
+db=""
+for f in "$DATA"/*.db; do
+  [ -f "$f" ] && db="$f" && break
+done
+[ -n "$db" ] || exit 0
+[ -d "$CHECKPOINT" ] || { echo "yaac-opencode-checkpoint: no checkpoint dir at $CHECKPOINT" >&2; exit 1; }
+
+name=$(basename "$db")
+# A temp file left by a backup the pod's grace period cut short.
+rm -f "$CHECKPOINT"/.tmp-*.db
+tmp="$CHECKPOINT/.tmp-$$.db"
+if ! python3 - "$db" "$tmp" <<'PY'
+import sqlite3, sys
+src = sqlite3.connect(sys.argv[1])
+dst = sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+dst.close()
+src.close()
+PY
+then
+  rm -f "$tmp"
+  echo "yaac-opencode-checkpoint: backup of $db failed" >&2
+  exit 1
+fi
+mv -f "$tmp" "$CHECKPOINT/$name" || { rm -f "$tmp"; exit 1; }
+# Sidecars the checkpoint held (a pre-split data dir's) belonged to the
+# database this backup just replaced — it was made through a connection
+# that read them, so they are folded in — and beside the new file they
+# would be a stale pair a later restore must never see.
+rm -f "$CHECKPOINT/$name-wal" "$CHECKPOINT/$name-shm" "$CHECKPOINT/$name-journal"
+
+# Everything beside the database, file for file; the working copy's WAL
+# sidecars are excluded, since the backup above already folded them in.
+ok=1
+for entry in "$DATA"/* "$DATA"/.[!.]*; do
+  [ -e "$entry" ] || continue
+  case "$(basename "$entry")" in
+    "$name"|*.db|*-wal|*-shm|*-journal) continue ;;
+  esac
+  cp -a "$entry" "$CHECKPOINT"/ || ok=0
+done
+[ "$ok" = 1 ] || { echo "yaac-opencode-checkpoint: copying $DATA failed" >&2; exit 1; }
+
+if [ "${1:-}" = stop ]; then
+  rm -rf "$DATA"/* "$DATA"/.[!.]* 2>/dev/null || true
+fi
+exit 0

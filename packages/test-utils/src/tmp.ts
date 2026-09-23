@@ -38,7 +38,7 @@ export function setHermeticScratch(on: boolean): void {
  *    host and on the pod's node. `os.tmpdir()` carries no such guarantee:
  *    on a kind host `/tmp` is the node container's own tmpfs, and a pod
  *    mounting a host `/tmp/...` path hangs Pending. The data dir does carry
- *    it — it is the SHARED tier by definition, and `yaac cluster check`'s
+ *    it — it is the GLOBAL tier by definition, and `yaac cluster check`'s
  *    end-to-end probe mounts it into a pod on every setup precisely to
  *    prove the node can see it. Hanging scratch off it means any cluster
  *    that passes `cluster check` runs e2e with no TMPDIR and no

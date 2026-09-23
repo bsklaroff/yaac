@@ -67,7 +67,7 @@ record of which image a running pod came from, which nothing keeps.
 least one create per project since this shipped. Directly checkable:
 
 ```sh
-grep -rl '/etc/yaac/agent-links.sh' "${YAAC_DATA_DIR:-$HOME/.yaac}"/projects/*/claude/settings.json
+grep -rl '/etc/yaac/agent-links.sh' "${YAAC_DATA_DIR:-$HOME/.yaac}"/global/projects/*/claude/settings.json
 ```
 
 When that prints nothing on every install in use, the strip and
@@ -227,11 +227,14 @@ when.
 what an older proxy kept on a hostPath into the objects the current one
 reads (docs/worktree-egress.md "What the proxy is told, and how").
 
-**What it reads:** `<dataDir>/run/proxy-data` — `ca.key`, `ca.pem`,
+**What it reads:** `<dataDir>/global/run/proxy-data` — `ca.key`, `ca.pem`,
 `worktrees.json`, `blocked-hosts.json`, `git-auth-failures.json`, the files
 the old proxy's `/data` hostPath held — from the server pod's own mount of
-the data dir, the first time `ensureProxyResources` finds the
-`yaac-proxy-ca` Secret empty beside an old `ca.pem`. It writes the CA
+the global tier, the first time `ensureProxyResources` finds the
+`yaac-proxy-ca` Secret empty beside an old `ca.pem`. The directory was
+`<dataDir>/run/proxy-data` when the old proxy wrote it; row 7 of the layout
+migration (`migrateDataDirLayout`, below) is what puts it where this looks,
+so the two entries go together or not at all. It writes the CA
 Secret, one registration ConfigMap per entry (rewriting a bare `secretRef`
 to `<projectSlug>/NAME`, which registrations written before refs were
 scoped still carry), and the state ConfigMap. The directory is left in
@@ -406,7 +409,7 @@ lists and what the agent has is the whole failure mode — there is no error.
 Safe to remove once no install can still hold a mountpoint this yaac did not
 create. There is no flag to check for that; the practical test is per install,
 and it is a `find` rather than a version: `find
-<data>/projects/*/{claude,codex,opencode-config,pi}/**/skills -maxdepth 1
+<data>/global/projects/*/{claude,codex,opencode-config,pi}/**/skills -maxdepth 1
 -type d -empty -user root` naming nothing. Removing it early costs nothing on
 an install that has always run one driver, since a root-owned mountpoint can
 only exist where k8s ran.
@@ -465,8 +468,12 @@ and `recordedDriver` (`shared/install-driver.ts`).
 
 **What they read:** `<dataDir>/remote.json`, `<dataDir>/.auth-daemon.lock` and
 `<dataDir>/driver`, written by a client or an installer that predates the
-split. The two locks are also *deleted* at the old path by their writers, so a
-migrated install cannot be found through a stale one.
+split — at the data dir ROOT, which the readers spell out with
+`path.join(getDataDir(), …)` because no tier helper names the root any
+more: the storage tiers are folders under it now (below), and
+`serverLocalPath` would send them to `server-local/`, where these files
+never were. The two locks are also *deleted* at the old path by their
+writers, so a migrated install cannot be found through a stale one.
 
 **What breaks silently if they go too early:** each one, differently, and all
 three quietly.
@@ -580,6 +587,132 @@ is in practice a release boundary rather than something a command reports.
 **Order:** the three are independent of each other and may go separately. The
 `driver` fallback is the one to keep longest — it is the only one whose loss
 corrupts a database rather than inconveniencing a client.
+
+## `migrateDataDirLayout`
+
+`migrateDataDirLayout` (`shared/data-dir-layout.ts`) moves a data dir
+written before the storage tiers were folders into the three-folder layout
+— `global/`, `server-local/` and `node-local/` under the data dir root.
+It runs on a host and never in the server pod (where the roots are mounts
+and a rename across claims would be a copy), at three call sites, each
+before anything else reads the data dir: `runServer` and `startServer`
+(`main/server-run.ts`, `main/lifecycle.ts`) ahead of `ensureDataDir` and
+the lock read, and `deployServerWorkload` (`install/server-deploy.ts`)
+after `refuseIfHostServerRunning` and after the server Deployment — if one
+exists — has been scaled to zero and its pod is gone. Only then is the data
+dir quiescent: the old pod holds PGlite open by path, and renaming `db/`
+under it is a corrupt or stranded database.
+
+**What it reads:** these rows, on the host, each one `rename(2)` in this
+order —
+
+| # | From | To | Tier |
+|---|---|---|---|
+| 1 | `secret.key` | `server-local/secret.key` | SERVER-LOCAL — first, so no state can exist in which a database has moved without its key |
+| 2 | `.credentials/` | `server-local/.credentials/` | SERVER-LOCAL |
+| 3 | `db/` | `server-local/db/` | SERVER-LOCAL |
+| 4 | `build/` (Dockerfile.user and its context) | `server-local/build/` | SERVER-LOCAL |
+| 5 | `models/` | `server-local/models/` | SERVER-LOCAL |
+| 6 | `projects/` | `global/projects/` | GLOBAL |
+| 7 | `run/proxy-data/` | `global/run/proxy-data/` | GLOBAL — what `seedProxyObjects` reads |
+| 8 | `server.log` | `server-local/server.log` | SERVER-LOCAL — a MERGE, not a rename: the migrating command's own `[layout]` lines land in the new file through `serverLog` before this row runs, so the old file's lines are written ahead of them |
+| 9 | `global/projects/<slug>/.cached-packages/` | `node-local/projects/<slug>/.cached-packages/` | NODE-LOCAL, per slug, after row 6 |
+| — | `.server.lock` | never moved | a live one refuses the run, a stale one is unlinked |
+| — | `shared-images/` | moved when it can be | its generations are root-owned, and `rename(2)` of a directory into a new parent needs write permission on it; when refused, it is a re-derivable cache and the log prints the `sudo rm -rf` |
+| — | `run/ssh-pub/` | deleted | content-keyed public-key files, regenerated on demand |
+
+All or nothing: a row that fails for any reason other than "source
+absent" aborts with the row named and the server does not start. A partial
+run is not a corrupt state — every completed row is atomic, and the next
+run resumes at the first row whose source still exists — and the row order
+is what makes that true. An EMPTY existing destination is treated as
+absent (so an `ensureDataDir` that ran first cannot shadow a full
+`projects/` with an empty `global/projects`); a NON-empty one beside a
+still-present source is refused, naming both, rather than guessed at.
+`remote.json`, `.auth-daemon.lock`, `driver` and the harness's `e2e-tmp`
+at the root are not on the table and stay where their readers look.
+
+**The checkpoint placement is recorded here too.** `opencodeCheckpointDir`
+(GLOBAL) is deliberately the pre-split node-local location inside the
+projects tree, `global/projects/<slug>/opencode-data/<id>`, so row 6 is
+also what carries every stopped opencode worktree's history into place
+with nothing to convert. Renaming the checkpoint dir later is a migration
+of that history.
+
+**What breaks silently if it is deleted too early:** an install that
+upgrades without it comes up with no projects (`global/projects` is empty),
+an empty `server-local/db`, no credentials and a fresh
+`server-local/secret.key` — every project and worktree row is gone from
+every listing while the checkouts sit one directory over, every credential
+is missing, and every sealed row that still exists is unreadable, with no
+error anywhere, because that is exactly what a fresh install looks like.
+Its node-local row is cheaper to lose (a cold pnpm store), but it is the
+same function.
+
+**Order against every other shim.** All of them read through the tier
+helpers, so once the migration has run they find the moved location; none
+may run before it, and the call placement above is what guarantees that.
+`importLegacyProjectConfig` is the reason the migration is all-or-nothing:
+run on a tree where `projects/` had moved but `.credentials/` had not, it
+finds the overlays, finds no values, imports valueless rows and STRIPS the
+keys from the overlays — after which the values still sitting in the
+un-moved file are orphaned for good. `seedProxyObjects` reads row 7's
+destination; `adoptLegacyClaudeJson`, the agent-links strip, the
+spent-mountpoint reclaim and `sweepLegacyVclusterState` all read under
+row 6's. This entry therefore outlives every one of them.
+
+**What the pre-upgrade k8s pods hold.** A worktree pod created before this
+step bind-mounts `projects/<slug>/…` by its old hostPath. A bind mount
+holds its dentry, so renaming an ancestor underneath it leaves the running
+pod's view intact; those pods keep working until they stop, and the new
+server addresses the same bytes under the new names.
+
+**How to tell it is safe to remove:** no data dir in use has `projects/`
+or `db/` at its root — directly checkable with
+`ls "${YAAC_DATA_DIR:-$HOME/.yaac}"` showing only the three tier folders
+(and the pre-client-local files, which have their own entry) on every
+install that matters.
+
+## The `node-local-mount` advisory
+
+`noteNodeLocalMount` (`install/install.ts`) and the `node-local-mount`
+gate of `yaac cluster check` (`install/check.ts`) say when a kind node does
+not bind `<dataDir>/node-local` at `/var/lib/yaac/node/<hash>`. A tripwire
+about state, not a shim in the data path: kind writes extraMounts at
+create time, so a cluster created before the node-local one existed keeps
+its caches (pnpm stores, image stores, opencode working copies) on the
+node container's own disk — correct, and lost with the node.
+
+**What it reads:** `podman exec <node> findmnt <path>`, on kind nodes only.
+
+**What breaks silently if it goes too early:** nothing. A user with an
+old cluster simply stops being told why their pnpm store is cold after
+every podman-machine restart.
+
+**How to tell it is safe to remove:** when no kind cluster in use predates
+the mount, which `kubectl get nodes -o yaml` cannot say — a season after
+release.
+
+## The pre-split lock fallback in `readLock` / `removeLock`
+
+`readLock` (`shared/lock.ts`) reads `<dataDir>/.server.lock` when
+`<dataDir>/server-local/.server.lock` is absent, and `removeLock` unlinks
+whichever of the two the read found.
+
+**What it reads:** the lock a server from before the storage-tier split
+wrote, at the data dir root. It exists for one window: such a server is
+still running when the CLI upgrades. `yaac server start` must see it — it
+would otherwise spawn a second writer onto the same database — and `yaac
+server stop` must be able to stop it. The migration above is what refuses
+to rearrange the data dir under it in the meantime.
+
+**What breaks silently if it goes too early:** that second server, on a
+database the first one still holds open.
+
+**How to tell it is safe to remove:** no pre-split server can still be
+running — a release boundary, since nothing records a server's build.
+Remove it together with `migrateDataDirLayout`'s lock handling, which is
+the other half of the same window.
 
 ## A note on evidence
 

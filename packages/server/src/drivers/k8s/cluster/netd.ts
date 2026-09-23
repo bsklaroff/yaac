@@ -12,6 +12,7 @@ import {
   k8sNamespace,
   kubectlApply,
   kubectlWithRetry,
+  LABEL_INSTALL_NAMESPACE,
 } from '#drivers/k8s/substrate'
 import {
   contextHash,
@@ -192,7 +193,7 @@ export function netdClusterScopedName(): string {
  * able to do so without matching the real install's.
  */
 export function netdClusterScopedLabels(): Record<string, string> {
-  return { app: NETD_APP_NAME, 'yaac.install-namespace': k8sNamespace() }
+  return { app: NETD_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
 }
 
 export interface NetdDaemonSetOptions {

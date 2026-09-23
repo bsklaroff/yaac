@@ -8,6 +8,7 @@ import {
   k8sNamespace,
   kubectlApply,
   kubectlWithRetry,
+  LABEL_INSTALL_NAMESPACE,
 } from '#drivers/k8s/substrate'
 import type { PodToleration } from '#drivers/k8s/substrate'
 import { invalidateRegistryEndpoint, registryHasTag, registryRef } from '#drivers/k8s/container'
@@ -104,7 +105,7 @@ export function gvisorInstallerClusterScopedName(): string {
 }
 
 export function gvisorInstallerClusterScopedLabels(): Record<string, string> {
-  return { app: GVISOR_INSTALLER_APP_NAME, 'yaac.install-namespace': k8sNamespace() }
+  return { app: GVISOR_INSTALLER_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
 }
 
 /**

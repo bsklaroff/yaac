@@ -27,6 +27,7 @@ import {
 import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
 import {
   prepareWorkspaceImage,
+  reapNodeLocal,
   retryImageBuild,
 } from '#drivers/k8s/images'
 import {
@@ -171,6 +172,7 @@ export function createK8sDriver(): WorktreeDriver {
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
+    reapNodeLocal: (running) => reapNodeLocal(running),
 
     pendingMamaRequests: () => drainPendingMamaRequests(),
     resolveMamaRequests: (results) => proxyClient.postMamaResults(results),

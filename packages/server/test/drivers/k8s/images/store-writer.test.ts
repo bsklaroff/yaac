@@ -47,7 +47,7 @@ import {
   ensureNodeImageStore,
   nodeImageStoreMount,
   reconcileNodeImageStores,
-  removeNodeImageStore,
+  removeNodeLocalProject,
 } from '#drivers/k8s/images'
 // Setup values and the reset hook — not a second surface under test.
 import {
@@ -60,7 +60,8 @@ import {
   generationName,
 } from '#drivers/k8s/images/store-writer'
 import { CACHED_GENERATIONS_KEPT, CACHE_TAG_PREFIX } from '#drivers/k8s/images/image-promoter'
-import { imageStoreDir } from '@yaac/shared/project-paths'
+import { imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
+import { nodeLocalHostPath, nodeLocalNodePath } from '#drivers/k8s/substrate'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -357,14 +358,32 @@ describe('ensureNodeImageStore', () => {
     expect(ctr.securityContext).toEqual({ runAsUser: 0 })
     expect(JSON.stringify(pod)).not.toContain('SYS_ADMIN')
     expect(JSON.stringify(pod)).not.toContain('privileged')
-    // The generation parent, rw, at the path the script is handed as argv.
+    // The generation parent, rw, at the path the script is handed as argv
+    // — the NODE's path for it, under this install's node-local tree, not
+    // the server-side spelling.
     expect(pod.spec.volumes).toEqual([{
       name: 'store',
-      hostPath: { path: imageStoreDir(SLUG), type: 'DirectoryOrCreate' },
+      hostPath: { path: nodeLocalHostPath(imageStoreDir(SLUG)), type: 'DirectoryOrCreate' },
     }])
+    expect(pod.spec.volumes[0].hostPath?.path).toBe(`${nodeLocalNodePath()}/shared-images/${SLUG}`)
     expect(ctr.volumeMounts).toEqual([{ name: 'store', mountPath: STORE_POD_PATH }])
     expect(podCommand().argv[0]).toBe(STORE_POD_PATH)
     await expect(execFileAsync('sh', ['-n', '-c', podCommand().script])).resolves.toBeTruthy()
+  })
+
+  it('writes ONE generation name on every node, so the name the server picks exists everywhere', async () => {
+    stageLiveCluster()
+    const base = mockGetJson.getMockImplementation()!
+    mockGetJson.mockImplementation((args: string[]) => args[1] === 'nodes'
+      ? Promise.resolve({ items: [{ metadata: { name: 'n1' } }, { metadata: { name: 'n2' } }] })
+      : base(args))
+    await expect(ensureNodeImageStore(SLUG)).resolves.toBe(true)
+
+    const pods = appliedPods()
+    expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1', 'n2'])
+    const gens = pods.map((p) => /GEN="\$STORE\/(gen-[^"]+)"/.exec(String(p.spec.containers[0].command[2]))?.[1])
+    expect(gens[0]).toMatch(/^gen-/)
+    expect(new Set(gens).size).toBe(1)
   })
 
   it('pulls the newest generations of yaac-built repos and nothing a dead one supports', async () => {
@@ -564,7 +583,7 @@ describe('nodeImageStoreMount', () => {
     // `partial` sorts newest but has no marker: a build that crashed
     // mid-pull must never become a worktree's store.
     await expect(nodeImageStoreMount(SLUG)).resolves.toEqual({
-      source: { kind: 'hostPath', path: path.join(parent, newer) },
+      source: { kind: 'hostPath', path: path.join(parent, newer), type: 'DirectoryOrCreate' },
       mountPath: SHARED_IMAGES_MOUNT,
       readOnly: true,
     })
@@ -589,16 +608,18 @@ describe('reconcileNodeImageStores', () => {
   })
 })
 
-describe('removeNodeImageStore', () => {
-  it('removes the project directory from every node with a one-shot pod', async () => {
+describe('removeNodeLocalProject', () => {
+  it('removes the image store and the node-local project tree from every node with a one-shot pod', async () => {
     stageLiveCluster()
-    await removeNodeImageStore(SLUG)
+    await removeNodeLocalProject(SLUG)
     const [pod] = appliedPods()
     expect(pod.spec.nodeName).toBe(NODE)
-    // The PARENT is mounted, so the project's own directory can go — the
-    // server's uid cannot remove these root-owned bytes itself.
-    expect(pod.spec.volumes[0].hostPath?.path).toBe(path.dirname(imageStoreDir(SLUG)))
+    // The install's node root is mounted, so both trees can go in one
+    // pass — the server's uid cannot remove the root-owned store itself,
+    // and the project tree may be on a node its filesystem never sees.
+    expect(pod.spec.volumes[0].hostPath?.path).toBe(nodeLocalNodePath())
     expect(pod.spec.containers[0].command[2])
-      .toContain(`rm -rf /store-parent/${path.basename(imageStoreDir(SLUG))}`)
+      .toBe(`rm -rf "/node/shared-images/${SLUG}" "/node/projects/${SLUG}"`)
+    expect(nodeLocalHostPath(nodeLocalProjectPath(SLUG))).toBe(`${nodeLocalNodePath()}/projects/${SLUG}`)
   })
 })
