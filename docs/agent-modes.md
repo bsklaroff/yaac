@@ -292,9 +292,10 @@ object. A request whose reply carried an error changed nothing and is ignored.
 The row is still written by the reconciler's conversation sweep, and the
 handshake that mints the id moves nothing the informers watch — so the id
 landing in the live agent set is itself a reconcile trigger (`live-agents`,
-docs/event-driven-reconcile.md). That is what the webapp waits on: until the
-row exists, an ACP worktree has no chat pane to show and falls back to the
-raw agent window, which is acpd's log rather than a conversation.
+docs/event-driven-reconcile.md). Until the row exists an ACP worktree has no
+chat pane to show, only the raw agent window, which is acpd's log rather than
+a conversation — so a fresh ACP create holds until the row lands, and the
+webapp swaps its provisioning placeholder straight for the chat pane.
 
 The pod carries `yaac.mode` as a label (stamped only for `acp`) so the status
 watcher can pick a driver from an informer delta without a database read on the

@@ -72,6 +72,7 @@ import {
 import {
   applyWorktreeEvent,
   getProjectLastPermissionMode,
+  listActiveAgentSessions,
   setWorktreeGroup,
   setWorktreeMamaTokenHash,
 } from '#db'
@@ -113,6 +114,9 @@ import {
   type PiProvider,
 } from '@yaac/shared/tool-providers'
 import { AGENT_INSTALL } from '@yaac/shared/tool-install'
+
+/** How long a fresh acp create holds for its conversation's row. */
+const ACP_CONVERSATION_WAIT_MS = 60_000
 
 /** In-pod claude home. The host-side `claudeDir` is mounted here, and
  *  `CLAUDE_CONFIG_DIR` names it — which also puts claude's global config at
@@ -512,12 +516,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
       ...(options.model !== undefined ? { model: options.model } : {}),
     }),
   }))
-  const toolLabel =
-    tool === 'codex' ? 'Codex' :
-    tool === 'opencode' ? 'OpenCode' :
-    tool === 'pi' ? 'Pi' :
-    'Claude Code'
-  emit(`Starting ${toolLabel}...`, options)
+  emit(`Starting ${toolLabel(tool)}...`, options)
   await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
 
   // Did the agents actually come up? `respawn-window` says yes even when the
@@ -561,21 +560,47 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
     })
   }
 
-  if (options.initialPrompt !== undefined) {
-    emit('Sending initial prompt...', options)
-    // Mode-agnostic: `tui` pastes it into the pane and submits, `acp` waits
-    // for the conversation's handshake and sends `session/prompt`. Neither
-    // waits for the agent to answer.
-    await driver.deliverPrompt(
-      { slug: projectSlug, worktreeId, jobName, tool },
-      agentWindowName(tool, 0),
-      options.initialPrompt,
-    ).catch((err: unknown) => {
-      serverLog(`[server] create ${worktreeId}: initial prompt failed: ${String(err)}`)
-    })
-  }
-
   return handle
+}
+
+function toolLabel(tool: AgentTool): string {
+  return tool === 'codex' ? 'Codex'
+    : tool === 'opencode' ? 'OpenCode'
+    : tool === 'pi' ? 'Pi'
+    : 'Claude Code'
+}
+
+/**
+ * Poll until the worktree has a live conversation row, resolving whether one
+ * landed. Gives up at the deadline or as soon as the agent's window is gone,
+ * and treats a failed read as "not yet": a handshake that never lands is the
+ * watcher's to retry, and the worktree is better shown with its terminal than
+ * held behind a spinner.
+ */
+async function awaitConversationRow(
+  projectSlug: string,
+  worktreeId: string,
+  jobName: string,
+  window: string,
+): Promise<boolean> {
+  const deadline = Date.now() + ACP_CONVERSATION_WAIT_MS
+  for (let polls = 0; Date.now() < deadline; polls++) {
+    const rows = await listActiveAgentSessions(projectSlug, worktreeId).catch(() => [])
+    if (rows.length > 0) return true
+    // An exec per probe, so every couple of seconds rather than every poll.
+    if (polls % 8 === 7) {
+      const dead = await verifyAgentWindowAlive(jobName, [window])
+        .then(() => false, (err: unknown) => err instanceof AgentLaunchDeadError)
+      if (dead) {
+        serverLog(`[server] create ${worktreeId}: acp agent window exited before its handshake`)
+        return false
+      }
+    }
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  serverLog(`[server] create ${worktreeId}: no acp conversation recorded after `
+    + `${String(ACP_CONVERSATION_WAIT_MS / 1000)}s`)
+  return false
 }
 
 /**
@@ -1729,6 +1754,40 @@ export async function createWorktree(
         worktreeId,
         baseBranch: upstreamStartPoint.replace(/^origin\//, ''),
       })
+    }
+  }
+
+  // A fresh acp conversation has no row until its agent mints an id
+  // (`session/new`), seconds after the window opens, and until then the
+  // webapp has no chat pane to open — only a terminal on acpd's log, which it
+  // then swaps for the conversation in a column after the init windows. So
+  // the create holds until the row exists, keeping this worktree behind its
+  // provisioning placeholder; a resumed one's rows were written at launch.
+  // After the start loop, not in it: nothing the loop recovers by relaunching
+  // applies to a row that has not landed yet.
+  const agentWindow = agentWindowName(tool, 0)
+  let conversationUp = true
+  if (mode === 'acp') {
+    emit(`Connecting to ${toolLabel(tool)}...`, options)
+    conversationUp = await awaitConversationRow(projectSlug, worktreeId, handle.jobName, agentWindow)
+  }
+
+  if (options.initialPrompt !== undefined) {
+    // Mode-agnostic: `tui` pastes it into the pane and submits, `acp` sends
+    // `session/prompt`. Neither waits for the agent to answer. Not sent to an
+    // acp conversation the hold gave up on — that would wait out a second
+    // budget for the same handshake.
+    if (conversationUp) {
+      emit('Sending initial prompt...', options)
+      await agentDriver(mode).deliverPrompt(
+        { slug: projectSlug, worktreeId, jobName: handle.jobName, tool },
+        agentWindow,
+        options.initialPrompt,
+      ).catch((err: unknown) => {
+        serverLog(`[server] create ${worktreeId}: initial prompt failed: ${String(err)}`)
+      })
+    } else {
+      serverLog(`[server] create ${worktreeId}: initial prompt not delivered — no conversation`)
     }
   }
 

@@ -186,7 +186,12 @@ function sessionModesReply(tool: AgentTool): Record<string, unknown> {
   }
 }
 
+/** A file beside the stand-in adapters that makes each exit at once — an
+ *  adapter that dies before its handshake. */
+const ACP_ADAPTER_DIES = 'acp-adapter-dies'
+
 const fakeAcpAdapter = (tool: AgentTool): string => `#!/usr/bin/env node
+if (require('fs').existsSync(require('path').join(__dirname, '${ACP_ADAPTER_DIES}'))) process.exit(1)
 let buf = ''
 const reply = (id, result) => {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
@@ -1120,6 +1125,27 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
   it.each(CASES)('supervises $tool\'s adapter under acpd and handshakes a conversation',
     async ({ tool, posture, modeId, launch, model }) => {
       const id = await createWorktreeWith(tool, '--mode', 'acp', '--permission-mode', posture)
+
+      // The server knows about the conversation, which is the half the record
+      // alone cannot show. Nothing on this substrate reports a workspace into
+      // existence — no informer, no pod event — so a create that fails to
+      // announce itself leaves the worktree running and unobserved: the
+      // handshake never happens, and this list stays empty for the life of
+      // the server. Straight after the create, unpolled: it holds until the
+      // conversation is a row, which is what lets a webapp swap the
+      // provisioning placeholder for the chat pane rather than a terminal on
+      // acpd's log.
+      const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
+      const { worktrees } = await res.json() as {
+        worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
+      }
+      const row = worktrees.find((w) => w.worktreeId === id)
+      expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain(`e2e-acp-${tool}`)
+      expect(row?.agentSessions[0]?.mode).toBe('acp')
+      // Read from the record, which is the only source that answers for
+      // every tool: three of the four leave no transcript this host can find.
+      expect(row?.agentSessions[0]?.model).toBe(model)
+
       // The record opens under the WORKTREE id and is renamed once
       // `session/new` answers, so its final name is itself the assertion that
       // the handshake completed and the server adopted the session it minted.
@@ -1175,32 +1201,26 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
       const windows = await tmux(id, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
       expect(windows).toContain(tool)
 
-      // The server knows about the conversation, which is the half the record
-      // alone cannot show. Nothing on this substrate reports a workspace into
-      // existence — no informer, no pod event — so a create that fails to
-      // announce itself leaves the worktree running and unobserved: the
-      // handshake above never happens, and this list stays empty for the life
-      // of the server.
-      // Polled, because the row trails the handshake rather than accompanying
-      // it: adoption renames the record, and the conversation reaches
-      // `worktree_agent_sessions` a reconcile tick later. Asserting straight
-      // after the window check reads whichever side of that the host happens
-      // to be on.
-      await vi.waitFor(async () => {
-        const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
-        const { worktrees } = await res.json() as {
-          worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
-        }
-        const row = worktrees.find((w) => w.worktreeId === id)
-        expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain(`e2e-acp-${tool}`)
-        expect(row?.agentSessions[0]?.mode).toBe('acp')
-        // Read from the record, which is the only source that answers for
-        // every tool: three of the four leave no transcript this host can find.
-        expect(row?.agentSessions[0]?.model).toBe(model)
-      }, { timeout: 30_000, interval: 250 })
-
       await runYaac(serverEnv, 'worktree', 'stop', id)
     }, 180_000)
+
+  it('lets a create go once its adapter has died, rather than holding for a handshake', async () => {
+    // The hold's give-up branch. An adapter that exits takes acpd and its
+    // window with it, so the create must notice that and return, not sit out
+    // the whole conversation budget behind "Connecting to…".
+    const marker = path.join(testEnv.scratchDir, 'bin', ACP_ADAPTER_DIES)
+    await fs.writeFile(marker, '')
+    try {
+      const started = Date.now()
+      const { exitCode, stdout, stderr } = await runYaac(
+        serverEnv, 'worktree', 'create', SLUG, '--tool', 'claude', '--mode', 'acp',
+      )
+      expect(exitCode, `${stdout}${stderr}`).toBe(0)
+      expect(Date.now() - started).toBeLessThan(30_000)
+    } finally {
+      await fs.rm(marker, { force: true })
+    }
+  }, 120_000)
 
   it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
     // codex has plan mode; codex-acp does not — it collapses codex's approval
