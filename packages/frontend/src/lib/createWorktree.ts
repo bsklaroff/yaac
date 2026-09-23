@@ -29,33 +29,36 @@ async function streamWorktreeOp(
   return await consumeNdjsonStream<unknown>(res, onProgress)
 }
 
+/** What a create names beyond its project and tool. Each field left out is
+ *  resolved server-side — from what this project last used, else a fallback
+ *  — and only the fields sent become the project's next defaults. */
+export interface CreateWorktreeOptions {
+  branch?: string
+  model?: string
+  mode?: AgentMode
+  permissionMode?: PermissionMode
+  /** Retry-only: let the server install the agent's CLI when its host hasn't
+   *  got it. Set by the Install-and-retry path, never by a first attempt —
+   *  yaac does not install anything the user did not ask it to. */
+  installMissingTool?: boolean
+}
+
 export async function createWorktree(
   project: string,
   tool: AgentTool,
   onProgress: (message: string) => void,
   worktreeId?: string,
-  branch?: string,
-  mode?: AgentMode,
-  /** How much the agent may do before asking. Omitted when the user did not
-   *  touch the dropdown, so the server resolves it (this project's last
-   *  choice, else the per-driver default) rather than the webapp guessing —
-   *  and so an untouched form never overwrites the remembered choice. */
-  permissionMode?: PermissionMode,
-  /** Retry-only: let the server install the agent's CLI when its host hasn't
-   *  got it. Set by the Install-and-retry path, never by a first attempt —
-   *  yaac does not install anything the user did not ask it to. */
-  installMissingTool?: boolean,
+  opts: CreateWorktreeOptions = {},
 ): Promise<CreateWorktreeResult> {
   const body = {
     project,
     tool,
     ...(worktreeId ? { worktreeId } : {}),
-    ...(branch ? { branch } : {}),
-    // Omitted for tui: the server defaults it, and sending the default would
-    // make every create look like an explicit mode choice in the logs.
-    ...(mode === 'acp' ? { mode } : {}),
-    ...(permissionMode !== undefined ? { permissionMode } : {}),
-    ...(installMissingTool === true ? { installMissingTool } : {}),
+    ...(opts.branch ? { branch: opts.branch } : {}),
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
+    ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+    ...(opts.installMissingTool === true ? { installMissingTool: true } : {}),
   }
   return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
 }

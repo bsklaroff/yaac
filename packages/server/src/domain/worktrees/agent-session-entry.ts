@@ -1,4 +1,5 @@
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { modelDisplayName } from '#domain/auth'
 import type { AgentSessionLinkRow } from '#db'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
@@ -13,11 +14,15 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
  * just now. The db layer speaks rows, and deciding how the two halves combine is
  * this layer's job (docs/layered-server.md) — the same reason the join paths
  * that call this one live here.
+ *
+ * The model goes out with its catalog name beside it, so every surface that
+ * names an agent says "Opus 5.5" the way the create form did.
  */
 export function toAgentSessionEntry(
   l: AgentSessionLinkRow,
   live?: { status: 'running' | 'waiting'; waitingSinceMs?: number },
 ): AgentSessionEntry {
+  const modelName = l.model !== undefined ? modelDisplayName(l.tool, l.model) : undefined
   return {
     agentSessionId: l.agentSessionId,
     tool: l.tool,
@@ -28,6 +33,7 @@ export function toAgentSessionEntry(
     ...(live?.waitingSinceMs !== undefined ? { waitingSinceMs: live.waitingSinceMs } : {}),
     ...(l.firstPrompt !== undefined ? { prompt: l.firstPrompt } : {}),
     ...(l.model !== undefined ? { model: l.model } : {}),
+    ...(modelName !== undefined ? { modelName } : {}),
     ...(l.lastActiveAt !== undefined
       ? { lastActiveAt: formatUtcTimestamp(l.lastActiveAt.getTime()) }
       : {}),

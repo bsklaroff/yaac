@@ -36,7 +36,7 @@ function emptySnapshot(): ServerSnapshot {
 function snapshotWithProject(slug: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', worktreeCount: 0 }],
+    projects: [{ slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', worktreeCount: 0, createDefaults: {} }],
   }
 }
 

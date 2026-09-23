@@ -50,7 +50,6 @@ import {
   type ReconcileStep,
   type ReconcileTrigger,
 } from '#main/reconciler'
-import type { AgentTool } from '@yaac/shared/types'
 import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
 import { reconcileMamaRequests } from '#domain/worktrees/mama-reconcile'
 import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
@@ -273,7 +272,7 @@ describe('startReconciler', () => {
  *  engine's own filtering is asserted above with injected steps). */
 async function runPass(
   triggers: ReconcileTrigger[],
-  opts: { resync?: boolean; defaultTool?: AgentTool; projectSlugs?: string[] } = {},
+  opts: { resync?: boolean; projectSlugs?: string[] } = {},
 ): Promise<void> {
   const resync = opts.resync ?? false
   const ctx: PassContext = {
@@ -281,7 +280,6 @@ async function runPass(
     resync,
     signal: new AbortController().signal,
     snapshot: () => snapshotFixture(),
-    defaultTool: () => Promise.resolve(opts.defaultTool),
     projectSlugs: () => Promise.resolve(opts.projectSlugs ?? []),
     projectConfig: () => Promise.resolve(undefined),
         terminating: () => false,
@@ -434,33 +432,11 @@ describe('defaultReconcileSteps', () => {
       .toEqual(['image-salvage', 'image-store', 'registry-gc'])
   })
 
-  // The configured default is a preference row, resolved once per pass and
-  // handed down; claude is what a create falls back to.
-  it('hands the pass’s default tool to the pool, defaulting to claude', async () => {
-    await runPass([], { resync: true, defaultTool: 'codex' })
-    expect(vi.mocked(reconcilePrewarmPool).mock.calls[0][0]).toBe('codex')
+  // What a spare is warmed as is resolved per project, at spawn time, by the
+  // pool itself — the pass hands it nothing but its view of the substrate.
+  it('hands the pool the pass view', async () => {
     await runPass([], { resync: true })
-    expect(vi.mocked(reconcilePrewarmPool).mock.calls[1][0]).toBe('claude')
-  })
-
-  // A FAILED preference read is not an unset preference: falling back to
-  // claude on a transient db failure would retool a spare toward the
-  // wrong tool and churn it back next pass. The accessor rejects, the step
-  // fails (error-isolated by the engine), and the pool stands down for the
-  // pass instead.
-  it('stands the pool down when the preference read fails', async () => {
-    const pool = defaultReconcileSteps().find((s) => s.name === 'prewarm-pool')!
-    const ctx: PassContext = {
-      triggers: new Set<ReconcileTrigger>(['worktree-pods']),
-      resync: false,
-      signal: new AbortController().signal,
-      snapshot: () => snapshotFixture(),
-      defaultTool: () => Promise.reject(new Error('db is gone')),
-      projectSlugs: () => Promise.resolve([]),
-      projectConfig: () => Promise.resolve(undefined),
-        terminating: () => false,
-    }
-    await expect(pool.run(ctx)).rejects.toThrow('db is gone')
-    expect(reconcilePrewarmPool).not.toHaveBeenCalled()
+    expect(vi.mocked(reconcilePrewarmPool)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(reconcilePrewarmPool).mock.calls[0]).toHaveLength(1)
   })
 })

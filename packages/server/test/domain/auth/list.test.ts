@@ -50,6 +50,8 @@ describe('listAuth', () => {
         savedAt: '2026-04-20T00:00:00.000Z',
         opencodeProvider: undefined,
         piProvider: undefined,
+        models: expect.arrayContaining([{ id: 'claude-opus-5-5', name: 'Opus 5.5' }]) as unknown,
+        defaultModel: 'claude-opus-5-5',
       },
       expect.objectContaining({ tool: 'codex', kind: 'api-key', keyPreview: '****' }),
       expect.objectContaining({ tool: 'opencode', kind: 'api-key', opencodeProvider: 'neuralwatt' }),
@@ -58,6 +60,11 @@ describe('listAuth', () => {
     // A provider belongs to the tool that has one; it never bleeds across.
     expect(result.toolAuth[2]).toMatchObject({ piProvider: undefined })
     expect(result.toolAuth[3]).toMatchObject({ opencodeProvider: undefined })
+    // The create form's model list is the credential's: a provider-qualified
+    // id for the tools whose credential names a provider.
+    expect(result.toolAuth[1].defaultModel).toBe('gpt-6-sol')
+    expect(result.toolAuth[3].models.every((m) => m.id.startsWith('openrouter/'))).toBe(true)
+    expect(result.toolAuth[3].defaultModel).toMatch(/^openrouter\//)
   })
 
   it('never leaks the raw access token', async () => {

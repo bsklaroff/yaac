@@ -131,27 +131,52 @@ and codex's `agent` fallback has a reviewer answering most of them, so
 
 ## Resolution
 
-`resolvePermissionMode` decides, in three rungs, most specific first:
+`resolveCreate` (`#domain/worktrees`) decides a person's create field by field,
+most specific first:
 
-1. what the request named (`--permission-mode`, the popover's dropdown),
-2. what this project last had chosen (`projects.lastPermissionMode`),
+1. what the request named (`--permission-mode`, the create form's dropdown),
+2. what this project last chose *for this agent* (`project_tool_defaults`),
 3. `defaultPermissionMode` for this driver and tool — `bypass` where the
    worktree is sandboxed, `accept-edits` where it is not, and `bypass` for
    pi either way.
 
 The middle rung is why the choice is persisted at all: a user who picks
 `plan` once keeps getting it from the CLI, the webapp and the keyboard
-shortcut alike, because all three land here. It lives on the project row
-rather than in the browser so those three agree, and only an *explicit*
-choice writes it — a defaulted create must not overwrite what a human
-picked. The route is what records it, since only there is the choice known
-to be a person's rather than a restart's or the spawn policy's.
+shortcut alike, because all three land here. It lives server-side so those
+three agree, keyed by project because posture tracks what the code is (a
+scratch repo vs one that deploys), and by agent because one agent's postures
+are not another's — pi can only run in `bypass`, and that says nothing about
+how a claude worktree in the same project should run. The route records what
+the request named, since only there is the choice known to be a person's
+rather than a restart's or the spawn policy's; a field the request left out
+is left as it was.
 
 A request naming a posture its tool lacks is refused rather than nudged to a
 neighbour: the caller asked for a restraint, and quietly launching with a
 weaker one is the failure mode worth being loud about. The remembered value
-gets the opposite treatment — it was chosen for some other tool, so a tool
-that lacks it falls through to its default.
+gets the opposite treatment — it may have been recorded under the other agent
+mode, or before a tool update dropped it — so a posture the agent no longer
+offers falls through to its default.
+
+### The rest of the create form's memory
+
+The same row remembers the agent's model and agent mode, and the project row
+remembers which agent was last created with (`projects.lastTool`). A create
+naming no tool runs that agent; one naming no model runs the remembered one,
+else a fallback (`defaultModelFor`: a pinned id for claude and codex, pi's own
+per-provider default, and for opencode pi's default for the same provider
+where opencode lists it, else the provider's newest). A remembered
+`provider/model` id for a provider the stored credential no longer names is
+dropped rather than launched.
+
+The agent mode has no server-side rung: an omitted mode is `tui`, because the
+CLI can only present a terminal and would otherwise print "open it in the
+web app" instead of attaching. The webapp, which can present both, sends the
+remembered mode itself — from the create form and from Alt+N alike, which
+both submit exactly what the form shows untouched. `resolveToolCreateDefaults`
+in `@yaac/shared/types` is the one function both ends answer "what would an
+untouched create run" with, so the form never shows one thing and launches
+another.
 
 The resolved answer is recorded on `worktrees.permissionMode`, because a
 worktree outlives the request that made it: a restart must relaunch its
@@ -196,11 +221,16 @@ ids, so a user who accepted "yes, and auto-accept edits" moved the session to
 back. The row wins again at the next restart, which is where it is the durable
 answer.
 
-## One place a posture is not honored
+## Prewarmed spares
 
-**A prewarmed spare is only claimable for a create resolving to `bypass`.**
-The spare's agent is already running, in that posture — claiming one for a
-`plan` create would hand back an unrestrained worktree, and silently, since
-the claim never rewrites the row. Cold-creating is the honest answer; it
-costs the claim's saving, which is the price of the posture actually being
-the one that was asked for.
+A spare is warmed as its project's untouched create — the last agent, with
+its remembered model, posture and agent mode — so the usual claim hands its
+running agent over as booted. What each spare was launched with is on its
+worktree row (`permissionMode`, `model`, `mode`), and a claim picks one whose
+launch matches the request first. A spare in the same mode but warmed with a
+different agent, model or posture is still claimed, and its agent is
+respawned into what was asked for — a posture is never quietly weaker than
+the request. A spare in the other mode is passed over: an `acp` pod carries a
+mount for acpd's records that a `tui` one lacks, and the pod spec is fixed at
+warm time. The pool replaces a spare whose mode no longer matches its
+project's, since no claim from the webapp could take it.

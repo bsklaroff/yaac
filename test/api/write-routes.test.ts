@@ -11,9 +11,8 @@ import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { getDefaultTool } from '@yaac/server/db/preferences'
 import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/worktree-store'
-import { getProjectLastPermissionMode, recordProject } from '@yaac/server/db/project-store'
+import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
 import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { closeDb } from '@yaac/server/db/client'
@@ -638,12 +637,10 @@ describe('write routes', () => {
       expect(body.error.code).toBe('VALIDATION')
     })
 
-    // The project's remembered posture is meant to capture working style, so
-    // it must not be taught by a pick the user had no choice about: pi is
-    // reachable ONLY by asking for bypass, and recording that would silently
-    // move every later claude create in the project — on a containerless
-    // server, onto the user's real machine.
-    it('remembers a freely chosen posture, but not one the tool forced', async () => {
+    // A person's create becomes the project's next defaults: the agent, and
+    // whatever the request named for it — per agent, so one agent's picks
+    // never move another's. A field left out keeps what was picked before.
+    it('remembers the agent and what the request named for it', async () => {
       await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
       mockCreateWorktree.mockResolvedValue({
         worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
@@ -656,21 +653,41 @@ describe('write routes', () => {
         await res.text() // drain the NDJSON stream so the handler finishes
       }
 
-      await create({ tool: 'claude', permissionMode: 'plan' })
-      expect(await getProjectLastPermissionMode('demo')).toBe('plan')
-
-      // pi has exactly one posture, so asking for it expresses no preference.
+      await create({ tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' })
+      // pi's only posture is bypass; remembering it moves nothing but pi.
       await create({ tool: 'pi', permissionMode: 'bypass' })
-      expect(await getProjectLastPermissionMode('demo')).toBe('plan')
+      expect(await getProjectRow('demo')).toMatchObject({
+        lastTool: 'pi',
+        createDefaults: {
+          claude: { model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' },
+          pi: { permissionMode: 'bypass' },
+        },
+      })
 
-      // A chat worktree's pick is as free as a terminal one's — every posture
-      // claude has is available over ACP too — so it teaches like any other.
-      await create({ tool: 'claude', mode: 'acp', permissionMode: 'manual' })
-      expect(await getProjectLastPermissionMode('demo')).toBe('manual')
+      // A bare create runs the last agent with what it last used — except
+      // the mode, which only the webapp (which sends it) can present.
+      await create({ tool: 'claude' })
+      expect(mockCreateWorktree.mock.calls.at(-1)?.[1]).toMatchObject({
+        tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'tui',
+      })
+      // ...and records nothing but the agent, so the picks stand.
+      expect((await getProjectRow('demo'))?.createDefaults.claude)
+        .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' })
+    })
 
-      // A free pick still teaches, so the feature is not merely disabled.
-      await create({ tool: 'claude', permissionMode: 'bypass' })
-      expect(await getProjectLastPermissionMode('demo')).toBe('bypass')
+    it('names the launch model on the provisioning row', async () => {
+      await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+      let rowModel: unknown
+      mockCreateWorktree.mockImplementation((_slug, opts) => {
+        rowModel = listProvisioning().find((p) => p.worktreeId === opts.worktreeId)
+        return Promise.resolve({ worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
+      })
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/worktree/create', withAuth({
+        method: 'POST', body: JSON.stringify({ project: 'demo', tool: 'claude', model: 'claude-opus-5-5' }),
+      }))
+      await res.text()
+      expect(rowModel).toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
     })
 
     it('streams progress and a terminal result event from createWorktree', async () => {
@@ -980,35 +997,6 @@ describe('write routes', () => {
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-a', name: '' }),
       }))
       expect(res.status).toBe(400)
-    })
-  })
-
-  describe('POST /tool/set', () => {
-    it('rejects a missing tool field', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/tool/set', withAuth({
-        method: 'POST',
-        body: JSON.stringify({}),
-      }))
-      expect(res.status).toBe(400)
-    })
-
-    it('rejects an unknown tool value with VALIDATION', async () => {
-      // Schema accepts any string; setDefaultToolChecked does the enum
-      // check and throws VALIDATION, so we can go through the typed client.
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.tool.set.$post({ json: { tool: 'gemini' } })
-      expect(res.status).toBe(400)
-      const body = await res.json() as unknown as { error: { code: string } }
-      expect(body.error.code).toBe('VALIDATION')
-    })
-
-    it('persists the tool and returns the saved value', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.tool.set.$post({ json: { tool: 'codex' } })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ tool: 'codex' })
-      expect(await getDefaultTool()).toBe('codex')
     })
   })
 

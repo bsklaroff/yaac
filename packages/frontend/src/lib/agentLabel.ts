@@ -7,10 +7,12 @@ import type { AgentSessionEntry, AgentTool, WorktreeListEntry } from '@yaac/shar
  *
  * The model arrives verbatim in the tool's own spelling, which is the right
  * thing to store and the wrong thing to show — `claude-opus-5` beside a tool
- * name reads as a config value, not as a fact about the conversation. So the
- * shortening here is presentational only, and deliberately conservative: an
- * id it does not recognize is shown as-is rather than mangled, since a wrong
- * short name is worse than a long right one.
+ * name reads as a config value, not as a fact about the conversation. The
+ * server sends the catalog's name for it alongside (`modelName`), which is
+ * what is shown; the shortening here is only for ids the catalog does not
+ * name, and deliberately conservative: an id it does not recognize is shown
+ * as-is rather than mangled, since a wrong short name is worse than a long
+ * right one.
  */
 
 /**
@@ -39,10 +41,20 @@ export function formatModel(model: string): string {
   return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`
 }
 
-/** "Claude · Opus 5", or the bare tool name when no model is known — which is
- *  every conversation before its agent first answers, and every opencode one. */
-export function agentLabel(tool: AgentTool, model: string | undefined): string {
-  return model === undefined ? TOOL_LABEL[tool] : `${TOOL_LABEL[tool]} · ${formatModel(model)}`
+/** A model as shown: the catalog's name when the server sent one, else the
+ *  id shortened by `formatModel`. */
+export function modelLabel(named: { model?: string; modelName?: string }): string | undefined {
+  return named.modelName ?? (named.model !== undefined ? formatModel(named.model) : undefined)
+}
+
+/** "Claude · Opus 5", or the bare tool name when no model is known — a
+ *  conversation launched without one that has not answered yet. */
+export function agentLabel(
+  tool: AgentTool,
+  named: { model?: string; modelName?: string } | undefined,
+): string {
+  const model = named !== undefined ? modelLabel(named) : undefined
+  return model === undefined ? TOOL_LABEL[tool] : `${TOOL_LABEL[tool]} · ${model}`
 }
 
 /**
@@ -55,8 +67,8 @@ export function agentLabel(tool: AgentTool, model: string | undefined): string {
  * shows one from its history rather than nothing: the transcript it came from
  * is the same one the live agent is appending to.
  */
-export function worktreeModel(worktree: WorktreeListEntry): string | undefined {
+export function worktreeModel(worktree: WorktreeListEntry): AgentSessionEntry | undefined {
   const byOrdinal = [...worktree.agentSessions].sort((a, b) => a.ordinal - b.ordinal)
   const named = (s: AgentSessionEntry): boolean => s.model !== undefined
-  return (byOrdinal.find((s) => s.active && named(s)) ?? byOrdinal.find(named))?.model
+  return byOrdinal.find((s) => s.active && named(s)) ?? byOrdinal.find(named)
 }

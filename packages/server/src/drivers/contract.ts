@@ -499,13 +499,9 @@ export interface PassContext {
   signal: AbortSignal
   /** The pass's shared runtime view — memoized, created on first use. */
   snapshot: () => RuntimeSnapshot
-  /** The configured default tool — memoized, read from its preference row
-   *  on first use and handed to the steps that need it, so no substrate
-   *  step reads a row itself. */
-  defaultTool: () => Promise<AgentTool | undefined>
-  /** Which projects exist — the same arrangement as `defaultTool`, and for
-   *  the same reason: it is a row question, so a runtime step is handed the
-   *  answer instead of reading db itself. */
+  /** Which projects exist — memoized, read on first use and handed to the
+   *  steps that need it: it is a row question, so a runtime step is handed
+   *  the answer instead of reading db itself. */
   projectSlugs: () => Promise<string[]>
   /**
    * One project's resolved config, memoized per project for the pass.

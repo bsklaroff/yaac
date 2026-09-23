@@ -473,10 +473,10 @@ exception in both directions, because it has no permission system at all
 (see docs/agent-modes.md) — `bypass` is the only truthful answer anywhere.
 
 That default is the last rung. A create takes the posture the request names,
-else the one this project last had chosen, else the default above. The
-remembered value lives on the project row rather than in the browser, so the
-CLI (`--permission-mode`), the webapp's dropdown and the keyboard shortcut
-all resolve the same answer, and only an explicit choice writes it.
+else the one this project last chose for that agent, else the default above.
+The remembered value lives server-side rather than in the browser, so the
+CLI (`--permission-mode`), the webapp's create form and the keyboard shortcut
+all resolve the same answer (see docs/permission-modes.md).
 
 The resolved posture is recorded on the worktree row
 (`worktrees.permissionMode`) because a restart relaunches the agents and

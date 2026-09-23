@@ -1,17 +1,14 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { readExchangeToken, postWebSession, stripTokenFromUrl } from './lib/webSession'
-import { createWorktree } from './lib/createWorktree'
 import { stopWorktreeOptimistic } from './lib/stopWorktreeFlow'
 import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
 import { getShortcutOverrides } from './lib/settingsApi'
-import { configuredTools, useAuthList } from './lib/useAuthList'
 import { useEvents } from './lib/useEvents'
-import { useProvisionWorktree } from './lib/useProvisionWorktree'
-import { randomUUID } from './lib/uuid'
 import { useSnapshot } from './lib/useSnapshot'
+import { useCreateDefaults, useCreateWorktree } from './lib/useCreateDefaults'
 import {
-  mergeProvisioning, persistSelection, resolveNewWorktreeTool, resolveVacantSelection,
+  mergeProvisioning, persistSelection, resolveVacantSelection,
   unreadWaitingBySlug, useUiStore,
 } from './store'
 import { ProjectRail } from './components/ProjectRail'
@@ -193,24 +190,24 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // here, not in Sidebar, so they work with the sidebar hidden too:
   //  - Alt+K/Alt+J step through the sidebar rows top-to-bottom (wrapping)
   //    — the vertical sibling of WorktreeView's Alt+H/Alt+L terminal cycler.
-  //  - Alt+N starts a new worktree in the active project, with the selected
-  //    worktree's tool (or claude) — ignored while that tool has no stored
-  //    credential (sign in via settings → credentials).
+  //  - Alt+N starts a new worktree in the active project exactly as the
+  //    create popover would if opened and confirmed untouched: the agent the
+  //    project was last created with, and that agent's remembered model,
+  //    posture and UI — ignored while that agent has no stored credential
+  //    (sign in via settings → credentials).
   //  - Alt+D deletes the selected worktree, through the same confirm dialog
   //    as the sidebar row's × (Enter confirms — the button holds focus).
   // The ref keeps the single listener reading the current render's state.
-  const provision = useProvisionWorktree()
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
-  const authList = useAuthList()
-  const configured = configuredTools(authList)
+  const createDefaults = useCreateDefaults(activeProjectSlug)
+  const createWorktree = useCreateWorktree()
   const newWorktree = (): void => {
-    if (!activeProjectSlug) return
-    const slug = activeProjectSlug
-    const tool = resolveNewWorktreeTool(worktrees, selectedWorktreeId, configured)
-    if (!tool) return
-    const worktreeId = randomUUID()
-    provision(slug, tool, 'create', worktreeId,
-      (sid, onProgress) => createWorktree(slug, tool, onProgress, sid))
+    if (!activeProjectSlug || !createDefaults.ready) return
+    const tool = createDefaults.lastTool
+    if (!createDefaults.configured.has(tool)) return
+    const setup = createDefaults.forTool(tool)
+    const modelName = setup.models.find((m) => m.id === setup.model)?.name
+    createWorktree(activeProjectSlug, tool, { ...setup, ...(modelName !== undefined ? { modelName } : {}) })
   }
   const [confirmDelete, setConfirmDelete] = useState<WorktreeListEntry | null>(null)
   const selectedWorktree = selectedWorktreeId && !pendingDeleteIds.includes(selectedWorktreeId)

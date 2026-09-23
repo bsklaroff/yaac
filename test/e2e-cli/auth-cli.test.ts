@@ -34,7 +34,7 @@ import {
  * happen CLI-side"), never by the server, so they are passed per-runYaac
  * call and the shared server needs no special env.
  */
-describe('yaac auth + tool (real CLI + shared server)', () => {
+describe('yaac auth (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
 
@@ -100,7 +100,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
   }
 
   // Pristine-state assertions — these MUST run before anything writes a
-  // credential file or sets the default tool.
+  // credential file.
   describe('clean data dir', () => {
     it('auth list on a clean data dir reports no credentials configured', async () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
@@ -116,12 +116,6 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'clear')
       expect(exitCode).toBe(0)
       expect(stdout).toContain('No credentials configured.')
-    })
-
-    it('tool get reports the unconfigured state on a clean data dir', async () => {
-      const { stdout, exitCode } = await runYaac(testEnv.env, 'tool', 'get')
-      expect(exitCode).toBe(0)
-      expect(stdout).toMatch(/No default tool configured/)
     })
   })
 
@@ -539,26 +533,6 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(parsed.kind).toBe('api-key')
       expect(parsed.apiKey).toBe('sk-ant-pi-test-key')
       expect(parsed.provider).toBe('anthropic')
-    })
-  })
-
-  describe('tool', () => {
-    // Runs after the clean-data-dir describe: `tool set` persists the
-    // default tool, which would break the unconfigured-state assertion.
-    it('tool set then tool get round-trips via the server', async () => {
-      const setResult = await runYaac(testEnv.env, 'tool', 'set', 'claude')
-      expect(setResult.exitCode).toBe(0)
-      expect(setResult.stdout).toMatch(/claude/)
-
-      const getResult = await runYaac(testEnv.env, 'tool', 'get')
-      expect(getResult.exitCode).toBe(0)
-      expect(getResult.stdout.trim()).toBe('claude')
-    })
-
-    it('tool set rejects an unknown tool', async () => {
-      const { exitCode, stderr } = await runYaac(testEnv.env, 'tool', 'set', 'bogus')
-      expect(exitCode).not.toBe(0)
-      expect(stderr.length).toBeGreaterThan(0)
     })
   })
 })

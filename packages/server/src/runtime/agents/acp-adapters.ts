@@ -40,13 +40,14 @@ export interface AcpAdapterProfile {
   modeIds: Partial<Record<PermissionMode, string>>
   /**
    * Where the model is chosen. `argv` and `env` settle it before the agent
-   * starts; the other two name the request that settles it after the
-   * handshake, for an adapter that otherwise reads its model from the tool's
-   * own settings. Two spellings because the adapters genuinely disagree:
-   * opencode removed `session/set_model` in v2 and answers only the config
-   * option, while pi-acp implements the method.
+   * starts; `set_config_option` settles it after the handshake, as the `model`
+   * config option, for an adapter that otherwise reads its model from the
+   * tool's own settings. Never `session/set_model`: neither pinned adapter
+   * that needs this answers it (opencode removed it in v2, and pi-acp 0.0.33
+   * answers "Method not found"), while both advertise `model` among their
+   * `configOptions`.
    */
-  modelVia: 'argv' | 'env' | 'set_model' | 'set_config_option'
+  modelVia: 'argv' | 'env' | 'set_config_option'
   /**
    * Whether a `session/request_permission` still reaches the user under the
    * `bypass` posture. True for an adapter whose asks are not permission
@@ -168,7 +169,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   /**
    * pi-acp drives `pi --mode rpc`, so the pi CLI has to be beside it, and it
    * takes neither flags nor configuration environment: the model is sent
-   * after the handshake, as `session/set_model`.
+   * after the handshake, as the `model` config option — the one route its
+   * `setSessionConfigOption` answers (its `session/set_model` is not routed).
    *
    * That is not a cosmetic difference. pi's model id names its provider
    * (`openrouter/…`), and the provider decides which api-key variable the
@@ -187,7 +189,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     argv: () => [ACP_ADAPTERS.pi.binary],
     env: () => [],
     modeIds: {},
-    modelVia: 'set_model',
+    modelVia: 'set_config_option',
     forwardAsksUnderBypass: true,
   },
 }
@@ -209,5 +211,5 @@ export const _ACP_PROFILES = PROFILES
 /** Whether this adapter has to be TOLD its model after the handshake, rather
  *  than being launched with one. */
 export function acpModelIsProtocol(profile: AcpAdapterProfile): boolean {
-  return profile.modelVia === 'set_model' || profile.modelVia === 'set_config_option'
+  return profile.modelVia === 'set_config_option'
 }

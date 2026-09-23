@@ -96,21 +96,23 @@ describe('decideSpawn', () => {
   })
 
   // The caller's tool is only reported when the substrate labelled it with one
-  // yaac knows, so an unlabelled caller falls through to the server's own
-  // preference row, and then to claude.
-  it('falls back to the configured default, then claude, for an unknown caller tool', async () => {
+  // yaac knows, so an unlabelled caller falls through to the agent its project
+  // was last created with, and then to claude.
+  it('falls back to the project\'s last agent, then claude, for an unknown caller tool', async () => {
     const withDefault = stubCreate()
+    const lastToolFn = vi.fn(() => Promise.resolve<'pi'>('pi'))
     expect((await decideSpawn(
       makeRequest({ callerTool: undefined }),
-      { defaultToolFn: () => Promise.resolve('pi') },
+      { lastToolFn },
     )).ok).toBe(true)
+    expect(lastToolFn).toHaveBeenCalledWith(makeRequest().callerProjectSlug)
     expect(withDefault.mock.calls[0][1].tool).toBe('pi')
     await settle()
 
     const noDefault = stubCreate()
     expect((await decideSpawn(
       makeRequest({ callerTool: undefined }),
-      { defaultToolFn: () => Promise.resolve(undefined) },
+      { lastToolFn: () => Promise.resolve(undefined) },
     )).ok).toBe(true)
     expect(noDefault.mock.calls[0][1].tool).toBe('claude')
     await settle()

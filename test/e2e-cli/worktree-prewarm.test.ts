@@ -219,13 +219,14 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     )).toBe('dev')
 
     // 5. The claim leaves the pool short, so a fresh spare is warmed to
-    //    replace it — warmed for the project's tool, not the codex the claim
-    //    retooled into. Running is enough here: nothing claims this one, and
-    //    waiting on its tmux would just be waiting.
+    //    replace it — as the project's untouched create, and the `--tool
+    //    codex` claim just made codex the agent this project was last created
+    //    with. Running is enough here: nothing claims this one, and waiting on
+    //    its tmux would just be waiting.
     const refilled = await waitFor(async () => {
       const pods = await listWorktreePods('repo-demo')
       return pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
     }, 150_000)
-    expect(refilled.tool).toBe('claude')
+    expect(refilled.tool).toBe('codex')
   }, 420_000)
 })

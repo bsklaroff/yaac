@@ -14,8 +14,9 @@ its **mode**, and there are two:
 Mode is orthogonal to `AgentTool`: it selects the protocol, not which agent
 runs. Every tool has an adapter, and which one is the shared `ACP_ADAPTERS`
 record in `@yaac/shared/types` — the single table the image's install steps,
-the host preflight, the launch command and the webapp's chat button all derive
-from:
+the host preflight, the launch command and the create form's UI dropdown
+(Terminal / Chat — remembered per agent, see docs/permission-modes.md) all
+derive from:
 
 | tool | adapter | notes |
 |---|---|---|

@@ -372,7 +372,8 @@ dimension):
   content-hash tags would absorb) only if personalization proves worth the
   build fan-out.
 - Per-user UI/preference state that is install-global today and hence
-  cross-user writable: default tool, git identity, shortcut overrides, and
+  cross-user writable: the per-project create memory (last agent and each
+  agent's model, posture and UI), git identity, shortcut overrides, and
   worktree death read-marks (`deathSeen` on the row, surfaced by
   `/worktree/list-stopped`; `mark-all-deaths-seen` dismisses for everyone).
 
@@ -626,8 +627,9 @@ class — *install-global* writes any user can make today:
   /worktree/provisioning/:id/dismiss` write other users' rows; `DELETE
   /project/:slug` purges every worktree of the project. Owner/project-owner
   gated, with the provisioning registry gaining an owner field.
-- **Shared preference rows**: `/tool/set` (also changes what prewarm warms),
-  the git identity and `/shortcuts/*` are install-global — per-user rows
+- **Shared preference rows**: the per-project create memory (also changes
+  what prewarm warms), the git identity and `/shortcuts/*` are install-global
+  — per-user rows
   (low severity, but reads like a bug).
 
 ### The spawn flow needs an owner carried through it
@@ -645,8 +647,8 @@ caller's owner**, read from the caller's worktree row the drain already
 resolves. The queue caps are `MAMA_MAX_PENDING_TOTAL` across the install
 plus a per-worktree pending cap and `SPAWN_MAX_IN_FLIGHT_PER_SESSION` —
 one user's worktrees can still fill the shared total, so add a per-owner
-budget. And `decideSpawn` falls back to the install-global default tool
-(request tool → caller's tool → `getDefaultTool()` → `claude`) and its
+budget. And `decideSpawn` falls back to the project's last agent
+(request tool → caller's tool → the project's last agent → `claude`) and its
 credential — resolve tool *and* credential from the inherited owner, and
 fail the spawn if the owner has no credential rather than creating an
 unauthenticatable worktree. The proxy `/tools` roster leaks other users'

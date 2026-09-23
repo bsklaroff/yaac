@@ -23,7 +23,7 @@ vi.mock('#lib/useProvisionWorktree', () => ({
 }))
 // The snapshot arrives over the events socket; there is no queryFn, so a
 // component that mounts before the first frame sees `undefined` — which is
-// the case the permission-mode default has to survive.
+// the case the form's fallbacks have to survive.
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
@@ -42,12 +42,26 @@ beforeAll(() => {
   }
 })
 
-const CLAUDE_ONLY: AuthListResult = {
-  gitCredentials: [],
-  toolAuth: [
-    { tool: 'claude', kind: 'oauth', keyPreview: '***host', savedAt: '2026-01-01T00:00:00.000Z' },
+const CLAUDE = {
+  tool: 'claude' as const, kind: 'oauth' as const, keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z',
+  models: [
+    { id: 'claude-opus-5-5', name: 'Opus 5.5' },
+    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
   ],
+  defaultModel: 'claude-opus-5-5',
 }
+const CODEX = {
+  tool: 'codex' as const, kind: 'oauth' as const, keyPreview: '***x', savedAt: '2026-01-01T00:00:00.000Z',
+  models: [{ id: 'gpt-6-sol', name: 'GPT-6 Sol' }, { id: 'gpt-5.5', name: 'GPT-5.5' }],
+  defaultModel: 'gpt-6-sol',
+}
+const PI = {
+  tool: 'pi' as const, kind: 'api-key' as const, keyPreview: '***k', savedAt: '2026-01-01T00:00:00.000Z',
+  models: [{ id: 'anthropic/claude-opus-4-8', name: 'Claude Opus 4.8' }],
+  defaultModel: 'anthropic/claude-opus-4-8',
+}
+const CLAUDE_ONLY: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE] }
+const SIGNED_IN: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE, CODEX, PI] }
 
 const BRANCHES: ProjectBranches = {
   branches: ['main', 'dev', 'release/2.x'],
@@ -55,18 +69,29 @@ const BRANCHES: ProjectBranches = {
   referenceBranch: null,
 }
 
+/** A snapshot for project `proj` with the given create memory. */
+function project(memory: Record<string, unknown> = {}, driver = 'k8s'): unknown {
+  return { driver, projects: [{ slug: 'proj', createDefaults: {}, ...memory }] }
+}
+
 beforeEach(() => {
   useUiStore.setState({ settingsOpen: false, settingsSection: 'general', settingsFocusTool: null })
   vi.clearAllMocks()
-  snapshot.mockReturnValue(undefined)
+  snapshot.mockReturnValue(project())
   vi.mocked(getAuthList).mockResolvedValue(CLAUDE_ONLY)
   vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
   vi.mocked(setProjectReferenceBranch).mockImplementation((_slug, branch) => Promise.resolve(branch))
+  // Run the op the button hands the provisioning flow, so what it sends is
+  // what `createWorktree` is called with.
+  provision.mockImplementation(
+    (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
+      void op(sid, () => {})
+    })
 })
 
 afterEach(cleanup)
 
-/** Render the button and open its popover, waiting for the auth list. */
+/** Render the button and open its popover. */
 async function openMenu(): Promise<void> {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -74,30 +99,158 @@ async function openMenu(): Promise<void> {
     </QueryClientProvider>,
   )
   fireEvent.click(screen.getByRole('button', { name: 'New worktree' }))
-  await waitFor(() => expect(screen.getByText('Claude')).toBeTruthy())
+  await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
 }
 
-const branchInput = (): HTMLInputElement =>
-  screen.getByLabelText<HTMLInputElement>('Reference branch')
+/** Open, and wait until the credential list has landed. */
+async function openReady(): Promise<void> {
+  await openMenu()
+  await waitFor(() => expect(createButton().disabled).toBe(false))
+}
+
+const branchInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Reference branch')
+const modelInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Model')
+const select = (label: string): HTMLSelectElement => screen.getByLabelText<HTMLSelectElement>(label)
+const createButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^Create$|^Sign in to/ })
+const option = (label: string, text: string): HTMLOptionElement =>
+  [...select(label).options].find((o) => o.textContent?.startsWith(text))!
 
 describe('NewWorktreeButton', () => {
-  it('creates a worktree for a tool with credentials', async () => {
-    await openMenu()
+  it('opens on the project\'s last agent with what it last used, and creates with all of it', async () => {
+    vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+    snapshot.mockReturnValue(project({
+      lastTool: 'codex',
+      createDefaults: { codex: { model: 'gpt-5.5', permissionMode: 'plan' } },
+    }))
+    await openReady()
 
-    await waitFor(() => expect(screen.queryAllByText('Sign in').length).toBe(3))
-    fireEvent.click(screen.getByText('Claude'))
+    expect(select('Agent').value).toBe('codex')
+    // Shown by name, sent by id.
+    expect(modelInput().value).toBe('GPT-5.5')
+    expect(select('Permissions').value).toBe('plan')
+    expect(select('UI').value).toBe('tui')
 
-    expect(provision).toHaveBeenCalledTimes(1)
-    expect(provision.mock.calls[0][0]).toBe('proj')
-    expect(provision.mock.calls[0][1]).toBe('claude')
-    expect(useUiStore.getState().settingsOpen).toBe(false)
+    fireEvent.click(createButton())
+    // Every field is sent, so every field becomes the next default. The
+    // branch is omitted: the picker is on the project's default.
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
+      model: 'gpt-5.5', permissionMode: 'plan', mode: 'tui',
+    })
+    // The provisioning row names the model from its first frame.
+    expect(provision.mock.calls[0][6]).toEqual({ model: 'gpt-5.5', modelName: 'GPT-5.5' })
+    expect(screen.queryByLabelText('Agent')).toBeNull() // closed
   })
 
-  it('routes a credential-less tool to settings → credentials instead of creating', async () => {
+  // A missing snapshot would read a containerless server as sandboxed and
+  // offer bypass, so nothing may create until it lands.
+  it('falls back per field, and offers no create before the snapshot lands', async () => {
+    snapshot.mockReturnValue(undefined)
     await openMenu()
+    await waitFor(() => expect(modelInput().value).toBe('Opus 5.5'))
+    expect(createButton().disabled).toBe(true)
 
-    await waitFor(() => expect(screen.queryAllByText('Sign in').length).toBe(3))
-    fireEvent.click(screen.getByText('Codex'))
+    cleanup()
+    snapshot.mockReturnValue(project({}, 'containerless'))
+    await openReady()
+    expect(select('Agent').value).toBe('claude')
+    expect(modelInput().value).toBe('Opus 5.5')
+    expect(select('Permissions').value).toBe('accept-edits')
+    expect(select('UI').value).toBe('tui')
+    // Picking bypass there is allowed, and said out loud.
+    fireEvent.change(select('Permissions'), { target: { value: 'bypass' } })
+    expect(screen.getByText('no sandbox — acts as you')).toBeTruthy()
+  })
+
+  it('reloads an agent\'s own memory and options when the agent changes', async () => {
+    vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+    snapshot.mockReturnValue(project({
+      createDefaults: {
+        claude: { model: 'claude-sonnet-5', permissionMode: 'manual', mode: 'acp' },
+        codex: { model: 'gpt-5.5' },
+      },
+    }))
+    await openReady()
+    expect(modelInput().value).toBe('Sonnet 5')
+    expect(select('UI').value).toBe('acp')
+
+    fireEvent.change(select('Agent'), { target: { value: 'codex' } })
+    expect(modelInput().value).toBe('GPT-5.5')
+    expect(select('Permissions').value).toBe('bypass')
+    expect(select('UI').value).toBe('tui')
+
+    // pi has no permission system, so bypass is all it offers.
+    fireEvent.change(select('Agent'), { target: { value: 'pi' } })
+    expect([...select('Permissions').options].map((o) => o.value)).toEqual(['bypass'])
+    expect(modelInput().value).toBe('Claude Opus 4.8')
+  })
+
+  // codex's chat adapter has no plan or manual mode, and neither field
+  // quietly moves the other: each disables what the other rules out.
+  it('disables the postures and UIs that rule each other out', async () => {
+    vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+    await openReady()
+    fireEvent.change(select('Agent'), { target: { value: 'codex' } })
+
+    fireEvent.change(select('UI'), { target: { value: 'acp' } })
+    expect(option('Permissions', 'Plan').disabled).toBe(true)
+    expect(option('Permissions', 'Manual').disabled).toBe(true)
+    expect(option('Permissions', 'Accept').disabled).toBe(false)
+
+    fireEvent.change(select('UI'), { target: { value: 'tui' } })
+    fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
+    expect(option('UI', 'Chat').disabled).toBe(true)
+    expect(select('Permissions').value).toBe('plan')
+  })
+
+  it('searches models by name or id, and Enter picks before it creates', async () => {
+    await openReady()
+
+    fireEvent.change(modelInput(), { target: { value: 'sonnet' } })
+    expect(screen.getByText('Sonnet 5')).toBeTruthy()
+    expect(screen.queryByText('Opus 5.5')).toBeNull()
+    // Mid-edit text is a search, not a pick.
+    expect(createButton().disabled).toBe(true)
+
+    fireEvent.change(modelInput(), { target: { value: 'claude-sonnet' } })
+    fireEvent.keyDown(modelInput(), { key: 'Enter' })
+    expect(modelInput().value).toBe('Sonnet 5')
+    expect(createWorktree).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(modelInput(), { key: 'Enter' })
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
+      expect.objectContaining({ model: 'claude-sonnet-5' }))
+  })
+
+  it('takes a model id the catalog does not list', async () => {
+    await openReady()
+    fireEvent.change(modelInput(), { target: { value: 'claude-next' } })
+    fireEvent.click(screen.getByText('Use "claude-next" as a model id'))
+    expect(modelInput().value).toBe('claude-next')
+
+    fireEvent.click(createButton())
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
+      expect.objectContaining({ model: 'claude-next' }))
+  })
+
+  it('creates on Enter straight after opening, but not from a button', async () => {
+    await openReady()
+    await waitFor(() => expect(branchInput().value).toBe('main'))
+    fireEvent.change(branchInput(), { target: { value: 'dev' } })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Set as default branch' }), { key: 'Enter' })
+    expect(createWorktree).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' })
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
+      expect.objectContaining({ branch: 'dev', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui' }))
+  })
+
+  it('routes a credential-less agent to settings → credentials instead of creating', async () => {
+    await openReady()
+    fireEvent.change(select('Agent'), { target: { value: 'codex' } })
+
+    expect(screen.getByText('Codex has no credentials')).toBeTruthy()
+    expect(screen.queryByLabelText('Model')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to Codex…' }))
 
     expect(provision).not.toHaveBeenCalled()
     const state = useUiStore.getState()
@@ -130,34 +283,8 @@ describe('NewWorktreeButton', () => {
     await waitFor(() => expect(branchInput().value).toBe('dev'))
   })
 
-  it('creates on the default branch without sending a branch', async () => {
-    provision.mockImplementation(
-      (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
-        void op(sid, () => {})
-      })
-    await openMenu()
-    await waitFor(() => expect(branchInput().value).toBe('main'))
-
-    fireEvent.click(screen.getByText('Claude'))
-    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith(
-      // undefined, not a posture: the user has never touched the dropdown,
-      // so the create omits the field and the SERVER resolves it. Sending one
-      // here would both make that fallback unreachable and overwrite the
-      // project's remembered choice with a default nobody picked.
-      //
-      // The trailing undefined is installMissingTool: a first attempt never
-      // installs anything, only the explicit Install-and-retry does.
-      'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', undefined,
-      undefined,
-    )
-  })
-
   it('typeahead filters the branch list and a picked branch rides the create', async () => {
-    provision.mockImplementation(
-      (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
-        void op(sid, () => {})
-      })
-    await openMenu()
+    await openReady()
     await waitFor(() => expect(branchInput().value).toBe('main'))
 
     fireEvent.change(branchInput(), { target: { value: 're' } })
@@ -168,11 +295,9 @@ describe('NewWorktreeButton', () => {
     fireEvent.click(screen.getByText('release/2.x'))
     expect(branchInput().value).toBe('release/2.x')
 
-    fireEvent.click(screen.getByText('Claude'))
-    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith(
-      'proj', 'claude', expect.any(Function), expect.any(String), 'release/2.x', 'tui', undefined,
-      undefined,
-    )
+    fireEvent.click(createButton())
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
+      expect.objectContaining({ branch: 'release/2.x' }))
   })
 
   it('pins the picked branch as the project default', async () => {
@@ -191,116 +316,5 @@ describe('NewWorktreeButton', () => {
     // The pinned branch becomes the default resolution — pin disables again.
     await waitFor(() => expect((pin as HTMLButtonElement).disabled).toBe(true))
     expect(branchInput().value).toBe('dev')
-  })
-
-  // The bargain the containerless mode is documented on: no sandbox, so the
-  // agent edits its worktree freely but still asks before anything wider.
-  it('shows the driver default, and never reads a missing snapshot as sandboxed', async () => {
-    snapshot.mockReturnValue(undefined)
-    await openMenu()
-    // An initializer that captured the undefined snapshot here would show the
-    // sandboxed default for the component's life; the value is derived at
-    // render instead, so the containerless answer lands as soon as it does.
-    snapshot.mockReturnValue({ driver: 'containerless', projects: [] })
-    cleanup()
-    await openMenu()
-    expect(screen.getByRole('combobox')).toHaveProperty('value', 'accept-edits')
-
-    snapshot.mockReturnValue({ driver: 'k8s', projects: [] })
-    cleanup()
-    await openMenu()
-    expect(screen.getByRole('combobox')).toHaveProperty('value', 'bypass')
-  })
-
-  // The remembered choice is the server's, not this browser's, so the form
-  // opens on what a create would actually resolve to for this project.
-  it('prefers the project\'s remembered posture over the driver default', async () => {
-    snapshot.mockReturnValue({
-      driver: 'k8s',
-      projects: [{ slug: 'proj', lastPermissionMode: 'plan' }],
-    })
-    await openMenu()
-    expect(screen.getByRole('combobox')).toHaveProperty('value', 'plan')
-  })
-
-  it('sends an explicit choice, and omits it while untouched', async () => {
-    snapshot.mockReturnValue({ driver: 'containerless', projects: [] })
-    provision.mockImplementation(
-      (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
-        void op(sid, () => {})
-      })
-    await openMenu()
-    fireEvent.click(screen.getByText('Claude'))
-    // Untouched: the field is omitted so the server resolves it — and so a
-    // defaulted create never overwrites what the user last picked.
-    expect(vi.mocked(createWorktree)).toHaveBeenLastCalledWith(
-      'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', undefined,
-      undefined,
-    )
-
-    cleanup()
-    await openMenu()
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'manual' } })
-    fireEvent.click(screen.getByText('Claude'))
-    expect(vi.mocked(createWorktree)).toHaveBeenLastCalledWith(
-      'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', 'manual',
-      undefined,
-    )
-  })
-
-  // pi has no permission system at all, so it cannot honor a posture the user
-  // has already picked — the row says so rather than silently launching
-  // unrestrained.
-  it('disables a tool that has no such posture', async () => {
-    vi.mocked(getAuthList).mockResolvedValue({
-      gitCredentials: [],
-      toolAuth: [
-        { tool: 'claude', kind: 'oauth', keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z' },
-        { tool: 'pi', kind: 'api-key', keyPreview: '***k', savedAt: '2026-01-01T00:00:00.000Z' },
-      ],
-    })
-    snapshot.mockReturnValue({ driver: 'k8s', projects: [] })
-    await openMenu()
-    // Under bypass — pi's only posture — it is clickable like any other.
-    expect(screen.getByText('Pi').closest('button')).toHaveProperty('disabled', false)
-
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'plan' } })
-    expect(screen.getByText('Pi').closest('button')).toHaveProperty('disabled', true)
-    expect(screen.getByText('Claude').closest('button')).toHaveProperty('disabled', false)
-  })
-
-  it('offers a chat worktree under every posture its ADAPTER supports', async () => {
-    // A conversation enforces a posture by telling its adapter and asking the
-    // pane about whatever the mode does not settle, so the chat button is
-    // gated on a posture rather than on `bypass`. On the ACP column, though,
-    // not the tool's: codex has plan mode and codex-acp does not, so under
-    // `plan` codex is a terminal worktree only — offering a chat button there
-    // would open a create the server refuses.
-    vi.mocked(getAuthList).mockResolvedValue({
-      gitCredentials: [],
-      toolAuth: [
-        { tool: 'claude', kind: 'oauth', keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z' },
-        { tool: 'codex', kind: 'oauth', keyPreview: '***x', savedAt: '2026-01-01T00:00:00.000Z' },
-      ],
-    })
-    snapshot.mockReturnValue({ driver: 'k8s', projects: [] })
-    await openMenu()
-    const chatFor = (tool: string): boolean =>
-      screen.getByText(tool).closest('div')?.textContent?.includes('chat') === true
-
-    expect(chatFor('Claude')).toBe(true)
-    expect(chatFor('Codex')).toBe(true)
-
-    for (const mode of ['manual', 'accept-edits']) {
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: mode } })
-      expect(chatFor('Claude'), mode).toBe(true)
-    }
-
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'plan' } })
-    expect(chatFor('Claude')).toBe(true)
-    expect(chatFor('Codex')).toBe(false)
-    // The terminal button is untouched — codex runs plan mode perfectly well,
-    // just not through its adapter.
-    expect(screen.getByText('Codex').closest('button')).toHaveProperty('disabled', false)
   })
 })

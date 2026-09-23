@@ -58,6 +58,15 @@ describe('applyWorktreeEvent', () => {
     })
   })
 
+  // What its first agent launched with — the facts a spare claim matches on.
+  it('records the launch it was created with', async () => {
+    await created('wt-launch', { permissionMode: 'plan', model: 'claude-opus-5-5', mode: 'acp' })
+
+    expect(await rowOf('wt-launch')).toMatchObject({
+      permissionMode: 'plan', model: 'claude-opus-5-5', mode: 'acp',
+    })
+  })
+
   it('stamps a resolved base branch onto an existing row', async () => {
     await applyWorktreeEvent({
       type: 'base-branch-resolved',
@@ -77,7 +86,10 @@ describe('applyWorktreeEvent', () => {
       projectSlug: 'proj',
       worktreeId: 'wt-1',
       sessions: [
-        { tool: 'claude', agentSessionId: 'conv-a', mode: 'acp', paneId: 'claude', firstPrompt: 'do the thing' },
+        {
+          tool: 'claude', agentSessionId: 'conv-a', mode: 'acp', paneId: 'claude', firstPrompt: 'do the thing',
+          model: 'claude-opus-5-5',
+        },
         { tool: 'claude', agentSessionId: 'conv-b', mode: 'acp', paneId: 'claude-2' },
       ],
     })
@@ -88,6 +100,9 @@ describe('applyWorktreeEvent', () => {
       ['conv-b', 1, true, 'claude-2'],
     ])
     expect(links[0].firstPrompt).toBe('do the thing')
+    // Named from the launch, before the agent has answered.
+    expect(links[0].model).toBe('claude-opus-5-5')
+    expect(links[1].model).toBeUndefined()
   })
 
   it('stamps the stop, and the cause when a reaper supplied one', async () => {

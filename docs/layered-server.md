@@ -337,12 +337,11 @@ step takes the view and every later step sees the same instant. Its
 "a unit with no workspace" is never a comparison across two instants,
 which is what makes the reaper's destructive sweep safe. The runtime's own
 steps recover the fuller substrate view from the same object.
-The configured default tool is a preference row, resolved through a lazy
-per-pass accessor and handed down so no substrate step reads a row; a
-FAILED read rejects the accessor and stands down exactly the steps that
-needed the answer, while an unset preference falls back to claude. The
-project list and each project's config are handed down the same way, so a
-runtime step never reads a row or a config file itself. A step that runs
+The project list and each project's config are rows and disk, resolved
+through lazy per-pass accessors and handed down, so a runtime step never
+reads a row or a config file itself. (A domain step reads its own: the
+prewarm pool resolves what to warm each spare as, per project, at spawn
+time.) A step that runs
 outside a pass — the boot-time forwarder restore, the webapp's build
 retry — takes the same reader as a plain parameter, since there is no
 context to draw one from.

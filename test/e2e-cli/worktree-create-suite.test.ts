@@ -2265,11 +2265,12 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       {
         // pi has no permission system, and no way to be launched with a model
         // — so the provider default reaches it as a protocol call, which is
-        // what makes the egress proxy swap the right api key.
+        // what makes the egress proxy swap the right api key. The `model`
+        // config option, because pi-acp's `session/set_model` is not routed.
         tool: 'pi',
         posture: 'bypass',
         launch: ['pi-acp'],
-        method: '"method":"session/set_model"',
+        method: '"method":"session/set_config_option"',
       },
     ]
 
@@ -2305,6 +2306,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         expect(recorded).toContain('"sessionId"')
         if (modeId !== undefined) expect(recorded).toContain(`"modeId":"${modeId}"`)
         if (method !== undefined) expect(recorded).toContain(method)
+        // Sent is not taken: an adapter answers a call it does not route with
+        // "Method not found", and the conversation runs on regardless.
+        expect(recorded).not.toContain('-32601')
         if (defaultModeId !== undefined) {
           expect(recorded).toContain(`"currentModeId":"${defaultModeId}"`)
         }

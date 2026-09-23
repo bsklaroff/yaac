@@ -2,15 +2,6 @@ import { api } from './api'
 import type { Chord, ShortcutId } from './shortcuts'
 import type { AgentTool, AuthListResult, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
-export async function getDefaultTool(): Promise<AgentTool | null> {
-  const { tool } = await api.tool.get.$get()
-  return tool
-}
-
-export async function setDefaultTool(tool: AgentTool): Promise<void> {
-  await api.tool.set.$post({ json: { tool } })
-}
-
 export async function getAuthList(): Promise<AuthListResult> {
   return api.auth.list.$get()
 }

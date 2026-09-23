@@ -6,7 +6,7 @@ import {
   createWorktree,
   failedCreateCollectsCheckout,
   launchPermissionMode,
-  resolvePermissionMode,
+  resolveCreate,
   withUpstreamConfigLock,
 } from '#domain/worktrees/create'
 import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
@@ -15,10 +15,11 @@ import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import { setGitIdentity } from '#db'
 import {
-  getProjectLastPermissionMode,
+  getProjectRow,
   recordProject,
-  recordProjectPermissionMode,
+  recordProjectCreate,
 } from '#db/project-store'
+import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 
 // The rule a failed create's rollback consults before removing a checkout.
 // Both exclusions are here because getting either backwards destroys work
@@ -128,52 +129,69 @@ describe('launchPermissionMode', () => {
 })
 
 /**
- * The route-facing wrapper, which adds the project-memory rung. The db is
- * real (an empty temp data dir), because that rung IS the recorded row and a
- * mocked read would assert the mock rather than the precedence.
+ * What a person's create runs with: the request, else what this project last
+ * used for the agent, else the fallback. The db is real (an empty temp data
+ * dir), because the middle rung IS the recorded row and a mocked read would
+ * assert the mock rather than the precedence. No credentials are stored, so
+ * the model fallback is the tool's own.
  */
-describe('resolvePermissionMode', () => {
+describe('resolveCreate', () => {
   let tmpDir: string
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    installFakeWorktreeDriver()
     await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
   })
   afterEach(async () => {
+    resetWorktreeDriver()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
-  const resolve = (args: Partial<Parameters<typeof resolvePermissionMode>[0]> = {}) =>
-    resolvePermissionMode({
-      projectSlug: 'p', tool: 'claude', driver: 'k8s', ...args,
+  it('falls back per field when nothing is remembered', async () => {
+    expect(await resolveCreate('p', {})).toEqual({
+      tool: 'claude', model: FALLBACK_MODELS.claude, permissionMode: 'bypass', mode: 'tui',
     })
-
-  it('prefers what the project last had chosen over the driver default', async () => {
-    expect(await resolve()).toBe('bypass')
-    await recordProjectPermissionMode('p', 'plan')
-    expect(await resolve()).toBe('plan')
-    expect(await resolve({ driver: 'containerless' })).toBe('plan')
-    // Remembered for some other tool, so a tool that lacks it falls through
-    // rather than being refused — the user picked it for a different agent.
-    expect(await resolve({ tool: 'pi' })).toBe('bypass')
+    // The posture fallback is the driver's: containerless acts as the user.
+    installFakeWorktreeDriver({ kind: 'containerless' })
+    expect((await resolveCreate('p', { tool: 'codex' }))).toMatchObject({
+      model: FALLBACK_MODELS.codex, permissionMode: 'accept-edits',
+    })
   })
 
-  it('prefers the request over both, and never records it itself', async () => {
-    await recordProjectPermissionMode('p', 'plan')
-    expect(await resolve({ requested: 'manual' })).toBe('manual')
+  it('reopens on the last agent and what it was last created with', async () => {
+    await recordProjectCreate('p', 'claude', { model: 'claude-sonnet-5' })
+    await recordProjectCreate('p', 'codex', { model: 'gpt-5.5', permissionMode: 'plan', mode: 'acp' })
+
+    // The mode is not taken from memory for the route's callers — the CLI
+    // can only show a terminal — so codex opens in `tui`, where plan exists.
+    expect(await resolveCreate('p', {})).toEqual({
+      tool: 'codex', model: 'gpt-5.5', permissionMode: 'plan', mode: 'tui',
+    })
+    // The pool warms what the webapp would send, remembered mode included —
+    // and codex's chat adapter has no plan mode, so the remembered posture
+    // falls through to the default rather than being refused.
+    expect(await resolveCreate('p', {}, { modeFromMemory: true })).toEqual({
+      tool: 'codex', model: 'gpt-5.5', permissionMode: 'bypass', mode: 'acp',
+    })
+    // Another agent brings its own memory.
+    expect(await resolveCreate('p', { tool: 'claude' })).toMatchObject({ model: 'claude-sonnet-5' })
+  })
+
+  it('prefers the request over memory, and never records it itself', async () => {
+    await recordProjectCreate('p', 'claude', { model: 'claude-sonnet-5', permissionMode: 'plan' })
+    expect(await resolveCreate('p', { tool: 'claude', model: 'claude-opus-5', permissionMode: 'manual' }))
+      .toMatchObject({ model: 'claude-opus-5', permissionMode: 'manual' })
     // Remembering is the route's job, since only there is the choice known to
     // be a person's rather than a restart's or the spawn policy's.
-    expect(await getProjectLastPermissionMode('p')).toBe('plan')
+    expect((await getProjectRow('p'))?.createDefaults.claude)
+      .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
   })
 
-  // The posture is a property of the worktree, not of how its agent is
-  // presented: a chat conversation enforces one by telling the adapter and
-  // asking the pane about the rest, so there is no mode-shaped exception here
-  // — which is why the resolver takes no mode at all.
-  it('answers the same for a conversation as for a terminal', async () => {
-    await recordProjectPermissionMode('p', 'plan')
-    expect(await resolve()).toBe('plan')
-    expect(await resolve({ requested: 'accept-edits' })).toBe('accept-edits')
+  it('refuses a named posture the agent lacks under the named mode', async () => {
+    await expect(resolveCreate('p', { tool: 'pi', permissionMode: 'plan' })).rejects.toThrow(/pi has no "plan"/)
+    await expect(resolveCreate('p', { tool: 'codex', permissionMode: 'plan', mode: 'acp' }))
+      .rejects.toThrow(/under acp/)
   })
 })
 

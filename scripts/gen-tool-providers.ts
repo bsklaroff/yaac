@@ -90,6 +90,18 @@ const OPENCODE_EXCLUDE = new Set([
   'cloudflare-ai-gateway',
 ])
 
+interface ModelsDevModel {
+  name?: string
+  tool_call?: boolean
+  release_date?: string
+}
+
+/** Per-provider model ids (in picker order) and their display names. */
+interface ModelsCatalog {
+  ids: Record<string, string[]>
+  names: Record<string, Record<string, string>>
+}
+
 interface ModelsDevProvider {
   id: string
   name?: string
@@ -210,22 +222,47 @@ function buildOpencodeRows(
  * a set of candidate agent models, not the vendor's full catalog. pi has its
  * own registry (see PI_MODELS_BY_PROVIDER); it does not use this map.
  */
-function buildModelsCatalog(db: Record<string, ModelsDevProvider>): Record<string, string[]> {
-  const catalog: Record<string, string[]> = {}
+function buildModelsCatalog(db: Record<string, ModelsDevProvider>): ModelsCatalog {
+  const catalog: ModelsCatalog = { ids: {}, names: {} }
   let modelCount = 0
   for (const [id, p] of Object.entries(db)) {
-    const models = p.models && typeof p.models === 'object' ? p.models : {}
-    const ids = Object.entries(models)
-      .filter(([, m]) => (m as { tool_call?: unknown }).tool_call === true)
+    const models = (p.models && typeof p.models === 'object' ? p.models : {}) as Record<string, ModelsDevModel>
+    const toolCalling = Object.entries(models).filter(([, m]) => m.tool_call === true)
+    const present = new Set(toolCalling.map(([mid]) => mid))
+    // Newest first, so a picker (and the opencode fallback, which takes the
+    // head of the list) leads with current models. A dated snapshot whose
+    // alias is also listed is the same model twice, so only the alias stays.
+    const ids = toolCalling
+      .filter(([mid]) => !isDatedSnapshotOf(mid, present))
+      .sort(([aId, a], [bId, b]) =>
+        (b.release_date ?? '').localeCompare(a.release_date ?? '') || aId.localeCompare(bId))
       .map(([mid]) => mid)
-      .sort()
     if (ids.length) {
-      catalog[id] = ids
+      catalog.ids[id] = ids
+      catalog.names[id] = Object.fromEntries(ids.flatMap((mid) => {
+        const name = displayName(models[mid]?.name)
+        return name !== undefined ? [[mid, name]] : []
+      }))
       modelCount += ids.length
     }
   }
-  console.log(`  models (models.dev, tool-calling): ${modelCount} ids across ${Object.keys(catalog).length} providers`)
+  console.log(`  models (models.dev, tool-calling): ${modelCount} ids across ${Object.keys(catalog.ids).length} providers`)
   return catalog
+}
+
+/** A registry's name for a model, as a picker shows it: models.dev marks an
+ *  alias "(latest)", which says nothing once the dated snapshot beside it is
+ *  dropped. */
+function displayName(name: unknown): string | undefined {
+  if (typeof name !== 'string') return undefined
+  const trimmed = name.replace(/ \(latest\)/, '').trim()
+  return trimmed !== '' ? trimmed : undefined
+}
+
+/** `claude-haiku-4-5-20251001` when `claude-haiku-4-5` is also listed. */
+function isDatedSnapshotOf(id: string, present: Set<string>): boolean {
+  const alias = /^(.+)-\d{8}$/.exec(id)?.[1]
+  return alias !== undefined && present.has(alias)
 }
 
 // ── pi: installed @earendil-works/pi-ai ─────────────────────────────────
@@ -304,20 +341,28 @@ async function buildPiRows(): Promise<ProviderRow[]> {
  * for pi rather than reusing the models.dev map. (pi still accepts any
  * `provider/model` at runtime; this is the convenience list.)
  */
-async function buildPiModelsCatalog(): Promise<Record<string, string[]>> {
+async function buildPiModelsCatalog(): Promise<ModelsCatalog> {
   const root = piPackageRoot()
   const piAi = path.join(root, 'node_modules', '@earendil-works', 'pi-ai', 'dist')
   const all = await importPi(path.join(piAi, 'providers', 'all.js'))
   const getBuiltinProviders = all.getBuiltinProviders as () => string[]
-  const getBuiltinModels = all.getBuiltinModels as (provider: string) => { id: string }[]
+  const getBuiltinModels = all.getBuiltinModels as (provider: string) => { id: string; name?: unknown }[]
 
-  const catalog: Record<string, string[]> = {}
+  const catalog: ModelsCatalog = { ids: {}, names: {} }
   let modelCount = 0
   for (const provider of getBuiltinProviders()) {
-    const ids = getBuiltinModels(provider).map((m) => m.id).sort()
-    if (ids.length) { catalog[provider] = ids; modelCount += ids.length }
+    const models = getBuiltinModels(provider)
+    const ids = models.map((m) => m.id).sort()
+    if (ids.length) {
+      catalog.ids[provider] = ids
+      catalog.names[provider] = Object.fromEntries(models.flatMap((m) => {
+        const name = displayName(m.name)
+        return name !== undefined ? [[m.id, name]] : []
+      }))
+      modelCount += ids.length
+    }
   }
-  console.log(`  models (pi registry): ${modelCount} ids across ${Object.keys(catalog).length} providers`)
+  console.log(`  models (pi registry): ${modelCount} ids across ${Object.keys(catalog.ids).length} providers`)
   return catalog
 }
 
@@ -366,6 +411,18 @@ function piDefaultModelsMap(rows: ProviderRow[]): string {
   return `export const PI_PROVIDER_DEFAULT_MODELS: Record<string, string> = {\n${entries}\n}`
 }
 
+function modelNamesMap(name: string, names: Record<string, Record<string, string>>): string {
+  const entries = Object.keys(names)
+    .sort()
+    .map((id) => {
+      const pairs = Object.keys(names[id]).sort()
+        .map((m) => `${JSON.stringify(m)}: ${JSON.stringify(names[id][m])}`)
+      return `  ${JSON.stringify(id)}: { ${pairs.join(', ')} },`
+    })
+    .join('\n')
+  return `export const ${name}: Record<string, Record<string, string>> = {\n${entries}\n}`
+}
+
 function modelsCatalogMap(name: string, catalog: Record<string, string[]>): string {
   const entries = Object.keys(catalog)
     .sort()
@@ -383,8 +440,8 @@ function modelsCatalogMap(name: string, catalog: Record<string, string[]>): stri
 function generatedFile(
   opencode: ProviderRow[],
   pi: ProviderRow[],
-  catalog: Record<string, string[]>,
-  piModels: Record<string, string[]>,
+  catalog: ModelsCatalog,
+  piModels: ModelsCatalog,
   header: string,
 ): string {
   return `/* eslint-disable */
@@ -440,12 +497,18 @@ ${piDefaultModelsMap(pi)}
 // \`GET yaac.internal/tools?models=1\`) so a
 // worktree can discover valid \`--model\` values without a network fetch; also
 // available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
-// tool-calling models (claude → anthropic, codex → openai, opencode → provider);
+// tool-calling models (claude → anthropic, codex → openai, opencode → provider),
+// newest first with dated snapshots of a listed alias dropped;
 // PI_MODELS_BY_PROVIDER is pi's own registry, which differs from models.dev.
+// The *_NAMES maps carry each registry's display name for an id.
 
-${modelsCatalogMap('MODELS_BY_PROVIDER', catalog)}
+${modelsCatalogMap('MODELS_BY_PROVIDER', catalog.ids)}
 
-${modelsCatalogMap('PI_MODELS_BY_PROVIDER', piModels)}
+${modelsCatalogMap('PI_MODELS_BY_PROVIDER', piModels.ids)}
+
+${modelNamesMap('MODEL_NAMES', catalog.names)}
+
+${modelNamesMap('PI_MODEL_NAMES', piModels.names)}
 `
 }
 
@@ -454,7 +517,7 @@ async function main(): Promise<void> {
   const db = await fetchModelsDev()
   const [pi, piModels] = await Promise.all([buildPiRows(), buildPiModelsCatalog()])
   const catalog = buildModelsCatalog(db)
-  const opencode = buildOpencodeRows(db, catalog)
+  const opencode = buildOpencodeRows(db, catalog.ids)
 
   const piRoot = piPackageRoot()
   const opencodeVer = (() => {

@@ -299,10 +299,6 @@ yaac worktree <command>
   monitor [options] [project] Poll and display running worktrees in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
 
-yaac tool <command>
-  get                 Show the current default agent tool
-  set <tool>          Set the default agent tool (claude, codex, opencode, or pi)
-
 yaac config <command>
   edit <project>              Open the project's yaac-config.json in $EDITOR
   edit-dockerfile <project>   Open the project's Dockerfile.yaac in $EDITOR

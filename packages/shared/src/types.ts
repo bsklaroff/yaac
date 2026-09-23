@@ -230,6 +230,55 @@ export function defaultPermissionMode(driver: DriverKind, tool: AgentTool): Perm
   return driver === 'containerless' ? 'accept-edits' : 'bypass'
 }
 
+/**
+ * What one agent was last created with in a project — the create form's
+ * memory (`project_tool_defaults`). Each field is absent until it has been
+ * picked for that agent there.
+ */
+export interface ToolCreateDefaults {
+  model?: string
+  permissionMode?: PermissionMode
+  mode?: AgentMode
+}
+
+/**
+ * The model and posture a create for `tool` runs with when its request names
+ * neither: what the project remembers for that agent where it still fits,
+ * else the fallback. The ONE function both ends answer this with — the create
+ * form to show it, the server to launch it — so the form always shows what an
+ * untouched create would run.
+ *
+ * A remembered posture must still be one the tool offers under `agentMode`
+ * (it may have been recorded under the other mode, or before a tool update
+ * dropped it). A remembered model must name the credential's current provider
+ * for the tools whose ids carry one (`provider/model`); for claude and codex
+ * any remembered id stands, since the catalog is a convenience rather than an
+ * allowlist and the user may have typed one it lacks.
+ */
+export function resolveToolCreateDefaults(args: {
+  driver: DriverKind
+  tool: AgentTool
+  agentMode: AgentMode
+  remembered: ToolCreateDefaults | undefined
+  /** opencode / pi: the provider the stored credential authenticates against. */
+  provider?: string
+  /** What the tool runs when nothing is remembered (`defaultModelFor`). */
+  defaultModel: string
+}): { model: string; permissionMode: PermissionMode } {
+  const { driver, tool, agentMode, remembered, provider } = args
+  const posture = remembered?.permissionMode
+  const model = remembered?.model
+  const qualified = tool === 'opencode' || tool === 'pi'
+  const modelFits = model !== undefined
+    && (!qualified || provider === undefined || model.startsWith(`${provider}/`))
+  return {
+    model: modelFits ? model : args.defaultModel,
+    permissionMode: posture !== undefined && toolSupportsPermissionMode(tool, posture, agentMode)
+      ? posture
+      : defaultPermissionMode(driver, tool),
+  }
+}
+
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
@@ -582,6 +631,18 @@ export interface ToolAuthSummary {
   opencodeProvider?: OpencodeProvider
   /** pi only — which provider the stored api-key authenticates against. */
   piProvider?: PiProvider
+  /** Candidate `--model` values for this credential, newest first, each with
+   *  its display name when the catalog has one — the create form's model
+   *  list. A convenience, not an allowlist. */
+  models: ModelOption[]
+  /** What a create runs when this project remembers no model for the tool. */
+  defaultModel: string
+}
+
+/** One model a create can be launched with. */
+export interface ModelOption {
+  id: string
+  name?: string
 }
 
 export interface AuthListResult {
@@ -718,18 +779,21 @@ export interface AgentSessionEntry {
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) of its transcript's last write. */
   lastActiveAt?: string
   /**
-   * The model it last answered as, in the tool's own spelling
+   * The model it is answering as, in the tool's own spelling
    * (`claude-opus-5`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`) — for
-   * display beside the tool name, never to relaunch with. Follows a `/model`
-   * switch, since it is read from what the conversation recorded rather than
-   * from the launch — a `tui` one from the tool's own transcript, an `acp` one
-   * from acpd's record.
+   * display beside the tool name, never to relaunch with. Seeded from the
+   * launch, then followed as observed, so it tracks a `/model` switch: read
+   * from what the conversation recorded — a `tui` one from the tool's own
+   * transcript, an `acp` one from acpd's record. A `tui` opencode
+   * conversation records nothing readable (its history is a container-side
+   * sqlite DB), so it keeps the launch value.
    *
-   * Absent until the agent has answered once, and always for a `tui` opencode
-   * conversation, whose history is a container-side sqlite DB with nothing to
-   * read. A UI shows the bare tool name in that case.
+   * Absent only on a conversation launched without a model that has not
+   * answered yet. A UI shows the bare tool name in that case.
    */
   model?: string
+  /** `model`'s display name ("Opus 5.5"), when the catalog has one. */
+  modelName?: string
 }
 
 export interface WorktreeListEntry {
@@ -1050,22 +1114,19 @@ export interface WorktreeTerminalEntry {
 // when the state changed; granular per-entity events come later.
 // ---------------------------------------------------------------------------
 
-/**
- * Project row in the snapshot. Structurally matches `ProjectListEntry`
- * from `features/projects/list`; inlined here so this module stays
- * browser-safe (the frontend imports it without pulling node-only lib
- * files into its type graph).
- */
+/** Project row in the snapshot, and what `listProjects` answers. */
 export interface ProjectSummary {
   slug: string
   remoteUrl: string
   addedAt: string
   worktreeCount: number
-  /** The posture this project's last explicit create asked for, if any. What
-   *  the create form shows as its default, so the value on screen is the one
-   *  the server would pick if the form were submitted untouched. Absent until
-   *  someone has picked one; `defaultPermissionMode` answers in the meantime. */
-  lastPermissionMode?: PermissionMode
+  /** The agent this project was last created with; absent until the first
+   *  create, when `claude` answers. What the create form opens on. */
+  lastTool?: AgentTool
+  /** Per agent, what it was last created with here — the create form's
+   *  memory, resolved against its fallbacks by `resolveToolCreateDefaults`
+   *  so the form shows what the server would run. */
+  createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
 }
 
 /**
@@ -1079,6 +1140,11 @@ export interface ProvisioningWorktreeEntry {
   projectSlug: string
   tool: AgentTool
   kind: 'create' | 'restart'
+  /** The model a create launches with, and its display name when the
+   *  catalog has one — so the row names what is coming up before any agent
+   *  has answered. Absent on a restart. */
+  model?: string
+  modelName?: string
   /** Latest progress line (e.g. 'Pulling image…'). */
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */

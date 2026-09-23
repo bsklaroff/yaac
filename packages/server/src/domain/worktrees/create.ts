@@ -46,7 +46,7 @@ import {
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
-import { seedProjectToolHome } from '#domain/auth'
+import { defaultModelFor, seedProjectToolHome } from '#domain/auth'
 import {
   addWorktree,
   fetchOrigin,
@@ -71,7 +71,7 @@ import {
 } from '#runtime/agents'
 import {
   applyWorktreeEvent,
-  getProjectLastPermissionMode,
+  getProjectRow,
   listActiveAgentSessions,
   setWorktreeGroup,
   setWorktreeMamaTokenHash,
@@ -99,6 +99,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import {
   defaultPermissionMode,
+  resolveToolCreateDefaults,
   supportedPermissionModes,
   toolSupportsPermissionMode,
   type AgentMode,
@@ -578,7 +579,7 @@ function toolLabel(tool: AgentTool): string {
  * watcher's to retry, and the worktree is better shown with its terminal than
  * held behind a spinner.
  */
-async function awaitConversationRow(
+export async function awaitConversationRow(
   projectSlug: string,
   worktreeId: string,
   jobName: string,
@@ -658,9 +659,9 @@ async function reportCreateFailed(
  *
  * What the request named, else `defaultPermissionMode` for this driver and
  * tool. Every caller reaching createWorktree directly — the spawn policy, a
- * prewarm, a restart — wants exactly this: no project memory, because none of
- * them is a person choosing (see `resolvePermissionMode` for the rung that
- * is).
+ * restart — wants exactly this: no project memory, because neither is a
+ * person choosing (see `resolveCreate` for the rung that is; the route and the
+ * prewarm pool resolve through it before they get here).
  *
  * A request naming a posture its tool lacks is refused rather than nudged to
  * a neighbour: the caller asked for a restraint, and quietly launching with a
@@ -712,42 +713,66 @@ export function launchPermissionMode(args: {
   return requested
 }
 
-/**
- * The same decision with the project's remembered choice as a middle rung:
- * what the request said, else what this project last had chosen, else the
- * default. That rung is the whole point of persisting the choice — a user who
- * picks `plan` once keeps getting `plan` from the CLI, the webapp and the
- * keyboard shortcut alike.
- *
- * Exported for the create route, which is the one caller that speaks for a
- * person, and which has to know the answer one step earlier than
- * `createWorktree` does: a prewarmed spare is only claimable for a worktree
- * that resolves to `bypass`, since the spare's agent is already running in
- * that posture. The route passes the result back down explicitly, so the
- * decision is made once.
- *
- * The remembered value is treated as a preference, not a demand — it was
- * chosen for some other tool, so a tool that lacks it falls through to its
- * default rather than failing the create.
- */
-export async function resolvePermissionMode(args: {
-  projectSlug: string
+/** A create with every choice made — what the route launches and what a
+ *  prewarmed spare is warmed as. */
+export interface CreateSetup {
   tool: AgentTool
-  driver?: DriverKind
-  requested?: PermissionMode
-  agentMode?: AgentMode
-}): Promise<PermissionMode> {
-  const { projectSlug, tool, requested } = args
-  const agentMode = args.agentMode ?? 'tui'
-  const driver = args.driver ?? worktreeDriver().kind
-  if (requested !== undefined) {
-    return launchPermissionMode({ tool, driver, requested, agentMode })
+  /** Absent only when the catalog has nothing for the tool's provider, and
+   *  the create then launches without `--model`. */
+  model?: string
+  permissionMode: PermissionMode
+  mode: AgentMode
+}
+
+/**
+ * What a create runs with, field by field: what the request named, else what
+ * this project last used for that agent (`project_tool_defaults`) where it
+ * still fits, else the fallback (`resolveToolCreateDefaults`) — and the agent
+ * itself is the request's, else the one this project was last created with,
+ * else claude.
+ *
+ * The mode is the exception: the route leaves an unnamed mode at `tui`, since
+ * its other callers (the CLI) can only present a terminal, and it is the
+ * webapp that sends the remembered one. The prewarm pool passes
+ * `modeFromMemory`, because the webapp is who claims its spares.
+ *
+ * Only for callers speaking for a person, or warming for one. Everything that
+ * reaches `createWorktree` directly — the spawn policy, a restart — resolves
+ * nothing from memory (see `launchPermissionMode`). A named posture the tool
+ * lacks is refused rather than nudged; a remembered one it lacks falls
+ * through to the default, since it was a preference rather than a demand.
+ */
+export async function resolveCreate(
+  projectSlug: string,
+  request: { tool?: AgentTool; model?: string; permissionMode?: PermissionMode; mode?: AgentMode },
+  opts: { modeFromMemory?: boolean } = {},
+): Promise<CreateSetup> {
+  const row = await getProjectRow(projectSlug)
+  const tool = request.tool ?? row?.lastTool ?? 'claude'
+  const remembered = row?.createDefaults[tool]
+  const mode = request.mode ?? (opts.modeFromMemory === true ? remembered?.mode : undefined) ?? 'tui'
+  const driver = worktreeDriver().kind
+  const auth = await loadToolAuthEntry(tool)
+  const provider = auth?.tool === 'opencode' ? auth.opencodeProvider
+    : auth?.tool === 'pi' ? auth.piProvider
+    : undefined
+  const fallback = resolveToolCreateDefaults({
+    driver,
+    tool,
+    agentMode: mode,
+    remembered,
+    ...(provider !== undefined ? { provider } : {}),
+    defaultModel: defaultModelFor(tool, provider),
+  })
+  const model = request.model ?? fallback.model
+  return {
+    tool,
+    ...(model !== '' ? { model } : {}),
+    permissionMode: request.permissionMode !== undefined
+      ? launchPermissionMode({ tool, driver, requested: request.permissionMode, agentMode: mode })
+      : fallback.permissionMode,
+    mode,
   }
-  const remembered = await getProjectLastPermissionMode(projectSlug)
-  if (remembered !== undefined && toolSupportsPermissionMode(tool, remembered, agentMode)) {
-    return remembered
-  }
-  return defaultPermissionMode(driver, tool)
 }
 
 export async function createWorktree(
@@ -931,6 +956,8 @@ export async function createWorktree(
     projectSlug,
     worktreeId,
     permissionMode,
+    mode,
+    ...(options.model !== undefined ? { model: options.model } : {}),
     resume: options.resume,
     ...(options.prewarm === true ? { spare: true } : {}),
   })
@@ -985,6 +1012,13 @@ export async function createWorktree(
           ...(mode === 'acp' ? { paneId: agentWindowName(a.tool, i) } : {}),
           ...(i === 0 && options.initialPrompt !== undefined
             ? { firstPrompt: options.initialPrompt }
+            : {}),
+          // Named from the launch so the pane can say what is answering
+          // before the agent first has; the transcript's own spelling takes
+          // over once it does. A fresh conversation only — a resumed one
+          // already carries what it last answered as.
+          ...(i === 0 && options.resume !== true && options.model !== undefined
+            ? { model: options.model }
             : {}),
         })),
       })
@@ -1764,9 +1798,12 @@ export async function createWorktree(
   // provisioning placeholder; a resumed one's rows were written at launch.
   // After the start loop, not in it: nothing the loop recovers by relaunching
   // applies to a row that has not landed yet.
+  //
+  // Not for a spare: nothing attaches to one until it is claimed (spares have
+  // no status watcher), so the claim is what holds for its row instead.
   const agentWindow = agentWindowName(tool, 0)
   let conversationUp = true
-  if (mode === 'acp') {
+  if (mode === 'acp' && options.prewarm !== true) {
     emit(`Connecting to ${toolLabel(tool)}...`, options)
     conversationUp = await awaitConversationRow(projectSlug, worktreeId, handle.jobName, agentWindow)
   }

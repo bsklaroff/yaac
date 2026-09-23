@@ -66,16 +66,17 @@ describe('formatModel', () => {
 })
 
 describe('agentLabel', () => {
-  it('names the tool and the model it is answering as', () => {
-    expect(agentLabel('claude', 'claude-opus-5')).toBe('Claude · Opus 5')
-    expect(agentLabel('codex', 'gpt-5.6-sol')).toBe('Codex · gpt-5.6-sol')
+  it('names the tool and the model it is answering as, by the catalog\'s name first', () => {
+    expect(agentLabel('codex', { model: 'gpt-6-sol', modelName: 'GPT-6 Sol' })).toBe('Codex · GPT-6 Sol')
+    // An id the catalog does not name is shortened here instead.
+    expect(agentLabel('claude', { model: 'claude-opus-5' })).toBe('Claude · Opus 5')
+    expect(agentLabel('codex', { model: 'gpt-5.6-sol' })).toBe('Codex · gpt-5.6-sol')
   })
 
   it('falls back to the bare tool name when no model is known', () => {
-    // Before the first reply, and forever for opencode — which leaves no
-    // transcript to read one from.
+    // A conversation launched without one, before its first reply.
     expect(agentLabel('claude', undefined)).toBe('Claude')
-    expect(agentLabel('opencode', undefined)).toBe('OpenCode')
+    expect(agentLabel('opencode', {})).toBe('OpenCode')
   })
 })
 
@@ -86,7 +87,7 @@ describe('worktreeModel', () => {
     expect(worktreeModel(worktree([
       session({ agentSessionId: 'old', ordinal: 0, active: false, model: 'claude-opus-4-8' }),
       session({ agentSessionId: 'live', ordinal: 1, active: true, model: 'claude-opus-5' }),
-    ]))).toBe('claude-opus-5')
+    ]))?.model).toBe('claude-opus-5')
   })
 
   it('takes the primary agent when several are live', () => {
@@ -95,7 +96,7 @@ describe('worktreeModel', () => {
     expect(worktreeModel(worktree([
       session({ agentSessionId: 'second', ordinal: 1, model: 'claude-fable-5' }),
       session({ agentSessionId: 'primary', ordinal: 0, model: 'claude-opus-5' }),
-    ]))).toBe('claude-opus-5')
+    ]))?.model).toBe('claude-opus-5')
   })
 
   it('falls back to history when no live conversation has reported one', () => {
@@ -104,7 +105,7 @@ describe('worktreeModel', () => {
     expect(worktreeModel(worktree([
       session({ agentSessionId: 'old', ordinal: 0, active: false, model: 'claude-opus-5' }),
       session({ agentSessionId: 'live', ordinal: 1, active: true }),
-    ]))).toBe('claude-opus-5')
+    ]))?.model).toBe('claude-opus-5')
   })
 
   it('reports none for a worktree whose agents have not answered yet', () => {

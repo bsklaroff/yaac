@@ -56,6 +56,10 @@ export interface WorktreeCreated {
    *  because a restart has to relaunch them the way the user asked rather
    *  than re-deriving today's default. */
   permissionMode?: PermissionMode
+  /** The model and agent mode its first agent launches with — what a spare
+   *  claim matches a request against (see `worktrees.model`). */
+  model?: string
+  mode?: AgentMode
 }
 
 /**
@@ -131,6 +135,9 @@ export interface LaunchedSession {
   paneId?: string
   /** The user's opening message, when they supplied one. */
   firstPrompt?: string
+  /** The model it was launched with — a display value until the agent's own
+   *  record says what it is answering as (see `agent_sessions.model`). */
+  model?: string
 }
 
 /**

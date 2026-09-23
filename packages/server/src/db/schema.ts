@@ -17,7 +17,8 @@ import { boolean, integer, jsonb, primaryKey, snakeCase, text, timestamp, unique
  * `@yaac/*` imports (drizzle-orm/pg-core + relative paths only).
  */
 
-/** Single-value user preferences, keyed by name. Only key today: `default_tool`. */
+/** Single-value user preferences, keyed by name (the git identity worktrees
+ *  commit under). */
 export const preferences = snakeCase.table('preferences', {
   key: text().primaryKey(),
   value: text().notNull(),
@@ -52,18 +53,37 @@ export const projects = snakeCase.table('projects', {
   remoteUrl: text().notNull(),
   addedAt: text().notNull(),
   /**
-   * The permission posture this project's last explicit create asked for —
-   * the create form's memory, so a user who picks one once keeps getting it.
+   * The agent this project was last created with — what a create naming no
+   * tool runs, what the create form opens on, and what the prewarm pool warms
+   * spares with. Null until the first create; `claude` answers then.
    *
-   * Only an explicit choice writes here; a create that took the default
-   * leaves it alone, so the remembered value is always something a human
-   * actually picked. Null means nobody has, and `defaultPermissionMode`
-   * answers instead. Per project rather than global because posture tracks
-   * what the code is (a scratch repo vs one that deploys), and server-side
-   * rather than in the browser so the CLI and the webapp agree.
+   * Per project, and server-side rather than in the browser, so the CLI, the
+   * webapp, `yaac-mama` and the spare pool all agree on it.
    */
-  lastPermissionMode: text(),
+  lastTool: text(),
 })
+
+/**
+ * The create form's memory, one row per (project, agent): the model,
+ * permission posture and UI mode that agent was last created with in this
+ * project, so picking them once is enough. Written by the create route from
+ * whatever the request named, and read back as the next create's defaults
+ * (`resolveCreate` in #domain/worktrees).
+ *
+ * Per agent because the three are about the agent — a model id means nothing
+ * to another tool, and a posture one tool has another may lack. Per project
+ * because posture tracks what the code is (a scratch repo vs one that
+ * deploys), and the model one reaches for tends to follow it. Each column is
+ * null until that field has been picked; the resolver's fallback answers.
+ */
+export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectSlug: text().notNull(),
+  tool: text().notNull(),
+  model: text(),
+  permissionMode: text(),
+  mode: text(),
+}, (t) => [uniqueIndex().on(t.projectSlug, t.tool)])
 
 /**
  * Every worktree yaac has ever created, one row per (project, worktree id).
@@ -159,6 +179,15 @@ export const worktrees = snakeCase.table('worktrees', {
    * here, since the launch path re-checks against the tool.
    */
   permissionMode: text().notNull().default('bypass'),
+  /**
+   * The model and the agent mode (`tui` / `acp`) its first agent was launched
+   * with — recorded beside `permissionMode` for the same reason, and what a
+   * spare claim matches a request against: a spare whose launch matches runs
+   * on untouched, anything else has its agent respawned or is passed over.
+   * Null only on rows written before these columns existed.
+   */
+  model: text(),
+  mode: text(),
   /**
    * SHA-256 of the bearer this worktree's `yaac-mama` presents, when its
    * runtime reaches the server directly (containerless). Null where the

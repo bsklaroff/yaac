@@ -920,9 +920,12 @@ describe('agentDriver', () => {
     const created = stream.sent().find((m) => m.method === 'session/new')!
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'pi-1' } })}\n`)
 
-    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_model')).toBe(true))
-    const setModel = stream.sent().find((m) => m.method === 'session/set_model')!
-    expect(setModel.params).toEqual({ sessionId: 'pi-1', modelId: PI_DEFAULT_MODEL })
+    // As the `model` config option: pi-acp's `session/set_model` is not routed,
+    // and answers "Method not found".
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
+    const setModel = stream.sent().find((m) => m.method === 'session/set_config_option')!
+    expect(setModel.params).toEqual({ sessionId: 'pi-1', configId: 'model', value: PI_DEFAULT_MODEL })
+    expect(stream.sent().some((m) => m.method === 'session/set_model')).toBe(false)
     // pi advertises thinking levels rather than postures, so there is no mode
     // for `bypass` to be — and sending one would be rejected outright.
     expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)

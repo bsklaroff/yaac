@@ -39,6 +39,7 @@ export {
   type LiveAgent,
 } from './drivers'
 export { attachAcp, type AcpSocket } from './acp-bridge'
+export { parkAcpLaunchModel } from './acp-driver'
 export { acpConversation } from './acp-registry'
 export { readAcpFirstPrompt, readAcpLog, readAcpModel } from './acp-log'
 // A tui claude conversation as the events an acp one produces, so a stopped
@@ -56,12 +57,10 @@ export {
   type AgentPaneStatus,
 } from './agent-tools'
 export {
-  agentWindowTarget,
   buildAgentCmd,
   initWindowCommand,
   resolveInitWindows,
   tmuxCmd,
-  typeInitialPrompt,
   verifyAgentWindowAlive,
   AgentLaunchDeadError,
   type InitWindow,

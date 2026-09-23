@@ -2,10 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   buildAgentCmd,
-  agentWindowTarget,
   buildPromptPasteCmd,
   buildPromptPasteBgCmd,
-  typeInitialPrompt,
   buildAgentWindowCheck,
   verifyAgentWindowAlive,
   AgentLaunchDeadError,
@@ -278,15 +276,6 @@ function embeddedPrompt(cmd: string): string {
   return Buffer.from(match![1], 'base64').toString('utf8')
 }
 
-describe('agentWindowTarget', () => {
-  it.each(AGENT_TOOLS)('addresses the %s primary agent window', (tool) => {
-    // Session create's initial ask goes to the window; a later message goes to
-    // a pane id instead, since a worktree with several conversations has only
-    // one `yaac:<tool>` window between them.
-    expect(agentWindowTarget(tool)).toBe(`yaac:${tool}`)
-  })
-})
-
 describe('buildPromptPasteCmd', () => {
   it('round-trips arbitrary prompt text through the base64 payload', () => {
     const nasty = 'say "hi" && don\'t eval `$HOME`\nsecond line — ünïcode'
@@ -313,7 +302,7 @@ describe('buildPromptPasteCmd', () => {
   })
 
   it.each(AGENT_TOOLS)('targets the %s agent window', (tool) => {
-    const cmd = buildPromptPasteCmd(agentWindowTarget(tool), 'prompt', PATHS)
+    const cmd = buildPromptPasteCmd(`yaac:${tool}`, 'prompt', PATHS)
     expect(cmd).toContain(`paste-buffer -p -d -b yaac-prompt -t yaac:${tool}`)
     expect(cmd).toContain(`send-keys -t yaac:${tool} Enter`)
   })
@@ -348,19 +337,6 @@ describe('buildPromptPasteBgCmd', () => {
     expect(b64).not.toBeNull()
     const script = Buffer.from(b64![1], 'base64').toString('utf8')
     expect(`sh -c '${script}'`).toBe(buildPromptPasteCmd('yaac:codex', "it's $HOME\nline 2", PATHS))
-  })
-})
-
-describe('typeInitialPrompt', () => {
-  beforeEach(() => podExec.mockClear())
-
-  it('relay-execs the detached paste command single-attempt (a retry could double-paste)', async () => {
-    await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
-    expect(podExec).toHaveBeenCalledWith(
-      'yaac-job-1',
-      buildPromptPasteBgCmd('yaac:claude', 'hello there', PATHS),
-      { maxAttempts: 1, timeout: 15_000 },
-    )
   })
 })
 

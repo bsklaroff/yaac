@@ -1,33 +1,38 @@
 /**
  * Reconcile step that keeps the prewarmed-worktree pool at its target:
- * one spare per active project, booting the configured default tool (spares
- * are tool-agnostic — a claim for another tool retools them). Spawns spares
- * via `createWorktree({ prewarm: true })` and reaps excess / idle ones via
- * `cleanupWorktreeDetached`. The decision is the pure `computePrewarmPlan`;
- * this wrapper just lists pods and drives the side effects.
+ * one spare per active project, warmed as that project's untouched create
+ * (a claim that asks for something else retools it). Spawns spares via
+ * `createWorktree({ prewarm: true })` and reaps excess / idle ones — and ones
+ * in an agent mode the project no longer creates in — via `cleanupWorktree`.
+ * The decision is the pure `computePrewarmPlan`; this wrapper just lists pods,
+ * reads what they were warmed as, and drives the side effects.
  */
 import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
-import { createWorktree } from './create'
+import { createWorktree, resolveCreate } from './create'
 import {
   claiming,
   computePrewarmPlan,
   inFlight,
 } from './prewarm'
-import { deleteSpareWorktreeRow } from '#db'
+import { deleteSpareWorktreeRow, getWorktreeRow, listProjectRows } from '#db'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
-import type { AgentTool } from '@yaac/shared/types'
+import type { RuntimeHandle } from '#drivers/contract'
 
-/** Fire a prewarm spawn, decrementing the in-flight counter when it settles. */
-async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
+/**
+ * Fire a prewarm spawn, decrementing the in-flight counter when it settles.
+ *
+ * Warmed as the project's untouched create — what the create form would
+ * submit if opened and confirmed, agent mode included, since the webapp is
+ * who claims spares — so the usual claim runs the agent on as booted.
+ * Resolved at spawn time, so a spare always reflects the latest choice.
+ */
+async function spawnSpare(projectSlug: string): Promise<void> {
   try {
-    // Explicitly `bypass`, never the project's remembered posture: a spare is
-    // claimed only by a create that resolves to `bypass` (routes/worktrees),
-    // so warming one in anything else would build spares nothing can claim —
-    // and `retoolSpare` respawns its agent in `bypass` regardless.
-    await createWorktree(projectSlug, { tool, prewarm: true, permissionMode: 'bypass' })
+    const setup = await resolveCreate(projectSlug, {}, { modeFromMemory: true })
+    await createWorktree(projectSlug, { ...setup, prewarm: true })
   } catch (err) {
     serverLog(`[prewarm] spawn for ${projectSlug} failed: ${String(err)}`)
   } finally {
@@ -41,13 +46,7 @@ async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
  * Reconcile the prewarm pool once. No-op when `YAAC_PREWARM_POOL_SIZE=0`.
  * Best-effort: a cluster hiccup just skips this tick.
  */
-export async function reconcilePrewarmPool(
-  // Which tool to warm spares with is a user preference — a row, resolved
-  // once per pass and handed down so no substrate step reads one
-  // (docs/layered-server.md).
-  defaultTool: AgentTool,
-  snapshot?: RuntimeSnapshot,
-): Promise<void> {
+export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<void> {
   const poolSize = env.prewarmPoolSize
   if (poolSize === 0) return
 
@@ -58,7 +57,9 @@ export async function reconcilePrewarmPool(
     return
   }
 
-  const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, defaultTool, inFlight, claiming)
+  const { toSpawn, toReap } = computePrewarmPlan(
+    pods, poolSize, inFlight, claiming, await staleModeSpares(pods),
+  )
 
   for (const target of toReap) {
     // A spare that is reaped unclaimed never became a worktree, so no
@@ -94,6 +95,35 @@ export async function reconcilePrewarmPool(
   for (const spawn of toSpawn) {
     // Bump in-flight BEFORE awaiting anything so a concurrent tick sees it.
     inFlight.set(spawn.projectSlug, (inFlight.get(spawn.projectSlug) ?? 0) + 1)
-    void spawnSpare(spawn.projectSlug, spawn.tool)
+    void spawnSpare(spawn.projectSlug)
   }
+}
+
+/**
+ * The spares warmed in a different agent mode than their project now creates
+ * in — which no claim from the webapp can take, since the mode is fixed into
+ * the pod at warm time. A spare whose row names no mode predates the column
+ * and counts too; the pool replaces it once.
+ *
+ * Unreadable rows answer "not stale": reaping on a failed read would churn a
+ * pod over a hiccup, and the next pass asks again.
+ */
+async function staleModeSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
+  const spares = pods.filter((p) => p.prewarmed && p.projectSlug && !claiming.has(p.jobName))
+  if (spares.length === 0) return new Set()
+  let projects
+  try {
+    projects = await listProjectRows()
+  } catch {
+    return new Set()
+  }
+  const wanted = new Map(projects.map((p) =>
+    [p.slug, p.createDefaults[p.lastTool ?? 'claude']?.mode ?? 'tui']))
+  const stale = new Set<string>()
+  await Promise.all(spares.map(async (p) => {
+    const row = await getWorktreeRow(p.projectSlug, p.workspaceId).catch(() => null)
+    const want = wanted.get(p.projectSlug)
+    if (row && want !== undefined && row.mode !== want) stale.add(p.jobName)
+  }))
+  return stale
 }

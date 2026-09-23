@@ -116,7 +116,7 @@ function paneName(
     const session = isAcpTarget(target)
       ? sessions.find((a) => a.agentSessionId === acpTargetSession(target))
       : [...sessions].sort((a, b) => a.ordinal - b.ordinal).find((a) => a.mode !== 'acp')
-    return worktree === undefined ? 'Agent' : agentLabel(worktree.tool, session?.model)
+    return worktree === undefined ? 'Agent' : agentLabel(worktree.tool, session)
   }
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'

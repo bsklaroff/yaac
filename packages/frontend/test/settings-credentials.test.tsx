@@ -6,11 +6,9 @@ import type { AuthListResult } from '@yaac/shared/types'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
 vi.mock('#lib/settingsApi', () => ({
-  getDefaultTool: vi.fn().mockResolvedValue('claude'),
   getGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
   setGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
   getAuthList: vi.fn(),
-  setDefaultTool: vi.fn().mockResolvedValue(undefined),
   addGitCredential: vi.fn().mockResolvedValue(undefined),
   setToolApiKey: vi.fn().mockResolvedValue(undefined),
   clearToolAuth: vi.fn().mockResolvedValue(undefined),
@@ -45,7 +43,7 @@ beforeAll(() => {
 const CLAUDE_CONFIGURED: AuthListResult = {
   gitCredentials: [],
   toolAuth: [
-    { tool: 'claude', kind: 'oauth', keyPreview: '***host', savedAt: '2026-01-01T00:00:00.000Z' },
+    { tool: 'claude', kind: 'oauth', keyPreview: '***host', savedAt: '2026-01-01T00:00:00.000Z', models: [], defaultModel: 'claude-opus-5-5' },
   ],
 }
 
@@ -71,6 +69,11 @@ async function openCredentials(): Promise<void> {
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   fireEvent.click(screen.getByRole('button', { name: 'Credentials' }))
   await waitFor(() => expect(screen.getByText(/claude/)).toBeTruthy())
+  // The rows render before the list lands; wait for it, so a row reads the
+  // credential rather than the signed-out state it starts in.
+  await waitFor(() => expect(vi.mocked(getAuthList)).toHaveBeenCalled())
+  await vi.mocked(getAuthList).mock.results[0]?.value
+  await new Promise((r) => setTimeout(r, 0))
 }
 
 /** The credential row containing the tool's name. */

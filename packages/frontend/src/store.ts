@@ -506,21 +506,6 @@ export function resolveVacantSelection(args: {
   return rowIds[0] ?? null
 }
 
-/**
- * The tool the new-worktree shortcut would launch — the selected worktree's
- * tool, else claude — gated on its credentials being configured. Null means
- * the shortcut must be ignored: the target tool has no stored credential
- * (which includes the moment before the auth list has loaded).
- */
-export function resolveNewWorktreeTool(
-  worktrees: Pick<WorktreeListEntry, 'worktreeId' | 'tool'>[],
-  selectedWorktreeId: string | null,
-  configured: ReadonlySet<AgentTool>,
-): AgentTool | null {
-  const tool = worktrees.find((s) => s.worktreeId === selectedWorktreeId)?.tool ?? 'claude'
-  return configured.has(tool) ? tool : null
-}
-
 /** Sections of the settings modal (left-nav entries). 'server' shows only in the desktop shell. */
 export type SettingsSection =
   | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile' | 'server'

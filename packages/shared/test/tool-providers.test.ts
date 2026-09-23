@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  FALLBACK_MODELS,
   OPENCODE_DEFAULT_PROVIDER,
   OPENCODE_PROVIDERS,
   PI_DEFAULT_PROVIDER,
@@ -13,6 +14,7 @@ import {
   type OpencodeProvider,
   type PiProvider,
 } from '@yaac/shared/tool-providers'
+import { MODEL_NAMES, MODELS_BY_PROVIDER } from '@yaac/shared/tool-providers.generated'
 
 // Both registries are code-generated (scripts/gen-tool-providers.ts), so these
 // assert invariants over whatever providers the tools currently ship rather
@@ -95,5 +97,35 @@ describe('provider info + host lookup', () => {
   it('host matches the provider row', () => {
     expect(piProviderHost('anthropic')).toBe(piProviderInfo('anthropic').apiHost)
     expect(opencodeProviderHost('openrouter')).toBe('openrouter.ai')
+  })
+})
+
+// Pinned by hand because neither CLI is pinned in the tools image. A regen
+// that drops one means it has been retired upstream, and every first create
+// of that agent in a project would launch a model the vendor no longer lists.
+describe('FALLBACK_MODELS', () => {
+  it('names a model the catalog still lists for each tool', () => {
+    expect(MODELS_BY_PROVIDER['anthropic']).toContain(FALLBACK_MODELS.claude)
+    expect(MODELS_BY_PROVIDER['openai']).toContain(FALLBACK_MODELS.codex)
+  })
+})
+
+// The picker's order and dedup are baked in at generation time.
+describe('MODELS_BY_PROVIDER', () => {
+  it('drops a dated snapshot whose alias is listed', () => {
+    for (const ids of Object.values(MODELS_BY_PROVIDER)) {
+      const listed = new Set(ids)
+      for (const id of ids) {
+        const alias = /^(.+)-\d{8}$/.exec(id)?.[1]
+        expect(alias !== undefined && listed.has(alias), id).toBe(false)
+      }
+    }
+  })
+
+  it('names models without the "(latest)" an alias carries upstream', () => {
+    expect(MODEL_NAMES['anthropic']?.['claude-opus-5-5']).toBe('Claude Opus 5.5')
+    for (const names of Object.values(MODEL_NAMES)) {
+      for (const name of Object.values(names)) expect(name).not.toContain('(latest)')
+    }
   })
 })

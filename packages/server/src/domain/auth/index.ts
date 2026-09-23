@@ -18,6 +18,10 @@
 // drives the standing sweep. The comparators and the per-project harvest and
 // push are internal to it, exercised through those four.
 //
+// The model catalog serves the create path and `yaac-mama models`: which
+// models a tool's credential can run, the one a create falls back to, and
+// what an id is called on screen.
+//
 // The runtime link is the other direction: every writer of the host store
 // pushes the whole set to the runtime, and the reconcile pass adopts what a
 // mediating runtime captured from a worktree's refresh.
@@ -32,6 +36,7 @@ export {
   syncToolCredentialsThrottled,
 } from './credential-sync'
 export { listAuth } from './list'
+export { defaultModelFor, modelDisplayName, modelsForTool } from './models'
 export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'
 export {
   codexPlanUsageForSnapshot,

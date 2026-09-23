@@ -563,6 +563,21 @@ async function waitForConversation(
   }
 }
 
+/**
+ * Park the model a conversation launched under `launchId` must be told once
+ * its adapter handshakes — for the adapters told it over the protocol
+ * (opencode, pi); the others took it on their command line, and a no-op here.
+ *
+ * The launch parks it, but the parking is this process's memory, and a spare
+ * waits in the pool across server restarts with nothing attached. So a spare
+ * claim that hands the agent over as warmed parks it again: without that, the
+ * attach after a restart would find nothing and the adapter would run its own
+ * default — for pi, a provider whose key the proxy never swaps.
+ */
+export function parkAcpLaunchModel(tool: AgentTool, launchId: string, model: string | undefined): void {
+  if (model !== undefined && acpModelIsProtocol(acpAdapterFor(tool))) stashAcpLaunchModel(launchId, model)
+}
+
 export const acpDriver: AgentDriver = {
   mode: 'acp',
 
@@ -590,10 +605,7 @@ export const acpDriver: AgentDriver = {
     // An adapter that can only be told its model over the protocol is handed
     // one here anyway: the launch is where the worktree's provider default is
     // known, and the handshake is where it can be delivered.
-    if (acpModelIsProtocol(adapter)) {
-      const model = acpLaunchModel(spec)
-      if (model !== undefined) stashAcpLaunchModel(spec.agentSessionId, model)
-    }
+    parkAcpLaunchModel(spec.tool, spec.agentSessionId, acpLaunchModel(spec))
     // The record is named for the CONVERSATION, not the window: a window name
     // is a slot, and a restart that drops an earlier conversation shifts every
     // later one down a slot — which under slot-naming would truncate a live

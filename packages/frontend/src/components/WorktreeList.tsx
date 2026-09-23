@@ -483,7 +483,7 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorktreeEntry }): JSX.E
           <span className="truncate font-medium text-text-dim">
             {entry.kind === 'restart' ? 'Restarting worktree' : 'New worktree'}
           </span>
-          <span className="ml-auto shrink-0 text-xs text-text-faint">{TOOL_LABEL[entry.tool]}</span>
+          <span className="ml-auto shrink-0 text-xs text-text-faint">{agentLabel(entry.tool, entry)}</span>
         </span>
         <span className="flex items-center gap-1.5 text-xs text-text-faint">
           {entry.error ? (

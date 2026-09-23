@@ -6,11 +6,10 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import {
   deleteProjectRow,
-  getProjectLastPermissionMode,
   getProjectRow,
   listProjectRows,
   recordProject,
-  recordProjectPermissionMode,
+  recordProjectCreate,
 } from '#db/project-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
@@ -34,7 +33,7 @@ describe('recordProject', () => {
     await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
 
     expect(await getProjectRow('app')).toEqual({
-      slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01',
+      slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01', createDefaults: {},
     })
   })
 
@@ -69,8 +68,9 @@ describe('deleteProjectRow', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('removes the row and pushes a fresh snapshot', async () => {
+  it('removes the row and its create memory, and pushes a fresh snapshot', async () => {
     await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    await recordProjectCreate('app', 'codex', { model: 'gpt-6-sol' })
     _resetWorktreeListChangedForTests()
     let pushes = 0
     onWorktreeListChanged(() => { pushes += 1 })
@@ -78,6 +78,11 @@ describe('deleteProjectRow', () => {
     await deleteProjectRow('app')
     expect(await getProjectRow('app')).toBeUndefined()
     expect(pushes).toBe(1)
+    // A project re-added under the same slug starts with no memory rather
+    // than inheriting the removed one's.
+    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-02-01' })
+    expect(await getProjectRow('app')).toMatchObject({ createDefaults: {} })
+    expect((await getProjectRow('app'))?.lastTool).toBeUndefined()
   })
 })
 
@@ -107,7 +112,7 @@ describe('listProjectRows', () => {
     })
 
     expect(await listProjectRows()).toEqual([
-      { slug: 'legacy', remoteUrl: 'https://x/legacy.git', addedAt: '2025-12-31' },
+      { slug: 'legacy', remoteUrl: 'https://x/legacy.git', addedAt: '2025-12-31', createDefaults: {} },
     ])
   })
 
@@ -152,7 +157,7 @@ describe('listProjectRows', () => {
     await listProjectRows()
 
     expect(await listProjectRows()).toEqual([
-      { slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' },
+      { slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01', createDefaults: {} },
     ])
   })
 
@@ -164,7 +169,7 @@ describe('listProjectRows', () => {
   })
 })
 
-describe('getProjectLastPermissionMode', () => {
+describe('recordProjectCreate', () => {
   let tmpDir: string
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
@@ -176,29 +181,49 @@ describe('getProjectLastPermissionMode', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  // Absent is a real answer, not a default in disguise: it is what tells the
-  // create path "nobody has chosen for this project" so it falls through to
-  // the per-driver default rather than to somebody else's posture.
-  it('answers undefined until a posture has been recorded', async () => {
-    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
-    expect(await getProjectLastPermissionMode('p')).toBeUndefined()
-    expect(await getProjectLastPermissionMode('missing')).toBeUndefined()
-  })
-
-  it('round-trips the recorded posture, per project', async () => {
+  it('remembers the agent and what it was created with, per agent and per project', async () => {
     await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
     await recordProject({ slug: 'q', remoteUrl: 'git@h:o/s.git', addedAt: 'now' })
-    await recordProjectPermissionMode('p', 'plan')
-    expect(await getProjectLastPermissionMode('p')).toBe('plan')
-    // A second project is untouched — posture tracks what the code is, so it
-    // is remembered per project rather than globally.
-    expect(await getProjectLastPermissionMode('q')).toBeUndefined()
+    let pushes = 0
+    onWorktreeListChanged(() => { pushes += 1 })
 
-    await recordProjectPermissionMode('p', 'manual')
-    expect(await getProjectLastPermissionMode('p')).toBe('manual')
-    // And it survives a re-record of the project itself, which only rewrites
-    // the remote (an `add` of a project that already exists).
+    await recordProjectCreate('p', 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' })
+    await recordProjectCreate('p', 'codex', { model: 'gpt-6-sol' })
+    expect(pushes).toBe(2)
+
+    expect(await getProjectRow('p')).toMatchObject({
+      lastTool: 'codex',
+      createDefaults: {
+        claude: { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' },
+        codex: { model: 'gpt-6-sol' },
+      },
+    })
+    // Another project is untouched: the memory is per project.
+    const q = await getProjectRow('q')
+    expect(q?.lastTool).toBeUndefined()
+    expect(q?.createDefaults).toEqual({})
+    // And the list read carries the same memory as the point read.
+    expect((await listProjectRows()).find((r) => r.slug === 'p')?.createDefaults)
+      .toEqual((await getProjectRow('p'))?.createDefaults)
+  })
+
+  // A create that took the resolved default for a field names nothing for
+  // it, and must not overwrite what a person picked — while the agent itself
+  // is always the one this project was last created with.
+  it('writes only the fields it is given', async () => {
+    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+    await recordProjectCreate('p', 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan' })
+    await recordProjectCreate('p', 'claude', { mode: 'acp' })
+    await recordProjectCreate('p', 'claude', {})
+
+    expect(await getProjectRow('p')).toMatchObject({
+      lastTool: 'claude',
+      createDefaults: { claude: { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' } },
+    })
+
+    // It survives a re-record of the project itself, which only rewrites the
+    // remote (an `add` of a project that already exists).
     await recordProject({ slug: 'p', remoteUrl: 'git@h:o/moved.git', addedAt: 'now' })
-    expect(await getProjectLastPermissionMode('p')).toBe('manual')
+    expect((await getProjectRow('p'))?.lastTool).toBe('claude')
   })
 })

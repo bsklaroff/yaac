@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, paneViewKey,
-  resolveNewWorktreeTool, resolveVacantSelection, unreadWaitingBySlug, useUiStore,
+  resolveVacantSelection, unreadWaitingBySlug, useUiStore,
 } from '#store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
@@ -482,30 +482,5 @@ describe('settings modal state', () => {
     useUiStore.getState().closeSettings()
     useUiStore.getState().openSettings()
     expect(useUiStore.getState().settingsFocusTool).toBeNull()
-  })
-})
-
-describe('resolveNewWorktreeTool', () => {
-  const sessions = [
-    { worktreeId: 's-claude', tool: 'claude' as const },
-    { worktreeId: 's-codex', tool: 'codex' as const },
-  ]
-
-  it("uses the selected session's tool when its credentials are configured", () => {
-    expect(resolveNewWorktreeTool(sessions, 's-codex', new Set(['claude', 'codex'])))
-      .toBe('codex')
-  })
-
-  it('falls back to claude when nothing is selected', () => {
-    expect(resolveNewWorktreeTool(sessions, null, new Set(['claude']))).toBe('claude')
-  })
-
-  it('returns null when the target tool has no credentials', () => {
-    expect(resolveNewWorktreeTool(sessions, 's-codex', new Set(['claude']))).toBeNull()
-    expect(resolveNewWorktreeTool(sessions, null, new Set(['codex']))).toBeNull()
-  })
-
-  it('returns null while the auth list is still unknown (empty set)', () => {
-    expect(resolveNewWorktreeTool(sessions, 's-claude', new Set())).toBeNull()
   })
 })

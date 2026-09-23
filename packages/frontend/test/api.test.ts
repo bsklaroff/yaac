@@ -30,23 +30,23 @@ function stubFetch(over: {
 describe('frontend api client', () => {
   it('sends same-origin credentials and a JSON Accept header', async () => {
     const fetchMock = stubFetch({ json: () => Promise.resolve({ tool: 'claude' }) })
-    await api.tool.get.$get()
+    await api.auth.list.$get()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/tool/get')
+    expect(url).toBe('/auth/list')
     expect(init.credentials).toBe('same-origin')
     expect(new Headers(init.headers).get('accept')).toBe('application/json')
   })
 
   it('resolves the JSON body directly on a 2xx response (no .json() unwrap)', async () => {
     stubFetch({ json: () => Promise.resolve({ tool: 'codex' }) })
-    expect(await api.tool.get.$get()).toEqual({ tool: 'codex' })
+    expect(await api.auth.list.$get()).toEqual({ tool: 'codex' })
   })
 
   it('rejects with a ServerError carrying the server code + message on non-2xx', async () => {
     const body = { error: { code: 'INTERNAL', message: 'boom' } }
     stubFetch({ status: 500, json: () => Promise.resolve(body) })
-    await expect(api.tool.get.$get()).rejects.toBeInstanceOf(ServerError)
+    await expect(api.auth.list.$get()).rejects.toBeInstanceOf(ServerError)
     stubFetch({ status: 500, json: () => Promise.resolve(body) })
-    await expect(api.tool.get.$get()).rejects.toMatchObject({ code: 'INTERNAL', message: 'boom' })
+    await expect(api.auth.list.$get()).rejects.toMatchObject({ code: 'INTERNAL', message: 'boom' })
   })
 })

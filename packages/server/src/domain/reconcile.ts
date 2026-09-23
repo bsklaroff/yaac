@@ -65,7 +65,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped worktrees). No-op when the pool size is 0.
     { name: 'prewarm-pool', triggers: ['workspaces'],
-      run: async (ctx) => reconcilePrewarmPool((await ctx.defaultTool()) ?? 'claude', ctx.snapshot()) },
+      run: (ctx) => reconcilePrewarmPool(ctx.snapshot()) },
   ]
   return [
     // The stale reaper — first, so counts reflect just-reaped worktrees by
