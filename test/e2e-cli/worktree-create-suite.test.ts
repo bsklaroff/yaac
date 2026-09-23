@@ -1614,7 +1614,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       }
       // Codex greets new sessions with modal prompts we need to dismiss
       // before the chat composer is reachable:
-      //   1. "Do you trust the contents of this directory?" — accept default
+      //   1. "Trust this folder?" — accept the default
       //      (Yes, continue) with Enter.
       //   2. "Hooks need review" — pick "Trust all and continue" (option 2).
       //   3. "Introducing GPT-5.4 … 1. Try new model, 2. Use existing model"
@@ -1632,7 +1632,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // match while a modal still owns the screen, and a prompt typed there
       // is swallowed by the menu.
       const DIALOGS = [
-        { name: 'trust', match: /Do you trust the contents of this directory/i, keys: ['Enter'] },
+        { name: 'trust', match: /Trust this folder\?/i, keys: ['Enter'] },
         { name: 'hooks', match: /Hooks need review|Trust all and continue/i, keys: ['Down', 'Enter'] },
         { name: 'upgrade', match: /Introducing GPT|Try new model|Use existing model/i, keys: ['Down', 'Enter'] },
       ] as const

@@ -42,7 +42,7 @@ ENV EDITOR=nvim
 RUN umask 002 && npm install -g chrome-devtools-mcp@0.24.0
 # Codex, deliberately unpinned. Bump the date to pull a newer release (this is
 # the topmost unpinned step, so bumping it refreshes pi and claude too).
-RUN umask 002 && CODEX_REFRESH=2026-09-02 npm install -g @openai/codex
+RUN umask 002 && CODEX_REFRESH=2026-09-22 npm install -g @openai/codex
 # opencode 2 (`@opencode/cli`), pinned: yaac's launch command is written
 # against its flags and config (buildAgentCmd), and the session env sets
 # OPENCODE_DISABLE_AUTOUPDATE=1 (packages/server/src/domain/worktrees/create.ts)
@@ -65,7 +65,7 @@ RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 # to group-writable in this same step, where it costs no copy-up. `find`
 # rather than a path list so a changed installer layout is caught: a path
 # that stops existing fails the build instead of silently going unwritable.
-RUN umask 002 && CLAUDE_CODE_REFRESH=2026-09-02 curl -fsSL https://claude.ai/install.sh | bash && \
+RUN umask 002 && CLAUDE_CODE_REFRESH=2026-09-22 curl -fsSL https://claude.ai/install.sh | bash && \
     find /home/yaac/.claude* /home/yaac/.local/share/claude \
       ! -perm -g+w -exec chmod g=u {} +
 # The ACP adapters — the agent side of yaac's `acp` mode. Each speaks JSON-RPC

@@ -346,6 +346,26 @@ const MOCK_LLM_SCRIPT = `
         res.end(responsesSSE('Hello from mock!'));
         return;
       }
+      // codex's workspace-routing discovery (codex-cli >= 0.156): the TUI
+      // reads its account at bootstrap and refuses to start unless the
+      // account it selected (sent as this header) is listed here with a
+      // backend origin and a routing override. NO_CONSTRAINT for both keeps
+      // requests on the chatgpt.com the proxy redirects here and adds no
+      // routing header; a real origin would steer the next requests at it.
+      if (req.method === 'GET' && pathOnly === '/backend-api/wham/accounts/check') {
+        const id = req.headers['chatgpt-account-id'] || 'mock-account';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          accounts: [{
+            id, plan_type: 'plus',
+            workspace_backend_origin: 'NO_CONSTRAINT',
+            account_routing_override: 'NO_CONSTRAINT',
+          }],
+          account_ordering: [id],
+          default_account_id: id,
+        }));
+        return;
+      }
       // Catch-all: return an empty JSON object so any tool-probing request
       // (e.g. /v1/models, /v1/me, auth pings) looks "successful enough" to
       // avoid bailing out before the primary /v1/messages call lands. Not a
