@@ -103,6 +103,10 @@ const worktreePodSelector = {
  * pod IP resolves to a worktree whose registered remote is SSH, and admits
  * only list/sign messages onto the shared agent.
  *
+ * Nothing here for the install's npm cache: which worktrees may dial it is
+ * per project, so its rule selects on a label the server stamps
+ * (npm-cache.ts), and NetworkPolicy unions it with this one.
+ *
  * Deliberately NO in-cluster allowance for the per-project registry (5000):
  * this policy is install-wide, so it cannot express "the worktree's OWN
  * project" — a blanket rule would open every registry to every worktree
@@ -280,7 +284,8 @@ export function buildServerFrontIngressNpManifest(
  * below are about which pods need NO egress at all, not about escaping a
  * deny.
  *
- *  - the proxy: the one pod that legitimately reaches the internet. It
+ *  - the proxy: the one pod that reaches the internet on a worktree's
+ *    behalf with the worktree's own allowlist applied. It
  *    also reads every Secret in this namespace (its Role, in
  *    proxy-manifests.ts — `list`/`watch` cannot be name-scoped), which is
  *    fine while the namespace holds only yaac's objects: anything else
@@ -296,7 +301,11 @@ export function buildServerFrontIngressNpManifest(
  *    policy governs them.
  *
  * `NotIn`/`DoesNotExist` also match pods carrying no such label, so
- * registries, mocks, and anything added later stay covered by default.
+ * registries, mocks, and anything added later stay covered by default. The
+ * npm cache is one of those, and the one other pod with a way out: its own
+ * policy (npm-cache.ts) admits 443 off-cluster, and what it fetches reaches
+ * worktrees outside their allowlists — an accepted exception, bounded to
+ * public npm content coming in (docs/worktree-egress.md).
  */
 export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {
   return np(EGRESS_WORLD_DENY_NAME, k8sNamespace(), {

@@ -223,13 +223,12 @@ export function acpLogDir(slug: string, worktreeId: string): string {
 }
 
 /**
- * NODE-LOCAL. The project's pnpm store plus the per-worktree ephemeral
- * module dirs under it, mounted at `/home/yaac/.cached-packages`. A store
- * on a network filesystem turns every `link(2)`/stat into a round trip,
- * and the hardlinks it hands out must stay on one filesystem — so it is
- * per node, duplicate downloads accepted. Nothing outside the worktree's
- * own node reads it; the orphan sweep that collects a dead worktree's
- * module dirs runs on the node too (`WorktreeDriver.reapNodeLocal`).
+ * NODE-LOCAL. The project's package-manager caches, mounted at
+ * `/home/yaac/.cached-packages`: per node, because a cache on a network
+ * filesystem turns every `link(2)`/stat into a round trip. On a host it is
+ * also where the project's pnpm store lives (every worktree there is a
+ * process on one disk); a pod keeps its store in its own module dirs
+ * instead (docs/containerless-driver.md, docs/worktree-storage.md).
  */
 export function cachedPackagesDir(slug: string): string {
   return nodeLocalProjectPath(slug, '.cached-packages')

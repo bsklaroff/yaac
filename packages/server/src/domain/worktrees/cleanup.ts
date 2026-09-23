@@ -17,7 +17,6 @@ import {
   markWorktreeTerminating,
 } from '#runtime/status'
 import {
-  cachedPackagesDir,
   globalProjectPath,
   opencodeCheckpointDir,
   projectsRoots,
@@ -32,16 +31,6 @@ import { shellQuote } from '#lib/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
 import type { TeardownTarget } from '#drivers/contract'
 import { serverLog } from '#log'
-
-/**
- * Absolute host path to `<cachedPackages>/modules/<worktreeId>` — the
- * per-worktree ephemeral-modules root whose subdirs back the
- * `/workspace/<relPath>` symlinks installed at worktree start. See
- * `installEphemeralModuleLinks` in `packages/server/src/worktree-create.ts`.
- */
-export function worktreeModulesDir(projectSlug: string, worktreeId: string): string {
-  return path.join(cachedPackagesDir(projectSlug), 'modules', worktreeId)
-}
 
 /**
  * Detached teardowns this server spawned and has not yet seen exit, by
@@ -67,11 +56,10 @@ function detachedTeardownSettled(worktreeId: string): Promise<void> {
  * The ephemeral-modules paths as they exist IN the checkout — where a
  * host-run workspace keeps them, since that substrate realizes no mount into
  * the checkout (docs/containerless-driver.md). Removing them at stop is
- * what "ephemeral" means on both substrates: under a pod the contents sat
- * behind a mount whose backing dir `worktreeModulesDir` covers, and the
- * target here is an empty placeholder the restart's `prepareEphemeralMounts`
- * recreates. The restart's init commands rebuild them either way, from the
- * project's shared pnpm store.
+ * what "ephemeral" means on both substrates: under a pod the contents were
+ * on a pod-local volume that went with the pod, and the target here is an
+ * empty placeholder the restart's `prepareModuleDirs` recreates. The
+ * restart's init commands rebuild them either way.
  *
  * A path that is a symlink, or that reaches its parent through one leading
  * out of the checkout, is left alone — the same refusal the mkdir at create
@@ -225,7 +213,6 @@ export async function cleanupWorktree(params: {
 
   // Every removal below is gated on the verdict, for the same reason the
   // CHECKOUT removal callers chain off it is: these are mount sources — the
-  // ephemeral-modules dir backing `/workspace/node_modules`, and the
   // per-worktree dirs holding the staged skills and worktree bin — or, for
   // the ephemeral paths a host-run workspace keeps in the checkout itself,
   // its working directory. A workspace the runtime could not confirm gone
@@ -245,17 +232,6 @@ export async function cleanupWorktree(params: {
   // removes exactly these dirs; the server-start orphan sweep collects them
   // too. Both are idempotent, so the only price is that they go later.
   if (runtimeGone) {
-    // No-op when ephemeral modules were disabled for this worktree (the
-    // dir won't exist). Best-effort: NODE-LOCAL, so on a cluster this is
-    // the server's own node's tree and the worktree may have run on
-    // another — the node-local sweep (`reapNodeLocal`) is what collects it
-    // wherever it is.
-    await fs.rm(worktreeModulesDir(projectSlug, worktreeId), {
-      recursive: true,
-      force: true,
-    }).catch((err: unknown) => {
-      serverLog(`[server] remove modules dir of ${worktreeId} at stop: ${String(err)}`)
-    })
     // Best-effort, like the script's `|| true`: under a pod this is the
     // mount target, and a node still unwinding the mount answers EBUSY.
     for (const p of await checkoutEphemeralPaths(projectSlug, worktreeId)) {
@@ -336,10 +312,8 @@ export async function cleanupWorktreeDetached(params: {
     // runtime's, and a detached shell could do neither.
     await runtime.deregisterWorkspace(worktreeId)
 
-    const ephemeralModulesRms = [
-      worktreeModulesDir(projectSlug, worktreeId),
-      ...await checkoutEphemeralPaths(projectSlug, worktreeId),
-    ].map((dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`)
+    const ephemeralModulesRms = (await checkoutEphemeralPaths(projectSlug, worktreeId))
+      .map((dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`)
 
     const worktreeDirRm =
       `rm -rf ${shellQuote(worktreeStateDir(projectSlug, worktreeId))} 2>/dev/null || true`
@@ -472,8 +446,9 @@ async function gcOrphanSpares(
  * The orphan sweep: what a worktree that no longer exists left behind, on
  * both tiers. The GLOBAL half — dead spares' checkouts, session-starts
  * logs and `sessions/<id>` dirs — is walked here, on the server's own
- * filesystem. The NODE-LOCAL half — ephemeral module dirs, opencode
- * working copies — is handed to the runtime (`reapNodeLocal`) with the
+ * filesystem. The NODE-LOCAL half — opencode working copies, and the
+ * per-worktree module dirs an older install left (docs/legacy-compat-shims.md)
+ * — is handed to the runtime (`reapNodeLocal`) with the
  * same live set, because on a cluster those bytes are on whichever node
  * the worktree ran on. Runs every pass; the global walk is a readdir per
  * project and the runtime throttles its own half.
@@ -483,10 +458,9 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
   // exists — and "no longer exists" is read from a cluster listing taken
   // here, seconds before the removals below. A create that stages its dirs
   // inside that gap looks exactly like an orphan: its Job is not applied
-  // yet, so it is in no listing, and the sweep deletes the worktree dir and
-  // ephemeral-modules dir out from under the pod that is about to mount
-  // them. The pod then sits in ContainerCreating on FailedMount until the
-  // create gives up. This runs fire-and-forget at server startup, and a
+  // yet, so it is in no listing, and the sweep deletes the worktree dir
+  // out from under the pod that is about to mount it. The pod then sits in
+  // ContainerCreating on FailedMount until the create gives up. This runs fire-and-forget at server startup, and a
   // `worktree create` right after `server start` is the normal way to hit
   // it. Two guards below: a worktree the process is provisioning is never
   // swept, and neither is a directory touched since this listing was taken.

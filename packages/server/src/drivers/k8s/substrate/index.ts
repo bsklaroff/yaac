@@ -65,7 +65,7 @@ export {
   SSH_AGENT_SOCKET_PATH,
   PRE_STOP_GRACE_SECONDS,
   buildPodJobManifest,
-  graphrootMountAnnotations,
+  sentryTmpfsAnnotations,
   hostUidSecurityContext,
 } from './pod-spec'
 export type { HostPathType, MountSource, PodMount } from './pod-spec'
@@ -117,6 +117,9 @@ export {
   NETD_LISTENER_PORT_END,
   NETD_LISTENER_SLOTS,
   NETD_SA_NAME,
+  LABEL_NPM_CACHE,
+  NPM_CACHE_APP_NAME,
+  NPM_CACHE_PORT,
   POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,

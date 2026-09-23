@@ -1,6 +1,20 @@
 /** Deployment/Service name and pod selector label of the shared proxy. */
 export const PROXY_APP_NAME = 'yaac-proxy'
 /**
+ * Deployment/Service name and pod selector label of the install's npm
+ * registry cache (drivers/k8s/cluster/npm-cache.ts), and the port it serves —
+ * one worktree pods dial directly, outside netd's redirected set.
+ */
+export const NPM_CACHE_APP_NAME = 'yaac-npm-cache'
+export const NPM_CACHE_PORT = 4873
+/**
+ * Worktree-pod label admitting it to the npm cache — both policies that let
+ * a worktree dial the cache select on it. Stamped by the server at launch,
+ * per the project's `npmCache` setting; a worktree pod holds no API
+ * credential, so it cannot relabel itself in.
+ */
+export const LABEL_NPM_CACHE = 'yaac.npm-cache'
+/**
  * DaemonSet/ServiceAccount name and pod selector label of netd, the
  * redirect layer (features/cluster/netd.ts). Defined here with the other
  * datapath names so a caller can select on it without importing the

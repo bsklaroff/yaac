@@ -44,7 +44,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   dataDirHash,
   ensureKubernetes,
-  graphrootMountAnnotations,
+  sentryTmpfsAnnotations,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
@@ -178,7 +178,7 @@ export function buildBuilderPodManifest(name: string, imageRef: string): Record<
         [LABEL_DATA_DIR_HASH]: dataDirHash(),
         [LABEL_ROLE]: ROLE_BUILDER,
       },
-      annotations: graphrootMountAnnotations(BUILDER_GRAPHROOT_TMPFS_BYTES),
+      annotations: sentryTmpfsAnnotations(NESTED_GRAPHROOT_VOLUME, BUILDER_GRAPHROOT_TMPFS_BYTES),
     },
     spec: {
       restartPolicy: 'Never',

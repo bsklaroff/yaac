@@ -4,7 +4,7 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 
-const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'referenceBranch'])
+const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'npmCache', 'referenceBranch'])
 
 /**
  * Keys yaac used to honor, mapped to what to tell the author now. A
@@ -68,18 +68,6 @@ export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[
     return [...DEFAULT_EPHEMERAL_MODULES_PATHS]
   }
   return [...config.ephemeralModulesPaths]
-}
-
-/**
- * Derive the per-path subdirectory name under `modules/<worktreeId>/`.
- * Root "node_modules" → "root" (keeps the backing dir cleanly named
- * and avoids node_modules-inside-node_modules on disk). Nested paths
- * collapse slashes to underscores, e.g. "packages/web/node_modules" →
- * "packages_web_node_modules".
- */
-export function ephemeralModulesSlotKey(relPath: string): string {
-  if (relPath === 'node_modules') return 'root'
-  return relPath.replace(/\//g, '_')
 }
 
 /** tmux window names tagged 'reserved' across every supported agent tool —
@@ -278,6 +266,13 @@ export function parseProjectConfig(raw: string): YaacConfig {
       throw new Error('yaac-config.json: nestedContainers must be a boolean')
     }
     config.nestedContainers = obj.nestedContainers
+  }
+
+  if (obj.npmCache !== undefined) {
+    if (typeof obj.npmCache !== 'boolean') {
+      throw new Error('yaac-config.json: npmCache must be a boolean')
+    }
+    config.npmCache = obj.npmCache
   }
 
   // The retired `virtualCluster` always implied `nestedContainers`, and the

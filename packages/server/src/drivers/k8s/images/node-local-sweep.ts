@@ -2,17 +2,19 @@
  * The node-local orphan sweep: one root pod per node, walking this
  * install's node-local tree and removing what no live worktree owns.
  *
- * The NODE-LOCAL tier holds, per project, the pnpm store, the per-worktree
- * ephemeral module dirs under it, and each opencode worktree's working
- * copy (docs/server-in-cluster.md "Storage is two claims"). None of it is
+ * The NODE-LOCAL tier holds, per project, package-manager caches and each
+ * opencode worktree's working copy (docs/server-in-cluster.md "Storage is
+ * two claims") — and, on a node an older install ran worktrees on, the
+ * shared pnpm store and per-worktree module dirs this sweep retires
+ * (docs/legacy-compat-shims.md "The retired pnpm store and module dirs"). None of it is
  * on the server's own filesystem on a multi-node cluster — it is on
  * whichever node the worktree ran on — so nothing about it is read or
  * written from the server; the sweep runs where the bytes are, on the
  * node-write-pod shape the image store's writer uses (store-writer.ts).
  *
  * The keep-list is the set of worktree ids with a LIVE pod, per slug, and
- * it is the only keep-list: a stopped worktree's ephemeral modules are per
- * life, and its opencode working copy is either already deleted by its
+ * it is the only keep-list: a stopped worktree's module dir was per life,
+ * and its opencode working copy is either already deleted by its
  * own `preStop` checkpoint or a stale copy the global checkpoint outranks
  * on the next start. Everything else under the two entry kinds is an
  * orphan — except what was written since the cutoff, which is a create
@@ -62,13 +64,26 @@ export const NODE_LOCAL_SWEEP_TIMEOUT_MS = 5 * 60_000
  */
 export const NODE_LOCAL_SWEEP_SLACK_MS = 10_000
 
+/**
+ * How long the retired shared pnpm store must have gone unwritten before
+ * the sweep removes it. Only a worktree launched by an older server still
+ * points pnpm at it, and one of those installing when the store vanished
+ * would fail — so it goes once nothing has touched it for a day.
+ */
+export const LEGACY_PNPM_STORE_IDLE_MS = 24 * 60 * 60_000
+
 function sweepLabels(): Record<string, string> {
   return { app: NODE_LOCAL_SWEEP_APP_LABEL, [LABEL_SWEEP_DATA_DIR_HASH]: dataDirHash() }
 }
 
 /**
- * The in-pod script. Argv is `<cutoff epoch seconds> <slug>=<id>,<id>…`,
- * one keep entry per project with live worktrees. It walks
+ * The in-pod script. Argv is `<cutoff epoch seconds> <store cutoff epoch
+ * seconds> <slug>=<id>,<id>…`, one keep entry per project with live
+ * worktrees. Per project it first removes the retired shared pnpm store
+ * when nothing under its top three levels is newer than the store cutoff:
+ * pnpm 11's index database sits at the second, and pnpm 10's per-prefix
+ * `files/<xx>` and `index/<xx>` dirs at the third, where every write of a
+ * new package touches one. Then it walks
  * `/node/projects/<slug>/{.cached-packages/modules,opencode-data}/*` and
  * removes each entry whose basename is not in its slug's keep set and whose
  * mtime is older than the cutoff (`find -newermt` is the in-pod form of the
@@ -84,13 +99,20 @@ function sweepLabels(): Record<string, string> {
 export function buildNodeLocalSweepScript(): string {
   return [
     'set -u',
-    'CUTOFF="$1"; shift',
+    'CUTOFF="$1"; STORE_CUTOFF="$2"; shift 2',
     'keep_of() { for kv in "$@"; do case "$kv" in "$1="*) echo "${kv#*=}"; return;; esac; done; }',
     'removed=0',
     'for slugdir in /node/projects/*; do',
     '  [ -d "$slugdir" ] && [ ! -L "$slugdir" ] || continue',
     '  slug=$(basename "$slugdir")',
     '  keep=$(keep_of "$slug" "$@"); shift 0',
+    '  cp="$slugdir/.cached-packages"; store="$cp/pnpm-store"',
+    // Fails closed: a find that errors (an unreadable entry, EIO) keeps the
+    // store rather than reading as "nothing recent".
+    '  if [ -d "$store" ] && [ ! -L "$cp" ] && [ ! -L "$store" ] \\',
+    '    && recent=$(find "$store" -maxdepth 3 -newermt "@$STORE_CUTOFF" -print -quit) && [ -z "$recent" ]; then',
+    '    rm -rf "$store" && removed=$((removed+1)) && echo "removed $slug/.cached-packages/pnpm-store"',
+    '  fi',
     '  for kind in .cached-packages/modules opencode-data; do',
     '    kinddir="$slugdir/$kind"',
     '    [ -d "$kinddir" ] && [ ! -L "$kinddir" ] || continue',
@@ -119,6 +141,7 @@ export function buildNodeLocalSweepPodManifest(params: {
   imageRef: string
   running: Map<string, Set<string>>
   cutoffEpoch: number
+  storeCutoffEpoch: number
   runId: string
   nodeIndex: number
 }): Record<string, unknown> {
@@ -144,7 +167,10 @@ export function buildNodeLocalSweepPodManifest(params: {
         name: 'sweep',
         image: params.imageRef,
         imagePullPolicy: 'IfNotPresent',
-        command: ['sh', '-c', `${buildNodeLocalSweepScript()}\n`, '--', String(params.cutoffEpoch), ...keep],
+        command: [
+          'sh', '-c', `${buildNodeLocalSweepScript()}\n`, '--',
+          String(params.cutoffEpoch), String(params.storeCutoffEpoch), ...keep,
+        ],
         securityContext: { runAsUser: 0 },
         volumeMounts: [{ name: 'node', mountPath: SWEEP_POD_PATH }],
       }],
@@ -197,10 +223,11 @@ export async function reapNodeLocal(
     const imageRef = await ensureBuilderImage()
     const runId = crypto.randomBytes(4).toString('hex')
     const cutoffEpoch = Math.floor((now - NODE_LOCAL_SWEEP_SLACK_MS) / 1000)
+    const storeCutoffEpoch = Math.floor((now - LEGACY_PNPM_STORE_IDLE_MS) / 1000)
     const nodes = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
     for (const [nodeIndex, { metadata }] of (nodes?.items ?? []).entries()) {
       const manifest = buildNodeLocalSweepPodManifest({
-        nodeName: metadata.name, imageRef, running, cutoffEpoch, runId, nodeIndex,
+        nodeName: metadata.name, imageRef, running, cutoffEpoch, storeCutoffEpoch, runId, nodeIndex,
       })
       const { phase, logs } = await runPodToCompletion(manifest, {
         timeoutMs: NODE_LOCAL_SWEEP_TIMEOUT_MS,

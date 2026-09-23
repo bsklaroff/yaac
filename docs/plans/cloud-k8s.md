@@ -128,7 +128,7 @@ plan.
 - **Nodes are disposable.** Nothing a worktree needs in order to resume
   may live only on the node it last ran on, and no pod is ever pinned to a
   node. The NODE-LOCAL tier therefore holds exactly two kinds of thing:
-  caches that are re-derivable (the pnpm store, the per-node image store)
+  caches that are re-derivable (package caches, the per-node image store)
   and **working copies of a checkpoint on the shared tier**. opencode's
   per-worktree SQLite is the second kind: SQLite is unusable on NFS (no
   WAL, a confirmed corruption issue), so the pod works on a node-local
@@ -144,7 +144,7 @@ plan.
   since hostPath ignores `fsGroup`. On kind that path is bound to
   `<dataDir>/node-local` by a second extraMount, so caches still live on
   the host disk and survive a cluster delete; on a cloud node it is the
-  node's own disk, and a drained node costs a cold pnpm store and nothing
+  node's own disk, and a drained node costs a cold cache and nothing
   else.
 - **The pod's tier roots are three mount points, and the install identity
   is stamped, not derived.** `globalRoot()`, `serverLocalRoot()` and
@@ -298,6 +298,10 @@ against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
   CNI on EKS) and `YAAC_KUBE_PROXY_EXTERNAL` on k3s.
 - The storage gates over a real network — every spike number is a
   single-host floor, and `actimeo=1` is where staleness bugs would show.
+- Worktree `pnpm install` time with the npm cache (docs/worktree-storage.md
+  "Package installs") on another node — measured single-host only so far —
+  and a node drain that moves the cache: installs fail until its claim
+  reattaches, the same exposure the main registry has for pulls.
 - A full worktree life: create, nested containers, prewarm claim, then
   drain the node and resume — every tool including opencode — on another
   (repo, transcripts and the opencode checkpoint are shared; the worktree

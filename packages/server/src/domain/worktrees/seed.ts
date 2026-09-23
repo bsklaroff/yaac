@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ephemeralModulesSlotKey } from '#domain/projects'
 
 // Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
 // ships a newer onboarding flow, a stale value lets the first-run wizard
@@ -127,15 +126,6 @@ export async function seedClaudeSettings(settingsPath: string): Promise<void> {
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n')
 }
 
-export interface EphemeralMount {
-  /** Relative path under /workspace (e.g. "node_modules"). */
-  rel: string
-  /** Host backing dir — the hostPath mount source. */
-  hostBacking: string
-  /** Absolute in-container path — the mount target. */
-  containerPath: string
-}
-
 /**
  * `mkdir -p` a mount target inside the worktree without following a link
  * out of it. On a restart the worktree is already full of agent-authored
@@ -166,38 +156,20 @@ async function mkdirMountTarget(worktreeDirPath: string, rel: string): Promise<v
 }
 
 /**
- * Resolve per-worktree ephemeral-module mount descriptors and ensure each
- * mount's TARGET exists in the checkout before the Job is created.
+ * Create each ephemeral-modules dir in the checkout before the workspace is
+ * launched, and answer with the dirs as the workspace sees them — its
+ * `moduleDirs`, which the runtime backs however it backs them (a pod gives
+ * each its own pod-local volume; a host process leaves it in the checkout).
  *
- * Each `rel` becomes a mount from `<cachedPackages>/modules/<worktreeId>/
- * <slotKey>` — NODE-LOCAL, created on the worktree's node by the driver
- * (the k8s init container), never from here — to `/workspace/<rel>`
- * inside the container. Keeping the backing dirs under the same
- * `.cached-packages` tree as the pnpm store preserves hardlink affinity
- * (same superblock → `link(2)` does not hit EXDEV).
- *
- * The mount *target* is nested inside /workspace, which is the global
- * checkout — so it is a directory on the worktree, and pre-creating it
- * here is what keeps the pod's runtime from creating it root-owned 0700
- * instead. It exists before the checkout runs, which `addWorktree` is
- * built to accept.
+ * The checkout is the global one, so under a pod each dir is a mount target
+ * on the worktree, and pre-creating it here is what keeps the pod's runtime
+ * from creating it root-owned 0700 instead. It exists before the checkout
+ * runs, which `addWorktree` is built to accept.
  */
-export async function prepareEphemeralMounts(
-  cachedPackages: string,
-  worktreeId: string,
+export async function prepareModuleDirs(
   worktreeDirPath: string,
   relPaths: string[],
-): Promise<EphemeralMount[]> {
-  const mounts: EphemeralMount[] = []
-  for (const rel of relPaths) {
-    const slot = ephemeralModulesSlotKey(rel)
-    const hostBacking = path.join(cachedPackages, 'modules', worktreeId, slot)
-    await mkdirMountTarget(worktreeDirPath, rel)
-    mounts.push({
-      rel,
-      hostBacking,
-      containerPath: `/workspace/${rel}`,
-    })
-  }
-  return mounts
+): Promise<string[]> {
+  for (const rel of relPaths) await mkdirMountTarget(worktreeDirPath, rel)
+  return relPaths.map((rel) => `/workspace/${rel}`)
 }

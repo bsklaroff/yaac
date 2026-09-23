@@ -41,10 +41,12 @@ vi.mock('#drivers/k8s/egress/proxy-client', () => ({
 // node writes) — its boundary is the barrel.
 const mockProxyClusterIp = vi.hoisted(() => vi.fn().mockResolvedValue('10.96.0.5'))
 const mockEnsureProjectRegistry = vi.hoisted(() => vi.fn())
+const mockNpmCacheUrl = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterModule>()),
   proxyServiceClusterIp: mockProxyClusterIp,
   ensureProjectRegistry: mockEnsureProjectRegistry,
+  servingNpmCacheUrl: mockNpmCacheUrl,
 }))
 
 // The node image store is written by cleanup/write pods of its own.
@@ -107,6 +109,7 @@ function specOf(
     image: 'localhost:5000/img:tag',
     env: ['CALLER_SAID=yes'],
     mounts: [{ source: { kind: 'hostPath', path: worktreeDir('proj', 's1') }, mountPath: '/workspace' }],
+    moduleDirs: [],
     resources: {
       memoryRequestBytes: 1, memoryLimitBytes: 2,
       cpuRequestMillis: 3, cpuLimitMillis: 4,
@@ -161,6 +164,7 @@ beforeEach(() => {
   mockProxyClusterIp.mockResolvedValue('10.96.0.5')
   mockEnsureRunning.mockResolvedValue(undefined)
   mockStoreMount.mockResolvedValue(undefined)
+  mockNpmCacheUrl.mockResolvedValue(null)
 })
 
 /** The registration ConfigMap a prepare applied, decoded. */
@@ -301,6 +305,87 @@ describe('launchWorkspace', () => {
     expect(env.CALLER_SAID).toBe('yes')
     expect(env.YAAC_STREAM_TOKEN).toBe('stream-token')
     expect(env.SSL_CERT_FILE).toBe('/etc/yaac/certs/proxy-ca.pem')
+  })
+
+  // A store shared between pods corrupts (pnpm 11's SQLite index needs one
+  // kernel), so each pod's store is its own — inside the root module dir,
+  // on the same volume as `.pnpm`, which is what lets pnpm hardlink.
+  it('backs each module dir with its own volume and keeps pnpm\'s store inside the root one', async () => {
+    const plain = await prepareWorkspaceSubstrate(INTENT)
+    await launchWorkspace(specOf(plain, {
+      moduleDirs: ['/workspace/node_modules', '/workspace/packages/web/node_modules'],
+    }))
+
+    const job = appliedJob().spec.template
+    const volumes = job.spec.volumes.map((v) => v.name)
+    expect(volumes).toContain('pnpm-modules-0')
+    expect(volumes).toContain('pnpm-modules-1')
+    const mounts = job.spec.containers[0].volumeMounts
+    expect(mounts).toContainEqual({ name: 'pnpm-modules-0', mountPath: '/workspace/node_modules' })
+    expect(mounts).toContainEqual({ name: 'pnpm-modules-1', mountPath: '/workspace/packages/web/node_modules' })
+    expect(job.metadata).toMatchObject({
+      annotations: {
+        'dev.gvisor.spec.mount.pnpm-modules-0.type': 'bind',
+        'dev.gvisor.spec.mount.pnpm-modules-1.type': 'bind',
+      },
+    })
+    // Nothing node-side to create for them.
+    expect(job.spec.initContainers).toBeUndefined()
+    // Under both names: a corepack-pinned pnpm 10 reads only npm_config_.
+    expect(containerEnv()).toMatchObject({
+      pnpm_config_store_dir: '/workspace/node_modules/.pnpm-store',
+      npm_config_store_dir: '/workspace/node_modules/.pnpm-store',
+    })
+
+    // No root module dir: the pod's own disk, never the checkout.
+    mockApply.mockClear()
+    await launchWorkspace(specOf(plain, { moduleDirs: ['/workspace/packages/web/node_modules'] }))
+    expect(containerEnv()).toMatchObject({
+      pnpm_config_store_dir: '/home/yaac/.local/share/pnpm/store',
+      npm_config_store_dir: '/home/yaac/.local/share/pnpm/store',
+    })
+  })
+
+  // The cache is handed to the init script, which writes it BELOW the
+  // project's own .npmrc — an env var would outrank a project that names a
+  // registry of its own.
+  it('admits a workspace to the npm cache per its project, and points it there only while it serves', async () => {
+    const url = 'http://yaac-npm-cache.yaac.svc.cluster.local:4873/'
+    await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
+    expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
+
+    // Not serving yet: no registry, but the label admitting the pod is
+    // there, because that is the project's decision, not the cache's state.
+    expect(appliedJob().spec.template.metadata.labels['yaac.npm-cache']).toBe('true')
+
+    mockNpmCacheUrl.mockResolvedValue(url)
+    mockApply.mockClear()
+    await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
+    expect(containerEnv().YAAC_NPM_REGISTRY).toBe(url)
+    for (const key of ['pnpm_config_registry', 'npm_config_registry']) {
+      expect(containerEnv()).not.toHaveProperty(key)
+    }
+
+    // Each of these keeps the workspace off the cache entirely — no
+    // registry, and no label, so the cache's policies do not admit the pod:
+    //  - the project turned it off;
+    //  - an allowlist that leaves npmjs out (the cache fetches outside the
+    //    proxy, so it would hand the workspace what its allowlist refuses);
+    //  - a proxied npmjs secret (the cache fetches anonymously, so the
+    //    project's private packages would 404).
+    for (const intent of [
+      { ...INTENT, config: { npmCache: false } },
+      { ...INTENT, config: { setAllowedUrls: ['github.com', 'api.anthropic.com'] } },
+      {
+        ...INTENT,
+        proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } },
+      },
+    ]) {
+      mockApply.mockClear()
+      await launchWorkspace(specOf(await prepareWorkspaceSubstrate(intent)))
+      expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
+      expect(appliedJob().spec.template.metadata.labels).not.toHaveProperty('yaac.npm-cache')
+    }
   })
 
   it('routes an SSH workspace through the tunnel sentinel, with no key in the pod', async () => {

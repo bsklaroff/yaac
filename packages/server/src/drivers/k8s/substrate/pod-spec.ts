@@ -88,8 +88,16 @@ export const NESTED_GRAPHROOT_SIZELIMIT_BYTES = NESTED_GRAPHROOT_TMPFS_BYTES + 1
 /**
  * Pod-template annotations that make the graphroot a sentry-INTERNAL tmpfs
  * (not a gofer-proxied emptyDir) with file-capability xattr support, DISK
- * backed. gVisor's containerd shim resolves the volume name to its kubelet
- * emptyDir path and infers the medium from the annotation's `type`
+ * backed — see `sentryTmpfsAnnotations`.
+ */
+export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
+  sentryTmpfsAnnotations(NESTED_GRAPHROOT_VOLUME, NESTED_GRAPHROOT_TMPFS_BYTES)
+
+/**
+ * Pod-template annotations that turn the emptyDir `volume` into a
+ * sentry-INTERNAL tmpfs of at most `sizeBytes`, DISK backed. gVisor's
+ * containerd shim resolves the volume name to its kubelet emptyDir path and
+ * infers the medium from the annotation's `type`
  * (pkg/shim/v1/utils/volumes.go):
  *  - `type: tmpfs` → the container mount arrives at runsc as type tmpfs →
  *    memory-backed sentry tmpfs (pages pinned against the pod cgroup);
@@ -102,24 +110,44 @@ export const NESTED_GRAPHROOT_SIZELIMIT_BYTES = NESTED_GRAPHROOT_TMPFS_BYTES + 1
  * `pod_annotations = ["dev.gvisor.*"]` allowlist (see
  * gvisorContainerdRuntimesToml). Verified live: setcap works, a forced
  * cgroup reclaim pages a 2GiB graphroot down to ~0 with intact readback.
+ *
+ * The hint matches the volume's own kubelet path, so it applies to a mount
+ * of the WHOLE volume and never to a `subPath` of it — one volume per
+ * mount point.
  */
-export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
-  graphrootMountAnnotations(NESTED_GRAPHROOT_TMPFS_BYTES)
-
-/**
- * The annotation set above, parameterized on the sentry tmpfs size cap so
- * other podman-in-gvisor pods (the ephemeral builder pods of
- * docs/trust-split-builds.md) can size their graphroot independently
- * of worktree pods. Keys on NESTED_GRAPHROOT_VOLUME — the pod must mount
- * its graphroot emptyDir under that volume name.
- */
-export function graphrootMountAnnotations(sizeBytes: number): Record<string, string> {
+export function sentryTmpfsAnnotations(volume: string, sizeBytes: number): Record<string, string> {
   return {
-    [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.type`]: 'bind',
-    [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.share`]: 'container',
-    [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.options`]: `rw,size=${sizeBytes}`,
+    [`dev.gvisor.spec.mount.${volume}.type`]: 'bind',
+    [`dev.gvisor.spec.mount.${volume}.share`]: 'container',
+    [`dev.gvisor.spec.mount.${volume}.options`]: `rw,size=${sizeBytes}`,
   }
 }
+
+/**
+ * Volume-name prefix of a worktree's module dirs (`PodJobParams.moduleDirs`),
+ * one volume per dir: `pnpm-modules-0` for the first, and so on.
+ */
+export const MODULES_VOLUME_PREFIX = 'pnpm-modules'
+
+/**
+ * Sentry tmpfs cap of each module-dir volume. Sized for a large monorepo's
+ * root `node_modules` WITH the pnpm store inside it (the two share blocks —
+ * the store hardlinks into `.pnpm`), with room to spare; this repo's is
+ * ~1.5GiB. Disk-backed like the graphroot, so an ephemeral-storage budget,
+ * not pod memory.
+ */
+export const MODULES_TMPFS_BYTES = 8 * 1024 ** 3
+
+/** emptyDir sizeLimit of each module-dir volume: the cap plus the same
+ *  slack as NESTED_GRAPHROOT_SIZELIMIT_BYTES, for the same reason. */
+export const MODULES_SIZELIMIT_BYTES = MODULES_TMPFS_BYTES + 1024 ** 3
+
+/**
+ * What a worktree's modules add to its ephemeral-storage REQUEST: one
+ * ordinary install, which every worktree that runs `pnpm install` really
+ * does hold for its whole life.
+ */
+export const MODULES_REQUEST_BYTES = 2 * 1024 ** 3
 
 /**
  * In-sandbox capabilities the rootful nested engine needs. Under the sentry
@@ -279,7 +307,7 @@ export interface PodJobParams {
    * pod on the node, so bounding the blast radius to the offender is worth
    * the eviction risk. Nested worktrees get the graphroot emptyDir's own
    * sizeLimit added on top (see the resources block) — kubelet counts that
-   * volume against this number.
+   * volume against this number. So do `moduleDirs`.
    */
   ephemeralStorageLimitBytes: number
   /**
@@ -297,6 +325,17 @@ export interface PodJobParams {
    * a mount.
    */
   nested?: boolean
+  /**
+   * Container paths of the worktree's module dirs (`WorkspaceSpec.moduleDirs`),
+   * each backed by its own pod-local emptyDir promoted to a disk-backed
+   * sentry tmpfs (`sentryTmpfsAnnotations`): pnpm's link and stat traffic
+   * stays inside the sandbox instead of crossing the gofer, and a store
+   * placed inside the root one is on the same mount as `node_modules/.pnpm`,
+   * so pnpm hardlinks instead of copying. Gone with the pod, which is what
+   * "ephemeral" means here — a worktree Job never restarts in place, and a
+   * restart's init commands reinstall.
+   */
+  moduleDirs?: string[]
   /**
    * postStart lifecycle hook command (argv). Worktree pods run
    * `yaac-worktree-init` here — the kubelet holds the container's Ready
@@ -400,6 +439,31 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     volumeMounts.push({ name: NESTED_GRAPHROOT_VOLUME, mountPath: NESTED_GRAPHROOT_PATH })
   }
 
+  // One volume per module dir, never subPaths of one: the tmpfs hint keys
+  // on a whole volume (see sentryTmpfsAnnotations). Not owned by root like
+  // the graphroot — the sentry makes a tmpfs root world-writable, the way
+  // the kernel's does, so the unprivileged worktree user can install into
+  // it.
+  const moduleDirs = p.moduleDirs ?? []
+  let annotations: Record<string, string> = p.nested ? { ...NESTED_GRAPHROOT_ANNOTATIONS } : {}
+  moduleDirs.forEach((dir, i) => {
+    const name = `${MODULES_VOLUME_PREFIX}-${i}`
+    volumes.push({ name, emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) } })
+    volumeMounts.push({ name, mountPath: dir })
+    annotations = { ...annotations, ...sentryTmpfsAnnotations(name, MODULES_TMPFS_BYTES) }
+  })
+  // kubelet charges emptyDir volumes to the pod's ephemeral storage. The
+  // limit clears ONE module dir's sizeLimit on top of everything else: a
+  // runaway install ENOSPCs inside its own dir long before it evicts the
+  // worktree (which is fatal, backoffLimit 0), and a pod with several dirs
+  // keeps its total bounded rather than multiplying the ceiling. That fits
+  // a pnpm workspace, whose nested dirs hold only symlinks; several dirs
+  // that are independent installs each hold a full copy (the store is on
+  // another mount), and between them can reach the limit. The request
+  // counts the one install every such worktree really holds.
+  const modulesLimit = moduleDirs.length > 0 ? MODULES_SIZELIMIT_BYTES : 0
+  const modulesRequest = moduleDirs.length > 0 ? MODULES_REQUEST_BYTES : 0
+
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
@@ -413,8 +477,8 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
       template: {
         metadata: {
           labels: p.labels,
-          // Nested pods carry the gVisor graphroot-tmpfs annotations.
-          ...(p.nested ? { annotations: NESTED_GRAPHROOT_ANNOTATIONS } : {}),
+          // The gVisor tmpfs hints: the nested graphroot, the module dirs.
+          ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
         },
         spec: {
           restartPolicy: 'Never',
@@ -485,7 +549,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
                 requests: {
                   cpu: `${p.cpuRequestMillis}m`,
                   memory: String(p.memoryRequestBytes),
-                  'ephemeral-storage': String(p.ephemeralStorageRequestBytes),
+                  'ephemeral-storage': String(p.ephemeralStorageRequestBytes + modulesRequest),
                 },
                 limits: {
                   // Also sets the sandbox's virtual cpu count, and with it
@@ -500,7 +564,8 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
                   // site keeps that accounting next to the constant.
                   'ephemeral-storage': String(
                     p.ephemeralStorageLimitBytes
-                    + (p.nested ? NESTED_GRAPHROOT_SIZELIMIT_BYTES : 0),
+                    + (p.nested ? NESTED_GRAPHROOT_SIZELIMIT_BYTES : 0)
+                    + modulesLimit,
                   ),
                 },
               },

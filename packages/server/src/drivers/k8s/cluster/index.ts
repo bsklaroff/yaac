@@ -5,8 +5,8 @@
 //
 // This feature owns the *substrate*: the local kind/podman cluster, the
 // datapath the server hangs off it — the shared egress proxy, netd's
-// redirect layer, and the main and per-project registries — and the
-// IDENTITY of every image yaac ships: the digest pin or content-hash tag
+// redirect layer, the main and per-project registries, the npm cache — and
+// the IDENTITY of every image yaac ships: the digest pin or content-hash tag
 // by which the server looks one up. PRODUCING those images belongs to
 // `#drivers/k8s/install`, and nothing here reaches into it.
 // Two kinds of consumer enter here: worktree create and its reconcilers
@@ -95,3 +95,9 @@ export {
   mainRegistryExec,
   restartMainRegistry,
 } from './main-registry'
+export {
+  VERDACCIO_MIRROR_TAG,
+  VERDACCIO_UPSTREAM_IMAGE,
+  ensureNpmCache,
+  servingNpmCacheUrl,
+} from './npm-cache'

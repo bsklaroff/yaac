@@ -109,8 +109,9 @@ RUN umask 002 && mkdir -p /home/yaac/.yaac /home/yaac/.config /home/yaac/.local/
 # running as another uid could never run either command. As env there is no
 # file to fight over until the pod writes its own.
 ENV NPM_CONFIG_PREFIX=/home/yaac/.local
-RUN umask 002 && corepack install -g pnpm@11.1.2 && \
-    pnpm config set store-dir /home/yaac/.cached-packages/pnpm-store
+# No pnpm store-dir here: a worktree's store is per pod and differs by
+# layout, so the worktree env names it (docs/worktree-storage.md).
+RUN umask 002 && corepack install -g pnpm@11.1.2
 # Playwright pinned to the same version as the chromium installed above
 # (playwright-core@1.50.1 → chromium build 1155), so `chromium.launch()`
 # resolves the prebuilt browser at PLAYWRIGHT_BROWSERS_PATH. Skip the bundled

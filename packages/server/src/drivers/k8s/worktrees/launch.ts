@@ -2,6 +2,7 @@ import {
   LABEL_DATA_DIR_HASH,
   LABEL_MODE,
   LABEL_NESTED,
+  LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_TOOL,
@@ -9,6 +10,7 @@ import {
   dataDirHash,
   ensurePriorityClasses,
   k8sNamespace,
+  k8sWorkspacePaths,
   kubectlApply,
   nodeLocalDirsOf,
   nodeLocalNodePath,
@@ -23,6 +25,7 @@ import {
   ensureProjectRegistry,
   projectRegistryConfDropIn,
   proxyServiceClusterIp,
+  servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
 import {
   applyWorktreeRegistration,
@@ -32,6 +35,8 @@ import {
   type WorktreeRegistration,
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
+import { hostMatchesPattern } from '#lib/allowed-hosts'
+import type { SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 import type {
   RuntimeHandle,
   SubstrateIntent,
@@ -72,6 +77,11 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
   /** The project has its own push registry, so the in-pod engine needs its
    *  registries.conf drop-in. */
   projectRegistry: boolean
+  /** The workspace may use the npm cache — which the pod's label admits it
+   *  to, whether or not the cache is serving right now. */
+  npmCacheAllowed: boolean
+  /** The install's npm cache, when this workspace installs through it. */
+  npmRegistry: string | null
   /** What the proxy is told about this workspace — written by `launch`,
    *  right before the Job, so a prepare that overlaps a long image build
    *  never holds a registration with nothing behind it. */
@@ -172,15 +182,47 @@ export async function prepareWorkspaceSubstrate(
     secretRules: intent.proxySecretRules,
   })
 
+  // Where the workspace's installs fetch from. A failed lookup costs the
+  // cache, not the create: npmjs answers the same packages.
+  const npmCacheAllowed = npmCacheApplies(config, registration.allowedHosts, intent.proxySecretRules)
+  const npmRegistry = npmCacheAllowed ? await servingNpmCacheUrl().catch(() => null) : null
+
   const receipt: K8sWorkspaceSubstrate = {
     kind: 'workspace-substrate',
     proxyHost,
     streamToken,
     storeMounts,
     projectRegistry,
+    npmCacheAllowed,
+    npmRegistry,
     registration,
   }
   return receipt
+}
+
+/** The registry the npm cache stands in for. */
+const NPMJS_HOST = 'registry.npmjs.org'
+
+/**
+ * Whether a workspace may use the npm cache. Not when its project turns the
+ * cache off (`npmCache: false`). Not when its allowlist leaves npmjs out: the cache fetches outside the egress proxy,
+ * so pointing it there would hand the workspace what its own allowlist
+ * refuses. And not when the project authenticates to npmjs through a
+ * proxied secret: the cache fetches anonymously, so the project's private
+ * packages would stop resolving. (A token in the project's own `.npmrc` is
+ * the project's to route — see the `registry=` note in docs/worktree-storage.md.)
+ */
+function npmCacheApplies(
+  config: YaacConfig,
+  allowedHosts: string[],
+  secretRules: Record<string, SecretProxyRule>,
+): boolean {
+  if (config.npmCache === false) return false
+  const allowed = (allowedHosts.length === 1 && allowedHosts[0] === '*')
+    || allowedHosts.some((pattern) => hostMatchesPattern(NPMJS_HOST, pattern))
+  const authenticated = Object.values(secretRules)
+    .some((rule) => rule.hosts.some((pattern) => hostMatchesPattern(NPMJS_HOST, pattern)))
+  return allowed && !authenticated
 }
 
 /**
@@ -216,6 +258,26 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // trust in the MITM CA.
   env.push(...proxyClient.getCaTrustEnv())
   env.push(`YAAC_STREAM_TOKEN=${substrate.streamToken}`)
+  // pnpm's store, one per workspace: a store shared between pods corrupts —
+  // pnpm 11 indexes it in one SQLite database in WAL mode, which needs every
+  // writer on one kernel, and each pod is its own sandbox. It goes INSIDE
+  // the root module dir when that is one, on the same pod-local volume as
+  // `node_modules/.pnpm`, so pnpm hardlinks rather than copies. Otherwise
+  // the pod's own disk, never the checkout pnpm would pick by itself (the
+  // root of the project's filesystem). Under both names, because a project
+  // pins its own pnpm through corepack: 11 reads `pnpm_config_` and ignores
+  // `npm_config_` for this key, and every 10.x does the reverse.
+  const rootModules = `${k8sWorkspacePaths().workspaceDir}/node_modules`
+  const store = spec.moduleDirs.includes(rootModules)
+    ? `${rootModules}/.pnpm-store`
+    : '/home/yaac/.local/share/pnpm/store'
+  env.push(`pnpm_config_store_dir=${store}`, `npm_config_store_dir=${store}`)
+  // The npm cache, which the init script writes as the default registry in
+  // the user-level `~/.npmrc` rather than as env: env would outrank the
+  // project's own `.npmrc`, and a project naming a registry of its own —
+  // a private mirror of unscoped packages — must keep it. Both pnpm 10 and
+  // 11 read the file, below the project's.
+  if (substrate.npmRegistry) env.push(`YAAC_NPM_REGISTRY=${substrate.npmRegistry}`)
   if (spec.nestedContainers && substrate.projectRegistry) {
     // The per-project registries.conf drop-in, written by the in-pod init
     // script (sudo) before the engine starts. Base64 keeps the TOML free of
@@ -256,6 +318,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // salvage — the engine's own marker (YAAC_NESTED_ENGINE, below) lives
     // in the spec's env, which the reconciler never has.
     ...(spec.nestedContainers ? { [LABEL_NESTED]: 'true' } : {}),
+    // What admits the pod to the npm cache: both of the cache's worktree
+    // policies select on it.
+    ...(substrate.npmCacheAllowed ? { [LABEL_NPM_CACHE]: 'true' } : {}),
   }
 
   const manifest = buildPodJobManifest({
@@ -273,6 +338,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ephemeralStorageLimitBytes: spec.resources.ephemeralStorageLimitBytes,
     proxyHost: substrate.proxyHost,
     nested: spec.nestedContainers,
+    moduleDirs: spec.moduleDirs,
     // In-pod setup (git identity, tmux server + options, streamd, the
     // nested engine) runs as the container's postStart hook, so the kubelet
     // holds Ready until it's done and no per-command exec round trips are

@@ -116,3 +116,52 @@ describe('claimSpareWorkspace', () => {
     await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow('apiserver down')
   })
 })
+
+describe('claimSpareWorkspace and the npm cache', () => {
+  /** Serve the spare's pod (labelled or not) and the cache's readiness. */
+  function stage(opts: { admitted: boolean; serving: boolean }): void {
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'endpointslices'
+        ? { items: [{ endpoints: [{ conditions: { ready: opts.serving } }] }] }
+        : {
+          items: [{
+            metadata: {
+              name: 'yaac-proj-s1-abcde',
+              labels: opts.admitted ? { 'yaac.npm-cache': 'true' } : {},
+            },
+          }],
+        },
+    ))
+  }
+  const execArgv = (): string[] | undefined =>
+    mockKubectl.mock.calls.map(([a]) => a as string[]).find((a) => a[0] === 'exec')
+
+  // A spare is warmed long before it is claimed: pointed at a cache that
+  // has since gone down, every install would fail, so the claim re-decides.
+  it('re-decides a spare\'s registry against the cache as it is at claim time', async () => {
+    stage({ admitted: true, serving: false })
+    await claimSpareWorkspace('s1', 'codex')
+    const down = execArgv()!
+    expect(down).toEqual(expect.arrayContaining(['exec', 'yaac-proj-s1-abcde', '-c', 'worktree']))
+    // No URL: the script only strips the cache's own line.
+    expect(down.at(-1)).toBe('')
+    expect(down.join(' ')).toContain('registry=http://yaac-npm-cache')
+
+    mockKubectl.mockClear()
+    stage({ admitted: true, serving: true })
+    await claimSpareWorkspace('s1', 'codex')
+    expect(execArgv()!.at(-1)).toMatch(/^http:\/\/yaac-npm-cache\..*:4873\/$/)
+  })
+
+  it('leaves a spare the cache does not admit alone, and never fails a claim over it', async () => {
+    stage({ admitted: false, serving: true })
+    await claimSpareWorkspace('s1', 'codex')
+    expect(execArgv()).toBeUndefined()
+
+    stage({ admitted: true, serving: true })
+    mockKubectl.mockImplementation((args: string[]) => args[0] === 'exec'
+      ? Promise.reject(new Error('container not running'))
+      : Promise.resolve({ stdout: '', stderr: '' }))
+    await expect(claimSpareWorkspace('s1', 'codex')).resolves.toBeUndefined()
+  })
+})

@@ -10,13 +10,16 @@ import {
   SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
   buildPodJobManifest,
-  graphrootMountAnnotations,
   hostUidSecurityContext,
+  sentryTmpfsAnnotations,
 } from '#drivers/k8s/substrate'
 // Internals, for fixtures and bounds only: the in-container cert dir, the
-// sentry tmpfs cap, and the params the builder takes.
+// sentry tmpfs caps, and the params the builder takes.
 import {
   CA_MOUNT_DIR,
+  MODULES_REQUEST_BYTES,
+  MODULES_SIZELIMIT_BYTES,
+  MODULES_TMPFS_BYTES,
   NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_TMPFS_BYTES,
   type PodJobParams,
@@ -615,11 +618,54 @@ describe('buildPodJobManifest', () => {
         .toBeGreaterThan(Number(graphroot?.emptyDir?.sizeLimit))
     })
   })
+
+  describe('moduleDirs', () => {
+    const moduleDirs = ['/workspace/node_modules', '/workspace/packages/web/node_modules']
+
+    // One whole volume per dir: the tmpfs hint keys on a volume's own
+    // kubelet path, so a subPath of a shared one would stay gofer-backed.
+    it('backs each dir with its own sentry-tmpfs emptyDir, alongside the graphroot', () => {
+      const m = build({ moduleDirs, nested: true })
+      const spec = m.spec.template.spec
+      expect(spec.volumes).toContainEqual({
+        name: 'pnpm-modules-0', emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) },
+      })
+      expect(spec.volumes).toContainEqual({
+        name: 'pnpm-modules-1', emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) },
+      })
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'pnpm-modules-0', mountPath: '/workspace/node_modules',
+      })
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'pnpm-modules-1', mountPath: '/workspace/packages/web/node_modules',
+      })
+      expect(m.spec.template.metadata.annotations).toEqual({
+        ...sentryTmpfsAnnotations('podman-graphroot', NESTED_GRAPHROOT_TMPFS_BYTES),
+        ...sentryTmpfsAnnotations('pnpm-modules-0', MODULES_TMPFS_BYTES),
+        ...sentryTmpfsAnnotations('pnpm-modules-1', MODULES_TMPFS_BYTES),
+      })
+      // Pod-local: nothing for an init container to make on the node.
+      expect(spec.initContainers).toBeUndefined()
+    })
+
+    it('grows the ephemeral-storage request by one install and the limit by one dir\'s ceiling', () => {
+      const { resources } = build({ moduleDirs }).spec.template.spec.containers[0]
+      expect(resources.requests['ephemeral-storage'])
+        .toBe(String(2 * 1024 ** 3 + MODULES_REQUEST_BYTES))
+      expect(resources.limits['ephemeral-storage'])
+        .toBe(String(16 * 1024 ** 3 + MODULES_SIZELIMIT_BYTES))
+    })
+
+    it('leaves a pod with none exactly as it was', () => {
+      expect(build({ moduleDirs: [] })).toEqual(build())
+      expect(build().spec.template.metadata.annotations).toBeUndefined()
+    })
+  })
 })
 
-describe('graphrootMountAnnotations', () => {
-  it('parameterizes the sentry graphroot mount on size (builder pods use 16Gi)', () => {
-    expect(graphrootMountAnnotations(16 * 1024 ** 3)).toEqual({
+describe('sentryTmpfsAnnotations', () => {
+  it('keys the sentry tmpfs hints on the volume name and caps it at the size (builder pods use 16Gi)', () => {
+    expect(sentryTmpfsAnnotations('podman-graphroot', 16 * 1024 ** 3)).toEqual({
       'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
       'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
       'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${16 * 1024 ** 3}`,

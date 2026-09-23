@@ -115,8 +115,11 @@ registry (no content hash — the digest IS the pin): `registry:2` for
 per-project registries (`packages/server/src/drivers/k8s/cluster/project-registry.ts`),
 `quay.io/podman/stable` for the
 sandboxed builder pods (`packages/server/src/drivers/k8s/cluster/builder-image.ts`),
-and `envoyproxy/envoy` for netd's redirect sidecar
-(`packages/server/src/drivers/k8s/cluster/netd.ts`).
+`envoyproxy/envoy` for netd's redirect sidecar
+(`packages/server/src/drivers/k8s/cluster/netd.ts`), `curlimages/curl` for
+the gVisor installer (`packages/server/src/drivers/k8s/install/gvisor-installer.ts`),
+and `verdaccio/verdaccio` for the npm cache
+(`packages/server/src/drivers/k8s/cluster/npm-cache.ts`).
 
 **Rules:**
 - Never build images inside individual test workers — all builds belong in `test/global-setup.ts`.

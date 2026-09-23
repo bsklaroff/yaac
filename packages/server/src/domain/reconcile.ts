@@ -119,8 +119,8 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // detach their work, and the sweep reads transcripts and rows rather
     // than images.
     ...runtime.maintenance,
-    // Per-worktree `.cached-packages/modules/<id>` dirs whose runtime is
-    // gone — leftovers from crashes and host reboots. A startup sweep that
+    // What worktrees whose runtime is gone left behind — leftovers from
+    // crashes and host reboots (see gcOrphanEphemeralModuleDirs). A sweep that
     // must not delete a dir a create is staging into: which worktrees are
     // mid-create comes straight from the provisioning registry, which is
     // same-process and populated synchronously before a create stages

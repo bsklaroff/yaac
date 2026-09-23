@@ -47,6 +47,7 @@ function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
     prewarm: false,
     env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_STATUS_RIGHT= demo 4bfc59c6 '],
     mounts: [],
+    moduleDirs: [],
     resources: {
       memoryRequestBytes: 1, memoryLimitBytes: 1, cpuRequestMillis: 1,
       cpuLimitMillis: 1, ephemeralStorageRequestBytes: 1, ephemeralStorageLimitBytes: 1,

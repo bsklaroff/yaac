@@ -9,6 +9,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/domain/git'
+import { ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
 import { reapNodeLocal } from '@yaac/server/drivers/k8s/images'
 import { listWorktreePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
@@ -60,7 +61,6 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * node_modules/delete test tears the session down — keep that order.
  *
  * Deliberately deferred (unchanged from the originals):
- *   - pnpm cache reuse — exercises pnpm store behavior, not CLI surface.
  *   - nestedContainers — covered by nested-containers.test.ts.
  *   - full opencode turn via mock LLM — `opencode api` answers from the
  *     worktree's data dir independently of any provider; a session listing
@@ -506,6 +506,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await fs.writeFile(path.join(projectPath, 'claude', 'settings.json'), JSON.stringify({
         skipDangerousModePermissionPrompt: true,
       }) + '\n')
+
+      // The install's npm cache, which an install stands up and this
+      // file's namespace otherwise lacks: the kitchen session's pnpm
+      // installs through it (the last test below).
+      await ensureNpmCache()
 
       const created = await createWorktree('kitchen', '--tool', 'claude')
       jobName = created.jobName
@@ -1380,119 +1385,110 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await waitForListStatus('waiting', 30_000)
     }, 240_000)
 
-    it('redirects /workspace/node_modules through .cached-packages and cleans up on delete', async () => {
-      // LAST kitchen test: it deletes the session.
-      // Inside the container: /workspace/node_modules is a real directory
-      // backed by a bind mount — not a symlink (Node's fs.mkdir would
-      // reject a symlink-to-dir with ENOTDIR, breaking pnpm).
+    it('keeps each module dir and pnpm\'s store on pod-local volumes, installing through the npm cache', async () => {
+      // LAST kitchen test: it stops the session.
+      // Inside the container: each module dir is a real directory, its own
+      // sentry tmpfs — not a symlink (Node's fs.mkdir would reject a
+      // symlink-to-dir with ENOTDIR, breaking pnpm), and not the gofer.
       await expect(execInJob(jobName, [
         'readlink', '/workspace/node_modules',
       ])).rejects.toThrow()
-      const { stdout: ftype } = await execInJob(jobName, [
-        'stat', '-c', '%F', '/workspace/node_modules',
-      ])
-      expect(ftype.trim()).toBe('directory')
+      const { stdout: mounts } = await execInJob(jobName, ['cat', '/proc/mounts'])
+      for (const dir of ['/workspace/node_modules', '/workspace/frontends/node_modules']) {
+        expect(mounts.split('\n').find((l) => l.split(' ')[1] === dir)?.split(' ')[2]).toBe('tmpfs')
+      }
 
-      // Write to the bind mount and confirm the bytes land in the
-      // node-local .cached-packages tree (this pod's own node, under the
-      // install's node path — node disk for a test hash, which has no kind
-      // extraMount), NOT in the worktree. Read back through the pod's own
-      // store mount, which is the same directory.
+      // Writes land in the pod, never in the worktree on the global tier.
       await execInJob(jobName, [
         'sh', '-c',
-        'echo hello > /workspace/node_modules/marker.txt',
+        'echo hello > /workspace/node_modules/marker.txt && echo nested > /workspace/frontends/node_modules/marker.txt',
       ])
-      const { stdout: hostMarker } = await execInJob(jobName, [
-        'cat', `/home/yaac/.cached-packages/modules/${worktreeId}/root/marker.txt`,
-      ])
-      expect(hostMarker.trim()).toBe('hello')
-      // And on the node, at the install's node path, owned by the pod's
-      // own uid (the init container's chown) — never root.
-      const nodeModules = `${nodeLocalNodePath()}/projects/kitchen/.cached-packages/modules/${worktreeId}`
-      const { stdout: onNodeOut } = await execFileAsync('podman', [
-        'exec', await podNode(worktreeId), 'sh', '-c', `cat ${nodeModules}/root/marker.txt && stat -c %u ${nodeModules}`,
-      ])
-      expect(onNodeOut.trim().split('\n')).toEqual(['hello', String(process.getuid?.())])
-
-      // Host worktree's node_modules has no leaked content — the bind
-      // mount shadows it from the container side only.
-      const worktreeMarker = path.join(
-        projectPath, 'worktrees', worktreeId, 'node_modules', 'marker.txt',
-      )
-      await expect(fs.access(worktreeMarker)).rejects.toThrow()
-
-      // The nested redirect works the same way, and its mount TARGET is a
-      // dir on the host worktree that exists before `git worktree add`
-      // runs — which git refuses to check out into unless the add is
-      // staged. Both are asserted here: the checkout populated the tracked
-      // parent around the mount point, and the mount itself is live.
       const wtDir = path.join(projectPath, 'worktrees', worktreeId)
+      await expect(fs.access(path.join(wtDir, 'node_modules', 'marker.txt'))).rejects.toThrow()
+      await expect(fs.access(path.join(wtDir, 'frontends', 'node_modules', 'marker.txt'))).rejects.toThrow()
+      // The nested mount's TARGET is a dir on the host worktree that exists
+      // before `git worktree add` runs — which git refuses to check out into
+      // unless the add is staged. The checkout still populated the tracked
+      // parent around it.
       expect(await fs.readFile(path.join(wtDir, 'frontends', 'app.txt'), 'utf8')).toBe('app\n')
-      await execInJob(jobName, [
-        'sh', '-c', 'echo nested > /workspace/frontends/node_modules/marker.txt',
-      ])
-      const { stdout: nestedBacking } = await execInJob(jobName, [
-        'cat', `/home/yaac/.cached-packages/modules/${worktreeId}/frontends_node_modules/marker.txt`,
-      ])
-      expect(nestedBacking.trim()).toBe('nested')
-      await expect(
-        fs.access(path.join(wtDir, 'frontends', 'node_modules', 'marker.txt')),
-      ).rejects.toThrow()
-
       // node_modules is gitignored (via the seeded .gitignore), so a
-      // populated bind mount doesn't surface in `git status`.
+      // populated mount doesn't surface in `git status`.
       const { stdout: gitStatus } = await execInJob(jobName, [
         'sh', '-c', 'cd /workspace && git status --porcelain',
       ])
       expect(gitStatus.trim()).toBe('')
 
-      // Seed the pnpm-store so the post-delete assertion below can verify
-      // that modules/<sid> is reaped while the shared store survives.
-      await execInJob(jobName, [
+      // A second worktree of the project installs at the same moment. A
+      // store shared between the two pods is what used to corrupt (pnpm 11's
+      // SQLite index needs one kernel); now each has its own.
+      await createWorktree('kitchen', '--tool', 'claude')
+      const secondPod = await findWorktreePod('kitchen', new Set([worktreeId]))
+      const install = (job: string): Promise<{ stdout: string }> => execInJob(job, [
         'sh', '-c',
-        'mkdir -p /home/yaac/.cached-packages/pnpm-store && echo store-content > /home/yaac/.cached-packages/pnpm-store/src',
-      ])
-
-      // Stop the session. The server's own removal of modules/<sid> only
-      // reaches the node it runs on; on any other node the dir is an
-      // orphan the node-local sweep collects. So run that sweep for real
-      // once the pod is gone — sparing every worktree still live in this
-      // file — and read the node: the module dir is gone, the project's
-      // pnpm store is not.
-      const node = await podNode(worktreeId)
-      const { exitCode: delExit } = await runYaac(
-        serverEnv, 'worktree', 'stop', worktreeId,
-      )
-      expect(delExit).toBe(0)
-
-      const onNode = (p: string): Promise<boolean> =>
-        execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)
-      let podGone = false
-      for (let i = 0; i < 240 && !podGone; i++) {
-        podGone = !(await listWorktreePods('kitchen')).some((p) => p.worktreeId === worktreeId)
-        if (!podGone) await sleep(500)
+        'cd /workspace && printf \'{"name":"kitchen","private":true,"dependencies":{"is-number":"7.0.0"}}\' > package.json'
+        + ' && pnpm install 2>&1'
+        + ' && stat -c %h node_modules/.pnpm/is-number@7.0.0/node_modules/is-number/package.json'
+        + ' && echo "store=$pnpm_config_store_dir registry=$(pnpm config get registry)"',
+      ], { timeout: 180_000 })
+      const [first, other] = await Promise.all([install(jobName), install(secondPod.jobName)])
+      for (const { stdout } of [first, other]) {
+        // Hardlinked from the store (link count 2), which only happens when
+        // the store is on the same mount as node_modules/.pnpm.
+        expect(stdout).toMatch(/^2$/m)
+        expect(stdout).toContain('store=/workspace/node_modules/.pnpm-store')
+        expect(stdout).toContain(`registry=http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/`)
       }
-      expect(podGone).toBe(true)
+      // ...and the fetch went through the cache.
+      const { stdout: cacheLog } = await kubectlWithRetry([
+        'logs', '-n', k8sNamespace(), 'deployment/yaac-npm-cache',
+      ])
+      expect(cacheLog).toContain('is-number')
+      // The cache is only the default: a project .npmrc naming a registry
+      // of its own keeps it.
+      const { stdout: projectRegistry } = await execInJob(jobName, [
+        'sh', '-c',
+        "cd /workspace && printf 'registry=https://registry.npmjs.org/\\n' > .npmrc && pnpm config get registry",
+      ])
+      expect(projectRegistry.trim()).toBe('https://registry.npmjs.org/')
+
+      const node = await podNode(worktreeId)
+      for (const id of [worktreeId, secondPod.worktreeId]) {
+        const { exitCode } = await runYaac(serverEnv, 'worktree', 'stop', id)
+        expect(exitCode).toBe(0)
+      }
+
+      // What an older install left on the node — a shared store nothing has
+      // written for two days, and a dead worktree's modules dir — is
+      // retired by the real sweep: a root pod pinned to the node, over its
+      // hostPath tree. Spares every worktree still live in this file.
+      const legacy = `${nodeLocalNodePath()}/projects/kitchen/.cached-packages`
+      await execFileAsync('podman', ['exec', node, 'sh', '-c',
+        `mkdir -p ${legacy}/pnpm-store/v11/files/00 ${legacy}/modules/dead-worktree/root`
+        + ` && touch ${legacy}/pnpm-store/v11/index.db`
+        + ` && find ${legacy} -exec touch -d '2 days ago' {} +`])
       const running = new Map<string, Set<string>>()
       for (const p of await listWorktreePods()) {
         const ids = running.get(p.projectSlug) ?? new Set<string>()
         ids.add(p.worktreeId)
         running.set(p.projectSlug, ids)
       }
-      // A cutoff in the future: nothing here is a create still staging.
-      await reapNodeLocal(running, { nowMs: Date.now() + 60_000 })
-      expect(await onNode(nodeModules)).toBe(false)
-      expect(await onNode(`${nodeLocalNodePath()}/projects/kitchen/.cached-packages/pnpm-store/src`)).toBe(true)
-    }, 120_000)
+      await reapNodeLocal(running)
+      const onNode = (p: string): Promise<boolean> =>
+        execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)
+      expect(await onNode(`${legacy}/pnpm-store`)).toBe(false)
+      expect(await onNode(`${legacy}/modules/dead-worktree`)).toBe(false)
+    }, 360_000)
   })
 
-  describe('provisioning hand-off + ephemeralModulesPaths []', () => {
+  describe('provisioning hand-off + ephemeralModulesPaths [] + npmCache false', () => {
     it('a webapp create with a client id yields a real session of that id, and the provisioning row drops on hand-off', async () => {
-      // Doubles as the ephemeralModulesPaths:[] coverage — the project
-      // disables the node_modules redirect and we assert on the created pod
-      // after the hand-off completes.
+      // Doubles as the ephemeralModulesPaths:[] and npmCache:false coverage
+      // — the project disables both and we assert on the created pod after
+      // the hand-off completes. The cache exists, so what keeps this pod off
+      // it is the project's setting and nothing else.
+      await ensureNpmCache()
       await setupProject('no-ephemeral', {
-        yaacConfig: { ephemeralModulesPaths: [] },
+        yaacConfig: { ephemeralModulesPaths: [], npmCache: false },
       })
       const worktreeId = randomUUID()
 
@@ -1555,6 +1551,16 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await expect(execInJob(pod.jobName, [
         'test', '-e', '/workspace/node_modules',
       ])).rejects.toThrow()
+
+      // npmCache:false — pnpm stays on npmjs, and the cache is not even
+      // reachable: the pod carries no label its policies admit.
+      const { stdout: registry } = await execInJob(pod.jobName, ['pnpm', 'config', 'get', 'registry'])
+      expect(registry.trim()).toBe('https://registry.npmjs.org/')
+      const { stdout: dial } = await execInJob(pod.jobName, [
+        'sh', '-c',
+        `curl -s -o /dev/null -m 5 -w '%{http_code}' http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/-/ping || true`,
+      ])
+      expect(dial.trim()).toBe('000')
     }, 240_000)
   })
 

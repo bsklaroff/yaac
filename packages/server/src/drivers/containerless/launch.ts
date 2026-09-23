@@ -188,18 +188,18 @@ async function realizeMount(
   if (mountPath === '/workspace' || mountPath === '/repo/.git') return 'nothing-to-do'
 
   // A mount INTO the checkout is skipped rather than linked. Under a pod
-  // these redirect `node_modules` and cache volumes onto storage that is
-  // not the pod's ephemeral disk, and git never sees them because they are
-  // mounts. A symlink is not a mount: git reports it as an untracked file
-  // (so it lands in the review diff, and `git add -A` commits an absolute
-  // host path), and the ephemeral-modules guard — which exists to stop a
+  // these redirect cache volumes onto storage that is not the pod's
+  // ephemeral disk, and git never sees them because they are mounts. A
+  // symlink is not a mount: git reports it as an untracked file (so it
+  // lands in the review diff, and `git add -A` commits an absolute host
+  // path), and the ephemeral-modules guard — which exists to stop a
   // committed `foo -> /anywhere` becoming a host-side mkdir — trips on the
   // driver's own link, which made a stopped worktree unrestartable.
   //
   // Nothing is lost that this substrate needs: the checkout is on the
-  // host's own disk, so `node_modules` living in it is exactly where a
-  // developer would put it. What is lost is the per-worktree module cache,
-  // which was a pod-storage optimization.
+  // host's own disk, so a cache living in it is exactly where a developer
+  // would put it. (`moduleDirs` never arrive as mounts at all, and stay in
+  // the checkout for the same reason.)
   if (mountPath.startsWith('/workspace/')
     || mountPath.startsWith(`${paths.workspaceDir}/`)) return 'in-workspace'
 
@@ -314,7 +314,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   if (inWorkspace > 0) {
     serverLog(
       `[server] containerless ${spec.workspaceId}: left ${String(inWorkspace)} path(s) `
-      + 'in the checkout rather than redirecting them (node_modules, cache volumes)',
+      + 'in the checkout rather than redirecting them (cache volumes)',
     )
   }
   if (nested > 0) {

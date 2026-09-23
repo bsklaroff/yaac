@@ -140,6 +140,7 @@ function makeDeps(
       ?? vi.fn().mockResolvedValue('yaac-registry.yaac.svc.cluster.local:5000'),
     ensureBuilderGuard: overrides.ensureBuilderGuard ?? vi.fn().mockResolvedValue(undefined),
     ensureNetd: overrides.ensureNetd ?? vi.fn().mockResolvedValue(undefined),
+    ensureNpmCache: overrides.ensureNpmCache ?? vi.fn().mockResolvedValue(undefined),
     buildImages: overrides.buildImages ?? vi.fn().mockResolvedValue(undefined),
     ensureGvisorRuntime: overrides.ensureGvisorRuntime ?? vi.fn().mockResolvedValue(undefined),
     ensurePriorityClasses: overrides.ensurePriorityClasses ?? vi.fn().mockResolvedValue(undefined),
@@ -352,6 +353,18 @@ function calicoReads(rest: (p: string) => string | null) {
 }
 
 describe('runClusterInstall', () => {
+  // Worktrees install from npmjs without it, so a cache that will not come
+  // up is a note, not a failed install.
+  it('finishes the install when the npm cache cannot be deployed', async () => {
+    const log = vi.fn()
+    const deps = makeDeps({
+      run: freshRun(), log, ensureNpmCache: vi.fn().mockRejectedValue(new Error('claim Pending')),
+    })
+    await expect(runClusterInstall({}, deps)).resolves.toBe(true)
+    expect(deps.deployServer).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the npm cache (claim Pending)'))
+  })
+
   it('creates the cluster and installs everything on a host that has none', async () => {
     const deps = makeDeps({ run: freshRun() })
     const ok = await runClusterInstall({}, deps)
@@ -403,6 +416,14 @@ describe('runClusterInstall', () => {
     expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(deps.check).mock.invocationCallOrder[0])
     expect(createCall?.[2]?.env?.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
+
+    // The npm cache, once its image is mirrored and before the server whose
+    // worktrees install through it.
+    expect(deps.ensureNpmCache).toHaveBeenCalledOnce()
+    expect(vi.mocked(deps.ensureNpmCache).mock.invocationCallOrder[0])
+      .toBeGreaterThan(vi.mocked(deps.buildImages).mock.invocationCallOrder[0])
+    expect(vi.mocked(deps.ensureNpmCache).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
 
     // Calico applied from the verified manifest, then rolled out and the
     // node waited Ready (nodes cannot go Ready before the CNI is up).

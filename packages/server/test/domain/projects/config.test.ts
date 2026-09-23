@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { ephemeralModulesSlotKey, resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
+import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { setDataDir, projectConfigDir } from '@yaac/shared/project-paths'
 import type { YaacConfig } from '@yaac/shared/types'
 
@@ -251,6 +251,14 @@ describe('resolveProjectConfig', () => {
     })
   })
 
+  describe('npmCache', () => {
+    it('round-trips the boolean and rejects anything else', async () => {
+      expect(await roundTrip({ npmCache: false })).toEqual({ npmCache: false })
+      expect(await roundTrip({ npmCache: true })).toEqual({ npmCache: true })
+      await expect(roundTrip({ npmCache: 'off' })).rejects.toThrow('npmCache must be a boolean')
+    })
+  })
+
   describe('nestedContainers', () => {
     it('round-trips the boolean', async () => {
       expect(await roundTrip({ nestedContainers: true })).toEqual({ nestedContainers: true })
@@ -388,16 +396,5 @@ describe('resolveEphemeralModulesPaths', () => {
   it('returns a fresh array each call (not a shared reference)', () => {
     resolveEphemeralModulesPaths({}).push('mutated')
     expect(resolveEphemeralModulesPaths({})).toEqual(['node_modules'])
-  })
-})
-
-describe('ephemeralModulesSlotKey', () => {
-  it('maps "node_modules" to "root"', () => {
-    expect(ephemeralModulesSlotKey('node_modules')).toBe('root')
-  })
-
-  it('collapses slashes to underscores for nested paths', () => {
-    expect(ephemeralModulesSlotKey('packages/web/node_modules')).toBe('packages_web_node_modules')
-    expect(ephemeralModulesSlotKey('apps/api/node_modules')).toBe('apps_api_node_modules')
   })
 })

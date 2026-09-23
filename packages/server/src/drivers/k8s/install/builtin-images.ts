@@ -27,6 +27,8 @@ import {
   REGISTRY_UPSTREAM_IMAGE,
   resolveNetdImageTag,
   resolveProxyImageTag,
+  VERDACCIO_MIRROR_TAG,
+  VERDACCIO_UPSTREAM_IMAGE,
 } from '#drivers/k8s/cluster'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
@@ -146,17 +148,18 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<s
 /**
  * Mirror every digest-pinned upstream yaac runs: the per-project
  * registries' `registry:2`, netd's Envoy sidecar, the sandboxed builder
- * pods' podman, and the gVisor installer's curl.
+ * pods' podman, the gVisor installer's curl, and the npm cache's Verdaccio.
  *
  * Exported because the e2e global setup needs exactly this set and nothing
  * else of an install — its own images are test-prefixed builds, but these
- * four are the same digests either way.
+ * are the same digests either way.
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG)
   await mirrorPinnedImage(ENVOY_UPSTREAM_IMAGE, ENVOY_MIRROR_TAG)
   await mirrorPinnedImage(BUILDER_UPSTREAM_IMAGE, BUILDER_LOCAL_TAG)
   await mirrorPinnedImage(GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG)
+  await mirrorPinnedImage(VERDACCIO_UPSTREAM_IMAGE, VERDACCIO_MIRROR_TAG)
 }
 
 /**

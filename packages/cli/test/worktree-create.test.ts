@@ -170,7 +170,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
 vi.mock('@yaac/server/domain/projects/config', () => ({
   resolveProjectConfig: vi.fn().mockResolvedValue({}),
   resolveEphemeralModulesPaths: () => [],
-  ephemeralModulesSlotKey: (p: string) => (p === 'node_modules' ? 'root' : p.replace(/\//g, '_')),
 } satisfies Partial<typeof projectConfigModule>))
 
 // The project's environment: rows, so the create asks for them rather than
