@@ -436,18 +436,11 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
     throw new SetupInputError(err)
   }
 
-  // Re-point the worktree's git plumbing at in-workspace paths and lock it
-  // against `git worktree prune` — one exec (see buildWorktreeLinkExec).
-  //
-  // Skipped when the workspace sees the checkout at the very path the host
-  // `git worktree add` wrote into it: there is nothing to re-point, and the
-  // rewrite would be actively wrong, replacing correct host paths with
-  // themselves-via-a-different-route only if they happened to agree. The
-  // `locked` file that half of it writes is not lost — `addWorktree` writes
-  // it host-side for every driver.
-  if (paths.workspaceDir !== worktreeDir(projectSlug, worktreeId)) {
-    await runtime.exec(jobName, buildWorktreeLinkExec(worktreeId, paths))
-  }
+  // Re-point the worktree's git plumbing at this substrate's view and lock
+  // it against `git worktree prune` — one exec (see buildWorktreeLinkExec).
+  // Run on every launch, on every driver: a checkout last started under the
+  // other substrate carries that one's paths.
+  await runtime.exec(jobName, buildWorktreeLinkExec(worktreeId, paths))
 
   // Fresh worktree: set the worktree branch's upstream from inside the pod
   // (virtiofs cache coherence — see buildUpstreamExec), serialized against

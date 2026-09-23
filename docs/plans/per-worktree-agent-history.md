@@ -231,22 +231,6 @@ wrote the file. Only a *resume* needs the converge step.
 - Stop keeps everything. `project remove` takes `history/` with the project
   dir.
 
-## Found while reading: switching may already break git
-
-Checked in a live k8s worktree: `buildWorktreeLinkExec` runs in the pod, but
-`/workspace` and `/repo/.git` are read-write hostPath mounts, so its rewrite
-lands in the data dir. The checkout's `.git` holds
-`gitdir: /repo/.git/worktrees/<id>` and the admin dir's `gitdir` holds
-`/workspace/.git`, both paths that exist only inside a pod. The server's own
-git calls don't care, because they pass `--git-dir`/`--work-tree` explicitly
-(`listCheckoutFiles`). But the agent's git in a containerless workspace reads
-`.git`. A containerless restart skips the rewrite (the checkout is already at
-its host path), and neither `restart.ts` nor the containerless driver
-rewrites the pointers back, so git in that worktree would fail on the host.
-Not yet reproduced with an actual switch. The fix is planned separately in
-`docs/plans/driver-switch-git-pointers.md`. It is independent of history and
-can land first.
-
 ## Verify against the pinned binaries before building
 
 claude and codex are unpinned in the image (`Dockerfile.tools`), so each point

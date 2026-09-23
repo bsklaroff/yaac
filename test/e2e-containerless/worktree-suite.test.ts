@@ -1149,13 +1149,32 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   // checkout is still there", which is exactly where the defect hid: the
   // driver's own node_modules symlink tripped the ephemeral-modules guard,
   // so every stopped worktree was permanently unrestartable.
+  //
+  // Restarted from the pointers a k8s launch leaves in the data dir, so it
+  // also pins the switch k8s → containerless: the checkout's `.git` and its
+  // admin `gitdir` name pod paths that exist nowhere on this host, and the
+  // launch has to point them back or the agent's git dies in its checkout.
   it('restarts the stopped worktree back onto a live tmux server', async () => {
+    const repoGit = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
+    const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId)
+    const admin = path.join(repoGit, 'worktrees', worktreeId)
+    await fs.writeFile(path.join(checkout, '.git'), `gitdir: /repo/.git/worktrees/${worktreeId}\n`)
+    await fs.writeFile(path.join(admin, 'gitdir'), '/workspace/.git\n')
+
     const { stdout, stderr, exitCode } = await runYaac(
       serverEnv, 'worktree', 'restart', worktreeId,
     )
     expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
     const windows = await tmux(worktreeId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
+
+    expect((await fs.readFile(path.join(checkout, '.git'), 'utf8')).trim())
+      .toBe(`gitdir: ${admin}`)
+    expect((await fs.readFile(path.join(admin, 'gitdir'), 'utf8')).trim())
+      .toBe(path.join(checkout, '.git'))
+    // Host git in the checkout is exactly what the agent runs.
+    await expect(execFileAsync('git', ['-C', checkout, 'status', '--porcelain']))
+      .resolves.toBeDefined()
     await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
   }, 180_000)
 })

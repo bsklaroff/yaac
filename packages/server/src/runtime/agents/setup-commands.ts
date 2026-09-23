@@ -23,20 +23,22 @@ import type { WorkspacePaths } from '#drivers/contract'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /**
- * Re-point the fresh worktree's git plumbing at in-container paths, then
- * lock it — one exec:
+ * Re-point the worktree's git plumbing at the launching substrate's view of
+ * it, then lock it — one exec, run in the workspace on every launch:
  *
- *  - The host-side `git worktree add` wrote host paths into the `.git`
- *    file and the admin dir's `gitdir`; inside the pod those must be
- *    /workspace and /repo/.git/worktrees/<id>.
+ *  - The `.git` file and the admin dir's `gitdir` are absolute paths saved
+ *    in the data dir, written in whichever view last launched the checkout.
+ *    Under k8s they must be /workspace and /repo/.git/worktrees/<id>; under
+ *    containerless they are the host paths. Rewriting them every launch is
+ *    what lets a stopped worktree restart on the other substrate.
  *  - The lock file keeps `git worktree prune` from ever reaping the
- *    worktree: its gitdir points at /workspace — valid only inside its own
- *    pod — so from the host, or any other pod sharing the /repo mount, it
- *    looks "prunable". A single prune would otherwise wipe every session's
- *    admin dir at once, breaking git in all live sessions. The lock file
- *    is checked before the prunable test, so prune skips it. Worktrees are
- *    never `git worktree remove`d (teardown rm -rf's the dirs), so the
- *    lock needs no clearing.
+ *    worktree: under k8s its gitdir points at /workspace — valid only
+ *    inside its own pod — so from the host, or any other pod sharing the
+ *    /repo mount, it looks "prunable". A single prune would otherwise wipe
+ *    every session's admin dir at once, breaking git in all live sessions.
+ *    The lock file is checked before the prunable test, so prune skips it.
+ *    Worktrees are never `git worktree remove`d (teardown rm -rf's the
+ *    dirs), so the lock needs no clearing.
  */
 export function buildWorktreeLinkExec(worktreeId: string, paths: WorkspacePaths): string {
   const admin = `${paths.repoGitDir}/worktrees/${worktreeId}`
