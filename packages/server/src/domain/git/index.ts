@@ -1,16 +1,10 @@
-// The public interface of git: the server's process boundary onto the
-// `simple-git` dependency. Three parts — `transport.ts` turns a resolved
-// credential into a runnable git invocation, `agent.ts` is the ssh-agent that
-// invocation signs through, `repo.ts` runs the operations against a
-// project's clone and the worktrees cut from it.
-//
-// Not yet the ONLY boundary, and worth saying so rather than implying
-// otherwise: `domain/worktrees/prewarm.ts` (one `revparse`) and
-// `domain/skills/discover.ts` (`ls-tree` / `show` against a ref) still drive
-// simple-git themselves. Both are one-off reads with no credential in them,
-// both predate this folder, and neither breaks a layer rule — every one of
-// them is in domain. Absorbing them means naming two more verbs here, which
-// is a follow-up rather than a reason to leave the boundary undescribed.
+// The public interface of git: the server's only process boundary onto
+// git. Four parts — `transport.ts` turns a resolved credential into a
+// runnable git invocation, `agent.ts` is the ssh-agent that invocation signs
+// through, `repo.ts` runs the operations against a project's clone and the
+// worktrees cut from it, and `run.ts` is how every one of them starts git
+// without letting it read the pod-writable config (docs/server-git.md) —
+// public only for the startup sweep of its scratch.
 //
 // A domain module rather than a lower layer for two reasons: nothing under
 // `src/runtime` runs git (a driver mounts a checkout, it does not make one),
@@ -29,6 +23,7 @@ export {
   type ResolvedGitCredential,
 } from './transport'
 export { startGitSshAgent, stopGitSshAgent } from './agent'
+export { clearGitScratch } from './run'
 export {
   addWorktree,
   cloneRepo,
@@ -36,7 +31,9 @@ export {
   getDefaultBranch,
   listCheckoutFiles,
   listRemoteBranches,
-  originRemoteUrl,
+  listTreeSubdirs,
+  readBlobAt,
   remoteBranchExists,
+  resolveRemoteRef,
   worktreeUpstreamBranch,
 } from './repo'

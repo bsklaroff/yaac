@@ -507,17 +507,18 @@ cannot be enforced on top of them.
   the pod-side resolver and the upgrade handlers. **Fix first, before any
   owner lookup** — an owner check keyed off a fuzzy resolve targets the
   wrong row.
-- **`/repo/.git` is mounted read-write and is a server-host escape today.**
-  Any worktree can write `hooks/`, `config` (`core.hooksPath`,
-  `core.fsmonitor`, `core.pager`), or `refs/remotes/origin/*`; the server
-  then runs `simple-git` against `repoDir(slug)` (fetch, default branch,
-  skills `ls-tree`, diffs) with `process.env` spread wholesale and runs
-  those hooks **on the host** — under `k8s`, inside the server pod. Nothing
-  server-side pins `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` or
-  `core.hooksPath` (only the containerless *worktree* launcher does, for
-  the worktree's own env). Harden regardless of tenancy: pin them on all
-  server-side git, and prefer mounting `/repo/.git` read-only with only
-  per-worktree `worktrees/<id>` writable.
+- **`/repo/.git` is mounted read-write, so a worktree can point the
+  server's git at other projects' files.** The server's git no longer runs
+  anything a pod wrote into `/repo/.git`: hooks, filters and fsmonitor
+  never reach it, and fetches use the project row's URL
+  (docs/server-git.md). What remains is links. A worktree can plant
+  symlinked directories, `objects/info/alternates` or a linked
+  `packed-refs`, and the server's git follows them. That lets it write ref
+  files and reflog lines outside the project, and read, or check out,
+  another project's repository. This matters more once tenants share a
+  server. Fix: mount `/repo/.git` read-only with only per-worktree
+  `worktrees/<id>` writable, or confine the server's git to the one
+  repository.
 - **`.cached-packages` lets one worktree write another's live
   `node_modules`.** The whole per-project pnpm store is mounted RW and the
   per-worktree ephemeral module backings live *inside* it

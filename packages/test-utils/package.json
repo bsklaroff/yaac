@@ -15,7 +15,6 @@
     "@yaac/server": "workspace:*",
     "@yaac/shared": "workspace:*",
     "hono": "catalog:",
-    "simple-git": "catalog:",
     "tsx": "catalog:",
     "ws": "catalog:"
   },

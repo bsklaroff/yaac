@@ -38,7 +38,7 @@ import {
   CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { loadKnownHostsEntryForHost, parseGitRemote, projectRemoteUrl, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -52,7 +52,6 @@ import {
   fetchOrigin,
   getDefaultBranch,
   isGitAuthError,
-  originRemoteUrl,
   remoteBranchExists,
   writeKnownHostsFile,
 } from '#domain/git'
@@ -826,10 +825,7 @@ export async function createWorktree(
 
   // Resolve the git credential (HTTPS token or SSH key) for this project's
   // remote URL and parse the remote so we know the scheme and host.
-  const remoteUrl = await originRemoteUrl(repo)
-  if (!remoteUrl) {
-    throw new ServerError('VALIDATION', 'could not determine remote URL for this project.')
-  }
+  const remoteUrl = await projectRemoteUrl(projectSlug)
   const parsedRemote = parseGitRemote(remoteUrl)
   const credential = await resolveCredentialForUrl(remoteUrl)
   if (!credential) {
@@ -1054,7 +1050,7 @@ export async function createWorktree(
     if (!testEnv.e2eSkipFetch) {
       emit('Fetching latest from remote...', options)
       try {
-        await fetchOrigin(repo, credential)
+        await fetchOrigin(repo, remoteUrl, credential)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         if (isGitAuthError(msg)) {

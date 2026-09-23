@@ -31,19 +31,16 @@ vi.mock('#runtime/status/liveness', () => ({
 vi.mock('#domain/git', () => ({
   fetchOrigin: vi.fn(),
   getDefaultBranch: vi.fn(),
-  // The value simple-git's mock used to answer for this, now that the
-  // `get-url origin` read has a verb of its own.
-  originRemoteUrl: vi.fn().mockResolvedValue('https://example.com/p.git'),
   remoteBranchExists: vi.fn(),
+  // Constructed with its answer, which survives the suite's resetAllMocks.
+  resolveRemoteRef: vi.fn(() => Promise.resolve('cafebabe1234')),
   worktreeUpstreamBranch: vi.fn(),
 }))
 vi.mock('#domain/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
 vi.mock('#domain/projects/credentials', () => ({ resolveCredentialForUrl: vi.fn() }))
-vi.mock('simple-git', () => ({
-  default: vi.fn(() => ({
-    remote: vi.fn().mockResolvedValue('https://example.com/p.git\n'),
-    revparse: vi.fn().mockResolvedValue('cafebabe1234\n'),
-  })),
+vi.mock('#domain/projects/detail', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  projectRemoteUrl: vi.fn(() => Promise.resolve('https://example.com/p.git')),
 }))
 
 import {

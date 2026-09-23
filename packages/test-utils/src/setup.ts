@@ -3,7 +3,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import simpleGit from 'simple-git'
 // Test infrastructure: re-exported below so tests can ASSERT against the
 // install root. Not a storage path — tests that write pick a tier helper.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
@@ -22,6 +21,7 @@ import { PROXY_APP_NAME, PROXY_PORT } from '@yaac/server/drivers/k8s/substrate/p
 import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
 import { e2eMkdtemp, removeScratchTree } from '#tmp'
+import { git } from '#git'
 
 const execFileAsync = promisify(execFile)
 
@@ -219,15 +219,14 @@ export async function cleanupTempDir(dir: string): Promise<void> {
  */
 export async function createTestRepo(dir: string): Promise<string> {
   await fs.mkdir(dir, { recursive: true })
-  const git = simpleGit(dir)
-  await git.init()
-  await git.addConfig('user.email', 'test@test.com')
-  await git.addConfig('user.name', 'Test')
+  await git(dir, ['init'])
+  await git(dir, ['config', 'user.email', 'test@test.com'])
+  await git(dir, ['config', 'user.name', 'Test'])
 
   await fs.writeFile(path.join(dir, 'README.md'), '# Test repo\n')
 
-  await git.add('.')
-  await git.commit('initial commit')
+  await git(dir, ['add', '.'])
+  await git(dir, ['commit', '-m', 'initial commit'])
 
   return dir
 }
@@ -296,8 +295,17 @@ export async function requireCluster(): Promise<void> {
 /**
  * Add a local test repo as a yaac project, bypassing URL validation and
  * token resolution (which only apply to real GitHub URLs).
+ *
+ * `remoteUrl` is what the project row records — the remote every create
+ * parses and resolves a credential for. It defaults to the local path the
+ * clone came from; a suite that needs a create to get past that parse
+ * names a URL-shaped remote here, which nothing dials under
+ * YAAC_E2E_SKIP_FETCH.
  */
-export async function addTestProject(localRepoPath: string): Promise<void> {
+export async function addTestProject(
+  localRepoPath: string,
+  opts: { remoteUrl?: string } = {},
+): Promise<void> {
   const slug = path.basename(localRepoPath)
   const dir = projectDir(slug)
   await fs.mkdir(dir, { recursive: true })
@@ -306,7 +314,7 @@ export async function addTestProject(localRepoPath: string): Promise<void> {
 
   const meta: ProjectMeta = {
     slug,
-    remoteUrl: localRepoPath,
+    remoteUrl: opts.remoteUrl ?? localRepoPath,
     addedAt: new Date().toISOString(),
   }
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta, null, 2) + '\n')

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import simpleGit from 'simple-git'
+import { git } from '@yaac/test-utils/git'
 import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/domain/git'
 import { listWorktreePods, isPrewarmed } from '@yaac/server/drivers/k8s/substrate/pods'
 import { listActiveWorktrees } from '@yaac/server/domain/worktrees/list'
@@ -92,7 +92,7 @@ describe('yaac prewarmed sessions', () => {
 
     await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir, null)
     const fakeRemote = 'https://github.com/test-org/repo-demo.git'
-    await simpleGit(repoDir).remote(['set-url', 'origin', fakeRemote])
+    await git(repoDir, ['remote', 'set-url', 'origin', fakeRemote])
     await fs.writeFile(
       path.join(projectDir, 'project.json'),
       JSON.stringify({ slug: 'repo-demo', remoteUrl: fakeRemote, addedAt: new Date().toISOString() }) + '\n',

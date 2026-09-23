@@ -11,7 +11,6 @@
     "@yaac/server": "workspace:*",
     "@yaac/shared": "workspace:*",
     "commander": "catalog:",
-    "simple-git": "catalog:",
     "ws": "catalog:"
   },
   "devDependencies": {

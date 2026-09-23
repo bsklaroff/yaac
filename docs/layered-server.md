@@ -147,8 +147,8 @@ speak alone.
   seeding and the in-pod hook's session-starts log), `projects/` (a project
   whole — which exist, from rows, and what each one holds on disk: the
   clone's branches, the two config layers, git credentials, dockerfiles and
-  build files), `git/` (the `simple-git` process boundary, domain's the
-  way kubectl is the driver's), `images/` (one verb: a build retry, which
+  build files), `git/` (domain's process boundary onto git, the way
+  kubectl is the driver's; see docs/server-git.md), `images/` (one verb: a build retry, which
   hands the runtime the project-config reader it may not fetch),
   `titles/`, `auth/`, `skills/`, and `reconcile.ts` — the ordered step list
   one pass runs.

@@ -63,9 +63,9 @@ export function isGitAuthError(message: string): boolean {
 // When Tor is enabled on the server process, route the git subprocess
 // through the user's host-machine Tor (assumed already running at
 // YAAC_HOST_TOR_SOCKS_URL, default socks5h://127.0.0.1:9050). Returns
-// undefined when the toggle is off so simple-git uses its default env.
+// undefined when the toggle is off so git inherits the server's env.
 //
-// simple-git's `.env(obj)` replaces the child's env wholesale, so we must
+// `runGit` takes a given env as the child's whole env, so we must
 // spread process.env to preserve PATH, HOME, etc.
 export function torEnv(): NodeJS.ProcessEnv | undefined {
   if (!env.useTor) return undefined
@@ -96,7 +96,7 @@ async function contentKeyedFile(dir: string, suffix: string, content: string): P
 }
 
 /**
- * The environment for `simpleGit.env(...)` under a credential.
+ * The environment for `runGit` under a credential.
  *
  * For ssh, two PUBLIC files are written for the command to name: the host
  * key (so an unknown host fails here rather than being trusted on first

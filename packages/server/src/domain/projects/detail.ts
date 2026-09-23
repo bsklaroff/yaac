@@ -33,6 +33,15 @@ export async function assertProjectExists(slug: string): Promise<void> {
 }
 
 /**
+ * The project's remote, as its row records it — the only source for a URL
+ * the server fetches from or picks a credential by. The clone's own
+ * `remote.origin.url` is written by pods, so it is never read back.
+ */
+export async function projectRemoteUrl(slug: string): Promise<string> {
+  return (await loadProjectMeta(slug)).remoteUrl
+}
+
+/**
  * Resolve the project's config from the per-machine config directory.
  * Mirrors `resolveProjectConfig` but throws NOT_FOUND when the project
  * itself is unknown (the server route relies on this).

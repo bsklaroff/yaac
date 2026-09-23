@@ -255,9 +255,7 @@ export default tseslint.config(
             // module import @kubernetes/client-node — and lib is imported by
             // every layer, so that one edge would put the cluster client back
             // into the module graph of mediators the contract just got it out
-            // of. It is also what keeps the stage-7 answer for `platform/git.ts`
-            // honest: git wraps the `simple-git` dep, so lib is not a legal
-            // home for it and the rule says so rather than the plan alone.
+            // of.
             {
               regex: '^(?!node:|@yaac/shared)[@a-zA-Z]',
               message: 'src/lib takes no third-party dependency: node builtins and @yaac/shared only (docs/layered-server.md).',

@@ -372,15 +372,11 @@ beforeAll(async () => {
   await runYaac(serverEnv, 'auth', 'fake', 'github')
 
   repoPath = await createTestRepo(path.join(testEnv.scratchDir, SLUG))
-  await addTestProject(repoPath)
-  // The clone's origin is the local path it came from, which create refuses
-  // to parse as a remote. Point it at a plausible GitHub URL — nothing ever
-  // dials it (YAAC_E2E_SKIP_FETCH), and the fake github credential above is
-  // what resolves for it.
-  await execFileAsync('git', [
-    '-C', path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo'),
-    'remote', 'set-url', 'origin', `https://github.com/test/${SLUG}.git`,
-  ])
+  // The row's remote is what a create parses and resolves a credential for,
+  // and a local path is refused as a remote. A plausible GitHub URL instead
+  // — nothing ever dials it (YAAC_E2E_SKIP_FETCH), and the fake github
+  // credential above is what resolves for it.
+  await addTestProject(repoPath, { remoteUrl: `https://github.com/test/${SLUG}.git` })
 })
 
 afterAll(async () => {
@@ -1048,6 +1044,52 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       })
     } finally {
       await runYaac(serverEnv, 'worktree', 'stop', second)
+    }
+  }, 120_000)
+
+  it('creates a worktree without running what another worktree planted in the shared repo', async () => {
+    // Every worktree can write the project's shared `.git`. Here that crosses
+    // no boundary, but the server's checkout is the same code the k8s server
+    // runs against a pod-writable repo (docs/server-git.md), so this is where
+    // it is cheap to prove end to end: a filter driver every path selects and
+    // hooks in a pinned hooks dir, each of which would leave a marker, and
+    // the checkout still lands as committed.
+    const gitDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
+    const markers = path.join(testEnv.scratchDir, 'planted-markers')
+    const hooks = path.join(testEnv.scratchDir, 'planted-hooks')
+    const evil = path.join(testEnv.scratchDir, 'planted.sh')
+    await fs.mkdir(markers, { recursive: true })
+    await fs.mkdir(hooks, { recursive: true })
+    await fs.writeFile(evil, `#!/bin/sh\ntouch "${markers}/$1"\ncat\n`)
+    await fs.chmod(evil, 0o755)
+    for (const hook of ['post-checkout', 'reference-transaction']) {
+      await fs.writeFile(path.join(hooks, hook), `#!/bin/sh\n"${evil}" ${hook} </dev/null\n`)
+      await fs.chmod(path.join(hooks, hook), 0o755)
+    }
+    const configPath = path.join(gitDir, 'config')
+    const attributesPath = path.join(gitDir, 'info', 'attributes')
+    const configBefore = await fs.readFile(configPath, 'utf8')
+    for (const [key, value] of [
+      ['filter.planted.smudge', `"${evil}" smudge`],
+      ['filter.planted.clean', `"${evil}" clean`],
+      ['core.hooksPath', hooks],
+    ]) {
+      await execFileAsync('git', ['--git-dir', gitDir, 'config', key, value])
+    }
+    await fs.mkdir(path.dirname(attributesPath), { recursive: true })
+    await fs.writeFile(attributesPath, '* filter=planted\n')
+
+    let id: string | undefined
+    try {
+      id = await createWorktree()
+      const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', id)
+      expect(await fs.readFile(path.join(checkout, 'README.md'), 'utf8')).toBe('# Test repo\n')
+      expect(await fs.readdir(markers)).toEqual([])
+    } finally {
+      // Planted state would reach every later case's git in this project.
+      await fs.writeFile(configPath, configBefore)
+      await fs.rm(attributesPath, { force: true })
+      if (id !== undefined) await runYaac(serverEnv, 'worktree', 'stop', id)
     }
   }, 120_000)
 
