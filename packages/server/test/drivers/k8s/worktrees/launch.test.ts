@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PRE_STOP_GRACE_SECONDS } from '#drivers/k8s/substrate'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 
 // Mocked at the process boundary: kubectl is the only way a launch reaches
@@ -64,8 +65,24 @@ vi.mock('node:fs/promises', () => ({
 import type * as priorityClassesModule from '#drivers/k8s/substrate/priority-classes'
 import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
 import type * as clusterModule from '#drivers/k8s/cluster'
-import { launchWorkspace, prepareWorkspaceSubstrate } from '#drivers/k8s/worktrees/launch'
+import { launchWorkspace, prepareWorkspaceSubstrate,
+} from '#drivers/k8s/worktrees/launch'
 import type { WorkspaceSpec, WorkspaceSubstrate } from '#drivers/contract'
+import path from 'node:path'
+import { setDataDir } from '@yaac/shared/paths'
+import {
+  cachedPackagesDir,
+  imageStoreDir,
+  projectDir,
+  secretKeyPath,
+  worktreeDir,
+  worktreeSessionStartsPath,
+} from '@yaac/shared/project-paths'
+
+// Mount sources are resolved from the tier a path lives under, so the
+// spec's paths have to be REAL tier paths of some data dir.
+setDataDir('/data/yaac')
+const NODE_ROOT = '/var/lib/yaac/node/ddh0123456789abc'
 
 const INTENT = {
   projectSlug: 'proj',
@@ -89,7 +106,7 @@ function specOf(
     prewarm: false,
     image: 'localhost:5000/img:tag',
     env: ['CALLER_SAID=yes'],
-    mounts: [{ source: { kind: 'hostPath', path: '/w' }, mountPath: '/workspace' }],
+    mounts: [{ source: { kind: 'hostPath', path: worktreeDir('proj', 's1') }, mountPath: '/workspace' }],
     resources: {
       memoryRequestBytes: 1, memoryLimitBytes: 2,
       cpuRequestMillis: 3, cpuLimitMillis: 4,
@@ -109,13 +126,19 @@ interface JobManifest {
     template: {
       metadata: { labels: Record<string, string> }
       spec: {
+        terminationGracePeriodSeconds?: number
+        initContainers?: Array<{ name: string; command: string[]; volumeMounts: Array<{ mountPath: string }> }>
         containers: Array<{
           image: string
           env: Array<{ name: string; value: string }>
-          lifecycle?: { postStart?: { exec?: { command: string[] } } }
-          volumeMounts: Array<{ mountPath: string; readOnly?: boolean }>
+          lifecycle?: { postStart?: { exec?: { command: string[] } }; preStop?: { exec?: { command: string[] } } }
+          volumeMounts: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>
         }>
-        volumes: Array<{ hostPath?: { path: string; type: string } }>
+        volumes: Array<{
+          name: string
+          hostPath?: { path: string; type: string }
+          persistentVolumeClaim?: { claimName: string }
+        }>
       }
     }
   }
@@ -198,7 +221,7 @@ describe('prepareWorkspaceSubstrate', () => {
 
   it('gives a nested workspace the project registry and this node\'s image store', async () => {
     mockStoreMount.mockResolvedValue({
-      source: { kind: 'hostPath', path: '/var/lib/yaac/store/gen-7' },
+      source: { kind: 'hostPath', path: path.join(imageStoreDir('proj'), 'gen-7'), type: 'Directory' },
       mountPath: '/var/lib/shared-images',
       readOnly: true,
     })
@@ -211,9 +234,11 @@ describe('prepareWorkspaceSubstrate', () => {
     // generation is already pinned by the mount above.
     expect(mockEnsureStore).toHaveBeenCalledWith('proj')
     const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
-    expect(mounts).toContainEqual(
-      expect.objectContaining({ mountPath: '/var/lib/shared-images', readOnly: true }),
-    )
+    const store = mounts.find((m) => m.mountPath === '/var/lib/shared-images')
+    expect(store).toMatchObject({ readOnly: true })
+    // A node-local path, resolved onto the pod's own node tree.
+    expect(appliedJob().spec.template.spec.volumes.find((v) => v.name === store?.name)?.hostPath)
+      .toEqual({ path: `${NODE_ROOT}/shared-images/proj/gen-7`, type: 'Directory' })
     // Plain HTTP registry: the in-pod engine needs the drop-in to pull it.
     expect(containerEnv().YAAC_REGISTRY_CONF_B64).toEqual(expect.any(String))
     // And the engine is announced on the POD, not just the Job: the image
@@ -281,7 +306,7 @@ describe('launchWorkspace', () => {
   it('routes an SSH workspace through the tunnel sentinel, with no key in the pod', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(substrate, {
-      ssh: { knownHostsFile: '/data/proj/known_hosts' },
+      ssh: { knownHostsFile: path.join(projectDir('proj'), 'known_hosts') },
     }))
 
     const env = containerEnv()
@@ -301,7 +326,7 @@ describe('launchWorkspace', () => {
     // The retry loop hands the SAME spec back after a failed attempt. If the
     // injections appended to it, the second pod would carry two of each.
     const substrate = await prepareWorkspaceSubstrate(INTENT)
-    const spec = specOf(substrate, { ssh: { knownHostsFile: '/data/known_hosts' } })
+    const spec = specOf(substrate, { ssh: { knownHostsFile: path.join(projectDir('proj'), 'known_hosts') } })
 
     await launchWorkspace(spec)
     const first = appliedJob().spec.template.spec.containers[0].env
@@ -322,6 +347,64 @@ describe('launchWorkspace', () => {
     expect(mockEnsurePriorityClasses).toHaveBeenCalled()
     expect(mockEnsurePriorityClasses.mock.invocationCallOrder[0])
       .toBeLessThan(mockApply.mock.invocationCallOrder[0])
+  })
+
+  it('resolves every mount from its tier: global subPaths, node paths, the init container, and no hostPath under the data dir', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    await launchWorkspace(specOf(substrate, {
+      mounts: [
+        { source: { kind: 'hostPath', path: worktreeDir('proj', 's1') }, mountPath: '/workspace' },
+        {
+          source: { kind: 'hostPath', path: worktreeSessionStartsPath('proj', 's1'), type: 'File' },
+          mountPath: '/home/yaac/.yaac/session-starts.jsonl',
+        },
+        { source: { kind: 'hostPath', path: cachedPackagesDir('proj') }, mountPath: '/home/yaac/.cached-packages' },
+        {
+          source: { kind: 'hostPath', path: path.join(cachedPackagesDir('proj'), 'modules', 's1', 'node_modules') },
+          mountPath: '/workspace/node_modules',
+        },
+        { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
+      ],
+      preStopExec: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'],
+    }))
+
+    const pod = appliedJob().spec.template.spec
+    const byMount = Object.fromEntries(pod.containers[0].volumeMounts.map((m) => [m.mountPath, m]))
+    const volume = (name: string) => pod.volumes.find((v) => v.name === name)
+    // GLOBAL: subPaths of the one claim, a File included.
+    expect(volume(byMount['/workspace'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
+    expect(byMount['/workspace'].subPath).toBe('projects/proj/worktrees/s1')
+    expect(byMount['/home/yaac/.yaac/session-starts.jsonl'].subPath).toBe('projects/proj/meta/s1.session-starts.jsonl')
+    // NODE-LOCAL: the pod's own node tree.
+    expect(volume(byMount['/home/yaac/.cached-packages'].name)?.hostPath)
+      .toEqual({ path: `${NODE_ROOT}/projects/proj/.cached-packages`, type: 'DirectoryOrCreate' })
+    // Nothing under the data dir by hostPath any more.
+    for (const v of pod.volumes) {
+      expect(v.hostPath?.path.startsWith('/data/yaac')).not.toBe(true)
+    }
+    // The init container names exactly the node-local dirs, and the preStop
+    // hook rides the spec through.
+    const [init] = pod.initContainers ?? []
+    expect(init?.name).toBe('node-dirs')
+    expect(init?.command.slice(-2)).toEqual([
+      '/node/projects/proj/.cached-packages',
+      '/node/projects/proj/.cached-packages/modules/s1/node_modules',
+    ])
+    expect(volume('node-root')?.hostPath).toEqual({ path: NODE_ROOT, type: 'DirectoryOrCreate' })
+    // ...and a grace period sized for the hook, not for a bare SIGTERM.
+    expect(pod.terminationGracePeriodSeconds).toBe(PRE_STOP_GRACE_SECONDS)
+    expect(pod.containers[0].lifecycle?.preStop).toEqual({
+      exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] },
+    })
+  })
+
+  it('rejects a server-local mount before anything is applied', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    mockApply.mockClear()
+    await expect(launchWorkspace(specOf(substrate, {
+      mounts: [{ source: { kind: 'hostPath', path: secretKeyPath() }, mountPath: '/x' }],
+    }))).rejects.toThrow(/SERVER-LOCAL/)
+    expect(mockApply).not.toHaveBeenCalled()
   })
 
   it('passes the caller\'s resources and post-start entry through untouched', async () => {

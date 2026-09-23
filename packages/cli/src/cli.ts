@@ -268,7 +268,7 @@ server
 
 server
   .command('logs')
-  .description('Print the server log (~/.yaac/server.log)')
+  .description('Print the server log (~/.yaac/server-local/server.log)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
   .action(async (options: { follow?: boolean; lines?: number }) => {
@@ -504,7 +504,7 @@ config
 
 config
   .command('edit-user-dockerfile')
-  .description('Open the global ~/.yaac/Dockerfile.user in $EDITOR')
+  .description('Open the global ~/.yaac/server-local/build/Dockerfile.user in $EDITOR')
   .action(configEditUserDockerfile)
 
 // Top-level, not under `worktree`: with no session named it forwards for

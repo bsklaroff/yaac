@@ -7,9 +7,8 @@ install`, reached from the host at a fixed loopback origin.
 The move exists so that server and worktree pods can be given the *same*
 storage. A host process beside the cluster can only ever share a
 filesystem with its pods by way of hostPath and the node==host assumption;
-a pod can mount a claim. Everything below is the process, network and
-lifecycle half of that — storage is deliberately untouched here (see
-"Storage is still hostPath").
+a pod can mount a claim, and this one mounts two (see "Storage is two
+claims").
 
 ## What is deployed
 
@@ -31,18 +30,24 @@ lifecycle half of that — storage is deliberately untouched here (see
    `--tailnet` — and, on kind, the forwarder that fronts it (see
    "Reachability"). Before the Deployment, because the origin the fronting
    publishes is an input to the Deployment's environment.
-4. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
-   priority, plain runc, `runAsUser` = the installing host's uid, and
-   `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY` stating whatever the fronting
-   says about its origin, unioned with what the install shell carried.
+4. **The two storage claims** and, on kind, the static volumes behind
+   them — applied before the Deployment that mounts them, and only after
+   the server that is there has been stopped and the data dir moved into
+   the tier layout (see "Storage is two claims").
+5. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
+   priority, plain runc, `runAsUser` = the installing host's uid, three
+   mounts (the two claims and the node's own node-local tree) named by the
+   three root variables, and `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`
+   stating whatever the fronting says about its origin, unioned with what
+   the install shell carried.
 
 Then it waits for the published origin to report ready and registers the
 server: `server.json` gets that origin, a durable token, and `k8s` as what
 this data dir runs. The token is minted with the lock secret, and the lock
 is read by asking the **pod** (`kubectl exec … cat .server.lock`) rather
 than the host's disk: on kind the host could still open it through the
-hostPath, on a cloud cluster the data dir is not on the CLI machine at all,
-and one path serves both. The registration itself is not install's own — it
+volume's hostPath, on a cloud cluster the data dir is not on the CLI
+machine at all, and one path serves both. The registration itself is not install's own — it
 is the same `registerServer` `yaac server start` calls for a host process,
 because a client reaches either server the same way
 (docs/server-selection.md).
@@ -354,8 +359,11 @@ supplies is what a pod cannot read for itself — a reachable origin (the
 forward's local port is what the returned lock reports, never the port the
 pod binds), a durable token in `server.json`, RBAC in that namespace, the
 node half of the ingress wall (a port-forward is a CRI-side dial that never
-traverses policy, so no fronting and no fronting half), and a mount wide
-enough to cover the file's scratch tree.
+traverses policy, so no fronting and no fronting half), the claim pair for
+the file's namespace with static volumes into the file's own data dir, and
+one mount an install never has: the file's scratch base at its own
+absolute path, because the source repos tests `project add` and the
+mock-remote stores are siblings of the data dir rather than inside a tier.
 
 Three consequences worth knowing when reading a failure there:
 
@@ -366,9 +374,12 @@ Three consequences worth knowing when reading a failure there:
   origin `yaac server start|restart` waits on. Without that, those verbs
   could not be exercised at all.
 - The server's ClusterRole and ClusterRoleBinding are namespace-suffixed
-  (`yaac-server-<namespace>`), like netd's, so the real install and every
-  concurrent test file own their own. They do not cascade when a namespace
-  is deleted, so the suite sweeps them by their install-namespace label.
+  (`yaac-server-<namespace>`), like netd's, and the two PersistentVolumes
+  are named by the file's data-dir hash, so the real install and every
+  concurrent test file own their own. None of them cascades when a
+  namespace is deleted, so the per-file teardown and the global sweep
+  delete them by their install-namespace label — which touches no bytes,
+  the volumes being `Retain`.
 - A test asks a POD things with `kubectl exec`, never through the stream
   relay or the proxy's control API — both of those are Service dials that
   answer for a pod of the install namespace and for nothing on the host. A
@@ -376,21 +387,75 @@ Three consequences worth knowing when reading a failure there:
   `ProxyClient` a forwarded origin instead; one that needs a fact from
   inside a workspace runs the command there.
 
-## Storage is still hostPath
+## Storage is two claims
 
-The pod mounts the real data dir, by hostPath, at its own absolute path.
-kind binds `$HOME` into every node, so this resolves to the same bytes the
-host process wrote, and `dataDirHash()`, every existing hostPath mount and
-the worktree-pod view of the world are byte-identical either side of the
-move. The proxy mounts nothing at all: what it needs it is handed as
-objects (docs/worktree-egress.md "What the proxy is told, and how"), so
-`.credentials/` is the server's alone. Splitting the tiers onto claims is
-docs/plans/cloud-k8s.md; nothing above the driver learns anything either
-way.
+The data dir has three tier folders on every substrate — `global/`,
+`server-local/` and `node-local/`, and nothing else of yaac's at its root
+(the legend in `packages/shared/src/paths.ts`). The pod sees them as three
+mounts at fixed pod paths, which the Deployment names in three variables:
+
+| Tier | Host folder | Pod mount | Variable | Backing on kind |
+|---|---|---|---|---|
+| GLOBAL | `<dataDir>/global` | `/yaac/global` | `YAAC_GLOBAL_ROOT` | PVC `yaac-global` (RWX) → PV `yaac-global-<hash>` → hostPath `<dataDir>/global` |
+| SERVER-LOCAL | `<dataDir>/server-local` | `/yaac/server-local` | `YAAC_SERVER_LOCAL_ROOT` | PVC `yaac-server-local` (RWO) → PV `yaac-server-local-<hash>` → hostPath `<dataDir>/server-local` |
+| NODE-LOCAL | `<dataDir>/node-local` | `/yaac/node-local` | `YAAC_NODE_LOCAL_ROOT` | hostPath `/var/lib/yaac/node/<hash>` on the node, which a kind extraMount binds to `<dataDir>/node-local` |
+
+`YAAC_DATA_DIR` keeps naming the host's data dir inside the pod. It is an
+identity string there and a directory only on the host: `dataDirHash()`,
+every label, the registry claim name and the cookie name hash it, so none
+of them change across the storage boundary. The path helpers resolve into
+the three roots, and the roots are what the Deployment re-points — a host
+process never sets the variables, so under containerless the split is
+inert (three folders of one directory, no volume machinery).
+
+NODE-LOCAL is the tier nothing durable lives in: per project, the pnpm
+store and the per-worktree module dirs under it, the image-store
+generations (docs/nested-containers.md), and each opencode worktree's
+working copy (docs/worktree-storage.md "opencode"). On a multi-node
+cluster those bytes are on whichever node the worktree ran on, so the
+server never reads or writes them from its own filesystem: a pod's init
+container creates and chowns what the pod mounts, a node-side writer pod
+fills the image store, and `reapNodeLocal` runs one root pod per node to
+remove what no live worktree owns.
+
+The claims are **named**, and the volumes are **hashed**. A claim is
+namespaced and belongs to one install, so `yaac-global` is the same name
+in every install namespace; a PersistentVolume is cluster-scoped and one
+cluster hosts more than one install (the real one, and every e2e
+namespace), so its name carries the install hash and its `claimRef` pins
+it to its own namespace's claim. Both volumes are `Retain` with an empty
+storage class, which is what makes the pair static: no provisioner, and a
+claim or namespace delete never touches the hostPath. `kind delete` takes
+the objects with the cluster and leaves the bytes under `~/.yaac`, so
+`yaac cluster delete` keeps its promise of touching none of them.
+Kubernetes enforces no access mode on a hostPath, so the same claim spec
+is what a cloud backend binds through a real RWX class.
+
+Worktree pods mount **subPaths** of `yaac-global`, never the claim whole,
+and never the server's claim at all: the k8s driver resolves each declared
+mount from the tier root its path lives under (`resolveMountSource`), a
+GLOBAL path becoming a claim subPath, a NODE-LOCAL one the matching path
+under the node's own tree, and a SERVER-LOCAL one a thrown error. A `File`
+mount is a subPath to that file, which is why every global file a pod
+mounts must exist before its Job is applied — kubelet creates a missing
+subPath as a root-owned directory. The node-local directories a pod
+mounts are chowned to the pod's identity on its node by its own init
+container, as root, because hostPath ignores `fsGroup` and kubelet has
+already created each one root-owned before the init container runs.
+
+`yaac cluster install` applies the pair after stopping the server that is
+there and moving the data dir into the tier layout, in that order: the
+old pod holds PGlite open by path, and renaming `db/` under a running
+server is a stranded database. An older data dir is moved once, by a
+rename per row (docs/legacy-compat-shims.md, `migrateDataDirLayout`).
+
+The proxy mounts nothing at all: what it needs it is handed as objects
+(docs/worktree-egress.md "What the proxy is told, and how"), so
+`.credentials/` is the server's alone.
 
 ## Client state lives beside the data dir, not in it
 
-The pod mounts the data dir, so anything inside it is something the pod can
+The pod mounts the tiers, so anything inside them is something the pod can
 see and the pod's uid owns. Several files there were never the server's:
 `server.json` (which origin this machine's clients dial, and which kind of
 install this is), the auth daemon's lock and its `login-*` scratch, and the
@@ -404,7 +469,9 @@ rooted at `<dataDir>-client` — `~/.yaac` pairs with `~/.yaac-client`. A
 sibling rather than a subdirectory, because a subdirectory of the data dir is
 by definition inside what the pod mounts; derived from the data dir rather
 than a fixed per-user path, so `YAAC_DATA_DIR` isolation carries for free and
-one install's clients never read another's remote.
+one install's clients never read another's remote. The data dir root itself
+holds only the three tier folders, so there is no fourth place for a
+client file to end up.
 
 Two consequences worth stating:
 

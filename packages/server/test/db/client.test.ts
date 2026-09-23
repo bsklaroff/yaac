@@ -44,7 +44,7 @@ describe('openDb', () => {
     // Before any getDb() — the handle opens lazily, so asserting the dir
     // only after one would hold for a no-op openDb too. What this pins is
     // that the call itself opened and migrated.
-    const stat = await fs.stat(path.join(getDataDir(), 'db'))
+    const stat = await fs.stat(path.join(getDataDir(), 'server-local', 'db'))
     expect(stat.isDirectory()).toBe(true)
     expect(stat.mode & 0o777).toBe(0o700)
     const db = await getDb()

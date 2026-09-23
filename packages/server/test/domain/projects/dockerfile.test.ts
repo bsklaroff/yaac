@@ -15,7 +15,7 @@ const slug = 'demo'
 const projectDockerfilePath = (): string =>
   path.join(projectConfigDir(slug), 'build', PROJECT_DOCKERFILE)
 const userDockerfilePath = (): string =>
-  path.join(getDataDir(), 'build', USER_DOCKERFILE)
+  path.join(getDataDir(), 'server-local', 'build', USER_DOCKERFILE)
 
 let tmpDir: string
 

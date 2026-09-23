@@ -21,6 +21,7 @@ import {
   claudeDir,
   claudeJsonFile,
   codexDir,
+  opencodeCheckpointDir,
   opencodeConfigDir,
   opencodeDataDir,
   piDir,
@@ -32,6 +33,8 @@ import {
 } from '@yaac/shared/project-paths'
 import {
   CONTAINER_ACP_LOG_DIR,
+  CONTAINER_OPENCODE_CHECKPOINT,
+  CONTAINER_OPENCODE_DATA,
   CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
@@ -86,6 +89,7 @@ import {
 } from '#domain/skills'
 import { deleteWorktreeState } from './cleanup'
 import {
+  OPENCODE_CHECKPOINT_SCRIPT,
   WORKTREE_INIT_SCRIPT,
   worktreeBinDir,
   worktreeBinMounts,
@@ -1094,20 +1098,29 @@ export async function createWorktree(
     await adoptLegacyClaudeJson(claudeJsonFile(projectSlug), claudeJson)
     const codex = codexDir(projectSlug)
     const opencodeData = opencodeDataDir(projectSlug, worktreeId)
+    const opencodeCheckpoint = opencodeCheckpointDir(projectSlug, worktreeId)
     const opencodeConfig = opencodeConfigDir(projectSlug)
     const pi = piDir(projectSlug)
     const cachedPackages = cachedPackagesDir(projectSlug)
 
+    // The GLOBAL dirs the pod mounts, created here so they exist before
+    // the Job is applied: a global mount is a subPath of the claim, and a
+    // subPath that is missing when the pod starts is created root-owned by
+    // the kubelet. The NODE-LOCAL ones (`opencodeData`, `cachedPackages`)
+    // are deliberately NOT made here — they live on the worktree's node,
+    // which the server's filesystem may not reach; the driver creates
+    // them where the pod lands (the k8s init container, the containerless
+    // link).
     await fs.mkdir(claude, { recursive: true })
     await fs.mkdir(codex, { recursive: true })
-    // Per-yaac-session opencode data dir (sqlite DB + sessions). Per-session
-    // isolation sidesteps opencode upstream #5241 concurrent-write issues.
-    await fs.mkdir(opencodeData, { recursive: true })
     await fs.mkdir(opencodeConfig, { recursive: true })
+    // The GLOBAL checkpoint of this worktree's opencode history: what a
+    // pod restores its working copy from and checkpoints back into, and
+    // what a containerless workspace opens outright.
+    await fs.mkdir(opencodeCheckpoint, { recursive: true })
     // Per-project pi home (mounted at PI_CONTAINER_HOME); pi creates the
     // agent/worktrees subdir under it on first run.
     await fs.mkdir(pi, { recursive: true })
-    await fs.mkdir(cachedPackages, { recursive: true })
     // One worktree's ACP conversation records, written by acpd inside the pod
     // and read by the server from here — including after the pod is gone,
     // which is why they sit under the project rather than the worktree dir
@@ -1137,7 +1150,7 @@ export async function createWorktree(
           `No SSH known_hosts entry for ${parsedRemote.host}. Run "yaac auth update" to register one.`,
         )
       }
-      // SHARED: written under the project dir by the server, read in-pod.
+      // GLOBAL: written under the project dir by the server, read in-pod.
       sshKnownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
       await writeKnownHostsFile([knownHostsEntry], sshKnownHostsFile)
     }
@@ -1241,7 +1254,7 @@ export async function createWorktree(
     return {
       toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
-      claude, codex, opencodeData, opencodeConfig, pi,
+      claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
       cachedPackages, acpLogs, sessionStarts,
     }
   })()
@@ -1250,7 +1263,7 @@ export async function createWorktree(
   const {
     toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
-    claude, codex, opencodeData, opencodeConfig, pi,
+    claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
     cachedPackages, acpLogs, sessionStarts,
   } = prep
 
@@ -1446,20 +1459,36 @@ export async function createWorktree(
   env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(projectSlug, worktreeId, forwardedPorts)}`)
   if (nestedContainers) env.push('YAAC_NESTED_ENGINE=1')
 
-  // Every mount declares its SOURCE, not just a host path — the seam the
-  // cloud backend needs (docs/plans/cloud-k8s.md). What
-  // drives each choice is the storage tier the path already declares in
-  // project-paths.ts, so this list invents no second classification:
-  //   SHARED     — the server and the worktree pod must see the same bytes.
-  //                hostPath here (one node, one filesystem); a subPath of
-  //                the RWX claim once the tiers become different volumes.
-  //   NODE-LOCAL — never has to leave the node it was written on. hostPath
-  //                here too; node disk on a multi-node cluster.
+  // Every mount is a DECLARATION against a tier helper's host path, and
+  // the driver realizes each tier its own way: the k8s driver resolves a
+  // GLOBAL path into a subPath of the `yaac-global` claim and a NODE-LOCAL
+  // one into the pod's own node tree (created by its init container), the
+  // containerless driver symlinks either. What drives each choice is the
+  // storage tier the path already declares in project-paths.ts, so this
+  // list invents no second classification:
+  //   GLOBAL     — the server and the worktree pod must see the same bytes.
+  //   NODE-LOCAL — never has to leave the node it was written on.
   //   emptyDir   — the subset of NODE-LOCAL that nothing outside the pod
   //                ever opens and nothing needs after it dies. Only the
   //                tmux socket dir qualifies today.
+  //
+  // opencode's data is the one place the list branches on the driver kind
+  // — WHETHER the working-copy feature applies, which is the one kind of
+  // branch the layering allows. Under a pod the tool works on a node-local
+  // copy of its history and checkpoints it to the global tier (SQLite is
+  // unusable on a network filesystem); a host process's disk is local, so a
+  // copy would be a copy of itself, and the workspace opens the checkpoint
+  // directly.
+  const opencodeMounts: WorkspaceMount[] = runtime.kind === 'containerless'
+    ? [{ source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_DATA }]
+    : [
+      // NODE-LOCAL: the working copy, restored by the init script.
+      { source: { kind: 'hostPath', path: opencodeData }, mountPath: CONTAINER_OPENCODE_DATA },
+      // GLOBAL: where the copy is checkpointed to.
+      { source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_CHECKPOINT },
+    ]
   const mounts: WorkspaceMount[] = [
-    // SHARED.
+    // GLOBAL.
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
     { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: '/repo/.git' },
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
@@ -1468,7 +1497,7 @@ export async function createWorktree(
     ...(acpLogs !== undefined
       ? [{ source: { kind: 'hostPath' as const, path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR }]
       : []),
-    // SHARED, and the one file the pod writes that the server reads back. A
+    // GLOBAL, and the one file the pod writes that the server reads back. A
     // `File` mount is safe here precisely because nothing ever renames it: a
     // rename would replace the inode the mount pins, and the pod would go on
     // writing to a file nobody reads.
@@ -1477,13 +1506,8 @@ export async function createWorktree(
       mountPath: CONTAINER_SESSION_STARTS_LOG,
     },
     { source: { kind: 'hostPath', path: codex }, mountPath: '/home/yaac/.codex' },
-    // NODE-LOCAL: opencode's sqlite DB — WAL is unusable on a network
-    // filesystem, and only this pod's node ever reads it.
-    {
-      source: { kind: 'hostPath', path: opencodeData },
-      mountPath: '/home/yaac/.local/share/opencode',
-    },
-    // SHARED.
+    ...opencodeMounts,
+    // GLOBAL.
     { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
     { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
     // NODE-LOCAL: the pnpm store hands out hardlinks, which can't cross a
@@ -1498,7 +1522,7 @@ export async function createWorktree(
     // `kubectl exec` inside this pod — so there is nothing to share and
     // nothing to keep once the pod is gone.
     { source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR },
-    // SHARED: the point of a cache volume is that the NEXT worktree gets the
+    // GLOBAL: the point of a cache volume is that the NEXT worktree gets the
     // warm cache, wherever it is scheduled.
     ...cacheVolumeEntries.map(([key, containerPath]): WorkspaceMount => ({
       source: { kind: 'hostPath', path: cacheVolumeDir(projectSlug, key) },
@@ -1509,7 +1533,7 @@ export async function createWorktree(
       source: { kind: 'hostPath', path: m.hostBacking },
       mountPath: m.containerPath,
     })),
-    // SHARED: server-staged trees (skills, worktree bin), written
+    // GLOBAL: server-staged trees (skills, worktree bin), written
     // host-side and read in-pod. The skills are mounted only where a mount
     // is what delivers them; `hostSkills` already put them on disk.
     ...(hostSkills ? [] : builtinSkillMounts(builtinSkillsStaging, builtinSkillNames)),
@@ -1545,6 +1569,13 @@ export async function createWorktree(
     // "ready" until it is done and no per-command round trips are paid.
     // Prewarmed spares take this same path.
     postStartExec: [`/usr/local/bin/${WORKTREE_INIT_SCRIPT}`],
+    // A pod checkpoints its opencode working copy on the way out and
+    // empties it, so a cleanly stopped worktree leaves nothing on its node
+    // (the script is a no-op for any other tool's pod). Not under
+    // containerless, which keeps no working copy.
+    ...(runtime.kind === 'containerless'
+      ? {}
+      : { preStopExec: [`/usr/local/bin/${OPENCODE_CHECKPOINT_SCRIPT}`, 'stop'] }),
     nestedContainers,
     ...(sshKnownHostsFile !== undefined ? { ssh: { knownHostsFile: sshKnownHostsFile } } : {}),
     ...(gitCredential !== undefined ? { gitCredential } : {}),

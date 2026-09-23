@@ -11,7 +11,7 @@ vi.mock('#domain/worktrees/cleanup', () => ({ cleanupWorktreeDetached: vi.fn() }
 
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
 import { purgeProjectBytes } from '#domain/worktrees'
-import { projectDir, projectRoots } from '@yaac/shared/project-paths'
+import { nodeLocalProjectPath, projectDir } from '@yaac/shared/project-paths'
 import type { RuntimeHandle } from '#drivers/contract'
 
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 async function writeProject(slug: string): Promise<void> {
-  for (const root of projectRoots(slug)) {
+  for (const root of [projectDir(slug), nodeLocalProjectPath(slug)]) {
     await fs.mkdir(path.join(root, 'repo'), { recursive: true })
   }
 }
@@ -50,7 +50,7 @@ function workspace(projectSlug: string, workspaceId: string): RuntimeHandle {
 }
 
 describe('purgeProjectBytes', () => {
-  it('tears down every live session, drops what the runtime holds, then both tier roots', async () => {
+  it('tears down every live session, drops what the runtime holds, then the global tree', async () => {
     await writeProject('demo')
     await writeProject('keeper')
     mockList.mockResolvedValue([workspace('demo', 'a'), workspace('demo', 'b')])
@@ -66,9 +66,10 @@ describe('purgeProjectBytes', () => {
     ])
     expect(mockDestroySubstrate).toHaveBeenCalledWith('demo')
 
-    for (const root of projectRoots('demo')) {
-      await expect(fs.access(root)).rejects.toThrow()
-    }
+    await expect(fs.access(projectDir('demo'))).rejects.toThrow()
+    // The node-local tree is the runtime's to remove — it lives on the
+    // node the worktrees ran on, which may not be this filesystem.
+    await expect(fs.access(nodeLocalProjectPath('demo'))).resolves.toBeUndefined()
     await expect(fs.access(projectDir('keeper'))).resolves.toBeUndefined()
   })
 

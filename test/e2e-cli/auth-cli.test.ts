@@ -49,7 +49,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
   })
 
   function credPath(file: string): string {
-    return path.join(testEnv.dataDir, '.credentials', file)
+    return path.join(testEnv.dataDir, 'server-local', '.credentials', file)
   }
 
   /**
@@ -60,7 +60,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
    * shift `auth clear` menu indexes.
    */
   async function resetCreds(): Promise<string> {
-    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.rm(credsDir, { recursive: true, force: true })
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     return credsDir
@@ -306,7 +306,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(stdout).toContain('Removed git credential for pattern "github.com/acme/*"')
 
       const raw = await fs.readFile(
-        path.join(testEnv.dataDir, '.credentials', 'github.json'), 'utf8',
+        path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json'), 'utf8',
       )
       expect(JSON.parse(raw)).toEqual({
         tokens: [{ kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_token_yy' }],
@@ -326,7 +326,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(stdout).toContain('All credentials removed.')
 
       const raw = await fs.readFile(
-        path.join(testEnv.dataDir, '.credentials', 'github.json'), 'utf8',
+        path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json'), 'utf8',
       )
       expect(JSON.parse(raw)).toEqual({ tokens: [] })
     })
@@ -344,7 +344,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
 
       // Nothing removed.
       const raw = await fs.readFile(
-        path.join(testEnv.dataDir, '.credentials', 'github.json'), 'utf8',
+        path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json'), 'utf8',
       )
       const parsed = JSON.parse(raw) as { tokens: unknown[] }
       expect(parsed.tokens).toHaveLength(1)
@@ -384,7 +384,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Credential saved for pattern "github.com/acme/*"')
 
-      const credsPath = path.join(testEnv.dataDir, '.credentials', 'github.json')
+      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json')
       const raw = await fs.readFile(credsPath, 'utf8')
       expect(JSON.parse(raw)).toEqual({
         tokens: [{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_test_token_xyz' }],
@@ -456,7 +456,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Claude Code credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, '.credentials', 'claude.json')
+      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json')
       const raw = await fs.readFile(credsPath, 'utf8')
       const parsed = JSON.parse(raw) as { kind: string; claudeAiOauth?: typeof bundle }
       expect(parsed.kind).toBe('oauth')
@@ -472,7 +472,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('OpenCode credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, '.credentials', 'opencode.json')
+      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'opencode.json')
       const raw = await fs.readFile(credsPath, 'utf8')
       const parsed = JSON.parse(raw) as {
         kind: string; apiKey?: string; savedAt?: string; provider?: string
@@ -495,7 +495,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('OpenCode credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, '.credentials', 'opencode.json')
+      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'opencode.json')
       const raw = await fs.readFile(credsPath, 'utf8')
       const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; provider?: string }
       expect(parsed.kind).toBe('api-key')
@@ -512,7 +512,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Pi credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, '.credentials', 'pi.json')
+      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'pi.json')
       const raw = await fs.readFile(credsPath, 'utf8')
       const parsed = JSON.parse(raw) as {
         kind: string; apiKey?: string; savedAt?: string; provider?: string
@@ -533,7 +533,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Pi credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, '.credentials', 'pi.json')
+      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'pi.json')
       const raw = await fs.readFile(credsPath, 'utf8')
       const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; provider?: string }
       expect(parsed.kind).toBe('api-key')

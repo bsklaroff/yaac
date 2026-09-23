@@ -41,3 +41,12 @@ export {
   startClusterServer,
   stopClusterServer,
 } from './server-deploy'
+export {
+  buildGlobalPvManifest,
+  buildGlobalPvcManifest,
+  buildServerLocalPvManifest,
+  buildServerLocalPvcManifest,
+  deleteStorageVolumes,
+  ensureStorageClaims,
+  storageVolumeName,
+} from './storage'

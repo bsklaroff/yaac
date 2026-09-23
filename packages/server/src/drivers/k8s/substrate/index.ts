@@ -44,6 +44,12 @@ export {
   kubectlGetJson,
   kubectlWithRetry,
 } from './kubectl'
+export {
+  nodeLocalDirsOf,
+  nodeLocalHostPath,
+  nodeLocalNodePath,
+  resolveMountSource,
+} from './mount-sources'
 export { k8sWorkspacePaths } from './workspace-paths'
 export { invalidatePortForward, resolvePortForward } from './port-forward'
 export type { ForwardAddr, PortForwardSpec } from './port-forward'
@@ -57,6 +63,7 @@ export {
   NESTED_GRAPHROOT_VOLUME,
   SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
+  PRE_STOP_GRACE_SECONDS,
   buildPodJobManifest,
   graphrootMountAnnotations,
   hostUidSecurityContext,
@@ -70,6 +77,15 @@ export {
 } from './priority-classes'
 export { waitForJobPodReady } from './pod-wait'
 export { PRIVILEGED_PSS_LABELS } from './pss'
+export {
+  GLOBAL_CLAIM_NAME,
+  LABEL_INSTALL_NAMESPACE,
+  NODE_LOCAL_NODE_ROOT,
+  POD_GLOBAL_ROOT,
+  POD_NODE_LOCAL_ROOT,
+  POD_SERVER_LOCAL_ROOT,
+  SERVER_LOCAL_CLAIM_NAME,
+} from './storage-constants'
 export {
   LABEL_DATA_DIR_HASH,
   LABEL_NESTED,

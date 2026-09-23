@@ -132,7 +132,7 @@ Discovery has one input the host cannot see for itself, and it is the only file
 in this story. Every tool with a host-mounted home runs a `SessionStart` hook
 (`worktree-bin/yaac-agent-links`, staged per worktree onto the workspace's PATH
 like the other worktree-bin scripts) which appends **one JSON line per firing**
-to `projects/<slug>/meta/<worktreeId>.session-starts.jsonl`, reached from the
+to `global/projects/<slug>/meta/<worktreeId>.session-starts.jsonl`, reached from the
 workspace at `$HOME/.yaac/session-starts.jsonl` — a mount under the k8s driver,
 a symlink under containerless. Writing through `$HOME` rather than an absolute
 path is what lets one script and one registered command serve both substrates,
@@ -150,8 +150,10 @@ outside the pod.
 
 **The pod appends and the server folds**, and that asymmetry is the whole
 design. The log is append-only and never renamed, which is what makes mounting
-it as a `File` hostPath safe — a rename would replace the inode the mount pins,
-and the pod would go on writing to a file nobody reads. Two writers doing two
+it as a subPath-to-file of the global claim safe — kubelet bind-mounts the
+file, so a rename would replace the inode the mount pins, and the pod would
+go on writing to a file nobody reads. It also has to exist before the Job is
+applied: a subPath that is missing is created as a root-owned directory. Two writers doing two
 read-modify-writes would lose one side's write, and coordinating them would mean
 a lock held across a hostPath mount from inside a gVisor sandbox. So nothing
 crosses the boundary but appended lines; the database is server-local and
@@ -216,6 +218,41 @@ data dir written by the 1.x line holds its history as JSON under `storage/`
 instead, which opencode 2 has no importer for: such a worktree resumes into a
 fresh, empty session (with an error toast from its own `--continue` lookup),
 and the JSON stays on disk untouched.
+
+### opencode
+
+SQLite is unusable on a network filesystem, so under `k8s` a pod runs opencode
+against a NODE-LOCAL working copy of its data dir
+(`node-local/projects/<slug>/opencode-data/<id>`, mounted at
+`~/.local/share/opencode`) and the GLOBAL tier holds the one durable copy: the
+checkpoint at `global/projects/<slug>/opencode-data/<id>`
+(`opencodeCheckpointDir`, mounted at `~/.yaac/opencode-checkpoint`).
+`yaac-opencode-checkpoint` (worktree-bin) copies the working copy into the
+checkpoint — the database through sqlite's backup API, which is consistent
+under a live writer, everything else file for file. `yaac-worktree-init` runs
+it every five minutes, and the pod runs it once more as its preStop hook with
+`stop`, which also empties the working copy, so a cleanly stopped worktree
+leaves nothing on its node; a crashed one leaves a copy the node-local sweep
+collects. A start restores from the checkpoint — it is the only source of
+truth, and whatever the node still held is discarded, never merged — with
+one exception: a surviving working copy whose database or WAL is newer than
+the checkpoint's is checkpointed first, so an unclean stop on a node that
+came back costs nothing. Where the node did not come back, the loss is
+bounded by the timer: at most five minutes of conversation. The plain-copy
+format is what makes a pre-split `opencode-data/<id>` directory a valid
+checkpoint with nothing to convert (docs/legacy-compat-shims.md); such a
+directory is one opencode wrote directly, so its `-wal` holds the newest
+transactions and is restored along with the database. The checkpoint script
+deletes those sidecars once a backup made through the live connection
+supersedes them.
+
+Two things make the hook run at all. The detached teardown's
+`kubectl delete job` is a waited foreground cascade, because the session dir
+it removes next is the source of the pod's File mounts — the hook's own
+script among them; and a pod with a preStop hook gets a grace period sized
+for a backup plus a copy (`PRE_STOP_GRACE_SECONDS`) rather than the few
+seconds a bare SIGTERM needs. Under `containerless` the checkpoint directory
+is the working copy itself, and none of this runs.
 
 `acp` needs none of this. The server *is* the ACP client, so `session/new` hands
 it the id directly and the live set carries it — the mode replaces a whole

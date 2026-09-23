@@ -34,12 +34,19 @@ Everything the earlier plans called "the keystone" has shipped on kind:
 - Both registries are in-cluster Deployments on RWO PVCs through the
   default StorageClass; the cross-session image cache travels through the
   per-project registry; builder pods are sandboxed and push to it.
-- The path layer is classified into SHARED / NODE-LOCAL / SERVER-LOCAL /
+- The path layer is classified into GLOBAL / NODE-LOCAL / SERVER-LOCAL /
   CLIENT-LOCAL tiers (`packages/shared/src/paths.ts`, one tier per helper in
-  `project-paths.ts`); CLIENT-LOCAL is already a separate directory. The
-  worktree mount list declares a source per mount, and the pod-spec renderer
-  already renders `hostPath | pvc+subPath | emptyDir`. Nothing selects
-  `pvc` yet.
+  `project-paths.ts`), and the three in-install tiers are three folders of
+  the data dir on every substrate. On kind the server pod mounts two
+  claims, `yaac-global` (RWX) and `yaac-server-local` (RWO), bound to
+  static hostPath volumes into those folders, plus the node's own
+  node-local tree; every worktree pod mounts subPaths of `yaac-global`,
+  resolved by the k8s driver from the tier a path declares, and its
+  node-local directories are created by its own init container
+  (docs/server-in-cluster.md "Storage is two claims"). The node-local
+  sweeps are per-node pods, opencode works on a node-local copy of a
+  global checkpoint, and `cluster check` proves the claim and the POSIX
+  semantics of what backs it.
 - Multi-node kind (`--nodes N`) exists, with per-node readiness gates.
 - Node tuning (the sysctls, `DefaultTasksMax`) is the gVisor installer
   DaemonSet's, applied on every node it lands on and re-applied after a
@@ -72,11 +79,11 @@ Everything the earlier plans called "the keystone" has shipped on kind:
   all-ext4 baseline of 0.5s). Sentry locks never reach the server, so
   single-writer discipline per file is the rule on the shared tier.
 
-What is NOT there: the tiers are still one directory, every mount is still
-a hostPath resolved through kind's `$HOME` extraMount, the built-in images
-bake the CLI machine's uid, and `--adopt-cni` deploys no server because
-nothing yet selects the tailnet fronting together with the storage and uid
-a foreign cluster needs. Those gaps are the whole of this plan.
+What is NOT there: `--adopt-cni` deploys no server, because nothing yet
+selects the tailnet fronting together with the StorageClass-backed claims
+a foreign cluster needs, and the static hostPath pair it applies today is
+wrong for anything but a kind rehearsal. That gap is the whole of this
+plan.
 
 ## Decisions
 
@@ -91,21 +98,25 @@ a foreign cluster needs. Those gaps are the whole of this plan.
   the check probes are identical. Every difference is a manifest install
   renders — which PersistentVolume backs a claim, what fronts the server's
   Service, which uid the images bake — never a branch in the driver.
-- **Storage is two named claims on every backend.** `yaac-shared` (RWX:
-  the `projects/` tree) and `yaac-server-state` (RWO: the PGlite DB, the
-  lock, logs, `.credentials/`, `build/`, `models/`, caches). The server
-  pod and every worktree pod mount subPaths of `yaac-shared`; only the
-  server mounts `yaac-server-state`; the proxy mounts neither. What differs per backend is the PV behind each
-  claim:
+- **Storage is two named claims on every backend.** `yaac-global` (RWX:
+  the `projects/` tree) and `yaac-server-local` (RWO: the PGlite DB, the
+  lock, logs, `.credentials/`, `build/`, `models/`). The server pod and
+  every worktree pod mount subPaths of `yaac-global`; only the server
+  mounts `yaac-server-local`; the proxy mounts neither. The data dir has
+  one layout on every substrate — three tier folders, `global/`,
+  `server-local/` and `node-local/`, and nothing else of yaac's at its root
+  — into which an older data dir is moved once, by a rename per row, at
+  the first host process that touches it (docs/legacy-compat-shims.md).
+  What differs per backend is the PV behind each claim:
   - **kind: static hostPath PVs into the data dir**, `reclaimPolicy:
-    Retain`, explicit `claimRef`. `yaac-shared` binds `<dataDir>` itself
-    and `yaac-server-state` binds `<dataDir>/server` — so the bytes stay on
-    the host's disk at the paths they occupy today, nothing under the data
-    dir is ever moved, and `yaac cluster delete` keeps its standing
-    promise of touching none of it. Kubernetes does not enforce access
-    modes on hostPath, so the RWX claim spec is the same one the cloud
-    backend uses. Multi-node kind keeps working because the extraMount
-    binds `$HOME` into every node and the PV path resolves on each.
+    Retain`, explicit `claimRef`. `yaac-global` binds `<dataDir>/global`
+    and `yaac-server-local` binds `<dataDir>/server-local` — so the bytes
+    stay on the host's disk under `~/.yaac`, and `yaac cluster delete`
+    keeps its standing promise of touching none of them. Kubernetes does
+    not enforce access modes on hostPath, so the RWX claim spec is the
+    same one the cloud backend uses. Multi-node kind keeps working because
+    the extraMount binds `$HOME` into every node and the PV path resolves
+    on each.
   - **byo: dynamically provisioned from named StorageClasses** — an
     NFS-family RWX class (csi-driver-nfs against an NFS server you run;
     EFS, Filestore and Azure Files NFS are the managed equivalents, all NFS
@@ -121,12 +132,12 @@ a foreign cluster needs. Those gaps are the whole of this plan.
   and **working copies of a checkpoint on the shared tier**. opencode's
   per-worktree SQLite is the second kind: SQLite is unusable on NFS (no
   WAL, a confirmed corruption issue), so the pod works on a node-local
-  copy and checkpoints it to `<shared>/projects/<slug>/opencode-data/<id>`
-  with `sqlite3 .backup` plus an atomic rename — on every stop, and on a
-  timer while running — and a start restores from the checkpoint when the
-  node-local copy is absent. The pod does both itself (the DB is in-pod
-  and has one writer), so the server learns nothing new; a node lost
-  mid-run costs at most one checkpoint interval of conversation.
+  copy and checkpoints it to `<global>/projects/<slug>/opencode-data/<id>`
+  on a timer and at stop, and a start restores from the checkpoint
+  (docs/worktree-storage.md "opencode" is the record of what ships). The
+  pod does both itself (the DB is in-pod and has one writer), so the
+  server learns nothing new; a node lost mid-run costs at most one
+  checkpoint interval of conversation.
 - **The NODE-LOCAL tier is node disk on both backends**: a hostPath at a
   fixed node path (`/var/lib/yaac/node/<dataDirHash>/…`,
   `DirectoryOrCreate`) with an init container doing `mkdir -p` + `chown`,
@@ -136,8 +147,8 @@ a foreign cluster needs. Those gaps are the whole of this plan.
   node's own disk, and a drained node costs a cold pnpm store and nothing
   else.
 - **The pod's tier roots are three mount points, and the install identity
-  is stamped, not derived.** `sharedRoot()`, `serverLocalRoot()` and
-  `nodeLocalRoot()` read `YAAC_SHARED_ROOT` / `YAAC_SERVER_LOCAL_ROOT` /
+  is stamped, not derived.** `globalRoot()`, `serverLocalRoot()` and
+  `nodeLocalRoot()` read `YAAC_GLOBAL_ROOT` / `YAAC_SERVER_LOCAL_ROOT` /
   `YAAC_NODE_LOCAL_ROOT` when set (the Deployment sets them; containerless
   never does, so the split is inert there). `dataDirHash()` — every pod
   label, the registry claim name, the cookie name — hashes `getDataDir()`,
@@ -215,40 +226,13 @@ on kind (single and `--nodes 3`) is the gate for every one of them, and the
 byo-on-kind tier described under step 6 joins that gate as soon as it
 exists.
 
-### 1. Storage: claims on kind, data dir untouched
+### 1. Storage: claims on kind — shipped
 
-- Install renders the two claims and, on kind, the two static hostPath PVs
-  (`Retain`, `claimRef`) into the data dir. The server Deployment mounts
-  them at three fixed pod paths and sets the three root env vars;
-  `YAAC_DATA_DIR` stays the host path. `serverLocalRoot` writers
-  (`db/`, the lock, `server.log`, `build/`, `models/`, caches) move under
-  `<dataDir>/server` on the host as part of this — a one-shot rename at
-  install time for an existing data dir, listed in
-  docs/legacy-compat-shims.md.
-- The k8s driver's mount-source resolution maps a path by the tier root it
-  lives under: under `sharedRoot` → `{pvc: yaac-shared, subPath}`, under
-  `nodeLocalRoot` → the node hostPath with the init container, `emptyDir`
-  unchanged. Prefix mapping is sound because the roots differ inside the
-  pod. The session-starts `File` mount becomes a subPath-to-file mount
-  (one appending writer; verify the never-renamed contract on NFS with the
-  spike's `append-race.sh`).
-- Server-side `mkdir`s of node-local dirs move into the init container;
-  the node-local sweeps (orphan modules GC, opencode-data cleanup) become
-  per-node one-shot pods on the node-write-pod pattern (`store-writer.ts`).
-- The opencode checkpoint/restore loop lands in the worktree init script,
-  with the shared checkpoint path added to `project-paths.ts` as SHARED
-  and the node-local dir re-documented as its working copy. An e2e case
-  stops an opencode worktree, deletes its node-local dir, restarts it and
-  resumes the conversation.
-- The e2e harness mounts a file's scratch as a subPath of a per-namespace
-  claim it renders (with a static PV into `testTmpBase()` on kind), the way
-  it already renders per-namespace RBAC.
-- `cluster check`: the hostPath nonce probe becomes an RWX write probe
-  through the claim; `volume-nodes` writes through the claim from each
-  node; `fsprobe.py`'s semantics chain and `coherence.sh` land from the
-  spike branch as gates, so a byo install's storage class is judged by the
-  same probes the spike used.
-- Gate: e2e green on kind, one node and three.
+docs/server-in-cluster.md "Storage is two claims" is the current-state
+reference; the one-shot layout migration and the lock fallback are in
+docs/legacy-compat-shims.md. What step 6 still owes storage is the byo
+half: StorageClass-backed claims in place of the static pair, and
+`storage-semantics` promoted from warn to fail.
 
 ### 2. Node tuning into the DaemonSet — shipped
 

@@ -543,7 +543,7 @@ describe('gcOrphanProjectRegistries', () => {
   })
 
   it('removes registries whose project dir is gone, keeps live ones', async () => {
-    await fs.mkdir(path.join(tmpDir, 'projects', 'alive'), { recursive: true })
+    await fs.mkdir(path.join(tmpDir, 'global', 'projects', 'alive'), { recursive: true })
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       const cidr = cidrRead(args)
       if (cidr) return cidr

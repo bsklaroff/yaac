@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { runtimeClassSpec } from './gvisor'
 import { priorityClassSpec } from './priority-classes'
 
@@ -151,15 +152,13 @@ export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrC
  * Where a worktree mount's bytes come from. The mount's container-side path
  * is fixed by the mount itself, never by the source, so re-sourcing a mount
  * is invisible inside the pod — which is the whole point: the storage tier
- * a path declares (SHARED / NODE-LOCAL, see packages/shared/src/paths.ts)
- * picks the source, and the pod spec is the only place that has to know.
+ * a path declares (GLOBAL / NODE-LOCAL, see packages/shared/src/paths.ts)
+ * picks the source (`resolveMountSource`), and the pod spec is the only
+ * place that has to render one.
  *
- *  - `hostPath` — what every tier renders as on the local backend, whose
- *    single node and server process share one filesystem.
- *  - `pvc` — a subPath of a claim: the RWX volume that carries the SHARED
- *    tier on a multi-node cluster, where the server pod and the worktree pod
- *    mount the same claim. Rendered here, but nothing selects it yet — the
- *    claims install provisions are docs/plans/cloud-k8s.md.
+ *  - `hostPath` — a NODE-LOCAL path, on the node's own disk.
+ *  - `pvc` — a subPath of a claim: the RWX `yaac-global` claim that carries
+ *    the GLOBAL tier, which the server pod and every worktree pod mount.
  *  - `emptyDir` — pod-local scratch: a NODE-LOCAL path that nothing outside
  *    the pod ever opens needs no node identity at all, so it never has to
  *    survive the pod or be found again. The tmux socket dir is the standing
@@ -307,6 +306,25 @@ export interface PodJobParams {
    * worktree-create's retry loop surfaces.
    */
   postStartExec?: string[]
+  /**
+   * preStop lifecycle hook command (argv), run before the container is
+   * signalled and bounded by the grace period: a hook that outruns it is
+   * killed, not waited on. Worktree pods checkpoint opencode's working
+   * copy here.
+   */
+  preStopExec?: string[]
+  /**
+   * NODE-LOCAL directories on the node this pod lands on, as node paths
+   * under `nodeLocalRoot`, for the `node-dirs` init container to create.
+   * hostPath ignores `fsGroup` and `DirectoryOrCreate` makes root-owned
+   * directories, so the pod creates them itself, as root, and chowns each
+   * one it made to the identity the pod runs as. Absent or empty renders
+   * no init container.
+   */
+  nodeLocalDirs?: string[]
+  /** The node root the init container mounts to create `nodeLocalDirs`
+   *  under; required when they are given. */
+  nodeLocalRoot?: string
   /** Matches the podman-era `container.stop({t: 5})` grace. */
   terminationGracePeriodSeconds?: number
 }
@@ -356,6 +374,16 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   // whose project has no SSH remote simply leave it empty.
   volumes.push({ name: 'ssh-agent', emptyDir: {} })
   volumeMounts.push({ name: 'ssh-agent', mountPath: SSH_AGENT_MOUNT })
+
+  const initContainers: Array<Record<string, unknown>> = []
+  if (p.nodeLocalDirs && p.nodeLocalDirs.length > 0) {
+    if (!p.nodeLocalRoot) throw new Error('nodeLocalDirs given without nodeLocalRoot')
+    volumes.push({
+      name: 'node-root',
+      hostPath: { path: p.nodeLocalRoot, type: 'DirectoryOrCreate' },
+    })
+    initContainers.push(nodeDirsInitContainer(p.image, p.nodeLocalRoot, p.nodeLocalDirs))
+  }
 
   if (p.nested) {
     // Per-worktree ROOTFUL graphroot: a disk emptyDir promoted to a
@@ -425,6 +453,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           // this resolver the only one.
           dnsPolicy: 'None',
           dnsConfig: { nameservers: [p.proxyHost] },
+          ...(initContainers.length > 0 ? { initContainers } : {}),
           containers: [
             {
               name: 'worktree',
@@ -435,8 +464,11 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
               workingDir: '/workspace',
               env: p.env.map(parseEnvEntry),
               volumeMounts,
-              ...(p.postStartExec ? {
-                lifecycle: { postStart: { exec: { command: p.postStartExec } } },
+              ...(p.postStartExec || p.preStopExec ? {
+                lifecycle: {
+                  ...(p.postStartExec ? { postStart: { exec: { command: p.postStartExec } } } : {}),
+                  ...(p.preStopExec ? { preStop: { exec: { command: p.preStopExec } } } : {}),
+                },
               } : {}),
               // Nested only: the in-sandbox capabilities the rootful engine
               // needs (NESTED_ENGINE_CAPS). Under the sentry they grant no
@@ -478,6 +510,77 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
         },
       },
     },
+  }
+}
+
+/** Where the init container sees the node root. */
+const NODE_ROOT_MOUNT = '/node'
+
+/**
+ * Grace period of a pod with a preStop hook (seconds): a budget for the
+ * hook (an opencode checkpoint — a SQLite backup plus a copy) rather than
+ * the few seconds a bare SIGTERM needs. The detached teardown's Job
+ * delete waits longer than this before it removes the pod's File-mount
+ * sources (worktrees/teardown.ts).
+ */
+export const PRE_STOP_GRACE_SECONDS = 60
+
+/**
+ * The `node-dirs` init container: the pod's own image, as root, under the
+ * pod's RuntimeClass like every other container of the pod — no extra
+ * image, no extra pull. It walks each NODE-LOCAL directory the mount
+ * list names one path component at a time, creating the component when
+ * it is missing and chowning it to the pod's own identity either way —
+ * never recursively, so a full pnpm store is never walked. The chown has
+ * to be unconditional: kubelet sets every volume up before any init
+ * container runs, so the leaf directory a `DirectoryOrCreate` hostPath
+ * names already exists, root-owned, by the time this container sees it.
+ * A component that is a symlink is removed and recreated as a directory:
+ * the tree is writable by every pod of the project, and a walk that
+ * followed a planted link would create and chown wherever it pointed.
+ *
+ * On kind the node root is host disk through the extraMount, and on macOS
+ * a chown through virtiofs is cosmetic; both are fine, because the host
+ * uid owns everything on that side anyway (docs/server-in-cluster.md "The
+ * uid everything runs as").
+ */
+function nodeDirsInitContainer(
+  image: string,
+  nodeRoot: string,
+  dirs: string[],
+): Record<string, unknown> {
+  const { runAsUser, runAsGroup } = hostUidSecurityContext()
+  const script = [
+    'set -e',
+    'for d in "$@"; do',
+    `  case "$d" in ${NODE_ROOT_MOUNT}/*) ;; *) echo "not under ${NODE_ROOT_MOUNT}: $d" >&2; exit 1;; esac`,
+    `  p=${NODE_ROOT_MOUNT}`,
+    `  rel=\${d#${NODE_ROOT_MOUNT}/}`,
+    '  oldifs=$IFS; IFS=/',
+    '  for seg in $rel; do',
+    '    IFS=$oldifs',
+    '    p="$p/$seg"',
+    // A link planted by an earlier pod (the tree is pod-writable) would
+    // redirect the mkdir and chown; remove it, never follow it.
+    '    if [ -L "$p" ]; then rm -f "$p"; fi',
+    '    [ -d "$p" ] || mkdir "$p"',
+    `    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`,
+    '    IFS=/',
+    '  done',
+    '  IFS=$oldifs',
+    'done',
+  ].join('\n')
+  return {
+    name: 'node-dirs',
+    image,
+    imagePullPolicy: 'IfNotPresent',
+    securityContext: { runAsUser: 0, runAsGroup: 0 },
+    command: [
+      'sh', '-c', `${script}
+`, '--',
+      ...dirs.map((d) => `${NODE_ROOT_MOUNT}/${path.posix.relative(nodeRoot, d)}`),
+    ],
+    volumeMounts: [{ name: 'node-root', mountPath: NODE_ROOT_MOUNT }],
   }
 }
 

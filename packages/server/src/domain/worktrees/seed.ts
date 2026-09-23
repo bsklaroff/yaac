@@ -166,20 +166,21 @@ async function mkdirMountTarget(worktreeDirPath: string, rel: string): Promise<v
 }
 
 /**
- * Resolve per-worktree ephemeral-module mount descriptors and ensure both
- * ends of each mount exist on the host before the Job is created.
+ * Resolve per-worktree ephemeral-module mount descriptors and ensure each
+ * mount's TARGET exists in the checkout before the Job is created.
  *
- * Each `rel` becomes a hostPath mount from
- * `<cachedPackages>/modules/<worktreeId>/<slotKey>` on host to
- * `/workspace/<rel>` inside the container. Keeping the backing dirs
- * under the same `.cached-packages` mount as the pnpm store preserves
- * hardlink affinity (same superblock → `link(2)` does not hit EXDEV).
+ * Each `rel` becomes a mount from `<cachedPackages>/modules/<worktreeId>/
+ * <slotKey>` — NODE-LOCAL, created on the worktree's node by the driver
+ * (the k8s init container), never from here — to `/workspace/<rel>`
+ * inside the container. Keeping the backing dirs under the same
+ * `.cached-packages` tree as the pnpm store preserves hardlink affinity
+ * (same superblock → `link(2)` does not hit EXDEV).
  *
- * The mount *target* is nested inside /workspace, which is a bind of the
- * host worktree dir — so unlike the backing dirs, it is a directory on the
- * worktree, and pre-creating it here is what keeps the pod's runtime from
- * creating it root-owned 0700 instead. It exists before the checkout runs,
- * which `addWorktree` is built to accept.
+ * The mount *target* is nested inside /workspace, which is the global
+ * checkout — so it is a directory on the worktree, and pre-creating it
+ * here is what keeps the pod's runtime from creating it root-owned 0700
+ * instead. It exists before the checkout runs, which `addWorktree` is
+ * built to accept.
  */
 export async function prepareEphemeralMounts(
   cachedPackages: string,
@@ -191,7 +192,6 @@ export async function prepareEphemeralMounts(
   for (const rel of relPaths) {
     const slot = ephemeralModulesSlotKey(rel)
     const hostBacking = path.join(cachedPackages, 'modules', worktreeId, slot)
-    await fs.mkdir(hostBacking, { recursive: true })
     await mkdirMountTarget(worktreeDirPath, rel)
     mounts.push({
       rel,

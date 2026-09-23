@@ -14,6 +14,7 @@ import { MAX_PORT_PROBES } from '@yaac/shared/server-port'
 import { serverLogPath } from '@yaac/shared/paths'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { addTestProject, createTestRepo } from '@yaac/test-utils/setup'
 
 /**
  * The server as a HOST PROCESS: binding, the lock file, `start`/`stop`/
@@ -69,7 +70,7 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true })
 
-    expect(serverLockPath()).toBe(path.join(testEnv.dataDir, '.server.lock'))
+    expect(serverLockPath()).toBe(path.join(testEnv.dataDir, 'server-local', '.server.lock'))
     const raw = await fs.readFile(serverLockPath(), 'utf8')
     expect(JSON.parse(raw)).toEqual(server.lock)
 
@@ -323,6 +324,104 @@ describe('yaac server logs (real CLI)', () => {
       child.kill('SIGINT')
       await new Promise<void>((resolve) => child.once('exit', () => resolve()))
     }
+  })
+})
+
+describe('the storage-tier layout migration (real CLI, old layout rebuilt by hand)', () => {
+  let testEnv: YaacTestEnv
+
+  beforeEach(async () => {
+    testEnv = await createYaacTestEnv()
+  })
+
+  afterEach(async () => {
+    await killServerByLock()
+    await testEnv.cleanup()
+  })
+
+  /** Put a data dir the current build wrote back into the pre-split shape:
+   *  every tier at the root, the way an older install left it. */
+  async function rebuildOldLayout(dataDir: string): Promise<void> {
+    const moves: Array<[string[], string[]]> = [
+      [['global', 'projects'], ['projects']],
+      [['server-local', 'db'], ['db']],
+      [['server-local', 'secret.key'], ['secret.key']],
+      [['server-local', '.credentials'], ['.credentials']],
+      [['server-local', 'server.log'], ['server.log']],
+    ]
+    for (const [from, to] of moves) {
+      // Not every install has every file (the secret key is minted on the
+      // first sealed write), and neither did an old one.
+      await fs.rename(path.join(dataDir, ...from), path.join(dataDir, ...to))
+        .catch((err: NodeJS.ErrnoException) => { if (err.code !== 'ENOENT') throw err })
+    }
+    await fs.rm(path.join(dataDir, 'global'), { recursive: true, force: true })
+    await fs.rm(path.join(dataDir, 'server-local'), { recursive: true, force: true })
+  }
+
+  // The only executable proof the migration has: every other tier starts
+  // from a fresh data dir, where it is a no-op (docs/legacy-compat-shims.md).
+  it('moves an old data dir into the tier folders at `server start`, keeping projects and credentials', async () => {
+    expect((await runYaac(testEnv.env, 'server', 'start')).exitCode).toBe(0)
+    // A project, a credential, and a database with rows in it.
+    const repo = await createTestRepo(path.join(testEnv.scratchDir, 'old-layout-repo'))
+    await addTestProject(repo)
+    expect((await runYaac(testEnv.env, 'auth', 'fake', 'github')).exitCode).toBe(0)
+    expect((await runYaac(testEnv.env, 'project', 'list')).stdout).toContain('old-layout-repo')
+    expect((await runYaac(testEnv.env, 'server', 'stop')).exitCode).toBe(0)
+
+    await rebuildOldLayout(testEnv.dataDir)
+    expect((await fs.readdir(testEnv.dataDir)).sort()).toEqual(
+      ['.credentials', 'db', 'projects', 'server.log'],
+    )
+
+    const started = await runYaac(testEnv.env, 'server', 'start')
+    expect(started.exitCode, started.stderr).toBe(0)
+    // The start names each move, in the order the rows are defined: the
+    // key before the database, the credentials before the projects.
+    const moves = started.stderr.split('\n').filter((l) => l.includes('[layout] moved'))
+    const rowOf = (name: string): number => moves.findIndex((l) => l.includes(`/${name} ->`))
+    expect(rowOf('.credentials')).toBe(0)
+    expect(rowOf('.credentials')).toBeLessThan(rowOf('db'))
+    expect(rowOf('.credentials')).toBeLessThan(rowOf('projects'))
+    // The root holds the tier folders and nothing else of yaac's.
+    expect((await fs.readdir(testEnv.dataDir)).sort()).toEqual(['global', 'server-local'])
+    // And the server that came up finds everything where it now lives.
+    const listed = await runYaac(testEnv.env, 'project', 'list')
+    expect(listed.stdout).toContain('old-layout-repo')
+    const creds = await runYaac(testEnv.env, 'auth', 'list')
+    expect(creds.stdout).toMatch(/github\.com/)
+    expect(await readLock()).not.toBeNull()
+    expect(serverLockPath()).toBe(path.join(testEnv.dataDir, 'server-local', '.server.lock'))
+  })
+
+  it('refuses to migrate under a live pre-split server, and `server stop` can still stop it', async () => {
+    expect((await runYaac(testEnv.env, 'server', 'start')).exitCode).toBe(0)
+    const lock = await readLock()
+    expect(lock).not.toBeNull()
+    // The lock where a pre-split server wrote it: the data dir root.
+    await fs.rename(serverLockPath(), path.join(testEnv.dataDir, '.server.lock'))
+
+    const second = await runYaac(testEnv.env, 'server', 'start')
+    expect(second.exitCode).toBe(1)
+    expect(second.stderr).toMatch(/still running[\s\S]*yaac server stop/)
+    // Nothing was rearranged under it.
+    await expect(fs.access(path.join(testEnv.dataDir, '.server.lock'))).resolves.toBeUndefined()
+
+    // The fallback read is what lets `stop` reach it. A real pre-split
+    // server renews its lease at the old path alone; THIS server is the
+    // current build and re-homes its lock to the new path on its next
+    // heartbeat, so `stop` may end up clearing the old copy itself rather
+    // than watching the server remove it — both spellings are a stop.
+    const stopped = await runYaac(testEnv.env, 'server', 'stop')
+    expect(stopped.exitCode).toBe(0)
+    expect(stopped.stderr).toMatch(/server stopped|force-removed stale lock/)
+    expect(await readLock()).toBeNull()
+    await expect(fs.access(path.join(testEnv.dataDir, '.server.lock'))).rejects.toThrow()
+    await expect(fs.access(serverLockPath())).rejects.toThrow()
+    // And the process is gone: a signal to a dead pid throws.
+    await new Promise((r) => setTimeout(r, 500))
+    expect(() => process.kill(lock!.pid, 0)).toThrow()
   })
 })
 

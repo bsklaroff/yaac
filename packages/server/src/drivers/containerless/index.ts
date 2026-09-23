@@ -31,6 +31,7 @@ import {
   destroyProjectSubstrate,
   destroyWorkspace,
   detachedTeardownCommand,
+  reapNodeLocal,
 } from './teardown'
 import type { WorktreeDriver } from '#drivers/contract'
 
@@ -188,7 +189,8 @@ export function createContainerlessDriver(): WorktreeDriver {
 
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
-    destroyProjectSubstrate: () => destroyProjectSubstrate(),
+    destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
+    reapNodeLocal: (running) => reapNodeLocal(running),
 
     // Empty forever, and NOT because the feature is missing: this pair is
     // the pull transport, which exists so a sandboxed pod — unable to dial

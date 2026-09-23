@@ -21,6 +21,7 @@ import {
   removeProjectRegistry,
 } from '@yaac/server/drivers/k8s/cluster/project-registry'
 import { DONE_MARKER } from '@yaac/server/drivers/k8s/images/store-writer'
+import { nodeLocalHostPath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import {
   createYaacTestEnv,
@@ -156,7 +157,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   const createdSlugs: string[] = []
 
   async function seedCredentials(): Promise<void> {
-    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
       tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }],
@@ -172,7 +173,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await seedMockGitRepo(mockGit!, slug, {
       files: { 'README.md': '# demo\n' },
     })
-    const projectPath = path.join(testEnv.dataDir, 'projects', slug)
+    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', slug)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
@@ -278,23 +279,31 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   }, 300_000)
 
   /**
-   * Wait until this node has a COMPLETE image-store generation for the
+   * Wait until EVERY node has a COMPLETE image-store generation for the
    * project — a `gen-…` directory carrying the DONE marker the writer pod
    * writes last. The server enumerates exactly this to decide what a new
-   * pod mounts.
+   * pod mounts, and the writer runs one pod per node; session 2 may land
+   * on any node, and one whose writer has not finished would run cold.
+   * The store is NODE-LOCAL under this run's own install hash, a tree the
+   * kind extraMount does not bind to the host, so it is read through the
+   * node itself (`podman exec`, the node being a container).
    */
   async function waitForStoreGeneration(projectSlug: string, timeoutMs: number): Promise<void> {
-    const parent = imageStoreDir(projectSlug)
+    const parent = nodeLocalHostPath(imageStoreDir(projectSlug))
+    const nodes = (await kubectlGetJson<{ items: Array<{ metadata: { name: string } }> }>(['get', 'nodes']))
+      ?.items.map((n) => n.metadata.name) ?? []
     const deadline = Date.now() + timeoutMs
     for (;;) {
-      const names = await fs.readdir(parent).catch(() => [] as string[])
-      for (const name of names) {
-        if (await fs.access(path.join(parent, name, DONE_MARKER)).then(() => true, () => false)) {
-          return
-        }
+      const pending: string[] = []
+      for (const node of nodes) {
+        const complete = await execFileAsync('podman', [
+          'exec', node, 'sh', '-c', `ls -d ${parent}/*/${DONE_MARKER} 2>/dev/null | head -1`,
+        ]).then(({ stdout }) => stdout.trim() !== '', () => false)
+        if (!complete) pending.push(node)
       }
+      if (pending.length === 0) return
       if (Date.now() > deadline) {
-        throw new Error(`no complete image-store generation under ${parent} within ${timeoutMs}ms`)
+        throw new Error(`no complete image-store generation under ${parent} on ${pending.join(', ')} within ${timeoutMs}ms`)
       }
       await new Promise((r) => setTimeout(r, 2000))
     }
@@ -808,7 +817,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(depAfterDelete?.metadata?.name).toBe(regName)
 
     // --- GCs once the project dir is gone (server-start sweep) ---
-    await fs.rm(path.join(testEnv.dataDir, 'projects', slug), { recursive: true, force: true })
+    await fs.rm(path.join(testEnv.dataDir, 'global', 'projects', slug), { recursive: true, force: true })
     await gcOrphanProjectRegistries()
     const svcAfterGc = await kubectlGetJson<{ metadata?: { name?: string } }>([
       'get', 'service', regName, '-n', k8sNamespace(),

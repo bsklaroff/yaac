@@ -41,7 +41,7 @@ describe('serverLog', () => {
     const nested = path.join(dataDir, 'nested', 'deeper')
     setDataDir(nested)
     serverLog('[server] create me')
-    const contents = await fs.readFile(path.join(nested, 'server.log'), 'utf8')
+    const contents = await fs.readFile(path.join(nested, 'server-local', 'server.log'), 'utf8')
     expect(contents).toContain('[server] create me')
   })
 })
@@ -54,6 +54,7 @@ describe('serverLogs', () => {
   beforeEach(async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-logs-test-'))
     setDataDir(dataDir)
+    await fs.mkdir(path.dirname(serverLogPath()), { recursive: true })
     consoleErrorSpy.mockClear()
     stdoutWriteSpy.mockClear()
   })

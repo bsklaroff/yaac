@@ -109,7 +109,7 @@ describe('launchWorkspace', () => {
     // The marker is the substrate's only durable record: without it a
     // restarted server cannot know the worktree exists at all.
     const marker = JSON.parse(await fsp.readFile(
-      path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
+      path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
       'utf8',
     )) as { worktreeId: string; tool: string; tmuxPid: number }
     expect(marker.worktreeId).toBe(UUID)
@@ -119,7 +119,7 @@ describe('launchWorkspace', () => {
   })
 
   it('gives the workspace its own HOME with the project tool dirs linked in', async () => {
-    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: claudeSrc }, mountPath: '/home/yaac/.claude' },
     ]
@@ -127,7 +127,7 @@ describe('launchWorkspace', () => {
 
     // A container's mount becomes a symlink here — the contract's own note
     // that "a host-process driver reads a hostPath as a bind or a symlink".
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(await fsp.realpath(path.join(home, '.claude')))
       .toBe(await fsp.realpath(claudeSrc))
     // HOME is what makes the links reachable; without it the agent would
@@ -140,7 +140,7 @@ describe('launchWorkspace', () => {
   })
 
   it('relaunches over its own leftovers instead of tripping on them', async () => {
-    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: claudeSrc }, mountPath: '/home/yaac/.claude' },
     ]
@@ -159,7 +159,7 @@ describe('launchWorkspace', () => {
       { source: { kind: 'hostPath', path: staged, type: 'File' }, mountPath: '/usr/local/bin/yaac-mama' },
     ]
     await launchWorkspace(spec({ mounts }))
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     const binDir = path.join(home, '.local', 'bin')
     expect(await fsp.realpath(path.join(binDir, 'yaac-mama'))).toBe(await fsp.realpath(staged))
     const env = mockRunHost.mock.calls
@@ -178,9 +178,9 @@ describe('launchWorkspace', () => {
     // The user's own values do NOT move: a yaac dev host runs as a user whose
     // home is literally /home/yaac, so rewriting anything container-shaped
     // would silently redirect a real host path they passed in.
-    const piSrc = path.join(dataDir, 'projects', 'demo', 'pi')
-    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
-    const cachedSrc = path.join(dataDir, 'projects', 'demo', '.cached-packages')
+    const piSrc = path.join(dataDir, 'global', 'projects', 'demo', 'pi')
+    const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
+    const cachedSrc = path.join(dataDir, 'node-local', 'projects', 'demo', '.cached-packages')
     await fsp.mkdir(path.join(piSrc, 'agent', 'sessions'), { recursive: true })
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: piSrc }, mountPath: '/home/yaac/.pi' },
@@ -209,7 +209,7 @@ describe('launchWorkspace', () => {
     // The project's dir, not this worktree's: claude names its macOS Keychain
     // item after this string, and a per-worktree one would let the first
     // token refresh take the credential away from every sibling worktree.
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(env.env.CLAUDE_CONFIG_DIR).toBe(claudeSrc)
     expect(env.env.CLAUDE_CONFIG_DIR).not.toContain(home)
     // pnpm's store is the project's, shared by every worktree — and on the
@@ -222,7 +222,7 @@ describe('launchWorkspace', () => {
   it('resolves a value under a nested mount to the innermost source', async () => {
     // Otherwise a path inside the inner mount would be expressed against the
     // outer one's source, which is a different directory on this filesystem.
-    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const skillSrc = path.join(dataDir, 'staged-skill')
     await fsp.mkdir(skillSrc, { recursive: true })
     await launchWorkspace(spec({
@@ -265,7 +265,7 @@ describe('launchWorkspace', () => {
     // A pod layers a builtin skill over a mounted tool home; here the tool
     // home is a symlink into shared project state, so writing the skill
     // would leave one worktree's staging where every worktree reads.
-    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const skillSrc = path.join(dataDir, 'staged-skill')
     await fsp.mkdir(skillSrc, { recursive: true })
     const mounts: WorkspaceMount[] = [
@@ -278,7 +278,7 @@ describe('launchWorkspace', () => {
 
   it('writes git identity into the workspace home, never the server user\'s', async () => {
     await launchWorkspace(spec())
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     const gitconfig = await fsp.readFile(path.join(home, '.gitconfig'), 'utf8')
     expect(gitconfig).toContain('name = Ada')
     expect(gitconfig).toContain('ada@example.com')
@@ -300,7 +300,7 @@ describe('launchWorkspace', () => {
     await launchWorkspace(spec({
       gitCredential: { kind: 'https', host: 'github.com', token: 'ghp_a/b+c%d' },
     }))
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
 
     const gitconfig = await fsp.readFile(path.join(home, '.gitconfig'), 'utf8')
     // The empty helper first: git takes the FIRST helper that answers, so a
@@ -323,7 +323,7 @@ describe('launchWorkspace', () => {
     // reaches it over stdin, so a stopped worktree (or one whose host
     // rebooted before anyone pressed stop) leaves no usable private key on
     // disk. What lands in the home is the public half.
-    const knownHosts = path.join(dataDir, 'projects', 'demo', 'known_hosts')
+    const knownHosts = path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts')
     await launchWorkspace(spec({
       gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
       ssh: { knownHostsFile: knownHosts },
@@ -333,7 +333,7 @@ describe('launchWorkspace', () => {
     expect(mockRunHostWithInput).toHaveBeenCalledWith(
       ['ssh-add', '-'], PRIVATE_KEY, expect.anything(),
     )
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     const pub = path.join(home, '.ssh', 'id.pub')
     expect(await fsp.readFile(pub, 'utf8')).toBe('ssh-ed25519 AAAAPUBLIC yaac\n')
 
@@ -365,7 +365,7 @@ describe('launchWorkspace', () => {
     // exists to prevent. A relaunch is ordinary: a retried create, a restart.
     const sshSpec = (): WorkspaceSpec => spec({
       gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
-      ssh: { knownHostsFile: path.join(dataDir, 'projects', 'demo', 'known_hosts') },
+      ssh: { knownHostsFile: path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts') },
     })
     await launchWorkspace(sshSpec())
     mockSpawnSshAgent.mockResolvedValue(4343)
@@ -379,11 +379,11 @@ describe('launchWorkspace', () => {
   it('records the agent pid so teardown can end the process holding the key', async () => {
     await launchWorkspace(spec({
       gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
-      ssh: { knownHostsFile: path.join(dataDir, 'projects', 'demo', 'known_hosts') },
+      ssh: { knownHostsFile: path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts') },
     }))
 
     const marker = JSON.parse(await fsp.readFile(path.join(
-      dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json',
+      dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json',
     ), 'utf8')) as { sshAgentPid?: number }
     expect(marker.sshAgentPid).toBe(4242)
   })
@@ -398,7 +398,7 @@ describe('launchWorkspace', () => {
   it('clears a credential the last launch left behind', async () => {
     // A relaunch is not always for the same answer: a rotated token, a remote
     // moved to SSH, or a worktree restarted with no credential at all.
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     await launchWorkspace(spec({
       gitCredential: { kind: 'https', host: 'github.com', token: 'first' },
     }))
@@ -429,7 +429,7 @@ describe('launchWorkspace', () => {
     // decides anything if the tools resolve their defaults. One of these
     // inherited and the agent reads the SERVER user's config — with real
     // credentials in it — and writes its sessions where nothing looks.
-    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const hostConfig = path.join(dataDir, 'the-host-user')
     const saved = { ...process.env }
     // Every name the driver clears, poisoned from the list itself — a case
@@ -459,7 +459,7 @@ describe('launchWorkspace', () => {
     }
     // Dropped rather than pinned, so the tools land on their own defaults —
     // which is what the staged home is built out of.
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(call.env.HOME).toBe(home)
     expect(await fsp.realpath(path.join(home, '.claude'))).toBe(await fsp.realpath(claudeSrc))
   })

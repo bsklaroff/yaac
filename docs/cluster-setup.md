@@ -220,11 +220,20 @@ only kind's provider breaks.
    re-pushes and rebuilds. That is the same self-healing a cluster recreate
    has always relied on. The old hostPath data stays on the nodes under
    `/var/lib/yaac/main-registry/<install-hash>`, recoverable by hand.
-2. **Home-directory extraMount** — worktree pods mount worktrees and caches
-   via `hostPath`, which resolves on the *node*. Mounting
-   `$HOME` into the node at the same path makes node == host for everything
-   yaac touches. Every node gets it, so the bind holds wherever a worktree
-   is scheduled.
+2. **Two extraMounts per node.** The home directory, at the same path:
+   the two storage claims (`yaac-global`, `yaac-server-local`) bind static
+   hostPath volumes into the data dir's `global/` and `server-local/`
+   folders, and a hostPath resolves on the *node*, so the bind is what
+   makes the volume the host's bytes (docs/server-in-cluster.md "Storage
+   is two claims"). And `<dataDir>/node-local` at the install's node path,
+   `/var/lib/yaac/node/<hash>`: the NODE-LOCAL tier — pnpm stores, image
+   stores, opencode working copies — lives there, so on kind it is host
+   disk and survives a cluster delete rather than dying with the node
+   container. Both ride every node, so they hold wherever a worktree is
+   scheduled. The second is per install (the hash), and kind writes mounts
+   only at create time: a cluster made before it existed keeps its
+   node-local tier on node disk, which `yaac cluster install` and `yaac
+   cluster check` both say (`node-local-mount`).
 3. **The kind node fixups** — the two settings a node *container* has and
    a real node does not, applied through podman: a raised pids-limit on the
    node container (podman's default 2048 is what subagent fan-out would
@@ -334,11 +343,12 @@ exercises multi-node scheduling.** `yaac cluster check` reports both numbers
 (`3 nodes, 2 able to schedule worktrees`).
 
 The rendering is the whole mechanism. `k8s/kind-config.yaml` holds one
-control-plane node entry carrying the `$HOME → $HOME` extraMount, and setup
-copies that entry into `N-1` `role: worker` entries — so **every** node
-binds the host's home directory at the same path. Since all kind nodes are
-containers on this one host, hostPath keeps resolving to the same bytes no
-matter which node a worktree lands on, and the shared-filesystem model
+control-plane node entry carrying the `$HOME → $HOME` extraMount, install
+adds the node-local one beside it, and setup copies that entry into `N-1`
+`role: worker` entries — so **every** node binds both. Since all kind nodes
+are containers on this one host, the claims' volumes keep resolving to the
+same bytes no matter which node a worktree lands on, and the NODE-LOCAL
+tier — per node in name — is one host folder in fact; the storage model
 survives unchanged while real multi-node *scheduling* is exercised. The rest
 of the config is cluster-scoped and kind applies it to every node itself:
 the containerd `config_path` registry patch, the kubelet swap patch, and
@@ -579,17 +589,26 @@ not 1000. The README's "Custom images" section spells that out.
 ## Verifying
 
 `yaac cluster check` verifies kubectl, the cluster, the registry, the
-namespace, the PriorityClasses and the kind node fixups, asserts the
-RuntimeClasses exist, that at least one node carries the `yaac.gvisor`
-label they schedule on, and that a
-`gvisor`-class pod really runs inside the sentry, reads the node tuning
-back through the installer's pod on every node (`node-tuning`, warn-level:
-a node whose installer pod is not Running is reported unverified, never
-passed), then runs an end-to-end probe pod — on the gvisor tier, like worktree pods — that exercises all of
-the wiring above, including a hostPath **write** at the worktree uid. It
-ends with a sweep warning about any untrusted (worktree-labeled) pod running
-without a gvisor-tier `runtimeClassName`. Run it whenever worktrees fail to
-start.
+namespace, the two storage claims (`storage`: both Bound, both volumes
+`Retain`, and on kind each volume the data dir's own tier folder — a
+missing claim fails and points at install), the PriorityClasses and the
+kind node fixups, asserts the RuntimeClasses exist, that at least one node
+carries the `yaac.gvisor` label they schedule on, and that a `gvisor`-class
+pod really runs inside the sentry, reads the node tuning back through the
+installer's pod on every node (`node-tuning`, warn-level: a node whose
+installer pod is not Running is reported unverified, never passed), then
+runs an end-to-end probe pod — on the gvisor tier, like worktree pods —
+that mounts the `yaac-global` claim and exercises all of the wiring above,
+including a **write** at the worktree uid and a second nonce round-tripped
+while the pod runs, whose latency the pass detail reports. Two warn-level
+gates sit beside it: `storage-semantics` runs the POSIX probe in
+`k8s/probes/fsprobe.py` (ownership, O_EXCL, atomic rename, hardlinks,
+locks, fsync, mmap, append, xattrs) against the claim from a sandboxed pod,
+naming any that fail — the same probes a cloud install's storage class is
+judged by; and `node-local-mount` says when a kind node does not bind
+`<dataDir>/node-local` at the install's node path. It ends with a sweep
+warning about any untrusted (worktree-labeled) pod running without a
+gvisor-tier `runtimeClassName`. Run it whenever worktrees fail to start.
 
 Two gates cover the redirect, and they fail differently on purpose.
 `datapath` says calico-node and netd are Ready — policy is enforced and a
@@ -666,13 +685,14 @@ reporting three warn-level gates —
 - `registry-nodes`: that node's containerd can pull from the registry (the
   probe pulls `Always`, so a layer already on the node cannot mask an
   unreachable one).
-- `volume-nodes`: the shared data dir is the same bytes the server sees
-  from that node, and the worktree uid can write it.
+- `volume-nodes`: the `yaac-global` claim is the same bytes the server
+  sees from that node, and the worktree uid can write it.
 
 They are warnings, not failures: a single-node cluster is still a legitimate
 topology, and each carries the fix for its own cause — the installer
-DaemonSet for runsc, `yaac cluster install` for the registry wiring, the home
-extraMount for the volume. A probe pod that never ran is attributed to one
+DaemonSet for runsc, `yaac cluster install` for the registry wiring, the
+claim's volume (the home extraMount, on kind) for the volume. A probe pod
+that never ran is attributed to one
 gate from the kubelet's event and left explicitly *unverified* on the
 others, so no gate ever passes on a node it could not actually check.
 
@@ -682,9 +702,10 @@ Narrowing is right; narrowing silently is not — an "all N worktree-eligible
 nodes" pass otherwise reads identically whether the node that dropped out
 was a control plane or a worker that just went under disk pressure.
 
-> **Limits:** all nodes must share one filesystem — the hostPath model
-> assumes node == host, which multi-node kind preserves by binding `$HOME`
-> into every node container. Nothing yaac deploys listens on a host
+> **Limits:** the `yaac-global` claim has to be the same bytes on every
+> node — which multi-node kind gets by binding `$HOME` into every node
+> container, so the static volume resolves everywhere, and a cloud cluster
+> gets from an RWX storage class. Nothing yaac deploys listens on a host
 > interface: the server's control traffic reaches the proxy as an ordinary
 > pod-to-pod Service dial (docs/server-in-cluster.md).
 
@@ -696,9 +717,12 @@ yaac cluster delete        # prompts first; -y / --yes skips the prompt
 
 The teardown counterpart to `install`, and one `kind delete` is the whole
 of it: everything yaac deploys lives inside the cluster — Calico, netd, the
-main and per-project registries — and so does their node-local storage on
-every node, including every pushed image. Running worktree pods
-stop, but nothing under the yaac data dir is touched: on-disk worktrees and
-worktrees survive, and a later `yaac cluster install` recreates the cluster and
-re-pushes images on demand. It leaves the podman machine and its shared image
-store alone (that's the build engine, not the cluster).
+main and per-project registries, the two storage claims and their
+volumes — and so does the registries' storage on every node, including
+every pushed image. Running worktree pods stop, but nothing under the yaac
+data dir is touched: the volumes are `Retain` and their bytes are the data
+dir's own folders, so on-disk worktrees, the database and the node-local
+caches all survive, and a later `yaac cluster install` recreates the
+cluster, re-binds the same folders and re-pushes images on demand. It
+leaves the podman machine and its shared image store alone (that's the
+build engine, not the cluster).

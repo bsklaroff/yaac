@@ -33,6 +33,7 @@ import {
 import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
+import { migrateDataDirLayout } from '@yaac/shared/data-dir-layout'
 import { startReconciler } from '#main/reconciler'
 import { setWorktreeDriver, worktreeDriver } from '#drivers/driver'
 import {
@@ -183,6 +184,13 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // open. This is also the only place in `src/` that names a concrete
   // driver — everything else reaches one through `#drivers/driver`.
   await preflightHostTor()
+  // A host process migrates its own data dir into the three tier folders
+  // before it creates or reads anything there — before `ensureDataDir`,
+  // which would otherwise leave an empty `global/projects` for the move to
+  // find, and before the lock read, so an "already running" verdict reads
+  // the migrated lock. The pod skips it: its roots are mounts
+  // (docs/legacy-compat-shims.md).
+  if (!env.inCluster) await migrateDataDirLayout(serverLog)
   await ensureDataDir()
 
   // Placement is the driver (see `#main/driver-choice`): a pod runs k8s, a

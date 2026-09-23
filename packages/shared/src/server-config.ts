@@ -1,5 +1,10 @@
 import fs from 'node:fs/promises'
-import { clientLocalPath, ensureClientLocalRoot, serverLocalPath } from '#paths'
+import path from 'node:path'
+// The data dir ROOT, for the two pre-client-local fallbacks alone: those
+// files were written when the root was the only directory, and no tier
+// helper names it any more (docs/legacy-compat-shims.md).
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
+import { clientLocalPath, ensureClientLocalRoot, getDataDir } from '#paths'
 import { readLock } from '#lock'
 import type { ServerLock } from '#server-lock-file'
 import type { DriverKind } from '#types'
@@ -55,7 +60,7 @@ export function serverConfigPath(): string {
  * docs/legacy-compat-shims.md.
  */
 function legacyConfigPaths(): string[] {
-  return [clientLocalPath('remote.json'), serverLocalPath('remote.json')]
+  return [clientLocalPath('remote.json'), path.join(getDataDir(), 'remote.json')]
 }
 
 /**
@@ -115,7 +120,7 @@ async function readServerConfigAt(filePath: string): Promise<ServerConfig | null
  * the same two places.
  */
 export async function readLegacyDriverRecord(): Promise<DriverKind | undefined> {
-  for (const p of [clientLocalPath('driver'), serverLocalPath('driver')]) {
+  for (const p of [clientLocalPath('driver'), path.join(getDataDir(), 'driver')]) {
     try {
       const raw = (await fs.readFile(p, 'utf8')).trim()
       if (raw === 'k8s' || raw === 'containerless') return raw

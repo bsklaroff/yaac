@@ -68,11 +68,11 @@ filesystem.
 
 | | k8s | containerless |
 |---|---|---|
-| checkout | `/workspace` | `~/.yaac/projects/<slug>/worktrees/<id>` |
-| project git dir | `/repo/.git` | `~/.yaac/projects/<slug>/repo/.git` |
+| checkout | `/workspace` | `~/.yaac/global/projects/<slug>/worktrees/<id>` |
+| project git dir | `/repo/.git` | `~/.yaac/global/projects/<slug>/repo/.git` |
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-cl-<hash>/<id>.sock` |
 | scratch | `/tmp` | the worktree's own state dir |
-| ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/projects/<slug>/acp/<id>` |
+| ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/global/projects/<slug>/acp/<id>` |
 
 The ACP record is the one row the driver does not get to answer freely. Under
 k8s the container path is a mount whose host side is the shared project
@@ -86,6 +86,23 @@ Because the checkout the agent sees IS the one the server made, there is no
 git plumbing to re-point: the create path skips the in-pod gitdir rewrite
 entirely, and the review diff is host `git` run in that directory rather
 than an exec into anything.
+
+## Storage: the same three folders, no volumes
+
+The data dir has the same shape on every substrate — `global/`,
+`server-local/` and `node-local/` under `~/.yaac` (the tier legend in
+`packages/shared/src/paths.ts`). Under k8s those three are claims and a
+node hostPath; here they are three subdirectories of one directory, and no
+volume machinery applies. The split is inert on this driver, not different:
+a path declared GLOBAL is symlinked from the worktree's HOME exactly as a
+NODE-LOCAL one is, and the one place the tier shows is that a node-local
+source directory that does not exist yet (the project's pnpm store on its
+first worktree) is created by the driver as it links it, where the pod
+driver's init container would have.
+
+A data dir written before the tiers were folders is moved into this
+layout once, at `yaac server start`, before the lock is read or anything
+else touches it — `migrateDataDirLayout` in docs/legacy-compat-shims.md.
 
 ## Mounts become symlinks
 
@@ -485,7 +502,7 @@ worktree's liveness with it.
 
 Recovery is not an edge case here, it is the ordinary path. A fresh server
 enumerates the marker files it wrote last time
-(`projects/<slug>/sessions/<id>/containerless/workspace.json` — the
+(`global/projects/<slug>/sessions/<id>/containerless/workspace.json` — the
 substrate's analogue of a Job object) and probes each socket. One that
 answers is a running worktree, recovered whole with its agents still
 working. One that does not is recorded as a DEAD workspace rather than

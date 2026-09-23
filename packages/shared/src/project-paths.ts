@@ -14,9 +14,9 @@ import {
   serverLocalPath,
   serverLocalRoot,
   setDataDir,
-  sharedPath,
-  sharedProjectPath,
-  sharedRoot,
+  globalPath,
+  globalProjectPath,
+  globalRoot,
 } from '#paths'
 
 // The install root itself. Re-exported for the few callers that need the
@@ -41,29 +41,23 @@ export {
   serverLocalPath,
   serverLocalRoot,
   setDataDir,
-  sharedPath,
-  sharedProjectPath,
-  sharedRoot,
+  globalPath,
+  globalProjectPath,
+  globalRoot,
 }
 
 /*
  * ── Where each path lives ──────────────────────────────────────────────
  *
- * Every helper below is tagged with its storage tier — SHARED must be
+ * Every helper below is tagged with its storage tier — GLOBAL must be
  * visible from every node, NODE-LOCAL never has to leave the node it was
  * written on, SERVER-LOCAL is touched only by the server process, and
  * CLIENT-LOCAL only by processes on the user's own machine (the legend is
- * in paths.ts). Those tags are the classification's single source: the
- * plan that consumes it (docs/plans/cloud-k8s.md) points here rather than
- * restating a table that would drift.
+ * in paths.ts). Those tags are the classification's single source, and
+ * the tier a path declares is what the k8s driver resolves its mount
+ * source from (docs/server-in-cluster.md "Storage is two claims").
  *
- * The first three roots resolve to the same directory today, so for them
- * this file is a declaration of visibility requirements; the mount
- * machinery that makes them different volumes is docs/plans/cloud-k8s.md.
- * CLIENT-LOCAL is already a
- * different directory, because the boundary it names already exists.
- *
- * A new helper picks a tier by calling `sharedProjectPath` /
+ * A new helper picks a tier by calling `globalProjectPath` /
  * `nodeLocalProjectPath` / `serverLocalPath` / `clientLocalPath` (or a
  * helper built on one). There is deliberately no un-tiered way to reach
  * the data dir here.
@@ -142,13 +136,12 @@ export function secretKeyPath(): string {
 }
 
 /**
- * SHARED: the project's state tree — everything a worktree pod mounts
+ * GLOBAL: the project's state tree — everything a worktree pod mounts
  * hangs off it, plus the project metadata the server keeps beside it.
- * The node-local counterpart is {@link nodeLocalProjectPath}; the two are
- * the same directory today.
+ * The node-local counterpart is {@link nodeLocalProjectPath}.
  */
 export function projectDir(slug: string): string {
-  return sharedProjectPath(slug)
+  return globalProjectPath(slug)
 }
 
 /**
@@ -160,31 +153,31 @@ export function projectDir(slug: string): string {
  *
  * DELIBERATELY OUTSIDE the project tree, unlike every other per-project
  * path. Its contents are written by a root-running node-side pod, so they
- * are root-owned and unreadable to the server's own uid — and
- * {@link projectRoots}, which project removal `rm -rf`s as the server user,
- * would fail on them. The store's own removal goes through a node-side pod
- * instead (the same shape the registry's `certs.d` cleanup uses).
+ * are root-owned and unreadable to the server's own uid — and the project
+ * removal that `rm -rf`s the project tree as the server user would fail on
+ * them. The store's own removal goes through a node-side pod instead (the
+ * same shape the registry's `certs.d` cleanup uses).
  */
 export function imageStoreDir(slug: string): string {
   return nodeLocalPath('shared-images', slug)
 }
 
-/** SHARED: the bare git repo. `repo/.git` is mounted into every worktree. */
+/** GLOBAL: the bare git repo. `repo/.git` is mounted into every worktree. */
 export function repoDir(slug: string): string {
-  return sharedProjectPath(slug, 'repo')
+  return globalProjectPath(slug, 'repo')
 }
 
 /**
- * SHARED: mounted at `/home/yaac/.claude` in every worktree of the project,
+ * GLOBAL: mounted at `/home/yaac/.claude` in every worktree of the project,
  * and named by `CLAUDE_CONFIG_DIR` — so claude's global config is the
  * `.claude.json` INSIDE this directory, carried by this mount.
  */
 export function claudeDir(slug: string): string {
-  return sharedProjectPath(slug, 'claude')
+  return globalProjectPath(slug, 'claude')
 }
 
 /**
- * SHARED, and legacy only: where claude's global config lived before
+ * GLOBAL, and legacy only: where claude's global config lived before
  * worktrees named `CLAUDE_CONFIG_DIR`, when it resolved beside the home dir
  * rather than inside the claude home and needed a `File` mount of its own.
  * Nothing mounts or writes it now; its one caller is the adoption that
@@ -192,11 +185,11 @@ export function claudeDir(slug: string): string {
  * (`adoptLegacyClaudeJson`, docs/legacy-compat-shims.md).
  */
 export function claudeJsonFile(slug: string): string {
-  return sharedProjectPath(slug, 'claude.json')
+  return globalProjectPath(slug, 'claude.json')
 }
 
 /**
- * SHARED. Path to the project-local `.credentials.json` that gets mounted
+ * GLOBAL. Path to the project-local `.credentials.json` that gets mounted
  * into the container at `/home/yaac/.claude/.credentials.json`. Seeded with
  * placeholder tokens so Claude Code finds a credentials file without it ever
  * containing real secrets.
@@ -205,13 +198,13 @@ export function projectClaudeCredentialsFile(slug: string): string {
   return path.join(claudeDir(slug), '.credentials.json')
 }
 
-/** SHARED: mounted at `/home/yaac/.codex`. */
+/** GLOBAL: mounted at `/home/yaac/.codex`. */
 export function codexDir(slug: string): string {
-  return sharedProjectPath(slug, 'codex')
+  return globalProjectPath(slug, 'codex')
 }
 
 /**
- * SHARED. One worktree's ACP conversation logs — the verbatim `session/update`
+ * GLOBAL. One worktree's ACP conversation logs — the verbatim `session/update`
  * stream acpd tees as it relays, one file per conversation, mounted read-write
  * at `/home/yaac/.yaac-acp` in that worktree's worktree.
  *
@@ -226,36 +219,35 @@ export function codexDir(slug: string): string {
  * would collide across worktrees.
  */
 export function acpLogDir(slug: string, worktreeId: string): string {
-  return sharedProjectPath(slug, 'acp', worktreeId)
+  return globalProjectPath(slug, 'acp', worktreeId)
 }
 
 /**
  * NODE-LOCAL. The project's pnpm store plus the per-worktree ephemeral
  * module dirs under it, mounted at `/home/yaac/.cached-packages`. A store
  * on a network filesystem turns every `link(2)`/stat into a round trip,
- * and the hardlinks it hands out must stay on one filesystem
- * (docs/plans/cloud-k8s.md: per-node store, duplicate downloads
- * accepted). Nothing outside the worktree's own node reads it — except the
- * orphan-modules GC, which is the server-side sweep that has to learn to
- * enumerate per node.
+ * and the hardlinks it hands out must stay on one filesystem — so it is
+ * per node, duplicate downloads accepted. Nothing outside the worktree's
+ * own node reads it; the orphan sweep that collects a dead worktree's
+ * module dirs runs on the node too (`WorktreeDriver.reapNodeLocal`).
  */
 export function cachedPackagesDir(slug: string): string {
   return nodeLocalProjectPath(slug, '.cached-packages')
 }
 
 /**
- * SHARED. Host directory backing a `cacheVolumes` entry. The podman
+ * GLOBAL. Host directory backing a `cacheVolumes` entry. The podman
  * backend used named volumes (`yaac-cache-<slug>-<key>`); on kubernetes
  * these are plain per-project hostPath dirs with the same
  * persist-across-worktrees semantics — and the point of persisting them is
  * that the NEXT worktree gets the warm cache, wherever it is scheduled.
  */
 export function cacheVolumeDir(slug: string, key: string): string {
-  return sharedProjectPath(slug, 'cache-volumes', key)
+  return globalProjectPath(slug, 'cache-volumes', key)
 }
 
 /**
- * SHARED. Path to the project-local `auth.json` that gets mounted into the
+ * GLOBAL. Path to the project-local `auth.json` that gets mounted into the
  * container at `/home/yaac/.codex/auth.json`. Seeded with placeholder
  * bearer tokens so Codex finds a valid bundle without ever seeing the
  * real access/refresh tokens.
@@ -265,7 +257,7 @@ export function projectCodexAuthFile(slug: string): string {
 }
 
 /**
- * SHARED. Per-project shared opencode config root. Bind-mounted at
+ * GLOBAL. Per-project shared opencode config root. Bind-mounted at
  * `/home/yaac/.config/opencode/` inside the container. Shared across
  * worktrees within the same project so that model selection, permissions,
  * and other opencode settings (written via `Config.updateGlobal()`)
@@ -273,41 +265,60 @@ export function projectCodexAuthFile(slug: string): string {
  * isolation (the SQLite DB in `~/.local/share/opencode/`).
  */
 export function opencodeConfigDir(slug: string): string {
-  return sharedProjectPath(slug, 'opencode-config')
+  return globalProjectPath(slug, 'opencode-config')
 }
 
 /**
- * NODE-LOCAL. Per-yaac-session opencode data root — the SQLite DB —
- * bind-mounted at `/home/yaac/.local/share/opencode/` inside the
- * container. Per-worktree isolation sidesteps opencode upstream concurrent-
- * write issues (sst/opencode#5241) and makes `opencode --continue`
- * deterministic since each container's DB only ever contains its own
- * worktree.
+ * GLOBAL. The one durable home of a worktree's opencode history: its
+ * per-worktree SQLite database and everything beside it, as a plain copy
+ * of the data directory. A k8s pod works on a node-local copy of this
+ * ({@link opencodeDataDir}), checkpoints into here on a timer and at
+ * `preStop`, and every start restores from here unconditionally; a
+ * containerless workspace opens this directory directly, there being no
+ * other filesystem to copy it to.
  *
- * Node-local because SQLite forbids WAL on a network filesystem and
- * opencode has a confirmed NFS-corruption issue (anomalyco/opencode#14970).
- * The server never opens the file (opencode-status.ts probes the in-pod
- * HTTP API), so the only consequence is that a resume on another node
- * has to find the DB somewhere — the shared-tier checkpoint in
- * docs/plans/cloud-k8s.md.
+ * Per-worktree isolation sidesteps opencode's concurrent-write issues
+ * (sst/opencode#5241) and makes `opencode --continue` deterministic, since
+ * each database only ever holds its own worktree.
+ *
+ * The spelling is frozen: it is the pre-split node-local location inside
+ * the projects tree, so the layout migration's `projects/` row carries
+ * every older worktree's history into place with nothing to convert
+ * (docs/legacy-compat-shims.md, `migrateDataDirLayout`). Renaming it is a
+ * migration of that history.
+ */
+export function opencodeCheckpointDir(slug: string, worktreeId: string): string {
+  return globalProjectPath(slug, 'opencode-data', worktreeId)
+}
+
+/**
+ * NODE-LOCAL. The WORKING COPY of {@link opencodeCheckpointDir} a k8s pod
+ * runs opencode against, mounted at `CONTAINER_OPENCODE_DATA`. Present only
+ * while the pod runs: the init script restores it from the checkpoint at
+ * start, the checkpoint script copies it back on a timer and empties it at
+ * a clean stop, and the node-local sweep collects what an unclean stop
+ * left. Node-local because SQLite forbids WAL on a network filesystem and
+ * opencode has a confirmed NFS-corruption issue (anomalyco/opencode#14970);
+ * the server never opens the file (opencode-status.ts probes the in-pod
+ * HTTP API). Unused under containerless.
  */
 export function opencodeDataDir(slug: string, worktreeId: string): string {
   return nodeLocalProjectPath(slug, 'opencode-data', worktreeId)
 }
 
 /**
- * SHARED. Per-project pi home. Bind-mounted at `/home/yaac/.pi/` inside the
+ * GLOBAL. Per-project pi home. Bind-mounted at `/home/yaac/.pi/` inside the
  * container (the whole `.pi` dir, mirroring `claudeDir`/`~/.claude`), so every
  * worktree's settings, extensions, and JSONL session logs are shared across all
  * worktrees of the project. Persists across container teardown, so a deleted
  * worktree's first message can still be parsed from its log on demand.
  */
 export function piDir(slug: string): string {
-  return sharedProjectPath(slug, 'pi')
+  return globalProjectPath(slug, 'pi')
 }
 
 /**
- * SHARED. Directory holding pi's JSONL session logs (one
+ * GLOBAL. Directory holding pi's JSONL session logs (one
  * `<timestamp>_<worktreeId>.jsonl` per worktree) under the mounted pi home. pi
  * addresses each session by id via `--session-id`, so the server reads a
  * worktree's log by matching that id in the filename rather than isolating each
@@ -317,13 +328,13 @@ export function piSessionsDir(slug: string): string {
   return path.join(piDir(slug), 'agent', 'sessions')
 }
 
-/** SHARED — see {@link worktreeDir}. */
+/** GLOBAL — see {@link worktreeDir}. */
 export function worktreesDir(slug: string): string {
-  return sharedProjectPath(slug, 'worktrees')
+  return globalProjectPath(slug, 'worktrees')
 }
 
 /**
- * SHARED. What the in-pod `SessionStart` hook appends to — one JSON line per
+ * GLOBAL. What the in-pod `SessionStart` hook appends to — one JSON line per
  * firing, named for the only thing that ever writes it.
  *
  * The hook is the only witness of a user-started agent session (`/clear`, a
@@ -333,16 +344,16 @@ export function worktreesDir(slug: string): string {
  * inode the mount pins stays the one both sides are writing and reading.
  */
 export function worktreeSessionStartsPath(slug: string, worktreeId: string): string {
-  return sharedProjectPath(slug, 'meta', `${worktreeId}.session-starts.jsonl`)
+  return globalProjectPath(slug, 'meta', `${worktreeId}.session-starts.jsonl`)
 }
 
-/** SHARED. The `meta/` directory the session-starts logs live in. */
+/** GLOBAL. The `meta/` directory the session-starts logs live in. */
 export function worktreeMetaDir(slug: string): string {
-  return sharedProjectPath(slug, 'meta')
+  return globalProjectPath(slug, 'meta')
 }
 
 /**
- * SHARED, deliberately. The worktree's `/workspace`. A worktree is hot,
+ * GLOBAL, deliberately. The worktree's `/workspace`. A worktree is hot,
  * per-worktree data that would rather be node-local, but its `.git` file
  * points into `repo/.git/worktrees/<sid>` and the server creates it with
  * `git worktree add` from its own filesystem: keeping both halves on the
@@ -355,68 +366,24 @@ export function worktreeDir(slug: string, worktreeId: string): string {
 }
 
 /**
- * SHARED. Per-worktree directory rooting everything worktree-scoped that is
+ * GLOBAL. Per-worktree directory rooting everything worktree-scoped that is
  * not the worktree — today the staged builtin-skills and worktree-bin
  * copies. All of it is written by the server and mounted into the worktree
- * pod, so it has to be visible from the pod's node. Its node-local twin is
- * {@link nodeLocalWorktreeStateDir}.
+ * pod, so it has to be visible from the pod's node.
  *
- * Removed wholesale by worktree cleanup and the orphan-worktree GC, which
- * sweep both roots.
+ * Removed wholesale by worktree cleanup and the orphan-worktree GC.
  */
 export function worktreeStateDir(slug: string, worktreeId: string): string {
-  return sharedProjectPath(slug, 'sessions', worktreeId)
+  return globalProjectPath(slug, 'sessions', worktreeId)
 }
 
 /**
- * NODE-LOCAL twin of {@link worktreeStateDir}: per-worktree scratch that only the
- * worktree's own node ever touches. Same directory as `worktreeStateDir` today.
- *
- * Nothing writes under it right now — its last resident, the tmux socket
- * dir, is a pod-local emptyDir (see CONTAINER_TMUX_DIR). It stays because
- * it is the tier declaration the sweeps below are built on: worktree scratch
- * that has to survive the pod but not leave the node lands here, and
- * {@link worktreeStateRoots} already reaches it.
- */
-export function nodeLocalWorktreeStateDir(slug: string, worktreeId: string): string {
-  return nodeLocalProjectPath(slug, 'sessions', worktreeId)
-}
-
-/**
- * Both roots a worktree's state can live under, deduplicated. Anything that
- * must see ALL of a worktree — cleanup, the orphan GC — iterates this
- * instead of re-stating the twin relationship, so a reclassification
- * (worktrees to node-local, say) is edited once, here.
- *
- * One entry on the single-node backend, where the tiers coincide.
- */
-export function worktreeStateRoots(slug: string, worktreeId: string): string[] {
-  return [...new Set([
-    worktreeStateDir(slug, worktreeId),
-    nodeLocalWorktreeStateDir(slug, worktreeId),
-  ])]
-}
-
-/** The `worktrees/` parents of {@link worktreeStateRoots}, deduplicated. */
-export function projectWorktreeStateRoots(slug: string): string[] {
-  return [...new Set([
-    sharedProjectPath(slug, 'sessions'),
-    nodeLocalProjectPath(slug, 'sessions'),
-  ])]
-}
-
-/** Both roots a PROJECT's state can live under, deduplicated. */
-export function projectRoots(slug: string): string[] {
-  return [...new Set([projectDir(slug), nodeLocalProjectPath(slug)])]
-}
-
-/**
- * Both `projects/` trees, deduplicated — the slug SOURCE for any sweep
- * that must see every project. Enumerating only the shared root would miss
- * a project whose shared half is already gone but whose node-local tree
- * (pnpm store, opencode data) survives.
+ * Both `projects/` trees — the slug SOURCE for any sweep that must see
+ * every project. Enumerating only the global root would miss a project
+ * whose global half is already gone but whose node-local tree (pnpm
+ * store, opencode working copy) survives.
  */
 export function projectsRoots(): string[] {
-  return [...new Set([getProjectsDir(), getNodeLocalProjectsDir()])]
+  return [getProjectsDir(), getNodeLocalProjectsDir()]
 }
 

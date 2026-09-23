@@ -341,6 +341,14 @@ export interface WorkspaceSpec {
   /** Argv run inside the workspace once its filesystem is up and before it
    *  is reported ready — the in-workspace setup the caller staged. */
   postStartExec: string[]
+  /**
+   * Argv run inside the workspace as it is being stopped, before its
+   * processes are signalled, bounded by the runtime's grace period. What a
+   * working copy checkpoints on the way out. A runtime whose workspaces
+   * keep no working copy (the host-process one) never receives one and
+   * ignores it if it did, like `postStartExec`.
+   */
+  preStopExec?: string[]
   /** The workspace runs its own container engine. */
   nestedContainers: boolean
   /**
@@ -1148,10 +1156,22 @@ export interface WorktreeDriver {
    */
   detachedTeardownCommand(target: TeardownTarget): string
   /** Everything the runtime holds for a whole project, beyond its
-   *  workspaces — the secret values it was handed included: the caller
-   *  tears the workspaces down first. Best-effort per part, so one
-   *  unreachable piece cannot strand the rest. */
+   *  workspaces — the secret values it was handed included, and the
+   *  project's NODE-LOCAL tree on every node (its caches and working
+   *  copies, which the caller's own filesystem does not reach): the caller
+   *  tears the workspaces down first and removes the global tree after.
+   *  Best-effort per part, so one unreachable piece cannot strand the
+   *  rest. */
   destroyProjectSubstrate(projectSlug: string): Promise<void>
+  /**
+   * Collect the NODE-LOCAL leftovers of workspaces that are gone — the
+   * per-worktree ephemeral module dirs and working copies whose owner is
+   * not in `running` (live workspace ids, per project slug), on every node
+   * the runtime has. The global half of the same sweep is the caller's;
+   * this is the half that lives where the caller's filesystem may not
+   * reach. Throttled by the runtime, never by the caller; never rejects.
+   */
+  reapNodeLocal(running: Map<string, Set<string>>): Promise<void>
 
   /**
    * Take the in-workspace `yaac-mama` requests waiting to be answered.

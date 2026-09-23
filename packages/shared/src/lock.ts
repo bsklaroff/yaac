@@ -2,7 +2,9 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { serverLocalPath } from '#paths'
+// The root itself, for the pre-split lock path only (see `legacyLockPath`).
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
+import { getDataDir, serverLocalPath } from '#paths'
 import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock, type ServerLock } from '#server-lock-file'
 
 /** SERVER-LOCAL: the lock is 1:1 with the server process. */
@@ -10,12 +12,27 @@ export function serverLockPath(): string {
   return serverLocalPath(SERVER_LOCK_FILENAME)
 }
 
-export async function readLock(): Promise<ServerLock | null> {
+/**
+ * LEGACY COMPAT (docs/legacy-compat-shims.md). Where a server from before
+ * the storage-tier split wrote its lock: the data dir root. Read as a
+ * fallback so `yaac server start` sees such a server still running rather
+ * than spawning a second writer onto its (now migrated) database, and
+ * `yaac server stop` can stop it. Never written.
+ */
+function legacyLockPath(): string {
+  return path.join(getDataDir(), SERVER_LOCK_FILENAME)
+}
+
+async function readLockAt(p: string): Promise<ServerLock | null> {
   try {
-    return parseServerLock(await fs.readFile(serverLockPath(), 'utf8'))
+    return parseServerLock(await fs.readFile(p, 'utf8'))
   } catch {
     return null
   }
+}
+
+export async function readLock(): Promise<ServerLock | null> {
+  return await readLockAt(serverLockPath()) ?? await readLockAt(legacyLockPath())
 }
 
 export async function writeLock(lock: ServerLock): Promise<void> {
@@ -157,8 +174,11 @@ export async function removeLock(
       : cur.pid === expected.pid
     if (!ours) return
   }
+  // Whichever path the read found it at: the current one when it holds
+  // a lock, else the pre-split root.
+  const target = await readLockAt(serverLockPath()) ? serverLockPath() : legacyLockPath()
   try {
-    await fs.unlink(serverLockPath())
+    await fs.unlink(target)
   } catch {
     // already gone
   }

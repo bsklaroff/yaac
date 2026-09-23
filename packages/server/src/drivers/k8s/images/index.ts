@@ -26,5 +26,6 @@ export {
   ensureNodeImageStore,
   nodeImageStoreMount,
   reconcileNodeImageStores,
-  removeNodeImageStore,
+  removeNodeLocalProject,
 } from './store-writer'
+export { reapNodeLocal } from './node-local-sweep'

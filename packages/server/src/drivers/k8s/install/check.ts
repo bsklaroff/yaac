@@ -2,6 +2,7 @@ import {
   buildProxyIngressNpManifest,
   buildWorktreeEgressNpManifest,
   cniVethPrefix,
+  ensureBuilderImage,
   ensureNamespace,
   nodeIpBlocks,
   vapAvailable,
@@ -10,6 +11,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+  GLOBAL_CLAIM_NAME,
   GVISOR_NODE_LABEL,
   LABEL_WORKTREE_ID,
   NESTED_ENGINE_CAPS,
@@ -20,6 +22,7 @@ import {
   SERVER_APP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_INGRESS_NP_NAME,
+  SERVER_LOCAL_CLAIM_NAME,
   SERVER_POD_PORT,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
@@ -29,6 +32,9 @@ import {
   formatTaint,
   k8sNamespace,
   kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+  nodeLocalNodePath,
   runPodToCompletion,
   runtimeClassSpec,
   hostUidSecurityContext,
@@ -46,7 +52,7 @@ import {
   registryHost,
   registryReachable,
 } from '#drivers/k8s/container'
-import { sharedRoot } from '@yaac/shared/paths'
+import { PACKAGE_ROOT, globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so
 // consumers can name the shape without importing the check suite.
 import type { CheckResult } from '@yaac/shared/types'
@@ -62,9 +68,9 @@ const PROBE_POD_NAME = 'yaac-cluster-check'
 const KIND_SETUP_FIX = [
   'Create a kind cluster wired for yaac by running:',
   '  yaac cluster install',
-  'It provisions the podman machine (macOS), the kind cluster (home',
-  'extraMount), Calico, the kind node fixups, every built-in image, and',
-  'the in-cluster registry.',
+  'It provisions the podman machine (macOS), the kind cluster (home and',
+  'node-local extraMounts), Calico, the kind node fixups, every built-in',
+  'image, the in-cluster registry, and the two storage claims.',
 ].join('\n')
 
 /**
@@ -105,6 +111,10 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *   5. the in-cluster registry answering (through this process's route to
  *      it — a kubectl port-forward, or the outer project registry nested)
  *   6. yaac namespace exists / can be created
+ *   6a. storage: the `yaac-global` and `yaac-server-local` claims exist
+ *      and are Bound, their volumes are `Retain`, and on kind their
+ *      hostPaths are the data dir's own tier folders — the probe below
+ *      mounts the global claim, so a missing one gates it
  *   6b. node fixups (warn-only, kind nodes only): the kubelet housekeeping
  *      interval and the node container's pids-limit that `yaac cluster
  *      install` applies through podman — the two settings a node container
@@ -120,12 +130,17 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      place on every node it runs on, read back through its pods — so it
  *      works on a node yaac has no shell on, and a node that restarted
  *      reads as tuned again once the installer's first pass lands
+ *   6e. node-local-mount (warn-only, kind nodes only): each node binds
+ *      `<dataDir>/node-local` at the install's node path — a cluster
+ *      created before that extraMount keeps its caches on node disk
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
- *      from its cluster ref (on the default gvisor tier) that reads
- *      a nonce file from a hostPath mount of the data dir and writes a
- *      marker back at the worktree uid — proves in-cluster registry
- *      pulls, host-visible hostPath, AND unprivileged hostPath writes
- *      through the gofer in one shot
+ *      from its cluster ref (on the default gvisor tier) that mounts the
+ *      `yaac-global` claim, reads a nonce the check wrote at the global
+ *      root and writes a marker back at the worktree uid — proves
+ *      in-cluster registry pulls, that the claim is the server's bytes,
+ *      AND unprivileged writes through the gofer in one shot; it also
+ *      round-trips a second nonce while the pod runs, which is the
+ *      cross-visibility latency the pass detail reports
  *   8. egress enforcement: a worktree-labeled pod (gvisor, like real
  *      worktrees) cannot reach the apiserver (CNI enforces policy) and
  *      cannot dial a proxy transparent port directly (the forgery lock —
@@ -149,6 +164,11 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
  *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
  *      engine (nestedContainers; suid/file-caps are covered by the e2e)
+ *  10a. storage-semantics (warn-only): the POSIX semantics of what backs
+ *      the global claim, as a gvisor pod sees them — ownership, O_EXCL,
+ *      atomic rename, hardlinks, locks, fsync, mmap, append, xattrs
+ *      (k8s/probes/fsprobe.py) — the probes a cloud install's storage
+ *      class will be judged by, run here so a kind quirk surfaces early
  *  11. runtime-stamp (warn-only): every UNTRUSTED pod — the worktree pods,
  *      by their yaac.worktree-id label — carries a gvisor-tier
  *      runtimeClassName. Trusted infra (proxy, registries, node-write)
@@ -241,16 +261,22 @@ export async function runClusterCheck(
     })
   }
 
-  // 6a. PriorityClasses — cluster-scoped objects the pod builders name;
-  // read-only, so it runs before the probe gates rather than behind them.
+  // 6a. The storage claims — what the server pod and every probe below
+  // mount; read-only, so it runs before the probe gates rather than behind
+  // them.
+  add(await runStorageCheck())
+
+  // PriorityClasses — cluster-scoped objects the pod builders name;
+  // read-only likewise.
   add(await runPriorityClassCheck())
 
   // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
   // prerequisites already failed)
   const PROBE_GATES = [
-    'node-fixups', 'gvisor', 'node-tuning', 'probe', 'egress', 'datapath', 'veth-source',
+    'node-fixups', 'node-local-mount', 'gvisor', 'node-tuning', 'probe', 'egress', 'datapath',
+    'veth-source',
     ...MULTI_NODE_GATES,
-    'nested-mount', 'vap', 'runtime-stamp',
+    'nested-mount', 'storage-semantics', 'vap', 'runtime-stamp',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
     for (const name of PROBE_GATES.slice(PROBE_GATES.indexOf(from))) {
@@ -262,6 +288,7 @@ export async function runClusterCheck(
     return { ok: false, results }
   }
   add(await runNodeFixupsCheck())
+  add(await runNodeLocalMountCheck())
   add(await runGvisorRuntimeCheck())
   // After the gvisor gate, which is what proves the installer DaemonSet
   // exists at all; warn-only, so it gates nothing below.
@@ -282,11 +309,12 @@ export async function runClusterCheck(
   // still runs first, so none of them can sit Pending to its timeout
   // waiting for a RuntimeClass that will never appear — which is the one
   // ordering that was ever load-bearing.
-  const [probeResult, egressResult, nestedMountResult, multiNodeResults] = await Promise.all([
+  const [probeResult, egressResult, nestedMountResult, multiNodeResults, semanticsResult] = await Promise.all([
     runEndToEndProbe(),
     runNetworkPolicyProbe(),
     runNestedMountProbe(),
     runMultiNodeReadiness(nodes, gvisorScheduling),
+    runStorageSemanticsProbe(),
   ])
   add(probeResult)
   add(egressResult)
@@ -319,6 +347,10 @@ export async function runClusterCheck(
   // namespaced SYS_ADMIN grant does not unlock the mount family). Ran
   // above, alongside the other pod probes.
   add(nestedMountResult)
+
+  // 10a. What backs the global claim, judged by the spike's probes. Ran
+  // above, alongside the other pod probes.
+  add(semanticsResult)
 
   // 10b. ValidatingAdmissionPolicy availability: the builder-pod guard
   // refuses to apply without it, fail-closed, so no image can be built.
@@ -529,6 +561,127 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
       name: 'node-fixups', status: 'warn',
       detail: `could not verify node fixups (${truncate(err)})`,
       fix: NODE_FIXUPS_FIX,
+    }
+  }
+}
+
+/**
+ * LEGACY COMPAT (docs/legacy-compat-shims.md): warn-level tripwire for a
+ * kind cluster created before the node-local extraMount existed. kind
+ * writes mounts at create time, so the node binds `<dataDir>/node-local`
+ * at the install's node path or it never will; without the bind the
+ * node-local tier lives on the node container's own disk — correct, but
+ * lost with the node (every podman-machine restart on macOS). Kind-specific
+ * like the fixups (node name == podman container name), and self-skips
+ * the same way on a node that is not a podman container.
+ */
+async function runNodeLocalMountCheck(): Promise<CheckResult> {
+  const nodePath = nodeLocalNodePath()
+  try {
+    const { stdout } = await execFileAsync('kubectl', [
+      'get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}',
+    ])
+    const nodes = stdout.trim().split(/\s+/).filter(Boolean)
+    const unbound: string[] = []
+    for (const node of nodes) {
+      try {
+        await execFileAsync('podman', ['exec', node, 'findmnt', '-n', nodePath])
+      } catch (err) {
+        // `findmnt` exits 1 for "not a mount point"; anything else is a
+        // node this cannot ask (not a podman container, no findmnt).
+        if ((err as { code?: number }).code !== 1) {
+          return {
+            name: 'node-local-mount', status: 'skip',
+            detail: `node "${node}" is not a podman container — the kind extraMount is not applicable`,
+          }
+        }
+        unbound.push(node)
+      }
+    }
+    if (unbound.length > 0) {
+      return {
+        name: 'node-local-mount', status: 'warn',
+        detail: `${nodeList(unbound)} does not bind ${nodeLocalRoot()} at ${nodePath}`,
+        fix: 'This cluster predates the node-local extraMount, which kind can only '
+          + 'write at create time. Per-node caches (pnpm stores, image stores, '
+          + 'opencode working copies) live on node disk until `yaac cluster delete` '
+          + 'and `yaac cluster install` recreate it; worktrees work either way.',
+      }
+    }
+    return {
+      name: 'node-local-mount', status: 'pass',
+      detail: `${nodeLocalRoot()} bound at ${nodePath} on ${String(nodes.length)} node(s)`,
+    }
+  } catch (err) {
+    return {
+      name: 'node-local-mount', status: 'warn',
+      detail: `could not verify the node-local mount (${truncate(err)})`,
+    }
+  }
+}
+
+const STORAGE_FIX =
+  'The two storage claims are applied by `yaac cluster install`: static '
+  + 'hostPath volumes into the data dir\'s `global/` and `server-local/` '
+  + 'folders, bound to `yaac-global` (RWX) and `yaac-server-local` (RWO) in '
+  + 'the install namespace. Re-run it.'
+
+interface RawPvcRead {
+  spec?: { volumeName?: string }
+  status?: { phase?: string }
+}
+interface RawPvRead {
+  spec?: { persistentVolumeReclaimPolicy?: string; hostPath?: { path?: string } }
+}
+
+/**
+ * The storage gate: both claims exist and are Bound, their volumes are
+ * `Retain` (a claim or namespace delete must never take the data with it),
+ * and where a volume is a hostPath it is the data dir's own tier folder —
+ * anything else is a claim bound to bytes that are not this install's.
+ * Fail-level: the server pod and every probe below mount the global claim.
+ */
+async function runStorageCheck(): Promise<CheckResult> {
+  const ns = k8sNamespace()
+  const expectedHostPath: Record<string, string> = {
+    [GLOBAL_CLAIM_NAME]: globalRoot(),
+    [SERVER_LOCAL_CLAIM_NAME]: serverLocalRoot(),
+  }
+  try {
+    const problems: string[] = []
+    const bound: string[] = []
+    for (const name of [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME]) {
+      const pvc = await kubectlGetJson<RawPvcRead>(['get', 'pvc', name, '-n', ns])
+      if (!pvc) {
+        problems.push(`${name}: no such claim in "${ns}"`)
+        continue
+      }
+      const phase = pvc.status?.phase ?? 'Pending'
+      if (phase !== 'Bound') {
+        problems.push(`${name}: ${phase}`)
+        continue
+      }
+      const volumeName = pvc.spec?.volumeName ?? ''
+      const pv = await kubectlGetJson<RawPvRead>(['get', 'pv', volumeName])
+      const reclaim = pv?.spec?.persistentVolumeReclaimPolicy
+      if (reclaim !== 'Retain') {
+        problems.push(`${name}: volume ${volumeName} reclaims by ${reclaim ?? 'an unknown policy'}, not Retain`)
+      }
+      const hostPath = pv?.spec?.hostPath?.path
+      if (hostPath !== undefined && hostPath !== expectedHostPath[name]) {
+        problems.push(`${name}: volume ${volumeName} is ${hostPath}, not ${expectedHostPath[name]}`)
+      }
+      bound.push(`${name} → ${volumeName}${hostPath ? ` (${hostPath})` : ''}`)
+    }
+    if (problems.length > 0) {
+      return { name: 'storage', status: 'fail', detail: problems.join('; '), fix: STORAGE_FIX }
+    }
+    return { name: 'storage', status: 'pass', detail: `${bound.join('; ')}, both Bound and Retain` }
+  } catch (err) {
+    return {
+      name: 'storage', status: 'fail',
+      detail: `could not read the storage claims (${truncate(err)})`,
+      fix: STORAGE_FIX,
     }
   }
 }
@@ -891,19 +1044,64 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
   }
 }
 
+/** Files the e2e probe and the check pass each other through the claim. */
+const PROBE_BEACON_FILE = '.cluster-check-beacon'
+const PROBE_NONCE2_FILE = '.cluster-check-nonce2'
+const PROBE_ACK_FILE = '.cluster-check-ack'
+
+/**
+ * The pod's half of the cross-visibility round trip: announce that it is
+ * running, wait for the second nonce the check writes on seeing that, and
+ * acknowledge it. Bounded, and never a failure — a pod that hears nothing
+ * simply exits without an ack and the detail omits the number.
+ */
+const PROBE_ROUND_TRIP_SCRIPT =
+  `echo > /probe/${PROBE_BEACON_FILE}; i=0; `
+  + `while [ $i -lt 1500 ] && [ ! -f /probe/${PROBE_NONCE2_FILE} ]; do sleep 0.02; i=$((i+1)); done; `
+  + `if [ -f /probe/${PROBE_NONCE2_FILE} ]; then echo ok > /probe/${PROBE_ACK_FILE}; fi`
+
+/**
+ * The check's half: watch for the pod's beacon while the pod runs, write
+ * the second nonce the moment it shows, and time the acknowledgement. The
+ * result is the host↔pod round trip through the claim — the coherence
+ * number a network-backed class is judged by — or undefined when the pod
+ * finished without ever announcing itself (a failed pod, or a fake one).
+ */
+async function measureRoundTrip(dataDir: string, until: Promise<unknown>): Promise<number | undefined> {
+  let done = false
+  void until.then(() => { done = true }, () => { done = true })
+  const exists = (p: string): Promise<boolean> => fs.access(p).then(() => true, () => false)
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
+  while (!done) {
+    if (await exists(path.join(dataDir, PROBE_BEACON_FILE))) {
+      const started = Date.now()
+      await fs.writeFile(path.join(dataDir, PROBE_NONCE2_FILE), 'go')
+      while (!done) {
+        if (await exists(path.join(dataDir, PROBE_ACK_FILE))) return Date.now() - started
+        await tick()
+      }
+      return undefined
+    }
+    await tick()
+  }
+  return undefined
+}
+
 /**
  * The one check that exercises the full wiring: registry pull from inside
- * the cluster plus host-visible hostPath mounts. Failure modes map to the
- * two pieces of cluster install yaac cannot do itself (containerd registry
- * config, node extraMounts).
+ * the cluster, plus the global claim being the same bytes the server
+ * writes. Failure modes map to the pieces `yaac cluster install` wires:
+ * the containerd registry config, the claim and its volume, the runtime.
  */
 async function runEndToEndProbe(): Promise<CheckResult> {
-  // The SHARED root: the probe writes here and mounts the same directory
-  // into a pod, which is exactly the visibility contract that tier states.
-  const dataDir = sharedRoot()
+  // The GLOBAL root: the probe writes here, and the pod mounts the claim
+  // that is (on kind) this very directory — which is exactly the
+  // visibility contract that tier states.
+  const dataDir = globalRoot()
   const nonce = crypto.randomUUID()
   const nonceFile = path.join(dataDir, '.cluster-check-nonce')
   const writeFile = path.join(dataDir, '.cluster-check-write')
+  const scratch = [PROBE_BEACON_FILE, PROBE_NONCE2_FILE, PROBE_ACK_FILE].map((f) => path.join(dataDir, f))
   const ns = k8sNamespace()
   // The identity a worktree pod runs as. The probe's whole point is that a
   // hostPath write at THIS uid reaches the host, so it must be the same
@@ -913,7 +1111,7 @@ async function runEndToEndProbe(): Promise<CheckResult> {
   try {
     await fs.mkdir(dataDir, { recursive: true })
     await fs.writeFile(nonceFile, nonce)
-    await fs.rm(writeFile, { force: true })
+    for (const f of [writeFile, ...scratch]) await fs.rm(f, { force: true })
 
     // Make sure the probe image exists locally, then push it through the
     // same registry path worktree images take.
@@ -927,11 +1125,11 @@ async function runEndToEndProbe(): Promise<CheckResult> {
         restartPolicy: 'Never',
         // Mirror the worktree-pod containment (see buildPodJobManifest):
         // a host pod carries the gvisor RuntimeClass (no userns), so the
-        // probe proves hostPath reads/writes work through the gofer at the
-        // worktree uid.
+        // probe proves reads/writes on the claim work through the gofer at
+        // the worktree uid.
         ...runtimeClassSpec(),
-        // Run at the identity a worktree pod runs at, and prove a hostPath
-        // WRITE works there — worktree setup's first unprivileged write (the
+        // Run at the identity a worktree pod runs at, and prove a WRITE
+        // works there — worktree setup's first unprivileged write (the
         // worktree gitdir pointer) fails exactly here when it does not.
         securityContext: {
           seccompProfile: { type: 'RuntimeDefault' },
@@ -942,20 +1140,25 @@ async function runEndToEndProbe(): Promise<CheckResult> {
           image: imageRef,
           command: [
             'sh', '-c',
-            'cat /probe/.cluster-check-nonce && echo ok > /probe/.cluster-check-write',
+            'cat /probe/.cluster-check-nonce && echo ok > /probe/.cluster-check-write && '
+            + PROBE_ROUND_TRIP_SCRIPT,
           ],
           volumeMounts: [{ name: 'probe', mountPath: '/probe' }],
         }],
-        volumes: [{ name: 'probe', hostPath: { path: dataDir, type: 'Directory' } }],
+        // The claim, not a hostPath: what every worktree pod mounts its
+        // subPaths of, and what the server pod has mounted whole.
+        volumes: [{ name: 'probe', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } }],
       },
     }
-    // Run to a terminal phase; image-pull errors and hostPath failures
-    // both surface here.
-    const { phase, logs } = await runPodToCompletion(manifest, {
+    // Run to a terminal phase; image-pull errors and mount failures both
+    // surface here. The round trip is timed alongside, from the host.
+    const run = runPodToCompletion(manifest, {
       timeoutMs: 90_000,
+      pollMs: 250,
       kubectl: (args) => execFileAsync('kubectl', args),
       apply: kubectlApply,
     })
+    const [{ phase, logs }, roundTripMs] = await Promise.all([run, measureRoundTrip(dataDir, run)])
     if (phase !== 'Succeeded') {
       return {
         name: 'probe', status: 'fail',
@@ -963,15 +1166,17 @@ async function runEndToEndProbe(): Promise<CheckResult> {
         fix: 'If the pod is stuck in ImagePullBackOff, the node cannot '
           + `pull from ${registryHost()} — its containerd hosts.toml for `
           + 'that host is missing or stale; re-apply it with `yaac cluster '
-          + 'install`.\nIf it failed mounting '
-          + `/probe, the node cannot see ${dataDir} — add an extraMounts `
-          + 'entry for your home directory to the kind config.\n'
+          + 'install`.\nIf it failed mounting /probe, the '
+          + `${GLOBAL_CLAIM_NAME} claim or its volume is broken on the node — `
+          + `on kind the volume is a hostPath into ${dataDir}, which the `
+          + 'node needs the home extraMount to see; `yaac cluster install` '
+          + 're-applies the claim.\n'
           + 'If it never got past Pending or failed with a runsc/'
           + 'RuntimeClass error, the gvisor runtime is broken — run '
           + '`yaac cluster install` (re-applies the runsc installer '
           + 'DaemonSet).\n'
           + 'If it failed writing /probe/.cluster-check-write, uid '
-          + `${identity.runAsUser} cannot write hostPath mounts — see the `
+          + `${identity.runAsUser} cannot write the volume — see the `
           + 'virtiofs ownership notes in docs/cluster-setup.md '
           + '("macOS: the podman machine").',
       }
@@ -979,31 +1184,32 @@ async function runEndToEndProbe(): Promise<CheckResult> {
     if (logs.trim() !== nonce) {
       return {
         name: 'probe', status: 'fail',
-        detail: 'probe pod read stale data from the hostPath mount',
-        fix: `The node's view of ${dataDir} is not the host's — check the `
+        detail: 'probe pod read stale data through the global claim',
+        fix: `The ${GLOBAL_CLAIM_NAME} claim is not bound to ${dataDir} as the `
+          + 'server sees it — check its volume (`kubectl get pv`) and the '
           + 'extraMounts entry in your kind config.',
       }
     }
     // The pod's write must round-trip to the host: this is the server-side
-    // proof that a worktree's unprivileged uid can mutate hostPath mounts
+    // proof that a worktree's unprivileged uid can mutate the claim
     // (worktree, config dirs) — a read-only probe passes on clusters where
     // every worktree still dies on its first write.
     const written = await fs.readFile(writeFile, 'utf8').catch(() => null)
     if (written?.trim() !== 'ok') {
       return {
         name: 'probe', status: 'fail',
-        detail: `probe pod's hostPath write (uid ${identity.runAsUser}) `
-          + 'did not reach the host',
-        fix: 'Session pods write hostPath mounts as the uid that owns the '
-          + 'data dir; on a strict-virtiofs host that uid is a ceiling '
-          + 'nothing in the cluster can raise. See the virtiofs ownership '
-          + 'notes in docs/cluster-setup.md ("macOS: the podman machine").',
+        detail: `probe pod's write (uid ${identity.runAsUser}) through the `
+          + 'global claim did not reach the host',
+        fix: 'Session pods write the claim as the uid that owns the data '
+          + 'dir; on a strict-virtiofs host that uid is a ceiling nothing in '
+          + 'the cluster can raise. See the virtiofs ownership notes in '
+          + 'docs/cluster-setup.md ("macOS: the podman machine").',
       }
     }
     return {
       name: 'probe', status: 'pass',
-      detail: `registry pull + hostPath mount + uid ${identity.runAsUser} `
-        + 'write verified',
+      detail: `registry pull + global claim: read, write at uid ${identity.runAsUser}`
+        + (roundTripMs === undefined ? '' : `, cross-visibility round trip ${String(roundTripMs)}ms`),
     }
   } catch (err) {
     return {
@@ -1012,8 +1218,113 @@ async function runEndToEndProbe(): Promise<CheckResult> {
       fix: KIND_SETUP_FIX,
     }
   } finally {
-    await fs.rm(nonceFile, { force: true }).catch(() => { /* best-effort */ })
-    await fs.rm(writeFile, { force: true }).catch(() => { /* best-effort */ })
+    for (const f of [nonceFile, writeFile, ...scratch]) {
+      await fs.rm(f, { force: true }).catch(() => { /* best-effort */ })
+    }
+  }
+}
+
+const FSPROBE_CONFIGMAP_NAME = 'yaac-cluster-check-fsprobe'
+const FSPROBE_POD_NAME = 'yaac-cluster-check-fsprobe'
+
+const STORAGE_SEMANTICS_FIX =
+  'A worktree relies on these from the global claim: creation ownership '
+  + 'and O_EXCL for the lock and the staged files, atomic rename for every '
+  + 'seed the server writes, hardlinks for the git object store, append for '
+  + 'the session-starts log. On kind a failure is a virtiofs or gofer quirk '
+  + 'worth reporting; on a cloud cluster it is the storage class, and the '
+  + 'claim needs one that passes.'
+
+/**
+ * Warn-level: the POSIX semantics of what backs the global claim, as a
+ * sandboxed pod at the worktree uid sees them — the spike's `fsprobe.py`
+ * (k8s/probes/), delivered by a ConfigMap this check applies and deletes,
+ * run by the pinned podman mirror because it ships python3 and is already
+ * in the registry. Every check must pass; the detail names the failures.
+ * Warn rather than fail on kind so a virtiofs quirk surfaces without
+ * blocking; a cloud install is where this becomes the gate.
+ */
+async function runStorageSemanticsProbe(): Promise<CheckResult> {
+  const ns = k8sNamespace()
+  try {
+    const script = await fs.readFile(path.join(PACKAGE_ROOT, 'k8s', 'probes', 'fsprobe.py'), 'utf8')
+    await kubectlApply({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: FSPROBE_CONFIGMAP_NAME, namespace: ns },
+      data: { 'fsprobe.py': script },
+    })
+    const imageRef = await ensureBuilderImage()
+    const { phase, logs } = await runPodToCompletion({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: FSPROBE_POD_NAME, namespace: ns },
+      spec: {
+        restartPolicy: 'Never',
+        automountServiceAccountToken: false,
+        enableServiceLinks: false,
+        ...runtimeClassSpec(),
+        securityContext: { seccompProfile: { type: 'RuntimeDefault' }, ...hostUidSecurityContext() },
+        containers: [{
+          name: 'probe',
+          image: imageRef,
+          imagePullPolicy: 'IfNotPresent',
+          // The probe leaves its scratch dir behind; nothing else reads it.
+          command: ['sh', '-c', 'python3 /probes/fsprobe.py /probe; rc=$?; rm -rf /probe/fsprobe-*; exit $rc'],
+          volumeMounts: [
+            { name: 'probe', mountPath: '/probe' },
+            { name: 'script', mountPath: '/probes', readOnly: true },
+          ],
+        }],
+        volumes: [
+          { name: 'probe', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } },
+          { name: 'script', configMap: { name: FSPROBE_CONFIGMAP_NAME } },
+        ],
+      },
+    }, {
+      timeoutMs: 120_000,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
+    })
+    const failed = logs.split('\n')
+      .filter((l) => l.startsWith('FAIL'))
+      .map((l) => l.replace(/^FAIL\s+/, '').replace(/\s{2,}.*$/, '').trim())
+    const summary = /(\d+\/\d+ passed)/.exec(logs)?.[1]
+    if (phase !== 'Succeeded' && failed.length === 0) {
+      return {
+        name: 'storage-semantics', status: 'warn',
+        detail: `fsprobe pod ended in phase ${phase} (${logs.trim().slice(-80) || 'no output'})`,
+        fix: STORAGE_SEMANTICS_FIX,
+      }
+    }
+    if (failed.length > 0) {
+      return {
+        name: 'storage-semantics', status: 'warn',
+        detail: `the global claim fails: ${failed.join(', ')}${summary ? ` (${summary})` : ''}`,
+        fix: STORAGE_SEMANTICS_FIX,
+      }
+    }
+    if (!summary) {
+      return {
+        name: 'storage-semantics', status: 'warn',
+        detail: `fsprobe printed no summary (${logs.trim().slice(-80) || 'no output'})`,
+        fix: STORAGE_SEMANTICS_FIX,
+      }
+    }
+    return {
+      name: 'storage-semantics', status: 'pass',
+      detail: `POSIX semantics on the global claim under gvisor: ${summary}`,
+    }
+  } catch (err) {
+    return {
+      name: 'storage-semantics', status: 'warn',
+      detail: `fsprobe errored (${truncate(err)})`,
+      fix: STORAGE_SEMANTICS_FIX,
+    }
+  } finally {
+    await kubectlWithRetry([
+      'delete', 'configmap', FSPROBE_CONFIGMAP_NAME, '-n', ns, '--ignore-not-found',
+    ], { maxAttempts: 1 }).catch(() => { /* best-effort */ })
   }
 }
 
@@ -1132,7 +1443,7 @@ async function podFailureEvent(podName: string): Promise<string> {
  * gate, which is visible and true.
  */
 function blameProbeFailure(event: string): ProbeBlame {
-  if (/FailedMount|MountVolume|hostPath/i.test(event)) return 'volume'
+  if (/FailedMount|MountVolume|hostPath|FailedAttachVolume|PersistentVolumeClaim|not bound/i.test(event)) return 'volume'
   if (/RuntimeClass|runsc|no runtime for/i.test(event)) return 'runsc'
   if (/ImagePull|ErrImage|pull|manifest unknown|no such host|connection refused/i.test(event)) {
     return 'registry'
@@ -1194,7 +1505,8 @@ async function probeNode(
           ],
           volumeMounts: [{ name: 'probe', mountPath: '/probe' }],
         }],
-        volumes: [{ name: 'probe', hostPath: { path: ctx.dataDir, type: 'Directory' } }],
+        // The global claim, as a worktree pod on this node would mount it.
+        volumes: [{ name: 'probe', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } }],
       },
     }, {
       // Shorter than the e2e probe's: these run one per node, and a pinned
@@ -1230,11 +1542,12 @@ const REGISTRY_NODES_FIX =
   + 'every node.'
 
 const VOLUME_NODES_FIX =
-  'Session pods mount worktrees, caches and credentials by hostPath, which '
-  + 'resolves on the NODE. Every node therefore needs the home-directory '
-  + 'extraMount — `yaac cluster install --nodes N` renders it onto every node '
-  + 'it creates, so a cluster made by hand (or by an older yaac) is the '
-  + 'usual cause.'
+  `Session pods mount subPaths of the ${GLOBAL_CLAIM_NAME} claim, whose volume `
+  + 'on kind is a hostPath into the data dir that resolves on the NODE. Every '
+  + 'node therefore needs the home-directory extraMount — `yaac cluster '
+  + 'install --nodes N` renders it onto every node it creates, so a cluster '
+  + 'made by hand (or by an older yaac) is the usual cause. On a cloud '
+  + 'cluster the volume itself has to attach on every node.'
 
 /** Node names for a warn detail, capped so a wide cluster stays readable. */
 function nodeList(names: string[]): string {
@@ -1256,8 +1569,8 @@ function nodeList(names: string[]): string {
  *    how many is this gate's question.
  *  - **registry-nodes** — that node's containerd can pull from the local
  *    registry (the probe pulls `Always`).
- *  - **volume-nodes** — the shared data dir hostPath resolves to the same
- *    bytes the server sees, and the worktree uid can write it.
+ *  - **volume-nodes** — the global claim is the same bytes the server
+ *    sees from that node, and the worktree uid can write it.
  *
  * A pod that never runs is attributed to ONE of them from the kubelet's
  * event (blameProbeFailure) and left *unverified* — never passed — on the
@@ -1338,7 +1651,7 @@ async function runMultiNodeReadiness(
     )
   }
 
-  const dataDir = sharedRoot()
+  const dataDir = globalRoot()
   const nonce = crypto.randomUUID()
   const nonceFile = path.join(dataDir, NODE_PROBE_NONCE_FILE)
   try {
@@ -1438,7 +1751,7 @@ async function runMultiNodeReadiness(
         ],
         [...failed.filter((o) => o.blame !== 'volume').map((o) => o.node), ...unlabelledNames],
         VOLUME_NODES_FIX,
-        (list) => `${sharedRoot()} is not the server's on: ${list}`,
+        (list) => `${globalRoot()} is not the server's on: ${list}`,
         `shared data dir visible and writable at uid ${probeUid} from all `
           + `${eligible.length} session-eligible nodes`,
       ),

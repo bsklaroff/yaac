@@ -60,7 +60,7 @@ describe('yaac auth server (real CLI + real servers)', () => {
     expect(res.stdout).toMatch(/claude\.com\/cai\/oauth/)
 
     const creds = JSON.parse(await fs.readFile(
-      path.join(testEnv.dataDir, '.credentials', 'claude.json'), 'utf8',
+      path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json'), 'utf8',
     )) as { kind: string; claudeAiOauth: { accessToken: string } }
     expect(creds.kind).toBe('oauth')
     expect(creds.claudeAiOauth.accessToken).toBe('sk-ant-oat01-fake-web-login')

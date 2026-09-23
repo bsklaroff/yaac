@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir } from '@yaac/shared/paths'
+import { ensureDataDir, setDataDir } from '@yaac/shared/paths'
 import { readServerConfig, registerServer } from '@yaac/shared/server-config'
 import { readLock } from '@yaac/shared/lock'
 import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
@@ -124,9 +124,10 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   const scratchDir = await e2eMkdtemp('yaac-e2ecli-')
   const dataDir = path.join(scratchDir, 'data')
   const gitConfigPath = path.join(scratchDir, 'gitconfig')
-  await fs.mkdir(path.join(dataDir, 'projects'), { recursive: true })
   await fs.writeFile(gitConfigPath, '')
   setDataDir(dataDir)
+  // The tier folders, through the same helper a server start uses.
+  await ensureDataDir()
   // Mirror the namespace into the test process so src helpers used by
   // assertions (listWorktreePods, containerExec, ...) hit the same
   // namespace as the server subprocess.

@@ -119,6 +119,17 @@ vi.mock('@yaac/server/drivers/k8s/substrate/pod-wait', () => ({
   waitForJobPodReady: vi.fn().mockResolvedValue(undefined),
 }))
 
+// The tier resolver is bypassed: every path here is a `/tmp` stand-in
+// under no real tier root, and what these cases pin is the DECLARED mount
+// list. How a declaration becomes a claim subPath or a node path is
+// covered where the resolver lives (substrate/mount-sources.test.ts).
+vi.mock('@yaac/server/drivers/k8s/substrate/mount-sources', () => ({
+  resolveMountSource: (m: unknown) => m,
+  nodeLocalDirsOf: () => [],
+  nodeLocalHostPath: (p: string) => p,
+  nodeLocalNodePath: () => '/var/lib/yaac/node/ddh0123456789abc',
+}))
+
 // A whole replacement, not a partial one: every path has to land under /tmp
 // so nothing here can reach a real data dir. The cost is that it has to be
 // kept in step by hand — a path helper the create path starts calling is
@@ -135,7 +146,8 @@ vi.mock('@yaac/shared/project-paths', () => ({
   claudeJsonFile: vi.fn((slug: string) => `/tmp/${slug}/claude.json`),
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
   opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
-  opencodeDataDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/opencode-data/${worktreeId}`),
+  opencodeDataDir: vi.fn((slug: string, worktreeId: string) => `/tmp/node/${slug}/opencode-data/${worktreeId}`),
+  opencodeCheckpointDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/opencode-data/${worktreeId}`),
   piDir: vi.fn((slug: string) => `/tmp/${slug}/pi`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
   // Per-worktree ACP conversation records; create makes the dir so acpd can
@@ -355,7 +367,7 @@ interface JobManifest {
         containers: Array<{
           image: string
           env: Array<{ name: string; value: string }>
-          lifecycle?: { postStart?: { exec?: { command: string[] } } }
+          lifecycle?: { postStart?: { exec?: { command: string[] } }; preStop?: { exec?: { command: string[] } } }
           volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
         }>
         volumes: Array<{
@@ -757,6 +769,7 @@ describe('createWorktree', () => {
       '/tmp/demo/repo/.git',
       '/tmp/demo/claude',
       '/tmp/demo/codex',
+      '/tmp/node/demo/opencode-data/abcd1234',
       '/tmp/demo/opencode-data/abcd1234',
       '/tmp/demo/opencode-config',
       '/tmp/demo/pi',
@@ -1043,6 +1056,7 @@ describe('createWorktree', () => {
     const container = appliedJobManifest().spec.template.spec.containers[0]
     expect(container.lifecycle).toEqual({
       postStart: { exec: { command: ['/usr/local/bin/yaac-worktree-init'] } },
+      preStop: { exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] } },
     })
     expect(container.env).toEqual(expect.arrayContaining([
       { name: 'YAAC_TOOL', value: 'claude' },
@@ -1117,7 +1131,7 @@ describe('createWorktree', () => {
     })
   })
 
-  it('mounts the per-session opencode data dir + shared config dir on every session', async () => {
+  it('mounts the per-session opencode working copy, its global checkpoint, and the shared config dir on every session', async () => {
     // Per-yaac-session opencode data is mounted regardless of which tool
     // is active (matches the existing "claude + codex always mounted"
     // pattern), so the mount shows up here even though tool=claude.
@@ -1125,11 +1139,26 @@ describe('createWorktree', () => {
 
     const { volumes, containers } = appliedJobManifest().spec.template.spec
 
-    const dataVol = volumes.find((v) => v.hostPath?.path === '/tmp/demo/opencode-data/abcd1234')
+    // The NODE-LOCAL working copy the tool runs against...
+    const dataVol = volumes.find((v) => v.hostPath?.path === '/tmp/node/demo/opencode-data/abcd1234')
     expect(dataVol).toBeDefined()
     const dataMount = containers[0].volumeMounts
       .find((m) => m.mountPath === '/home/yaac/.local/share/opencode')
     expect(dataMount?.name).toBe(dataVol?.name)
+    // ...and the GLOBAL checkpoint it is restored from and copied back to,
+    // with the preStop hook that does the last copy. The working copy is
+    // NOT created here: it lives on the pod's node, which the init
+    // container creates.
+    const checkpointVol = volumes.find((v) => v.hostPath?.path === '/tmp/demo/opencode-data/abcd1234')
+    expect(checkpointVol).toBeDefined()
+    expect(containers[0].volumeMounts.find((m) => m.mountPath === '/home/yaac/.yaac/opencode-checkpoint')?.name)
+      .toBe(checkpointVol?.name)
+    expect(containers[0].lifecycle?.preStop).toEqual({
+      exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] },
+    })
+    expect(mockMkdir).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^\/tmp\/node\//), expect.anything(),
+    )
 
     const configVol = volumes.find((v) => v.hostPath?.path === '/tmp/demo/opencode-config')
     expect(configVol).toBeDefined()
@@ -1137,10 +1166,7 @@ describe('createWorktree', () => {
       .find((m) => m.mountPath === '/home/yaac/.config/opencode')
     expect(configMount?.name).toBe(configVol?.name)
 
-    expect(mockMkdir).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/tmp\/demo\/opencode-data\//),
-      { recursive: true },
-    )
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-data/abcd1234', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-config', { recursive: true })
   })
 })

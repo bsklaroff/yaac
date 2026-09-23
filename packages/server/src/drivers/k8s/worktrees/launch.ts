@@ -10,10 +10,14 @@ import {
   ensurePriorityClasses,
   k8sNamespace,
   kubectlApply,
+  nodeLocalDirsOf,
+  nodeLocalNodePath,
   podStreamToken,
+  resolveMountSource,
   worktreeIdLabels,
   worktreeJobName,
   type PodMount,
+  PRE_STOP_GRACE_SECONDS,
 } from '#drivers/k8s/substrate'
 import {
   ensureProjectRegistry,
@@ -222,14 +226,18 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
   }
 
-  const mounts: PodMount[] = [...spec.mounts]
+  const declared: PodMount[] = [...spec.mounts]
   // NODE-LOCAL, read-only: this node's image store generation.
-  mounts.push(...substrate.storeMounts)
+  declared.push(...substrate.storeMounts)
   if (spec.ssh) {
     const ssh = workspaceSshTransport(spec.ssh.knownHostsFile, substrate.proxyHost)
-    mounts.push(...ssh.mounts)
+    declared.push(...ssh.mounts)
     env.push(...ssh.env)
   }
+  // Every mount arrives declared against a tier helper's host path; what
+  // backs it in the cluster — a subPath of the global claim, or the node's
+  // own tree — is resolved here and nowhere above (mount-sources.ts).
+  const mounts = declared.map(resolveMountSource)
 
   const labels: Record<string, string> = {
     [LABEL_PROJECT]: spec.projectSlug,
@@ -270,6 +278,16 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // holds Ready until it's done and no per-command exec round trips are
     // paid. Prewarmed spares take this same path.
     postStartExec: spec.postStartExec,
+    // A preStop hook runs inside the pod's grace period, so a pod that has
+    // one gets a budget sized for the hook (PRE_STOP_GRACE_SECONDS).
+    ...(spec.preStopExec
+      ? { preStopExec: spec.preStopExec, terminationGracePeriodSeconds: PRE_STOP_GRACE_SECONDS }
+      : {}),
+    // The node-local directories this pod mounts, created on its node by
+    // its own init container: nothing about a node's disk is written from
+    // the server's filesystem.
+    nodeLocalDirs: nodeLocalDirsOf(mounts),
+    nodeLocalRoot: nodeLocalNodePath(),
   })
 
   spec.onProgress?.(`Creating session job ${jobName}...`)

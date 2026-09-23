@@ -371,7 +371,7 @@ beforeAll(async () => {
   // dials it (YAAC_E2E_SKIP_FETCH), and the fake github credential above is
   // what resolves for it.
   await execFileAsync('git', [
-    '-C', path.join(testEnv.dataDir, 'projects', SLUG, 'repo'),
+    '-C', path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo'),
     'remote', 'set-url', 'origin', `https://github.com/test/${SLUG}.git`,
   ])
 })
@@ -419,7 +419,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
 
   it('gives the worktree a real checkout on the host, which is what the agent sees', async () => {
     const dir = path.join(
-      testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId,
+      testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId,
     )
     // No path translation: the checkout the server made IS the workspace,
     // which is why the create skips the in-pod gitdir rewrite.
@@ -430,7 +430,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
 
   it('runs the review diff with host git in that checkout', async () => {
     const dir = path.join(
-      testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId,
+      testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId,
     )
     await fs.writeFile(path.join(dir, 'NEW.md'), '# added by the test\n')
     const res = await fetch(`${origin()}/worktree/${worktreeId}/changes`, {
@@ -447,7 +447,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // checkout's `origin` is deliberately tokenless, and the private HOME
     // hides the user's own git config from the workspace.
     const home = workspaceHome(SLUG, worktreeId)
-    const dir = path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId)
+    const dir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId)
     // Taken from the workspace's own tmux server rather than assembled here:
     // this is the environment its panes inherit, so it is what the agent's
     // git really runs with. A hand-built one would inherit the developer
@@ -555,7 +555,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // command naming an in-image path is what made claude print a
     // SessionStart hook error on every start here.
     const settings = JSON.parse(await fs.readFile(
-      path.join(testEnv.dataDir, 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
+      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
     )) as { hooks?: { SessionStart?: Array<{ hooks?: Array<{ command?: string }> }> } }
     const commands = settings.hooks?.SessionStart
       ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? []) ?? []
@@ -563,7 +563,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(command).toBe('yaac-agent-links "$HOME/.claude" claude')
 
     const home = path.join(
-      testEnv.dataDir, 'projects', SLUG, 'sessions', worktreeId, 'containerless', 'home',
+      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', worktreeId, 'containerless', 'home',
     )
     const binDir = path.join(home, '.local', 'bin')
     await expect(fs.access(path.join(binDir, 'yaac-agent-links'), fs.constants.X_OK))
@@ -595,7 +595,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     })
 
     const log = await fs.readFile(path.join(
-      testEnv.dataDir, 'projects', SLUG, 'meta', `${worktreeId}.session-starts.jsonl`,
+      testEnv.dataDir, 'global', 'projects', SLUG, 'meta', `${worktreeId}.session-starts.jsonl`,
     ), 'utf8')
     const line = log.trim().split('\n').map((l) => JSON.parse(l) as {
       id: string; tool: string; pane: string; path: string
@@ -681,7 +681,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // And the ones a create names are the project's own directories, not
     // the server user's and not a per-worktree path (see create.ts: claude
     // keys its macOS Keychain item on this exact string).
-    const projectDir = path.join(testEnv.dataDir, 'projects', SLUG)
+    const projectDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
     expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(projectDir, 'claude'))
     expect(env.CODEX_HOME).toBe(path.join(projectDir, 'codex'))
     expect(env.PI_CODING_AGENT_DIR).toBe(path.join(projectDir, 'pi', 'agent'))
@@ -696,10 +696,21 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // itself, with the pane's environment: the variable being set proves
     // nothing if it is not the name this host's pnpm reads, and that
     // failure is silent everywhere but the disk.
-    const store = path.join(projectDir, '.cached-packages', 'pnpm-store')
+    // NODE-LOCAL — the host's `node-local/` folder, which on this driver is
+    // just a sibling of `global/`: the checkout and the tool homes are
+    // global, the store is not, and that is the whole of the tier split
+    // here (docs/containerless-driver.md "Storage").
+    const nodeLocalProject = path.join(testEnv.dataDir, 'node-local', 'projects', SLUG)
+    const store = path.join(nodeLocalProject, '.cached-packages', 'pnpm-store')
     for (const key of ['pnpm_config_store_dir', 'npm_config_store_dir']) {
       expect(env[key], key).toBe(store)
     }
+    // The driver made the store's directory as it linked it; nothing else
+    // of this project's is node-local on a host (opencode's data is the
+    // global checkpoint itself, opened directly).
+    expect((await fs.readdir(nodeLocalProject)).sort()).toEqual(['.cached-packages'])
+    expect(await fs.realpath(path.join(env.HOME ?? '', '.local', 'share', 'opencode')))
+      .toBe(await fs.realpath(path.join(projectDir, 'opencode-data', worktreeId)))
     const { stdout: storePath } = await execFileAsync('pnpm', ['store', 'path'], {
       env, cwd: path.join(projectDir, 'worktrees', worktreeId),
     })
@@ -869,7 +880,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(gone).toBe(true)
     // A stop, not a delete: the checkout it was working in is still there.
     await expect(fs.stat(
-      path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', doomed),
+      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', doomed),
     )).resolves.toBeDefined()
   }, 180_000)
 
@@ -909,8 +920,8 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   it('signs in with a real bundle, then lets a running worktree\'s refresh win', async () => {
     // The credential loop with no proxy in it. Three things have to hold, and
     // they are asserted in the order they happen to one install.
-    const hostCreds = path.join(testEnv.dataDir, '.credentials', 'claude.json')
-    const projectCreds = path.join(testEnv.dataDir, 'projects', SLUG, 'claude', '.credentials.json')
+    const hostCreds = path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json')
+    const projectCreds = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', '.credentials.json')
     const readBundle = async (p: string): Promise<Record<string, unknown>> => {
       const parsed = JSON.parse(await fs.readFile(p, 'utf8')) as { claudeAiOauth: Record<string, unknown> }
       return parsed.claudeAiOauth
@@ -970,7 +981,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // What an init command's `pnpm install` leaves in the checkout: on this
     // substrate the ephemeral paths live there, and the stop below is what
     // makes them ephemeral (asserted once the checkout is confirmed kept).
-    const checkout = path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId)
+    const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId)
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
     const { exitCode } = await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
     expect(exitCode).toBe(0)
@@ -989,7 +1000,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
 
   it('leaves the checkout behind, and stays stopped rather than flickering back', async () => {
     const dir = path.join(
-      testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId,
+      testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId,
     )
     await expect(fs.stat(dir)).resolves.toBeDefined()
     // Minus its ephemeral paths — a stopped worktree's node_modules is
@@ -1113,7 +1124,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
       // `session/new` answers, so its final name is itself the assertion that
       // the handshake completed and the server adopted the session it minted.
       const record = path.join(
-        testEnv.dataDir, 'projects', SLUG, 'acp', id, `e2e-acp-${tool}.jsonl`,
+        testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, `e2e-acp-${tool}.jsonl`,
       )
       await vi.waitFor(async () => {
         expect(await fs.readFile(record, 'utf8')).toContain('initialize')
@@ -1144,7 +1155,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
       // with the path this test composed rather than with the directory it
       // names.
       expect(created?.result?.cwd).toBe(
-        await fs.realpath(path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', id)),
+        await fs.realpath(path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', id)),
       )
 
       // The posture, over the protocol rather than on the command line — and

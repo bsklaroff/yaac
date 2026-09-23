@@ -127,7 +127,7 @@ describe('yaac project (real CLI + real server)', () => {
   it('project add returns CONFLICT when a project with the same slug exists', async () => {
     // Pre-create the project dir so the server's `fs.access` check throws
     // CONFLICT before it reaches token resolution.
-    await fs.mkdir(path.join(testEnv.dataDir, 'projects', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'repo'), { recursive: true })
 
     const { stderr, exitCode } = await runYaac(
       testEnv.env, 'project', 'add', 'https://github.com/org/repo',
@@ -142,7 +142,7 @@ describe('yaac project (real CLI + real server)', () => {
     // lowercase even when the source URL has caps. The CONFLICT check fires
     // after slug derivation but before clone / credential resolution, so we
     // can assert the slug shape via the conflict message.
-    await fs.mkdir(path.join(testEnv.dataDir, 'projects', 'myrepo'), { recursive: true })
+    await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'myrepo'), { recursive: true })
 
     const github = await runYaac(
       testEnv.env, 'project', 'add', 'https://github.com/Acme/MyRepo',
@@ -192,7 +192,7 @@ describe('yaac config (real CLI + real server)', () => {
     )
     expect(exitCode, stderr).toBe(0)
 
-    const target = path.join(testEnv.dataDir, 'projects', 'demo-edit', 'config', 'yaac-config.json')
+    const target = path.join(testEnv.dataDir, 'global', 'projects', 'demo-edit', 'config', 'yaac-config.json')
     const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { initCommands?: string[] }
     expect(saved.initCommands).toEqual(['echo MARKER'])
   })
@@ -211,7 +211,7 @@ describe('yaac config (real CLI + real server)', () => {
     const kept = /Your edits are kept at (.+)/.exec(stderr)?.[1] as string
     expect(await fs.readFile(kept.trim(), 'utf8')).toBe('{ not json')
 
-    const target = path.join(testEnv.dataDir, 'projects', 'demo-badjson', 'config', 'yaac-config.json')
+    const target = path.join(testEnv.dataDir, 'global', 'projects', 'demo-badjson', 'config', 'yaac-config.json')
     await expect(fs.access(target)).rejects.toThrow()
   })
 
@@ -226,7 +226,7 @@ describe('yaac config (real CLI + real server)', () => {
     expect(exitCode, stderr).toBe(0)
 
     const target = path.join(
-      testEnv.dataDir, 'projects', 'demo-dockerfile', 'config', 'build', 'Dockerfile.yaac',
+      testEnv.dataDir, 'global', 'projects', 'demo-dockerfile', 'config', 'build', 'Dockerfile.yaac',
     )
     expect(await fs.readFile(target, 'utf8')).toBe('RUN echo dockerfile-marker\n')
   })
@@ -240,7 +240,7 @@ describe('yaac config (real CLI + real server)', () => {
     )
     expect(exitCode, stderr).toBe(0)
 
-    const target = path.join(testEnv.dataDir, 'build', 'Dockerfile.user')
+    const target = path.join(testEnv.dataDir, 'server-local', 'build', 'Dockerfile.user')
     expect(await fs.readFile(target, 'utf8')).toBe(layered)
   })
 
@@ -249,7 +249,7 @@ describe('yaac config (real CLI + real server)', () => {
 
     // The raw read hands broken content to the editor verbatim so it can
     // be repaired; the validated write then stores clean JSON.
-    const target = path.join(testEnv.dataDir, 'projects', 'demo-malformed', 'config', 'yaac-config.json')
+    const target = path.join(testEnv.dataDir, 'global', 'projects', 'demo-malformed', 'config', 'yaac-config.json')
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, '{ this is not valid json')
 

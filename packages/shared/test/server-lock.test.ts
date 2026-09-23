@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
+import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
   acquireLock,
@@ -71,6 +72,39 @@ describe('server lock', () => {
       await writeLock({ pid: 1, port: 2, secret: 'a', startedAt: 3, buildId: 'b1' })
       await writeLock({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2' })
       expect(await readLock()).toEqual({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2' })
+    })
+  })
+
+  // LEGACY COMPAT (docs/legacy-compat-shims.md): a server from before the
+  // storage-tier split wrote its lock at the data dir root. `yaac server
+  // start` has to see one still running there, or it spawns a second
+  // writer onto the same database; `stop` has to be able to stop it.
+  describe('the pre-split lock at the data dir root', () => {
+    const legacy = (): string => path.join(tmpDir, '.server.lock')
+    const old: ServerLock = { pid: 7, port: 8, secret: 's', startedAt: 1, buildId: 'b' }
+
+    it('is read only when the current path has no lock', async () => {
+      await fs.writeFile(legacy(), JSON.stringify(old))
+      expect(await readLock()).toEqual(old)
+      const current = { ...old, pid: 9 }
+      await writeLock(current)
+      expect(await readLock()).toEqual(current)
+    })
+
+    it('is what removeLock unlinks when it is the lock that was found', async () => {
+      await fs.writeFile(legacy(), JSON.stringify(old))
+      await removeLock()
+      await expect(fs.access(legacy())).rejects.toThrow()
+      expect(await readLock()).toBeNull()
+    })
+
+    it('is left alone by a removal of the current lock', async () => {
+      await fs.writeFile(legacy(), JSON.stringify(old))
+      await writeLock({ ...old, pid: 9 })
+      await removeLock({ pid: 9 })
+      await expect(fs.access(serverLockPath())).rejects.toThrow()
+      // Still there — and readLock falls back to it again.
+      expect(await readLock()).toEqual(old)
     })
   })
 

@@ -18,6 +18,26 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('the tier-root overrides', () => {
+    // Set by the server Deployment alone, naming the pod's three mount
+    // points; unset (and set-but-empty) reads as "the data dir's folders".
+    it.each([
+      ['YAAC_GLOBAL_ROOT', 'globalRootOverride'],
+      ['YAAC_SERVER_LOCAL_ROOT', 'serverLocalRootOverride'],
+      ['YAAC_NODE_LOCAL_ROOT', 'nodeLocalRootOverride'],
+    ] as const)('%s re-roots exactly one tier', (name, accessor) => {
+      vi.stubEnv(name, undefined)
+      expect(env[accessor]).toBeUndefined()
+      vi.stubEnv(name, '  ')
+      expect(env[accessor]).toBeUndefined()
+      vi.stubEnv(name, '/yaac/x')
+      expect(env[accessor]).toBe('/yaac/x')
+      for (const other of ['globalRootOverride', 'serverLocalRootOverride', 'nodeLocalRootOverride'] as const) {
+        if (other !== accessor) expect(env[other]).toBeUndefined()
+      }
+    })
+  })
+
   describe('useTor', () => {
     it('is false when YAAC_USE_TOR is unset', () => {
       vi.stubEnv('YAAC_USE_TOR', undefined)

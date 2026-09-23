@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { promisify } from 'node:util'
 import {
   CA_CONFIGMAP_NAME,
   NESTED_GRAPHROOT_PATH,
@@ -16,6 +21,8 @@ import {
   NESTED_GRAPHROOT_TMPFS_BYTES,
   type PodJobParams,
 } from '#drivers/k8s/substrate/pod-spec'
+
+const execFileAsync = promisify(execFile)
 
 function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
   return {
@@ -235,10 +242,9 @@ describe('buildPodJobManifest', () => {
   })
 
   it('renders every mount source, leaving the container-side paths identical', () => {
-    // The seam docs/plans/cloud-k8s.md needs: the source is
-    // the only thing that varies, so the same in-pod layout can be served
-    // from node disk, an RWX claim, or pod-local scratch. Nothing selects
-    // `pvc` yet — it is rendered here and nowhere else.
+    // The source is the only thing that varies, so the same in-pod layout
+    // can be served from node disk, the global claim, or pod-local scratch
+    // — which is what `resolveMountSource` decides per tier.
     const m = build({
       mounts: [
         { source: { kind: 'hostPath', path: '/host/dir' }, mountPath: '/workspace' },
@@ -300,6 +306,112 @@ describe('buildPodJobManifest', () => {
     expect(c.lifecycle).toEqual({
       postStart: { exec: { command: ['/usr/local/bin/yaac-worktree-init'] } },
     })
+  })
+
+  it('wires preStopExec as the preStop hook, beside or without postStart', () => {
+    const both = build({
+      postStartExec: ['/usr/local/bin/yaac-worktree-init'],
+      preStopExec: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'],
+    }).spec.template.spec.containers[0]
+    expect(both.lifecycle).toEqual({
+      postStart: { exec: { command: ['/usr/local/bin/yaac-worktree-init'] } },
+      preStop: { exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] } },
+    })
+    const only = build({ preStopExec: ['x'] }).spec.template.spec.containers[0]
+    expect(only.lifecycle).toEqual({ preStop: { exec: { command: ['x'] } } })
+  })
+
+  it('creates the node-local dirs with an init container: the pod image, as root, chowning to the pod identity', () => {
+    const m = build({
+      nodeLocalRoot: '/var/lib/yaac/node/ddh',
+      nodeLocalDirs: [
+        '/var/lib/yaac/node/ddh/projects/demo/.cached-packages',
+        '/var/lib/yaac/node/ddh/projects/demo/opencode-data/abcd',
+      ],
+    })
+    const spec = m.spec.template.spec
+    const [init] = spec.initContainers ?? []
+    expect(init).toBeDefined()
+    expect(init.name).toBe('node-dirs')
+    // The pod's own image under the pod's RuntimeClass: no extra image, no
+    // extra pull.
+    expect(init.image).toBe('localhost:5000/yaac-tools:abc')
+    expect(init.securityContext).toEqual({ runAsUser: 0, runAsGroup: 0 })
+    // The node root is mounted at /node, and each dir is named relative to it.
+    expect(init.volumeMounts).toEqual([{ name: 'node-root', mountPath: '/node' }])
+    expect(spec.volumes.find((v) => v.name === 'node-root')).toEqual({
+      name: 'node-root', hostPath: { path: '/var/lib/yaac/node/ddh', type: 'DirectoryOrCreate' },
+    })
+    expect(init.command?.slice(0, 2)).toEqual(['sh', '-c'])
+    expect(init.command?.slice(-2)).toEqual([
+      '/node/projects/demo/.cached-packages',
+      '/node/projects/demo/opencode-data/abcd',
+    ])
+    // Chowned to the identity the worktree container runs as — hostPath
+    // ignores fsGroup, and DirectoryOrCreate leaves them root-owned. The
+    // chown is unconditional: kubelet has already created the leaf by the
+    // time the init container runs, so a chown gated on the mkdir would
+    // never reach the one directory the worktree writes to.
+    const { runAsUser, runAsGroup } = hostUidSecurityContext()
+    expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
+    expect(init.command?.[2]).toContain(`\n    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
+  })
+
+  it('runs the node-dirs script for real: a leaf kubelet already created is chowned, parents are made', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-node-dirs-'))
+    try {
+      // kubelet's DirectoryOrCreate: the leaf exists before the script runs.
+      await fs.mkdir(path.join(root, 'projects/demo/opencode-data/abcd'), { recursive: true })
+      const m = build({
+        nodeLocalRoot: '/var/lib/yaac/node/ddh',
+        nodeLocalDirs: [
+          '/var/lib/yaac/node/ddh/projects/demo/opencode-data/abcd',
+          '/var/lib/yaac/node/ddh/projects/demo/.cached-packages/modules/abcd',
+        ],
+      })
+      const [init] = m.spec.template.spec.initContainers ?? []
+      const script = (init.command?.[2] ?? '').replaceAll('/node', root)
+      const args = (init.command ?? []).slice(4).map((d) => d.replace('/node', root))
+      await expect(execFileAsync('sh', ['-c', script, '--', ...args])).resolves.toBeTruthy()
+      const { uid, gid } = await fs.stat(path.join(root, 'projects/demo/opencode-data/abcd'))
+      const { runAsUser, runAsGroup } = hostUidSecurityContext()
+      expect([uid, gid]).toEqual([runAsUser, runAsGroup])
+      await expect(fs.stat(path.join(root, 'projects/demo/.cached-packages/modules/abcd'))).resolves.toBeTruthy()
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces a symlinked component a pod planted with a real directory, never following it', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-node-dirs-'))
+    try {
+      const victim = path.join(root, 'victim')
+      await fs.mkdir(path.join(victim, 'precious'), { recursive: true })
+      await fs.mkdir(path.join(root, 'projects/demo/.cached-packages'), { recursive: true })
+      await fs.symlink(victim, path.join(root, 'projects/demo/.cached-packages/modules'))
+      const m = build({
+        nodeLocalRoot: '/var/lib/yaac/node/ddh',
+        nodeLocalDirs: ['/var/lib/yaac/node/ddh/projects/demo/.cached-packages/modules/abcd'],
+      })
+      const [init] = m.spec.template.spec.initContainers ?? []
+      const script = (init.command?.[2] ?? '').replaceAll('/node', root)
+      const args = (init.command ?? []).slice(4).map((d) => d.replace('/node', root))
+      await expect(execFileAsync('sh', ['-c', script, '--', ...args])).resolves.toBeTruthy()
+      const modules = await fs.lstat(path.join(root, 'projects/demo/.cached-packages/modules'))
+      expect(modules.isSymbolicLink()).toBe(false)
+      expect(modules.isDirectory()).toBe(true)
+      await expect(fs.stat(path.join(root, 'projects/demo/.cached-packages/modules/abcd'))).resolves.toBeTruthy()
+      await expect(fs.stat(path.join(victim, 'precious'))).resolves.toBeTruthy()
+      expect(await fs.readdir(victim)).toEqual(['precious'])
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('renders no init container when there is nothing node-local to create', () => {
+    expect(build().spec.template.spec.initContainers).toBeUndefined()
+    expect(build({ nodeLocalDirs: [], nodeLocalRoot: '/x' }).spec.template.spec.initContainers).toBeUndefined()
+    expect(() => build({ nodeLocalDirs: ['/x/y'] })).toThrow(/nodeLocalRoot/)
   })
 
   it('emits no lifecycle block without postStartExec', () => {

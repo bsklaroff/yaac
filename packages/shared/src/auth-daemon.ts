@@ -1,7 +1,12 @@
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { clientLocalPath, ensureClientLocalRoot, serverLocalPath } from '#paths'
+// The data dir ROOT, for the pre-client-local fallback alone: the file was
+// written when the root was the only directory, and no tier helper names
+// it any more (docs/legacy-compat-shims.md).
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
+import { clientLocalPath, ensureClientLocalRoot, getDataDir } from '#paths'
 import { resolveServerTarget, type ServerTarget } from '#server-api'
 
 /** Cold-boot budget shared by automatic connection and explicit startup. */
@@ -41,7 +46,7 @@ export function authDaemonLockPath(): string {
  * docs/legacy-compat-shims.md.
  */
 function legacyAuthDaemonLockPath(): string {
-  return serverLocalPath('.auth-daemon.lock')
+  return path.join(getDataDir(), '.auth-daemon.lock')
 }
 
 export async function readAuthDaemonLock(): Promise<AuthDaemonLock | null> {

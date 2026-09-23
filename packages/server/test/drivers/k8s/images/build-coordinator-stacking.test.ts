@@ -33,10 +33,10 @@ describe('ensureImage', () => {
   }
 
   it('takes the yaac-shipped layers from the registry and builds only the rest', async () => {
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
-    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
     await fs.writeFile(
-      path.join(h.dataDir, 'build', 'Dockerfile.user'),
+      path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),
       'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n',
     )
 
@@ -55,7 +55,7 @@ describe('ensureImage', () => {
   })
 
   it('needs nothing built at all when the chain is yaac-shipped end to end', async () => {
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
 
     const { ensureImage, resolveImageChain } = await h.load()
     await stagePrebuilt(resolveImageChain, 'myproject')
@@ -70,7 +70,7 @@ describe('ensureImage', () => {
     // before the Dockerfiles changed. Building it here would put a
     // container engine back on the server's critical path, so the only
     // useful answer is which command produces the tag.
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
 
     const { ensureImage } = await h.load()
     await expect(ensureImage('myproject')).rejects.toThrow(/yaac cluster install/)
@@ -78,8 +78,8 @@ describe('ensureImage', () => {
   })
 
   it('layers a project Dockerfile on nestable when nestedContainers is set', async () => {
-    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(
       path.join(buildDir, 'Dockerfile.yaac'),
@@ -103,8 +103,8 @@ describe('ensureImage', () => {
     // A standalone project Dockerfile replaces the yaac-shipped chain, so
     // there is nothing for the install to have produced — and it is still
     // untrusted, so it still builds in a pod.
-    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(
       path.join(buildDir, 'Dockerfile.yaac'),
@@ -121,10 +121,10 @@ describe('ensureImage', () => {
   })
 
   it('rejects Dockerfile.user without ARG BASE_IMAGE', async () => {
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
-    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
     await fs.writeFile(
-      path.join(h.dataDir, 'build', 'Dockerfile.user'),
+      path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),
       'FROM yaac-current\nRUN echo user\n',
     )
 

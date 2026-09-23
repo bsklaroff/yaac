@@ -59,11 +59,12 @@ export function ambientDataDir(): string {
 /**
  * The one physical directory this yaac install owns. It is the INSTALL
  * IDENTITY (1:1 with the server lock — hashed into the cluster label and
- * the web-session cookie name) and, today, the single filesystem every
- * storage tier below resolves into.
+ * the web-session cookie name), and on a host the parent of the three
+ * tier folders below. Inside the server pod it is an identity string only:
+ * the tiers are mounts there, and nothing is at this path.
  *
  * Do not build storage paths on it directly: pick a tier
- * (`sharedRoot` / `nodeLocalRoot` / `serverLocalRoot`) so the path
+ * (`globalRoot` / `nodeLocalRoot` / `serverLocalRoot`) so the path
  * declares who has to be able to see it.
  */
 export function getDataDir(): string {
@@ -78,66 +79,71 @@ export function setDataDir(dir: string): void {
 /*
  * ── Storage tiers ──────────────────────────────────────────────────────
  *
- * Every yaac path hangs off one of three roots, chosen by ONE question:
+ * Every yaac path hangs off one of four roots, chosen by ONE question:
  * who has to be able to read these bytes?
  *
- *  - SHARED (`sharedRoot`)       the server AND worktree pods — which on a
+ *  - GLOBAL (`globalRoot`)        the server AND worktree pods — which on a
  *                                multi-node cluster may land on any node.
- *                                Becomes an RWX volume (PVC + subPath):
- *                                docs/plans/cloud-k8s.md.
- *  - NODE-LOCAL (`nodeLocalRoot`) one pod, or one node's scratch. Nobody
- *                                off that node ever reads it, so it never
- *                                has to travel: emptyDir or node disk.
- *  - SERVER-LOCAL (`serverLocalRoot`) only the server process itself.
- *                                Becomes the server's own RWO volume
- *                                — the pglite DB must never sit on a
- *                                network filesystem.
+ *                                `<dataDir>/global` on a host; the RWX
+ *                                claim `yaac-global` mounted at
+ *                                `/yaac/global` in the server pod, and
+ *                                subPaths of it in every worktree pod.
+ *  - NODE-LOCAL (`nodeLocalRoot`) one node's scratch: re-derivable caches
+ *                                and working copies of a GLOBAL checkpoint.
+ *                                Nobody off that node reads it, so it never
+ *                                travels. `<dataDir>/node-local` on a host;
+ *                                a node hostPath (`/var/lib/yaac/node/<hash>`)
+ *                                mounted at `/yaac/node-local` in the pod.
+ *  - SERVER-LOCAL (`serverLocalRoot`) only the server process itself: the
+ *                                PGlite DB, the lock, the log, credentials,
+ *                                the secret key. `<dataDir>/server-local`
+ *                                on a host; the RWO claim `yaac-server-local`
+ *                                at `/yaac/server-local` in the pod. No
+ *                                worktree pod may mount it.
  *  - CLIENT-LOCAL (`clientLocalRoot`) only processes on the USER's machine
  *                                — the CLI, the auth daemon, the desktop
  *                                shell, and `yaac cluster install` acting
  *                                as installer. Never mounted into a pod
  *                                and never backed by a cluster volume.
  *
- * The first three resolve to `getDataDir()` today. The current single-node
- * backend has exactly one filesystem, so every path is byte-identical to
- * what it was before the split: the tier is a declaration of a visibility
- * requirement, not (yet) a different directory. Splitting them is the
- * volume-source work in docs/plans/cloud-k8s.md, not something a caller
- * opts into.
+ * The three in-install roots are three folders of the data dir on every
+ * substrate, so the data dir root holds nothing of yaac's but them. The
+ * server Deployment is the one thing that re-roots them, by naming the
+ * pod's mount points in `YAAC_GLOBAL_ROOT` / `YAAC_SERVER_LOCAL_ROOT` /
+ * `YAAC_NODE_LOCAL_ROOT` (docs/server-in-cluster.md "Storage is two
+ * claims"). Under containerless nothing sets them and no volume machinery
+ * applies: the split is inert there, not different.
  *
- * CLIENT-LOCAL is the exception, and it is a different directory ALREADY,
- * because the boundary it declares is one that already exists: the server
- * runs as a pod under the k8s driver, so "the machine the user is on" and
- * "the machine the server is on" are not the same filesystem, the same
- * process namespace, or the same uid. A client-local path has to be one
- * the pod never sees — which a subdirectory of the data dir the pod mounts
- * could not be. See docs/server-in-cluster.md.
+ * CLIENT-LOCAL is a sibling directory rather than a folder of the data dir
+ * because the boundary it declares is a different one: a client-local path
+ * has to be one the pod never sees, which a subdirectory of what the pod
+ * mounts could not be. See docs/server-in-cluster.md.
  *
  * The classification of every existing path lives in project-paths.ts.
  */
 
-/** Root of the SHARED tier — see the tier legend above. */
-export function sharedRoot(): string {
-  return getDataDir()
+/** Root of the GLOBAL tier — see the tier legend above. */
+export function globalRoot(): string {
+  return env.globalRootOverride ?? path.join(getDataDir(), 'global')
 }
 
 /** Root of the NODE-LOCAL tier — see the tier legend above. */
 export function nodeLocalRoot(): string {
-  return getDataDir()
+  return env.nodeLocalRootOverride ?? path.join(getDataDir(), 'node-local')
 }
 
 /** Root of the SERVER-LOCAL tier — see the tier legend above. */
 export function serverLocalRoot(): string {
-  return getDataDir()
+  return env.serverLocalRootOverride ?? path.join(getDataDir(), 'server-local')
 }
 
-/** A SHARED path outside the project tree: `<sharedRoot>/<…rest>`. */
-export function sharedPath(...rest: string[]): string {
-  return path.join(sharedRoot(), ...rest)
+/** A GLOBAL path outside the project tree: `<globalRoot>/<…rest>`. */
+export function globalPath(...rest: string[]): string {
+  return path.join(globalRoot(), ...rest)
 }
 
-/** A SHARED per-project path: `<sharedRoot>/projects/<slug>/<…rest>`. */
-export function sharedProjectPath(slug: string, ...rest: string[]): string {
+/** A GLOBAL per-project path: `<globalRoot>/projects/<slug>/<…rest>`. */
+export function globalProjectPath(slug: string, ...rest: string[]): string {
   return path.join(getProjectsDir(), slug, ...rest)
 }
 
@@ -148,7 +154,7 @@ export function nodeLocalPath(...rest: string[]): string {
 
 /** A NODE-LOCAL per-project path: `<nodeLocalRoot>/projects/<slug>/<…rest>`. */
 export function nodeLocalProjectPath(slug: string, ...rest: string[]): string {
-  return path.join(nodeLocalRoot(), 'projects', slug, ...rest)
+  return path.join(getNodeLocalProjectsDir(), slug, ...rest)
 }
 
 /** A SERVER-LOCAL path: `<serverLocalRoot>/<…rest>`. */
@@ -160,14 +166,16 @@ export function serverLocalPath(...rest: string[]): string {
  * A short, install-keyed directory under the OS temp dir, for UNIX sockets.
  *
  * Forced by the platform: `sockaddr_un.sun_path` is about 104 bytes on
- * macOS, and a data-dir path (`~/.yaac/projects/<slug>/…`) is far over
- * budget, while `os.tmpdir()` is the shortest writable place on every
- * platform. Keyed by the install's own root so two servers on one host (a
- * test run beside a real one, two data dirs) never collide. It costs nothing
- * durable: a reboot clears it, and every socket it named is gone by then.
+ * macOS, and a data-dir path (`~/.yaac/global/projects/<slug>/…`) is far
+ * over budget, while `os.tmpdir()` is the shortest writable place on every
+ * platform. Keyed by the install IDENTITY — not a tier root, which the pod
+ * re-roots — so two servers on one host (a test run beside a real one, two
+ * data dirs) never collide, and a running worktree's socket dir keeps its
+ * name across an upgrade. It costs nothing durable: a reboot clears it, and
+ * every socket it named is gone by then.
  */
 export function installTmpDir(): string {
-  const key = crypto.createHash('sha256').update(serverLocalRoot()).digest('hex').slice(0, 8)
+  const key = crypto.createHash('sha256').update(getDataDir()).digest('hex').slice(0, 8)
   return path.join(os.tmpdir(), `yaac-${key}`)
 }
 
@@ -198,17 +206,18 @@ export async function ensureClientLocalRoot(): Promise<void> {
 }
 
 /**
- * SHARED: the per-project state tree. Enumerating it lists the install's
+ * GLOBAL: the per-project state tree. Enumerating it lists the install's
  * projects (`list.ts`, the orphan GC, tool-auth's placeholder sweep).
  */
 export function getProjectsDir(): string {
-  return path.join(sharedRoot(), 'projects')
+  return path.join(globalRoot(), 'projects')
 }
 
 /**
- * NODE-LOCAL twin of {@link getProjectsDir}. Same directory today; once
- * the tiers split, a sweep that must see every project has to enumerate
- * BOTH (see `projectsRoots`).
+ * NODE-LOCAL twin of {@link getProjectsDir}: the per-project caches and
+ * working copies. A sweep that must see every project enumerates BOTH
+ * (see `projectsRoots`), because a project whose global half is gone can
+ * still have a node-local tree.
  */
 export function getNodeLocalProjectsDir(): string {
   return path.join(nodeLocalRoot(), 'projects')
@@ -259,6 +268,20 @@ export function containerAcpSock(handle: string): string {
 export const CONTAINER_SESSION_STARTS_LOG = '/home/yaac/.yaac/session-starts.jsonl'
 
 /**
+ * Where opencode keeps its per-worktree SQLite database inside the
+ * workspace — the NODE-LOCAL working copy under a pod, the global
+ * checkpoint itself under containerless (`opencodeCheckpointDir`).
+ */
+export const CONTAINER_OPENCODE_DATA = '/home/yaac/.local/share/opencode'
+
+/**
+ * In-pod path of the GLOBAL opencode checkpoint (`opencodeCheckpointDir`),
+ * which `yaac-opencode-checkpoint` copies the working copy into on a timer
+ * and at `preStop`, and `yaac-worktree-init` restores from at start.
+ */
+export const CONTAINER_OPENCODE_CHECKPOINT = '/home/yaac/.yaac/opencode-checkpoint'
+
+/**
  * Where a worktree's ACP conversation logs are mounted in its session — the
  * host side is `acpLogDir()`. Unlike the socket dir above this one IS
  * host-mounted, because the log is what the server reads to rebuild a
@@ -271,12 +294,12 @@ export function containerAcpLog(name: string): string {
 }
 
 /**
- * SHARED: per-project config (yaac-config.json, the project Dockerfile and
+ * GLOBAL: per-project config (yaac-config.json, the project Dockerfile and
  * its build context). Only the server reads it today, but it sits inside
  * the project tree and moves with it.
  */
 export function projectConfigDir(slug: string): string {
-  return sharedProjectPath(slug, 'config')
+  return globalProjectPath(slug, 'config')
 }
 
 /** SERVER-LOCAL: the server's own log file. */
@@ -285,10 +308,12 @@ export function serverLogPath(): string {
 }
 
 /**
- * Create the shared project tree. Node-local per-project dirs are created
- * lazily by whoever mounts them (worktree-create's `mkdir -p`s), so there
- * is nothing to pre-create on that root.
+ * Create the global project tree and the server-local root. Not the
+ * node-local root: under k8s that is the node's, created by each pod's
+ * init container, and under containerless the driver creates what it
+ * links lazily.
  */
 export async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getProjectsDir(), { recursive: true })
+  await fs.mkdir(serverLocalRoot(), { recursive: true })
 }

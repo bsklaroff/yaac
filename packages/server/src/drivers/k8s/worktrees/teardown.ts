@@ -1,7 +1,9 @@
-import { k8sNamespace, kubectlWithRetry } from '#drivers/k8s/substrate'
+import { k8sNamespace, kubectlWithRetry,
+  PRE_STOP_GRACE_SECONDS,
+} from '#drivers/k8s/substrate'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorktreeForwarders } from '#drivers/k8s/forwarders'
-import { removeNodeImageStore, salvageWorktreeImages } from '#drivers/k8s/images'
+import { removeNodeLocalProject, salvageWorktreeImages } from '#drivers/k8s/images'
 import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluster'
 import type { TeardownTarget } from '#drivers/contract'
 
@@ -60,6 +62,9 @@ export async function salvageWorkspaceImages(target: TeardownTarget): Promise<vo
 
 /** Deadline for the Job delete to report its pod actually gone. */
 const UNIT_DELETE_TIMEOUT = '30s'
+
+/** The detached delete's wait: past a hooked pod's grace period, with room. */
+const DETACHED_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
 
 /**
  * Tear a workspace's runtime down and wait for it to really be gone.
@@ -125,8 +130,15 @@ export async function destroyWorkspace(
  * salvage in particular has to reach into a pod this command destroys.
  */
 export function detachedTeardownCommand(target: TeardownTarget): string {
+  // Foreground cascade, waited: the caller removes the session dir next,
+  // and that dir is the source of the pod's File mounts — the preStop
+  // hook's own script among them — so the delete has to outlast the pod,
+  // not just the Job object, which means outlasting the hook's whole grace
+  // period. The timeout keeps a stuck pod from holding the removals
+  // hostage; they run either way.
   return `kubectl delete job ${target.unitName} -n ${k8sNamespace()}`
-    + ' --ignore-not-found 2>/dev/null || true'
+    + ` --ignore-not-found --cascade=foreground --wait=true --timeout=${DETACHED_DELETE_TIMEOUT}`
+    + ' 2>/dev/null || true'
 }
 
 /**
@@ -152,7 +164,7 @@ export async function destroyProjectSubstrate(projectSlug: string): Promise<void
     console.warn(`Failed to remove the egress secrets of ${projectSlug}: ${(err as Error).message}`)
   }
   try {
-    await removeNodeImageStore(projectSlug)
+    await removeNodeLocalProject(projectSlug)
   } catch {
     // Node-side residue is a cache nothing will mount.
   }

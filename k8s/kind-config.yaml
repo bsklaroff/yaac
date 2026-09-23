@@ -6,9 +6,14 @@
 #      one and the per-project ones — are in-cluster Services, which the node
 #      cannot resolve by cluster DNS; one-shot pods hostPath-mount that
 #      directory and write each registry's live ClusterIP into it.
-#   2. extraMounts making your home directory visible to the node at the
-#      same path — yaac session pods mount worktrees, caches, and
-#      credentials via hostPath, which resolves on the NODE, not the host.
+#   2. extraMounts: your home directory, visible to the node at the same
+#      path — the two storage claims (`yaac-global`, `yaac-server-local`)
+#      bind static hostPath PVs into the data dir, which resolve on the
+#      NODE, not the host. `yaac cluster install` renders a SECOND entry
+#      beside it, `<dataDir>/node-local` → `/var/lib/yaac/node/<hash>`, so
+#      the node-local tier (pnpm stores, image stores) lives on the host
+#      disk too and survives a cluster delete; it is per install (the
+#      hash) and cannot be added to a running cluster.
 #
 # Substitute $HOME for your real home directory before use (kind does not
 # expand environment variables), e.g.:
@@ -16,9 +21,10 @@
 #
 # MULTI-NODE: `yaac cluster install --nodes N` renders this file into an
 # N-node cluster by COPYING the control-plane entry below into N-1 `role:
-# worker` entries — so the $HOME extraMount lands on every node, which is
-# what keeps hostPath working when a session schedules off the control
-# plane (all kind node containers share the one host filesystem). The
+# worker` entries — so both extraMounts land on every node, which is what
+# keeps the PVs and the node-local path resolving when a session schedules
+# off the control plane (all kind node containers share the one host
+# filesystem). The
 # `nodes:` list must therefore stay LAST in this file, and hold exactly one
 # entry. Everything above it is cluster-scoped and kind applies it to every
 # node already: the containerd registry patch, the kubelet swap patch, and

@@ -16,19 +16,25 @@
  * own Deployment — a workload that rolls itself is a workload that can roll
  * itself into a state it cannot roll back out of.
  *
- * Storage is deliberately unchanged here: the pod hostPath-mounts the real
- * data dir at the same absolute path the host process used, so
- * `dataDirHash()`, every existing hostPath mount and the worktree-pod view
- * of the world are byte-identical either side of the move. Turning those
- * into claims is docs/plans/cloud-k8s.md.
+ * The pod's storage is the three tiers as three mounts (storage.ts): the
+ * `yaac-global` and `yaac-server-local` claims and the node's own
+ * node-local tree, at fixed pod paths the Deployment names in the three
+ * root variables. `YAAC_DATA_DIR` keeps naming the host's data dir, as an
+ * identity string: `dataDirHash()`, every label and every row carry over.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+  GLOBAL_CLAIM_NAME,
   LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_NAMESPACE,
+  POD_GLOBAL_ROOT,
+  POD_NODE_LOCAL_ROOT,
+  POD_SERVER_LOCAL_ROOT,
   PRIORITY_CLASS_INFRA,
   RELAY_PORT,
   SERVER_APP_NAME,
+  SERVER_LOCAL_CLAIM_NAME,
   SERVER_POD_PORT,
   hostUidSecurityContext,
   SERVER_SA_NAME,
@@ -37,8 +43,10 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  nodeLocalNodePath,
   proxyServiceHost,
 } from '#drivers/k8s/substrate'
+import { ensureStorageClaims } from './storage'
 import {
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
@@ -52,14 +60,13 @@ import {
 } from '#drivers/k8s/image-engine'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-// The install root itself, not a place to put bytes: what the pod mounts
-// today is the WHOLE data dir at its own absolute path, so that every tier
-// resolves inside the pod exactly as it did on the host. The storage step
-// of docs/plans/cloud-k8s.md is where the tiers become separate volumes and
-// this becomes three mounts.
+// The install root itself, not a place to put bytes: the pod is handed it
+// as `YAAC_DATA_DIR` so its identity (`dataDirHash()`, every label, the
+// cookie name) is the host's; what it MOUNTS are the three tier roots.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { getDataDir } from '@yaac/shared/paths'
+import { getDataDir, globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
+import { migrateDataDirLayout } from '@yaac/shared/data-dir-layout'
 import {
   SERVER_LOCK_FILENAME,
   isLockLive,
@@ -177,7 +184,7 @@ export function serverClusterScopedName(): string {
  * leftovers without matching the real install's.
  */
 export function serverClusterScopedLabels(): Record<string, string> {
-  return { app: SERVER_APP_NAME, 'yaac.install-namespace': k8sNamespace() }
+  return { app: SERVER_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
 }
 
 /**
@@ -281,9 +288,11 @@ export interface ServerEnvOptions {
  * Environment the Deployment hands the server: what it can no longer read
  * off a host, plus the host-side shims it must not take.
  *
- * `YAAC_DATA_DIR` names the same absolute path the host process used —
- * hostPath-mounted below — so the install's identity (`dataDirHash()`,
- * every pod label, the DB) carries over unchanged. `YAAC_RELAY_ADDR` points
+ * `YAAC_DATA_DIR` names the same absolute path the host uses, so the
+ * install's identity (`dataDirHash()`, every pod label, the DB) carries
+ * over unchanged; the three root variables are where the tiers are
+ * MOUNTED, which is what the path helpers resolve into inside the pod
+ * (docs/server-in-cluster.md "Storage is two claims"). `YAAC_RELAY_ADDR` points
  * at the proxy Service, which deletes the stream relay's port-forward hop.
  * `YAAC_IN_CLUSTER` is what the registry client reads to dial the registry's
  * Service DNS instead of forwarding to it.
@@ -305,6 +314,9 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
     { name: 'YAAC_BIND_ADDR', value: '0.0.0.0' },
     { name: 'YAAC_SERVER_PORT', value: String(SERVER_POD_PORT) },
     { name: 'YAAC_DATA_DIR', value: getDataDir() },
+    { name: 'YAAC_GLOBAL_ROOT', value: POD_GLOBAL_ROOT },
+    { name: 'YAAC_SERVER_LOCAL_ROOT', value: POD_SERVER_LOCAL_ROOT },
+    { name: 'YAAC_NODE_LOCAL_ROOT', value: POD_NODE_LOCAL_ROOT },
     { name: 'YAAC_DRIVER', value: 'k8s' },
     { name: 'YAAC_RELAY_ADDR', value: proxyServiceHost(k8sNamespace(), RELAY_PORT) },
   ]
@@ -396,9 +408,10 @@ export function torSocksUrlForPod(hostAddr?: string): string {
  *
  * `Recreate` at one replica, because PGlite is an embedded single-writer
  * database and two servers of one install are two writers of one directory.
- * The lock's lease is the guard that actually enforces that on hostPath
- * storage (there is no attach exclusivity to fall back on), and the
- * strategy is what keeps the lease from having to arbitrate on every roll.
+ * The lock's lease is the guard that actually enforces that on kind, where
+ * the RWO claim is a hostPath with no attach exclusivity to fall back on,
+ * and the strategy is what keeps the lease from having to arbitrate on
+ * every roll.
  *
  * Plain runc, no RuntimeClass: the server is yaac's own code, and a sentry
  * per infra pod is CPU spent on containment that buys nothing. Infra
@@ -429,11 +442,11 @@ export function buildServerDeploymentManifest(
           enableServiceLinks: false,
           priorityClassName: PRIORITY_CLASS_INFRA,
           // The identity every path the server pre-creates for a worktree
-          // pod is owned by, stamped from the installing host: the data dir
-          // is a hostPath this machine owns and no pod can write it as
-          // anything else. No `fsGroup`: the data dir is this pod's only
-          // volume and the kubelet never manages a hostPath's ownership,
-          // while HOME is the image's own rootfs, writable through group 0.
+          // pod is owned by, stamped from the installing host: on kind the
+          // claims are hostPaths this machine owns and no pod can write
+          // them as anything else. No `fsGroup`: the kubelet never manages
+          // a hostPath's ownership, and HOME is the image's own rootfs,
+          // writable through group 0.
           securityContext: hostUidSecurityContext(),
           // A rolled server should not sit in the drain while every
           // watcher's connection times out; its shutdown path is bounded to
@@ -479,15 +492,20 @@ export function buildServerDeploymentManifest(
                 requests: { cpu: '250m', memory: '1Gi' },
                 limits: { memory: '6Gi' },
               },
-              volumeMounts: [{ name: 'data', mountPath: getDataDir() }],
+              volumeMounts: [
+                { name: 'global', mountPath: POD_GLOBAL_ROOT },
+                { name: 'server-local', mountPath: POD_SERVER_LOCAL_ROOT },
+                { name: 'node-local', mountPath: POD_NODE_LOCAL_ROOT },
+              ],
             },
           ],
+          // The three tiers (storage.ts). The claims are what install
+          // bound; the node-local tree is this node's own, the same path
+          // every worktree pod on the node mounts its caches under.
           volumes: [
-            // The real host data dir, at its real absolute path. kind binds
-            // $HOME into every node, so this resolves to the same bytes the
-            // host process wrote — which is the whole point of doing the
-            // process move before the storage move.
-            { name: 'data', hostPath: { path: getDataDir(), type: 'DirectoryOrCreate' } },
+            { name: 'global', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } },
+            { name: 'server-local', persistentVolumeClaim: { claimName: SERVER_LOCAL_CLAIM_NAME } },
+            { name: 'node-local', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } },
           ],
         },
       },
@@ -618,10 +636,19 @@ async function readPodLock(): Promise<ServerLock | null> {
 }
 
 /**
- * Build the image, apply the workload, wait for the published origin to
- * answer, and point this machine's clients at it — the whole of "the
- * server now runs in the cluster", as one step `yaac cluster install`
+ * Stop the server that is there, bring the data dir into the tier
+ * layout, build the image, apply the workload, wait for the published
+ * origin to answer, and point this machine's clients at it — the whole of
+ * "the server now runs in the cluster", as one step `yaac cluster install`
  * injects and unit tests replace.
+ *
+ * The stop comes FIRST, before the layout migration, and that order is
+ * the point: an old pod holds PGlite open by path and heartbeats its lock
+ * by path, and renaming `db/` under a running server is a stranded or
+ * corrupt database. `stopClusterServer` waits on the pod's deletion, so
+ * once it returns the data dir is quiescent. Install rolls the server
+ * anyway (`Recreate`); stopping it earlier moves the outage ahead of the
+ * image build rather than adding one.
  *
  * Returns the origin it published, which is what install prints.
  */
@@ -629,6 +656,17 @@ export async function deployServerWorkload(
   opts: ServerEnvOptions & { fronting: ServerFronting; log: (message: string) => void },
 ): Promise<string> {
   await refuseIfHostServerRunning()
+  if (await serverDeploymentExists()) {
+    opts.log('Stopping the running server pod...')
+    await stopClusterServer()
+  }
+  await migrateDataDirLayout(opts.log)
+  await ensureStorageClaims({
+    globalHostPath: globalRoot(),
+    serverLocalHostPath: serverLocalRoot(),
+    nodeLocalHostPath: nodeLocalRoot(),
+    log: opts.log,
+  })
   opts.log('Building the server image (from the bundle)...')
   const imageRef = await ensureServerImage()
   opts.log(`Deploying the yaac server (${imageRef})...`)

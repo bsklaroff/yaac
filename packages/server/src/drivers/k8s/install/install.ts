@@ -15,11 +15,13 @@ import { isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
 import {
   TAILSCALE_OPERATOR_NAMESPACE,
+  dataDirHash,
   ensurePriorityClasses,
   execFileAsync,
   isKubectlAbsentError,
   k8sNamespace,
   kubectlErrorSummary,
+  nodeLocalNodePath,
 } from '#drivers/k8s/substrate'
 import { registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
@@ -43,7 +45,7 @@ import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#drivers/k8s/con
 import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
 import { deployServerWorkload } from './server-deploy'
 import { TAILNET_HOSTNAME, kindFronting, tailnetFronting } from './server-fronting'
-import { PACKAGE_ROOT } from '@yaac/shared/paths'
+import { PACKAGE_ROOT, nodeLocalRoot } from '@yaac/shared/paths'
 import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
 import { resolveServerPort } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
@@ -397,8 +399,12 @@ export async function runClusterInstall(
     // nodes are podman containers and say so where they are not. The node
     // tuning needs no such branch: the installer DaemonSet carries it.
     const nodes = await kindNodes(deps, cluster)
-    if (nodes.length > 0) for (const node of nodes) await applyKindNodeFixups(deps, node)
-    else {
+    if (nodes.length > 0) {
+      for (const node of nodes) {
+        await applyKindNodeFixups(deps, node)
+        await noteNodeLocalMount(deps, node)
+      }
+    } else {
       deps.log(
         `note: no kind cluster "${cluster}" on this host, so the kind node fixups `
         + '(the node container\'s pids-limit and the kubelet housekeeping flag) are '
@@ -432,7 +438,10 @@ export async function runClusterInstall(
     // machine restart is the usual reason to be here, and the node's
     // address may have moved under it.
     resetClusterCidrCache()
-    for (const node of await kindNodes(deps, cluster)) await applyKindNodeFixups(deps, node)
+    for (const node of await kindNodes(deps, cluster)) {
+      await applyKindNodeFixups(deps, node)
+      await noteNodeLocalMount(deps, node)
+    }
   }
   // Once there is a cluster to ask, and before any layer lands on it: an
   // operator that is not there costs the diagnosis and nothing else.
@@ -531,22 +540,40 @@ const KIND_NODES_SECTION = /^nodes:\n([\s\S]+)$/m
 
 /**
  * The kind config to feed `kind create cluster`: `$HOME` substituted (kind
- * expands no environment variables), and the node list grown to `nodes`
- * entries.
+ * expands no environment variables), the install's node-local extraMount
+ * added, and the node list grown to `nodes` entries.
+ *
+ * Two extraMounts ride every node. `$HOME → $HOME` is what lets the static
+ * PVs behind the two claims resolve on the node (docs/server-in-cluster.md
+ * "Storage is two claims"). The second binds `<dataDir>/node-local` to the
+ * install's node path, `/var/lib/yaac/node/<hash>`, so the NODE-LOCAL tier
+ * — the pnpm stores, the image stores, the working copies — lives on the
+ * host disk and survives a cluster delete rather than dying with the node
+ * container. It is per install (the hash) because one host can run more
+ * than one, and it is written here because kind binds mounts only at
+ * create time.
  *
  * Workers are COPIES of the bundled control-plane entry with the role
  * swapped, which is the whole trick behind the multi-node rehearsal: the
- * copy carries the `$HOME → $HOME` extraMount, and since every kind node
- * container shares this one host's filesystem, hostPath keeps resolving to
- * the same bytes on whichever node a worktree lands. Everything else in the
- * file is cluster-scoped (containerd registry patch, kubelet swap patch,
+ * copy carries both extraMounts, and since every kind node container
+ * shares this one host's filesystem, both paths keep resolving to the same
+ * bytes on whichever node a worktree lands. Everything else in the file is
+ * cluster-scoped (containerd registry patch, kubelet swap patch,
  * disableDefaultCNI), and kind applies those to every node itself.
  */
 export function renderKindConfig(
   raw: string,
-  opts: { homedir: string; nodes: number; serverHostPort: number },
+  opts: {
+    homedir: string
+    nodes: number
+    serverHostPort: number
+    nodeLocalHostPath: string
+    nodeLocalNodePath: string
+  },
 ): string {
-  const substituted = raw.replaceAll('$HOME', opts.homedir)
+  const substituted = `${raw.replaceAll('$HOME', opts.homedir).trimEnd()}\n`
+    + `  - hostPath: ${opts.nodeLocalHostPath}\n`
+    + `    containerPath: ${opts.nodeLocalNodePath}\n`
   // The server's published loopback endpoint: the host end of the port the
   // fronting forwarder binds on the control-plane node. HOST-scoped, so it
   // belongs to exactly one node — the control-plane entry the bundled file
@@ -750,6 +777,9 @@ async function createKindCluster(
   if (raw === null) {
     throw new ClusterInstallError(`Bundled kind config not found at ${configPath} — broken install?`)
   }
+  // The node-local bind's host side has to exist before `kind create`:
+  // podman refuses a bind of a missing source, or creates it as root.
+  await fs.mkdir(nodeLocalRoot(), { recursive: true })
   const config = renderKindConfig(raw, {
     homedir: deps.homedir(),
     nodes,
@@ -757,6 +787,8 @@ async function createKindCluster(
     // writes port mappings only when a cluster is CREATED — which is why an
     // older cluster cannot be converged into publishing one.
     serverHostPort: resolveServerPort(),
+    nodeLocalHostPath: nodeLocalRoot(),
+    nodeLocalNodePath: nodeLocalNodePath(),
   })
 
   const topology = nodes === 1
@@ -1027,6 +1059,33 @@ async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Prom
     + ' && systemctl restart kubelet; fi',
   ])
   await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
+}
+
+/**
+ * LEGACY COMPAT (docs/legacy-compat-shims.md): a tripwire for a kind
+ * cluster created before the node-local extraMount existed. kind writes
+ * mounts at create time, so such a cluster cannot be converged; its
+ * node-local tier lives on the node container's own disk, which works but
+ * is lost with the node (every podman-machine restart on macOS). Said once
+ * per install run, beside the fixups; `yaac cluster check` says it too.
+ * Self-skips on a node that is not a podman container, as the fixups do.
+ */
+async function noteNodeLocalMount(deps: ClusterInstallDeps, node: string): Promise<void> {
+  const nodePath = nodeLocalNodePath()
+  try {
+    await deps.run('podman', ['exec', node, 'findmnt', '-n', nodePath])
+  } catch (err) {
+    // `findmnt` exits 1 for "not a mount point"; anything else (no such
+    // container, no findmnt) is a node this cannot ask, which is not a
+    // finding.
+    if ((err as { code?: number }).code !== 1) return
+    deps.log(
+      `note: ${node} does not bind ${nodeLocalRoot()} at ${nodePath} — this cluster `
+      + 'predates the node-local extraMount, so per-node caches (pnpm stores, image '
+      + 'stores) live on node disk until `yaac cluster delete` + `yaac cluster '
+      + `install\` recreates it. Worktrees work either way (install ${dataDirHash()}).`,
+    )
+  }
 }
 
 /**

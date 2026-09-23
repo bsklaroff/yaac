@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { dataDirHash, k8sNamespace, kubectlWithRetry } from '#drivers/k8s/substrate'
-import { projectWorktreeStateRoots, projectsRoots } from '@yaac/shared/project-paths'
+import { globalProjectPath, projectsRoots } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 
 /**
@@ -100,19 +100,18 @@ export async function sweepLegacyVclusterState(): Promise<void> {
     projectsRoots().map((root) => fs.readdir(root).catch((): string[] => [])),
   )
   for (const slug of new Set(slugSets.flat())) {
-    for (const root of projectWorktreeStateRoots(slug)) {
-      let worktreeIds: string[] = []
-      try {
-        worktreeIds = await fs.readdir(root)
-      } catch { continue /* no sessions dir → nothing to sweep */ }
-      for (const worktreeId of worktreeIds) {
-        for (const sub of WORKTREE_SUBDIRS) {
-          const dir = path.join(root, worktreeId, sub)
-          try {
-            await fs.rm(dir, { recursive: true, force: true })
-          } catch (err) {
-            serverLog(`[server] legacy vcluster sweep (${dir}): ${(err as Error).message}`)
-          }
+    const root = globalProjectPath(slug, 'sessions')
+    let worktreeIds: string[] = []
+    try {
+      worktreeIds = await fs.readdir(root)
+    } catch { continue /* no sessions dir → nothing to sweep */ }
+    for (const worktreeId of worktreeIds) {
+      for (const sub of WORKTREE_SUBDIRS) {
+        const dir = path.join(root, worktreeId, sub)
+        try {
+          await fs.rm(dir, { recursive: true, force: true })
+        } catch (err) {
+          serverLog(`[server] legacy vcluster sweep (${dir}): ${(err as Error).message}`)
         }
       }
     }

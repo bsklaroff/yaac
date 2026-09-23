@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -25,26 +25,23 @@ import {
   NETD_DIR,
   CALICO_DIR,
   calicoManifestCachePath,
-  sharedRoot,
+  globalRoot,
   nodeLocalRoot,
   serverLocalRoot,
   clientLocalRoot,
   clientLocalPath,
   credentialsDir,
-  sharedPath,
-  sharedProjectPath,
+  globalPath,
+  globalProjectPath,
   nodeLocalProjectPath,
   serverLocalPath,
-  nodeLocalWorktreeStateDir,
-  worktreeStateRoots,
-  projectWorktreeStateRoots,
-  projectRoots,
   projectsRoots,
   worktreeStateDir,
   opencodeDataDir,
   cacheVolumeDir,
+  imageStoreDir,
 } from '#project-paths'
-import { serverLogPath, expandTilde, findRepoRoot } from '#paths'
+import { installTmpDir, serverLogPath, expandTilde, findRepoRoot } from '#paths'
 
 describe('findRepoRoot', () => {
   const here = path.dirname(new URL(import.meta.url).pathname)
@@ -98,52 +95,48 @@ describe('paths', () => {
 
   it('returns correct projects dir', () => {
     setDataDir('/tmp/yaac-test')
-    expect(getProjectsDir()).toBe('/tmp/yaac-test/projects')
+    expect(getProjectsDir()).toBe('/tmp/yaac-test/global/projects')
   })
 
   it('returns correct server log path', () => {
     setDataDir('/tmp/yaac-test')
-    expect(serverLogPath()).toBe('/tmp/yaac-test/server.log')
+    expect(serverLogPath()).toBe('/tmp/yaac-test/server-local/server.log')
   })
 
   it('returns correct project subdirectories', () => {
     setDataDir('/tmp/yaac-test')
-    expect(projectDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo')
-    expect(repoDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
-    expect(projectConfigDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/config')
-    expect(claudeDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude')
-    expect(projectClaudeCredentialsFile('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude/.credentials.json')
-    expect(codexDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex')
-    expect(projectCodexAuthFile('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex/auth.json')
-    expect(cachedPackagesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/.cached-packages')
-    expect(opencodeConfigDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/opencode-config')
-    expect(worktreesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/worktrees')
-    expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')
+    const proj = '/tmp/yaac-test/global/projects/my-repo'
+    expect(projectDir('my-repo')).toBe(proj)
+    expect(repoDir('my-repo')).toBe(`${proj}/repo`)
+    expect(projectConfigDir('my-repo')).toBe(`${proj}/config`)
+    expect(claudeDir('my-repo')).toBe(`${proj}/claude`)
+    expect(projectClaudeCredentialsFile('my-repo')).toBe(`${proj}/claude/.credentials.json`)
+    expect(codexDir('my-repo')).toBe(`${proj}/codex`)
+    expect(projectCodexAuthFile('my-repo')).toBe(`${proj}/codex/auth.json`)
+    expect(opencodeConfigDir('my-repo')).toBe(`${proj}/opencode-config`)
+    expect(worktreesDir('my-repo')).toBe(`${proj}/worktrees`)
+    expect(worktreeDir('my-repo', 'abc123')).toBe(`${proj}/worktrees/abc123`)
   })
 
   it('puts the secret key in the server-local tier, not beside the credentials', () => {
     setDataDir('/tmp/yaac-test')
-    // Deliberately NOT under .credentials: that directory is mounted into
-    // the proxy pod, and a key beside the ciphertext it opens is no key.
-    expect(secretKeyPath()).toBe('/tmp/yaac-test/secret.key')
+    // Deliberately NOT under .credentials: that directory's contents are
+    // handed to a runtime wholesale, and a key beside the ciphertext it
+    // opens is no key.
+    expect(secretKeyPath()).toBe('/tmp/yaac-test/server-local/secret.key')
   })
 
-  it('ensureDataDir creates projects directory', async () => {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ensure-test-'))
-    setDataDir(tmpDir)
-    await ensureDataDir()
-    const stat = await fs.stat(path.join(tmpDir, 'projects'))
-    expect(stat.isDirectory()).toBe(true)
-    await fs.rm(tmpDir, { recursive: true, force: true })
-  })
-
-  it('ensureDataDir is idempotent', async () => {
+  it('ensureDataDir creates the global project tree and the server-local root, idempotently', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ensure-test-'))
     setDataDir(tmpDir)
     await ensureDataDir()
     await ensureDataDir()
-    const stat = await fs.stat(path.join(tmpDir, 'projects'))
-    expect(stat.isDirectory()).toBe(true)
+    expect((await fs.stat(path.join(tmpDir, 'global', 'projects'))).isDirectory()).toBe(true)
+    expect((await fs.stat(path.join(tmpDir, 'server-local'))).isDirectory()).toBe(true)
+    // Not the node-local root: under k8s that is the node's own, created
+    // by each pod's init container; under containerless the driver makes
+    // what it links.
+    await expect(fs.stat(path.join(tmpDir, 'node-local'))).rejects.toThrow()
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
@@ -181,19 +174,46 @@ describe('paths', () => {
 describe('storage tiers', () => {
   afterEach(() => {
     setDataDir('/tmp/yaac-path-test')
+    vi.unstubAllEnvs()
   })
 
-  it('resolves the three in-install roots to the one data dir (single-node backend)', () => {
+  it('resolves the three in-install roots to three folders of the data dir', () => {
     setDataDir('/tmp/yaac-test')
-    expect(sharedRoot()).toBe('/tmp/yaac-test')
-    expect(nodeLocalRoot()).toBe('/tmp/yaac-test')
-    expect(serverLocalRoot()).toBe('/tmp/yaac-test')
+    expect(globalRoot()).toBe('/tmp/yaac-test/global')
+    expect(nodeLocalRoot()).toBe('/tmp/yaac-test/node-local')
+    expect(serverLocalRoot()).toBe('/tmp/yaac-test/server-local')
+  })
+
+  it('re-roots exactly one tier per override variable — the pod\'s mount points', () => {
+    setDataDir('/tmp/yaac-test')
+    vi.stubEnv('YAAC_GLOBAL_ROOT', '/yaac/global')
+    expect(globalRoot()).toBe('/yaac/global')
+    expect(getProjectsDir()).toBe('/yaac/global/projects')
+    expect(nodeLocalRoot()).toBe('/tmp/yaac-test/node-local')
+    expect(serverLocalRoot()).toBe('/tmp/yaac-test/server-local')
+    vi.stubEnv('YAAC_SERVER_LOCAL_ROOT', '/yaac/server-local')
+    expect(serverLocalPath('db')).toBe('/yaac/server-local/db')
+    vi.stubEnv('YAAC_NODE_LOCAL_ROOT', '/yaac/node-local')
+    expect(cachedPackagesDir('my-repo')).toBe('/yaac/node-local/projects/my-repo/.cached-packages')
+    // The install identity is untouched by any of them.
+    expect(getDataDir()).toBe('/tmp/yaac-test')
+  })
+
+  it('keys the socket tmp dir on the install identity, not on a tier root', () => {
+    // A running containerless worktree's tmux socket lives under this dir,
+    // and the recovery scan finds it by name: a root that the pod re-roots
+    // (or that an upgrade moved) would rename it under every live worktree.
+    setDataDir('/tmp/yaac-test')
+    const before = installTmpDir()
+    vi.stubEnv('YAAC_SERVER_LOCAL_ROOT', '/yaac/server-local')
+    vi.stubEnv('YAAC_GLOBAL_ROOT', '/yaac/global')
+    expect(installTmpDir()).toBe(before)
   })
 
   it('puts the client-local root beside the data dir, never inside it', () => {
-    // Beside, because the k8s server is a pod that mounts the data dir:
-    // anything under it is reachable by something that is not a client, and
-    // an install's clients still have to stay isolated per data dir.
+    // Beside, because the k8s server is a pod that mounts the tiers:
+    // anything under them is reachable by something that is not a client,
+    // and an install's clients still have to stay isolated per data dir.
     setDataDir('/tmp/yaac-test')
     expect(clientLocalRoot()).toBe('/tmp/yaac-test-client')
     expect(clientLocalPath('remote.json')).toBe('/tmp/yaac-test-client/remote.json')
@@ -203,43 +223,37 @@ describe('storage tiers', () => {
 
   it('joins per tier', () => {
     setDataDir('/tmp/yaac-test')
-    expect(sharedPath('projects')).toBe('/tmp/yaac-test/projects')
+    expect(globalPath('run', 'proxy-data')).toBe('/tmp/yaac-test/global/run/proxy-data')
     // The credential files are the server's alone: nothing mounts them, a
     // runtime is handed their contents instead.
-    expect(credentialsDir()).toBe(path.join(serverLocalRoot(), '.credentials'))
-    expect(sharedProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
-    expect(nodeLocalProjectPath('my-repo', 'opencode-data', 'abc123'))
-      .toBe('/tmp/yaac-test/projects/my-repo/opencode-data/abc123')
-    expect(serverLocalPath('db')).toBe('/tmp/yaac-test/db')
+    expect(credentialsDir()).toBe('/tmp/yaac-test/server-local/.credentials')
+    expect(globalProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/global/projects/my-repo/repo')
+    expect(nodeLocalProjectPath('my-repo', 'x')).toBe('/tmp/yaac-test/node-local/projects/my-repo/x')
+    expect(serverLocalPath('db')).toBe('/tmp/yaac-test/server-local/db')
   })
 
-  // The node-local tier is where a re-rooting would show up first, and the
-  // paths below are also what a session pod mounts today — freeze them so
-  // classifying a dir can never move it by accident.
-  it('keeps node-local session paths where the single-node backend puts them', () => {
+  // Frozen, because a re-rooting would show up here first: these are what a
+  // worktree pod mounts and what the layout migration moves.
+  it('puts the node-local caches and working copies under the node-local root', () => {
     setDataDir('/tmp/yaac-test')
-    const proj = '/tmp/yaac-test/projects/my-repo'
-    expect(cachedPackagesDir('my-repo')).toBe(`${proj}/.cached-packages`)
-    expect(opencodeDataDir('my-repo', 'abc123')).toBe(`${proj}/opencode-data/abc123`)
-    expect(nodeLocalWorktreeStateDir('my-repo', 'abc123')).toBe(`${proj}/sessions/abc123`)
+    const node = '/tmp/yaac-test/node-local'
+    expect(cachedPackagesDir('my-repo')).toBe(`${node}/projects/my-repo/.cached-packages`)
+    expect(opencodeDataDir('my-repo', 'abc123')).toBe(`${node}/projects/my-repo/opencode-data/abc123`)
+    expect(imageStoreDir('my-repo')).toBe(`${node}/shared-images/my-repo`)
   })
 
-  it('pairs both roots for whole-session, whole-project, and all-project sweeps', () => {
+  it('enumerates both project trees for a sweep', () => {
     setDataDir('/tmp/yaac-test')
-    // One entry each while the tiers coincide — the dedup is what keeps
-    // cleanup from rm-ing (and the GC from reading) the same dir twice.
-    expect(worktreeStateRoots('my-repo', 'abc123'))
-      .toEqual(['/tmp/yaac-test/projects/my-repo/sessions/abc123'])
-    expect(projectWorktreeStateRoots('my-repo')).toEqual(['/tmp/yaac-test/projects/my-repo/sessions'])
-    expect(projectRoots('my-repo')).toEqual(['/tmp/yaac-test/projects/my-repo'])
-    expect(projectsRoots()).toEqual(['/tmp/yaac-test/projects'])
+    expect(projectsRoots()).toEqual([
+      '/tmp/yaac-test/global/projects',
+      '/tmp/yaac-test/node-local/projects',
+    ])
   })
 
-  it('keeps the shared half of a session dir beside the node-local half', () => {
+  it('keeps the per-worktree state dir and the cache volumes global', () => {
     setDataDir('/tmp/yaac-test')
-    const sess = '/tmp/yaac-test/projects/my-repo/sessions/abc123'
-    expect(worktreeStateDir('my-repo', 'abc123')).toBe(sess)
-    expect(cacheVolumeDir('my-repo', 'pnpm')).toBe('/tmp/yaac-test/projects/my-repo/cache-volumes/pnpm')
+    expect(worktreeStateDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/global/projects/my-repo/sessions/abc123')
+    expect(cacheVolumeDir('my-repo', 'pnpm')).toBe('/tmp/yaac-test/global/projects/my-repo/cache-volumes/pnpm')
   })
 })
 

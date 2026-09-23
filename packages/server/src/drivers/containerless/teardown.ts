@@ -1,4 +1,11 @@
 import fs from 'node:fs/promises'
+import path from 'node:path'
+import {
+  cachedPackagesDir,
+  getNodeLocalProjectsDir,
+  imageStoreDir,
+  nodeLocalProjectPath,
+} from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { shellQuote } from '#lib/shell'
 import { descendantPids, isSshAgentFor, killPids, runHost } from './host'
@@ -188,10 +195,53 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
 }
 
 /**
- * See `WorktreeDriver.destroyProjectSubstrate`. There is nothing a project
- * holds here beyond its worktrees — no registry, no cluster objects, no
- * proxy registration — and the caller has already torn those down.
+ * See `WorktreeDriver.destroyProjectSubstrate`. A project holds nothing
+ * here beyond its worktrees and its node-local tree — no registry, no
+ * cluster objects, no proxy registration — and the "node" is this host,
+ * so the tree is one `rm` per root.
  */
-export function destroyProjectSubstrate(): Promise<void> {
-  return Promise.resolve()
+export async function destroyProjectSubstrate(projectSlug: string): Promise<void> {
+  for (const dir of [nodeLocalProjectPath(projectSlug), imageStoreDir(projectSlug)]) {
+    await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+      serverLog(`[server] containerless: remove ${dir}: ${String(err)}`)
+    })
+  }
+}
+
+/**
+ * How far before the sweep's start a write still counts as "in use": a
+ * create staging into a directory whose workspace has not been listed yet.
+ * Same slack the global half of the sweep gives.
+ */
+const RECENT_WRITE_SLACK_MS = 10_000
+
+/**
+ * See `WorktreeDriver.reapNodeLocal`. The node-local tier here is this
+ * host's `node-local/` folder, and what a workspace leaves in it is the
+ * per-worktree ephemeral module dirs under the project's pnpm store —
+ * there is no opencode working copy on this driver (the workspace opens
+ * the global checkpoint directly). One readdir per project; nothing
+ * expensive enough to throttle.
+ */
+export async function reapNodeLocal(running: Map<string, Set<string>>): Promise<void> {
+  const startedAt = Date.now()
+  const slugs = await fs.readdir(getNodeLocalProjectsDir()).catch((): string[] => [])
+  for (const slug of slugs) {
+    const modulesRoot = path.join(cachedPackagesDir(slug), 'modules')
+    const entries = await fs.readdir(modulesRoot).catch((): string[] => [])
+    for (const sid of entries) {
+      if (running.get(slug)?.has(sid)) continue
+      const dir = path.join(modulesRoot, sid)
+      const stat = await fs.stat(dir).catch(() => null)
+      // Unreadable reads as in use: refusing to delete costs a stale dir
+      // the next sweep collects, deleting wrongly costs a live worktree.
+      if (stat === null || stat.mtimeMs >= startedAt - RECENT_WRITE_SLACK_MS) continue
+      try {
+        await fs.rm(dir, { recursive: true, force: true })
+        console.log(`Removed orphan ephemeral modules dir ${dir}`)
+      } catch (err) {
+        serverLog(`[server] containerless: remove ${dir}: ${String(err)}`)
+      }
+    }
+  }
 }

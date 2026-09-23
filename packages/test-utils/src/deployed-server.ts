@@ -22,6 +22,7 @@ import { readLock } from '@yaac/shared/lock'
 import { readServerConfig, registerServer } from '@yaac/shared/server-config'
 import type { ServerLock } from '@yaac/shared/server-lock-file'
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
+import { ensureTestStorageClaims } from '#storage-claims'
 import { testTmpBase } from '#tmp'
 import { TEST_CLI_DIR } from '#cli-bundle'
 import { TEST_IMAGE_PREFIX } from '#setup'
@@ -51,12 +52,16 @@ const execFileAsync = promisify(execFile)
  *    `yaac-test-<run-id>` and has neither. Both are applied here, under the
  *    namespace-suffixed cluster-scoped name so files never fight over one
  *    binding.
- *  - **Its scratch.** Production mounts the data dir; a test file's data
- *    dir is one directory under `testTmpBase()`, and the git config, source
- *    repos and mock-remote stores it also has to see are siblings of it. So
- *    the mount is that base, at its own absolute path — which the same
- *    host==node contract `yaac cluster check` proves is what makes every
- *    other e2e hostPath work.
+ *  - **Its storage.** Production binds two claims in the install
+ *    namespace; a file's namespace has none, so the same claim pair is
+ *    rendered here with static PVs into the file's own data dir
+ *    (`#storage-claims`). The pod then mounts the three tiers exactly as an
+ *    install's does, PLUS one mount an install has no need of: the file's
+ *    scratch base (`testTmpBase()`), at its own absolute path, because the
+ *    git config, the source repos tests `project add` and the mock-remote
+ *    stores are siblings of the data dir rather than inside a tier — the
+ *    same host==node contract `yaac cluster check` proves is what makes
+ *    every other e2e hostPath work.
  */
 
 /**
@@ -100,6 +105,7 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   const imageRef = await requirePrebuiltServerImage()
 
   await ensureNamespace()
+  await ensureTestStorageClaims()
   await kubectlApply(buildServerServiceAccountManifest())
   await kubectlApply(buildServerClusterRoleManifest())
   await kubectlApply(buildServerClusterRoleBindingManifest())
@@ -205,9 +211,10 @@ async function requirePrebuiltServerImage(): Promise<string> {
 
 /**
  * The production Deployment, with the three things a test file changes: the
- * env it wants the server to have, a mount wide enough to cover the scratch
- * tree its data dir hangs off, and a request small enough that a node
- * running several files' namespaces at once can fit them all.
+ * env it wants the server to have, one extra mount covering the scratch
+ * tree its data dir hangs off (the production tier mounts stay), and a
+ * request small enough that a node running several files' namespaces at
+ * once can fit them all.
  *
  * Derived from `buildServerDeploymentManifest` rather than written out, so
  * the pod these suites exercise cannot drift from the pod an install
@@ -242,9 +249,10 @@ function testServerDeploymentManifest(
     ...container.resources,
     requests: { cpu: '100m', memory: '256Mi' },
   }
+  // The one test-only mount, beside the production three.
   const base = testTmpBase()
-  container.volumeMounts = [{ name: 'scratch', mountPath: base }]
-  podSpec.volumes = [{ name: 'scratch', hostPath: { path: base, type: 'DirectoryOrCreate' } }]
+  container.volumeMounts.push({ name: 'scratch', mountPath: base })
+  podSpec.volumes.push({ name: 'scratch', hostPath: { path: base, type: 'DirectoryOrCreate' } })
   return manifest as unknown as Record<string, unknown>
 }
 

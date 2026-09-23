@@ -7,7 +7,7 @@ import {
   kubectlApply,
   kubectlGetJson,
 } from '#drivers/k8s/substrate'
-import { credentialsDir, sharedPath } from '@yaac/shared/project-paths'
+import { credentialsDir, globalPath } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { buildProxyOutputManifests, buildRegistrationConfigMapManifest } from './proxy-manifests'
 
@@ -23,10 +23,12 @@ import { buildProxyOutputManifests, buildRegistrationConfigMapManifest } from '.
  * file an older-still proxy read, once nothing can be reading it.
  */
 
-/** Where the old proxy's `/data` hostPath lived, off the data dir the
- *  server mounts. Read here and nowhere else; never deleted. */
+/** Where the old proxy's `/data` hostPath lived: `run/proxy-data` at the
+ *  data dir root, which the layout migration carries into the GLOBAL tier
+ *  so it is under the server pod's mount. Read here and nowhere else;
+ *  never deleted. */
 function legacyProxyDataDir(): string {
-  return sharedPath('run', 'proxy-data')
+  return globalPath('run', 'proxy-data')
 }
 
 async function readJson(file: string): Promise<unknown> {

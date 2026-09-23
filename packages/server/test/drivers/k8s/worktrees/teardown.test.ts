@@ -20,7 +20,7 @@ vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
 const mockSalvage = vi.hoisted(() => vi.fn())
 const mockRemoveStore = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/images/image-promoter', () => ({ salvageWorktreeImages: mockSalvage }))
-vi.mock('#drivers/k8s/images/store-writer', () => ({ removeNodeImageStore: mockRemoveStore }))
+vi.mock('#drivers/k8s/images/store-writer', () => ({ removeNodeLocalProject: mockRemoveStore }))
 
 const mockRemoveRegistry = vi.hoisted(() => vi.fn())
 const mockRemoveSecrets = vi.hoisted(() => vi.fn())
@@ -171,8 +171,12 @@ describe('destroyWorkspace', () => {
   })
 
 describe('detachedTeardownCommand', () => {
-  it('deletes the unit', () => {
-    expect(detachedTeardownCommand(TARGET)).toContain('kubectl delete job yaac-proj-s1')
+  it('deletes the unit, and waits for its pod: the session dir removed next holds the pod\'s File mounts', () => {
+    const cmd = detachedTeardownCommand(TARGET)
+    expect(cmd).toContain('kubectl delete job yaac-proj-s1')
+    expect(cmd).toContain('--cascade=foreground')
+    expect(cmd).toContain('--wait=true')
+    expect(cmd).toMatch(/--timeout=\d+s/)
   })
 
   // The whole script is re-issued to resume an interrupted teardown (the
@@ -191,7 +195,7 @@ describe('detachedTeardownCommand', () => {
 })
 
 describe('destroyProjectSubstrate', () => {
-  it('removes the project registry, its egress secrets and the node image stores', async () => {
+  it('removes the project registry, its egress secrets and the node-local trees', async () => {
     await destroyProjectSubstrate('proj')
     expect(mockRemoveRegistry).toHaveBeenCalledWith('proj')
     expect(mockRemoveSecrets).toHaveBeenCalledWith('proj')

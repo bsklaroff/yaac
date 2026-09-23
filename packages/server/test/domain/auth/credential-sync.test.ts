@@ -151,7 +151,7 @@ describe('harvestToolCredentials', () => {
     }))
     // Present but garbage — must be skipped, not fail the sweep.
     await writeProjectClaudeCredentials('broken-project', claudeBundle())
-    await fs.writeFile(path.join(dataDir, 'projects', 'broken-project', 'claude', '.credentials.json'), '{ not json')
+    await fs.writeFile(path.join(dataDir, 'global', 'projects', 'broken-project', 'claude', '.credentials.json'), '{ not json')
 
     await harvestToolCredentials()
 
@@ -222,7 +222,7 @@ describe('harvestToolCredentials', () => {
     }
     await writeProjectCodexAuth('alpha', codexBundle())
     await fs.writeFile(
-      path.join(dataDir, 'projects', 'alpha', 'codex', 'auth.json'),
+      path.join(dataDir, 'global', 'projects', 'alpha', 'codex', 'auth.json'),
       JSON.stringify(stampless, null, 2),
     )
 

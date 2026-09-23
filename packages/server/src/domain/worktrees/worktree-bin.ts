@@ -31,6 +31,10 @@ import type { WorkspaceMount } from '#drivers/contract'
  */
 export const WORKTREE_INIT_SCRIPT = 'yaac-worktree-init'
 
+/** The opencode checkpoint script: the pod's `preStop` hook (with `stop`)
+ *  and the timer the init script starts. */
+export const OPENCODE_CHECKPOINT_SCRIPT = 'yaac-opencode-checkpoint'
+
 let sourceDirOverride: string | null = null
 
 /**
@@ -74,7 +78,7 @@ export async function stageWorktreeBin(srcDir: string, destDir: string): Promise
 }
 
 /** Read-only File mounts placing each staged script at `/usr/local/bin/<name>`.
- *  The staging dir is SHARED (under `worktreeStateDir`) — the server writes it and
+ *  The staging dir is GLOBAL (under `worktreeStateDir`) — the server writes it and
  *  the pod reads it — so it takes the shared tier's source. */
 export function worktreeBinMounts(stagingDir: string, names: string[]): WorkspaceMount[] {
   return names.map((name) => ({
