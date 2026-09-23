@@ -138,13 +138,15 @@ export function Typeahead({
                 )}
               >
                 {icon?.({ size: 11, className: 'shrink-0 text-text-faint' })}
-                <span className="truncate">{item.label}</span>
-                {(item.detail !== undefined || tag?.(item)) && (
-                  <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 text-[10px] text-text-faint">
-                    {item.detail !== undefined && <span className="max-w-[9rem] truncate">{item.detail}</span>}
-                    {tag?.(item)}
-                  </span>
-                )}
+                {/* The label is never cut off — it keeps its width, wrapping
+                    only if even the whole row is too narrow — while the
+                    detail gets what is left (truncating) and doubles as the
+                    spacer that pushes the tag to the right edge. */}
+                <span className="min-w-0 break-words">{item.label}</span>
+                <span className="min-w-0 flex-1 truncate pl-2 text-right text-[10px] text-text-faint">
+                  {item.detail}
+                </span>
+                {tag?.(item) && <span className="shrink-0 text-[10px] text-text-faint">{tag(item)}</span>}
               </button>
             </li>
           ))}
