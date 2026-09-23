@@ -349,8 +349,8 @@ export function NewWorktreeButton(
                 onClick={submit}
                 disabled={signedIn && blocked !== null}
                 title={signedIn ? blocked ?? undefined : undefined}
-                className="w-full rounded-md bg-accent px-2 py-1.5 text-xs font-medium text-white outline-none
-                  transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
+                  text-text outline-none transition hover:bg-border-strong disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {signedIn ? 'Create' : `Sign in to ${TOOL_LABEL[tool]}…`}
               </button>
