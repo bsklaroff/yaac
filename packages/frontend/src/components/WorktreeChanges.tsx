@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Popover } from '@base-ui/react/popover'
@@ -11,6 +11,7 @@ import { changeMatchesQuery, indexDiffsByPath, type ParsedFileDiff } from '#lib/
 import { languageForPath } from '#lib/highlight'
 import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon, SearchIcon, OpenFileIcon } from '#lib/icons'
 import { CHANGE_STATUS } from '#lib/gitStatus'
+import { chordMatches, findChord } from '#lib/shortcuts'
 import { PathLabel } from '#components/ui/PathLabel'
 import type { WorktreeChange } from '@yaac/shared/types'
 
@@ -20,9 +21,15 @@ import type { WorktreeChange } from '@yaac/shared/types'
  * its diff inline (full width), so nothing is wasted on a side column. Polls
  * the server so it updates as work lands; read-only for now.
  */
-export function WorktreeChanges(
-  { worktreeId, projectSlug, baseBranch }: { worktreeId: string; projectSlug: string; baseBranch?: string },
-): JSX.Element {
+export function WorktreeChanges({ worktreeId, projectSlug, baseBranch, focusKey }: {
+  worktreeId: string
+  projectSlug: string
+  baseBranch?: string
+  /** Bumped (while this is the pane to focus) when it is opened or cycled to,
+   *  like a terminal's: the pane takes focus, so Cmd/Ctrl-F then reaches it
+   *  with no mouse. */
+  focusKey?: number
+}): JSX.Element {
   // The base branch this diff is compared against. Absent ⇒ the worktree's own
   // fork base (server default); a value ⇒ diff against origin/<value>'s fork
   // point. Lives in the store keyed by worktree id, so it survives a tab switch.
@@ -45,24 +52,26 @@ export function WorktreeChanges(
   const view = useUiStore((s) => s.paneView[viewKey])
   const setPaneView = useUiStore((s) => s.setPaneView)
 
-  // Find. The query filters the file list by path or diff content. The
-  // find-changes shortcut raises findPending after opening the pane; the
-  // mounted pane consumes it — focus + select the input — so opening by the
-  // header button (no request) never grabs focus.
+  // Find. The query filters the file list by path or diff content. The fixed
+  // Cmd/Ctrl-F (findChord) jumps to the box from anywhere in the focused
+  // pane, and keeps its browser meaning everywhere else.
   const find = view?.find ?? ''
   const setFind = (query: string): void => setPaneView(viewKey, { find: query })
-  const findPending = useUiStore((s) => s.findPending === CHANGES_TARGET)
-  const setFindPending = useUiStore((s) => s.setFindPending)
   const findRef = useRef<HTMLInputElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
-    // The input only exists once loading settles (the spinner/error branches
-    // return early below), so leave the request pending until it's mounted —
-    // isLoading in the deps re-runs this when the data arrives.
-    if (!findPending || !findRef.current) return
-    setFindPending(null)
+    // The root only exists once loading settles, hence isLoading in the deps.
+    // Focus already inside the pane (the find box) stays put.
+    const root = rootRef.current
+    if (focusKey === undefined || !root || root.contains(document.activeElement)) return
+    root.focus()
+  }, [focusKey, isLoading])
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (!chordMatches(findChord(), e.nativeEvent) || !findRef.current) return
+    e.preventDefault()
     findRef.current.focus()
     findRef.current.select()
-  }, [findPending, isLoading, setFindPending])
+  }
   const visible = useMemo(
     () => files.filter((f) => changeMatchesQuery(f, diffMap.get(f.path), find)),
     [files, diffMap, find],
@@ -160,7 +169,9 @@ export function WorktreeChanges(
     )
   }
   return (
-    <div className="flex h-full flex-col bg-surface">
+    // Focusable, so a click on the diff (or opening the pane) puts focus in
+    // the pane where Cmd/Ctrl-F can see it.
+    <div ref={rootRef} tabIndex={-1} onKeyDown={onKeyDown} className="flex h-full flex-col bg-surface outline-none">
       {/* Header is always present (even with no changes) so the base picker
           stays reachable — otherwise a base that yields an empty diff would
           trap the user with no way to switch back. */}

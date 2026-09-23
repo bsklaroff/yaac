@@ -208,7 +208,7 @@ would drop undo history, cursor and unsaved text.
 ### Keys
 
 - **`open-files` (Alt-E)** is a registry command: it opens or surfaces the
-  explorer and raises `findPending` for it, and the mounted explorer focuses
+  explorer and raises `filesFindPending`, and the mounted explorer focuses
   its filter — so Alt-E, a few letters, Enter is quick-open. Option-E is a
   dead key on macOS, the same trade every Alt-letter default makes.
 - **Cmd/Ctrl-S is fixed**, not in the registry: like undo it is part of what
@@ -217,6 +217,8 @@ would drop undo history, cursor and unsaved text.
   and keeps its browser meaning elsewhere. Because the workspace's shortcut
   listener runs first in the capture phase, `validateChord` refuses the
   platform's save chord and `mergeBindings` drops a stored override naming it.
+  The Changes pane's Cmd/Ctrl-F (jump to its find box) is fixed and reserved
+  the same way.
 
 Out of scope: preview tabs, per-column widths, LSP, collaborative cursors and
 search across files (the terminal has `rg`).

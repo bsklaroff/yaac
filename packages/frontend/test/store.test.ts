@@ -385,15 +385,15 @@ describe('view mode (tiles vs tabs)', () => {
     expect(useUiStore.getState().changesBase).toEqual({ s2: 'main' })
   })
 
-  it('setFindPending names the pane whose filter should take focus, no-oping on the same value', () => {
-    expect(useUiStore.getState().findPending).toBeNull()
-    useUiStore.getState().setFindPending('files')
-    expect(useUiStore.getState().findPending).toBe('files')
-    useUiStore.getState().setFindPending(null)
-    expect(useUiStore.getState().findPending).toBeNull()
+  it('setFilesFindPending raises and clears the focus request, no-oping on the same value', () => {
+    expect(useUiStore.getState().filesFindPending).toBe(false)
+    useUiStore.getState().setFilesFindPending(true)
+    expect(useUiStore.getState().filesFindPending).toBe(true)
+    useUiStore.getState().setFilesFindPending(false)
+    expect(useUiStore.getState().filesFindPending).toBe(false)
     // Clearing an already-clear request keeps state identity (no needless render).
     const before = useUiStore.getState()
-    useUiStore.getState().setFindPending(null)
+    useUiStore.getState().setFilesFindPending(false)
     expect(useUiStore.getState()).toBe(before)
   })
 

@@ -913,8 +913,8 @@ function WorktreeRow({
           </button>
           <button
             onClick={() => setConfirmDelete(true)}
-            title="Delete worktree"
-            aria-label="Delete worktree"
+            title="Stop worktree"
+            aria-label="Stop worktree"
             className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
               opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
               group-hover:pointer-events-auto group-hover:opacity-100
@@ -934,9 +934,9 @@ function WorktreeRow({
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title="Delete worktree?"
+        title="Stop worktree?"
         description="Stops and removes the worktree's container. The worktree history and worktree will be saved, and can be restarted."
-        confirmLabel="Delete"
+        confirmLabel="Stop"
         onConfirm={onConfirmDelete}
       />
     </div>

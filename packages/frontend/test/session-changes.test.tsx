@@ -18,6 +18,7 @@ import { getWorktreeChanges } from '#lib/changesApi'
 import { getProjectBranches } from '#lib/projectApi'
 import { WorktreeChanges } from '#components/WorktreeChanges'
 import { useUiStore } from '#store'
+import { findChord } from '#lib/shortcuts'
 
 const mock = vi.mocked(getWorktreeChanges)
 
@@ -53,11 +54,13 @@ const PAYLOAD: SessionChangesData = {
   truncated: false,
 }
 
-function renderPane({ baseBranch = 'main' }: { baseBranch?: string } = {}): ReturnType<typeof render> {
+function renderPane(
+  { baseBranch = 'main', focusKey }: { baseBranch?: string; focusKey?: number } = {},
+): ReturnType<typeof render> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <WorktreeChanges worktreeId="s1" projectSlug="proj" baseBranch={baseBranch} />
+      <WorktreeChanges worktreeId="s1" projectSlug="proj" baseBranch={baseBranch} focusKey={focusKey} />
     </QueryClientProvider>,
   )
 }
@@ -93,7 +96,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   mock.mockReset()
-  useUiStore.setState({ paneView: {}, changesBase: {}, findPending: null })
+  useUiStore.setState({ paneView: {}, changesBase: {} })
 })
 
 describe('WorktreeChanges', () => {
@@ -329,19 +332,32 @@ describe('WorktreeChanges', () => {
     expect(screen.getByLabelText<HTMLInputElement>('Find in changes').value).toBe('new.ts')
   })
 
-  it('consumes a pending find-focus request by focusing the find box', async () => {
-    mock.mockResolvedValue(PAYLOAD)
-    useUiStore.setState({ findPending: 'changes' })
-    renderPane()
-    await waitFor(() => expect(useUiStore.getState().findPending).toBeNull())
-    expect(document.activeElement).toBe(screen.getByLabelText('Find in changes'))
-  })
-
-  it('does not grab focus when the pane mounts without a pending request', async () => {
+  it('Cmd/Ctrl+F in the focused pane jumps to the find box; other chords do not', async () => {
     mock.mockResolvedValue(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
-    expect(document.activeElement).not.toBe(screen.getByLabelText('Find in changes'))
+    const input = screen.getByLabelText('Find in changes')
+    // Mounting never grabs focus on its own.
+    expect(document.activeElement).not.toBe(input)
+    const inPane = screen.getByTitle('new.ts')
+    const { meta, ctrl } = findChord()
+    fireEvent.keyDown(inPane, { code: 'KeyF', altKey: true })
+    fireEvent.keyDown(inPane, { code: 'KeyF', metaKey: meta, ctrlKey: ctrl, shiftKey: true })
+    expect(document.activeElement).not.toBe(input)
+    // Handled, so the browser's own find stays shut.
+    expect(fireEvent.keyDown(inPane, { code: 'KeyF', metaKey: meta, ctrlKey: ctrl })).toBe(false)
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('takes focus once loaded when it is the pane to focus, so Cmd/Ctrl+F needs no click', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane({ focusKey: 1 })
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    const root = screen.getByLabelText('Find in changes').closest('[tabindex="-1"]')
+    await waitFor(() => expect(document.activeElement).toBe(root))
+    const { meta, ctrl } = findChord()
+    fireEvent.keyDown(document.activeElement!, { code: 'KeyF', metaKey: meta, ctrlKey: ctrl })
+    expect(document.activeElement).toBe(screen.getByLabelText('Find in changes'))
   })
 
   it('keeps the base picker reachable even when there are no changes', async () => {

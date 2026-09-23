@@ -1,8 +1,8 @@
 /*
  * Verifies the Changes pane's find (search) input end-to-end in real Chromium:
- *   - Alt+F opens the Changes pane and moves focus into the find input
- *     (window-capture shortcut in SessionView + pending-focus consumption in
- *     SessionChanges) — including when pressed again while the pane is open.
+ *   - Alt+G opens the Changes pane and focuses it (its focusKey), and the
+ *     fixed Cmd/Ctrl+F on the pane's root then moves focus into the find
+ *     input — including from a terminal, with the pane already open.
  *   - Typing a query filters the file list (path or diff-content match) and
  *     the header switches to an "n of m files" count.
  *   - A query matching nothing shows the no-match state.
@@ -96,14 +96,17 @@ async function main() {
   // Wait for the session's workspace (the pushed /events snapshot) to arrive.
   await page.waitForTimeout(4000)
 
-  // Alt+F ('Alt+f': a capital F would add shiftKey, which the chord rejects).
-  await page.keyboard.press('Alt+f')
+  // Alt+G ('Alt+g': a capital G would add shiftKey, which the chord rejects),
+  // then Cmd/Ctrl+F from inside the now-focused pane.
+  await page.keyboard.press('Alt+g')
   const find = page.locator(FIND)
   await find.waitFor({ state: 'visible', timeout: 10_000 })
-  check(true, 'Alt+F opens the Changes pane with a find input')
+  check(true, 'Alt+G opens the Changes pane with a find input')
+  await page.waitForTimeout(300)
+  await page.keyboard.press('ControlOrMeta+f')
   check(
     await page.evaluate((sel) => document.activeElement === document.querySelector(sel), FIND),
-    'find input holds keyboard focus after Alt+F',
+    'find input holds keyboard focus after Alt+G, Cmd/Ctrl+F',
   )
   await page.waitForTimeout(1500) // let the diff load
   const fullCount = await page.locator('text=/^\\d+ files?$/').first().textContent()
@@ -143,13 +146,15 @@ async function main() {
     'full file list count returns after clearing',
   )
 
-  // With the pane already open and focus elsewhere, Alt+F re-focuses the input.
+  // With the pane already open and focus in a terminal, Alt+G then
+  // Cmd/Ctrl+F gets back to the input with no mouse.
   await page.locator('.xterm-helper-textarea').first().focus().catch(() => {})
-  await page.keyboard.press('Alt+f')
+  await page.keyboard.press('Alt+g')
   await page.waitForTimeout(300)
+  await page.keyboard.press('ControlOrMeta+f')
   check(
     await page.evaluate((sel) => document.activeElement === document.querySelector(sel), FIND),
-    'Alt+F re-focuses the find input when the pane is already open',
+    'Alt+G, Cmd/Ctrl+F re-focuses the find input from a terminal',
   )
 
   await browser.close()

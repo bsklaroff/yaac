@@ -235,7 +235,7 @@ try {
   // ---- the pane: its title rename, and the changes pane's find box ----
   await escape()
   const row = worktreesLayer
-    .locator('.group.relative.mx-2:has([aria-label="Delete worktree"]) > button')
+    .locator('.group.relative.mx-2:has([aria-label="Stop worktree"]) > button')
   const hasWorktree = await tapIfPresent(row, 20_000)
   check('the walk reached a live worktree (the pane controls need one)', hasWorktree)
   if (hasWorktree) {

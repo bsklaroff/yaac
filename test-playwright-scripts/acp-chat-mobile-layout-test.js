@@ -199,7 +199,7 @@ try {
 
   const worktreesLayer = shell.locator('> div').nth(1)
   const row = worktreesLayer
-    .locator('.group.relative.mx-2:has([aria-label="Delete worktree"]) > button')
+    .locator('.group.relative.mx-2:has([aria-label="Stop worktree"]) > button')
     .first()
   await row.waitFor({ state: 'visible', timeout: 30_000 })
   await row.tap()

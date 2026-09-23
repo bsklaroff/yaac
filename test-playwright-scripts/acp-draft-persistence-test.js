@@ -113,9 +113,9 @@ async function main() {
   check(await chat.inputValue() === DRAFT, 'the draft is in the box')
   await shot('acp-draft-typed')
 
-  // Alt+C opens the Changes pane; in tabs view it becomes the visible tab and
+  // Alt+G opens the Changes pane; in tabs view it becomes the visible tab and
   // the chat pane is unmounted outright.
-  await page.keyboard.press('Alt+c')
+  await page.keyboard.press('Alt+g')
   await page.waitForTimeout(1500)
   check(await page.locator(CHAT).count() === 0, 'leaving the pane unmounts the chat pane')
 
@@ -157,7 +157,7 @@ async function main() {
   check(cleared, 'sending clears the box once the server echoes the message')
   await shot('acp-draft-sent')
 
-  await page.keyboard.press('Alt+c')
+  await page.keyboard.press('Alt+g')
   await page.waitForTimeout(1000)
   await page.locator(AGENT_TAB).first().click()
   await page.waitForTimeout(2000)
@@ -174,7 +174,7 @@ async function main() {
   // nothing about the text now in the box.
   await page.locator(CHAT).fill('reply with just the word pong')
   await page.waitForTimeout(300)
-  await page.keyboard.press('Alt+c')
+  await page.keyboard.press('Alt+g')
   await page.waitForTimeout(1000)
   await page.locator(AGENT_TAB).first().click()
   await page.waitForTimeout(2000)

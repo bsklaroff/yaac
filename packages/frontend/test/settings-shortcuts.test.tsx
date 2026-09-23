@@ -24,7 +24,7 @@ vi.mock('#lib/settingsApi', () => ({
 import { SettingsButton } from '#components/SettingsButton'
 import { setShortcutOverride, resetShortcuts } from '#lib/settingsApi'
 import { useUiStore } from '#store'
-import { DEFAULT_BINDINGS } from '#lib/shortcuts'
+import { DEFAULT_BINDINGS, mergeBindings } from '#lib/shortcuts'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
@@ -64,7 +64,7 @@ describe('Settings → Shortcuts', () => {
     openShortcuts()
     expect(screen.getByText('New worktree')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Alt+N' })).toBeTruthy()
-    expect(screen.getByText('Delete worktree')).toBeTruthy()
+    expect(screen.getByText('Stop worktree')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Alt+D' })).toBeTruthy()
   })
 
@@ -73,12 +73,12 @@ describe('Settings → Shortcuts', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Alt+N' }))
     expect(screen.getByRole('button', { name: 'Press…' })).toBeTruthy()
 
-    fireEvent.keyDown(window, { code: 'KeyG', altKey: true })
+    fireEvent.keyDown(window, { code: 'KeyY', altKey: true })
 
-    const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }
+    const chord = { code: 'KeyY', alt: true, ctrl: false, meta: false, shift: false }
     await waitFor(() => expect(setShortcutOverride).toHaveBeenCalledWith('new-worktree', chord))
     expect(useUiStore.getState().bindings['new-worktree']).toEqual(chord)
-    expect(screen.getByRole('button', { name: 'Alt+G' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Alt+Y' })).toBeTruthy()
   })
 
   it('rejects a chord already bound to another command', () => {
@@ -95,15 +95,26 @@ describe('Settings → Shortcuts', () => {
   it('ignores a chord without a real modifier', () => {
     openShortcuts()
     fireEvent.click(screen.getByRole('button', { name: 'Alt+N' }))
-    fireEvent.keyDown(window, { code: 'KeyG' }) // no modifier
+    fireEvent.keyDown(window, { code: 'KeyY' }) // no modifier
 
     expect(screen.getByText(/Hold Alt, Ctrl, or Cmd/)).toBeTruthy()
     expect(setShortcutOverride).not.toHaveBeenCalled()
   })
 
+  it('refuses to reset a command whose default another command now holds', () => {
+    useUiStore.setState({ bindings: mergeBindings({ 'new-worktree': DEFAULT_BINDINGS['new-shell'] }) })
+    openShortcuts()
+    expect(screen.getByRole('button', { name: 'Unset' })).toBeTruthy()
+    const resets = screen.getAllByRole('button', { name: 'Reset' })
+    // new-worktree's row is first; new-shell's (unset) row is second.
+    fireEvent.click(resets[1])
+    expect(screen.getByText(/Already bound to “New worktree”/)).toBeTruthy()
+    expect(setShortcutOverride).not.toHaveBeenCalled()
+  })
+
   it('reset all restores defaults and clears overrides on the server', () => {
     useUiStore.setState({
-      bindings: { ...DEFAULT_BINDINGS, 'new-worktree': { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false } },
+      bindings: { ...DEFAULT_BINDINGS, 'new-worktree': { code: 'KeyY', alt: true, ctrl: false, meta: false, shift: false } },
     })
     openShortcuts()
     fireEvent.click(screen.getByRole('button', { name: /Reset all/ }))
