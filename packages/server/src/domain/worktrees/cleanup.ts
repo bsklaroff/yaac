@@ -93,6 +93,7 @@ export async function deleteWorktreeState(
   const adminDir = path.join(repoDir(projectSlug), '.git', 'worktrees', worktreeId)
   const outcomes = await Promise.all([
     fs.rm(worktreeDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    fs.rm(sandboxDiagnosticsPath(projectSlug, worktreeId), { force: true }),
     fs.rm(path.join(adminDir, 'locked'), { force: true })
       .then(() => fs.rm(adminDir, { recursive: true, force: true })),
     fs.rm(opencodeDataDir(projectSlug, worktreeId), { recursive: true, force: true }),
@@ -200,6 +201,51 @@ export async function cleanupWorktree(params: {
 
   console.log(`Session ${worktreeId} cleaned up.`)
   return runtimeGone
+}
+
+/**
+ * Where a forced stop keeps what the runtime captured about the wedged
+ * sandbox — the sentry stack dump — beside the worktree's other per-id
+ * metadata. Survives a stop (the checkout does too) and goes with a delete.
+ */
+export function sandboxDiagnosticsPath(projectSlug: string, worktreeId: string): string {
+  return path.join(worktreeMetaDir(projectSlug), `${worktreeId}.sandbox-stacks.txt`)
+}
+
+/**
+ * Force a stuck teardown's runtime down from outside it, and keep what the
+ * runtime captured first (docs/stuck-sandbox-recovery.md).
+ *
+ * The reaper's escalation: called for a worktree whose delete has outlasted
+ * the force window, right before the ordinary teardown is re-issued — the
+ * force only clears the way; the teardown is still what finishes. Resolves
+ * whether the runtime was actually forced; a runtime with no such lever
+ * says so in the log and the teardown is re-issued regardless. Never throws.
+ */
+export async function forceKillStuckWorktree(params: {
+  jobName: string
+  projectSlug: string
+  worktreeId: string
+}): Promise<boolean> {
+  const { jobName, projectSlug, worktreeId } = params
+  const outcome = await worktreeDriver().forceKillWorkspace(teardownTarget(params))
+  let kept = ''
+  if (outcome.diagnostics) {
+    const file = sandboxDiagnosticsPath(projectSlug, worktreeId)
+    try {
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      await fs.writeFile(file, outcome.diagnostics)
+      kept = ` (diagnostics kept in ${file})`
+    } catch (err) {
+      kept = ` (diagnostics not kept: ${String(err)})`
+    }
+  }
+  serverLog(
+    `[server] force-kill: session=${worktreeId} job=${jobName} `
+    + (outcome.forced ? 'runtime killed' : `not forced: ${outcome.reason ?? 'unknown'}`)
+    + kept,
+  )
+  return outcome.forced
 }
 
 /**

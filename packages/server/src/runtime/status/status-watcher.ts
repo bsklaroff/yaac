@@ -11,6 +11,7 @@ import {
   setAgentStatus,
   setLiveAgents,
   setWorktreeStreamHealth,
+  setWorktreeUnresponsive,
 } from './status-store'
 import {
   registerWorktreeControlStream,
@@ -72,6 +73,12 @@ export interface StatusWatcherDeps {
   dial?: AgentConnectDeps['dial']
   log?: (msg: string) => void
 }
+
+/** Every Nth consecutive stream death re-execs streamd in the pod. */
+const SELF_HEAL_EVERY_FAILURES = 3
+/** The death after the first self-heal: the pod could not be revived from
+ *  outside either, which is what marks a worktree unresponsive. */
+const UNRESPONSIVE_AFTER_FAILURES = SELF_HEAL_EVERY_FAILURES + 1
 
 export class WorktreeStatusWatcher {
   private connection: { close(): void } | null = null
@@ -183,6 +190,14 @@ export class WorktreeStatusWatcher {
     this.log(`[server] status-watcher ${this.session.worktreeId}: ${reason}`)
     this.teardown()
     setWorktreeStreamHealth(this.session.slug, this.session.worktreeId, false)
+    // One failure past the self-heal: streamd was re-exec'd on the third and
+    // the stream still could not be held, so the pod itself is not
+    // answering — a wedged sandbox, not a dropped relay. Say so; the reaper
+    // is what acts, and only on a stop (docs/stuck-sandbox-recovery.md).
+    if (this.consecutiveFailures === UNRESPONSIVE_AFTER_FAILURES) {
+      this.log(`[server] status-watcher ${this.session.worktreeId}: unresponsive (self-heal did not help)`)
+      setWorktreeUnresponsive(this.session.slug, this.session.worktreeId)
+    }
     this.scheduleRespawn()
   }
 
@@ -200,7 +215,7 @@ export class WorktreeStatusWatcher {
     // consecutive failure, so a proxy outage (streamd fine) doesn't hammer the
     // apiserver with boots. Best-effort: if the pod is really dead the reaper
     // owns it.
-    if (this.consecutiveFailures > 0 && this.consecutiveFailures % 3 === 0) {
+    if (this.consecutiveFailures > 0 && this.consecutiveFailures % SELF_HEAL_EVERY_FAILURES === 0) {
       this.log(`[server] status-watcher ${this.session.worktreeId}: re-execing streamd (self-heal)`)
       void this.reviveStreamd(this.session.jobName).catch((err: unknown) => {
         this.log(`[server] status-watcher ${this.session.worktreeId}: streamd revive failed: ${String(err)}`)

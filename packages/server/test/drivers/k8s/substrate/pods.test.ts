@@ -289,6 +289,30 @@ describe('listWorktreePods', () => {
   })
 })
 
+describe('listWorktreePods (force-kill fields)', () => {
+  it('carries the uid, node and deletion time a force-kill is keyed by', async () => {
+    const item = rawPod({ deletionTimestamp: '2026-06-01T00:05:00Z' }) as {
+      metadata: Record<string, unknown>
+      spec?: Record<string, unknown>
+    }
+    item.metadata.uid = 'uid-1'
+    item.spec = { nodeName: 'node-a' }
+    mockGetJson.mockResolvedValue({ items: [item] })
+
+    const [pod] = await listWorktreePods()
+
+    expect(pod).toMatchObject({
+      terminating: true,
+      terminatingSinceMs: Date.parse('2026-06-01T00:05:00Z'),
+      uid: 'uid-1',
+      nodeName: 'node-a',
+    })
+    // A live pod carries none of the terminating half.
+    mockGetJson.mockResolvedValue({ items: [rawPod()] })
+    expect((await listWorktreePods())[0]).not.toHaveProperty('terminatingSinceMs')
+  })
+})
+
 describe('findWorktreePod', () => {
   function pod(overrides: Partial<PodInfo> = {}): PodInfo {
     return {

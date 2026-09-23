@@ -45,6 +45,7 @@ export {
 } from './liveness'
 export {
   evictWorktreeStatus,
+  isWorktreeUnresponsive,
   liveAgents,
   onLiveAgentsChanged,
   onStreamHealthLost,

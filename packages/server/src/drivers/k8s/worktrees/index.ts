@@ -15,6 +15,7 @@ export {
   findWorkspaceForTeardown,
   listWorkspaces,
 } from './locate'
+export { forceKillWorkspace } from './force-kill'
 export { reconcileImageSalvage } from './salvage-reconcile'
 export {
   deregisterWorkspace,

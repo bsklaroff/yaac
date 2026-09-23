@@ -8,6 +8,7 @@ import {
 import { toAgentSessionEntry } from './agent-session-entry'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { testEnv } from '@yaac/shared/env'
 import { observeWorkspaces, type WorktreeRuntimeReport } from '#runtime/status'
 import type { AgentLiveness } from '#drivers/contract'
 import type { ActiveWorktreesResult, WorktreeListEntry } from '@yaac/shared/types'
@@ -113,10 +114,17 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
     if (w.phase === 'terminating') {
       // A distinct, non-interactive placeholder: no agents, no ports, and a
       // forced `running` so no attention badge fires on a row on its way out.
+      // A stop that has outlasted the force window is said to be stuck: the
+      // reaper is forcing the runtime down (docs/stuck-sandbox-recovery.md).
+      const since = w.terminatingSinceMs
       return {
         ...base,
         status: 'running',
         stopping: true,
+        ...(since !== undefined ? { stoppingSinceMs: since } : {}),
+        ...(since !== undefined && Date.now() - since >= testEnv.forceKillAfterMs
+          ? { stoppingStuck: true }
+          : {}),
         agentSessions: [],
         blockedHosts: [],
         forwardedPorts: [],
@@ -131,6 +139,7 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,
+      ...(w.unresponsive ? { unresponsive: true } : {}),
       baseBranch: row?.baseBranch,
     }
   })

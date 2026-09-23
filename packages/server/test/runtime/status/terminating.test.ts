@@ -33,10 +33,10 @@ describe('terminating registry', () => {
     markWorktreeTerminating('s1', 5_000) // ignored — first mark wins
     // Still within TTL of the FIRST mark at t=1_000.
     pruneTerminating(new Set(['s1']), 1_000 + TERMINATING_TTL_MS)
-    expect(isWorktreeTerminating('s1')).toBe(true)
+    expect(isWorktreeTerminating('s1', 1_000 + TERMINATING_TTL_MS)).toBe(true)
     // Just past the TTL of the first mark → pruned.
     pruneTerminating(new Set(['s1']), 1_000 + TERMINATING_TTL_MS + 1)
-    expect(isWorktreeTerminating('s1')).toBe(false)
+    expect(isWorktreeTerminating('s1', 1_000 + TERMINATING_TTL_MS + 1)).toBe(false)
   })
 
   // A mark greys the row, so it is a snapshot input and has to announce
@@ -84,8 +84,18 @@ describe('terminating registry', () => {
     markWorktreeTerminating('s2', 1_000)
     // s1's pod vanished (teardown finished); s2 still present.
     pruneTerminating(new Set(['s2']), 2_000)
+    expect(isWorktreeTerminating('s1', 2_000)).toBe(false)
+    expect(isWorktreeTerminating('s2', 2_000)).toBe(true)
+  })
+
+  it('a mark past the TTL no longer reads as terminating, whether or not anything pruned it', () => {
+    // The reaper defers to a live mark; on a server nobody is listing from
+    // (no display build, so no prune) an expired mark must still stand aside
+    // or a delete that never landed would never be escalated.
+    markWorktreeTerminating('s1', 1_000)
+    expect(isWorktreeTerminating('s1', 1_000 + TERMINATING_TTL_MS)).toBe(true)
+    expect(isWorktreeTerminating('s1', 1_000 + TERMINATING_TTL_MS + 1)).toBe(false)
     expect(isWorktreeTerminating('s1')).toBe(false)
-    expect(isWorktreeTerminating('s2')).toBe(true)
   })
 
   it('pruneTerminating forgets a mark past the TTL even if the pod lingers', () => {

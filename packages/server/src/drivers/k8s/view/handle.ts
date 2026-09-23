@@ -29,6 +29,7 @@ export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
     createdAtMs: pod.createdAtMs,
     prewarmed: isPrewarmed(pod),
     terminating: pod.terminating,
+    ...(pod.terminatingSinceMs !== undefined ? { terminatingSinceMs: pod.terminatingSinceMs } : {}),
     deathCause: deriveDeathCause(pod),
   }
 }

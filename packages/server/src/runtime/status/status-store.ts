@@ -55,6 +55,10 @@ export interface AgentStatusEntry {
 export interface WorktreeStatusEntry {
   /** True while the worktree's watcher connection is up and classifying. */
   streamHealthy: boolean
+  /** The watcher has lost the stream repeatedly and its streamd self-heal
+   *  did not bring it back: nothing can reach the runtime, though it may
+   *  still be running. Cleared by the next healthy connection. */
+  unresponsive?: boolean
   /** Epoch ms of the last write (status or health). */
   updatedAtMs: number
   /** Per-conversation status, keyed by the driver's handle. */
@@ -302,6 +306,7 @@ export function setWorktreeStreamHealth(slug: string, worktreeId: string, health
     notifyChanged()
     return
   }
+  if (healthy) prev.unresponsive = false
   if (prev.streamHealthy === healthy) return
   prev.streamHealthy = healthy
   prev.updatedAtMs = Date.now()
@@ -309,6 +314,26 @@ export function setWorktreeStreamHealth(slug: string, worktreeId: string, health
   // Health just went healthy → unhealthy: the display path can no longer
   // infer tmux liveness for this worktree, so the reaper is owed a pass.
   if (!healthy) streamHealthLostListener?.()
+}
+
+/**
+ * The watcher's verdict that a worktree has gone unreachable: its stream
+ * has died repeatedly and the self-heal failed. Distinct from a health
+ * drop, which any transport hiccup causes and the next respawn heals; this
+ * is the edge after which a user should be told (docs/stuck-sandbox-recovery.md).
+ * Creates the entry if the worktree never attached — a pod that wedged
+ * before its first stream is the case most worth flagging. Idempotent.
+ */
+export function setWorktreeUnresponsive(slug: string, worktreeId: string): void {
+  const e = entry(key(slug, worktreeId))
+  if (e.unresponsive) return
+  e.unresponsive = true
+  e.updatedAtMs = Date.now()
+  notifyChanged()
+}
+
+export function isWorktreeUnresponsive(slug: string, worktreeId: string): boolean {
+  return store.get(key(slug, worktreeId))?.unresponsive === true
 }
 
 /**

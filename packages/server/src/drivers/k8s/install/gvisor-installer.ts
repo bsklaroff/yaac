@@ -1,6 +1,7 @@
 import {
 } from '#drivers/k8s/cluster'
 import {
+  GVISOR_INSTALLER_APP_NAME,
   GVISOR_INSTALLER_READY_FILE,
   buildRuntimeClassManifests,
   gvisorInstallScript,
@@ -43,8 +44,7 @@ import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
  * runc wherever it lands.
  */
 
-/** DaemonSet / ServiceAccount name, and the `app` label on every object. */
-export const GVISOR_INSTALLER_APP_NAME = 'yaac-gvisor-install'
+export { GVISOR_INSTALLER_APP_NAME }
 
 /**
  * The installer's container image: upstream `curl`, digest-pinned by its

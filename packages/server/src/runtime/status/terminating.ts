@@ -41,9 +41,21 @@ export function markWorktreeTerminating(worktreeId: string, nowMs = Date.now()):
   notifyWorktreeListChanged()
 }
 
-/** Whether a worktree is currently marked terminating. */
-export function isWorktreeTerminating(worktreeId: string): boolean {
-  return marks.has(worktreeId)
+/**
+ * Whether a worktree is currently marked terminating. A mark past the TTL
+ * does not count, and is dropped here: the reaper's stuck-terminating sweep
+ * defers to a live mark, and a server nobody is listing from (no display
+ * build, so no `pruneTerminating`) must still get to escalate a delete that
+ * never landed (docs/stuck-sandbox-recovery.md).
+ */
+export function isWorktreeTerminating(worktreeId: string, nowMs = Date.now()): boolean {
+  const markedAt = marks.get(worktreeId)
+  if (markedAt === undefined) return false
+  if (nowMs - markedAt > TERMINATING_TTL_MS) {
+    marks.delete(worktreeId)
+    return false
+  }
+  return true
 }
 
 /** Drop a worktree's mark — called when its id is reused (restart) so a fresh

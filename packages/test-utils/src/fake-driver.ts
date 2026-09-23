@@ -171,6 +171,7 @@ export function installFakeWorktreeDriver(
     deregisterWorkspace: (w) => current.deregisterWorkspace(w),
     salvageImages: (t) => current.salvageImages(t),
     destroy: (t, o) => current.destroy(t, o),
+    forceKillWorkspace: (t) => current.forceKillWorkspace(t),
     detachedTeardownCommand: (t) => current.detachedTeardownCommand(t),
     destroyProjectSubstrate: (s) => current.destroyProjectSubstrate(s),
     pendingMamaRequests: () => current.pendingMamaRequests(),
@@ -288,6 +289,7 @@ function defaultRuntime(): WorktreeDriver {
     // removal on this verdict must exercise its happy path without every
     // test having to opt in, and a case about the timeout says so.
     destroy: () => Promise.resolve(true),
+    forceKillWorkspace: () => Promise.resolve({ forced: false, reason: 'fake runtime' }),
     detachedTeardownCommand: () => 'true',
     destroyProjectSubstrate: () => Promise.resolve(),
     pendingMamaRequests: () => Promise.resolve([]),

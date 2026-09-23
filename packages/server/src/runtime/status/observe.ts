@@ -1,7 +1,13 @@
 import { worktreeDriver } from '#drivers/driver'
 import { testEnv } from '@yaac/shared/env'
 import { classifyWorkspaces, watcherDisplayLiveness } from './classify'
-import { liveAgents, readAgentStatus, readWorktreeStatus, readWorktreeWaitingSince } from './status-store'
+import {
+  isWorktreeUnresponsive,
+  liveAgents,
+  readAgentStatus,
+  readWorktreeStatus,
+  readWorktreeWaitingSince,
+} from './status-store'
 import { pruneTerminating } from './terminating'
 import type { AgentLiveness, RuntimeHandle } from '#drivers/contract'
 import type {
@@ -35,6 +41,12 @@ export interface WorktreeRuntimeReport {
   /** `terminating` is on its way out — a non-interactive placeholder, not a
    *  live worktree. Its agents are already evicted, so it reports none. */
   phase: 'running' | 'terminating'
+  /** With `terminating`: when the teardown began, when the runtime records
+   *  it. The list reads a stop that has outlasted the force window as stuck. */
+  terminatingSinceMs?: number
+  /** With `running`: the watcher's verdict that nothing reaches the
+   *  runtime any more (see `setWorktreeUnresponsive`). */
+  unresponsive?: boolean
   /** When the runtime came up. The join prefers the recorded time, which
    *  survives a restart; this is the fallback for a worktree with no row. */
   createdAtMs: number
@@ -115,6 +127,7 @@ async function observeRunning(w: RuntimeHandle): Promise<WorktreeRuntimeReport> 
     // Aggregate over the workspace's live agents (see status-store).
     status: readWorktreeStatus(w.projectSlug, w.workspaceId),
     ...(waitingSinceMs !== undefined ? { waitingSinceMs } : {}),
+    ...(isWorktreeUnresponsive(w.projectSlug, w.workspaceId) ? { unresponsive: true } : {}),
     agents: agentLiveness(w.projectSlug, w.workspaceId),
     blockedHosts: await driver.blockedHosts(w.workspaceId),
     forwardedPorts: await driver.forwardedPorts(w.workspaceId),
@@ -138,6 +151,7 @@ function emptyReport(w: RuntimeHandle, phase: 'running' | 'terminating'): Worktr
     projectSlug: w.projectSlug,
     tool: w.tool,
     phase,
+    ...(w.terminatingSinceMs !== undefined ? { terminatingSinceMs: w.terminatingSinceMs } : {}),
     createdAtMs: w.createdAtMs,
     status: 'running',
     agents: [],

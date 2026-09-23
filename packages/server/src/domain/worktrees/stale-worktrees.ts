@@ -6,7 +6,7 @@ import {
   probeAgentPaneState,
   probeTmuxLiveness,
 } from '#runtime/status'
-import { cleanupWorktreeDetached } from './cleanup'
+import { cleanupWorktreeDetached, forceKillStuckWorktree } from './cleanup'
 import { inFlightWorktreeIds } from './provisioning'
 import { applyWorktreeEvent, desiredWorktrees } from '#db'
 import { serverLog } from '#log'
@@ -137,6 +137,13 @@ export async function reconcileStaleWorktrees(snapshot?: RuntimeSnapshot): Promi
   // decided from the worktree row's recorded deletion, not the mark. Deletes
   // we're still marking stay skipped here.
   const stuckTerminating: Array<{ jobName: string; projectSlug: string; worktreeId: string }> = []
+  // Escalation: a delete pending past the force window means the runtime
+  // cannot be killed the ordinary way (a worktree's grace is seconds), so
+  // its host process is killed from outside before the teardown is
+  // re-issued (docs/stuck-sandbox-recovery.md). Measured from when the
+  // runtime says the teardown began; one that records nothing is never
+  // forced — it has no lever to pull either.
+  const forceJobs = new Set<string>()
   for (const p of terminating) {
     if (!p.terminating || !p.projectSlug || !p.workspaceId) continue
     if (isWorktreeTerminating(p.workspaceId)) continue
@@ -148,6 +155,9 @@ export async function reconcileStaleWorktrees(snapshot?: RuntimeSnapshot): Promi
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
     stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.workspaceId })
+    if (p.terminatingSinceMs !== undefined && nowMs - p.terminatingSinceMs >= testEnv.forceKillAfterMs) {
+      forceJobs.add(p.jobName)
+    }
   }
 
   // A stuck-terminating pod that yaac itself deleted (its in-memory mark was
@@ -262,14 +272,21 @@ export async function reconcileStaleWorktrees(snapshot?: RuntimeSnapshot): Promi
   for (const o of orphanTargets) {
     serverLog(`[server] stale-reaper: reaping session=${o.worktreeId} job=${o.jobName} (orphan Job, no backing pod)`)
   }
+  const forcing = (t: { jobName: string }): string =>
+    forceJobs.has(t.jobName) ? '; stuck past the force window, forcing the runtime down' : ''
   for (const t of externalStuck) {
-    serverLog(`[server] stale-reaper: reaping session=${t.worktreeId} job=${t.jobName} (terminating out-of-band past grace)`)
+    serverLog(`[server] stale-reaper: reaping session=${t.worktreeId} job=${t.jobName} (terminating out-of-band past grace${forcing(t)})`)
   }
   for (const t of ourStuck) {
-    serverLog(`[server] stale-reaper: resuming teardown session=${t.worktreeId} job=${t.jobName} (terminating mark lost; yaac-issued delete)`)
+    serverLog(`[server] stale-reaper: resuming teardown session=${t.worktreeId} job=${t.jobName} (terminating mark lost; yaac-issued delete${forcing(t)})`)
   }
 
-  await Promise.all(targets.map((t) =>
-    cleanupWorktreeDetached(t).catch(() => { /* best-effort */ }),
-  ))
+  await Promise.all(targets.map(async (t) => {
+    if (forceJobs.has(t.jobName)) {
+      await forceKillStuckWorktree({
+        jobName: t.jobName, projectSlug: t.projectSlug, worktreeId: t.worktreeId,
+      }).catch(() => { /* best-effort; the teardown below is re-issued regardless */ })
+    }
+    await cleanupWorktreeDetached(t).catch(() => { /* best-effort */ })
+  }))
 }

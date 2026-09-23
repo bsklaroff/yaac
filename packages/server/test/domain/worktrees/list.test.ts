@@ -19,6 +19,11 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
 import { listWorktreePods, LABEL_PREWARMED } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
+import {
+  setWorktreeStreamHealth,
+  setWorktreeUnresponsive,
+  _resetWorktreeStatusStoreForTests,
+} from '#runtime/status/status-store'
 import { closeDb } from '#db/client'
 import { recordWorktreeCreated } from '#db/worktree-store'
 import {
@@ -60,6 +65,7 @@ describe('listActiveWorktrees', () => {
 
   afterEach(async () => {
     _clearTerminatingForTests()
+    _resetWorktreeStatusStoreForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -69,27 +75,60 @@ describe('listActiveWorktrees', () => {
   })
 
   it('renders a stopping pod as a non-interactive stopping row, not stale', async () => {
-    mockListPods.mockResolvedValue([{
-      jobName: 'yaac-demo-dying',
-      podName: 'yaac-demo-dying-x1',
-      worktreeId: 'dying',
+    const dyingSince = Date.now() - 10 * 60_000
+    const freshSince = Date.now() - 1_000
+    const stopping = (worktreeId: string, terminatingSinceMs: number): podsModule.PodInfo => ({
+      jobName: `yaac-demo-${worktreeId}`,
+      podName: `yaac-demo-${worktreeId}-x1`,
+      worktreeId,
       projectSlug: 'demo',
       tool: 'claude',
       phase: 'Running',
       running: false,
       terminating: true,
+      terminatingSinceMs,
       createdAtMs: 1_000,
       labels: {},
-    }])
+    })
+    mockListPods.mockResolvedValue([stopping('dying', dyingSince), stopping('fresh', freshSince)])
     const result = await listActiveWorktrees()
     expect(result.stale).toEqual([])
-    expect(result.worktrees).toHaveLength(1)
-    const row = result.worktrees[0]
-    expect(row.worktreeId).toBe('dying')
+    expect(result.worktrees).toHaveLength(2)
+    const row = result.worktrees.find((w) => w.worktreeId === 'dying')!
     expect(row.stopping).toBe(true)
     // Forced 'running' with no waiting stamp, so no attention badge fires.
     expect(row.status).toBe('running')
     expect(row.waitingSinceMs).toBeUndefined()
+    // A stop pending past the force window is stuck — the reaper is forcing
+    // the runtime down — and one that just began is not.
+    expect(row).toMatchObject({ stoppingSinceMs: dyingSince, stoppingStuck: true })
+    const fresh = result.worktrees.find((w) => w.worktreeId === 'fresh')!
+    expect(fresh).toMatchObject({ stopping: true, stoppingSinceMs: freshSince })
+    expect(fresh).not.toHaveProperty('stoppingStuck')
+  })
+
+  it('flags a live worktree the watcher found unresponsive', async () => {
+    mockListPods.mockResolvedValue([{
+      jobName: 'yaac-demo-mute',
+      podName: 'yaac-demo-mute-x1',
+      worktreeId: 'mute',
+      projectSlug: 'demo',
+      tool: 'claude',
+      phase: 'Running',
+      running: true,
+      terminating: false,
+      createdAtMs: 1_000,
+      labels: {},
+    }])
+    setWorktreeStreamHealth('demo', 'mute', true)
+    setWorktreeStreamHealth('demo', 'mute', false)
+    setWorktreeUnresponsive('demo', 'mute')
+
+    const { worktrees } = await listActiveWorktrees()
+
+    expect(worktrees).toHaveLength(1)
+    expect(worktrees[0]).toMatchObject({ worktreeId: 'mute', unresponsive: true })
+    expect(worktrees[0].stopping).toBeUndefined()
   })
 
   it('prunes a stopping mark once its pod is gone', async () => {

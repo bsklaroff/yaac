@@ -56,7 +56,9 @@ function renderRunning(worktrees: WorktreeListEntry[], groupNames: Map<string, s
     shortId: (w.worktreeId || '?').slice(0, 8),
     project: w.projectSlug || '?',
     tool: w.tool,
-    status: w.status,
+    status: w.stopping
+      ? (w.stoppingStuck ? 'stopping (stuck)' : 'stopping')
+      : (w.unresponsive ? 'unresponsive' : w.status),
     // How many conversations are live in this worktree. Shown as a plain
     // count because 1 is the overwhelmingly common answer and a column of
     // 1s should stay quiet.

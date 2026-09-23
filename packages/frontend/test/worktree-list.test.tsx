@@ -253,6 +253,23 @@ describe('WorktreeList', () => {
     expect(screen.getByText('Pick a project from the rail on the left.')).toBeTruthy()
   })
 
+  it('says when a stop is stuck and the server is forcing it', () => {
+    renderList([
+      entry({ worktreeId: 'a', title: 'Going', stopping: true }),
+      entry({ worktreeId: 'b', title: 'Wedged', stopping: true, stoppingStuck: true }),
+    ])
+    expect(screen.getByText('stopping…')).toBeTruthy()
+    expect(screen.getByText('stop is stuck — forcing…')).toBeTruthy()
+  })
+
+  it('tags a live worktree the server can no longer reach', () => {
+    renderList([
+      entry({ worktreeId: 'a', title: 'Fine' }),
+      entry({ worktreeId: 'b', title: 'Mute', unresponsive: true }),
+    ])
+    expect(screen.getAllByText('unresponsive')).toHaveLength(1)
+  })
+
   describe('the group dialog', () => {
     it('creates a group around the row it was opened from', async () => {
       renderList([entry({ worktreeId: 'a', title: 'Fix parser' })])

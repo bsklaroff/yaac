@@ -184,6 +184,9 @@ export function createContainerlessDriver(): WorktreeDriver {
     },
 
     destroy: (target, opts) => destroyWorkspace(target, opts),
+    // A host worktree has no sandbox to wedge and none to force: its tmux
+    // server dies to the ordinary teardown or not at all.
+    forceKillWorkspace: () => Promise.resolve({ forced: false, reason: 'no sandbox on a host worktree' }),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: () => destroyProjectSubstrate(),
 

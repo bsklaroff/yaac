@@ -758,7 +758,7 @@ function WorktreeRow({
             </span>
           </span>
           <span className="flex items-center gap-2 text-xs text-text-faint">
-            <span className="truncate">stopping…</span>
+            <span className="truncate">{worktree.stoppingStuck ? 'stop is stuck — forcing…' : 'stopping…'}</span>
             <span className="ml-auto shrink-0">{TOOL_LABEL[worktree.tool]}</span>
           </span>
         </div>
@@ -771,6 +771,17 @@ function WorktreeRow({
   const metaLine = (
     <span className="flex items-center gap-2 text-xs text-text-faint">
       <span className="shrink-0">{relativeAge(worktree.createdAt)}</span>
+      {/* The server can no longer reach this worktree's runtime and its
+          self-heal failed. The agent may still be running inside; a stop
+          recovers (the checkout is kept, and a stuck stop gets forced). */}
+      {worktree.unresponsive && (
+        <span
+          className="shrink-0 text-amber-500"
+          title="The worktree stopped answering and could not be revived. Stop it to recover; its checkout is kept."
+        >
+          unresponsive
+        </span>
+      )}
       {/* Only when a worktree holds more than one live conversation —
           one is the overwhelmingly common case and a column of "1
           agent" would be pure noise. */}

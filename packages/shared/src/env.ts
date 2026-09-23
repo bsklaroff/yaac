@@ -479,6 +479,20 @@ export const testEnv = {
   },
 
   /**
+   * `YAAC_FORCE_KILL_AFTER_MS` — how long a worktree may sit terminating
+   * before the stale reaper forces its runtime down from outside it
+   * (docs/stuck-sandbox-recovery.md). A worktree's termination grace is
+   * seconds, so minutes in that state means the runtime cannot be killed
+   * the ordinary way. Tests shrink it to provoke the escalation.
+   */
+  get forceKillAfterMs(): number {
+    const raw = process.env.YAAC_FORCE_KILL_AFTER_MS
+    if (raw === undefined || raw === '') return 3 * 60_000
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3 * 60_000
+  },
+
+  /**
    * `YAAC_TEST_SHARED_DB` — `1` makes `getDb()` hand every data dir one
    * process-wide in-memory PGlite, wiped when the data dir changes, instead
    * of opening a fresh on-disk instance per dir.

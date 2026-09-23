@@ -113,6 +113,12 @@ export const NODE_CONTAINERD_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/config.toml`
 /** Readiness marker (in a pod-local emptyDir): written after a pass that got
  *  the runtime live on this node, removed when the installer exits. */
 export const GVISOR_INSTALLER_STATE_DIR = '/run/yaac-gvisor'
+
+/** The installer DaemonSet's name and the `app` label on every one of its
+ *  objects. Vocabulary rather than the installer's own constant because the
+ *  running driver looks the pod up by it: it is the one privileged,
+ *  host-PID foothold yaac keeps on a node (`sandboxForceKillScript`). */
+export const GVISOR_INSTALLER_APP_NAME = 'yaac-gvisor-install'
 export const GVISOR_INSTALLER_READY_FILE = `${GVISOR_INSTALLER_STATE_DIR}/.ready`
 
 /** Idempotence marker for the containerd config.toml runtime block. */
@@ -540,3 +546,44 @@ export function gvisorInstallScript(): string {
     '',
   ].join('\n')
 }
+
+/**
+ * A POSIX shell program for the installer pod: find the gVisor sandbox
+ * process of the pod with `podUid`, dump its sentry stacks, then SIGKILL it
+ * (docs/stuck-sandbox-recovery.md).
+ *
+ * Keyed by pod uid because the sandbox's command line carries it — the
+ * shim passes `--panic-log=/var/log/pods/<ns>_<pod>_<uid>/gvisor_panic.log`
+ * to every `runsc-sandbox` — and a uid names exactly one pod ever, so no
+ * other process can match. The stack dump rides the sandbox's control
+ * socket, which a deadlocked sentry still answers (the debug RPC takes no
+ * kernel lock), under a deadline in case this one does not; it is the
+ * whole diagnostic record of a wedge, printed before the kill destroys it.
+ *
+ * Runs with the node's PID namespace and `/proc/1/root` as the node root,
+ * which is what the installer pod has. Only busybox is assumed.
+ */
+export function sandboxForceKillScript(podUid: string): string {
+  if (!/^[0-9a-f-]{1,64}$/.test(podUid)) throw new Error(`not a pod uid: ${podUid}`)
+  return [
+    'set -u',
+    'pid=; cmd=',
+    'for p in /proc/[0-9]*; do',
+    '  c=$(tr "\\0" " " < "$p/cmdline" 2>/dev/null) || continue',
+    '  case "$c" in',
+    `    "runsc-sandbox "*"_${podUid}/gvisor_panic.log"*) pid=\${p#/proc/}; cmd=$c; break;;`,
+    '  esac',
+    'done',
+    `if [ -z "$pid" ]; then echo "${FORCE_KILL_PREFIX} no sandbox process"; exit 0; fi`,
+    // The sandbox id is the task dir its --log flag points into.
+    'sid=$(printf "%s" "$cmd" | sed -n "s|.*/k8s\\.io/\\([0-9a-f]\\{64\\}\\)/log\\.json.*|\\1|p")',
+    `echo "${FORCE_KILL_PREFIX} sandbox pid=$pid id=\${sid:-unknown}"`,
+    'if [ -n "$sid" ]; then',
+    '  timeout 20 chroot /proc/1/root runsc --root=/run/containerd/runsc/k8s.io debug --stacks "$sid" 2>&1 || true',
+    'fi',
+    `kill -9 "$pid" && echo "${FORCE_KILL_PREFIX} killed pid=$pid"`,
+  ].join('\n')
+}
+
+/** Every verdict line the force-kill script prints starts with this. */
+export const FORCE_KILL_PREFIX = 'yaac-force-kill:'

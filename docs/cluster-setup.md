@@ -236,7 +236,9 @@ only kind's provider breaks.
    containerd, and labels the node `yaac.gvisor=true`. Setup waits for that
    rollout and then applies the `gvisor` and `gvisor-nested` RuntimeClasses,
    whose `scheduling.nodeSelector` is that label — so a sandboxed pod can
-   only be scheduled where the shim actually exists.
+   only be scheduled where the shim actually exists. The pod stays resident
+   afterwards, and is the foothold a stop whose sandbox will not die is
+   forced through (docs/stuck-sandbox-recovery.md).
 
    A DaemonSet rather than a loop over `podman exec <node>` for two reasons:
    it works on nodes yaac has no shell on (a managed pool, a remote control

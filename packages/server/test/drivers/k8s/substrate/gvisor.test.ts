@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
+  FORCE_KILL_PREFIX,
   GVISOR_NODE_LABEL,
   GVISOR_NODE_VERSION_LABEL,
   RUNTIME_CLASS_GVISOR,
@@ -10,6 +11,7 @@ import {
   gvisorInstallScript,
   gvisorInstallerHostMounts,
   runtimeClassSpec,
+  sandboxForceKillScript,
 } from '#drivers/k8s/substrate'
 // Internals, for pins only: the release the installer downloads, the node
 // paths it writes, and the containerd wiring it appends.
@@ -301,5 +303,30 @@ describe('gvisorInstallerHostMounts', () => {
       const p = raw.slice(1, -1)
       expect(mounted.some((m) => p === m || p.startsWith(`${m}/`))).toBe(true)
     }
+  })
+})
+
+describe('sandboxForceKillScript', () => {
+  it('parses as a POSIX shell program and, with no such pod, kills nothing', async () => {
+    const script = sandboxForceKillScript('0f6d4c1e-0000-4000-8000-000000000000')
+    await expect(runSh('sh', ['-n', '-c', script])).resolves.toBeDefined()
+    // Run for real against this machine's process table: nothing on it
+    // carries the uid, so the script must say so and exit 0 having sent no
+    // signal — the one outcome that is safe to exercise outside a node.
+    const { stdout } = await runSh('sh', ['-c', script])
+    expect(stdout.trim()).toBe(`${FORCE_KILL_PREFIX} no sandbox process`)
+  })
+
+  it('matches the sandbox by its pod uid alone, dumps its stacks, then SIGKILLs it', () => {
+    const script = sandboxForceKillScript('abc-123')
+    expect(script).toContain('"runsc-sandbox "*"_abc-123/gvisor_panic.log"*')
+    expect(script).toContain('runsc --root=/run/containerd/runsc/k8s.io debug --stacks "$sid"')
+    expect(script).toContain('kill -9 "$pid"')
+    // The dump comes first: the kill destroys what it reads.
+    expect(script.indexOf('debug --stacks')).toBeLessThan(script.indexOf('kill -9'))
+  })
+
+  it('refuses anything but a pod uid, since the script lands in a root shell', () => {
+    expect(() => sandboxForceKillScript('x; rm -rf /')).toThrow(/not a pod uid/)
   })
 })

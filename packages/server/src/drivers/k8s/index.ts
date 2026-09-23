@@ -8,6 +8,7 @@ import {
   detachedTeardownCommand,
   findWorkspace,
   findWorkspaceForTeardown,
+  forceKillWorkspace,
   getWorktreeChanges,
   launchWorkspace,
   listWorkspaces,
@@ -167,6 +168,7 @@ export function createK8sDriver(): WorktreeDriver {
     deregisterWorkspace: (workspaceId) => deregisterWorkspace(workspaceId),
     salvageImages: (target) => salvageWorkspaceImages(target),
     destroy: (target, opts) => destroyWorkspace(target, opts),
+    forceKillWorkspace: (target) => forceKillWorkspace(target),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
 

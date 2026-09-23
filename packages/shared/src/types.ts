@@ -636,6 +636,17 @@ export interface WorktreeListEntry {
    *  row is on its way out and should render as a non-interactive
    *  "stopping…" placeholder rather than a live worktree. */
   stopping?: boolean
+  /** With `stopping`: epoch ms when the teardown began (the pod's deletion
+   *  timestamp). Absent when the runtime does not record it. */
+  stoppingSinceMs?: number
+  /** With `stopping`: the teardown has outlasted the stop's grace and the
+   *  server is forcing the runtime down from outside it — a wedged sandbox
+   *  (docs/stuck-sandbox-recovery.md). */
+  stoppingStuck?: boolean
+  /** Live only: the runtime stopped answering the status watcher and its
+   *  self-heal did not bring it back. The agent may still be running, but
+   *  nothing can reach it; the `status` beside this is the last one seen. */
+  unresponsive?: boolean
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   /** Epoch ms when the current waiting spell began, stamped by the

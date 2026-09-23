@@ -115,9 +115,15 @@ export interface PodInfo {
    *  render the worktree as a "terminating…" placeholder instead of dropping
    *  it or misreading it as stale. */
   terminating: boolean
+  /** With `terminating`: the deletionTimestamp as epoch ms. */
+  terminatingSinceMs?: number
   /** Pod creationTimestamp as epoch ms. */
   createdAtMs: number
   labels: Record<string, string>
+  /** `metadata.uid` — what names the pod's sandbox process on its node. */
+  uid?: string
+  /** The node the pod was scheduled to, once it has been. */
+  nodeName?: string
   /** Set only when the pod carries terminal-state evidence. */
   terminal?: PodTerminalState
 }
@@ -172,7 +178,9 @@ export const podItemSchema = z.object({
     }).catchall(z.string()),
     creationTimestamp: timestampSchema,
     deletionTimestamp: timestampSchema.optional(),
+    uid: z.string().optional(),
   }),
+  spec: z.object({ nodeName: z.string().optional() }).optional(),
   status: z.object({
     phase: z.string().min(1),
     // Terminal-state evidence (all optional — absent on healthy pods):
@@ -196,7 +204,7 @@ export const podItemSchema = z.object({
 export type PodItem = z.infer<typeof podItemSchema>
 
 /** Map a validated pod object to the PodInfo row the rest of yaac uses. */
-export function mapPodItem({ metadata, status }: PodItem): PodInfo {
+export function mapPodItem({ metadata, spec, status }: PodItem): PodInfo {
   const terminating = metadata.deletionTimestamp !== undefined
   const terminated = status.containerStatuses?.[0]?.state?.terminated
   const terminal: PodTerminalState | undefined =
@@ -221,8 +229,13 @@ export function mapPodItem({ metadata, status }: PodItem): PodInfo {
     phase: status.phase,
     running: status.phase === 'Running' && !terminating,
     terminating,
+    ...(metadata.deletionTimestamp !== undefined
+      ? { terminatingSinceMs: toEpochMs(metadata.deletionTimestamp) }
+      : {}),
     createdAtMs: toEpochMs(metadata.creationTimestamp),
     labels: metadata.labels,
+    ...(metadata.uid !== undefined ? { uid: metadata.uid } : {}),
+    ...(spec?.nodeName !== undefined ? { nodeName: spec.nodeName } : {}),
     ...(terminal ? { terminal } : {}),
   }
 }

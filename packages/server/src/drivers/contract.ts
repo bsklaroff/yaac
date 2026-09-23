@@ -77,6 +77,10 @@ export interface RuntimeHandle {
    *  "terminating…" row and is already being torn down, so it belongs in
    *  neither the liveness probe path nor the reaper's targets. */
   terminating: boolean
+  /** With `terminating`: epoch ms when the teardown began, when the runtime
+   *  records it (a pod's deletion timestamp). What the reaper measures a
+   *  stuck teardown against. */
+  terminatingSinceMs?: number
   /**
    * Why the runtime stopped, read off the terminal state it was observed
    * with. Only meaningful once `running` is false — the reaper consults it
@@ -106,6 +110,19 @@ export interface TeardownTarget {
   projectSlug: string
   workspaceId: string
   unitName: string
+}
+
+/** What `forceKillWorkspace` did (docs/stuck-sandbox-recovery.md). */
+export interface ForceKillOutcome {
+  /** The runtime's host process was killed: the unit's pending delete can
+   *  now complete. */
+  forced: boolean
+  /** Why nothing was forced — no such lever on this substrate, no unit
+   *  found, or one that is not terminating. */
+  reason?: string
+  /** What the runtime captured about the wedged unit before killing it — a
+   *  sentry stack dump under k8s — for the caller to keep. */
+  diagnostics?: string
 }
 
 /**
@@ -1146,6 +1163,19 @@ export interface WorktreeDriver {
     target: TeardownTarget,
     opts?: { salvageImages?: boolean; unitOnly?: boolean },
   ): Promise<boolean>
+  /**
+   * Last resort for a unit whose delete will not complete: kill the
+   * runtime's host process from OUTSIDE the workspace, so the delete can.
+   *
+   * Exists because a sandbox can wedge in a way its own supervisor cannot
+   * undo — a deadlocked gVisor sentry answers neither the kill nor the
+   * state query the kubelet's stop needs, so the pod sits terminating
+   * forever (docs/stuck-sandbox-recovery.md). Refuses a unit that is not
+   * already terminating: this is how a stop finishes, never how one
+   * starts. A runtime with no such lever answers `forced: false`, and a
+   * caller re-issues the ordinary teardown either way. Never throws.
+   */
+  forceKillWorkspace(target: TeardownTarget): Promise<ForceKillOutcome>
   /**
    * The same teardown as a shell command, for a caller that must not wait
    * for it — composed into a detached script the calling process outlives.

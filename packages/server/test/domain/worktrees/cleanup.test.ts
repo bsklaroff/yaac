@@ -31,7 +31,9 @@ import {
   cleanupWorktree,
   cleanupWorktreeDetached,
   deleteWorktreeState,
+  forceKillStuckWorktree,
   gcOrphanEphemeralModuleDirs,
+  sandboxDiagnosticsPath,
   worktreeModulesDir,
 } from '#domain/worktrees/cleanup'
 
@@ -266,10 +268,15 @@ describe('deleteWorktreeState', () => {
     // Worktree setup writes this precisely so `git worktree prune` can't reap
     // a live worktree; it has to be cleared or it outlives what it protects.
     await fs.writeFile(path.join(admin, 'locked'), 'yaac\n')
+    // What a forced stop kept about the sandbox goes with the worktree too.
+    const diagnostics = sandboxDiagnosticsPath(slug, 'w1')
+    await fs.mkdir(path.dirname(diagnostics), { recursive: true })
+    await fs.writeFile(diagnostics, 'goroutine 1\n')
 
     await expect(deleteWorktreeState(slug, 'w1')).resolves.toBe(true)
     await expect(fs.access(wt)).rejects.toThrow()
     await expect(fs.access(admin)).rejects.toThrow()
+    await expect(fs.access(diagnostics)).rejects.toThrow()
   })
 
   // Structural rather than incidental: every id that reaches this today is a
@@ -282,6 +289,50 @@ describe('deleteWorktreeState', () => {
 
     await expect(deleteWorktreeState(slug, '')).resolves.toBe(false)
     expect(await fs.readdir(root)).toEqual(['keeper'])
+  })
+})
+
+describe('forceKillStuckWorktree', () => {
+  let dataDir: string
+  const params = { jobName: 'yaac-fk-w1', projectSlug: 'fk', worktreeId: 'w1' }
+  const logged = (): string => mockServerLog.mock.calls.map(([m]) => m).join('\n')
+
+  beforeEach(async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-force-kill-'))
+    setDataDir(dataDir)
+    mockServerLog.mockClear()
+  })
+
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('kills through the runtime and keeps what it captured beside the worktree', async () => {
+    const targets: TeardownTarget[] = []
+    installFakeWorktreeDriver({
+      forceKillWorkspace: (t) => {
+        targets.push(t)
+        return Promise.resolve({ forced: true, diagnostics: 'goroutine 1 [running]:\n' })
+      },
+    })
+
+    await expect(forceKillStuckWorktree(params)).resolves.toBe(true)
+
+    expect(targets).toEqual([{ projectSlug: 'fk', workspaceId: 'w1', unitName: 'yaac-fk-w1' }])
+    const file = sandboxDiagnosticsPath('fk', 'w1')
+    expect(await fs.readFile(file, 'utf8')).toBe('goroutine 1 [running]:\n')
+    expect(logged()).toContain(`force-kill: session=w1 job=yaac-fk-w1 runtime killed (diagnostics kept in ${file})`)
+  })
+
+  it('reports a runtime that had no lever to pull, and keeps nothing', async () => {
+    installFakeWorktreeDriver({
+      forceKillWorkspace: () => Promise.resolve({ forced: false, reason: 'no sandbox on a host worktree' }),
+    })
+
+    await expect(forceKillStuckWorktree(params)).resolves.toBe(false)
+
+    expect(logged()).toContain('not forced: no sandbox on a host worktree')
+    await expect(fs.access(sandboxDiagnosticsPath('fk', 'w1'))).rejects.toThrow()
   })
 })
 

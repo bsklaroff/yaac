@@ -10,6 +10,8 @@ import {
   setLiveAgents,
   onLiveAgentsChanged,
   onStreamHealthLost,
+  isWorktreeUnresponsive,
+  setWorktreeUnresponsive,
   _resetWorktreeStatusStoreForTests,
 } from '#runtime/status/status-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
@@ -293,5 +295,27 @@ describe('onLiveAgentsChanged', () => {
     setAgentStatus('demo', 's1', 'claude-1', 'running')
     setAgentStatus('demo', 's1', 'claude-1', 'waiting')
     expect(listener).not.toHaveBeenCalled()
+  })
+})
+
+describe('isWorktreeUnresponsive', () => {
+  it('is false until the watcher says so — even for a worktree that never attached', () => {
+    expect(isWorktreeUnresponsive('demo', 's1')).toBe(false)
+    setWorktreeUnresponsive('demo', 's1')
+    expect(isWorktreeUnresponsive('demo', 's1')).toBe(true)
+    // The verdict does not invent a live stream: the entry it created reads
+    // as a worktree nothing reaches, which is exactly what it is.
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+  })
+
+  it('clears on the next healthy connection, and only then', () => {
+    setWorktreeStreamHealth('demo', 's1', true)
+    setWorktreeStreamHealth('demo', 's1', false)
+    setWorktreeUnresponsive('demo', 's1')
+    setWorktreeStreamHealth('demo', 's1', false)
+    expect(isWorktreeUnresponsive('demo', 's1')).toBe(true)
+    setWorktreeStreamHealth('demo', 's1', true)
+    expect(isWorktreeUnresponsive('demo', 's1')).toBe(false)
   })
 })

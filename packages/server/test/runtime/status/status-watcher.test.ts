@@ -12,6 +12,7 @@ import type { AgentTool } from '@yaac/shared/types'
 import {
   readWorktreeStatus,
   isWorktreeStreamHealthy,
+  isWorktreeUnresponsive,
   setAgentStatus,
   _resetWorktreeStatusStoreForTests,
 } from '#runtime/status/status-store'
@@ -273,6 +274,26 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     await vi.waitFor(() => expect(children.length).toBe(4))
     await connectWatcher(children[3])
     expect(revives).toHaveLength(1)
+  })
+
+  it('marks the worktree unresponsive one failure past the self-heal, and clears it on recovery', async () => {
+    const { watcher, children, revives } = makeWatcher('claude', { respawnDelayMs: 1 })
+    watchers.push(watcher)
+    watcher.start()
+    for (let i = 1; i <= 3; i++) {
+      await vi.waitFor(() => expect(children.length).toBe(i))
+      children[i - 1].emitExit()
+    }
+    // The self-heal has fired and gets one chance before the verdict.
+    await vi.waitFor(() => expect(revives).toHaveLength(1))
+    await vi.waitFor(() => expect(children.length).toBe(4))
+    expect(isWorktreeUnresponsive('demo', 's1')).toBe(false)
+    children[3].emitExit()
+    await vi.waitFor(() => expect(isWorktreeUnresponsive('demo', 's1')).toBe(true))
+    // A stream that finally holds retracts it.
+    await vi.waitFor(() => expect(children.length).toBe(5))
+    await connectWatcher(children[4])
+    expect(isWorktreeUnresponsive('demo', 's1')).toBe(false)
   })
 
   it('stop() kills the child and prevents respawn', async () => {

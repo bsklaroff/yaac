@@ -19,6 +19,7 @@ vi.mock('#runtime/status/liveness', () => ({
 }))
 vi.mock('#domain/worktrees/cleanup', () => ({
   cleanupWorktreeDetached: vi.fn().mockResolvedValue(undefined),
+  forceKillStuckWorktree: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
@@ -36,7 +37,7 @@ vi.mock('#db', () => ({
 // stub it so these tests never open a DB.
 
 import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
-import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
+import { cleanupWorktreeDetached, forceKillStuckWorktree } from '#domain/worktrees/cleanup'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#log'
 import { applyWorktreeEvent, desiredWorktrees } from '#db'
@@ -55,6 +56,7 @@ const mockStrays = vi.fn<() => Promise<StrayUnit[]>>()
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
+const mockForce = vi.mocked(forceKillStuckWorktree)
 // The reaper reads what should exist from db and reports a death as
 // an event rather than writing the row — both stubbed above, so what a
 // pass decided is asserted directly.
@@ -118,6 +120,7 @@ describe('reconcileStaleWorktrees', () => {
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
+    mockForce.mockClear()
     appliedEvents.length = 0
     vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
       appliedEvents.push(event)
@@ -296,6 +299,42 @@ describe('reconcileStaleWorktrees', () => {
     const log = loggedLines()
     expect(log).toContain('resuming teardown session=term-ours')
     expect(log).not.toContain('out-of-band')
+  })
+
+  it('forces the runtime down before re-issuing a teardown stuck past the force window', async () => {
+    // A delete pending for longer than the force window is one the runtime
+    // cannot land itself (a worktree's grace is seconds): kill it from
+    // outside FIRST, then re-issue the idempotent teardown that finishes.
+    mockWorkspaces.mockResolvedValue([{
+      ...pod('wedged-1'), terminating: true, terminatingSinceMs: Date.now() - 10 * 60_000,
+    }])
+    setDesired({ stopped: ['proj/wedged-1'] })
+
+    await reconcileStaleWorktrees()
+
+    expect(mockForce).toHaveBeenCalledWith({
+      jobName: 'yaac-proj-wedged-1', projectSlug: 'proj', worktreeId: 'wedged-1',
+    })
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ worktreeId: 'wedged-1', preserveDeletedRecord: true }),
+    )
+    expect(mockForce.mock.invocationCallOrder[0]).toBeLessThan(mockCleanup.mock.invocationCallOrder[0])
+    expect(loggedLines()).toContain('forcing the runtime down')
+  })
+
+  it('re-issues a stuck teardown without forcing while the delete is inside the window, or undated', async () => {
+    mockWorkspaces.mockResolvedValue([
+      { ...pod('slow-1'), terminating: true, terminatingSinceMs: Date.now() - 30_000 },
+      // A runtime that does not say when the teardown began has no lever
+      // to pull either; it is never forced.
+      { ...pod('undated-1'), terminating: true },
+    ])
+
+    await reconcileStaleWorktrees()
+
+    expect(mockForce).not.toHaveBeenCalled()
+    expect(mockCleanup).toHaveBeenCalledTimes(2)
+    expect(loggedLines()).not.toContain('forcing')
   })
 
   it('does NOT re-reap a terminating pod whose teardown we already issued', async () => {

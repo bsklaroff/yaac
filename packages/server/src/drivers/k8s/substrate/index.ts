@@ -22,6 +22,8 @@ export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cl
 export type { DeltaSource } from './cluster-cache'
 export { containerExec } from './exec'
 export {
+  FORCE_KILL_PREFIX,
+  GVISOR_INSTALLER_APP_NAME,
   GVISOR_INSTALLER_READY_FILE,
   GVISOR_NODE_LABEL,
   GVISOR_NODE_VERSION_LABEL,
@@ -31,6 +33,7 @@ export {
   gvisorInstallScript,
   gvisorInstallerHostMounts,
   runtimeClassSpec,
+  sandboxForceKillScript,
 } from './gvisor'
 export {
   dataDirHash,
