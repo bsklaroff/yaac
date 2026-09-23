@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 import { projectConfigDir, getProjectsDir, repoDir } from '@yaac/shared/project-paths'
-import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists } from '#domain/projects'
+import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists, projectRemoteUrl } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 
@@ -126,5 +126,18 @@ describe('assertProjectExists', () => {
     await fs.mkdir(projectConfigDir('foo'), { recursive: true })
     await fs.writeFile(path.join(projectConfigDir('foo'), 'yaac-config.json'), '{ not json')
     await expect(assertProjectExists('foo')).resolves.toBeUndefined()
+  })
+})
+
+describe('projectRemoteUrl', () => {
+  it('answers the row\'s remote, whatever the clone says, and NOT_FOUND for an unknown slug', async () => {
+    await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example.com/foo', addedAt: '2026-01-01T00:00:00.000Z' })
+    // The clone's own origin is pod-writable and never consulted.
+    await fs.mkdir(path.join(repoDir('foo'), '.git'), { recursive: true })
+    await fs.writeFile(path.join(repoDir('foo'), '.git', 'config'),
+      '[remote "origin"]\n\turl = https://attacker.example/x\n')
+
+    expect(await projectRemoteUrl('foo')).toBe('https://example.com/foo')
+    await expect(projectRemoteUrl('missing')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

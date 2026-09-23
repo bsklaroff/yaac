@@ -1,7 +1,5 @@
-import { originRemoteUrl } from '#domain/git'
 import { worktreeDriver } from '#drivers/driver'
-import { repoDir } from '@yaac/shared/project-paths'
-import { resolveProjectConfig, resolveEphemeralModulesPaths, resolveProjectEnv } from '#domain/projects'
+import { projectRemoteUrl, resolveProjectConfig, resolveEphemeralModulesPaths, resolveProjectEnv } from '#domain/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { shellEscape } from '#lib/shell'
 import {
@@ -80,7 +78,7 @@ export async function retoolSpare(
 ): Promise<void> {
   const { tool } = agent
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
-  const remoteUrl = await originRemoteUrl(repoDir(spare.projectSlug))
+  const remoteUrl = await projectRemoteUrl(spare.projectSlug)
   const runtime = worktreeDriver()
   const paths = runtime.workspacePaths(spare.jobName)
   const TMUX = tmuxCmd(paths)

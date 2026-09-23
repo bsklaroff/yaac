@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
-import simpleGit from 'simple-git'
 
 import {
   createWorktree,
@@ -215,10 +214,10 @@ describe('createWorktree git identity', () => {
     tmpDir = await createTempDataDir()
     installFakeWorktreeDriver()
     await fs.mkdir(projectDir('demo'), { recursive: true })
-    // A real repo with an origin, so the create reaches the credential gate
-    // instead of dying on an unreadable remote.
+    // A real repo and a row naming its remote, so the create reaches the
+    // credential gate instead of dying on an unknown project.
     await createTestRepo(repoDir('demo'))
-    await simpleGit(repoDir('demo')).addRemote('origin', 'https://github.com/o/r.git')
+    await recordProject({ slug: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: '2026-01-01T00:00:00.000Z' })
   })
 
   afterEach(async () => {

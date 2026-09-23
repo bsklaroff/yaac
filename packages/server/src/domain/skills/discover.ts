@@ -39,12 +39,11 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import simpleGit from 'simple-git'
 import { parse as parseToml } from 'smol-toml'
 import { claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
-import { getDefaultBranch, remoteBranchExists } from '#domain/git'
+import { getDefaultBranch, listTreeSubdirs, readBlobAt, remoteBranchExists } from '#domain/git'
 import { getClaudeBundledSkills } from './claude-bundled'
 import { builtinSkillsDir, isBuiltinSkillLink } from './builtin'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from './parse'
@@ -78,32 +77,6 @@ async function subdirs(dir: string): Promise<string[]> {
     return entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name)
   } catch {
     return []
-  }
-}
-
-/** Immediate subtree names of `treePath` at `ref`, or [] when the tree is
- *  missing. Only real subtrees count — a committed skill dir is a tree, so
- *  blobs (including symlinks, which git stores as blobs) are excluded. */
-async function gitTreeSubdirs(repoPath: string, ref: string, treePath: string): Promise<string[]> {
-  try {
-    const out = await simpleGit(repoPath).raw(['ls-tree', `${ref}:${treePath}`])
-    return out
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .filter((l) => l.split(/\s+/)[1] === 'tree')
-      .map((l) => l.slice(l.indexOf('\t') + 1))
-  } catch {
-    return [] // missing tree (path absent at this ref) → no skills
-  }
-}
-
-/** The blob at `ref:blobPath`, or null when it doesn't exist. */
-async function gitReadBlob(repoPath: string, ref: string, blobPath: string): Promise<string | null> {
-  try {
-    return await simpleGit(repoPath).raw(['show', `${ref}:${blobPath}`])
-  } catch {
-    return null
   }
 }
 
@@ -148,8 +121,8 @@ function gitReader(
   return {
     source,
     sourceLabel,
-    list: () => gitTreeSubdirs(repoPath, ref, treePath),
-    read: (name) => gitReadBlob(repoPath, ref, `${treePath}/${name}/SKILL.md`),
+    list: () => listTreeSubdirs(repoPath, ref, treePath),
+    read: (name) => readBlobAt(repoPath, ref, `${treePath}/${name}/SKILL.md`),
   }
 }
 
@@ -171,7 +144,7 @@ function repoReader(
  *  from the working tree; null when absent. */
 function readRepoFile(repoPath: string, ref: string | null, relPath: string): Promise<string | null> {
   return ref
-    ? gitReadBlob(repoPath, ref, relPath)
+    ? readBlobAt(repoPath, ref, relPath)
     : fs.readFile(path.join(repoPath, relPath), 'utf8').catch(() => null)
 }
 

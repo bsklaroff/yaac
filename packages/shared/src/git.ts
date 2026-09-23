@@ -1,5 +1,8 @@
-import simpleGit from 'simple-git'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { env } from '#env'
+
+const execFileAsync = promisify(execFile)
 
 /**
  * ssh does not honor ALL_PROXY / HTTPS_PROXY, so Tor routing for ssh has
@@ -47,13 +50,14 @@ function shellQuoteArg(s: string): string {
  * worktree creation) need it.
  */
 export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
+  const read = async (key: string): Promise<string> =>
+    (await execFileAsync('git', ['config', '--global', '--get', key])).stdout.trim()
   try {
-    const git = simpleGit()
-    const name = (await git.getConfig('user.name', 'global')).value
-    const email = (await git.getConfig('user.email', 'global')).value
+    const [name, email] = await Promise.all([read('user.name'), read('user.email')])
     if (name && email) return { name, email }
     return null
   } catch {
+    // unset (`--get` exits 1), or no git at all
     return null
   }
 }

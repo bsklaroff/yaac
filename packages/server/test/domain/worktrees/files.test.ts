@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import simpleGit from 'simple-git'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir, setDataDir, worktreeDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
@@ -16,6 +15,7 @@ import {
   renameWorktreeEntry,
   writeWorktreeFile,
 } from '#domain/worktrees'
+import { git } from '@yaac/test-utils/git'
 
 /**
  * Real checkouts made by `addWorktree`, each with its `.git` file then
@@ -38,12 +38,13 @@ async function makeCheckout(id: string): Promise<string> {
 }
 
 /** git inside a checkout whose `.git` file no longer resolves. */
-function wtGit(id: string): ReturnType<typeof simpleGit> {
-  return simpleGit(worktreeDir(SLUG, id)).env({
+function wtGit(id: string): (args: string[]) => Promise<string> {
+  const env = {
     ...process.env,
     GIT_DIR: path.join(repoDir(SLUG), '.git', 'worktrees', id),
     GIT_WORK_TREE: worktreeDir(SLUG, id),
-  })
+  }
+  return (args) => git(worktreeDir(SLUG, id), args, { env })
 }
 
 async function refusal(p: Promise<unknown>): Promise<{ code: string; message: string }> {
@@ -65,18 +66,17 @@ beforeAll(async () => {
 
   const repo = repoDir(SLUG)
   await fs.mkdir(repo, { recursive: true })
-  const git = simpleGit(repo)
-  await git.init(['-b', 'main'])
-  await git.addConfig('user.email', 'test@test.com')
-  await git.addConfig('user.name', 'Test')
+  await git(repo, ['init', '-b', 'main'])
+  await git(repo, ['config', 'user.email', 'test@test.com'])
+  await git(repo, ['config', 'user.name', 'Test'])
   await write(repo, '.gitignore', 'node_modules/\n*.log\nbuild/\n')
   await write(repo, 'a.txt', 'alpha\n')
   await write(repo, 'b.txt', 'bravo\n')
   await write(repo, 'd.txt', 'delta\n')
   await write(repo, 'conflict.txt', 'base\n')
   await write(repo, 'src/lib/util.ts', 'export {}\n')
-  await git.add('.')
-  await git.commit('initial')
+  await git(repo, ['add', '.'])
+  await git(repo, ['commit', '-m', 'initial'])
 })
 
 // The fake is reset after every test, so it is installed before each.
@@ -149,22 +149,24 @@ describe('listWorktreeFiles', () => {
 
   it('reports git status against HEAD without writing the index', async () => {
     await makeCheckout('status')
-    const git = wtGit('status')
+    const inWt = wtGit('status')
     const wt = worktreeDir(SLUG, 'status')
     // A conflict first, while the tree is clean: the same file changed on
     // both sides of a merge.
-    await simpleGit(repoDir(SLUG)).raw(['commit', '--allow-empty', '-m', 'noop'])
+    await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'noop'])
     await write(repoDir(SLUG), 'conflict.txt', 'theirs\n')
-    await simpleGit(repoDir(SLUG)).add('conflict.txt').commit('theirs')
+    await git(repoDir(SLUG), ['add', 'conflict.txt'])
+    await git(repoDir(SLUG), ['commit', '-m', 'theirs'])
     await write(wt, 'conflict.txt', 'ours\n')
-    await git.add('conflict.txt').commit('ours')
-    await git.raw(['merge', 'main']).catch(() => { /* conflicts, as intended */ })
+    await inWt(['add', 'conflict.txt'])
+    await inWt(['commit', '-m', 'ours'])
+    await inWt(['merge', 'main']).catch(() => { /* conflicts, as intended */ })
 
     await write(wt, 'a.txt', 'changed\n')
     await write(wt, 'staged.txt', 'new\n')
-    await git.add('staged.txt')
+    await inWt(['add', 'staged.txt'])
     await write(wt, 'newdir/deep/x.txt', 'untracked\n')
-    await git.raw(['mv', 'b.txt', 'renamed.txt'])
+    await inWt(['mv', 'b.txt', 'renamed.txt'])
     await fs.rm(path.join(wt, 'd.txt'))
 
     const index = path.join(repoDir(SLUG), '.git', 'worktrees', 'status', 'index')

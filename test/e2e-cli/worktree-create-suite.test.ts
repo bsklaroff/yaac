@@ -7,7 +7,7 @@ import http from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
 import WebSocket from 'ws'
-import simpleGit from 'simple-git'
+import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
 import { reapNodeLocal } from '@yaac/server/drivers/k8s/images'
@@ -265,7 +265,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${slug}.git`
-    await simpleGit(repoPath).remote(['set-url', 'origin', fakeRemote])
+    await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
     await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
       slug,
       remoteUrl: fakeRemote,

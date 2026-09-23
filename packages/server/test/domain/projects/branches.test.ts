@@ -2,12 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import simpleGit from 'simple-git'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setDataDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectBranches, setProjectReferenceBranch } from '#domain/projects'
 import { cloneRepo } from '#domain/git'
+import { recordProject } from '#db'
+import { git } from '@yaac/test-utils/git'
 
 const execFileAsync = promisify(execFile)
 
@@ -19,22 +20,21 @@ describe('getProjectBranches', () => {
   beforeEach(async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-branches-test-'))
     setDataDir(tmp)
+    sourceRepo = path.join(tmp, 'source')
+    // The row's remote is the one a refresh fetches from — a local path here.
     await fs.mkdir(projectDir(slug), { recursive: true })
     await fs.writeFile(path.join(projectDir(slug), 'project.json'), JSON.stringify({
-      slug, remoteUrl: 'https://example.com/proj.git', addedAt: '2026-01-01T00:00:00.000Z',
+      slug, remoteUrl: sourceRepo, addedAt: '2026-01-01T00:00:00.000Z',
     }))
 
-    sourceRepo = path.join(tmp, 'source')
     await fs.mkdir(sourceRepo, { recursive: true })
-    const git = simpleGit(sourceRepo)
-    await git.raw(['init', '-b', 'main'])
-    await git.addConfig('user.email', 'test@test.com')
-    await git.addConfig('user.name', 'Test')
+    await git(sourceRepo, ['init', '-b', 'main'])
+    await git(sourceRepo, ['config', 'user.email', 'test@test.com'])
+    await git(sourceRepo, ['config', 'user.name', 'Test'])
     await fs.writeFile(path.join(sourceRepo, 'hello.txt'), 'hello\n')
-    await git.add('.')
-    await git.commit('initial')
-    await git.checkoutLocalBranch('develop')
-    await git.checkout('main')
+    await git(sourceRepo, ['add', '.'])
+    await git(sourceRepo, ['commit', '-m', 'initial'])
+    await git(sourceRepo, ['branch', 'develop'])
 
     await cloneRepo(sourceRepo, repoDir(slug), null)
   })
@@ -59,9 +59,7 @@ describe('getProjectBranches', () => {
   })
 
   it('refresh picks up a branch pushed after the clone', async () => {
-    const git = simpleGit(sourceRepo)
-    await git.checkoutLocalBranch('feature/new')
-    await git.checkout('main')
+    await git(sourceRepo, ['branch', 'feature/new'])
 
     expect((await getProjectBranches(slug)).branches).not.toContain('feature/new')
     const refreshed = await getProjectBranches(slug, { refresh: true })
@@ -79,6 +77,14 @@ describe('getProjectBranches', () => {
     expect((await getProjectBranches(slug)).branches).toContain('main')
   })
 
+  it('refreshes from the row\'s remote, not the one the clone names', async () => {
+    // A pod can rewrite the shared clone's origin; the refresh must not follow it.
+    await execFileAsync('git', ['-C', repoDir(slug), 'remote', 'set-url', 'origin', path.join(tmp, 'nowhere')])
+    await git(sourceRepo, ['branch', 'feature/new'])
+
+    expect((await getProjectBranches(slug, { refresh: true })).branches).toContain('feature/new')
+  })
+
   it('surfaces a rejected credential as AUTH_REQUIRED, pointing at auth update', async () => {
     // git's `ext::` transport runs an arbitrary command as the wire protocol,
     // so a stub can produce the exact stderr a real rejected credential does
@@ -86,9 +92,9 @@ describe('getProjectBranches', () => {
     const stub = path.join(tmp, 'reject-auth.sh')
     await fs.writeFile(stub, '#!/bin/sh\necho "fatal: Authentication failed for xyz" >&2\nexit 128\n')
     await fs.chmod(stub, 0o755)
-    // Written with plain git: simple-git refuses to touch protocol.allow.
-    await execFileAsync('git', ['-C', repoDir(slug), 'config', 'protocol.ext.allow', 'always'])
-    await execFileAsync('git', ['-C', repoDir(slug), 'remote', 'set-url', 'origin', `ext::${stub}`])
+    // The row is the only place a fetch's URL comes from; the transport it
+    // names is the one transport the fetch may use.
+    await recordProject({ slug, remoteUrl: `ext::${stub}`, addedAt: '2026-01-01T00:00:00.000Z' })
 
     await expect(getProjectBranches(slug, { refresh: true })).rejects.toMatchObject({
       code: 'AUTH_REQUIRED',

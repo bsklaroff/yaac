@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import simpleGit from 'simple-git'
+import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorktreePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
@@ -105,7 +105,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit.reposDir, `${SLUG}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${SLUG}.git`
-    await simpleGit(repoPath).remote(['set-url', 'origin', fakeRemote])
+    await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
     await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
       slug: SLUG,
       remoteUrl: fakeRemote,

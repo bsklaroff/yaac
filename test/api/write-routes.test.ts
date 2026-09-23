@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
-import simpleGit from 'simple-git'
+import { git } from '@yaac/test-utils/git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { addEntry, listEntries, loadCredentials } from '@yaac/server/domain/projects/credentials'
@@ -155,12 +155,12 @@ function withAuth(init: RequestInit = {}): RequestInit {
   return { ...init, headers }
 }
 
-async function writeProject(slug: string): Promise<void> {
+async function writeProject(slug: string, remoteUrl = 'https://example.com/foo'): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
   await fs.mkdir(dir, { recursive: true })
   const meta: ProjectMeta = {
     slug,
-    remoteUrl: 'https://example.com/foo',
+    remoteUrl,
     addedAt: '2026-01-01T00:00:00.000Z',
   }
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
@@ -353,18 +353,17 @@ describe('write routes', () => {
     // A real repo behind the project: source with main + develop, cloned to
     // the project's repo dir so origin/* remote-tracking refs exist.
     async function writeProjectWithRepo(slug: string): Promise<string> {
-      await writeProject(slug)
       const sourceRepo = path.join(getProjectsDir(), `${slug}-source`)
+      // The row's remote is what a refresh fetches, so it names the source.
+      await writeProject(slug, sourceRepo)
       await fs.mkdir(sourceRepo, { recursive: true })
-      const git = simpleGit(sourceRepo)
-      await git.raw(['init', '-b', 'main'])
-      await git.addConfig('user.email', 't@t.co')
-      await git.addConfig('user.name', 'T')
+      await git(sourceRepo, ['init', '-b', 'main'])
+      await git(sourceRepo, ['config', 'user.email', 't@t.co'])
+      await git(sourceRepo, ['config', 'user.name', 'T'])
       await fs.writeFile(path.join(sourceRepo, 'a.txt'), 'a\n')
-      await git.add('.')
-      await git.commit('initial')
-      await git.checkoutLocalBranch('develop')
-      await git.checkout('main')
+      await git(sourceRepo, ['add', '.'])
+      await git(sourceRepo, ['commit', '-m', 'initial'])
+      await git(sourceRepo, ['branch', 'develop'])
       await cloneRepo(sourceRepo, repoDir(slug), null)
       return sourceRepo
     }
@@ -389,9 +388,7 @@ describe('write routes', () => {
 
     it('GET /project/:slug/branches?refresh=1 fetches new branches first', async () => {
       const sourceRepo = await writeProjectWithRepo('demo')
-      const git = simpleGit(sourceRepo)
-      await git.checkoutLocalBranch('feature/late')
-      await git.checkout('main')
+      await git(sourceRepo, ['branch', 'feature/late'])
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({
         param: { slug: 'demo' },

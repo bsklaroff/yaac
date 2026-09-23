@@ -46,12 +46,12 @@ The cost is coupling to where the checkout lives: node-local checkouts
 
 ### Listing
 
-`listCheckoutFiles` in `#domain/git` names both halves explicitly —
-`--git-dir=<repo>/.git/worktrees/<id> --work-tree=<worktreeDir>` — because the
-in-pod setup rewrites the checkout's `.git` file to the container's own view
-(`/repo/...`), which means nothing to the server; the admin dir's `commondir`
-is relative, so naming it reaches the shared repo. `core.fsmonitor` is pinned
-off: the repo's config is the agent's to write. Four read-only calls run
+`listCheckoutFiles` in `#domain/git` runs git on a `worktree` target
+(docs/server-git.md), which names the admin dir, the shared repo and the work
+tree explicitly. It has to: the in-pod setup rewrites the checkout's `.git`
+file to the container's own view (`/repo/...`), which means nothing to the
+server. The runner also keeps git off the agent-writable repo config, so no
+filter, fsmonitor or hook it names runs here. Four read-only calls run
 concurrently:
 
 1. `ls-files --cached --others --exclude-standard`, minus `ls-files --deleted`
@@ -64,7 +64,8 @@ concurrently:
    descriptors, never following a link, skipping ignored folders) for the
    folders holding no listed file: `emptyDirs`, which is what makes "New
    folder" survive the next poll.
-4. `status --porcelain=v1 -z --untracked-files=all` — `status`, one
+4. `status --porcelain=v1 -z --untracked-files=all --ignore-submodules=all`
+   (never entering a submodule's pod-written git dir) — `status`, one
    `FileStatus` per path (`modified`, `added` including a rename's new path,
    `untracked`, `conflicted`; a deletion is dropped). The colors mean
    "differs from HEAD"; Changes answers "differs from the fork base".

@@ -26,7 +26,6 @@
  * The server is a single process (lock-file enforced), so module-level state
  * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
  */
-import simpleGit from 'simple-git'
 import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#db'
@@ -39,11 +38,11 @@ import { isTmuxSessionAlive } from '#runtime/status'
 import {
   fetchOrigin,
   getDefaultBranch,
-  originRemoteUrl,
   remoteBranchExists,
+  resolveRemoteRef,
   worktreeUpstreamBranch,
 } from '#domain/git'
-import { resolveCredentialForUrl, resolveProjectConfig } from '#domain/projects'
+import { projectRemoteUrl, resolveCredentialForUrl, resolveProjectConfig } from '#domain/projects'
 import { shellEscape } from '#lib/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -340,8 +339,8 @@ export async function tryClaimPrewarmed(
       // the target ref exists and is current. Same e2e fixture escape hatch
       // as the cold path (pre-populated bare repos, no reachable remote).
       if (!testEnv.e2eSkipFetch) {
-        const remoteUrl = await originRemoteUrl(repo)
-        await fetchOrigin(repo, await resolveCredentialForUrl(remoteUrl))
+        const remoteUrl = await projectRemoteUrl(projectSlug)
+        await fetchOrigin(repo, remoteUrl, await resolveCredentialForUrl(remoteUrl))
       }
       if (!(await remoteBranchExists(repo, rebranchTo))) {
         // Pre-mutation user error: propagate instead of burning the spare
@@ -352,7 +351,7 @@ export async function tryClaimPrewarmed(
           `branch "${rebranchTo}" not found on origin — check ${source}.`,
         )
       }
-      const sha = (await simpleGit(repo).revparse([`refs/remotes/origin/${rebranchTo}`])).trim()
+      const sha = await resolveRemoteRef(repo, rebranchTo)
       emit(`Switching prewarmed session to branch ${rebranchTo}...`)
       mutated = true
       // The agent read the old checkout at startup, so it is restarted as

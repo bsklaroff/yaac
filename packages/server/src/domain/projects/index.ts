@@ -56,7 +56,12 @@ export {
   saveCredentials,
   sshKeyMaterial,
 } from './credentials'
-export { assertProjectExists, getProjectDetail, resolveProjectConfigWithSource } from './detail'
+export {
+  assertProjectExists,
+  getProjectDetail,
+  projectRemoteUrl,
+  resolveProjectConfigWithSource,
+} from './detail'
 export { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from './dockerfile'
 export { seedFakeAuth } from './fake-auth'
 export { listProjects } from './list'

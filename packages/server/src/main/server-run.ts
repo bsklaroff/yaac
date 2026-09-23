@@ -12,7 +12,7 @@ import {
 } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
 import { closeDb, getGitIdentity, listProjectRows, openDb, setGitIdentity } from '#db'
-import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
+import { clearGitScratch, startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
@@ -582,6 +582,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // that fails one is missing a setting, not broken.
   await importLegacyState()
 
+  // What a killed predecessor's git calls left in scratch. Under the lock and
+  // before anything can run git, so no live call's dir is in there.
+  await clearGitScratch()
   // The agent the server's own git signs through (docs/ssh-keys.md). After
   // the DB, because every request reads the sealed rows.
   await startGitSshAgent()

@@ -1,27 +1,24 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import simpleGit from 'simple-git'
 import { createKeyedMutex } from '#lib/keyed-mutex'
+import { readRepoConfig, runGit } from './run'
+import type { GitTarget } from './run'
 import { gitEnvForCredential, injectTokenIntoUrl, torEnv } from './transport'
 import type { ResolvedGitCredential } from './transport'
 import type { FileStatus } from '@yaac/shared/types'
 
 /**
  * Git operations against a project's clone and the worktrees cut from it —
- * clone, fetch, branch lookups, worktree add and its rollback.
+ * clone, fetch, branch and tree lookups, worktree add and its rollback.
  *
- * The process boundary for domain the way kubectl is the driver's. Every git
- * invocation that carries a CREDENTIAL goes through here; the two plain reads
- * still done elsewhere in domain are named in this folder's barrel.
+ * The process boundary for domain the way kubectl is the driver's: every
+ * git process the server starts is one of these, and each runs through
+ * `runGit`, which never lets git read the pod-writable config
+ * (docs/server-git.md). A remote URL is always the caller's — the project
+ * row's — and never read back out of the repository.
  */
 
-function gitWithCredentialEnv(
-  baseDir: string | undefined,
-  env: NodeJS.ProcessEnv | undefined,
-): ReturnType<typeof simpleGit> {
-  const git = baseDir ? simpleGit(baseDir) : simpleGit()
-  return env ? git.env(env) : git
-}
+const repo = (repoPath: string): GitTarget => ({ kind: 'repo', repoPath })
 
 export async function cloneRepo(
   remoteUrl: string,
@@ -30,51 +27,38 @@ export async function cloneRepo(
 ): Promise<void> {
   if (credential?.kind === 'https') {
     const authedUrl = injectTokenIntoUrl(remoteUrl, credential.token)
-    await gitWithCredentialEnv(undefined, torEnv()).clone(authedUrl, destPath)
-    // Strip credentials from the stored remote URL.
-    await simpleGit(destPath).remote(['set-url', 'origin', remoteUrl])
+    await runGit({ kind: 'none' }, ['clone', authedUrl, destPath], { env: torEnv(), remoteUrl })
+    // Strip credentials from the stored remote URL. Written to the real
+    // config — the one pods' git reads — before any pod can exist.
+    await runGit({ kind: 'none' }, [
+      'config', '--file', path.join(destPath, '.git', 'config'), 'remote.origin.url', remoteUrl,
+    ])
     return
   }
   // SSH signs through the in-process agent; no credential is an
   // unauthenticated clone (works for public HTTPS repos).
-  await gitWithCredentialEnv(undefined, await gitEnvForCredential(credential)).clone(remoteUrl, destPath)
-}
-
-/**
- * The clone's `origin` URL — the remote every credential lookup, fetch and
- * proxy registration is resolved against.
- *
- * Rejects when there is no origin: `get-url` either prints the URL or exits
- * non-zero, and simple-git turns the latter into a rejection. The `?? ''`
- * below is there for simple-git's `string | void` return type, NOT for an
- * unset remote — so a caller's falsy check on the result is a belt-and-braces
- * guard rather than the path an origin-less repo takes.
- */
-export async function originRemoteUrl(repoPath: string): Promise<string> {
-  return (await simpleGit(repoPath).remote(['get-url', 'origin']))?.trim() ?? ''
+  await runGit({ kind: 'none' }, ['clone', remoteUrl, destPath], {
+    env: await gitEnvForCredential(credential),
+    remoteUrl,
+  })
 }
 
 export async function getDefaultBranch(repoPath: string): Promise<string> {
-  const git = simpleGit(repoPath)
   try {
-    const ref = await git.raw(['symbolic-ref', 'refs/remotes/origin/HEAD'])
+    const ref = await runGit(repo(repoPath), ['symbolic-ref', 'refs/remotes/origin/HEAD'])
     const match = ref.trim().match(/^refs\/remotes\/origin\/(.+)$/)
     if (match) return match[1]
   } catch {
     // Fallback: origin/HEAD may not be set (e.g. local-only repos)
   }
-  const branch = await git.revparse(['--abbrev-ref', 'HEAD'])
-  return branch.trim()
+  return (await runGit(repo(repoPath), ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
 }
 
 /** True when `refs/remotes/origin/<branch>` exists in the repo. */
 export async function remoteBranchExists(repoPath: string, branch: string): Promise<boolean> {
   try {
-    // --quiet suppresses stderr, and simple-git then resolves the exit-1
-    // miss with empty output instead of rejecting — so key on the output
-    // (a hit prints the SHA), keeping the catch for non-repo errors.
-    const out = await simpleGit(repoPath).raw(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
-    return out.trim().length > 0
+    await resolveRemoteRef(repoPath, branch)
+    return true
   } catch {
     return false
   }
@@ -86,7 +70,7 @@ export async function remoteBranchExists(repoPath: string, branch: string): Prom
  * Excludes the `HEAD` symref.
  */
 export async function listRemoteBranches(repoPath: string): Promise<string[]> {
-  const out = await simpleGit(repoPath).raw([
+  const out = await runGit(repo(repoPath), [
     'for-each-ref', '--sort=-committerdate', '--format=%(refname:strip=3)', 'refs/remotes/origin',
   ])
   return out.split('\n').map((l) => l.trim()).filter((l) => l.length > 0 && l !== 'HEAD')
@@ -101,14 +85,41 @@ export async function listRemoteBranches(repoPath: string): Promise<string[]> {
  * claim-time re-branch prep rewrites it.
  */
 export async function worktreeUpstreamBranch(repoPath: string, branchName: string): Promise<string | null> {
-  let merge: string
-  try {
-    merge = await simpleGit(repoPath).raw(['config', '--get', `branch.${branchName}.merge`])
-  } catch {
-    return null // unset — git config --get exits 1
-  }
-  const match = merge.trim().match(/^refs\/heads\/(.+)$/)
+  const merge = (await readRepoConfig(repoPath, `branch.${branchName}.merge`).catch(() => [])).at(-1)
+  // Pod-written data: only a plain branch name comes back out.
+  const match = merge?.match(/^refs\/heads\/([^\s~^:?*[\\]+)$/)
   return match ? match[1] : null
+}
+
+/** The commit `refs/remotes/origin/<branch>` names; rejects when absent. */
+export async function resolveRemoteRef(repoPath: string, branch: string): Promise<string> {
+  return (await runGit(repo(repoPath), [
+    'rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`,
+  ])).trim()
+}
+
+/** Names of the subtrees directly under `treePath` at `ref`, or [] when that
+ *  tree is absent. Only trees: blobs, symlinks included, are skipped. */
+export async function listTreeSubdirs(repoPath: string, ref: string, treePath: string): Promise<string[]> {
+  let out: string
+  try {
+    out = await runGit(repo(repoPath), ['ls-tree', '-z', `${ref}:${treePath}`])
+  } catch {
+    return []
+  }
+  return out.split('\0')
+    .filter((entry) => entry.split(' ')[1] === 'tree')
+    .map((entry) => entry.slice(entry.indexOf('\t') + 1))
+}
+
+/** The blob at `ref:blobPath` as text, or null when there is none. Read
+ *  with `cat-file`, which applies no conversion of any kind. */
+export async function readBlobAt(repoPath: string, ref: string, blobPath: string): Promise<string | null> {
+  try {
+    return await runGit(repo(repoPath), ['cat-file', 'blob', `${ref}:${blobPath}`])
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -121,21 +132,23 @@ export async function worktreeUpstreamBranch(repoPath: string, branchName: strin
  */
 const fetchOriginMutex = createKeyedMutex()
 
+/**
+ * Fetch every branch of `remoteUrl` into `refs/remotes/origin/*`. The URL is
+ * the project row's, passed in: the repository's own `remote.origin.*` is
+ * written by pods, so it never decides where a fetch goes, what it runs, or
+ * where a token is sent.
+ */
 export async function fetchOrigin(
   repoPath: string,
+  remoteUrl: string,
   credential: ResolvedGitCredential | null,
 ): Promise<void> {
+  const url = credential?.kind === 'https' ? injectTokenIntoUrl(remoteUrl, credential.token) : remoteUrl
+  const env = credential?.kind === 'https' ? torEnv() : await gitEnvForCredential(credential)
   await fetchOriginMutex(repoPath, async () => {
-    if (credential?.kind === 'https') {
-      const git = gitWithCredentialEnv(repoPath, torEnv())
-      // This one goes through the credential-carrying handle, not
-      // `originRemoteUrl`: the fetch needs the same env the URL is read with.
-      const remoteUrl = (await git.remote(['get-url', 'origin']))!.trim()
-      const authedUrl = injectTokenIntoUrl(remoteUrl, credential.token)
-      await git.raw(['fetch', authedUrl, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
-      return
-    }
-    await gitWithCredentialEnv(repoPath, await gitEnvForCredential(credential)).fetch('origin')
+    await runGit(repo(repoPath), [
+      'fetch', url, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok',
+    ], { env, remoteUrl })
   })
 }
 
@@ -156,9 +169,10 @@ async function bestEffort(op: () => Promise<unknown>): Promise<void> {
  * creates any that are missing the moment it mounts. `git worktree add`
  * refuses a destination that is not an empty directory (`--force` does not
  * relax that check), so the checkout is staged: the worktree is created
- * `--no-checkout` in a scratch dir — where only its `.git` file lands — that
- * file is moved into the real destination, `worktree repair` re-points the
- * admin `gitdir` at it, and the population happens in place. The
+ * `--no-checkout` in a scratch dir — where only its `.git` file lands — a
+ * `.git` file naming the admin dir is written into the real destination,
+ * the admin `gitdir` is pointed back at it, and the population happens in
+ * place. The
  * destination's inode is never replaced, which is what lets the pod bind
  * `/workspace` to it before any of this has run.
  *
@@ -194,19 +208,22 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
   try {
     const args = ['worktree', 'add', '--no-track', '--no-checkout', staged, '-b', branchName]
     if (startPoint) args.push(startPoint)
-    await simpleGit(repoPath).raw(args)
+    await runGit(repo(repoPath), args)
     let adminDir: string | undefined
-    let movedGit = false
+    let wroteGit = false
     try {
       // The staged `.git` names the admin dir git just registered, and is
-      // the only thing that knows it once the scratch dir is gone.
-      adminDir = (await fs.readFile(path.join(staged, '.git'), 'utf8'))
-        .replace(/^gitdir:/, '').trim()
+      // the only thing that knows its name once the scratch dir is gone.
+      // Only the name: git reached the admin dir through the throwaway git
+      // dir `runGit` built, so the path it wrote is that one's.
+      const adminName = path.basename((await fs.readFile(path.join(staged, '.git'), 'utf8'))
+        .replace(/^gitdir:/, '').trim())
+      adminDir = path.join(repoPath, '.git', 'worktrees', adminName)
       await fs.mkdir(worktreePath, { recursive: true })
-      await fs.rename(path.join(staged, '.git'), path.join(worktreePath, '.git'))
-      movedGit = true
+      await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${adminDir}\n`)
+      wroteGit = true
       // Point the admin dir back at where the worktree actually is. The
-      // moved `.git` already names the admin dir, so this one line is the
+      // `.git` above already names the admin dir, so this one line is the
       // whole of the repair — and it is written directly rather than with
       // `git worktree repair`, which is NOT scoped to the path it is given:
       // it walks every worktree registered in the repo and, for any whose
@@ -230,19 +247,22 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
       // Nothing there can be worth keeping — a destination holding a live
       // checkout has a `.git` file, and callers reuse those rather than
       // adding over them.
-      await simpleGit(worktreePath).raw(['checkout', '--force'])
+      await runGit({ kind: 'worktree', repoPath, worktreeId: adminName, workTree: worktreePath }, [
+        'checkout', '--force',
+      ])
     } catch (err) {
       // Deliberately not `git worktree prune`: it would also drop a
       // CONCURRENT add whose registration momentarily points at its own
       // scratch dir, between that add's rename and its repair.
       const admin = adminDir
       if (admin !== undefined) await bestEffort(() => fs.rm(admin, { recursive: true, force: true }))
-      await bestEffort(() => simpleGit(repoPath).raw(['branch', '-D', branchName]))
+      // `update-ref`, not `branch -D`, which would also rewrite the config.
+      await bestEffort(() => runGit(repo(repoPath), ['update-ref', '-d', `refs/heads/${branchName}`]))
       // Only ours: a `.git` this call did not stage belongs to whatever
       // put it there. Leaving one behind would make the destination pass
       // the caller's "already a worktree" probe with an empty index, where
       // git reports every tracked file deleted.
-      if (movedGit) await bestEffort(() => fs.rm(path.join(worktreePath, '.git'), { force: true }))
+      if (wroteGit) await bestEffort(() => fs.rm(path.join(worktreePath, '.git'), { force: true }))
       throw err
     }
   } finally {
@@ -267,12 +287,12 @@ export interface CheckoutListing {
  * The file list of a worktree's checkout, read from the server's own view of
  * it.
  *
- * Both halves are named explicitly because the checkout's `.git` file names
- * the admin dir as the POD sees it (`/repo/.git/worktrees/<id>`, rewritten
- * by the in-pod setup), which means nothing here; the admin dir's own
- * `commondir` is the relative `../..`, so naming it is enough to reach the
- * shared repo. `core.fsmonitor` is pinned off because the repo's config is
- * the agent's to write, and a configured fsmonitor is a command git runs.
+ * A `worktree` target names the admin dir, the shared repo and the work tree
+ * explicitly, which this needs: the checkout's `.git` file names the admin
+ * dir as the POD sees it (`/repo/.git/worktrees/<id>`, rewritten by the
+ * in-pod setup), which means nothing here. `status` skips submodules
+ * outright, flag and all, because a `.gitmodules` `ignore` entry would
+ * otherwise beat the runner's pin and send git into a pod-written git dir.
  *
  * Nothing here writes. `ls-files` never does, and `status` runs with
  * `--no-optional-locks` so its opportunistic index refresh is never written
@@ -288,16 +308,9 @@ export async function listCheckoutFiles(
   worktreeId: string,
   worktreePath: string,
 ): Promise<CheckoutListing> {
-  // fsmonitor is refused by simple-git's unsafe-argument guard whatever the
-  // value; pinning it OFF is the safe direction, so the guard is lifted.
-  const git = simpleGit({ baseDir: worktreePath, unsafe: { allowUnsafeFsMonitor: true } })
-  const base = [
-    '-c', 'core.fsmonitor=false',
-    `--git-dir=${path.join(repoPath, '.git', 'worktrees', worktreeId)}`,
-    `--work-tree=${worktreePath}`,
-  ]
+  const target: GitTarget = { kind: 'worktree', repoPath, worktreeId, workTree: worktreePath }
   const run = async (args: string[]): Promise<string[]> =>
-    (await git.raw([...base, ...args])).split('\0').filter((p) => p !== '')
+    (await runGit(target, args)).split('\0').filter((p) => p !== '')
   const [listed, deleted, ignored, untrackedDirs, status] = await Promise.all([
     run(['ls-files', '-z', '--cached', '--others', '--exclude-standard']),
     run(['ls-files', '-z', '--deleted']),
@@ -305,7 +318,7 @@ export async function listCheckoutFiles(
     run(['ls-files', '-z', '--others', '--exclude-standard', '--directory']),
     run([
       '-c', 'core.checkStat=minimal', '-c', 'core.trustctime=false', '--no-optional-locks',
-      'status', '--porcelain=v1', '-z', '--untracked-files=all',
+      'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all',
     ]),
   ])
   const gone = new Set(deleted)

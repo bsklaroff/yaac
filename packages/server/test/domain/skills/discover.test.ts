@@ -2,13 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import simpleGit from 'simple-git'
 import { setDataDir, claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 // State hooks for the two caches/overrides discovery reads — reset so a case
 // sees only what it opts into. Neither is under test here.
 import { setClaudeBundledSkills } from '#domain/skills/claude-bundled'
 import { setBuiltinSkillsDir } from '#domain/skills/builtin'
+import { git } from '@yaac/test-utils/git'
 
 const slug = 'proj'
 
@@ -20,11 +20,11 @@ const slug = 'proj'
 async function commitRepoBranch(s: string, branch: string, files: Record<string, string>): Promise<void> {
   const repo = repoDir(s)
   await fs.mkdir(repo, { recursive: true })
-  const git = simpleGit(repo)
-  if (!(await git.checkIsRepo())) await git.raw(['init', '-b', 'main'])
-  await git.addConfig('user.email', 'test@example.com')
-  await git.addConfig('user.name', 'Test')
-  await git.checkout(['-B', branch])
+  const initialized = await fs.access(path.join(repo, '.git')).then(() => true, () => false)
+  if (!initialized) await git(repo, ['init', '-b', 'main'])
+  await git(repo, ['config', 'user.email', 'test@example.com'])
+  await git(repo, ['config', 'user.name', 'Test'])
+  await git(repo, ['checkout', '-q', '-B', branch])
   const paths: string[] = []
   for (const [rel, contents] of Object.entries(files)) {
     const abs = path.join(repo, rel)
@@ -32,11 +32,11 @@ async function commitRepoBranch(s: string, branch: string, files: Record<string,
     await fs.writeFile(abs, contents)
     paths.push(rel)
   }
-  await git.add(paths)
-  await git.commit(`skills on ${branch}`)
-  const sha = (await git.revparse(['HEAD'])).trim()
-  await git.raw(['update-ref', `refs/remotes/origin/${branch}`, sha])
-  await git.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  await git(repo, ['add', ...paths])
+  await git(repo, ['commit', '-m', `skills on ${branch}`])
+  const sha = (await git(repo, ['rev-parse', 'HEAD'])).trim()
+  await git(repo, ['update-ref', `refs/remotes/origin/${branch}`, sha])
+  await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
 }
 
 async function writeSkill(dir: string, contents: string): Promise<void> {

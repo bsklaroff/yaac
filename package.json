@@ -64,7 +64,6 @@
     "commander": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
-    "simple-git": "catalog:",
     "smol-toml": "catalog:",
     "ws": "catalog:",
     "yaml": "catalog:",

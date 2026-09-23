@@ -4,7 +4,6 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import WebSocket from 'ws'
-import simpleGit from 'simple-git'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -839,12 +838,9 @@ describe('with seeded projects', () => {
     it('surfaces the server "no git credential" validation error via stderr + nonzero exit', async () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo')
       await createTestRepo(repo)
-      await addTestProject(repo)
-      // Override the cloned origin with a URL-shaped value so parseGitRemote
-      // succeeds; the credential lookup against an empty store is the real
-      // assertion target.
-      await simpleGit(path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo', 'repo'))
-        .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo.git'])
+      // A URL-shaped remote so parseGitRemote succeeds; the credential
+      // lookup against an empty store is the real assertion target.
+      await addTestProject(repo, { remoteUrl: 'https://github.com/test-org/repo-demo.git' })
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env,
@@ -878,9 +874,7 @@ describe('with seeded projects', () => {
       // standing up a real opencode container.
       const repo = path.join(testEnv.scratchDir, 'repo-demo-opencode')
       await createTestRepo(repo)
-      await addTestProject(repo)
-      await simpleGit(path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo-opencode', 'repo'))
-        .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo-opencode.git'])
+      await addTestProject(repo, { remoteUrl: 'https://github.com/test-org/repo-demo-opencode.git' })
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'create', 'repo-demo-opencode', '--tool', 'opencode',
@@ -896,9 +890,7 @@ describe('with seeded projects', () => {
       // proof the flag is wired through without standing up a container.
       const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
       await createTestRepo(repo)
-      await addTestProject(repo)
-      await simpleGit(path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo-model-tool', 'repo'))
-        .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo-model-tool.git'])
+      await addTestProject(repo, { remoteUrl: 'https://github.com/test-org/repo-demo-model-tool.git' })
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'create', 'repo-demo-model-tool',
