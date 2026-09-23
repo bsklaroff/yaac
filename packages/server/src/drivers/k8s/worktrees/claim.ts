@@ -1,5 +1,6 @@
 import {
   LABEL_DATA_DIR_HASH,
+  LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_TOOL,
   LABEL_WORKTREE_ID,
@@ -7,8 +8,11 @@ import {
   k8sNamespace,
   kubectlGetJson,
   kubectlWithRetry,
+  NPM_CACHE_APP_NAME,
 } from '#drivers/k8s/substrate'
+import { servingNpmCacheUrl } from '#drivers/k8s/cluster'
 import type { AgentTool } from '@yaac/shared/types'
+import { serverLog } from '#log'
 
 /**
  * The commit point of a prewarm claim: the moment a spare stops being one
@@ -78,7 +82,9 @@ export async function claimSpareWorkspace(
     `${LABEL_PREWARMED}=true`,
   ].join(',')
 
-  const list = await kubectlGetJson<{ items?: Array<{ metadata?: { name?: string } }> }>([
+  const list = await kubectlGetJson<{
+    items?: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }>
+  }>([
     'get', 'pods', '-l', selector, '-n', k8sNamespace(),
   ])
   // One pod per workspace id, so the first match is the spare. A second
@@ -104,4 +110,33 @@ export async function claimSpareWorkspace(
       { op: 'add', path: `/metadata/labels/${pointerSegment(LABEL_TOOL)}`, value: tool },
     ]),
   ])
+
+  if (list?.items?.[0]?.metadata?.labels?.[LABEL_NPM_CACHE] === 'true') {
+    await refreshNpmRegistry(podName).catch((err: unknown) => {
+      serverLog(`[prewarm] could not re-decide the npm registry of ${podName}: ${String(err)}`)
+    })
+  }
+}
+
+/**
+ * Point a claimed spare's pnpm at the npm cache only if the cache serves
+ * NOW. A spare is prepared long before it is claimed, and what its init
+ * wrote into ~/.npmrc reflects the cache then — a spare warmed while the
+ * cache was up and claimed while it is down would fail every install, since
+ * pnpm has no fallback registry (`servingNpmCacheUrl`). Only the cache's
+ * own line is ever removed, so a registry the image names stays, and one is
+ * added only where the file names none — the init script's rule.
+ * Best-effort: a failure leaves what the init wrote.
+ */
+async function refreshNpmRegistry(podName: string): Promise<void> {
+  const url = await servingNpmCacheUrl()
+  const script = [
+    'f="$HOME/.npmrc"',
+    `sed -i '\\#^registry=http://${NPM_CACHE_APP_NAME}\\.#d' "$f" 2>/dev/null || true`,
+    'if [ -n "$1" ] && ! grep -qs "^registry=" "$f"; then printf "registry=%s\\n" "$1" >> "$f"; fi',
+  ].join('\n')
+  await kubectlWithRetry([
+    'exec', '-n', k8sNamespace(), podName, '-c', 'worktree', '--',
+    'sh', '-c', script, '--', url ?? '',
+  ], { maxAttempts: 2 })
 }

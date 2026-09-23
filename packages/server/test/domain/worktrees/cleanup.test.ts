@@ -37,7 +37,6 @@ import {
   deleteWorktreeState,
   gcOrphanEphemeralModuleDirs,
   teardownForRestart,
-  worktreeModulesDir,
 } from '#domain/worktrees/cleanup'
 
 import { isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
@@ -201,13 +200,11 @@ describe('cleanupWorktree', () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-order-'))
     setDataDir(dataDir)
     try {
-      const modules = worktreeModulesDir('p', 's-dirs')
-      await fs.mkdir(modules, { recursive: true })
       // A host-run workspace keeps its ephemeral paths in the checkout
-      // itself; those go with the backing dir, and the rest of the checkout
-      // stays for a restart.
+      // itself; those go, and the rest of the checkout stays for a restart.
       const checkout = worktreeDir('p', 's-dirs')
-      await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
+      const modules = path.join(checkout, 'node_modules')
+      await fs.mkdir(path.join(modules, 'left-pad'), { recursive: true })
       await fs.mkdir(path.join(checkout, 'src'), { recursive: true })
       let existedDuringDestroy: boolean | undefined
       installRuntime({
@@ -221,7 +218,6 @@ describe('cleanupWorktree', () => {
 
       expect(existedDuringDestroy).toBe(true)
       await expect(fs.access(modules)).rejects.toThrow()
-      await expect(fs.access(path.join(checkout, 'node_modules'))).rejects.toThrow()
       await expect(fs.access(path.join(checkout, 'src'))).resolves.toBeUndefined()
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true })
@@ -267,10 +263,8 @@ describe('cleanupWorktree', () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-keep-'))
     setDataDir(dataDir)
     try {
-      const modules = worktreeModulesDir('p', 's-kept')
       const stateDir = worktreeStateDir('p', 's-kept')
       const checkoutModules = path.join(worktreeDir('p', 's-kept'), 'node_modules')
-      await fs.mkdir(modules, { recursive: true })
       await fs.mkdir(checkoutModules, { recursive: true })
       await fs.mkdir(stateDir, { recursive: true })
       installRuntime({ destroy: () => Promise.resolve(false) })
@@ -279,7 +273,6 @@ describe('cleanupWorktree', () => {
         jobName: 'yaac-p-s-kept', projectSlug: 'p', worktreeId: 's-kept',
       })).resolves.toBe(false)
 
-      await expect(fs.access(modules)).resolves.toBeUndefined()
       await expect(fs.access(checkoutModules)).resolves.toBeUndefined()
       await expect(fs.access(stateDir)).resolves.toBeUndefined()
     } finally {
@@ -360,7 +353,6 @@ describe('cleanupWorktreeDetached', () => {
 
     const script = spawnedScript()!
     expect(script.startsWith(TEARDOWN_SENTINEL)).toBe(true)
-    expect(script).toContain(`rm -rf '${worktreeModulesDir('p', 's-script')}'`)
     expect(script).toContain(`rm -rf '${checkoutModules}'`)
     expect(script.indexOf(TEARDOWN_SENTINEL)).toBeLessThan(script.indexOf('rm -rf'))
   })
@@ -511,28 +503,6 @@ describe('teardownForRestart', () => {
   it('returns at once for a worktree with no teardown in flight', async () => {
     await teardownForRestart({ jobName: null, projectSlug: 'p', workspaceId: 's-idle' })
     expect(spawnMock).not.toHaveBeenCalled()
-  })
-})
-
-describe('worktreeModulesDir', () => {
-  let dataDir: string
-
-  beforeEach(async () => {
-    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-sessionmodules-'))
-    setDataDir(dataDir)
-  })
-
-  afterEach(async () => {
-    await fs.rm(dataDir, { recursive: true, force: true })
-  })
-
-  it('returns <nodeLocal>/projects/<slug>/.cached-packages/modules/<sid>', () => {
-    // NODE-LOCAL: the module dirs live under the pnpm store, which hands
-    // out hardlinks that cannot cross a filesystem.
-    const result = worktreeModulesDir('my-proj', 'sess-abc')
-    expect(result).toBe(
-      path.join(dataDir, 'node-local', 'projects', 'my-proj', '.cached-packages', 'modules', 'sess-abc'),
-    )
   })
 })
 

@@ -28,7 +28,6 @@ export {
   type BuildFileEntry,
 } from './build-files'
 export {
-  ephemeralModulesSlotKey,
   resolveEphemeralModulesPaths,
   resolveProjectConfig,
 } from './config'

@@ -203,6 +203,12 @@ const FSPROBE_ALL_PASS = [
 ].join('\n')
 /** What the fsprobe pod printed; a case edits. */
 let fsprobeOutput = FSPROBE_ALL_PASS
+/** The npm cache's Service, or null for an install without one; a case edits. */
+let npmCacheService: { spec: { clusterIP: string } } | null = null
+/** Whether a cache pod is ready behind that Service; a case edits. */
+let npmCacheReady = true
+/** What the npm-cache probe pod printed; a case edits. */
+let npmCacheProbeOutput = 'NPM_CACHE_OK\n'
 
 /**
  * deps.run implementation covering every probe the all-pass path makes.
@@ -371,6 +377,9 @@ async function happyResponses(
     // Both datapath DaemonSets report fully rolled out.
     return { stdout: '1/1', stderr: '' }
   }
+  if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-npm-cache') {
+    return { stdout: npmCacheProbeOutput, stderr: '' }
+  }
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-nested') {
     return { stdout: 'NESTED_MOUNT_OK\n', stderr: '' }
   }
@@ -413,6 +422,10 @@ function happyGetJson(args: string[]): unknown {
     return { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.7' }] } }] }
   }
   if (args[1] === 'endpoints') return { subsets: [{ addresses: [{ ip: '10.89.0.7' }] }] }
+  if (args[1] === 'service' && args[2] === 'yaac-npm-cache') return npmCacheService
+  if (args[1] === 'endpointslices') {
+    return { items: npmCacheService ? [{ endpoints: [{ conditions: { ready: npmCacheReady } }] }] : [] }
+  }
   if (args[1] === 'pod') return { status: { phase: podPhases[args[2]] ?? 'Succeeded' } }
   return { status: { phase: 'Succeeded' } }
 }
@@ -468,6 +481,9 @@ describe('runClusterCheck', () => {
       'yaac-server-local': { spec: { volumeName: 'yaac-server-local-ddh' }, status: { phase: 'Bound' } },
     }
     fsprobeOutput = FSPROBE_ALL_PASS
+    npmCacheService = { spec: { clusterIP: '10.96.4.2' } }
+    npmCacheReady = true
+    npmCacheProbeOutput = 'NPM_CACHE_OK\n'
     // Probe pods complete successfully unless a test overrides.
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(happyGetJson(args)))
     // vapAvailable()'s kubectl probe answers unless a test overrides.
@@ -498,6 +514,7 @@ describe('runClusterCheck', () => {
       ['node-tuning', 'pass'],
       ['probe', 'pass'],
       ['egress', 'pass'],
+      ['npm-cache', 'pass'],
       ['datapath', 'pass'],
       // Re-verified on every run, not only at --adopt-cni time: netd's
       // readiness is Envoy's config ack, which is green with zero pod →
@@ -1316,6 +1333,62 @@ describe('runClusterCheck', () => {
     // that went missing.
     expect(egress?.fix).toContain('yaac-server-ingress')
     expect(egress?.fix).toContain('yaac-server-ingress-front')
+  })
+
+  // A session pod fetching through the Service proves the worktree egress
+  // rule, the cache's ingress wall and its own route out, all at once.
+  it('passes npm-cache when a session pod fetches a package through the Service\'s IP', async () => {
+    const deps = stage()
+    const { results } = await runClusterCheck()
+
+    expect(byName(results, 'npm-cache')?.status).toBe('pass')
+    const pod = deps.apply.mock.calls.map((c) => c[0] as {
+      kind: string
+      metadata: { name: string; labels: Record<string, string> }
+      spec: { runtimeClassName?: string; containers: Array<{ command: string[] }> }
+    }).find((m) => m.metadata.name === 'yaac-cluster-check-npm-cache')
+    expect(pod?.metadata.labels['yaac.worktree-id']).toBeDefined()
+    expect(pod?.metadata.labels['yaac.npm-cache']).toBe('true')
+    expect(pod?.spec.runtimeClassName).toBe('gvisor')
+    expect(pod?.spec.containers[0].command[2])
+      .toContain('http://10.96.4.2:4873/is-number/-/is-number-7.0.0.tgz')
+  })
+
+  // Without one, pnpm installs from npmjs: slower, nothing worse.
+  it('warns, without failing, on an install with no npm cache', async () => {
+    npmCacheService = null
+    stage()
+    const { ok, results } = await runClusterCheck()
+
+    expect(byName(results, 'npm-cache')?.status).toBe('warn')
+    expect(byName(results, 'npm-cache')?.fix).toContain('yaac cluster install')
+    expect(ok).toBe(true)
+  })
+
+  // A new session is not pointed at a cache with no ready pod, so it too is
+  // a slower install, not a broken one.
+  it('warns, without probing, when the npm cache has no ready pod', async () => {
+    npmCacheReady = false
+    const deps = stage()
+    const { ok, results } = await runClusterCheck()
+
+    expect(byName(results, 'npm-cache')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'npm-cache')?.detail).toContain('no ready pod')
+    expect(deps.apply.mock.calls.some((c) =>
+      (c[0] as { metadata?: { name?: string } }).metadata?.name === 'yaac-cluster-check-npm-cache')).toBe(false)
+    expect(ok).toBe(true)
+  })
+
+  // With a ready one, every new session installs through it — a cache that
+  // cannot serve fails every one.
+  it('fails npm-cache when the Service does not serve', async () => {
+    npmCacheProbeOutput = 'wget: server returned error: HTTP/1.1 503\nNPM_CACHE_FAILED\n'
+    stage()
+    const { ok, results } = await runClusterCheck()
+
+    expect(byName(results, 'npm-cache')?.status).toBe('fail')
+    expect(byName(results, 'npm-cache')?.detail).toContain('503')
+    expect(ok).toBe(false)
   })
 
   it('passes datapath when calico-node and netd are both rolled out', async () => {

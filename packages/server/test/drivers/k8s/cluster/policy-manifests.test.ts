@@ -91,6 +91,13 @@ describe('buildWorktreeEgressNpManifest', () => {
     expect(cidrs).toContain('10.244.93.192/32')
     expect(cidrs.every((c) => c === undefined || c.endsWith('/32'))).toBe(true)
   })
+
+  // Which worktrees may dial the npm cache is per project, so the
+  // install-wide policy grants it to none; the cache's own label-keyed
+  // policy does (npm-cache.test.ts).
+  it('grants no worktree the npm cache', () => {
+    expect(JSON.stringify(buildWorktreeEgressNpManifest(['10.89.0.7/32']))).not.toContain('yaac-npm-cache')
+  })
 })
 
 describe('buildProxyIngressNpManifest', () => {

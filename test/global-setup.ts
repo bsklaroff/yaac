@@ -224,9 +224,10 @@ export async function setup(): Promise<void> {
     }
     // The digest-pinned upstreams every install mirrors: registry:2 for
     // the per-project registries, netd's Envoy, the builder pods' podman,
-    // and the gVisor installer's curl. Pull-or-skip, then push. The last
-    // is unused by any e2e today — mirrored so a test that does exercise
-    // the installer fails on what it is testing, not a missing image.
+    // the gVisor installer's curl, and the npm cache's Verdaccio.
+    // Pull-or-skip, then push. The installer's curl is unused by any e2e
+    // today — mirrored so a test that does exercise the installer fails on
+    // what it is testing, not a missing image.
     await mirrorPinnedUpstreams()
     // --- The dev server (dist-test/) --- the k8s tiers no longer spawn a
     // host server: their server is a Deployment, exactly as an install's is

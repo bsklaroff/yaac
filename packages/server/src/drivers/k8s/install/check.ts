@@ -5,6 +5,7 @@ import {
   ensureBuilderImage,
   ensureNamespace,
   nodeIpBlocks,
+  servingNpmCacheUrl,
   vapAvailable,
 } from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
@@ -13,9 +14,12 @@ import path from 'node:path'
 import {
   GLOBAL_CLAIM_NAME,
   GVISOR_NODE_LABEL,
+  LABEL_NPM_CACHE,
   LABEL_WORKTREE_ID,
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
+  NPM_CACHE_APP_NAME,
+  NPM_CACHE_PORT,
   NODE_TASKSMAX_LIVE,
   NODE_TUNING_SYSCTLS,
   PROXY_APP_NAME,
@@ -273,8 +277,8 @@ export async function runClusterCheck(
   // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
   // prerequisites already failed)
   const PROBE_GATES = [
-    'node-fixups', 'node-local-mount', 'gvisor', 'node-tuning', 'probe', 'egress', 'datapath',
-    'veth-source',
+    'node-fixups', 'node-local-mount', 'gvisor', 'node-tuning', 'probe', 'egress', 'npm-cache',
+    'datapath', 'veth-source',
     ...MULTI_NODE_GATES,
     'nested-mount', 'storage-semantics', 'vap', 'runtime-stamp',
   ] as const
@@ -309,15 +313,19 @@ export async function runClusterCheck(
   // still runs first, so none of them can sit Pending to its timeout
   // waiting for a RuntimeClass that will never appear — which is the one
   // ordering that was ever load-bearing.
-  const [probeResult, egressResult, nestedMountResult, multiNodeResults, semanticsResult] = await Promise.all([
+  const [
+    probeResult, egressResult, npmCacheResult, nestedMountResult, multiNodeResults, semanticsResult,
+  ] = await Promise.all([
     runEndToEndProbe(),
     runNetworkPolicyProbe(),
+    runNpmCacheProbe(),
     runNestedMountProbe(),
     runMultiNodeReadiness(nodes, gvisorScheduling),
     runStorageSemanticsProbe(),
   ])
   add(probeResult)
   add(egressResult)
+  add(npmCacheResult)
 
   // 9. datapath: Calico enforcing + netd up. (No top-level relay gate:
   // the server reaches the relay through a kubectl port-forward, the same
@@ -1981,6 +1989,96 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       name: 'egress', status: 'fail',
       detail: `egress probe errored (${truncate(err)})`,
       fix: KIND_SETUP_FIX,
+    }
+  }
+}
+
+const NPM_CACHE_PROBE_POD_NAME = 'yaac-cluster-check-npm-cache'
+
+/** A small, long-published tarball, fetched with its packument the way
+ *  pnpm fetches one. */
+const NPM_CACHE_PROBE_PATHS = ['is-number', 'is-number/-/is-number-7.0.0.tgz']
+
+/** A function, like gvisorFix: it names the per-install namespace. */
+function npmCacheFix(): string {
+  return 'Re-run `yaac cluster install`, which deploys the npm cache. Inspect it with '
+    + `\`kubectl -n ${k8sNamespace()} get pods,pvc -l app=${NPM_CACHE_APP_NAME}\` and `
+    + `\`kubectl -n ${k8sNamespace()} logs deploy/${NPM_CACHE_APP_NAME}\`.`
+}
+
+/**
+ * The npm cache serves a worktree: a worktree-labelled pod on the gvisor
+ * tier, admitted to the cache as a project that uses it would be, fetches
+ * a packument and its tarball through the cache's Service — which proves
+ * the cache's worktree policies, its ingress wall, and its own route to
+ * npmjs in one go. Addressed by ClusterIP, as the
+ * egress probe addresses its targets, so the verdict does not hang on DNS.
+ *
+ * A cache with no ready pod — or none at all — is a warn, not a fail: a
+ * worktree created now is not pointed at it (`servingNpmCacheUrl`), and
+ * pnpm installs from npmjs, slower and nothing worse. A ready cache that
+ * does not serve IS a fail, because every new worktree installs through it.
+ */
+async function runNpmCacheProbe(): Promise<CheckResult> {
+  const ns = k8sNamespace()
+  try {
+    const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+      'get', 'service', NPM_CACHE_APP_NAME, '-n', ns,
+    ])
+    const ip = svc?.spec?.clusterIP
+    if (!ip || await servingNpmCacheUrl() === null) {
+      return {
+        name: 'npm-cache', status: 'warn',
+        detail: `${ip ? 'the npm cache has no ready pod' : 'no npm cache in this install'} `
+          + '— worktrees install from npmjs',
+        fix: npmCacheFix(),
+      }
+    }
+    const fetches = NPM_CACHE_PROBE_PATHS
+      .map((p) => `wget -q -T 60 -O /dev/null http://${ip}:${NPM_CACHE_PORT}/${p}`)
+      .join(' && ')
+    const { phase, logs } = await runPodToCompletion({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: {
+        name: NPM_CACHE_PROBE_POD_NAME,
+        namespace: ns,
+        // Labelled like a worktree of a project that uses the cache: the
+        // cache's own policies admit exactly those.
+        labels: { ...worktreeIdLabels('cluster-check-npm-cache-probe'), [LABEL_NPM_CACHE]: 'true' },
+      },
+      spec: {
+        restartPolicy: 'Never',
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
+        containers: [{
+          name: 'probe',
+          image: await pushImageToRegistry(PROBE_LOCAL_TAG),
+          command: ['sh', '-c', `(${fetches}) && echo NPM_CACHE_OK || echo NPM_CACHE_FAILED`],
+        }],
+      },
+    }, {
+      timeoutMs: 150_000,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
+    })
+    if (phase === 'Succeeded' && logs.includes('NPM_CACHE_OK')) {
+      return {
+        name: 'npm-cache', status: 'pass',
+        detail: `a session pod fetched a package through ${NPM_CACHE_APP_NAME}`,
+      }
+    }
+    return {
+      name: 'npm-cache', status: 'fail',
+      detail: `a session pod could not fetch a package through ${NPM_CACHE_APP_NAME} `
+        + `(phase ${phase}${logs.trim() ? `, logs: ${logs.trim().slice(0, 80)}` : ''}), `
+        + 'so every session\'s pnpm install fails',
+      fix: npmCacheFix(),
+    }
+  } catch (err) {
+    return {
+      name: 'npm-cache', status: 'fail',
+      detail: `npm cache probe errored (${truncate(err)})`,
+      fix: npmCacheFix(),
     }
   }
 }

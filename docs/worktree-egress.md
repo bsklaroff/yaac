@@ -1,8 +1,9 @@
 # Worktree egress
 
 Every worktree pod is default-denied and reaches the internet only through
-the yaac MITM proxy, which enforces a per-worktree allowlist. Two
-components make that true, with a deliberate split of responsibility:
+the yaac MITM proxy, which enforces a per-worktree allowlist — with one
+accepted exception for public npm packages, the install's npm cache (below).
+Two components make that true, with a deliberate split of responsibility:
 
 - **Calico** (pinned by checksum in `k8s/calico/`, installed by `yaac
   cluster install`) is the CNI and the policy engine. It enforces every
@@ -151,6 +152,30 @@ non-SSH remote — the same condition under which the server provisions
 The transport is TCP because a UNIX socket on a shared host directory only
 rendezvous between pods on one node; nothing here assumes the proxy and the
 worktree are co-scheduled.
+
+## The npm cache: an exception to the allowlist
+
+One more pod may be dialed directly: the install's npm cache
+(`drivers/k8s/cluster/npm-cache.ts`, docs/worktree-storage.md "Package
+installs"), on tcp/4873, which netd does not redirect. The cache fetches
+from `registry.npmjs.org` itself, not through the proxy, so what it serves
+reaches a worktree outside that worktree's allowlist.
+
+What bounds it: it is npm content coming **in**. What goes out is package
+names (and `npm audit` bodies) sent to npmjs; Verdaccio serves a tarball
+only from a URL its uplink's own metadata named, and it forwards no
+credentials upstream. Nothing can publish into it.
+
+Which worktrees may dial it is per project, so it is not in the
+install-wide worktree policy. The cache's own policies — egress from the
+worktree side, ingress on the cache — admit only worktree pods labelled
+`yaac.npm-cache`, which the server stamps at launch; a worktree pod holds no
+API credential, so it cannot label itself in. A pod gets the label unless
+its project sets `npmCache: false`, its allowlist leaves
+`registry.npmjs.org` out, or its project authenticates to npmjs through a
+proxied secret. Without it, the pod can neither dial the cache nor is
+pointed at it: its pnpm keeps npmjs, through the proxy like any other
+host.
 
 ## What the proxy is told, and how
 

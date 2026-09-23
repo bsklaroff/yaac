@@ -19,8 +19,9 @@
 #
 # Inputs (env, set by session-create): YAAC_TOOL, YAAC_GIT_NAME,
 # YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, for SSH-remote projects
-# YAAC_SSH_AGENT_UPSTREAM (+ SSH_AUTH_SOCK), and for nested-containers
-# sessions YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
+# YAAC_SSH_AGENT_UPSTREAM (+ SSH_AUTH_SOCK), for installs through the npm
+# cache YAAC_NPM_REGISTRY, and for nested-containers sessions
+# YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
 set -eu
 
 # Give the running uid the image's `yaac` identity, before anything that
@@ -124,6 +125,17 @@ git config --global user.name "$YAAC_GIT_NAME"
 git config --global user.email "$YAAC_GIT_EMAIL"
 git config --global --add safe.directory /workspace
 git config --global --add safe.directory /repo
+
+# The install's npm cache as the DEFAULT registry, at user-config
+# precedence: pnpm (10 and 11) and npm read ~/.npmrc below the project's own
+# .npmrc, so a project that names a registry of its own keeps it — which an
+# env var would override. Skipped when the image already names one. The
+# file is created here, owned by the pod's uid, for the reason
+# Dockerfile.default gives for keeping npm's prefix out of it.
+if [ -n "${YAAC_NPM_REGISTRY:-}" ] && ! grep -qs '^registry=' "$HOME/.npmrc"; then
+  printf 'registry=%s\n' "$YAAC_NPM_REGISTRY" >> "$HOME/.npmrc" \
+    || echo "yaac: could not write the npm cache into ~/.npmrc; installs go to npmjs" >&2
+fi
 
 # Open the tmux session with a placeholder keepalive (`sleep infinity`)
 # instead of the agent. The agent is respawned in by the server once the

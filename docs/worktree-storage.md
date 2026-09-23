@@ -326,3 +326,70 @@ the result to the row, so a settled worktree costs one file read a tick. Where
 the transcripts live per tool is `runtime/agents/transcripts.ts`. A worktree
 that died before capture parses its first conversation's transcript on demand
 from the stopped listing, and the result is persisted.
+
+## Package installs
+
+A worktree's installed packages — its `ephemeralModulesPaths`, `node_modules`
+by default — live and die with its runtime rather than in the shared checkout.
+`prepareModuleDirs` creates each one in the checkout and hands them to the
+driver as the spec's `moduleDirs`; the stop removes them from the checkout, and
+a restart's init commands reinstall.
+
+**Under k8s each module dir is its own pod-local volume**, an emptyDir the
+gVisor mount hints (`sentryTmpfsAnnotations`) turn into a sentry-internal
+tmpfs paged against a file in the emptyDir: node disk, not pinned memory, and
+link/stat traffic that never crosses the gofer. One volume per dir, never
+subPaths of one, because the hint keys on a whole volume's kubelet path. The
+volume goes with the pod — a worktree Job never restarts in place — and kubelet
+reclaims it as soon as the pod finishes. Each dir is capped at 8 GiB, and the
+pod's ephemeral-storage limit clears one dir's cap.
+
+pnpm's store is per pod too, set under both `pnpm_config_store_dir` and
+`npm_config_store_dir` (pnpm 11 reads only the first, a corepack-pinned pnpm
+10 only the second). It goes inside the root module dir,
+`/workspace/node_modules/.pnpm-store`, which puts it on the same mount as
+`node_modules/.pnpm`, so pnpm hardlinks rather than copies. A project whose
+module dirs leave out the root one gets a store on the pod's own disk instead,
+never in the checkout. In a pnpm workspace the nested module dirs hold only
+symlinks into the root one; module dirs that are independent installs (their
+own lockfiles) each hold a full copy — the store is on another mount — so a
+repo with several of them spends a copy per dir against the one-dir limit.
+
+A store shared between pods is not an option: pnpm 11 indexes the store in one
+SQLite database in WAL mode, which needs every writer on one kernel, and every
+pod is its own sandbox — worktrees installing at once corrupt it.
+
+A cold store per worktree makes every install a full fetch, so fetches go to
+the install's **npm cache** instead of the internet: one Verdaccio
+(`drivers/k8s/cluster/npm-cache.ts`). A package comes from npmjs once per
+cluster, and installs keep working while npmjs is slow or down. The cache is
+read-only to worktrees, and pnpm checks every tarball against the lockfile's
+integrity hash whoever served it.
+
+It is only ever the **default** registry. The init script writes it to the
+worktree's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`), which pnpm 10, 11
+and npm all read below a project's own `.npmrc` — so a project that names a
+registry there, for everything or for a scope, keeps it. That is also the
+opt-out: `registry=https://registry.npmjs.org/` in the project `.npmrc`, which a
+project authenticating to npmjs with a token in that file needs, since the
+cache fetches anonymously and so never serves private packages. A worktree
+cannot use the cache at all — it is neither pointed at it nor admitted by its
+NetworkPolicies — when its project sets `npmCache: false`, when its allowlist
+leaves `registry.npmjs.org` out (the cache fetches outside the proxy —
+docs/worktree-egress.md), or when its project authenticates to npmjs through
+a proxied secret.
+
+Whether a new worktree is pointed at the cache is read at each create, from
+whether a cache pod is ready: a cache that is down or rolling leaves new
+worktrees on npmjs, slower and nothing worse. A prewarmed spare is decided
+twice — at warm-up, and again when it is claimed, which rewrites the cache's
+line in its `~/.npmrc` to match the cache as it is then. A worktree already pointed at it
+fails its installs while it is down — it is one replica, so a rollout or a node
+drain waiting on its claim is such a window; the main registry has the same
+exposure for image pulls. Nothing prunes the cache, and any worktree can grow
+it by fetching public packages; on kind its claim is node disk with no quota.
+
+**Under containerless** the module dirs stay in the checkout, on the host's own
+disk, and every worktree of a project shares one pnpm store under
+`.cached-packages` — safe there because they are all processes on one kernel
+(docs/containerless-driver.md).

@@ -680,18 +680,54 @@ gate of `yaac cluster check` (`install/check.ts`) say when a kind node does
 not bind `<dataDir>/node-local` at `/var/lib/yaac/node/<hash>`. A tripwire
 about state, not a shim in the data path: kind writes extraMounts at
 create time, so a cluster created before the node-local one existed keeps
-its caches (pnpm stores, image stores, opencode working copies) on the
+its caches (package caches, image stores, opencode working copies) on the
 node container's own disk — correct, and lost with the node.
 
 **What it reads:** `podman exec <node> findmnt <path>`, on kind nodes only.
 
 **What breaks silently if it goes too early:** nothing. A user with an
-old cluster simply stops being told why their pnpm store is cold after
+old cluster simply stops being told why their node caches are cold after
 every podman-machine restart.
 
 **How to tell it is safe to remove:** when no kind cluster in use predates
 the mount, which `kubectl get nodes -o yaml` cannot say — a season after
 release.
+
+## The retired pnpm store and module dirs
+
+Under k8s a worktree's modules and its pnpm store live on its own pod-local
+volumes (docs/worktree-storage.md "Package installs"). Before that, every
+worktree of a project shared `<nodeLocal>/projects/<slug>/.cached-packages/
+pnpm-store` and kept its modules in `.cached-packages/modules/<worktreeId>/`,
+and a node an older server ran worktrees on still holds both. Two arms of
+the node-local sweep (`buildNodeLocalSweepScript`,
+`drivers/k8s/images/node-local-sweep.ts`, run from the `orphan-modules-gc`
+reconcile step) exist only for them.
+
+**The `.cached-packages/modules` arm.** It removes each `modules/<id>` whose
+worktree has no live pod — exactly the dirs nothing creates any more.
+
+- **What it reads:** `<nodeLocal>/projects/<slug>/.cached-packages/modules/*`.
+- **What breaks silently if it goes too early:** a stopped old worktree's
+  copy of its `node_modules` — a full copy each, since the store's hardlinks
+  never crossed into those mounts — stays on node disk forever.
+- **How to tell it is safe to remove:** no node has a
+  `.cached-packages/modules/` dir left under any project
+  (`ls /var/lib/yaac/node/*/projects/*/.cached-packages/`).
+
+**The `pnpm-store` removal.** It deletes a project's
+`.cached-packages/pnpm-store` once nothing under its top three levels has
+been written for a day (`LEGACY_PNPM_STORE_IDLE_MS`) — pnpm 11's index
+database and pnpm 10's per-prefix dirs among them — and keeps it whenever
+`find` cannot read the tree. The wait is for worktrees launched by an older
+server, which still point pnpm at the shared store and would fail an install
+that ran as it vanished.
+
+- **What it reads:** the mtimes of `pnpm-store` down to its third level.
+- **What breaks silently if it goes too early:** a dead store — 1.2 GB for
+  this repo — stays on every node that ran the project's worktrees.
+- **How to tell it is safe to remove:** as for the arm above, no node has a
+  `.cached-packages/pnpm-store` left. The two go together.
 
 ## The pre-split lock fallback in `readLock` / `removeLock`
 

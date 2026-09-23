@@ -3,6 +3,7 @@ import {
   ensureBuilderRoleGuard,
   ensureMainRegistry,
   ensureNetd,
+  ensureNpmCache,
   resetClusterCidrCache,
 } from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
@@ -225,6 +226,9 @@ export interface ClusterInstallDeps {
   /** Applies the netd DaemonSet (its images come from buildImages).
    *  Injectable for the same reason as ensureRegistry. */
   ensureNetd: () => Promise<void>
+  /** Stands the npm cache up (its image comes from buildImages).
+   *  Injectable for the same reason as ensureRegistry. */
+  ensureNpmCache: () => Promise<void>
   /** Builds and pushes every yaac-shipped image, and mirrors the pinned
    *  upstreams. The one step that needs a container engine — everything
    *  else here is kubectl and kind. Injectable for the same reason as
@@ -314,6 +318,7 @@ function defaultDeps(): ClusterInstallDeps {
     },
     ensureBuilderGuard: ensureBuilderRoleGuard,
     ensureNetd,
+    ensureNpmCache,
     buildImages: (log) => buildBuiltinImages({ log }),
     ensureGvisorRuntime: () => ensureGvisorRuntime(),
     ensurePriorityClasses,
@@ -456,6 +461,7 @@ export async function runClusterInstall(
   await buildImages(deps)
   await installGvisorRuntime(deps)
   await deployNetd(deps)
+  await deployNpmCache(deps)
   // Last, and only under adoption, because it needs netd on a node: netd is
   // hostNetwork and ships iproute2, so it is the node's own view of the
   // routing table.
@@ -1247,6 +1253,24 @@ async function deployNetd(deps: ClusterInstallDeps): Promise<void> {
       'note: could not deploy yaac-netd '
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
       + 'the server retries this when it next brings up the proxy.',
+    )
+  }
+}
+
+/**
+ * Stand up the npm cache worktrees install through. Fails soft: until it
+ * serves, the worktree env names no registry and pnpm goes to npmjs, which
+ * is slower and nothing worse — and `cluster check` says so.
+ */
+async function deployNpmCache(deps: ClusterInstallDeps): Promise<void> {
+  deps.log('Deploying the npm cache (Verdaccio)...')
+  try {
+    await deps.ensureNpmCache()
+  } catch (err) {
+    deps.log(
+      'note: could not deploy the npm cache '
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
+      + 'worktrees install from npmjs until a re-run of `yaac cluster install` succeeds.',
     )
   }
 }

@@ -226,7 +226,7 @@ only kind's provider breaks.
    folders, and a hostPath resolves on the *node*, so the bind is what
    makes the volume the host's bytes (docs/server-in-cluster.md "Storage
    is two claims"). And `<dataDir>/node-local` at the install's node path,
-   `/var/lib/yaac/node/<hash>`: the NODE-LOCAL tier — pnpm stores, image
+   `/var/lib/yaac/node/<hash>`: the NODE-LOCAL tier — package caches, image
    stores, opencode working copies — lives there, so on kind it is host
    disk and survives a cluster delete rather than dying with the node
    container. Both ride every node, so they hold wherever a worktree is
@@ -321,6 +321,15 @@ only kind's provider breaks.
    pulled to the *host* engine and side-loaded onto the node, which keeps
    the ~235 MB one-time rather than per-recreate. `k8s/calico/README.md`
    has the repin recipe.
+7. **The npm cache** — one Verdaccio (`yaac-npm-cache`) in the install
+   namespace, which every worktree's `pnpm install` goes through
+   (docs/worktree-storage.md "Package installs"). A Recreate Deployment of
+   one replica over an RWO claim, like the main registry; digest-pinned and
+   mirrored like Envoy. A new worktree is pointed at it only while a cache
+   pod is ready, so a cluster installed before the cache existed, or one
+   whose cache is down, leaves new worktrees' pnpm on npmjs. Install
+   carries on without it rather than failing — installs are slower without
+   it, nothing worse.
 
 ## Multi-node
 
@@ -532,7 +541,10 @@ upgrade.
 Each worktree container requests **250m cpu, 1Gi memory, 2Gi
 ephemeral-storage**, and is limited to **8 cores, 8Gi memory and 16Gi
 ephemeral-storage** (plus the podman graphroot's own volume cap on a
-nested-containers worktree, which kubelet charges to the same limit). Requests
+nested-containers worktree, which kubelet charges to the same limit). A
+worktree with module dirs (the default, `node_modules`) adds 2Gi to the
+ephemeral-storage request — the install it really holds — and one module
+dir's 9Gi volume cap to the limit. Requests
 are the scheduler's reservation and sit well under the limits: the node is
 deliberately overcommitted, the way many mostly-idle worktrees want.
 
@@ -606,7 +618,11 @@ gates sit beside it: `storage-semantics` runs the POSIX probe in
 locks, fsync, mmap, append, xattrs) against the claim from a sandboxed pod,
 naming any that fail — the same probes a cloud install's storage class is
 judged by; and `node-local-mount` says when a kind node does not bind
-`<dataDir>/node-local` at the install's node path. It ends with a sweep
+`<dataDir>/node-local` at the install's node path. `npm-cache` has a
+worktree-labelled pod fetch a package through the npm cache's Service: a
+warn when the install has no cache or no ready cache pod (new worktrees
+then install from npmjs), a fail when a ready one does not serve, since
+every new worktree installs through it. It ends with a sweep
 warning about any untrusted (worktree-labeled) pod running without a
 gvisor-tier `runtimeClassName`. Run it whenever worktrees fail to start.
 

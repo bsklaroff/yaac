@@ -337,6 +337,16 @@ export interface WorkspaceSpec {
   env: string[]
   /** Caller-decided mounts; the runtime appends its own. */
   mounts: WorkspaceMount[]
+  /**
+   * Directories inside the checkout, as the workspace sees them, that hold
+   * installed packages (`node_modules`): per workspace, rebuilt by its init
+   * commands, and never worth keeping past it. The caller has created each
+   * one in the checkout. How they are backed is the runtime's — along with
+   * where the workspace's package store goes, since a store only hardlinks
+   * into modules on the same filesystem — and a runtime whose checkout is
+   * already on local disk leaves them where they are.
+   */
+  moduleDirs: string[]
   resources: WorkspaceResources
   /** Argv run inside the workspace once its filesystem is up and before it
    *  is reported ready — the in-workspace setup the caller staged. */
@@ -1165,11 +1175,11 @@ export interface WorktreeDriver {
   destroyProjectSubstrate(projectSlug: string): Promise<void>
   /**
    * Collect the NODE-LOCAL leftovers of workspaces that are gone — the
-   * per-worktree ephemeral module dirs and working copies whose owner is
-   * not in `running` (live workspace ids, per project slug), on every node
-   * the runtime has. The global half of the same sweep is the caller's;
-   * this is the half that lives where the caller's filesystem may not
-   * reach. Throttled by the runtime, never by the caller; never rejects.
+   * per-worktree dirs and working copies whose owner is not in `running`
+   * (live workspace ids, per project slug), on every node the runtime has.
+   * The global half of the same sweep is the caller's; this is the half
+   * that lives where the caller's filesystem may not reach. Throttled by the
+   * runtime, never by the caller; never rejects.
    */
   reapNodeLocal(running: Map<string, Set<string>>): Promise<void>
 

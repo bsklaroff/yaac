@@ -81,7 +81,7 @@ import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import {
   adoptLegacyClaudeJson,
-  prepareEphemeralMounts,
+  prepareModuleDirs,
   seedClaudeJson,
   seedClaudeSettings,
 } from './seed'
@@ -293,7 +293,8 @@ const WORKTREE_RESOURCES: WorkspaceResources = {
   // and the pod-local scratch (the tmux socket dir, the ssh-agent socket
   // dir, and nested-only the graphroot). 2Gi covers the steady state; the
   // 16Gi ceiling is a blast-radius bound on a worktree filling the node's
-  // disk, not a budget anyone should hit.
+  // disk, not a budget anyone should hit. A pod's `moduleDirs` are its own
+  // volumes, and the k8s driver adds their budget on top of both.
   ephemeralStorageRequestBytes: 2 * 1024 ** 3,
   ephemeralStorageLimitBytes: 16 * 1024 ** 3,
 }
@@ -901,18 +902,13 @@ export async function createWorktree(
   // Directory) mounts on first attempt: the Job is applied while the
   // checkout below may still be running.
   await fs.mkdir(wtDir, { recursive: true })
-  // The ephemeral-module mounts land *inside* /workspace, so their targets
-  // are directories on the host worktree. Create them here — before either
+  // The ephemeral-module dirs land *inside* /workspace, so they are
+  // directories on the host worktree. Create them here — before either
   // provisioning leg starts — rather than leaving them to the pod: the pod
   // creates them root-owned 0700 whenever it happens to win the race with
   // the checkout, and either way the checkout must cope with a destination
   // that is not empty (see addWorktree, which is what makes that legal).
-  const ephemeralMounts = await prepareEphemeralMounts(
-    cachedPackagesDir(projectSlug),
-    worktreeId,
-    wtDir,
-    resolveEphemeralModulesPaths(config),
-  )
+  const moduleDirs = await prepareModuleDirs(wtDir, resolveEphemeralModulesPaths(config))
 
   // Record the worktree BEFORE anything is provisioned, so no pod can ever
   // exist without a row — a rowless pod is invisible to every path that
@@ -1450,19 +1446,26 @@ export async function createWorktree(
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
   // pnpm's content-addressed store, one per project rather than one per
-  // worktree: `.cached-packages` is mounted into every worktree, and
+  // worktree — on a host, where every worktree is a process on one disk.
+  // `.cached-packages` is linked into every worktree, and the checkout's
   // `node_modules` on the same filesystem hardlinks into it, so a worktree's
-  // dependencies cost their directory entries and nothing more. The image
-  // says the same thing as pnpm config; on a host there is no image, and a
-  // private HOME left to pnpm's default would hold a full store per worktree
-  // — a copy of every dependency that the checkout's hardlinked
-  // `node_modules` keeps alive after the HOME is torn down at stop. Under
-  // both names, because a host runs whatever pnpm is on its PATH: 11 reads
-  // `pnpm_config_` and ignores `npm_config_` for this key, and every 10.x
-  // does the reverse (probed 9.15 through 11.1). The image pins 11, where
-  // the env agrees with the rc and wins by the same value.
-  env.push(`pnpm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
-  env.push(`npm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
+  // dependencies cost their directory entries and nothing more; a private
+  // HOME left to pnpm's default would hold a full store per worktree — a
+  // copy of every dependency that the checkout's hardlinked `node_modules`
+  // keeps alive after the HOME is torn down at stop. Under both names,
+  // because a host runs whatever pnpm is on its PATH: 11 reads `pnpm_config_`
+  // and ignores `npm_config_` for this key, and every 10.x does the reverse
+  // (probed 9.15 through 11.1).
+  //
+  // Not under a pod, and that is WHETHER the feature applies: pnpm 11 keeps
+  // the store's index in one SQLite database in WAL mode, which needs every
+  // writer on one kernel, and every pod is its own sandbox — worktrees
+  // installing at once corrupt a shared one. A pod's runtime puts a store
+  // in each workspace's own module dirs instead (`moduleDirs`).
+  if (runtime.kind === 'containerless') {
+    env.push(`pnpm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
+    env.push(`npm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
+  }
 
   // Port forwarding: ask the runtime which host port each of the config's
   // ports is offered at, BEFORE the launch, because the answer is stamped
@@ -1535,8 +1538,8 @@ export async function createWorktree(
     // GLOBAL.
     { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
     { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
-    // NODE-LOCAL: the pnpm store hands out hardlinks, which can't cross a
-    // filesystem, and its link/stat traffic hates a network one.
+    // NODE-LOCAL: package-manager caches, whose link/stat traffic hates a
+    // network filesystem — and on a host, the project's pnpm store.
     {
       source: { kind: 'hostPath', path: cachedPackages },
       mountPath: CACHED_PACKAGES_CONTAINER_DIR,
@@ -1552,11 +1555,6 @@ export async function createWorktree(
     ...cacheVolumeEntries.map(([key, containerPath]): WorkspaceMount => ({
       source: { kind: 'hostPath', path: cacheVolumeDir(projectSlug, key) },
       mountPath: containerPath,
-    })),
-    // NODE-LOCAL: the ephemeral module dirs live under the pnpm store.
-    ...ephemeralMounts.map((m): WorkspaceMount => ({
-      source: { kind: 'hostPath', path: m.hostBacking },
-      mountPath: m.containerPath,
     })),
     // GLOBAL: server-staged trees (skills, worktree bin), written
     // host-side and read in-pod. The skills are mounted only where a mount
@@ -1588,6 +1586,7 @@ export async function createWorktree(
     ...(imageRef !== undefined ? { image: imageRef } : {}),
     env,
     mounts,
+    moduleDirs,
     resources: WORKTREE_RESOURCES,
     // In-worktree setup (git identity, tmux server + options, the agent
     // transport, the nested engine) runs from here, so the runtime can hold

@@ -477,6 +477,13 @@ export interface YaacConfig {
    * caps, tmpfs graphroot, shared image store).
    */
   nestedContainers?: boolean
+  /**
+   * Whether the project's worktrees may use the install's npm cache (k8s
+   * only): installs fetch through it by default, and a worktree of a
+   * project that sets this false can neither use nor reach it — its pnpm
+   * stays on npmjs, through the egress proxy. Unset → true.
+   */
+  npmCache?: boolean
   /** Either a flat string list (collapsed into a single `init` window) or
    *  a list of `InitCommandSpec` objects (one tmux window per entry).
    *  Mixing the two forms is rejected by the config parser. */
@@ -486,11 +493,12 @@ export interface YaacConfig {
   addAllowedUrls?: string[]
   setAllowedUrls?: string[]
   /**
-   * Paths (relative to /workspace) whose directory should be redirected
-   * to `.cached-packages/modules/<worktreeId>/<slotKey>` via a symlink,
-   * so package-manager writes don't land on the host worktree. Sharing
-   * a filesystem with pnpm-store keeps hardlinks across worktrees.
-   * Unset → `["node_modules"]`. Empty array disables the feature.
+   * Paths (relative to /workspace) of installed-package dirs that live
+   * and die with the worktree's runtime rather than in the shared checkout
+   * — a pod backs each with its own pod-local volume (and keeps its pnpm
+   * store inside the root one); a host worktree keeps them in its checkout.
+   * Removed at stop either way. Unset → `["node_modules"]`. Empty array
+   * disables the feature.
    */
   ephemeralModulesPaths?: string[]
   /**
