@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFile, spawn } from 'node:child_process'
+import http from 'node:http'
 import net from 'node:net'
 import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
@@ -443,6 +444,63 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     })
     const changes = await res.json() as { files: Array<{ path: string }> }
     expect(changes.files.map((f) => f.path)).toContain('NEW.md')
+  })
+
+  it('edits the checkout over HTTP: create, list, read, a stale save refused, then saved', async () => {
+    const api = (route: string, init: RequestInit = {}): Promise<Response> => fetch(
+      `${origin()}/worktree/${worktreeId}${route}`,
+      { ...init, headers: { ...authHeader(), 'content-type': 'application/json' } },
+    )
+    const put = (body: object): Promise<Response> => api('/file', { method: 'PUT', body: JSON.stringify(body) })
+
+    // A create is a save with no base; it makes the folders on the way.
+    const created = await put({ path: 'notes/todo.md', content: 'one\n', baseVersion: null })
+    expect(created.status).toBe(200)
+    const { version } = await created.json() as { version: string }
+    expect((await put({ path: '.gitignore', content: 'node_modules/\n', baseVersion: null })).status).toBe(200)
+    const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId)
+    await fs.mkdir(path.join(checkout, 'node_modules', 'pkg'), { recursive: true })
+    await fs.writeFile(path.join(checkout, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
+
+    const files = await (await api('/files')).json() as {
+      paths: string[]; ignored: string[]; status: Record<string, string>
+    }
+    expect(files.paths).toEqual(expect.arrayContaining(['README.md', 'notes/todo.md']))
+    expect(files.ignored).toContain('node_modules/')
+    expect(files.status['notes/todo.md']).toBe('untracked')
+
+    const read = await (await api('/file?path=notes/todo.md')).json() as { version: string; content: string }
+    expect(read).toMatchObject({ version, content: 'one\n' })
+
+    // Something else writes it; a save against the version read is refused
+    // with the version it has now, and nothing is overwritten.
+    await fs.writeFile(path.join(checkout, 'notes', 'todo.md'), 'theirs\n')
+    const stale = await put({ path: 'notes/todo.md', content: 'mine\n', baseVersion: version })
+    expect(stale.status).toBe(409)
+    const { version: current } = await stale.json() as { version: string }
+    expect(await fs.readFile(path.join(checkout, 'notes', 'todo.md'), 'utf8')).toBe('theirs\n')
+    expect((await put({ path: 'notes/todo.md', content: 'mine\n', baseVersion: current })).status).toBe(200)
+    expect(await fs.readFile(path.join(checkout, 'notes', 'todo.md'), 'utf8')).toBe('mine\n')
+    // A body far past the editable size is refused before it is buffered.
+    // Sent on a connection of its own: the server answers without reading
+    // the rest and drops the socket, which a pooled fetch would reuse.
+    const huge = await new Promise<number>((resolve, reject) => {
+      const req = http.request(`${origin()}/worktree/${worktreeId}/file`, {
+        method: 'PUT',
+        agent: false,
+        headers: { ...authHeader(), 'content-type': 'application/json' },
+      }, (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      })
+      req.on('error', reject)
+      req.end(JSON.stringify({ path: 'notes/todo.md', content: 'x'.repeat(3 * 1024 * 1024), baseVersion: current }))
+    })
+    expect(huge).toBe(413)
+
+    // The ignored folder expands through the folder route.
+    const dir = await (await api('/dir?path=node_modules')).json() as { entries: Array<{ name: string; dir: boolean }> }
+    expect(dir.entries).toEqual([{ name: 'pkg', dir: true }])
   })
 
   it('gives the worktree\'s own git the project\'s credential', async () => {
@@ -1026,6 +1084,12 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       expect((await listWorktrees()).map((w) => w.worktreeId)).not.toContain(worktreeId)
     }
   }, 60_000)
+
+  it('still reads the checkout\'s files once the worktree is stopped', async () => {
+    const res = await fetch(`${origin()}/worktree/${worktreeId}/file?path=notes/todo.md`, { headers: authHeader() })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ path: 'notes/todo.md', content: 'mine\n' })
+  })
 
   // And it really restarts — the assertion above used to stop at "the
   // checkout is still there", which is exactly where the defect hid: the

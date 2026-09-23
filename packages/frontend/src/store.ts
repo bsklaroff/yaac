@@ -1,7 +1,8 @@
 import { create } from 'zustand'
-import { addColumn, isWorkspace, singleColumn, withActive, type Workspace } from '#lib/layout'
+import { addColumn, isWorkspace, removeTarget, renameTargets, singleColumn, withActive, type Workspace } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
 import { CHANGES_TARGET } from '#lib/changesApi'
+import { FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '#lib/theme'
 import type { ErrorCode } from '@yaac/shared/errors'
@@ -361,9 +362,10 @@ export function persistLayouts(layouts: Record<string, Workspace | null>): void 
 }
 
 /**
- * Insert a special (non-terminal) pane — preview or changes — into a worktree's
- * workspace as a new equal-width column beside the existing panes; a workspace
- * already showing it is returned unchanged. Exported for tests.
+ * Insert a special (non-terminal) pane — preview, changes or the explorer —
+ * into a worktree's workspace as a new equal-width column beside the existing
+ * panes; a workspace already showing it is returned unchanged. Exported for
+ * tests.
  */
 export function injectPaneLeaf(base: Workspace | null, target: string): Workspace {
   return addColumn(base ?? singleColumn('agent'), target)
@@ -391,6 +393,26 @@ export function mergeProvisioning(
   return [...byId.values()].sort(
     (a, b) => a.createdAt.localeCompare(b.createdAt) || a.worktreeId.localeCompare(b.worktreeId),
   )
+}
+
+/**
+ * The view state of a pane that is torn down whenever it goes off-screen
+ * (Changes, the explorer), kept here so it survives that: which entries are
+ * expanded, where the list was scrolled, the filter, and — for the explorer
+ * — whether ignored files show. In memory only: a tab or worktree switch
+ * keeps it, a reload does not.
+ */
+export interface PaneView {
+  /** Missing means the pane has not loaded yet (Changes seeds it then). */
+  expanded?: string[]
+  scroll?: number
+  find?: string
+  showIgnored?: boolean
+}
+
+/** Which pane of which worktree a `paneView` entry belongs to. */
+export function paneViewKey(worktreeId: string, pane: string): string {
+  return `${worktreeId}|${pane}`
 }
 
 /** A terminal pane identity — a /pty/attach target:
@@ -531,6 +553,20 @@ interface UiState {
   openPreview: (worktreeId: string, containerPort?: number) => void
   /** Open/focus the changes (review-diff) pane for a worktree. */
   openChanges: (worktreeId: string) => void
+  /** Open/focus the file explorer for a worktree. */
+  openFiles: (worktreeId: string) => void
+  /** Open/focus the editor pane of one file (see `placeFile`). */
+  openFile: (worktreeId: string, path: string) => void
+  /** Open files with unsaved text, by `fileKey`. Each editor pane sets and
+   *  clears its own; the tab strip draws the dirty dot from it, and the page
+   *  guards unloading while any is set. */
+  dirtyFiles: Record<string, true>
+  setFileDirty: (worktreeId: string, path: string, dirty: boolean) => void
+  /** A file or folder was renamed: its open panes, and theirs under it,
+   *  follow it along with their dirty marks. */
+  renameFiles: (worktreeId: string, from: string, to: string) => void
+  /** Close the editor panes of these files. */
+  closeFiles: (worktreeId: string, paths: string[]) => void
   /** Whether the worktree sidebar is shown. Desktop only — the mobile shell
    *  gives the worktree list a screen of its own. */
   sidebarOpen: boolean
@@ -561,35 +597,17 @@ interface UiState {
   /** Per-worktree active terminal: the visible tab in tabs mode, the
    *  last-focused pane in tiles mode. Tab-switch shortcuts cycle from it. */
   activeTabs: Record<string, string>
-  /** Per-worktree set of expanded file paths in the Changes (review-diff)
-   *  pane. Kept in the store — not WorktreeChanges' local state — so the
-   *  accordion survives the pane being torn down off-screen on a tab or
-   *  worktree switch, the same way previewPort survives it. A missing key
-   *  means the pane hasn't loaded for that worktree yet: WorktreeChanges seeds
-   *  it by auto-opening the first file, so any existing entry (even empty) is
-   *  the user's own choice and no auto-open reapplies. */
-  changesExpanded: Record<string, string[]>
-  /** Replace a worktree's expanded-files set in the Changes pane. */
-  setChangesExpanded: (worktreeId: string, paths: string[]) => void
-  /** Per-worktree scroll offset of the Changes pane's file list, so returning
-   *  to the pane lands where the user left off. In-memory like
-   *  changesExpanded — it survives a tab/worktree switch, not a reload. */
-  changesScroll: Record<string, number>
-  /** Record a worktree's Changes-pane scroll offset. */
-  setChangesScroll: (worktreeId: string, scrollTop: number) => void
-  /** Per-worktree base branch the Changes pane diffs against. In-memory like
-   *  changesExpanded — survives a tab/worktree switch, not a reload. Absent = the
-   *  worktree's own fork base (@{upstream}), i.e. today's default. */
+  /** Per-worktree base branch the Changes pane diffs against. In-memory —
+   *  survives a tab/worktree switch, not a reload. Absent = the worktree's
+   *  own fork base (@{upstream}), i.e. today's default. */
   changesBase: Record<string, string>
   /** Set (or, with undefined, clear back to the default) a worktree's Changes
    *  base branch. */
   setChangesBase: (worktreeId: string, branch: string | undefined) => void
-  /** Per-worktree find query filtering the Changes pane's file list. In-memory
-   *  like changesExpanded — survives a tab/worktree switch, not a reload.
-   *  Absent = no filter. */
-  changesFind: Record<string, string>
-  /** Set (or, with '', clear) a worktree's Changes find query. */
-  setChangesFind: (worktreeId: string, query: string) => void
+  /** View state of the off-screen-torn-down panes, by `paneViewKey`. */
+  paneView: Record<string, PaneView>
+  /** Merge into a pane's view state. */
+  setPaneView: (key: string, patch: PaneView) => void
   /** Half-typed ACP messages, keyed by chatDraftKey(worktreeId,
    *  agentSessionId). Lives here — not in WorktreeChat's local state — because
    *  a chat pane is torn down whenever it goes off-screen, which would
@@ -608,12 +626,13 @@ interface UiState {
    *  the worktree alone: an agent session that goes inactive and comes back
    *  with the same id is the same conversation, and keeps its draft. */
   syncChatDrafts: (worktreeIds: string[]) => void
-  /** One-shot "focus the Changes find box" request, raised by the find-changes
-   *  shortcut alongside openChanges. The mounted WorktreeChanges pane consumes
-   *  it (focuses its input, then clears the flag), so a pane mounted later —
-   *  e.g. opened by the header button — never steals focus for a stale press. */
-  changesFindPending: boolean
-  setChangesFindPending: (pending: boolean) => void
+  /** One-shot "focus the filter box" request naming the pane (`changes` or
+   *  `files`), raised by the find-changes and open-files shortcuts alongside
+   *  opening it. The mounted pane consumes it (focuses its input, then clears
+   *  the request), so a pane mounted later — e.g. opened by the header button
+   *  — never steals focus for a stale press. */
+  findPending: string | null
+  setFindPending: (pane: string | null) => void
   /** Locally-initiated provisioning rows, shown the instant create/restart is
    *  clicked. The server snapshot's `provisioning[]` is the source of truth;
    *  these only bridge the gap until the first snapshot frame carries the id,
@@ -749,6 +768,17 @@ interface UiState {
   syncWaitingRead: (waiting: { worktreeId: string; waitingSinceMs: number }[]) => void
 }
 
+/** Open (or surface) a special pane as its own column, and focus it. */
+function openSpecialPane(s: UiState, worktreeId: string, target: string): Partial<UiState> {
+  const base = worktreeId in s.layouts ? s.layouts[worktreeId] : singleColumn('agent')
+  const injected = injectPaneLeaf(base, target)
+  return {
+    layouts: { ...s.layouts, [worktreeId]: withActive(injected, target) },
+    activeTabs: { ...s.activeTabs, [worktreeId]: target },
+    focusNonce: s.focusNonce + 1,
+  }
+}
+
 const initialSelection = loadSelection()
 
 export const useUiStore = create<UiState>((set) => ({
@@ -767,11 +797,10 @@ export const useUiStore = create<UiState>((set) => ({
   viewMode: loadViewMode(),
   pinnedUsageMetric: loadPinnedUsageMetric(),
   activeTabs: {},
-  changesExpanded: {},
-  changesScroll: {},
   changesBase: {},
-  changesFind: {},
-  changesFindPending: false,
+  paneView: {},
+  findPending: null,
+  dirtyFiles: {},
   chatDrafts: loadChatDrafts(),
   optimisticProvisioning: [],
   pendingDeleteIds: [],
@@ -880,11 +909,15 @@ export const useUiStore = create<UiState>((set) => ({
       focusNonce: s.focusNonce + 1,
     }
   }),
-  openChanges: (worktreeId) => set((s) => {
+  openChanges: (worktreeId) => set((s) => openSpecialPane(s, worktreeId, CHANGES_TARGET)),
+  openFiles: (worktreeId) => set((s) => openSpecialPane(s, worktreeId, FILES_TARGET)),
+  openFile: (worktreeId, path) => set((s) => {
+    const target = fileTarget(path)
     const base = worktreeId in s.layouts ? s.layouts[worktreeId] : singleColumn('agent')
+    const placed = placeFile(base ?? [], target, s.activeTabs[worktreeId])
     return {
-      layouts: { ...s.layouts, [worktreeId]: injectPaneLeaf(base, CHANGES_TARGET) },
-      activeTabs: { ...s.activeTabs, [worktreeId]: CHANGES_TARGET },
+      layouts: { ...s.layouts, [worktreeId]: withActive(placed, target) },
+      activeTabs: { ...s.activeTabs, [worktreeId]: target },
       focusNonce: s.focusNonce + 1,
     }
   }),
@@ -915,29 +948,56 @@ export const useUiStore = create<UiState>((set) => ({
       ? s
       : { activeTabs: { ...s.activeTabs, [worktreeId]: target } }
   )),
-  setChangesExpanded: (worktreeId, paths) => set((s) => ({
-    changesExpanded: { ...s.changesExpanded, [worktreeId]: paths },
-  })),
-  setChangesScroll: (worktreeId, scrollTop) => set((s) => (
-    s.changesScroll[worktreeId] === scrollTop
-      ? s
-      : { changesScroll: { ...s.changesScroll, [worktreeId]: scrollTop } }
-  )),
   setChangesBase: (worktreeId, branch) => set((s) => {
     const next = { ...s.changesBase }
     if (branch) next[worktreeId] = branch
     else delete next[worktreeId]
     return { changesBase: next }
   }),
-  setChangesFind: (worktreeId, query) => set((s) => {
-    const next = { ...s.changesFind }
-    if (query) next[worktreeId] = query
-    else delete next[worktreeId]
-    return { changesFind: next }
+  setPaneView: (key, patch) => set((s) => {
+    const cur = s.paneView[key] ?? {}
+    const next = { ...cur, ...patch }
+    const same = (Object.keys(patch) as Array<keyof PaneView>).every((k) => cur[k] === next[k])
+    return same ? s : { paneView: { ...s.paneView, [key]: next } }
   }),
-  setChangesFindPending: (pending) => set((s) => (
-    s.changesFindPending === pending ? s : { changesFindPending: pending }
-  )),
+  setFindPending: (pane) => set((s) => (s.findPending === pane ? s : { findPending: pane })),
+  setFileDirty: (worktreeId, path, dirty) => set((s) => {
+    const key = fileKey(worktreeId, path)
+    if ((s.dirtyFiles[key] === true) === dirty) return s
+    const next = { ...s.dirtyFiles }
+    if (dirty) next[key] = true
+    else delete next[key]
+    return { dirtyFiles: next }
+  }),
+  renameFiles: (worktreeId, from, to) => set((s) => {
+    const cur = worktreeId in s.layouts ? s.layouts[worktreeId] : null
+    const layout = cur && renameTargets(cur, fileTarget(from), fileTarget(to))
+    const renamed = (key: string): string => {
+      const prefix = fileKey(worktreeId, from)
+      return key === prefix || key.startsWith(`${prefix}/`) ? fileKey(worktreeId, to) + key.slice(prefix.length) : key
+    }
+    const dirtyFiles = Object.fromEntries(Object.keys(s.dirtyFiles).map((k) => [renamed(k), true as const]))
+    const active = s.activeTabs[worktreeId]
+    const activeTabs = active === undefined ? s.activeTabs : {
+      ...s.activeTabs,
+      [worktreeId]: renameTargets([{ tabs: [active], active }], fileTarget(from), fileTarget(to))[0].active,
+    }
+    return {
+      dirtyFiles,
+      activeTabs,
+      ...(layout && layout !== cur ? { layouts: { ...s.layouts, [worktreeId]: layout } } : {}),
+    }
+  }),
+  closeFiles: (worktreeId, paths) => set((s) => {
+    let layout = worktreeId in s.layouts ? s.layouts[worktreeId] : null
+    for (const p of paths) layout = layout && removeTarget(layout, fileTarget(p))
+    const dirtyFiles = { ...s.dirtyFiles }
+    for (const p of paths) delete dirtyFiles[fileKey(worktreeId, p)]
+    return {
+      dirtyFiles,
+      ...(layout ? { layouts: { ...s.layouts, [worktreeId]: layout } } : {}),
+    }
+  }),
   setChatDraft: (worktreeId, agentSessionId, text) => set((s) => {
     const key = chatDraftKey(worktreeId, agentSessionId)
     const cur = s.chatDrafts[key]
@@ -1089,6 +1149,12 @@ useUiStore.subscribe((state, prev) => {
 // a hidden `visibilitychange` is the one browsers reliably deliver. Flushing on
 // both costs nothing — the second firing finds nothing unwritten.
 if (typeof window !== 'undefined') {
+  // Unsaved editor text holds the page. With autosave that is only the last
+  // second of typing (a save in flight included — a file is dirty until its
+  // save lands), a paused conflict, or a failing save.
+  window.addEventListener('beforeunload', (e) => {
+    if (Object.keys(useUiStore.getState().dirtyFiles).length > 0) e.preventDefault()
+  })
   window.addEventListener('pagehide', flushChatDrafts)
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushChatDrafts()

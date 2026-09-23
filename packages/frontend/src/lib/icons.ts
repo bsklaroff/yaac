@@ -59,6 +59,17 @@ export {
   Sparkles as SkillsIcon,
   Server as ServerIcon,
   Plug as PortIcon,
+  FolderTree as FilesIcon,
+  Folder as FolderIcon,
+  FolderOpen as FolderOpenIcon,
+  File as FileIcon,
+  FilePen as OpenFileIcon,
+  FilePlus as NewFileIcon,
+  FolderPlus as NewFolderIcon,
+  Eye as ShowIcon,
+  EyeOff as HideIcon,
+  Link2 as SymlinkIcon,
+  Save as SaveIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

@@ -4,6 +4,7 @@ import simpleGit from 'simple-git'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { gitEnvForCredential, injectTokenIntoUrl, torEnv } from './transport'
 import type { ResolvedGitCredential } from './transport'
+import type { FileStatus } from '@yaac/shared/types'
 
 /**
  * Git operations against a project's clone and the worktrees cut from it —
@@ -247,4 +248,94 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
   } finally {
     await fs.rm(stagingRoot, { recursive: true, force: true })
   }
+}
+
+/** What `listCheckoutFiles` reads off a worktree's checkout. */
+export interface CheckoutListing {
+  /** Tracked and untracked files, gitignore-aware, minus those deleted from
+   *  disk. */
+  paths: string[]
+  /** Ignored files, and each wholly ignored folder as one `dir/` entry. */
+  ignored: string[]
+  /** Untracked folders, each collapsed to one entry without its trailing
+   *  slash — the only record git keeps of a folder holding no file. */
+  untrackedDirs: string[]
+  status: Record<string, FileStatus>
+}
+
+/**
+ * The file list of a worktree's checkout, read from the server's own view of
+ * it.
+ *
+ * Both halves are named explicitly because the checkout's `.git` file names
+ * the admin dir as the POD sees it (`/repo/.git/worktrees/<id>`, rewritten
+ * by the in-pod setup), which means nothing here; the admin dir's own
+ * `commondir` is the relative `../..`, so naming it is enough to reach the
+ * shared repo. `core.fsmonitor` is pinned off because the repo's config is
+ * the agent's to write, and a configured fsmonitor is a command git runs.
+ *
+ * Nothing here writes. `ls-files` never does, and `status` runs with
+ * `--no-optional-locks` so its opportunistic index refresh is never written
+ * back: a write to the worktree's index from outside the pod is a lock the
+ * in-pod git can collide with, and a replaced inode under the VM's cached
+ * view (see `addWorktree`'s `--no-track` note). Comparing only mtime and
+ * size keeps a clean file clean even though in-pod git wrote the index's
+ * stat data through a different mount, where inode and device numbers need
+ * not match.
+ */
+export async function listCheckoutFiles(
+  repoPath: string,
+  worktreeId: string,
+  worktreePath: string,
+): Promise<CheckoutListing> {
+  // fsmonitor is refused by simple-git's unsafe-argument guard whatever the
+  // value; pinning it OFF is the safe direction, so the guard is lifted.
+  const git = simpleGit({ baseDir: worktreePath, unsafe: { allowUnsafeFsMonitor: true } })
+  const base = [
+    '-c', 'core.fsmonitor=false',
+    `--git-dir=${path.join(repoPath, '.git', 'worktrees', worktreeId)}`,
+    `--work-tree=${worktreePath}`,
+  ]
+  const run = async (args: string[]): Promise<string[]> =>
+    (await git.raw([...base, ...args])).split('\0').filter((p) => p !== '')
+  const [listed, deleted, ignored, untrackedDirs, status] = await Promise.all([
+    run(['ls-files', '-z', '--cached', '--others', '--exclude-standard']),
+    run(['ls-files', '-z', '--deleted']),
+    run(['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory']),
+    run(['ls-files', '-z', '--others', '--exclude-standard', '--directory']),
+    run([
+      '-c', 'core.checkStat=minimal', '-c', 'core.trustctime=false', '--no-optional-locks',
+      'status', '--porcelain=v1', '-z', '--untracked-files=all',
+    ]),
+  ])
+  const gone = new Set(deleted)
+  return {
+    // A file both tracked and modified is listed once per index stage when
+    // conflicted, so the list is deduplicated too.
+    paths: [...new Set(listed)].filter((p) => !gone.has(p)),
+    ignored,
+    untrackedDirs: untrackedDirs.filter((p) => p.endsWith('/')).map((p) => p.slice(0, -1)),
+    status: parsePorcelainStatus(status),
+  }
+}
+
+/**
+ * Map `status --porcelain=v1 -z` entries to one `FileStatus` per path.
+ * Staged and unstaged are not told apart, and a deletion is dropped: the
+ * explorer only colors files that exist.
+ */
+function parsePorcelainStatus(entries: string[]): Record<string, FileStatus> {
+  const out: Record<string, FileStatus> = {}
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]
+    const [x, y, file] = [entry[0], entry[1], entry.slice(3)]
+    // A rename or copy is followed by its source path as its own entry.
+    if (x === 'R' || x === 'C') i++
+    if (x === 'U' || y === 'U' || (x === 'A' && y === 'A') || (x === 'D' && y === 'D')) out[file] = 'conflicted'
+    else if (x === '?') out[file] = 'untracked'
+    else if (y === 'D') continue
+    else if (x === 'A' || x === 'R' || x === 'C' || y === 'A') out[file] = 'added'
+    else if (x === 'M' || y === 'M' || x === 'T' || y === 'T') out[file] = 'modified'
+  }
+  return out
 }

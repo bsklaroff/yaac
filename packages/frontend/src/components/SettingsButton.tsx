@@ -51,9 +51,7 @@ import type { ThemePref } from '#lib/theme'
 import type { AgentTool, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 import { useSnapshot } from '#lib/useSnapshot'
-
-// iPadOS reports as "Macintosh" in modern Safari; both want the ⌘/⌥ glyphs.
-const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
+import { IS_MAC } from '#lib/platform'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 

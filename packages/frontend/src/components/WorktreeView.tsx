@@ -7,8 +7,13 @@ import { WorktreeTerminal } from '#components/WorktreeTerminal'
 import { WorktreePreview } from '#components/WorktreePreview'
 import { WorktreeChanges } from '#components/WorktreeChanges'
 import { WorktreeChat } from '#components/WorktreeChat'
+import { WorktreeFiles } from '#components/WorktreeFiles'
+import { WorktreeFile } from '#components/WorktreeFile'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
 import { isChangesTarget } from '#lib/changesApi'
+import {
+  discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isFileTarget, isFilesTarget,
+} from '#lib/files'
 import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
 import { acpPaneTargets, defaultPaneTarget, paneStillLive } from '#lib/panes'
 import { agentLabel } from '#lib/agentLabel'
@@ -20,7 +25,7 @@ import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import {
-  AddIcon, ChangesIcon, CloseIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
+  AddIcon, ChangesIcon, CloseIcon, FilesIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
   TerminalIcon, TilesIcon, TOOL_LABEL,
 } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -92,15 +97,20 @@ interface DragState {
  *
  * `worktree` is absent on the paths that only ever name a terminal (the
  * kill-confirm chord), where the fallback is unreachable rather than wrong.
+ * A file pane is named by `fileLabels` (see `fileTabLabels`), falling back
+ * to its path.
  */
 function paneName(
   target: string,
   terminals: WorktreeTerminalEntry[] | undefined,
   previewPort?: number,
   worktree?: WorktreeListEntry,
+  fileLabels?: Record<string, string>,
 ): string {
   if (isPreviewTarget(target)) return previewLabel(previewPort)
   if (isChangesTarget(target)) return 'Changes'
+  if (isFilesTarget(target)) return 'Files'
+  if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
   if (target === 'agent' || isAcpTarget(target)) {
     const sessions = worktree?.agentSessions ?? []
     const session = isAcpTarget(target)
@@ -114,7 +124,8 @@ function paneName(
 
 /**
  * Special (non-terminal) panes: kept out of the tmux-window sync, closed
- * without a kill-confirm.
+ * without a kill-confirm (a file pane saves first, and asks only when that
+ * cannot land).
  *
  * An ACP conversation is special in the same way even though it *does* have a
  * tmux window behind it — the window runs acpd, not a TUI, so attaching a PTY
@@ -123,7 +134,8 @@ function paneName(
  * by window id like a terminal.
  */
 function isSpecialPane(target: string): boolean {
-  return isPreviewTarget(target) || isChangesTarget(target) || isAcpTarget(target)
+  return isPreviewTarget(target) || isChangesTarget(target) || isFilesTarget(target)
+    || isFileTarget(target) || isAcpTarget(target)
 }
 
 export function WorktreeView({
@@ -149,6 +161,8 @@ export function WorktreeView({
   const setPreviewPort = useUiStore((s) => s.setPreviewPort)
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
+  const openFiles = useUiStore((s) => s.openFiles)
+  const dirtyFiles = useUiStore((s) => s.dirtyFiles)
   // On a phone this pane is a screen of its own: back replaces the sidebar
   // toggle, the header's control cluster folds into an overflow menu, and
   // tiles mode is off the table (docs/mobile-layout.md).
@@ -306,6 +320,20 @@ export function WorktreeView({
     })
   }, [worktrees])
 
+  // A file pane whose target left its worktree's layout — a rename moved it,
+  // a delete closed it — is dropped the same way: it has nothing to show.
+  useEffect(() => {
+    setOpened((prev) => {
+      const next = prev.filter((key) => {
+        const target = keyTarget(key)
+        if (!isFileTarget(target)) return true
+        const id = key.slice(0, key.indexOf('|'))
+        return !(id in layouts) || paneTargets(layouts[id]).includes(target)
+      })
+      return next.length === prev.length ? prev : next
+    })
+  }, [layouts])
+
   // A pane stays mounted until its worktree goes — or, for the agent-side
   // targets, until the worktree stops having it. The prune above is what makes
   // that permanent; this is what makes it immediate.
@@ -394,16 +422,19 @@ export function WorktreeView({
   // Pane (x) / Alt+W → confirm → kill the tmux window (and whatever runs
   // in it).
   const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
+  // A file pane whose unsaved text could not be saved on close.
+  const [confirmDiscard, setConfirmDiscard] = useState<{ target: string; name: string } | null>(null)
 
   // Workspace shortcuts (all rebindable — these are the defaults): Alt+H/Alt+L
   // cycle terminals left/right and Alt+Shift+H/Alt+Shift+L move the active one
   // (its window in tiles mode) — the webapp-level replacement for tmux's prefix
   // bindings (webapp panes run with `prefix None`) — Alt+S opens a new scratch
   // shell, Alt+C opens the changes pane (Alt+F opens it and focuses its find
-  // box), Alt+P opens the preview pane, Alt+,/Alt+. switch the tabbed/window
-  // view, and Alt+W kills the active terminal through the same confirm dialog
-  // as the pane × (Alt+N, new worktree, and Alt+K/Alt+J, worktree cycle, live in
-  // App's Workspace, which owns project scope). Captured on window so the chord
+  // box), Alt+E opens the file tree and focuses its filter, Alt+P opens the
+  // preview pane, Alt+,/Alt+. switch the tabbed/window view, and Alt+W kills
+  // the active terminal through the same confirm dialog as the pane × (Alt+N,
+  // new worktree, and Alt+K/Alt+J, worktree cycle, live in App's Workspace,
+  // which owns project scope). Captured on window so the chord
   // is swallowed before xterm's textarea handler could forward it to the PTY;
   // the ref keeps the single listener reading the current render's state.
   const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell, previewPorts, isMobile })
@@ -429,11 +460,9 @@ export function WorktreeView({
           if (!ctx.activeTab || ctx.activeTab === 'agent') return
           e.preventDefault()
           e.stopPropagation()
-          // A preview/changes pane just closes (no tmux window, no confirm).
+          // A special pane just closes (no tmux window, no confirm).
           if (isSpecialPane(ctx.activeTab)) {
-            const st = useUiStore.getState()
-            const cur = ctx.sid in st.layouts ? st.layouts[ctx.sid] : null
-            if (cur) st.setWorktreeLayout(ctx.sid, removeTarget(cur, ctx.activeTab))
+            closePaneRef.current(ctx.activeTab)
             return
           }
           setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
@@ -445,7 +474,15 @@ export function WorktreeView({
           e.preventDefault()
           e.stopPropagation()
           state.openChanges(ctx.sid)
-          state.setChangesFindPending(true)
+          state.setFindPending('changes')
+          return
+        case 'open-files':
+          // Open (or surface) the explorer and focus its filter — the
+          // quick-open: Alt+E, a few letters, Enter.
+          e.preventDefault()
+          e.stopPropagation()
+          state.openFiles(ctx.sid)
+          state.setFindPending('files')
           return
         case 'open-changes':
           e.preventDefault()
@@ -528,13 +565,31 @@ export function WorktreeView({
       .finally(refetchTerminals)
   }
 
-  // Close a special (preview/changes) pane: just drop the leaf — there's no
-  // tmux window to kill, and no confirm (both are cheap to reopen).
-  const closePane = (target: string): void => {
-    if (!sid || !layout) return
-    setWorktreeLayout(sid, removeTarget(layout, target))
-    setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
+  // Close a special pane: just drop the leaf — there's no tmux window to
+  // kill, and no confirm (all are cheap to reopen). A file pane first saves
+  // what it holds, closing once that lands; only a save that cannot land (a
+  // paused conflict, a failing save) asks before its text is thrown away.
+  const dropPane = (id: string, target: string): void => {
+    if (isFileTarget(target)) discardFileSavers([fileKey(id, fileTargetPath(target))])
+    const st = useUiStore.getState()
+    const cur = id in st.layouts ? st.layouts[id] : null
+    if (cur) st.setWorktreeLayout(id, removeTarget(cur, target))
+    setOpened((prev) => prev.filter((k) => k !== `${id}|${target}`))
   }
+  const closePane = (target: string): void => {
+    if (!sid) return
+    if (!isFileTarget(target)) {
+      dropPane(sid, target)
+      return
+    }
+    const id = sid
+    void flushFileSavers([fileKey(id, fileTargetPath(target))]).then((landed) => {
+      if (landed) dropPane(id, target)
+      else setConfirmDiscard({ target, name: fileTargetPath(target) })
+    })
+  }
+  const closePaneRef = useRef(closePane)
+  closePaneRef.current = closePane
 
   // --- tab drag (rearrange columns / merge into tabs) ---
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -612,56 +667,64 @@ export function WorktreeView({
         })()
       : null
 
+  const fileLabels = fileTabLabels(targets.filter(isFileTarget).map(fileTargetPath))
+  const tabName = (t: string): string => paneName(t, terminals, previewPortForWorktree, worktree, fileLabels)
+
   /** A tab in a column strip (tiles) or the single tab bar (tabs). Draggable
    *  tabs double as click targets — see onTabDown. */
   const renderTab = (
     t: string,
     opts: { isActive: boolean; onSelect: () => void; draggable: boolean },
-  ): JSX.Element => (
-    <span key={t} className="group/tab relative flex items-center">
-      <button
-        onPointerDown={opts.draggable ? (e) => onTabDown(e, t, opts.onSelect) : undefined}
-        onClick={opts.draggable ? undefined : opts.onSelect}
-        className={clsx(
-          'rounded px-2 py-0.5 text-[11px] transition',
-          // Finger-sized on touch — with tiles mode off, this strip is the
-          // only way to move between a worktree's panes.
-          'max-md:h-8 max-md:rounded-md max-md:px-3 max-md:text-xs',
-          opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
-          t !== 'agent' && 'pr-5 max-md:pr-7',
-          drag?.active && drag.src === t && 'opacity-60',
-          opts.isActive
-            ? 'bg-surface-3 font-medium text-text'
-            : 'text-text-faint hover:text-text-dim',
+  ): JSX.Element => {
+    const dirty = sid !== null && isFileTarget(t) && dirtyFiles[fileKey(sid, fileTargetPath(t))] === true
+    return (
+      <span key={t} className="group/tab relative flex items-center">
+        <button
+          onPointerDown={opts.draggable ? (e) => onTabDown(e, t, opts.onSelect) : undefined}
+          onClick={opts.draggable ? undefined : opts.onSelect}
+          className={clsx(
+            'rounded px-2 py-0.5 text-[11px] transition',
+            // Finger-sized on touch — with tiles mode off, this strip is the
+            // only way to move between a worktree's panes.
+            'max-md:h-8 max-md:rounded-md max-md:px-3 max-md:text-xs',
+            opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
+            t !== 'agent' && 'pr-5 max-md:pr-7',
+            drag?.active && drag.src === t && 'opacity-60',
+            opts.isActive
+              ? 'bg-surface-3 font-medium text-text'
+              : 'text-text-faint hover:text-text-dim',
+          )}
+        >
+          {tabName(t)}
+        </button>
+        {isSpecialPane(t) ? (
+          // A file with unsaved text shows a dot in place of the × until hovered.
+          <button
+            onClick={() => closePane(t)}
+            title={dirty ? 'Unsaved changes — close' : 'Close pane'}
+            aria-label={`Close ${tabName(t)}`}
+            className={clsx('absolute right-0.5 flex h-4 w-4 items-center justify-center rounded',
+              'text-text-faint transition hover:text-text group-hover/tab:opacity-100',
+              'max-md:h-6 max-md:w-6 max-md:opacity-100', !dirty && 'opacity-0')}
+          >
+            {dirty && <span className="text-[9px] group-hover/tab:hidden">●</span>}
+            <CloseIcon size={10} className={clsx(dirty && 'hidden group-hover/tab:block')} />
+          </button>
+        ) : t !== 'agent' && (
+          <button
+            onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
+            title={`Kill ${paneName(t, terminals)}`}
+            aria-label={`Kill ${paneName(t, terminals)}`}
+            className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+              text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100
+              max-md:h-6 max-md:w-6 max-md:opacity-100"
+          >
+            <CloseIcon size={10} />
+          </button>
         )}
-      >
-        {paneName(t, terminals, previewPortForWorktree, worktree)}
-      </button>
-      {isSpecialPane(t) ? (
-        <button
-          onClick={() => closePane(t)}
-          title="Close pane"
-          aria-label={`Close ${paneName(t, terminals, previewPortForWorktree, worktree)}`}
-          className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
-            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100
-            max-md:h-6 max-md:w-6 max-md:opacity-100"
-        >
-          <CloseIcon size={10} />
-        </button>
-      ) : t !== 'agent' && (
-        <button
-          onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
-          title={`Kill ${paneName(t, terminals)}`}
-          aria-label={`Kill ${paneName(t, terminals)}`}
-          className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
-            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100
-            max-md:h-6 max-md:w-6 max-md:opacity-100"
-        >
-          <CloseIcon size={10} />
-        </button>
-      )}
-    </span>
-  )
+      </span>
+    )
+  }
 
   /** The header's leading affordance. On a phone this pane is a screen of its
    *  own, so it is the back chevron to the worktree list; on desktop it is the
@@ -752,6 +815,16 @@ export function WorktreeView({
                 <ChangesIcon size={13} />
                 Changes
               </button>
+              <button
+                onClick={() => openFiles(worktree.worktreeId)}
+                title="Browse files"
+                aria-label="Browse files"
+                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+                  text-text-dim transition hover:bg-surface-2 hover:text-text"
+              >
+                <FilesIcon size={13} />
+                Files
+              </button>
               {embedPreview && previewPorts.length > 0 && (
                 <button
                   onClick={() => openPreview(worktree.worktreeId, previewPorts[0].containerPort)}
@@ -795,6 +868,7 @@ export function WorktreeView({
               previewPorts={embedPreview ? previewPorts : []}
               onNewShell={() => openShell()}
               onOpenChanges={() => openChanges(worktree.worktreeId)}
+              onOpenFiles={() => openFiles(worktree.worktreeId)}
               onOpenPreview={(p) => openPreview(worktree.worktreeId, p)}
             />
           ) : (
@@ -892,6 +966,8 @@ export function WorktreeView({
           const target = key.slice(sep + 1)
           const preview = isPreviewTarget(target)
           const changes = isChangesTarget(target)
+          const explorer = isFilesTarget(target)
+          const file = isFileTarget(target)
           const chat = acpTargetSession(target)
           // Which panes are unmounted the moment they leave the screen. A
           // preview/changes pane polls the pod, so a hidden one is pure cost.
@@ -900,8 +976,10 @@ export function WorktreeView({
           // whole conversation replayed in `hello`, which on a slow link is
           // seconds of "Connecting to the agent…"). So it is laid out like a
           // terminal instead: kept mounted at a frozen rect and merely
-          // invisible, which makes a switch back a pure visibility flip.
-          const ephemeral = preview || changes
+          // invisible, which makes a switch back a pure visibility flip. A file
+          // pane is kept mounted for the same reason and more: unmounting it
+          // would throw away its undo history, cursor and unsaved text.
+          const ephemeral = preview || changes || explorer
           // In tiles mode a pane is on-screen when it's the active tab of its
           // column; its rect is that column's body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
@@ -970,6 +1048,19 @@ export function WorktreeView({
                 <div className="h-full w-full overflow-hidden rounded-md">
                   <WorktreeChat worktreeId={id} agentSessionId={chat} visible={onScreen} />
                 </div>
+              ) : file ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <WorktreeFile
+                    worktreeId={id}
+                    path={fileTargetPath(target)}
+                    visible={onScreen}
+                    onClose={() => dropPane(id, target)}
+                  />
+                </div>
+              ) : explorer ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <WorktreeFiles worktreeId={id} />
+                </div>
               ) : changes ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
                   {(() => {
@@ -1035,6 +1126,17 @@ export function WorktreeView({
       {keyBarTarget && sid && <TerminalKeyBar worktreeId={sid} target={keyBarTarget} />}
 
       <ConfirmDialog
+        open={!!confirmDiscard}
+        onOpenChange={(next) => { if (!next) setConfirmDiscard(null) }}
+        title={`Discard unsaved changes to “${confirmDiscard?.name ?? ''}”?`}
+        description="They could not be saved: the file changed or was deleted on disk, or saving is failing."
+        confirmLabel="Discard"
+        onConfirm={() => {
+          if (confirmDiscard && sid) dropPane(sid, confirmDiscard.target)
+          setConfirmDiscard(null)
+        }}
+      />
+      <ConfirmDialog
         open={!!confirmKill}
         onOpenChange={(next) => { if (!next) setConfirmKill(null) }}
         title={`Kill terminal “${confirmKill?.name ?? ''}”?`}
@@ -1063,6 +1165,7 @@ function PaneOverflowMenu({
   previewPorts,
   onNewShell,
   onOpenChanges,
+  onOpenFiles,
   onOpenPreview,
 }: {
   tool: WorktreeListEntry['tool']
@@ -1072,6 +1175,7 @@ function PaneOverflowMenu({
   previewPorts: WorktreeListEntry['forwardedPorts']
   onNewShell: () => void
   onOpenChanges: () => void
+  onOpenFiles: () => void
   onOpenPreview: (containerPort: number) => void
 }): JSX.Element {
   const ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2 py-2 text-xs '
@@ -1098,6 +1202,10 @@ function PaneOverflowMenu({
             <Menu.Item className={ITEM} onClick={onOpenChanges}>
               <ChangesIcon size={14} />
               Review changes
+            </Menu.Item>
+            <Menu.Item className={ITEM} onClick={onOpenFiles}>
+              <FilesIcon size={14} />
+              Browse files
             </Menu.Item>
             {previewPorts.length > 0 && (
               <Menu.Item className={ITEM} onClick={() => onOpenPreview(previewPorts[0].containerPort)}>

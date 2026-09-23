@@ -1,5 +1,6 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
+import { IS_MAC } from '#lib/platform'
 
 /** The window-control bridge the Electron preload exposes on `window`. */
 interface YaacWindow {
@@ -18,11 +19,6 @@ export function windowApi(): YaacWindow | undefined {
 
 const DOT = 'no-drag flex h-3 w-3 items-center justify-center rounded-full bg-text-faint/45 '
   + 'text-[8px] font-bold leading-none text-black/0 transition-colors group-hover/wc:text-black/60'
-
-/** Only the macOS shell maps the zoom button to native full screen (with ⌥ for plain zoom). */
-function isMac(): boolean {
-  return typeof navigator !== 'undefined' && navigator.platform.toUpperCase().includes('MAC')
-}
 
 /**
  * Custom window controls, drawn where the native macOS traffic lights would be
@@ -55,7 +51,9 @@ export function WindowControls({ className }: { className?: string }): JSX.Eleme
       <button
         type="button"
         aria-label="Zoom window"
-        title={isMac() ? 'Full screen (⌥ to zoom)' : 'Zoom'}
+        // Only the macOS shell maps the zoom button to native full screen (with
+        // ⌥ for plain zoom).
+        title={IS_MAC ? 'Full screen (⌥ to zoom)' : 'Zoom'}
         className={clsx(DOT, 'group-hover/wc:bg-[#28c840]')}
         onClick={(e) => windowApi()?.toggleMaximize(e.altKey)}
       >

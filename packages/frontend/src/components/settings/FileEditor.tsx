@@ -1,6 +1,7 @@
 import { useEffect, useState, type JSX } from 'react'
 import { Dialog } from '@base-ui/react/dialog'
-import { CodeEditor, type CodeLanguage } from '#components/ui/CodeEditor'
+import { CodeEditor } from '#components/ui/CodeEditor'
+import type { HighlightLanguage } from '#lib/highlight'
 import { CollapseIcon, ExpandIcon } from '#lib/icons'
 
 function errMessage(e: unknown): string {
@@ -27,7 +28,7 @@ export function FileEditor({
   hint,
 }: {
   title: string
-  language: CodeLanguage
+  language: HighlightLanguage | null
   load: () => Promise<string>
   save: (text: string) => Promise<void>
   hint?: string

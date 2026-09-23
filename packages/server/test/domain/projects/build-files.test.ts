@@ -4,7 +4,8 @@ import path from 'node:path'
 import os from 'node:os'
 import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#domain/projects'
 // Bounds the cases below sit either side of. Not under test here.
-import { MAX_TEXT_FILE_BYTES, MAX_UPLOAD_FILE_BYTES } from '#domain/projects/build-files'
+import { MAX_UPLOAD_FILE_BYTES } from '#domain/projects/build-files'
+import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 
 let root: string

@@ -4,8 +4,12 @@ import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-li
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { WorktreeChanges as SessionChangesData } from '@yaac/shared/types'
 import type { ProjectBranches } from '#lib/projectApi'
+import type * as ChangesApi from '#lib/changesApi'
 
-vi.mock('#lib/changesApi', () => ({ getWorktreeChanges: vi.fn() }))
+vi.mock('#lib/changesApi', async (importOriginal) => ({
+  ...await importOriginal<typeof ChangesApi>(),
+  getWorktreeChanges: vi.fn(),
+}))
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
   projectBranchesKey: (slug: string) => ['project-branches', slug],
@@ -89,10 +93,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   mock.mockReset()
-  useUiStore.setState({
-    changesExpanded: {}, changesScroll: {}, changesBase: {},
-    changesFind: {}, changesFindPending: false,
-  })
+  useUiStore.setState({ paneView: {}, changesBase: {}, findPending: null })
 })
 
 describe('WorktreeChanges', () => {
@@ -143,11 +144,11 @@ describe('WorktreeChanges', () => {
     if (!list) throw new Error('scroll container not found')
     list.scrollTop = 140
     fireEvent.scroll(list)
-    expect(useUiStore.getState().changesScroll.s1).toBe(140)
+    expect(useUiStore.getState().paneView['s1|changes'].scroll).toBe(140)
   })
 
   it('restores the saved scroll offset when the pane remounts', async () => {
-    useUiStore.setState({ changesScroll: { s1: 220 } })
+    useUiStore.setState({ paneView: { 's1|changes': { scroll: 220 } } })
     mock.mockResolvedValue(PAYLOAD)
     const { container } = renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
@@ -313,7 +314,7 @@ describe('WorktreeChanges', () => {
     expect(screen.getByText('No files match “zzz-nothing”')).toBeTruthy()
     expect(screen.getByText('0 of 2 files')).toBeTruthy()
     fireEvent.keyDown(input, { key: 'Escape' })
-    expect(useUiStore.getState().changesFind.s1).toBeUndefined()
+    expect(useUiStore.getState().paneView['s1|changes'].find).toBe('')
     expect(screen.getByText('2 files')).toBeTruthy()
   })
 
@@ -330,9 +331,9 @@ describe('WorktreeChanges', () => {
 
   it('consumes a pending find-focus request by focusing the find box', async () => {
     mock.mockResolvedValue(PAYLOAD)
-    useUiStore.setState({ changesFindPending: true })
+    useUiStore.setState({ findPending: 'changes' })
     renderPane()
-    await waitFor(() => expect(useUiStore.getState().changesFindPending).toBe(false))
+    await waitFor(() => expect(useUiStore.getState().findPending).toBeNull())
     expect(document.activeElement).toBe(screen.getByLabelText('Find in changes'))
   })
 

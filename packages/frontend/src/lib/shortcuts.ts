@@ -1,3 +1,5 @@
+import { IS_MAC } from '#lib/platform'
+
 /** Cycling direction decoded from a workspace keydown:
  *  -1 = previous (left/up), 1 = next (right/down). */
 export type CycleDelta = 1 | -1
@@ -31,6 +33,7 @@ export type ShortcutId =
   | 'kill-terminal'
   | 'open-changes'
   | 'find-changes'
+  | 'open-files'
   | 'open-preview'
   | 'view-tabs'
   | 'view-tiles'
@@ -81,6 +84,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: 'Open the Changes (review-diff) pane.', defaultChord: alt('KeyC') },
   { id: 'find-changes', label: 'Find in changes',
     description: 'Open the Changes pane and focus its find box.', defaultChord: alt('KeyF') },
+  { id: 'open-files', label: 'Open file tree',
+    description: 'Open the file tree and focus its filter.', defaultChord: alt('KeyE') },
   { id: 'open-preview', label: 'Open preview',
     description: 'Open the preview pane for a forwarded port.', defaultChord: alt('KeyP') },
   { id: 'view-tabs', label: 'Tabbed view',
@@ -203,20 +208,39 @@ export function isModifierCode(code: string): boolean {
   return MODIFIER_CODES.has(code)
 }
 
+/**
+ * The platform's save chord: Cmd-S on macOS, Ctrl-S elsewhere. Not a
+ * registry command — like undo, it is part of what an editor is — so it is
+ * never rebindable, and it is reserved: the workspace's shortcut listener
+ * runs ahead of the file pane, so a command bound to it would swallow saving.
+ */
+export function saveChord(isMac = IS_MAC): Chord {
+  return { code: 'KeyS', alt: false, ctrl: !isMac, meta: isMac, shift: false }
+}
+
 /** The outcome of validating a candidate rebind. */
 export type ChordValidation = { ok: true } | { ok: false; reason: string }
 
 /**
  * Whether `chord` may be bound to `selfId`. Requires a real modifier
  * (Alt/Ctrl/Meta) so a bare key can't shadow terminal typing, rejects a lone
- * modifier keypress, and rejects a chord already bound to a different command.
+ * modifier keypress, the platform's save chord, and a chord already bound to
+ * a different command.
  */
-export function validateChord(chord: Chord, bindings: BindingMap, selfId: ShortcutId): ChordValidation {
+export function validateChord(
+  chord: Chord,
+  bindings: BindingMap,
+  selfId: ShortcutId,
+  isMac = IS_MAC,
+): ChordValidation {
   if (isModifierCode(chord.code)) {
     return { ok: false, reason: 'Press a key along with a modifier.' }
   }
   if (!chord.alt && !chord.ctrl && !chord.meta) {
     return { ok: false, reason: 'Hold Alt, Ctrl, or Cmd.' }
+  }
+  if (chordsEqual(chord, saveChord(isMac))) {
+    return { ok: false, reason: 'Reserved for saving files.' }
   }
   for (const id of SHORTCUT_IDS) {
     if (id === selfId) continue
@@ -241,13 +265,14 @@ export function isChord(value: unknown): value is Chord {
 
 /**
  * A binding map = the defaults overlaid with `overrides`, but only for known
- * ids carrying a well-formed chord. Unknown ids and malformed chords (both
- * possible when reading a hand-edited or stale preferences file) are ignored.
+ * ids carrying a well-formed chord other than the save chord. Unknown ids,
+ * malformed chords and a claim on saving (all possible when reading a
+ * hand-edited or stale preferences file) are ignored.
  */
-export function mergeBindings(overrides: Record<string, unknown>): BindingMap {
+export function mergeBindings(overrides: Record<string, unknown>, isMac = IS_MAC): BindingMap {
   const merged: BindingMap = { ...DEFAULT_BINDINGS }
   for (const [id, chord] of Object.entries(overrides)) {
-    if (isShortcutId(id) && isChord(chord)) merged[id] = chord
+    if (isShortcutId(id) && isChord(chord) && !chordsEqual(chord, saveChord(isMac))) merged[id] = chord
   }
   return merged
 }

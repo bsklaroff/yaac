@@ -146,7 +146,7 @@ Three things change:
 - **The header folds.** Desktop lays out eleven controls; a phone keeps the
   title and the alarm chits (git auth, blocked hosts, unforwarded ports — they
   say something is wrong and must not be buried) and moves new-shell, changes,
-  preview and the forwarded-port links into a `⋯` menu.
+  the file tree, preview and the forwarded-port links into a `⋯` menu.
 - **Eager attach drops to 2** (from 12). Each pre-attached pane is a live
   `kubectl exec` PTY stream; twelve is a desktop-on-LAN number.
 

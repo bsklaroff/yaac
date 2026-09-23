@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles } from '#lib/build-context'
 import { PROJECT_DOCKERFILE, USER_DOCKERFILE } from '#lib/build-dirs'
+import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -12,9 +13,6 @@ import { ServerError } from '@yaac/shared/errors'
  * ever created, so no symlink can smuggle an out-of-tree read into the
  * context hash or the builder-pod tar (whose collector skips symlinks too).
  */
-
-/** Files readable/writable inline as text; larger ones upload as base64. */
-export const MAX_TEXT_FILE_BYTES = 1024 * 1024
 
 /** Per-file upload cap — a sanity bound well under the whole-context cap. */
 export const MAX_UPLOAD_FILE_BYTES = 50 * 1024 * 1024
@@ -56,13 +54,13 @@ export function resolveBuildFilePath(root: string, rel: string): string {
   return path.join(root, normalized)
 }
 
-/** NUL byte in the first 8KB — the standard "not a text file" sniff. */
+/** Sniff a file's head with the shared text-file rule. */
 async function isBinaryFile(abs: string): Promise<boolean> {
   const fh = await fs.open(abs, 'r')
   try {
     const buf = Buffer.alloc(8192)
     const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-    return buf.subarray(0, bytesRead).includes(0)
+    return isBinaryContent(buf.subarray(0, bytesRead), bytesRead === buf.length)
   } finally {
     await fh.close()
   }
@@ -154,7 +152,7 @@ export async function writeBuildFile(root: string, rel: string, data: Buffer): P
     }
     throw err
   }
-  return { path: path.relative(root, abs), size: data.length, binary: data.includes(0) }
+  return { path: path.relative(root, abs), size: data.length, binary: isBinaryContent(data) }
 }
 
 /**

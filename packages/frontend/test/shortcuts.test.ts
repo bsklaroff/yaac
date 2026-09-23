@@ -15,6 +15,7 @@ import {
   matchShortcut,
   mergeBindings,
   resolveCycleTarget,
+  saveChord,
   validateChord,
   type Chord,
   type ShortcutKey,
@@ -38,6 +39,13 @@ describe('SHORTCUTS registry', () => {
       expect(seen.has(k)).toBe(false) // no two defaults collide
       seen.add(k)
     }
+  })
+
+  it('opens the file tree on Alt+E, and has no entry for saving', () => {
+    expect(DEFAULT_BINDINGS['open-files']).toEqual(chord('KeyE'))
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyE'))).toBe('open-files')
+    expect(SHORTCUTS.some((s) => s.defaultChord.code === 'KeyS' && !s.defaultChord.alt)).toBe(false)
+    expect(SHORTCUTS.some((s) => /save/i.test(s.label))).toBe(false)
   })
 
   it('marks the four directional cyclers, and only those, as CYCLE_IDS', () => {
@@ -187,6 +195,17 @@ describe('validateChord', () => {
     if (!r.ok) expect(r.reason).toContain('Delete worktree')
   })
 
+  it('refuses the platform’s save chord, and only that platform’s', () => {
+    const cmdS = chord('KeyS', { alt: false, meta: true })
+    const ctrlS = chord('KeyS', { alt: false, ctrl: true })
+    const onMac = validateChord(cmdS, DEFAULT_BINDINGS, 'open-files', true)
+    expect(onMac).toEqual({ ok: false, reason: 'Reserved for saving files.' })
+    expect(validateChord(ctrlS, DEFAULT_BINDINGS, 'open-files', true).ok).toBe(true)
+    expect(validateChord(ctrlS, DEFAULT_BINDINGS, 'open-files', false).ok).toBe(false)
+    expect(validateChord(cmdS, DEFAULT_BINDINGS, 'open-files', false).ok).toBe(true)
+    expect(saveChord(false)).toEqual(ctrlS)
+  })
+
   it('allows rebinding a command to its own current chord', () => {
     expect(validateChord(chord('KeyN'), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
   })
@@ -211,6 +230,22 @@ describe('mergeBindings', () => {
     expect(merged['new-worktree']).toEqual(chord('KeyG'))
     expect(merged['kill-terminal']).toEqual(DEFAULT_BINDINGS['kill-terminal'])
     expect((merged as Record<string, unknown>)['bogus-id']).toBeUndefined()
+  })
+
+  it('drops an override that claims the save chord', () => {
+    const merged = mergeBindings({
+      'open-files': chord('KeyS', { alt: false, ctrl: true }),
+      'open-changes': chord('KeyS', { alt: false, meta: true }),
+    }, false)
+    expect(merged['open-files']).toEqual(DEFAULT_BINDINGS['open-files'])
+    // Cmd+S is not the save chord off macOS, so that one stands.
+    expect(merged['open-changes']).toEqual(chord('KeyS', { alt: false, meta: true }))
+  })
+
+  it('takes a stored override of open-files over its Alt+E default', () => {
+    const merged = mergeBindings({ 'open-files': chord('KeyO', { shift: true }) })
+    expect(matchShortcut(merged, key('KeyO', { shiftKey: true }))).toBe('open-files')
+    expect(matchShortcut(merged, key('KeyE'))).toBeNull()
   })
 
   it('returns a copy of the defaults for empty overrides', () => {

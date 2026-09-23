@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import type * as PlatformModule from '#lib/platform'
+
+// IS_MAC is read once at load; a getter over this lets a case flip it.
+const platform = vi.hoisted(() => ({ IS_MAC: false }))
+vi.mock('#lib/platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof PlatformModule>()),
+  get IS_MAC() { return platform.IS_MAC },
+}))
+
 import { WindowControls, windowApi } from '#components/WindowControls'
 
 afterEach(() => {
@@ -49,13 +58,13 @@ describe('WindowControls', () => {
     render(<WindowControls />)
     expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title')).toBe('Zoom')
     cleanup()
-    Object.defineProperty(window.navigator, 'platform', { value: 'MacIntel', configurable: true })
+    platform.IS_MAC = true
     try {
       render(<WindowControls />)
       expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title'))
         .toBe('Full screen (⌥ to zoom)')
     } finally {
-      Reflect.deleteProperty(window.navigator, 'platform')
+      platform.IS_MAC = false
     }
   })
 

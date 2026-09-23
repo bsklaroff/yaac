@@ -840,6 +840,42 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       ])
     }, 60_000)
 
+    // The file editor reads and writes the checkout from the server pod, on
+    // its own mount of the worktree (docs/file-editor.md). What only this tier
+    // proves: a save through the route is what the gVisor pod sees at once,
+    // an edit from the pod is what the next read returns, and status on an
+    // unchanged file is clean although in-pod git wrote the index's stat data
+    // through a different mount.
+    it('edits the checkout from the server, visibly to the pod and back', async () => {
+      const files = await (await fetch(`${base}/worktree/${worktreeId}/files`, { headers: auth })).json() as {
+        paths: string[]; status: Record<string, string>
+      }
+      expect(files.paths).toContain('README.md')
+      expect(files.status['README.md']).toBeUndefined()
+
+      const read = await (await fetch(`${base}/worktree/${worktreeId}/file?path=README.md`, { headers: auth }))
+        .json() as { version: string; content: string }
+      const saved = await fetch(`${base}/worktree/${worktreeId}/file`, {
+        method: 'PUT',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ path: 'README.md', content: `${read.content}saved by the server\n`, baseVersion: read.version }),
+      })
+      expect(saved.status).toBe(200)
+      const { version } = await saved.json() as { version: string }
+      const { stdout: inPod } = await execInJob(jobName, ['cat', '/workspace/README.md'])
+      expect(inPod).toContain('saved by the server')
+
+      await execInJob(jobName, ['sh', '-c', 'printf "edited in the pod\\n" >> /workspace/README.md'])
+      const reread = await (await fetch(
+        `${base}/worktree/${worktreeId}/file?path=README.md&known=${version}`, { headers: auth },
+      )).json() as { version: string; content?: string }
+      expect(reread.version).not.toBe(version)
+      expect(reread.content).toContain('edited in the pod')
+
+      // Leave the worktree as we found it — later tests read git state.
+      await execInJob(jobName, ['sh', '-c', 'cd /workspace && git checkout -- README.md'])
+    }, 60_000)
+
     // The other end of that path: a base the caller named that resolves
     // nowhere in the worktree. The pod script refuses to diff against a wrong
     // base, and that refusal has to reach the client as the bad request it is
