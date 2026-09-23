@@ -4,11 +4,13 @@ import CodeMirror, { EditorView, ExternalChange, type ReactCodeMirrorRef } from 
 import { syntaxHighlighting } from '@codemirror/language'
 import { classHighlighter } from '@lezer/highlight'
 import { editorLanguage, type HighlightLanguage } from '#lib/highlight'
+import { findPanel } from '#components/ui/FindPanel'
 
 /**
  * The app's editor look, in both themes: the chrome comes from the palette's
  * CSS variables, and tokens get the `tok-*` classes the diff view already
- * colors (index.css), so the editors and the diff always match.
+ * colors (index.css), so the editors and the diff always match. Long lines
+ * wrap rather than scroll sideways, and find is the app's own panel.
  */
 const editorTheme = [
   EditorView.theme({
@@ -28,9 +30,15 @@ const editorTheme = [
       backgroundColor: 'var(--color-surface-3)', outline: 'none',
     },
     '.cm-panels': { backgroundColor: 'var(--color-surface)', color: 'var(--color-text)' },
+    '.cm-panels-top': { borderBottom: '1px solid var(--color-hairline)' },
     '.cm-searchMatch': { backgroundColor: 'rgb(210 153 34 / 0.3)' },
+    '.cm-searchMatch.cm-searchMatch-selected': {
+      backgroundColor: 'rgb(210 153 34 / 0.55)', outline: '1px solid rgb(210 153 34)',
+    },
   }),
   syntaxHighlighting(classHighlighter),
+  EditorView.lineWrapping,
+  findPanel,
 ]
 
 /** The one change that turns `from` into `to`: their common prefix and
@@ -60,6 +68,8 @@ export function CodeEditor({
   height = '220px',
   className,
   bare = false,
+  fontSize,
+  onCreateEditor,
 }: {
   value: string
   onChange: (value: string) => void
@@ -69,10 +79,16 @@ export function CodeEditor({
   className?: string
   /** No frame — for an editor that fills a pane of its own. */
   bare?: boolean
+  /** Text size in px; unset inherits the page's. */
+  fontSize?: number
+  onCreateEditor?: (view: EditorView) => void
 }): JSX.Element {
   const ref = useRef<ReactCodeMirrorRef>(null)
   const [initial] = useState(value)
-  const extensions = useMemo(() => (language ? [editorLanguage(language)] : []), [language])
+  const extensions = useMemo(() => [
+    ...(language ? [editorLanguage(language)] : []),
+    ...(fontSize ? [EditorView.theme({ '&': { fontSize: `${fontSize}px` } })] : []),
+  ], [language, fontSize])
   useEffect(() => {
     const view = ref.current?.view
     if (!view) return
@@ -94,6 +110,7 @@ export function CodeEditor({
         height={height}
         className="h-full"
         extensions={extensions}
+        onCreateEditor={onCreateEditor}
         basicSetup={{ foldGutter: false, highlightActiveLine: false }}
       />
     </div>

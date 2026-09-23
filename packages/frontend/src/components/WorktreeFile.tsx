@@ -1,12 +1,15 @@
-import { useEffect, useReducer, useState, type JSX, type KeyboardEvent } from 'react'
+import { useEffect, useReducer, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
+import { Popover } from '@base-ui/react/popover'
+import type { EditorView } from '@uiw/react-codemirror'
+import { openSearchPanel } from '@codemirror/search'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeFile as WorktreeFileRead } from '@yaac/shared/types'
-import { useUiStore } from '#store'
+import { DEFAULT_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE, MIN_EDITOR_FONT_SIZE, useUiStore } from '#store'
 import { CodeEditor } from '#components/ui/CodeEditor'
-import { PathLabel } from '#components/ui/PathLabel'
 import { languageForPath } from '#lib/highlight'
-import { chordMatches, saveChord } from '#lib/shortcuts'
+import { chordMatches, findChord, formatChord, saveChord, textSizeStep } from '#lib/shortcuts'
+import { IS_MAC } from '#lib/platform'
 import {
   FileConflict,
   discardFileSavers,
@@ -16,7 +19,7 @@ import {
   registerFileSaver,
   saveWorktreeFile,
 } from '#lib/files'
-import { LoadingIcon, SaveIcon, WarningIcon } from '#lib/icons'
+import { AddIcon, LoadingIcon, MinusIcon, SaveIcon, SearchIcon, TextSizeIcon, WarningIcon } from '#lib/icons'
 
 /** Idle time after the last edit before it saves itself. */
 export const AUTOSAVE_MS = 1000
@@ -230,7 +233,9 @@ function formatSize(bytes: number): string {
  * so its undo history, cursor and unsaved text survive a tab switch; it polls
  * only while visible. Edits save themselves a second after the last
  * keystroke, and Cmd/Ctrl-S — handled on the pane's root, so it covers the
- * header strip too and never reaches a terminal — saves at once.
+ * header strip too and never reaches a terminal — saves at once. Cmd/Ctrl-F
+ * opens the editor's find bar from anywhere in the pane the same way, and
+ * Cmd/Ctrl =/−/0 size the text there rather than zooming the page.
  */
 export function WorktreeFile({ worktreeId, path, visible, onClose }: {
   worktreeId: string
@@ -244,6 +249,10 @@ export function WorktreeFile({ worktreeId, path, visible, onClose }: {
   const [saver] = useState(() => fileSaver<Saver>(key) ?? new Saver(worktreeId, path))
   saver.notify = render
   const setFileDirty = useUiStore((s) => s.setFileDirty)
+  const fontSize = useUiStore((s) => s.editorFontSize)
+  const setFontSize = useUiStore((s) => s.setEditorFontSize)
+  const viewRef = useRef<EditorView | null>(null)
+  const openFind = (): void => { if (viewRef.current) openSearchPanel(viewRef.current) }
 
   useEffect(() => {
     saver.alive = true
@@ -297,12 +306,23 @@ export function WorktreeFile({ worktreeId, path, visible, onClose }: {
   }, [visible, saver])
 
   const onKeyDown = (e: KeyboardEvent): void => {
-    if (!chordMatches(saveChord(), e.nativeEvent)) return
-    e.preventDefault()
-    void saver.flush()
+    // The editor answers its own Cmd/Ctrl-F; this catches the header strip.
+    if (e.defaultPrevented) return
+    const size = textSizeStep(e)
+    if (size !== null) {
+      e.preventDefault()
+      setFontSize(size === 0 ? DEFAULT_EDITOR_FONT_SIZE : fontSize + size)
+    } else if (chordMatches(saveChord(), e.nativeEvent)) {
+      e.preventDefault()
+      void saver.flush()
+    } else if (chordMatches(findChord(), e.nativeEvent) && viewRef.current) {
+      e.preventDefault()
+      openFind()
+    }
   }
 
   const { phase, conflict, status } = saver
+  const slash = path.lastIndexOf('/')
   const statusLabel = conflict?.version != null
     ? 'Paused: conflict'
     : status === 'saving' ? 'Saving…'
@@ -354,6 +374,8 @@ export function WorktreeFile({ worktreeId, path, visible, onClose }: {
             height="100%"
             className="min-h-0 flex-1"
             bare
+            fontSize={fontSize}
+            onCreateEditor={(view) => { viewRef.current = view }}
           />
         )
     }
@@ -368,26 +390,49 @@ export function WorktreeFile({ worktreeId, path, visible, onClose }: {
       }}
     >
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline bg-surface px-2 text-[11px]">
-        <span className="min-w-0 flex-1 truncate font-mono" title={path}>
-          <PathLabel path={path} />
-          {dirty && <span aria-label="Unsaved changes" className="ml-1.5 text-text-dim">●</span>}
+        {/* A long path gives up its folders from the left, never the name. */}
+        <span className="flex min-w-0 flex-1 items-center font-mono" title={path}>
+          {slash > 0 && (
+            <span className="truncate text-text-faint [direction:rtl]">
+              <span dir="ltr">{path.slice(0, slash + 1)}</span>
+            </span>
+          )}
+          <span className="shrink-0 text-text">{path.slice(slash + 1)}</span>
+          {dirty && <span aria-label="Unsaved changes" className="ml-1.5 shrink-0 text-text-dim">●</span>}
         </span>
         {statusLabel && (
           <span className={clsx('shrink-0', status === 'retrying' || conflict ? 'text-[#d29922]' : 'text-text-faint')}>
             {statusLabel}
           </span>
         )}
-        <button
-          onClick={() => void saver.flush()}
-          disabled={phase.kind !== 'ready' || !!conflict}
-          title="Save"
-          aria-label="Save"
-          className="flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-text-dim transition
-            hover:bg-surface-2 hover:text-text disabled:opacity-40"
-        >
-          <SaveIcon size={11} />
-          Save
-        </button>
+        {dirty && phase.kind === 'ready' && !conflict && (
+          <button
+            onClick={() => void saver.flush()}
+            title="Save"
+            aria-label="Save"
+            className="flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-text-dim transition
+              hover:bg-surface-2 hover:text-text"
+          >
+            <SaveIcon size={11} />
+            Save
+          </button>
+        )}
+        {phase.kind === 'ready' && !conflict && (
+          <div className="flex shrink-0 items-center">
+            {/* Below the mobile breakpoint the editor's text is pinned at
+                16px (index.css), so there is nothing to size. */}
+            <TextSizeMenu size={fontSize} onChange={setFontSize} />
+            <button
+              onClick={openFind}
+              title={`Find (${formatChord(findChord(), IS_MAC)})`}
+              aria-label="Find"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text"
+            >
+              <SearchIcon size={12} />
+            </button>
+          </div>
+        )}
       </div>
       {conflict?.version != null && (
         <div role="alert" className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline
@@ -404,5 +449,63 @@ export function WorktreeFile({ worktreeId, path, visible, onClose }: {
       )}
       {body}
     </div>
+  )
+}
+
+/** The header's "Aa": one button opening − / size / + and Reset, the way a
+ *  reader app offers it, so sizing costs the strip a single icon. */
+function TextSizeMenu({ size, onChange }: { size: number; onChange: (px: number) => void }): JSX.Element {
+  const mod = IS_MAC ? '⌘' : 'Ctrl+'
+  const step = 'flex h-6 w-6 items-center justify-center rounded text-text-dim transition hover:bg-surface-3 '
+    + 'hover:text-text disabled:pointer-events-none disabled:opacity-35'
+  return (
+    <Popover.Root>
+      <Popover.Trigger
+        title={`Text size (${mod}= / ${mod}−)`}
+        aria-label="Text size"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint outline-none transition
+          hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text max-md:hidden"
+      >
+        <TextSizeIcon size={14} />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner side="bottom" align="end" sideOffset={6}>
+          <Popover.Popup
+            className="flex items-center gap-1 rounded-lg border border-border bg-surface-2 p-1 text-xs text-text
+              shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
+              data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
+          >
+            <button
+              onClick={() => onChange(size - 1)}
+              disabled={size <= MIN_EDITOR_FONT_SIZE}
+              title={`Smaller (${mod}−)`}
+              aria-label="Smaller text"
+              className={step}
+            >
+              <MinusIcon size={13} />
+            </button>
+            <span className="w-10 text-center tabular-nums">{size}px</span>
+            <button
+              onClick={() => onChange(size + 1)}
+              disabled={size >= MAX_EDITOR_FONT_SIZE}
+              title={`Larger (${mod}=)`}
+              aria-label="Larger text"
+              className={step}
+            >
+              <AddIcon size={13} />
+            </button>
+            <button
+              onClick={() => onChange(DEFAULT_EDITOR_FONT_SIZE)}
+              disabled={size === DEFAULT_EDITOR_FONT_SIZE}
+              title={`Reset (${mod}0)`}
+              className="h-6 rounded px-2 text-text-dim transition hover:bg-surface-3 hover:text-text
+                disabled:pointer-events-none disabled:opacity-35"
+            >
+              Reset
+            </button>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   )
 }

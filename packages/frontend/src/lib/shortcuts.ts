@@ -217,10 +217,12 @@ function platformChord(code: string, isMac: boolean): Chord {
 
 /**
  * The fixed chords a pane handles on its own root: Cmd/Ctrl-S saves in the
- * file pane, Cmd/Ctrl-F jumps to the Changes pane's find box. Neither is a
- * registry command — each is part of what its pane is — so they are never
- * rebindable, and they are reserved: the workspace's shortcut listener runs
- * ahead of the panes, so a command bound to one would swallow it.
+ * file pane, Cmd/Ctrl-F opens the file pane's find bar or jumps to the
+ * Changes pane's find box, and Cmd/Ctrl =/−/0 size the file pane's text
+ * (textSizeStep). None is a registry command — each is part of what its
+ * pane is — so they are never rebindable, and they are reserved: the
+ * workspace's shortcut listener runs ahead of the panes, so a command bound
+ * to one would swallow it.
  */
 export function saveChord(isMac = IS_MAC): Chord {
   return platformChord('KeyS', isMac)
@@ -229,10 +231,34 @@ export function findChord(isMac = IS_MAC): Chord {
   return platformChord('KeyF', isMac)
 }
 
+
+/**
+ * The text-size keys every editor shares: Cmd/Ctrl with = or + a step up,
+ * − a step down, 0 back to the default; null for anything else. Matched on
+ * the character, not the physical key, so the keys labelled +/− work on
+ * every layout (on QWERTZ `+` is BracketRight, on AZERTY `-` is Digit6).
+ */
+export function textSizeStep(
+  e: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'metaKey' | 'key'>,
+  isMac = IS_MAC,
+): 1 | -1 | 0 | null {
+  if (e.altKey || !(isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey)) return null
+  switch (e.key) {
+    case '=': case '+': return 1
+    case '-': return -1
+    case '0': return 0
+    default: return null
+  }
+}
+/** Where textSizeStep's keys sit on a US layout — what a chord can name. */
+const TEXT_SIZE_CODES = new Set(['Equal', 'Minus', 'Digit0', 'NumpadAdd', 'NumpadSubtract', 'Numpad0'])
+
 /** What a reserved chord is kept for, or null when `chord` is free. */
 function reservedFor(chord: Chord, isMac: boolean): string | null {
   if (chordsEqual(chord, saveChord(isMac))) return 'saving files'
-  if (chordsEqual(chord, findChord(isMac))) return 'find in changes'
+  if (chordsEqual(chord, findChord(isMac))) return 'find'
+  const mod = isMac ? chord.meta && !chord.ctrl : chord.ctrl && !chord.meta
+  if (mod && !chord.alt && TEXT_SIZE_CODES.has(chord.code)) return 'text size'
   return null
 }
 
