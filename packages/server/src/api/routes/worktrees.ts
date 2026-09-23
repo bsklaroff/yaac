@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
   allowWorktreeHost,
+  createWorktreeFolder,
+  deleteWorktreeEntry,
   dismissWorktreePort,
   forwardWorktreePort,
   getAgentSessionTranscript,
@@ -13,9 +16,13 @@ import {
   getWorktreePrompt,
   listActiveWorktrees,
   listStoppedWorktrees,
+  listWorktreeDir,
+  listWorktreeFiles,
   listWorktreeGroups,
+  readWorktreeFile,
   registerProvisioning,
   removeProvisioning,
+  renameWorktreeEntry,
   resolveGroup,
   resolveSessionInProject,
   resolveWorktreeContainer,
@@ -23,6 +30,7 @@ import {
   restartWorktree,
   runMamaCommand,
   toAgentSessionEntry,
+  writeWorktreeFile,
   type WorktreeCreateOptions,
 } from '#domain/worktrees'
 import {
@@ -51,6 +59,7 @@ import { streamProvisioned } from '#routes/provisioned-stream'
 import { requireDriverFeature } from '#http'
 import { worktreeDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
+import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 // A group name is stored under `normalizeTitle`, which caps at this — so it
 // is also what every route may ACCEPT. A larger bound would take a name in,
 // truncate it on the way to the table, and let two distinct long names
@@ -535,6 +544,74 @@ export const worktreeApp = new Hono()
     '/:id/changes',
     zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
     async (c) => c.json(await getWorktreeChanges(c.req.param('id'), c.req.valid('query').base)),
+  )
+  // The file editor (docs/file-editor.md). Served from the server's own view
+  // of the checkout, resolved from the record: a stopped worktree browses and
+  // edits like a running one, under either driver.
+  .get('/:id/files', async (c) => c.json(await listWorktreeFiles(c.req.param('id'))))
+  .get(
+    '/:id/dir',
+    zv('query', z.object({ path: z.string().min(1) })),
+    async (c) => c.json(await listWorktreeDir(c.req.param('id'), c.req.valid('query').path)),
+  )
+  .get(
+    '/:id/file',
+    zv('query', z.object({ path: z.string().min(1), known: z.string().optional() })),
+    async (c) => {
+      const { path, known } = c.req.valid('query')
+      return c.json(await readWorktreeFile(c.req.param('id'), path, known))
+    },
+  )
+  // A null `baseVersion` creates. A save against a stale version is refused
+  // with the version the file has now (null: it is gone) — the one error
+  // body that carries more than the code, because the editor saves against
+  // it next.
+  .put(
+    '/:id/file',
+    // Refused before it is buffered, not after it is parsed. Twice the
+    // editable size leaves room for JSON's escaping (a newline or a quote is
+    // two bytes on the wire); the exact bound is the domain's.
+    bodyLimit({
+      maxSize: 2 * MAX_TEXT_FILE_BYTES + 64 * 1024,
+      onError: () => { throw new ServerError('TOO_LARGE', 'the file is over the editable size') },
+    }),
+    zv('json', z.object({
+      path: z.string().min(1),
+      content: z.string(),
+      baseVersion: z.string().nullable(),
+    })),
+    async (c) => {
+      const { path, content, baseVersion } = c.req.valid('json')
+      const result = await writeWorktreeFile(c.req.param('id'), path, content, baseVersion)
+      if ('conflict' in result) {
+        const message = result.conflict === null
+          ? `${path} no longer exists`
+          : `${path} changed since it was read`
+        return c.json({ error: { code: 'CONFLICT' as const, message }, version: result.conflict }, 409)
+      }
+      return c.json(result.saved)
+    },
+  )
+  .delete(
+    '/:id/file',
+    zv('query', z.object({ path: z.string().min(1) })),
+    async (c) => {
+      await deleteWorktreeEntry(c.req.param('id'), c.req.valid('query').path)
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/:id/folder',
+    zv('json', z.object({ path: z.string().min(1) })),
+    async (c) => c.json(await createWorktreeFolder(c.req.param('id'), c.req.valid('json').path)),
+  )
+  .post(
+    '/:id/rename',
+    zv('json', z.object({ from: z.string().min(1), to: z.string().min(1) })),
+    async (c) => {
+      const { from, to } = c.req.valid('json')
+      return c.json(await renameWorktreeEntry(c.req.param('id'), from, to))
+    },
   )
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can open a pane immediately.

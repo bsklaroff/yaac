@@ -192,6 +192,19 @@ export function moveTabInStrip(ws: Workspace, target: string, dir: 1 | -1): Work
   })
 }
 
+/**
+ * Rewrite every target that is `from` or sits under it (`from/…`) to the
+ * same place under `to` — what a renamed file or folder does to the panes
+ * showing it. Returns the same reference when no target moves.
+ */
+export function renameTargets(ws: Workspace, from: string, to: string): Workspace {
+  const rename = (t: string): string => (
+    t === from ? to : t.startsWith(`${from}/`) ? `${to}${t.slice(from.length)}` : t
+  )
+  if (paneTargets(ws).every((t) => rename(t) === t)) return ws
+  return ws.map((g) => group(g.tabs.map(rename), rename(g.active)))
+}
+
 /** Make `target` the active tab of its column. No-op if absent or already
  *  active (returns the same reference). */
 export function withActive(ws: Workspace | null, target: string): Workspace {

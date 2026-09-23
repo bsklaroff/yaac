@@ -43,6 +43,15 @@ export {
   type WorktreeDetail,
 } from './detail'
 export { allowWorktreeHost } from './allow-host'
+export {
+  createWorktreeFolder,
+  deleteWorktreeEntry,
+  listWorktreeDir,
+  listWorktreeFiles,
+  readWorktreeFile,
+  renameWorktreeEntry,
+  writeWorktreeFile,
+} from './files'
 export { listWorktreeGroups, resolveGroup } from './groups'
 export { dismissWorktreePort, forwardWorktreePort } from './forward-port'
 export { ensureProjectExists, listActiveWorktrees } from './list'

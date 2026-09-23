@@ -13,6 +13,7 @@ import {
   moveTargetToGroup,
   paneTargets,
   removeTarget,
+  renameTargets,
   singleColumn,
   withActive,
   type Workspace,
@@ -211,6 +212,24 @@ describe('withActive', () => {
     expect(withActive(ws, 'shell:a')).toBe(ws)
     expect(withActive(ws, 'nope')).toBe(ws)
     expect(withActive(null, 'x')).toEqual([])
+  })
+})
+
+describe('renameTargets', () => {
+  it('moves a target and every target under it, keeping which is active', () => {
+    const ws: Workspace = [
+      { tabs: ['agent', 'file:src/a.ts'], active: 'file:src/a.ts' },
+      { tabs: ['file:src/lib/b.ts', 'file:srcx.ts'], active: 'file:srcx.ts' },
+    ]
+    expect(renameTargets(ws, 'file:src', 'file:lib')).toEqual([
+      { tabs: ['agent', 'file:lib/a.ts'], active: 'file:lib/a.ts' },
+      { tabs: ['file:lib/lib/b.ts', 'file:srcx.ts'], active: 'file:srcx.ts' },
+    ])
+  })
+
+  it('returns the same reference when nothing moves', () => {
+    const ws = singleColumn('agent')
+    expect(renameTargets(ws, 'file:src', 'file:lib')).toBe(ws)
   })
 })
 

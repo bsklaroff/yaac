@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
 import { FileEditor } from '#components/settings/FileEditor'
-import type { CodeLanguage } from '#components/ui/CodeEditor'
+import { languageForPath } from '#lib/highlight'
 import { DeleteIcon, RenameIcon } from '#lib/icons'
 import type { BuildFileEntry, BuildFilesApi } from '#lib/buildFilesApi'
 
@@ -13,13 +13,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
-}
-
-function languageFor(path: string): CodeLanguage {
-  if (path.endsWith('.json')) return 'json'
-  const base = path.split('/').pop() ?? path
-  if (base.startsWith('Dockerfile') || base.endsWith('.dockerfile')) return 'dockerfile'
-  return 'text'
 }
 
 /**
@@ -268,7 +261,7 @@ export function BuildFiles({ filesApi, title }: {
         <FileEditor
           key={`${title}:${selected}`}
           title={`${title} · ${selected}`}
-          language={languageFor(selected)}
+          language={languageForPath(selected)}
           load={load}
           save={save}
         />

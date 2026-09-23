@@ -849,6 +849,65 @@ export interface WorktreeChanges {
 }
 
 /**
+ * A file's git status in the file explorer — what differs from HEAD, staged
+ * and unstaged alike. Deletions are absent: a deleted file is not in the tree.
+ */
+export type FileStatus = 'modified' | 'added' | 'untracked' | 'conflicted'
+
+/** Where a symlink in a worktree leads: its resolved path relative to the
+ *  worktree, or null when it is broken or leads outside the worktree. */
+export interface SymlinkTarget {
+  target: string | null
+  dir: boolean
+}
+
+/** Every path in a worktree's checkout, for the file explorer. */
+export interface WorktreeFiles {
+  /** Tracked and untracked files, gitignore-aware, deleted ones removed. */
+  paths: string[]
+  /** The entries of `paths` that are symlinks. */
+  symlinks: Record<string, SymlinkTarget>
+  /** Ignored files, and wholly ignored folders as one `dir/` entry each. */
+  ignored: string[]
+  /** Folders holding no path of `paths`, which the list alone cannot show. */
+  emptyDirs: string[]
+  status: Record<string, FileStatus>
+  /** True when `paths` was capped. */
+  truncated: boolean
+}
+
+/** One file of a worktree, as the editor reads it. */
+export interface WorktreeFile {
+  path: string
+  /** The sha256 of the file's bytes — what a save names as its base. */
+  version: string
+  size: number
+  binary: boolean
+  /** Omitted when the caller's `known` version is still current; null when
+   *  the file is binary or too large to edit. */
+  content?: string | null
+}
+
+/** A successful save: the version the file now has. */
+export interface WorktreeFileSaved {
+  path: string
+  version: string
+  size: number
+}
+
+/** One child of a folder, for expanding a folder the listing leaves out. */
+export interface WorktreeDirEntry {
+  name: string
+  dir: boolean
+  symlink?: SymlinkTarget
+}
+
+export interface WorktreeDir {
+  entries: WorktreeDirEntry[]
+  truncated: boolean
+}
+
+/**
  * Why a worktree died, derived at reap time from the pod's terminal state
  * and the reaper's own classification — the last chance to capture it,
  * since the reaper's teardown deletes the Job (and with it the pod's

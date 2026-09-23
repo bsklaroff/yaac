@@ -34,6 +34,7 @@ export {
   cloneRepo,
   fetchOrigin,
   getDefaultBranch,
+  listCheckoutFiles,
   listRemoteBranches,
   originRemoteUrl,
   remoteBranchExists,

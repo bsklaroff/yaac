@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { languageForPath, languageForFence, highlightLine, type HighlightSegment } from '#lib/highlight'
+import { editorLanguage, languageForPath, languageForFence, highlightLine, type HighlightSegment } from '#lib/highlight'
 
 const joined = (segs: HighlightSegment[]): string => segs.map((s) => s.text).join('')
 
@@ -64,6 +64,16 @@ describe('languageForPath', () => {
     expect(languageForPath('LICENSE')).toBeNull()
     expect(languageForPath('notes.unknownext')).toBeNull()
     expect(languageForPath('dir.with.dots/binary')).toBeNull()
+  })
+})
+
+describe('editorLanguage', () => {
+  it('hands editors the language the diff view parses with, built once', () => {
+    const ts = editorLanguage('ts')
+    expect(editorLanguage('ts')).toBe(ts)
+    expect(ts.name).toBe('typescript')
+    // A stream mode is a language too, so every table entry reaches an editor.
+    expect(editorLanguage('dockerfile').parser.parse('FROM alpine').length).toBe('FROM alpine'.length)
   })
 })
 

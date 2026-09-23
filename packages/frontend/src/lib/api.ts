@@ -10,7 +10,7 @@
  * client's fetch), so call sites never check `res.ok`; a successful call
  * resolves directly to its parsed body (no `.then((r) => r.json())`).
  */
-import { createApiClient, type FetchLike } from '@yaac/shared/api-core'
+import { createApiClient, createRawApiClient, type FetchLike } from '@yaac/shared/api-core'
 
 /**
  * Fetch used by the API client. hono hands us a relative path (the client's
@@ -24,3 +24,8 @@ const sameOriginFetch: FetchLike = (input, init) => {
 }
 
 export const api = createApiClient('/', sameOriginFetch)
+
+/** The same routes without the throwing/unwrapping wrappers, for the one call
+ *  whose error body carries more than a code: a file save refused against a
+ *  newer version (see `saveWorktreeFile`). */
+export const rawApi = createRawApiClient('/', sameOriginFetch)

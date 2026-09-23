@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning,
+  isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, paneViewKey,
   resolveNewWorktreeTool, resolveVacantSelection, unreadWaitingBySlug, useUiStore,
 } from '#store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
@@ -361,23 +361,19 @@ describe('view mode (tiles vs tabs)', () => {
     expect(useUiStore.getState().focusNonce).toBe(nonce + 2)
   })
 
-  it('setChangesExpanded stores the expanded-files set per session', () => {
-    useUiStore.getState().setChangesExpanded('s1', ['a.ts', 'b.ts'])
-    useUiStore.getState().setChangesExpanded('s2', [])
-    expect(useUiStore.getState().changesExpanded).toEqual({ s1: ['a.ts', 'b.ts'], s2: [] })
-    // A later call replaces that session's set without touching the others.
-    useUiStore.getState().setChangesExpanded('s1', ['a.ts'])
-    expect(useUiStore.getState().changesExpanded).toEqual({ s1: ['a.ts'], s2: [] })
-  })
-
-  it('setChangesScroll records the Changes-pane scroll offset per session and no-ops on the same value', () => {
-    useUiStore.getState().setChangesScroll('s1', 120)
-    useUiStore.getState().setChangesScroll('s2', 0)
-    expect(useUiStore.getState().changesScroll).toEqual({ s1: 120, s2: 0 })
-    // Re-recording the same offset keeps state identity (no needless render).
-    const before = useUiStore.getState().changesScroll
-    useUiStore.getState().setChangesScroll('s1', 120)
-    expect(useUiStore.getState().changesScroll).toBe(before)
+  it('setPaneView merges into one pane’s view state and no-ops on the same values', () => {
+    const key = paneViewKey('s1', 'changes')
+    useUiStore.getState().setPaneView(key, { expanded: ['a.ts', 'b.ts'] })
+    useUiStore.getState().setPaneView(key, { scroll: 120 })
+    useUiStore.getState().setPaneView(paneViewKey('s2', 'files'), { showIgnored: true })
+    expect(useUiStore.getState().paneView).toEqual({
+      's1|changes': { expanded: ['a.ts', 'b.ts'], scroll: 120 },
+      's2|files': { showIgnored: true },
+    })
+    // Re-recording the same values keeps state identity (no needless render).
+    const before = useUiStore.getState().paneView
+    useUiStore.getState().setPaneView(key, { scroll: 120 })
+    expect(useUiStore.getState().paneView).toBe(before)
   })
 
   it('setChangesBase sets a per-session base branch and clears it when unset', () => {
@@ -389,25 +385,45 @@ describe('view mode (tiles vs tabs)', () => {
     expect(useUiStore.getState().changesBase).toEqual({ s2: 'main' })
   })
 
-  it('setChangesFind sets a per-session find query and clears it on the empty string', () => {
-    useUiStore.getState().setChangesFind('s1', 'foo')
-    useUiStore.getState().setChangesFind('s2', 'bar')
-    expect(useUiStore.getState().changesFind).toEqual({ s1: 'foo', s2: 'bar' })
-    // An empty query removes just that session's entry.
-    useUiStore.getState().setChangesFind('s1', '')
-    expect(useUiStore.getState().changesFind).toEqual({ s2: 'bar' })
+  it('setFindPending names the pane whose filter should take focus, no-oping on the same value', () => {
+    expect(useUiStore.getState().findPending).toBeNull()
+    useUiStore.getState().setFindPending('files')
+    expect(useUiStore.getState().findPending).toBe('files')
+    useUiStore.getState().setFindPending(null)
+    expect(useUiStore.getState().findPending).toBeNull()
+    // Clearing an already-clear request keeps state identity (no needless render).
+    const before = useUiStore.getState()
+    useUiStore.getState().setFindPending(null)
+    expect(useUiStore.getState()).toBe(before)
   })
 
-  it('setChangesFindPending raises and clears the focus request, no-oping on the same value', () => {
-    expect(useUiStore.getState().changesFindPending).toBe(false)
-    useUiStore.getState().setChangesFindPending(true)
-    expect(useUiStore.getState().changesFindPending).toBe(true)
-    useUiStore.getState().setChangesFindPending(false)
-    expect(useUiStore.getState().changesFindPending).toBe(false)
-    // Clearing an already-clear flag keeps state identity (no needless render).
-    const before = useUiStore.getState()
-    useUiStore.getState().setChangesFindPending(false)
-    expect(useUiStore.getState()).toBe(before)
+  it('openFile places a file beside the explorer, then as a tab of the file column, and focuses it', () => {
+    useUiStore.getState().openFiles('s1')
+    useUiStore.getState().openFile('s1', 'src/a.ts')
+    useUiStore.getState().openFile('s1', 'src/b.ts')
+    expect(useUiStore.getState().layouts.s1).toEqual([
+      { tabs: ['agent'], active: 'agent' },
+      { tabs: ['files'], active: 'files' },
+      { tabs: ['file:src/a.ts', 'file:src/b.ts'], active: 'file:src/b.ts' },
+    ])
+    expect(useUiStore.getState().activeTabs.s1).toBe('file:src/b.ts')
+    // Opening one already open only surfaces it.
+    useUiStore.getState().openFile('s1', 'src/a.ts')
+    expect(useUiStore.getState().layouts.s1?.[2]).toEqual({ tabs: ['file:src/a.ts', 'file:src/b.ts'], active: 'file:src/a.ts' })
+  })
+
+  it('renameFiles moves the open panes and dirty marks under a renamed folder', () => {
+    useUiStore.getState().openFile('s1', 'src/a.ts')
+    useUiStore.getState().openFile('s1', 'other.ts')
+    useUiStore.getState().setFileDirty('s1', 'src/a.ts', true)
+    useUiStore.getState().renameFiles('s1', 'src', 'lib')
+    const state = useUiStore.getState()
+    expect(state.layouts.s1?.flatMap((g) => g.tabs)).toEqual(['agent', 'file:lib/a.ts', 'file:other.ts'])
+    expect(state.dirtyFiles).toEqual({ 's1|lib/a.ts': true })
+    expect(state.activeTabs.s1).toBe('file:other.ts')
+    useUiStore.getState().closeFiles('s1', ['lib/a.ts'])
+    expect(useUiStore.getState().layouts.s1?.flatMap((g) => g.tabs)).toEqual(['agent', 'file:other.ts'])
+    expect(useUiStore.getState().dirtyFiles).toEqual({})
   })
 })
 

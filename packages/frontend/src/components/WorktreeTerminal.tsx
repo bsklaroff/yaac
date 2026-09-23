@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { createSettleGate } from '#lib/attach-settle'
 import { clipboardKeyAction } from '#lib/clipboard'
+import { IS_MAC } from '#lib/platform'
 import { LoadingIcon } from '#lib/icons'
 import { paneKey, registerPtyInput } from '#lib/ptyInput'
 import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '#lib/selection'
@@ -26,9 +27,6 @@ import {
   INITIAL_RECONNECT_DELAY_MS,
   nextReconnectDelay,
 } from '#lib/reconnect'
-
-// iPadOS reports as "Macintosh" in modern Safari; both want the ⌘ bindings.
-const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 /** Keystroke coalescing window. Half the output batcher's, because input is
  *  a trickle next to output and the only thing worth catching is a burst that

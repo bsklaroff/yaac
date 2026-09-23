@@ -1,8 +1,9 @@
 /**
- * Syntax highlighting for the Changes diff view. Tokenizes a single line of
- * source into styled segments using CodeMirror/Lezer's standalone highlighting
- * primitives — the same library the config editor already ships. Pure (no DOM),
- * so it's unit-tested directly; the diff renderer wraps each segment in a span.
+ * The one language table: a path or a markdown fence picks a language, and
+ * `editorLanguage` hands it to both the editors (CodeMirror) and the diff
+ * view, which tokenizes a single line of source into styled segments using
+ * CodeMirror/Lezer's standalone highlighting primitives. Pure (no DOM), so
+ * it's unit-tested directly; the diff renderer wraps each segment in a span.
  *
  * `classHighlighter` emits `tok-*` class names (e.g. `tok-keyword`); the colors
  * live in index.css scoped under `.diff-hl`. Highlighting is per line, so a
@@ -11,7 +12,7 @@
  * highlighting a unified diff, which is itself made of partial-file fragments.
  */
 
-import { StreamLanguage, type StreamParser } from '@codemirror/language'
+import { StreamLanguage, type Language, type StreamParser } from '@codemirror/language'
 import { classHighlighter, highlightTree } from '@lezer/highlight'
 
 // Proper Lezer grammars — highest fidelity, one dependency each.
@@ -54,22 +55,22 @@ export interface HighlightSegment {
  *  noise and the parse cost isn't worth it. Render them as plain text. */
 const MAX_HIGHLIGHT_LEN = 5000
 
-function stream<S>(mode: StreamParser<S>): ReturnType<typeof StreamLanguage.define>['parser'] {
-  return StreamLanguage.define(mode).parser
+function stream<S>(mode: StreamParser<S>): Language {
+  return StreamLanguage.define(mode)
 }
 
-function buildParser(language: HighlightLanguage): ReturnType<typeof stream> {
+function buildLanguage(language: HighlightLanguage): Language {
   switch (language) {
-    case 'js': return javascriptLanguage.parser
-    case 'jsx': return jsxLanguage.parser
-    case 'ts': return typescriptLanguage.parser
-    case 'tsx': return tsxLanguage.parser
-    case 'json': return jsonLanguage.parser
-    case 'css': return cssLanguage.parser
-    case 'html': return htmlLanguage.parser
-    case 'md': return markdownLanguage.parser
-    case 'yaml': return yamlLanguage.parser
-    case 'python': return pythonLanguage.parser
+    case 'js': return javascriptLanguage
+    case 'jsx': return jsxLanguage
+    case 'ts': return typescriptLanguage
+    case 'tsx': return tsxLanguage
+    case 'json': return jsonLanguage
+    case 'css': return cssLanguage
+    case 'html': return htmlLanguage
+    case 'md': return markdownLanguage
+    case 'yaml': return yamlLanguage
+    case 'python': return pythonLanguage
     case 'shell': return stream(shell)
     case 'dockerfile': return stream(dockerFile)
     case 'go': return stream(go)
@@ -92,16 +93,18 @@ function buildParser(language: HighlightLanguage): ReturnType<typeof stream> {
   }
 }
 
-// Parsers are stateless and reusable; build each at most once.
-const parsers = new Map<HighlightLanguage, ReturnType<typeof stream>>()
+// Languages are stateless and reusable; build each at most once.
+const languages = new Map<HighlightLanguage, Language>()
 
-function parserFor(language: HighlightLanguage): ReturnType<typeof stream> {
-  let parser = parsers.get(language)
-  if (!parser) {
-    parser = buildParser(language)
-    parsers.set(language, parser)
+/** The CodeMirror language for a highlight language — what an editor loads
+ *  and what the diff view parses with. */
+export function editorLanguage(language: HighlightLanguage): Language {
+  let built = languages.get(language)
+  if (!built) {
+    built = buildLanguage(language)
+    languages.set(language, built)
   }
-  return parser
+  return built
 }
 
 /**
@@ -218,7 +221,7 @@ export function languageForFence(info: string): HighlightLanguage | null {
 export function highlightLine(text: string, language: HighlightLanguage): HighlightSegment[] {
   if (text === '') return []
   if (text.length > MAX_HIGHLIGHT_LEN) return [{ text, className: '' }]
-  const tree = parserFor(language).parse(text)
+  const tree = editorLanguage(language).parser.parse(text)
   const segments: HighlightSegment[] = []
   let pos = 0
   highlightTree(tree, classHighlighter, (from, to, className) => {

@@ -2,43 +2,17 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Popover } from '@base-ui/react/popover'
-import { useUiStore } from '#store'
-import { getWorktreeChanges } from '#lib/changesApi'
+import { paneViewKey, useUiStore } from '#store'
+import { CHANGES_TARGET, getWorktreeChanges } from '#lib/changesApi'
 import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
 import { BranchPicker } from '#components/BranchPicker'
 import { DiffView } from '#components/DiffView'
 import { changeMatchesQuery, indexDiffsByPath, type ParsedFileDiff } from '#lib/diff'
 import { languageForPath } from '#lib/highlight'
-import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon, SearchIcon } from '#lib/icons'
-import type { ChangeStatus, WorktreeChange } from '@yaac/shared/types'
-
-/** One-letter status badge, colored per change kind. */
-const STATUS_META: Record<ChangeStatus, { letter: string; className: string }> = {
-  added: { letter: 'A', className: 'text-[#3fb950]' },
-  modified: { letter: 'M', className: 'text-[#d29922]' },
-  deleted: { letter: 'D', className: 'text-[#f85149]' },
-  renamed: { letter: 'R', className: 'text-[#58a6ff]' },
-  copied: { letter: 'C', className: 'text-[#58a6ff]' },
-  typechange: { letter: 'T', className: 'text-text-dim' },
-}
-
-/** Split a path into directory + basename for two-tone rendering. */
-function splitPath(path: string): { dir: string; base: string } {
-  const i = path.lastIndexOf('/')
-  return i === -1 ? { dir: '', base: path } : { dir: path.slice(0, i + 1), base: path.slice(i + 1) }
-}
-
-/** Render a path as a faint directory prefix + a basename; `emphasis="dim"`
- *  mutes the basename (used for the "from" side of a rename). */
-function PathLabel({ path, emphasis = 'text' }: { path: string; emphasis?: 'text' | 'dim' }): JSX.Element {
-  const { dir, base } = splitPath(path)
-  return (
-    <>
-      {dir && <span className="text-text-faint">{dir}</span>}
-      <span className={emphasis === 'dim' ? 'text-text-dim' : 'text-text'}>{base}</span>
-    </>
-  )
-}
+import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon, SearchIcon, OpenFileIcon } from '#lib/icons'
+import { CHANGE_STATUS } from '#lib/gitStatus'
+import { PathLabel } from '#components/ui/PathLabel'
+import type { WorktreeChange } from '@yaac/shared/types'
 
 /**
  * The worktree review pane: what the agent changed in its worktree since it
@@ -64,67 +38,69 @@ export function WorktreeChanges(
   const files = useMemo(() => data?.files ?? [], [data?.files])
   const diffMap = useMemo(() => indexDiffsByPath(data?.diff ?? ''), [data?.diff])
 
-  // Find. The query filters the file list by path or diff content; it lives in
-  // the store keyed by worktree id (like the expanded set) so it survives the
-  // pane being torn down on a tab or worktree switch. The find-changes shortcut
-  // raises changesFindPending after opening the pane; the mounted pane consumes
-  // it — focus + select the input — so opening by the header button (no flag)
-  // never grabs focus.
-  const find = useUiStore((s) => s.changesFind[worktreeId]) ?? ''
-  const setChangesFind = useUiStore((s) => s.setChangesFind)
-  const findPending = useUiStore((s) => s.changesFindPending)
-  const setChangesFindPending = useUiStore((s) => s.setChangesFindPending)
+  // The pane's view state — the find query, the expanded set, the scroll
+  // offset — lives in the store keyed by worktree, so it survives the pane
+  // being torn down on a tab or worktree switch.
+  const viewKey = paneViewKey(worktreeId, CHANGES_TARGET)
+  const view = useUiStore((s) => s.paneView[viewKey])
+  const setPaneView = useUiStore((s) => s.setPaneView)
+
+  // Find. The query filters the file list by path or diff content. The
+  // find-changes shortcut raises findPending after opening the pane; the
+  // mounted pane consumes it — focus + select the input — so opening by the
+  // header button (no request) never grabs focus.
+  const find = view?.find ?? ''
+  const setFind = (query: string): void => setPaneView(viewKey, { find: query })
+  const findPending = useUiStore((s) => s.findPending === CHANGES_TARGET)
+  const setFindPending = useUiStore((s) => s.setFindPending)
   const findRef = useRef<HTMLInputElement | null>(null)
   useEffect(() => {
     // The input only exists once loading settles (the spinner/error branches
-    // return early below), so leave the flag pending until it's mounted —
+    // return early below), so leave the request pending until it's mounted —
     // isLoading in the deps re-runs this when the data arrives.
     if (!findPending || !findRef.current) return
-    setChangesFindPending(false)
+    setFindPending(null)
     findRef.current.focus()
     findRef.current.select()
-  }, [findPending, isLoading, setChangesFindPending])
+  }, [findPending, isLoading, setFindPending])
   const visible = useMemo(
     () => files.filter((f) => changeMatchesQuery(f, diffMap.get(f.path), find)),
     [files, diffMap, find],
   )
 
-  // Which files are expanded. This lives in the store keyed by worktree id, not
-  // in local state, so it survives the pane being torn down off-screen when the
-  // user switches tabs or worktrees. A missing entry means we haven't loaded
-  // this worktree's changes yet: auto-open the first file so the pane isn't
-  // empty on arrival, then leave it to the user — an existing entry (even an
-  // empty one) is their choice and never gets re-seeded.
-  const expandedList = useUiStore((s) => s.changesExpanded[worktreeId])
-  const setChangesExpanded = useUiStore((s) => s.setChangesExpanded)
+  // Which files are expanded. A missing entry means we haven't loaded this
+  // worktree's changes yet: auto-open the first file so the pane isn't empty
+  // on arrival, then leave it to the user — an existing entry (even an empty
+  // one) is their choice and never gets re-seeded.
+  const expandedList = view?.expanded
   const expanded = useMemo(() => new Set(expandedList ?? []), [expandedList])
   useEffect(() => {
     if (expandedList === undefined && files.length > 0) {
-      setChangesExpanded(worktreeId, [files[0].path])
+      setPaneView(viewKey, { expanded: [files[0].path] })
     }
-  }, [expandedList, files, worktreeId, setChangesExpanded])
+  }, [expandedList, files, viewKey, setPaneView])
   const toggle = (path: string): void => {
     const next = new Set(expanded)
     if (next.has(path)) next.delete(path)
     else next.add(path)
-    setChangesExpanded(worktreeId, [...next])
+    setPaneView(viewKey, { expanded: [...next] })
   }
+  const openFile = useUiStore((s) => s.openFile)
 
-  // Scroll offset also lives in the store, so returning to the pane lands where
-  // the user left off. On remount the diff is already cached and the expanded
-  // state is applied synchronously, so the content height is present by layout
-  // time; restore once (guarded), then let the user drive. Later polls that
+  // Scroll offset: returning to the pane lands where the user left off. On
+  // remount the diff is already cached and the expanded state is applied
+  // synchronously, so the content height is present by layout time; restore
+  // once (guarded), then let the user drive. Later polls that
   // don't change the file list won't re-run this — and if they do, the guard
   // keeps us from yanking the scroll out from under the user.
-  const setChangesScroll = useUiStore((s) => s.setChangesScroll)
   const listRef = useRef<HTMLDivElement | null>(null)
   const restoredScroll = useRef(false)
   useLayoutEffect(() => {
     const el = listRef.current
     if (!el || restoredScroll.current) return
     restoredScroll.current = true
-    el.scrollTop = useUiStore.getState().changesScroll[worktreeId] ?? 0
-  }, [worktreeId, files.length])
+    el.scrollTop = useUiStore.getState().paneView[viewKey]?.scroll ?? 0
+  }, [viewKey, files.length])
 
   // Base picker. It shares the sidebar's branch cache (projectBranchesKey), so a
   // refresh in either place is seen by both; opening it refreshes from the
@@ -254,12 +230,12 @@ export function WorktreeChanges(
           <input
             ref={findRef}
             value={find}
-            onChange={(e) => setChangesFind(worktreeId, e.target.value)}
+            onChange={(e) => setFind(e.target.value)}
             onKeyDown={(e) => {
               if (e.key !== 'Escape') return
               // First Escape clears the filter, a second one leaves the box.
               e.stopPropagation()
-              if (find !== '') setChangesFind(worktreeId, '')
+              if (find !== '') setFind('')
               else e.currentTarget.blur()
             }}
             placeholder="find"
@@ -299,7 +275,7 @@ export function WorktreeChanges(
       ) : (
         <div
           ref={listRef}
-          onScroll={(e) => setChangesScroll(worktreeId, e.currentTarget.scrollTop)}
+          onScroll={(e) => setPaneView(viewKey, { scroll: e.currentTarget.scrollTop })}
           className="min-h-0 flex-1 overflow-y-auto"
         >
           {visible.map((f) => (
@@ -309,6 +285,7 @@ export function WorktreeChanges(
               open={expanded.has(f.path)}
               diff={diffMap.get(f.path)}
               onToggle={() => toggle(f.path)}
+              onOpen={() => openFile(worktreeId, f.path)}
             />
           ))}
         </div>
@@ -318,18 +295,21 @@ export function WorktreeChanges(
 }
 
 function FileAccordion({
-  file, open, diff, onToggle,
+  file, open, diff, onToggle, onOpen,
 }: {
   file: WorktreeChange
   open: boolean
   diff: ParsedFileDiff | undefined
   onToggle: () => void
+  /** Open the file in an editor pane — the shortest way from reviewing a
+   *  change to fixing it. */
+  onOpen: () => void
 }): JSX.Element {
-  const meta = STATUS_META[file.status]
+  const meta = CHANGE_STATUS[file.status]
   // Renames/copies show `old → new`; git only sets oldPath for those.
   const renamedFrom = file.oldPath && file.oldPath !== file.path ? file.oldPath : undefined
   return (
-    <div className="border-b border-hairline">
+    <div className="group/row relative border-b border-hairline">
       <button
         onClick={onToggle}
         title={renamedFrom ? `${renamedFrom} → ${file.path}` : file.path}
@@ -348,6 +328,7 @@ function FileAccordion({
           )}
           <PathLabel path={file.path} />
         </span>
+        {file.status !== 'deleted' && <span className="w-5 shrink-0" />}
         {!file.binary && (
           <span className="shrink-0 font-mono text-[10px] text-text-faint">
             {file.additions > 0 && <span className="text-[#3fb950]">+{file.additions}</span>}
@@ -356,6 +337,17 @@ function FileAccordion({
           </span>
         )}
       </button>
+      {file.status !== 'deleted' && (
+        <button
+          onClick={onOpen}
+          title="Open file"
+          aria-label={`Open ${file.path}`}
+          className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded text-text-faint
+            opacity-0 transition hover:bg-surface-3 hover:text-text group-hover/row:opacity-100 max-md:opacity-100"
+        >
+          <OpenFileIcon size={11} />
+        </button>
+      )}
       {open && (
         <div className="overflow-x-auto border-t border-hairline bg-bg">
           {diff && !diff.binary && diff.lines.length > 0 ? (

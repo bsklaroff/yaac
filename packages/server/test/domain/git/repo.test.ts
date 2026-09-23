@@ -8,6 +8,7 @@ import {
   cloneRepo,
   fetchOrigin,
   getDefaultBranch,
+  listCheckoutFiles,
   listRemoteBranches,
   remoteBranchExists,
   worktreeUpstreamBranch,
@@ -394,6 +395,23 @@ describe('the git operations on a project clone', () => {
     expect(branches[0]).toBe('develop')
     expect(branches).toContain(defaultBranch)
     expect(branches).not.toContain('HEAD')
+  })
+
+  it('listCheckoutFiles reads a checkout whose .git names a path that does not exist here', async () => {
+    const wtPath = path.join(tmpDir, 'wt-list')
+    await addWorktree(sourceRepo, wtPath, 'agent/wt-list')
+    // What the in-pod setup leaves behind: the container's own view.
+    await fs.writeFile(path.join(wtPath, '.git'), 'gitdir: /repo/.git/worktrees/wt-list\n')
+    await fs.writeFile(path.join(wtPath, '.gitignore'), '*.log\n')
+    await fs.writeFile(path.join(wtPath, 'hello.txt'), 'changed\n')
+    await fs.writeFile(path.join(wtPath, 'debug.log'), 'ignored\n')
+    await fs.mkdir(path.join(wtPath, 'fresh/empty'), { recursive: true })
+
+    const listing = await listCheckoutFiles(sourceRepo, 'wt-list', wtPath)
+    expect(listing.paths.sort()).toEqual(['.gitignore', 'hello.txt'])
+    expect(listing.ignored).toEqual(['debug.log'])
+    expect(listing.untrackedDirs).toEqual(['fresh'])
+    expect(listing.status).toEqual({ '.gitignore': 'untracked', 'hello.txt': 'modified' })
   })
 
   it('worktreeUpstreamBranch reads the tracked branch, null when unset', async () => {

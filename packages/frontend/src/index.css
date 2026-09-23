@@ -381,12 +381,12 @@ body.col-resizing * {
 }
 
 /*
- * Syntax-highlight token colors for the Changes diff view. Same theming model
- * as the palette above — dark base, re-asserted for nested dark subtrees, with
- * a light override (and the system-follows-light variant CSS can't share).
- * @lezer/highlight's classHighlighter emits the `tok-*` classes; scoping to
- * `.diff-hl` keeps them off the CodeMirror config editors, which theme
- * themselves. Values are GitHub's prettylights palette, which is tuned for
+ * Syntax-highlight token colors, shared by the diff view (`.diff-hl`) and
+ * every CodeMirror editor (`.cm-editor`) so the two always match. Same theming
+ * model as the palette above — dark base, re-asserted for nested dark
+ * subtrees, with a light override (and the system-follows-light variant CSS
+ * can't share). @lezer/highlight's classHighlighter emits the `tok-*` classes
+ * in both. Values are GitHub's prettylights palette, which is tuned for
  * exactly this: colored code over a diff's green/red line tints.
  */
 :root,
@@ -420,23 +420,23 @@ body.col-resizing * {
   }
 }
 
-.diff-hl .tok-keyword { color: var(--syntax-keyword); }
-.diff-hl .tok-string,
-.diff-hl .tok-string2 { color: var(--syntax-string); }
-.diff-hl .tok-comment { color: var(--syntax-comment); font-style: italic; }
-.diff-hl .tok-number,
-.diff-hl .tok-bool,
-.diff-hl .tok-atom,
-.diff-hl .tok-literal { color: var(--syntax-constant); }
-.diff-hl .tok-definition,
-.diff-hl .tok-macroName,
-.diff-hl .tok-meta { color: var(--syntax-entity); }
-.diff-hl .tok-typeName,
-.diff-hl .tok-className,
-.diff-hl .tok-namespace { color: var(--syntax-type); }
-.diff-hl .tok-heading { color: var(--syntax-keyword); font-weight: 600; }
-.diff-hl .tok-strong { font-weight: 600; }
-.diff-hl .tok-emphasis { font-style: italic; }
-.diff-hl .tok-link,
-.diff-hl .tok-url { color: var(--syntax-entity); text-decoration: underline; }
-.diff-hl .tok-invalid { color: var(--syntax-invalid); text-decoration: underline wavy; }
+:is(.diff-hl, .cm-editor) .tok-keyword { color: var(--syntax-keyword); }
+:is(.diff-hl, .cm-editor) .tok-string,
+:is(.diff-hl, .cm-editor) .tok-string2 { color: var(--syntax-string); }
+:is(.diff-hl, .cm-editor) .tok-comment { color: var(--syntax-comment); font-style: italic; }
+:is(.diff-hl, .cm-editor) .tok-number,
+:is(.diff-hl, .cm-editor) .tok-bool,
+:is(.diff-hl, .cm-editor) .tok-atom,
+:is(.diff-hl, .cm-editor) .tok-literal { color: var(--syntax-constant); }
+:is(.diff-hl, .cm-editor) .tok-definition,
+:is(.diff-hl, .cm-editor) .tok-macroName,
+:is(.diff-hl, .cm-editor) .tok-meta { color: var(--syntax-entity); }
+:is(.diff-hl, .cm-editor) .tok-typeName,
+:is(.diff-hl, .cm-editor) .tok-className,
+:is(.diff-hl, .cm-editor) .tok-namespace { color: var(--syntax-type); }
+:is(.diff-hl, .cm-editor) .tok-heading { color: var(--syntax-keyword); font-weight: 600; }
+:is(.diff-hl, .cm-editor) .tok-strong { font-weight: 600; }
+:is(.diff-hl, .cm-editor) .tok-emphasis { font-style: italic; }
+:is(.diff-hl, .cm-editor) .tok-link,
+:is(.diff-hl, .cm-editor) .tok-url { color: var(--syntax-entity); text-decoration: underline; }
+:is(.diff-hl, .cm-editor) .tok-invalid { color: var(--syntax-invalid); text-decoration: underline wavy; }
