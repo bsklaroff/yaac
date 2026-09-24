@@ -30,9 +30,11 @@ ARG LLAMA_CPP_TAG=b9940
 
 # catatonit: node is PID 1 here and would never reap the orphans of the
 # processes the server spawns (kubectl, git). libgomp1: the llama.cpp
-# release links it and does not ship it.
+# release links it and does not ship it. netcat-openbsd: under YAAC_USE_TOR
+# the server's own ssh (host-key fetch, git over ssh) dials through
+# `ProxyCommand=nc -X 5 -x …` (torSshOpts).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates catatonit curl git libgomp1 openssh-client tar xz-utils && \
+      ca-certificates catatonit curl git libgomp1 netcat-openbsd openssh-client tar xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \

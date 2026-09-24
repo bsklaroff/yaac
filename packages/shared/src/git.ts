@@ -8,12 +8,13 @@ const execFileAsync = promisify(execFile)
  * ssh does not honor ALL_PROXY / HTTPS_PROXY, so Tor routing for ssh has
  * to go through `-o ProxyCommand=...`. OpenBSD `nc -X 5 -x` passes the
  * destination hostname unchanged to the SOCKS5 proxy, so Tor resolves DNS
- * at its exit (no local-DNS leak). `netcat-openbsd` is on every
- * Linux/macOS we target.
+ * at its exit (no local-DNS leak). Whatever runs the server must ship
+ * OpenBSD `nc` — macOS does, and Dockerfile.server installs
+ * `netcat-openbsd` for the in-cluster server.
  *
  * Note: these opts must NOT be passed to `ssh-keyscan` — its `-O` flag
  * only accepts `hashalg`, not ProxyCommand. For host-key fetches under
- * Tor, drive `ssh` instead (see fetchKnownHostsEntry in auth-update.ts).
+ * Tor, drive `ssh` instead (see fetchKnownHostsEntry in #domain/git).
  */
 export function torSshOpts(): string[] {
   if (!env.useTor) return []
