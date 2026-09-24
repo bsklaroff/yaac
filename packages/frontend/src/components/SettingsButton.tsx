@@ -1137,10 +1137,7 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
 
   return (
     <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-2">
-      {/* Stacked below md: at 16px (the phone-width floor every control gets)
-          two side-by-side fields leave the token one about 70px, which is a
-          box you can't read a pasted token in. */}
-      <div className="flex gap-2 max-md:flex-col">
+      <div className="flex gap-2">
         <select
           value={kind}
           onChange={(e) => setKind(e.target.value === 'ssh' ? 'ssh' : 'https')}
@@ -1152,27 +1149,27 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
         <input
           name="pattern"
           placeholder="github.com/*"
-          className="w-40 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-            outline-none focus:border-border-strong max-md:w-full"
+          className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
+            outline-none focus:border-border-strong"
         />
-        {kind === 'https' && (
-          <input
-            name="token"
-            type="password"
-            placeholder="token"
-            className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-              outline-none focus:border-border-strong"
-          />
-        )}
-        <button
-          type="submit"
-          disabled={busy}
-          className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
-            hover:bg-border-strong disabled:opacity-50 max-md:py-2.5"
-        >
-          {busy ? (kind === 'ssh' ? 'Generating…' : 'Adding…') : (kind === 'ssh' ? 'Generate' : 'Add')}
-        </button>
       </div>
+      {kind === 'https' && (
+        <input
+          name="token"
+          type="password"
+          placeholder="token"
+          className="rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
+            outline-none focus:border-border-strong"
+        />
+      )}
+      <button
+        type="submit"
+        disabled={busy}
+        className="self-start rounded-md bg-surface-3 px-3 py-1.5 text-xs font-medium text-text transition
+          hover:bg-border-strong disabled:opacity-50 max-md:py-2.5"
+      >
+        {busy ? (kind === 'ssh' ? 'Generating…' : 'Adding…') : (kind === 'ssh' ? 'Generate' : 'Add')}
+      </button>
       {generated && (
         <div className="space-y-1 break-all font-mono text-xs text-text-dim">
           <p>Public key for {generated.pattern} — register it with the host: {generated.publicKey}</p>

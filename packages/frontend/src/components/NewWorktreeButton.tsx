@@ -36,7 +36,7 @@ const MODE_HELP: Record<AgentMode, string> = {
   acp: 'The agent driven over the Agent Client Protocol, in a chat pane.',
 }
 
-const SELECT = 'min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-1 py-0.5 text-[11px] text-text '
+const SELECT = 'min-w-0 flex-1 rounded-md border border-border bg-surface-2 h-[26px] px-1 text-xs text-text '
   + 'outline-none hover:bg-surface-3'
 
 /**
@@ -366,8 +366,8 @@ export function NewWorktreeButton(
  *  carries its own aria-label). */
 function Row({ label, title, children }: { label: string; title?: string; children: ReactNode }): JSX.Element {
   return (
-    <div className="mx-1 mb-1 flex items-start gap-2 px-1 py-0.5 text-[11px] text-text-dim" title={title}>
-      <span className="w-[76px] shrink-0 pt-1">{label}</span>
+    <div className="mx-1 mb-1 flex items-start gap-2 px-1 py-0.5 text-xs text-text-dim" title={title}>
+      <span className="w-[76px] shrink-0 pt-[5px]">{label}</span>
       {children}
     </div>
   )

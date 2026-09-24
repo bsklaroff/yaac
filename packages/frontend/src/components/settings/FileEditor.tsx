@@ -3,6 +3,7 @@ import { Dialog } from '@base-ui/react/dialog'
 import { CodeEditor } from '#components/ui/CodeEditor'
 import type { HighlightLanguage } from '#lib/highlight'
 import { CollapseIcon, ExpandIcon } from '#lib/icons'
+import { useUiStore } from '#store'
 
 function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -19,6 +20,8 @@ function errMessage(e: unknown): string {
  * near-fullscreen overlay (a nested dialog, titled `title`) with the same
  * hint/error/save row below it; the text state is shared, so edits and
  * dirty state survive expanding and collapsing.
+ *
+ * Text is sized like the file pane's editor, following its text-size setting.
  */
 export function FileEditor({
   title,
@@ -39,6 +42,7 @@ export function FileEditor({
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const fontSize = useUiStore((s) => s.editorFontSize)
 
   useEffect(() => {
     let cancelled = false
@@ -97,7 +101,7 @@ export function FileEditor({
   return (
     <div className="flex flex-col gap-2">
       <div className="relative">
-        <CodeEditor value={text ?? ''} onChange={onEdit} language={language} />
+        <CodeEditor value={text ?? ''} onChange={onEdit} language={language} fontSize={fontSize} />
         <button
           type="button"
           onClick={() => setExpanded(true)}
@@ -135,6 +139,7 @@ export function FileEditor({
               value={text ?? ''}
               onChange={onEdit}
               language={language}
+              fontSize={fontSize}
               height="100%"
               className="min-h-0 flex-1"
             />
