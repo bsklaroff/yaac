@@ -76,10 +76,10 @@ describe('yaac-mama skill', () => {
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
     // Stopping is in the subset, and the two things an agent has to know
-    // about it are that omitting the session means itself and that a
+    // about it are that omitting the worktree means itself and that a
     // self-stop's confirmation may never arrive.
-    expect(body).toContain('yaac-mama stop [<session>]')
-    expect(body).toContain('the session ending is the confirmation')
+    expect(body).toContain('yaac-mama stop [<worktree>]')
+    expect(body).toContain('the worktree ending is the confirmation')
     // The subset is the point of the skill, so it has to say so: an agent
     // reading this must not go looking for a delete or a restart.
     expect(body).toContain('strict subset')
@@ -98,7 +98,7 @@ describe('review-pr skill', () => {
   it('is discoverable and drives the watch and the self-stop through the worktree-bin commands', async () => {
     expectShipped('review-pr')
     const body = await bodyOf('review-pr')
-    // A reviewer session watches its own PR's activity, and winds itself down
+    // A reviewer worktree watches its own PR's activity, and winds itself down
     // through yaac-mama once the PR is approved.
     expect(body).toContain('yaac-watch-prs --pr <n> --events commit,comment')
     expect(body).toContain('yaac-mama stop')

@@ -511,7 +511,7 @@ docs/plans/isolation-groundwork.md workstream 1.
   cluster*. `resolveWorktreeContainer` delegates to the driver's `find` with
   no exact-match preference, so every `/worktree/:id/*` route inherits the
   ambiguity. The fix already exists in the same folder:
-  `resolveSessionInProject` trims, rejects empty, prefers an exact match and
+  `resolveWorktreeInProject` trims, rejects empty, prefers an exact match and
   reports `ambiguous` on a multi-prefix hit — propagate that discipline to
   the pod-side resolver and the upgrade handlers. **Fix first, before any
   owner lookup** — an owner check keyed off a fuzzy resolve targets the
@@ -655,7 +655,7 @@ its allowlist, and a pod *cannot* spawn into another project
 carried in `SpawnRequest`; the spawned worktree should **inherit the
 caller's owner**, read from the caller's worktree row the drain already
 resolves. The queue caps are `MAMA_MAX_PENDING_TOTAL` across the install
-plus a per-worktree pending cap and `SPAWN_MAX_IN_FLIGHT_PER_SESSION` —
+plus a per-worktree pending cap and `SPAWN_MAX_IN_FLIGHT_PER_WORKTREE` —
 one user's worktrees can still fill the shared total, so add a per-owner
 budget. And `decideSpawn` falls back to the project's last agent
 (request tool → caller's tool → the project's last agent → `claude`) and its

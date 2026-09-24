@@ -4,12 +4,17 @@
 
 A **queued worktree** is a worktree create request saved for later: a
 prompt plus the full create settings (agent, model, permissions, UI mode,
-branch), attached to a **parent** worktree. The queued request runs
-automatically when the parent stops *naturally*. A natural stop is a user
-stop from the webapp, `yaac worktree stop`, or `yaac-mama stop`. It does not
-run when the parent dies (OOM, crash, eviction, the agent's tmux going away,
-and so on). In that case the request waits, still under the parent, until
-the user runs it or discards it.
+branch), attached to a **parent**. The queued request runs automatically
+when the parent stops *naturally*. A natural stop is a user stop from the
+webapp, `yaac worktree stop`, or `yaac-mama stop`. It does not run when the
+parent dies (OOM, crash, eviction, the agent's tmux going away, and so on).
+In that case the request waits, still under the parent, until the user runs
+it or discards it.
+
+The parent is either a worktree or **another queued worktree**, so requests
+chain to any depth: B after A, C after B, D after C, and so on. An entry
+under an entry waits for its parent to launch *and then* stop naturally.
+Each link in a chain is a full worktree run, one after another.
 
 The same change also reworks the create flow around it:
 
@@ -23,11 +28,12 @@ The same change also reworks the create flow around it:
 - A sidebar worktree row's hover icons collapse into one **`…` menu**, which
   gains **Queue worktree after this…**.
 - Queued requests show in the sidebar **nested under their parent**, with
-  **Run now / Edit / Discard**.
+  **Run now / Edit / Discard / Queue worktree after this…**. A chain nests
+  one level deeper per link.
 - The **stop dialog** lists the worktree's queued children, so the user can
   edit or discard them before they start.
 - **`yaac-mama queue`** lets an agent queue a follow-up under itself, or
-  under another worktree named with `--session`.
+  under another worktree or queued entry named with `--worktree`.
 - **Permission ceiling for agents.** Permission modes get a strict ordering.
   Anything an agent creates through `yaac-mama create` or `yaac-mama queue`
   runs at or below the creating worktree's own permission mode. Both commands
@@ -43,9 +49,10 @@ an in-memory concurrency cap that is never persisted.
 | Term | Meaning |
 |---|---|
 | **queued worktree** / **entry** | A `queued_worktrees` row: a saved create request. It is not a worktree yet. It has no `worktrees` row, no checkout and no runtime. |
-| **parent** | The worktree an entry waits on (`parentWorktreeId`). |
-| **release** | Marking an entry to launch now. A natural parent stop releases every child. **Run now** releases one. |
-| **launch** | Turning a released entry into a real worktree through the normal create path. The entry is deleted when the create succeeds. |
+| **parent** | What an entry waits on: a worktree (`parentWorktreeId`) or another entry (`parentQueuedId`). Exactly one is set. |
+| **chain** | An entry, its child entries, their child entries, and so on. There is no depth limit. |
+| **release** | Marking an entry to launch now. A natural stop of a parent *worktree* releases every direct child. **Run now** releases one entry. An entry whose parent is an entry is never released by a stop. |
+| **launch** | Turning a released entry into a real worktree through the normal create path. The entry is deleted when the create succeeds, and its child entries now wait on the new worktree. |
 | **held parent** | A *stopped* worktree that still has entries. It stays in the sidebar until it has none. |
 
 The UI calls entries "queued worktrees" and never "queued sessions"
@@ -66,7 +73,7 @@ stop do:
 |---|---|---|
 | Webapp stop (row menu, Alt+D) → `POST /worktree/stop` | yes | released |
 | `yaac worktree stop` → `POST /worktree/stop` | yes | released |
-| `yaac-mama stop [--session X]` → `runMamaCommand` → `runStop` | yes | released |
+| `yaac-mama stop [<worktree>]` → `runMamaCommand` → `runStop` | yes | released |
 | Stale reaper: `oom`, `evicted`, `crashed`, `pod-stopped`, `agent-exited`, `never-started`, `orphaned` | no (`cleanupWorktreeDetached` with a `cause`) | stay queued; parent is held |
 | Restart of a running worktree (`teardownForRestart`) | no | stay queued; the parent comes back |
 | Failed resume (`applyCreateFailed`) | no | stay queued; parent is held |
@@ -94,11 +101,58 @@ from a crash, so the children stay queued. An agent that is done calls
 All of a parent's children release together and launch concurrently, as
 siblings. There is no limit on how many entries one parent can hold.
 
+### Chains
+
+An entry can be queued under another entry, and so on to any depth. Only
+the top of a chain, the entry whose parent is a worktree, can be released
+by a stop. Everything below it waits on an entry, and an entry never
+stops, so nothing below can run early. Each link runs once the link above
+it has launched and then stopped naturally.
+
+The parent pointer moves down the chain as it runs, with no special case in
+`stopWorktree`:
+
+- **At claim.** The same transaction that claims an entry's launch
+  (`claimQueuedLaunch`) re-points its children from `parentQueuedId = entry`
+  to `parentWorktreeId = launchWorktreeId`. From then on they are ordinary
+  children of a worktree. The sidebar nests them under the provisioning row,
+  and a natural stop of that worktree releases them through the usual
+  `parentWorktreeId` match. This holds even if the stop comes before the
+  launch has finished: a child released that way launches on its own terms,
+  whatever happens to the launch that made its parent.
+- **On failure.** `failQueuedLaunch` moves back under the entry every
+  *unreleased* child of `launchWorktreeId` (`releasedAt IS NULL AND
+  launchWorktreeId IS NULL`). That includes entries queued under the
+  provisioning row while the launch was in flight. They wait on an entry
+  that failed, and the user can fix it and Run now. A child the worktree's
+  stop already released keeps its `parentWorktreeId` and runs, because a
+  release is never taken back and a pointer under a running launch is never
+  rewritten. If that child's own launch then fails too, it is left pointing
+  at W, which has no row, since a failed fresh create deletes its row. Such
+  an **orphaned** entry has no parent to nest under, so the sidebar shows it
+  at the top level (below).
+- **Queueing under a launching entry.** The entry is hidden from the
+  snapshot at that point, but `yaac-mama queue --worktree <entry id>` can
+  still name it. The request is queued under its `launchWorktreeId`, and the
+  failure rule above takes it back if the launch fails.
+
+When the worktree at the top of a chain dies, its direct children stay
+queued as usual, and the rest of the chain stays under them. The whole
+chain shows under the held parent.
+
+Settings default from an entry parent the same way they do from a worktree
+parent. They come from the entry's stored `tool`, `mode`, `model`,
+`permissionMode` and `branch`, because an entry has no agent session yet.
+Nothing is re-derived when the parent launches: every entry's settings were
+already concrete when it was queued.
+
 ### Default settings come from the parent
 
-When the dialog's Start is set to a parent, or when `yaac-mama queue` runs,
-an entry's settings default to the parent's **first agent session** (the
-same session that supplies the worktree's tool and label):
+When the dialog's Start is set to a parent worktree, or when `yaac-mama
+queue` runs under one, an entry's settings default to the parent's **first
+agent session** (the same session that supplies the worktree's tool and
+label). An entry parent supplies its stored settings instead (see
+"Chains"). For a worktree parent:
 
 - **tool** and **mode**: from that session.
 - **model**: that session's *current* model (`AgentSessionEntry.model`
@@ -135,7 +189,7 @@ exactly what will run, and an edit can change a value but never clear it.
 `baseBranch` is written by a `base-branch-resolved` event that lands after
 the launch has finished, and only on a best-effort basis. So a parent that
 is still starting has none. That is exactly the parent of
-`id=$(yaac-mama create …); yaac-mama queue --session "$id" …`.
+`id=$(yaac-mama create …); yaac-mama queue --worktree "$id" …`.
 
 The branch doesn't need to wait for the launch: `createWorktree` computes
 it as `options.branch ?? config.referenceBranch ?? getDefaultBranch(repo)`,
@@ -208,15 +262,31 @@ This covers both ways a parent can end up held:
 ### Editing, discarding, running now
 
 - **Edit** changes any stored field, including the parent: the dialog's
-  Start dropdown can re-parent an entry. Choosing `Now` in edit mode saves
-  the entry and runs it.
-- **Discard** deletes the entry. From the sidebar it asks for confirmation
-  (the entry is a prompt someone wrote). In the stop dialog it happens
-  immediately, because that dialog is already a confirmation. Discarding in
-  the stop dialog and then cancelling the stop does not bring the entry
-  back.
-- **Run now** releases one entry, whatever the parent's state. The parent
-  keeps running if it is running.
+  Start dropdown can re-parent an entry onto a worktree or another entry.
+  Its children move with it. A parent that is the entry itself or one of its
+  descendants would make a cycle that never runs, so it is refused
+  (`VALIDATION`). The check walks up from the new parent, and when it
+  reaches a worktree that is some entry's `launchWorktreeId` it steps to
+  that entry and keeps walking. Otherwise a launching entry would hide its
+  ancestry: with Q → E → C and E launching as W, moving Q under C would pass
+  a walk that stopped at W, and a failed launch would then close the cycle
+  E → Q → C → E. Choosing `Now` in edit mode saves the entry and runs it.
+- **Discard** deletes the entry. Its children are **spliced** up to the
+  discarded entry's own parent. Under an entry or a live worktree the rest
+  of the chain still runs, one link sooner. Under a held parent (a stopped
+  worktree) they stay queued there, like any child of a held parent, until
+  someone presses Run now or restarts and stops the parent. From the
+  sidebar Discard asks for confirmation (the entry is a prompt someone
+  wrote), and the confirmation says where the entry's children will move
+  and whether they will then run. In the stop dialog it happens immediately,
+  because that dialog is already a confirmation. Discarding in the stop
+  dialog and then cancelling the stop does not bring the entry back.
+- **Run now** releases one entry, whatever its parent's state. The parent
+  keeps running if it is running. Run now on an entry in the middle of a
+  chain takes it out of the chain once the launch succeeds. Its children
+  follow it to the new worktree, and the entries above it keep waiting. If
+  the launch fails, the entry is back where it was, still under its parent
+  entry, with `releasedAt` cleared and `launchError` set.
 
 An entry whose launch is in flight cannot be edited or discarded
 (`CONFLICT`). It is also absent from the snapshot while in flight, and its
@@ -232,19 +302,22 @@ provisioning row with progress and delivers the prompt the same way
 - **Claim.** The launcher first sets `launchWorktreeId` with a
   compare-and-set (`WHERE launch_worktree_id IS NULL`), before it provisions
   anything under that id. A Run-now double-click, or the stop hook racing
-  the reconcile step, loses the CAS and does nothing.
+  the reconcile step, loses the CAS and does nothing. The winning CAS also
+  re-points the entry's children at `launchWorktreeId` (see "Chains").
 - **Success.** The entry row is deleted.
-- **Failure.** `launchWorktreeId` and `releasedAt` are cleared and
-  `launchError` is set. The provisioning entry is *removed*, not *failed*, so
-  the error shows once, on the queued row, rather than also as a failed
-  provisioning row with a dismiss ×. The prompt is never lost: a failed fresh
+- **Failure.** `launchWorktreeId` and `releasedAt` are cleared,
+  `launchError` is set, and the children come back under the entry. The
+  provisioning entry is *removed*, not *failed*, so the error shows once,
+  on the queued row, rather than also as a failed provisioning row with a
+  dismiss ×. The prompt is never lost: a failed fresh
   create deletes its `worktrees` row, but the entry is still there.
 - **Server restart mid-launch.** The entry still has `launchWorktreeId`, and
   the new process's provisioning registry does not know it. The reconcile
   step (below) handles this. If the runtime snapshot has a live workspace
   under that id, the launch finished and only the cleanup was lost, so the
-  step deletes the entry. Otherwise it clears `launchWorktreeId` and launches
-  again under a fresh id. The half-made worktree from the dead attempt is the
+  step deletes the entry. Otherwise it clears `launchWorktreeId`, moves the
+  children back under the entry as a failure would, and launches again under
+  a fresh id. The half-made worktree from the dead attempt is the
   stale reaper's (`never-started`), as it would be for any interrupted
   create.
 
@@ -255,14 +328,18 @@ key, and, like every other table there, has no foreign keys.
 
 ```ts
 /**
- * A worktree create request saved to run when `parentWorktreeId` stops
- * naturally (docs/queued-worktrees.md). Not a worktree: no `worktrees` row,
+ * A worktree create request saved to run when its parent stops naturally
+ * (docs/queued-worktrees.md). Not a worktree: no `worktrees` row,
  * checkout or runtime exists until it launches, and the launch deletes it.
  */
 export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   id: uuid().primaryKey().defaultRandom(),
   projectSlug: text().notNull(),
-  parentWorktreeId: text().notNull(),
+  /** Exactly one of these two is set: the worktree this entry waits on, or
+   *  the entry it is chained after. Claiming the parent entry's launch
+   *  re-points its children at the launching worktree. */
+  parentWorktreeId: text(),
+  parentQueuedId: uuid(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   prompt: text().notNull(),
   tool: text().notNull(),
@@ -279,8 +356,14 @@ export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   launchWorktreeId: text(),
   /** Why the last launch failed; cleared by the next release. */
   launchError: text(),
-}, (t) => [index().on(t.projectSlug, t.parentWorktreeId)])
+}, (t) => [
+  index().on(t.projectSlug, t.parentWorktreeId),
+  index().on(t.parentQueuedId),
+])
 ```
+
+The store's writes are the only way into the table, and each one keeps
+exactly one parent column set.
 
 Generate the migration with
 `pnpm --filter @yaac/server exec drizzle-kit generate --name add_queued_worktrees`.
@@ -294,14 +377,14 @@ Every write ends with `notifyWorktreeListChanged()`, like `group-store.ts`:
 | Function | Does |
 |---|---|
 | `insertQueuedWorktree` | adds an entry |
-| `updateQueuedWorktree` | edits an entry; guarded by `launchWorktreeId IS NULL`; returns whether it matched |
-| `deleteQueuedWorktree` | deletes an entry, with the same guard |
+| `updateQueuedWorktree` | edits an entry, including which parent column is set; guarded by `launchWorktreeId IS NULL`; returns whether it matched |
+| `deleteQueuedWorktree` | deletes an entry, with the same guard, and splices its children up to its parent in the same transaction |
 | `listQueuedWorktreeRows(projectSlug?)` | reads entries |
-| `releaseQueuedChildren(slug, parentId)` | sets `releasedAt`, clears `launchError`; returns the released rows |
+| `releaseQueuedChildren(slug, parentId)` | for entries with `parentWorktreeId = parentId`: sets `releasedAt`, clears `launchError`; returns the released rows |
 | `releaseQueuedWorktree(id)` | same, for one entry |
-| `claimQueuedLaunch(id, worktreeId)` | the CAS |
+| `claimQueuedLaunch(id, worktreeId)` | the CAS, plus re-pointing the entry's children at `worktreeId`, in one transaction |
 | `finishQueuedLaunch(id)` | deletes the entry after a successful launch |
-| `failQueuedLaunch(id, error)` | records a failed launch |
+| `failQueuedLaunch(id, error)` | records a failed launch and moves the failed worktree id's *unreleased* children back under the entry, in one transaction |
 | `deleteProjectQueuedWorktrees(slug)` | removes a project's entries; called from `removeProject` beside `deleteProjectWorktrees` |
 
 ## Server
@@ -347,9 +430,9 @@ through the `#domain/worktrees` barrel:
 
 | Function | Does |
 |---|---|
-| `queueWorktree(project, request, source)` | Resolves the parent with `resolveSessionInProject` (the same id-or-prefix lookup `yaac-mama` uses). Rejects spares and unknown ids (`NOT_FOUND`). Fills defaults from the parent (above) and checks `launchPermissionMode` for the tool/mode pair. When `source` is `mama`, it also applies the permission ceiling. Inserts the entry. There is no cap on entries per parent. |
-| `updateQueuedWorktree(id, patch)` | Validates like `queueWorktree`; `CONFLICT` while launching. |
-| `discardQueuedWorktree(id)` | `CONFLICT` while launching. |
+| `queueWorktree(project, request, source)` | Resolves the parent as a worktree, with `resolveWorktreeInProject` (the same id-or-prefix lookup `yaac-mama` uses), or as an entry in the project, matched by id or prefix the same way. A prefix that matches both is ambiguous (`VALIDATION`). A launching entry resolves to its `launchWorktreeId`. Rejects spares and unknown ids (`NOT_FOUND`). Fills defaults from the parent (above) and checks `launchPermissionMode` for the tool/mode pair. When `source` is `mama`, it also applies the permission ceiling. Inserts the entry. There is no cap on entries per parent and no limit on chain depth. |
+| `updateQueuedWorktree(id, patch)` | Validates like `queueWorktree`, and also refuses a new parent that is the entry or one of its descendants (`VALIDATION`), found by walking up from the new parent and through any launching entry's `launchWorktreeId` (see Edit, above). `CONFLICT` while launching. |
+| `discardQueuedWorktree(id)` | Splices children up. `CONFLICT` while launching. |
 | `runQueuedWorktree(id)` | `releaseQueuedWorktree`, then launches detached. Returns once the launch is claimed. |
 | `releaseQueuedChildren(slug, parentId)` | Called by `stopWorktree`. Releases the children and launches each one detached. |
 | `listQueuedWorktrees()`, `listHeldWorktrees()` | Snapshot projections. |
@@ -371,7 +454,7 @@ handles two cases:
 1. **An interrupted launch.** The entry has `launchWorktreeId` set, and the
    provisioning registry doesn't know that id. If `ctx.snapshot()` has a live
    workspace under the id, the step calls `finishQueuedLaunch`. Otherwise it
-   clears the claim and launches again.
+   clears the claim, moves the children back, and launches again.
 2. **A missed release.** The entry has `releasedAt` set and
    `launchWorktreeId` null, which means the server died between the release
    and the launch. The step launches it.
@@ -384,11 +467,17 @@ from rows only:
 
 - `queuedWorktrees: QueuedWorktreeEntry[]`. Every entry *not* currently
   launching, oldest first within a parent. This mirrors how
-  `buildSnapshot` already hides worktrees that are provisioning.
+  `buildSnapshot` already hides worktrees that are provisioning. A
+  launching entry's children already point at its provisioning worktree, so
+  none of them is left pointing at a hidden entry. Each entry carries
+  `orphaned: true` when its `parentWorktreeId` names no `worktrees` row and
+  no provisioning entry. That happens when a released child's launch fails
+  under a worktree whose own create failed (see "Chains").
 - `heldWorktrees: HeldWorktreeEntry[]`. Stopped, non-spare `worktrees` rows
-  that have at least one entry. This is deliberately a slimmer type than
-  `StoppedWorktreeEntry`. `listStoppedWorktrees` stats transcripts to compute
-  `lastActiveAt`, which is too slow for a snapshot that rebuilds on every
+  that are the `parentWorktreeId` of at least one entry. This is
+  deliberately a slimmer type than `StoppedWorktreeEntry`.
+  `listStoppedWorktrees` stats transcripts to compute `lastActiveAt`, which
+  is too slow for a snapshot that rebuilds on every
   change. The sidebar only needs `worktreeId, projectSlug, tool, title,
   prompt, groupId, stoppedAt, deathReason, deathDetail`.
 
@@ -405,9 +494,9 @@ and a Run now's progress shows up as a provisioning row in the snapshot.
 
 | Route | Body | Answers |
 |---|---|---|
-| `POST /worktree/queue/create` | `{ project, parent, prompt, tool?, model?, mode?, permissionMode?, branch? }` | the `QueuedWorktreeEntry` |
-| `POST /worktree/queue/update` | `{ id, parent?, prompt?, tool?, model?, mode?, permissionMode?, branch? }`; a field that is present replaces the stored value, and none can be null. A new `tool` sent without `model` or `permissionMode` re-resolves those for that tool, as queueing does. | the entry; 409 while launching |
-| `POST /worktree/queue/discard` | `{ id }` | 204; 404 if gone, 409 while launching |
+| `POST /worktree/queue/create` | `{ project, parent, prompt, tool?, model?, mode?, permissionMode?, branch? }`; `parent` is a worktree id or an entry id | the `QueuedWorktreeEntry` |
+| `POST /worktree/queue/update` | `{ id, parent?, prompt?, tool?, model?, mode?, permissionMode?, branch? }`; a field that is present replaces the stored value, and none can be null. A new `tool` sent without `model` or `permissionMode` re-resolves those for that tool, as queueing does. | the entry; 400 for a cyclic parent, 409 while launching |
+| `POST /worktree/queue/discard` | `{ id }` | 204 (children spliced up); 404 if gone, 409 while launching |
 | `POST /worktree/queue/run` | `{ id }` | `{ worktreeId }` once claimed; 404 / 409 |
 
 A queued entry needs a prompt (`min(1).max(MAX_PROMPT_LENGTH)`). An entry
@@ -421,7 +510,9 @@ with no prompt would launch an idle agent nobody is watching.
 - `update` / `discard` / `run` with an unknown id → `404`
 
 Behavior belongs in `write-routes.test.ts`: create → update → run →
-the entry is gone, and a CAS loser gets `409`.
+the entry is gone, and a CAS loser gets `409`. A chain of three: re-parenting
+the top under the bottom gets `400`, and discarding the middle splices the
+bottom up under the top.
 
 ### Permission ceiling for `yaac-mama`
 
@@ -454,7 +545,7 @@ the mode for both:
 | Command | Mode when `--permission-mode` is not given |
 |---|---|
 | `create` | the caller's own mode. This replaces today's driver default, which could be *above* the caller's, e.g. `bypass` on k8s for a `plan`-mode caller. |
-| `queue` | the **parent's** mode (the caller's own when the parent is the caller) |
+| `queue` | the **parent's** mode: the caller's own when the parent is the caller, and the stored `permissionMode` when the parent is an entry |
 
 Whether the mode comes from the flag or from the default, the command fails
 with an error, and nothing is created or queued, when:
@@ -485,25 +576,27 @@ including when the user edits an entry an agent queued.
 ### `yaac-mama queue`
 
 ```
-yaac-mama queue [--session <parent>] [--tool T] [--model M]
+yaac-mama queue [--worktree <parent>] [--tool T] [--model M]
                 [--permission-mode P] "<prompt>"
 ```
 
 - It prints the entry id and nothing else, like `create` prints the new
   worktree id.
-- The parent defaults to the caller. `--session` names another worktree in
+- The parent defaults to the caller. `--worktree` names another worktree in
   the caller's project, resolved the same way `rename` and `stop` resolve
-  it.
+  it, or a queued entry by id or prefix. Because `queue` prints the entry id,
+  an agent can build a chain in a script:
+  `a=$(yaac-mama queue "step 2"); yaac-mama queue --worktree "$a" "step 3"`.
 - The other settings default from the parent, as described above, and the
   permission mode follows the ceiling rules above.
-- `yaac-mama list` shows each entry indented under its parent, with status
-  `queued` (or `failed: <launchError>`), so an agent can see what it has
-  queued.
+- `yaac-mama list` shows each entry indented under its parent, one level
+  deeper per link of a chain, with status `queued` (or
+  `failed: <launchError>`), so an agent can see what it has queued.
 
 Changes needed:
 
 - `MAMA_COMMANDS` gains `'queue'`.
-- `COMMAND_ARGS` gains `queue: ['session', 'tool', 'model',
+- `COMMAND_ARGS` gains `queue: ['worktree', 'tool', 'model',
   'permission-mode']`, and `create` gains `'permission-mode'`.
 - `runQueue` in `mama.ts` calls `queueWorktree(..., 'mama')`.
 - `decideSpawn` passes the resolved mode through instead of leaving the
@@ -512,14 +605,24 @@ Changes needed:
   `create)`, and both branches gain `--permission-mode`.
 - `builtin-skills/yaac-mama/SKILL.md` gains a section. The main use is "when
   you finish, a follow-up should pick up from here", paired with
-  `yaac-mama stop` as the agent's last act. The skill also documents
-  `--permission-mode` and the ceiling on both commands, so an agent knows to
-  pass a lower mode rather than retrying the same request.
+  `yaac-mama stop` as the agent's last act. It shows the chaining example
+  above for a multi-step plan whose steps must run one after another. It
+  also warns that a chain moves on only when each link's agent calls
+  `yaac-mama stop` or the user stops it. Otherwise the chain waits. The
+  skill also documents `--permission-mode` and the ceiling on both
+  commands, so an agent knows to pass a lower mode rather than retrying the
+  same request.
 
-The egress proxy passes commands through without its own allowlist, so the
-k8s transport needs no change. A worktree whose staged script predates the
-change won't have the subcommand until it restarts, and it fails with the
-script's usage error. That is acceptable, and no shim is needed.
+The egress proxy has no allowlist of command names (`COMMAND_RE` is only a
+shape check), but it does allowlist option names: `validateMamaRequest`
+refuses any arg not in `ARG_SHAPES` with a 400. So `ARG_SHAPES` gains
+`'permission-mode'` (`/^[a-z-]{1,32}$/`); without it k8s would refuse
+`--permission-mode` while containerless accepted it. That rolls the proxy
+image, which `ensureRunning` handles. An entry id passed as `--worktree` (a
+36-character uuid) already fits the `worktree` shape. A worktree whose
+staged script predates the change won't have the subcommand until it
+restarts, and it fails with the script's usage error. That is acceptable,
+and no shim is needed.
 
 ## Frontend
 
@@ -571,7 +674,7 @@ Fields, top to bottom:
 | Field | Notes |
 |---|---|
 | **Prompt** | An autosizing textarea. Optional for `Now`, required for a queued entry. Enter submits and Shift+Enter inserts a newline, matching the chat composer (`WorktreeChat.tsx`). |
-| **Start** | `Now` (the default), then `After "<title>" stops` for each of the project's live worktrees, newest first. In edit mode it also lists the entry's current parent, even when that parent is a held (stopped) worktree. |
+| **Start** | `Now` (the default), then `After "<title>" stops` for each of the project's live worktrees, newest first, then `After queued "<prompt first line>" stops` for each of the project's entries, in sidebar order. In edit mode it also lists the entry's current parent, even when that parent is a held (stopped) worktree, and it leaves out the entry itself and its descendants. |
 | **Branch, Agent, Model, Permissions, UI** | Today's controls, unchanged, including the branch pin and the "tool has no credential" handling. |
 
 **Seeding.** `Now` seeds from `useCreateDefaults`, as today. A parent seeds
@@ -609,16 +712,24 @@ like today's instant create, with one extra keystroke.
 (filtered to the active project like `worktreeGroups`):
 
 - **`QueuedWorktreeRow`** renders beneath its parent's row, indented, with a
-  clock glyph. It shows the prompt's first line as the title and
+  clock glyph. The parent row can be a live, provisioning or held worktree,
+  or another queued row. A chain renders as a tree, one indent step per
+  link, and the step stays small so a deep chain still fits the sidebar's
+  width. The row shows the prompt's first line as the title and
   `tool · model · queued` as meta, or the `launchError` in the error color.
   Clicking it opens the edit dialog. Its `…` menu has **Run now**,
-  **Edit…** and **Discard…** (`ConfirmDialog`).
+  **Edit…**, **Queue worktree after this…** and **Discard…**
+  (`ConfirmDialog`).
 - **Held parents** render in their normal slot as stopped rows, reusing
   `DeletedWorktreeRow`: dimmed, with the restart action, click opens the
   stopped overlay. When the parent died, the row adds the death reason
   (`describeWorktreeDeathReason`). Its queued rows sit beneath it. The row is
   deduplicated by id against the ghost rows the stopped-list query already
   produces.
+- **Orphaned entries** (`orphaned: true`) render at the top of the default
+  list, as queued rows with "parent gone" in place of the parent. They keep
+  their `…` menu, so they can still be run, edited (including re-parented)
+  or discarded. Their own children nest under them as usual.
 - The group-shown rule becomes `pinned || members || provisioning || held`.
 - Queued rows are **not** in `sidebarRowIds`. There is nothing to show in
   the main pane for them, so Alt+J/K skips them.
@@ -638,8 +749,12 @@ children it looks and behaves exactly as today. With children it lists them
   stop dialog.
 - **Discard**, which is immediate.
 
-The confirm button reads **Stop** or **Stop and start N queued**, and keeps
-initial focus so Alt+D then Enter still works.
+Entries further down a chain are listed nested under their parent entry and
+marked as waiting. They don't start with this stop.
+
+The confirm button reads **Stop** or **Stop and start N queued**, where N
+counts direct children only. It keeps initial focus so Alt+D then Enter
+still works.
 
 ## Wire types (`packages/shared/src/types.ts`)
 
@@ -647,7 +762,8 @@ initial focus so Alt+D then Enter still works.
 export interface QueuedWorktreeEntry {
   id: string
   projectSlug: string
-  parentWorktreeId: string
+  parentWorktreeId?: string    // exactly one of these two is set
+  parentQueuedId?: string
   prompt: string
   tool: AgentTool
   model: string
@@ -657,6 +773,7 @@ export interface QueuedWorktreeEntry {
   branch: string
   createdAt: string            // 'YYYY-MM-DD HH:MM:SS' UTC, like its peers
   launchError?: string
+  orphaned?: boolean           // parent worktree has no row: top level
 }
 
 export interface HeldWorktreeEntry {
@@ -679,20 +796,28 @@ export interface HeldWorktreeEntry {
 ## Tests
 
 **`unit:server`**
-- `test/db/queued-worktree-store.test.ts`: the CAS, and the guarded update
-  and delete.
+- `test/db/queued-worktree-store.test.ts`: the CAS and its re-pointing of
+  children, the move back under the entry on failure (leaving a child the
+  worktree's stop already released where it is), and the guarded update
+  and delete (with the splice).
 - `test/domain/worktrees/queued-worktrees.test.ts`: one `describe` per barrel
   function defined in the module, mocking at the process boundary. These
   cover:
   - default inheritance, including the tool-switch fallback;
   - the interrupted-launch and missed-release cases of the reconcile step;
   - a failed launch keeping the prompt;
+  - an orphaned entry (a released child whose launch fails under a
+    worktree whose own create failed) projecting with `orphaned: true`;
   - `branch` and `model` always being stored concretely, including under a
     parent that is still provisioning, and under an old parent row with no
     `baseBranch`;
   - refusal when no model can be resolved;
   - children following the parent's group at launch and forking from the
-    stored branch.
+    stored branch;
+  - chains: defaults inherited from an entry parent, a stop releasing only
+    the top of a chain, queueing under a launching entry, the cycle
+    refusal on re-parent (including one hidden behind a launching entry),
+    and an interrupted launch putting its children back under the entry.
 - `create.ts`'s tests: the row carries `baseBranch` from `worktree-created`
   onward.
 - `stopWorktree`'s existing test gains the release. The reaper's test
@@ -701,7 +826,7 @@ export interface HeldWorktreeEntry {
   rules on both commands:
   - the default is the caller's mode (`create`) or the parent's (`queue`);
   - an explicit mode above the ceiling is refused;
-  - a `--session` parent above the ceiling is refused;
+  - a `--worktree` parent above the ceiling is refused;
   - a tool that lacks the mode (pi from a non-bypass caller, opencode
     `auto`) is refused;
   - nothing is created or queued on any refusal.
@@ -714,8 +839,10 @@ export interface HeldWorktreeEntry {
 - The `write-routes.test.ts` behavior described above.
 
 **`test/e2e-containerless/worktree-suite.test.ts`**
-- Queue a child under the suite's shared worktree, stop the parent, and see
-  the child running with its prompt delivered.
+- Queue a child under the suite's shared worktree and a grandchild under
+  the child. Stop the parent, and see the child running with its prompt
+  delivered, while the grandchild is still queued, now under the child's
+  worktree.
 - A second parent killed out-of-band (kill its tmux server, so the reaper
   records `agent-exited`) keeps its child queued and is listed as held.
   Discard that child, and the parent drops out.
@@ -761,11 +888,6 @@ No new CLI option is added (see follow-ups), so there is no new
 - **Forking from the parent's own `agent/<id>` branch**, for "continue this
   exact work" chains. It needs the parent's commits to be reachable from the
   project clone whether or not they were pushed.
-
-- **Chains** (queue under a queued entry). They need an entry to point at a
-  parent that is itself still an entry, rewritten to the real worktree id
-  when that entry launches. Today a follow-up can be queued once the middle
-  link is running.
 - **CLI management.** `yaac worktree create --after <worktree>` and a
   `yaac worktree queue list|run|discard` family would each need e2e
   coverage. They are left out until someone asks.

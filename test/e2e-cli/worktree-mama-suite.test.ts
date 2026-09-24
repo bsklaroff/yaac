@@ -32,14 +32,14 @@ import { collectSnapshots } from '@yaac/test-utils/events-ws'
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /**
- * End-to-end coverage for the in-session command channel: a session pod runs
+ * End-to-end coverage for the in-worktree command channel: a worktree pod runs
  * the auto-installed `yaac-mama`, its JSON envelope rides the transparent
  * HTTP egress path to the proxy's magic host, the server's background tick
  * drains it, and the command runs against the caller's own project — a
- * sibling session created with its prompt typed into its agent pane, the
- * project's sessions listed back, groups made and filled.
+ * sibling worktree created with its prompt typed into its agent pane, the
+ * project's worktrees listed back, groups made and filled.
  */
-describe('yaac-mama from inside a session (real CLI + server + cluster)', () => {
+describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () => {
   const SLUG = 'spawner'
   let testEnv: YaacTestEnv
   let server: SpawnedServer | null = null
@@ -51,7 +51,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
    *  since its whole point is that the CALLER's row outlives its unit. */
   let callerWorktreeId = ''
   /** The sibling the spawn case creates — the stop case's subject, since a
-   *  session bring-up is the most expensive thing in this file. */
+   *  worktree bring-up is the most expensive thing in this file. */
   let spawnedWorktreeId = ''
 
   beforeAll(async () => {
@@ -113,10 +113,10 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
 
     const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'worktree', 'create', SLUG)
     if (exitCode !== 0) {
-      throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+      throw new Error(`worktree create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
     const pods = await listWorktreePods(SLUG)
-    if (pods.length !== 1) throw new Error(`expected 1 session pod, found ${pods.length}`)
+    if (pods.length !== 1) throw new Error(`expected 1 worktree pod, found ${pods.length}`)
     jobA = pods[0].jobName
     callerWorktreeId = pods[0].worktreeId
   }, 300_000)
@@ -131,7 +131,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     await testEnv.cleanup()
   })
 
-  /** Run yaac-mama in session A, capturing exit code + combined output
+  /** Run yaac-mama in worktree A, capturing exit code + combined output
    *  ourselves (execInJob throws-and-retries on non-zero exits). */
   async function runMama(args: string): Promise<{ exitCode: number; output: string }> {
     const { stdout } = await execInJob(jobA, [
@@ -151,7 +151,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     const { output, exitCode } = await runMama('')
     expect(exitCode).toBe(2)
     expect(output).toContain('Usage:')
-    // Read-only mount: a session cannot tamper with the host-staged copy.
+    // Read-only mount: a worktree cannot tamper with the host-staged copy.
     const { stdout: rw } = await execInJob(jobA, [
       'sh', '-c', 'sh -c ">> /usr/local/bin/yaac-mama" 2>&1; echo "EXIT:$?"',
     ])
@@ -176,12 +176,12 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     expect(stdout).toContain('HTTP:422')
   }, 120_000)
 
-  it('spawns a sibling session with the prompt and --model delivered to its agent', async () => {
-    // Watch the webapp snapshot stream: a spawned session must provision in
+  it('spawns a sibling worktree with the prompt and --model delivered to its agent', async () => {
+    // Watch the webapp snapshot stream: a spawned worktree must provision in
     // the sidebar exactly like a user-initiated create (row while building,
-    // then the ready session in its place).
+    // then the ready worktree in its place).
     //
-    // --model rides along on this spawn rather than getting a session of its
+    // --model rides along on this spawn rather than getting a worktree of its
     // own: the two are orthogonal flags read off different surfaces of the
     // same pod (the agent pane vs. the window's start command), and a
     // sibling bring-up is the most expensive thing in this file.
@@ -208,7 +208,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     }
     expect(sawRow).toBe(true)
 
-    // The new pod appears in the same project under the minted session id.
+    // The new pod appears in the same project under the minted worktree id.
     let spawned: PodInfo | undefined
     for (let i = 0; i < 120 && !spawned?.running; i++) {
       const pods = await listWorktreePods(SLUG)
@@ -220,8 +220,8 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     // Tool defaulted to the caller's (claude — no --tool given).
     expect(spawned?.tool).toBe('claude')
 
-    // Hand-off: once the create resolves, the row drops and the session
-    // lists — never both at once (buildSnapshot hides the session while its
+    // Hand-off: once the create resolves, the row drops and the worktree
+    // lists — never both at once (buildSnapshot hides the worktree while its
     // row exists).
     let handedOff = false
     for (let i = 0; i < 180 && !handedOff; i++) {
@@ -274,12 +274,12 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     expect(startCmd).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-8')
   }, 420_000)
 
-  it('lists the project\u2019s sessions, marking the caller and its group', async () => {
-    // Runs after the spawn above, so both sessions are up and the spawned
+  it('lists the project\u2019s worktrees, marking the caller and its group', async () => {
+    // Runs after the spawn above, so both worktrees are up and the spawned
     // one is filed under the group `create --group` made.
     const { exitCode, output } = await runMama('list')
     expect(exitCode).toBe(0)
-    expect(output).toMatch(/SESSION\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
+    expect(output).toMatch(/WORKTREE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
     // The caller's own row is marked, which is how an agent tells itself
     // from its siblings.
     expect(output).toContain('(you)')
@@ -288,7 +288,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     expect(output).toContain('Groups: release train')
   }, 120_000)
 
-  it('makes a group and files a session into it, by name and short id', async () => {
+  it('makes a group and files a worktree into it, by name and short id', async () => {
     const made = await runMama('group create "review queue"')
     expect(made.exitCode).toBe(0)
     expect(made.output).toContain('review queue')
@@ -328,13 +328,13 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     expect(restored.output).toMatch(new RegExp(`${selfShortId!}[^\\n]*\\(you\\)`))
   }, 180_000)
 
-  it('renames itself over the proxy queue, with no session named', async () => {
+  it('renames itself over the proxy queue, with no worktree named', async () => {
     const { exitCode, output } = await runMama('rename "driving the mama e2e"')
     expect(exitCode).toBe(0)
     expect(output).toContain('driving the mama e2e')
 
     // The caller is attributed by source pod IP, so the title has to land on
-    // the calling session and no other.
+    // the calling worktree and no other.
     const listed = await runMama('list')
     expect(listed.output).toContain('(you)')
   }, 120_000)
@@ -342,7 +342,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
   it('surfaces the proxy rejection for a model value outside the safe charset', async () => {
     // `;` survives the script's JSON encoding but fails the proxy's MODEL_RE
     // mirror — proving the option validation round trip without provisioning
-    // a session.
+    // a worktree.
     const { exitCode, output } = await runMama('create --model "opus;rm" "x"')
     expect(exitCode).toBe(1)
     expect(output).toContain('invalid value for --model')
@@ -364,10 +364,10 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     // rest are not, with the baked catalog supplying claude's model ids.
     const { exitCode, output } = await runMama('models')
     expect(exitCode).toBe(0)
-    expect(output).toContain('this session runs: claude')
+    expect(output).toContain('this worktree runs: claude')
     expect(output).toContain('claude-opus-4-8')
     expect(output).toMatch(/codex\s+not configured/)
-    // No session was spawned: the output is a report, not a session id.
+    // No worktree was spawned: the output is a report, not a worktree id.
     expect(output).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/m)
   }, 120_000)
 
@@ -401,21 +401,21 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     }
     expect(gone).toBe(true)
 
-    // What makes this reversible survives: the session is in the stopped
+    // What makes this reversible survives: the worktree is in the stopped
     // listing, which is where the user restarts it from.
     const listed = await runYaac(serverEnv, 'worktree', 'list', '--stopped')
     expect(listed.exitCode).toBe(0)
     expect(listed.stdout).toContain(shortId)
 
-    // The caller is untouched — naming a session means that session.
+    // The caller is untouched — naming a worktree means that worktree.
     const mine = await runMama('list')
     expect(mine.exitCode).toBe(0)
     expect(mine.output).toContain('(you)')
   }, 240_000)
 
-  it('stops ITSELF when no session is named', async () => {
+  it('stops ITSELF when no worktree is named', async () => {
     // A self-stop tears down the pod its own reply travels back through, so
-    // what is asserted is that the session went away — not what printed.
+    // what is asserted is that the worktree went away — not what printed.
     // Whether the confirmation (or the exec itself) survives the teardown is
     // exactly the race the skill tells an agent not to depend on, which is
     // also why this does not go through `runMama`: a dying exec must not be

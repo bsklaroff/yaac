@@ -101,7 +101,7 @@ workspace can already write the server's files directly
   resolves to the only workspace when exactly one exists.
 - **`findWorktreeRow`** (`db/worktree-store.ts`) rejects `''` but is
   first-match across *all* projects.
-- **`resolveSessionInProject`** (`domain/worktrees/resolve.ts`) is the one
+- **`resolveWorktreeInProject`** (`domain/worktrees/resolve.ts`) is the one
   correct resolver. It trims, rejects empty, prefers an exact match,
   reports `ambiguous`, and excludes spares. Only `group move` and `mama`
   use it.
@@ -138,7 +138,7 @@ below domain is exact.
     drops the prefix branch.
 - **One domain resolver.** `resolveWorktree(input, { projectSlug? })`
   lives in `domain/worktrees/resolve.ts`.
-  - It generalizes `resolveSessionInProject`: trim, reject empty, exact id
+  - It generalizes `resolveWorktreeInProject`: trim, reject empty, exact id
     first, then a *unique* prefix over non-spare rows, and otherwise
     `not-found` or `ambiguous`.
   - With `projectSlug` it is the existing project-scoped resolver, which

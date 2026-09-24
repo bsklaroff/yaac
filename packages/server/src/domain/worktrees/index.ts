@@ -68,7 +68,7 @@ export {
   runProvisioned,
 } from './provisioning'
 export {
-  resolveSessionInProject,
+  resolveWorktreeInProject,
   resolveWorktreeContainer,
   resolveWorktreeRecord,
 } from './resolve'

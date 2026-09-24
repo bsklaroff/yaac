@@ -32,9 +32,9 @@ Shipped skills:
 - **`yaac-autoconfig`** — generate a `yaac-config.json` template for the current
   repo (install/build/start the project + forward its ports) for the user to
   apply to their project config.
-- **`yaac-mama`** — ask the yaac server running this session to list the
-  project's sessions, start a sibling one with a prompt, or file sessions into
-  named groups, via the in-session `yaac-mama` command.
+- **`yaac-mama`** — ask the yaac server running this worktree to list the
+  project's worktrees, start a sibling one with a prompt, or file worktrees
+  into named groups, via the in-worktree `yaac-mama` command.
 - **`yaac-watch-prs`** — watch the project's GitHub repo for PR updates (opened
   / comment / commit), one event line per update, via `yaac-watch-prs`.
 - **`push-pr`** — commit the current branch, open a PR, then watch it for

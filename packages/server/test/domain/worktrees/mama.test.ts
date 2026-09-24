@@ -32,7 +32,7 @@ import { runMamaCommand, type MamaCaller } from '#domain/worktrees/mama'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 
 const CALLER: MamaCaller = {
-  workspaceId: 'caller-session',
+  workspaceId: 'caller-worktree',
   projectSlug: 'proj',
   tool: 'codex',
 }
@@ -78,7 +78,7 @@ const output = async (
 
 describe('runMamaCommand', () => {
   it('refuses a command outside the allowlist, naming what is allowed', async () => {
-    // The union IS the subset of the yaac CLI a session may reach, and this
+    // The union IS the subset of the yaac CLI a worktree may reach, and this
     // is where it is enforced for BOTH transports — the proxy queues
     // envelopes without knowing what any of them mean.
     for (const forbidden of ['delete', 'restart', 'worktree-stop', 'config', '']) {
@@ -103,7 +103,7 @@ describe('runMamaCommand', () => {
     expect(wrong.ok).toBe(false)
     if (!wrong.ok) expect(wrong.error).toContain("does not take '--group'")
 
-    const none = await run('list', '', { session: 'x' })
+    const none = await run('list', '', { worktree: 'x' })
     expect(none.ok).toBe(false)
     if (!none.ok) expect(none.error).toContain('takes no options')
 
@@ -118,36 +118,36 @@ describe('runMamaCommand', () => {
   it('answers rather than throws when a command fails', async () => {
     // A transport is holding a caller's request open, so every path has to
     // produce something to answer with.
-    const outcome = await run('group-move', 'anywhere', { session: 'nope' })
-    expect(outcome).toEqual({ ok: false, error: "no session 'nope' in proj" })
+    const outcome = await run('group-move', 'anywhere', { worktree: 'nope' })
+    expect(outcome).toEqual({ ok: false, error: "no worktree 'nope' in proj" })
   })
 
   describe('list', () => {
-    it('reports the project\'s sessions and groups, marking the caller', async () => {
-      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-session' })
-      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'other-session' })
-      const group = await createWorktreeGroup('proj', 'review', 'other-session')
+    it('reports the project\'s worktrees and groups, marking the caller', async () => {
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-worktree' })
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'other-worktree' })
+      const group = await createWorktreeGroup('proj', 'review', 'other-worktree')
       vi.mocked(listWorktreePods).mockResolvedValue([
-        podFor('caller-session'), podFor('other-session'),
+        podFor('caller-worktree'), podFor('other-worktree'),
       ])
 
       const text = await output('list')
 
-      expect(text).toContain('caller-session'.slice(0, 8))
+      expect(text).toContain('caller-worktree'.slice(0, 8))
       expect(text).toContain('(you)')
       expect(text).toContain('review')
       // The group column is how a reader knows what `group move` would change.
-      expect(text).toMatch(/SESSION\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
+      expect(text).toMatch(/WORKTREE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
       expect(group.name).toBe('review')
     })
 
     it('says so plainly when there is nothing to report', async () => {
       const text = await output('list')
-      expect(text).toContain('No running sessions in proj')
+      expect(text).toContain('No running worktrees in proj')
       expect(text).toContain('No groups yet')
     })
 
-    it('never shows another project\'s sessions', async () => {
+    it('never shows another project\'s worktrees', async () => {
       await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'elsewhere' })
       await createWorktreeGroup('other', 'theirs', 'elsewhere')
       vi.mocked(listWorktreePods).mockResolvedValue([podFor('elsewhere', 'other')])
@@ -205,84 +205,84 @@ describe('runMamaCommand', () => {
 
   describe('rename', () => {
     beforeEach(async () => {
-      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-session' })
-      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sibling-session' })
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-worktree' })
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sibling-worktree' })
     })
 
     const titleOf = async (id: string, slug = 'proj'): Promise<string | undefined> =>
       (await getProjectWorktreeRows(slug)).get(id)?.title
 
-    it('renames the CALLER when no session is named', async () => {
+    it('renames the CALLER when no worktree is named', async () => {
       // The common use: an agent that has worked out what it is doing says
       // so, without first looking up an id it only needs to name itself.
       const text = await output('rename', 'porting the lexer to rust')
 
-      expect(await titleOf('caller-session')).toBe('porting the lexer to rust')
+      expect(await titleOf('caller-worktree')).toBe('porting the lexer to rust')
       expect(text).toContain('porting the lexer to rust')
     })
 
     it('is readable back through list, which is the only view an agent has', async () => {
       await output('rename', 'porting the lexer')
-      vi.mocked(listWorktreePods).mockResolvedValue([podFor('caller-session')])
+      vi.mocked(listWorktreePods).mockResolvedValue([podFor('caller-worktree')])
       _clearListActiveInflightForTests()
 
       const listed = await output('list')
-      expect(listed).toMatch(/SESSION\s+TOOL\s+STATUS\s+GROUP\s+TITLE\s+PROMPT/)
+      expect(listed).toMatch(/WORKTREE\s+TOOL\s+STATUS\s+GROUP\s+TITLE\s+PROMPT/)
       expect(listed).toContain('porting the lexer')
     })
 
     it('renames a sibling by short id prefix', async () => {
-      await output('rename', 'reviewing the PR', { session: 'sibling' })
-      expect(await titleOf('sibling-session')).toBe('reviewing the PR')
-      // The caller is untouched — naming a session means that session.
-      expect(await titleOf('caller-session')).toBeUndefined()
+      await output('rename', 'reviewing the PR', { worktree: 'sibling' })
+      expect(await titleOf('sibling-worktree')).toBe('reviewing the PR')
+      // The caller is untouched — naming a worktree means that worktree.
+      expect(await titleOf('caller-worktree')).toBeUndefined()
     })
 
     it('reports the stored title, not the one that was sent', async () => {
       // The store trims, collapses whitespace and caps the length, so
       // echoing the request would tell the caller something untrue.
       const text = await output('rename', `  spaced   out  ${'x'.repeat(200)}`)
-      const stored = await titleOf('caller-session')
+      const stored = await titleOf('caller-worktree')
       expect(stored).toHaveLength(120)
       expect(stored?.startsWith('spaced out ')).toBe(true)
       expect(text).toContain(stored!)
     })
 
-    it('refuses an empty title and a session it cannot find', async () => {
+    it('refuses an empty title and a worktree it cannot find', async () => {
       expect(await run('rename', '   ')).toEqual({ ok: false, error: 'rename needs a title' })
-      expect(await titleOf('caller-session')).toBeUndefined()
+      expect(await titleOf('caller-worktree')).toBeUndefined()
 
-      const missing = await run('rename', 'x', { session: 'nope' })
+      const missing = await run('rename', 'x', { worktree: 'nope' })
       expect(missing.ok).toBe(false)
     })
 
-    it('cannot rename another project\u2019s session', async () => {
-      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-session' })
-      const outcome = await run('rename', 'mine now', { session: 'foreign-session' })
+    it('cannot rename another project\u2019s worktree', async () => {
+      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-worktree' })
+      const outcome = await run('rename', 'mine now', { worktree: 'foreign-worktree' })
       expect(outcome.ok).toBe(false)
-      expect(await titleOf('foreign-session', 'other')).toBeUndefined()
+      expect(await titleOf('foreign-worktree', 'other')).toBeUndefined()
     })
   })
 
   describe('stop', () => {
     beforeEach(async () => {
-      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-session' })
-      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sibling-session' })
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-worktree' })
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sibling-worktree' })
       vi.mocked(listWorktreePods).mockResolvedValue([
-        podFor('caller-session'), podFor('sibling-session'),
+        podFor('caller-worktree'), podFor('sibling-worktree'),
       ])
     })
 
     it('stops a sibling by short id prefix, keeping what makes it restartable', async () => {
-      const text = await output('stop', '', { session: 'sibling' })
+      const text = await output('stop', '', { worktree: 'sibling' })
 
       // The teardown is the driver's; what this owns is that the RESOLVED
-      // session is the one handed to it.
+      // worktree is the one handed to it.
       expect(vi.mocked(cleanupWorktreeDetached)).toHaveBeenCalledTimes(1)
       expect(vi.mocked(cleanupWorktreeDetached).mock.calls[0][0]).toMatchObject({
-        worktreeId: 'sibling-session',
+        worktreeId: 'sibling-worktree',
         projectSlug: 'proj',
-        jobName: 'yaac-proj-sibling-session',
+        jobName: 'yaac-proj-sibling-worktree',
       })
       expect(text).toContain('sibling-')
       // The line has to say this was reversible, or an agent reads a stop as
@@ -290,45 +290,45 @@ describe('runMamaCommand', () => {
       expect(text).toContain('checkout is kept')
     })
 
-    it('stops the CALLER when no session is named', async () => {
-      // The case the command exists for: a session spawned to do one job
+    it('stops the CALLER when no worktree is named', async () => {
+      // The case the command exists for: a worktree spawned to do one job
       // winding itself down once the job is done.
       await output('stop')
 
       expect(vi.mocked(cleanupWorktreeDetached).mock.calls[0][0]).toMatchObject({
-        worktreeId: 'caller-session',
+        worktreeId: 'caller-worktree',
       })
     })
 
-    it('reports a session that is not running as such, not as unknown', async () => {
-      // The row resolved, so the session exists — it just has no unit. The
+    it('reports a worktree that is not running as such, not as unknown', async () => {
+      // The row resolved, so the worktree exists — it just has no unit. The
       // driver's own NOT_FOUND sends a caller to `yaac worktree list`, which
       // an agent does not have.
       vi.mocked(listWorktreePods).mockResolvedValue([])
 
-      const outcome = await run('stop', '', { session: 'sibling' })
+      const outcome = await run('stop', '', { worktree: 'sibling' })
 
-      expect(outcome).toEqual({ ok: false, error: 'session sibling- is not running' })
+      expect(outcome).toEqual({ ok: false, error: 'worktree sibling- is not running' })
       expect(vi.mocked(cleanupWorktreeDetached)).not.toHaveBeenCalled()
     })
 
-    it('cannot stop another project\'s session', async () => {
-      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-session' })
-      vi.mocked(listWorktreePods).mockResolvedValue([podFor('foreign-session', 'other')])
+    it('cannot stop another project\'s worktree', async () => {
+      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-worktree' })
+      vi.mocked(listWorktreePods).mockResolvedValue([podFor('foreign-worktree', 'other')])
 
-      const outcome = await run('stop', '', { session: 'foreign-session' })
+      const outcome = await run('stop', '', { worktree: 'foreign-worktree' })
 
       expect(outcome.ok).toBe(false)
       expect(vi.mocked(cleanupWorktreeDetached)).not.toHaveBeenCalled()
     })
 
-    it('refuses an ambiguous prefix rather than stopping the wrong session', async () => {
+    it('refuses an ambiguous prefix rather than stopping the wrong worktree', async () => {
       await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sibling-second' })
 
-      const outcome = await run('stop', '', { session: 'sibling' })
+      const outcome = await run('stop', '', { worktree: 'sibling' })
 
       expect(outcome.ok).toBe(false)
-      // Told apart from "no such session", because the two ask the caller
+      // Told apart from "no such worktree", because the two ask the caller
       // for different things — and behind a teardown that difference is the
       // whole message: it holds the right id and typed too little of it.
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
@@ -337,7 +337,7 @@ describe('runMamaCommand', () => {
   })
 
   describe('group-create', () => {
-    it('makes an empty group the caller can then file sessions into', async () => {
+    it('makes an empty group the caller can then file worktrees into', async () => {
       const text = await output('group-create', 'release train')
       expect(text).toContain('release train')
 
@@ -389,8 +389,8 @@ describe('runMamaCommand', () => {
     const groupOf = async (id: string, slug = 'proj'): Promise<string | undefined> =>
       (await getProjectWorktreeRows(slug)).get(id)?.groupId
 
-    it('files a session by short id prefix, creating the group', async () => {
-      const text = await output('group-move', 'release', { session: 'aaaabbbb' })
+    it('files a worktree by short id prefix, creating the group', async () => {
+      const text = await output('group-move', 'release', { worktree: 'aaaabbbb' })
       expect(text).toContain('into "release"')
 
       const rows = await listWorktreeGroupRows('proj')
@@ -402,15 +402,15 @@ describe('runMamaCommand', () => {
       // do, so the line it reads back must not be a uuid.
       const group = await createWorktreeGroup('proj', 'release train', null)
 
-      const text = await output('group-move', group.groupId, { session: 'aaaabbbb' })
+      const text = await output('group-move', group.groupId, { worktree: 'aaaabbbb' })
 
       expect(text).toContain('into "release train"')
       expect(text).not.toContain(group.groupId)
     })
 
-    it('returns a session to the default list on "--"', async () => {
-      await output('group-move', 'release', { session: 'aaaabbbb' })
-      const text = await output('group-move', '--', { session: 'aaaabbbb' })
+    it('returns a worktree to the default list on "--"', async () => {
+      await output('group-move', 'release', { worktree: 'aaaabbbb' })
+      const text = await output('group-move', '--', { worktree: 'aaaabbbb' })
 
       expect(text).toContain('out of its group')
       expect(await groupOf('aaaabbbb-1111-2222')).toBeUndefined()
@@ -418,27 +418,27 @@ describe('runMamaCommand', () => {
       expect(await listWorktreeGroupRows('proj')).toHaveLength(1)
     })
 
-    it('cannot move another project\'s session', async () => {
-      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-session' })
+    it('cannot move another project\'s worktree', async () => {
+      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-worktree' })
 
-      const outcome = await run('group-move', 'release', { session: 'foreign-session' })
+      const outcome = await run('group-move', 'release', { worktree: 'foreign-worktree' })
 
       expect(outcome.ok).toBe(false)
-      expect(await groupOf('foreign-session', 'other')).toBeUndefined()
+      expect(await groupOf('foreign-worktree', 'other')).toBeUndefined()
     })
 
-    it('refuses an ambiguous prefix rather than moving the wrong session', async () => {
+    it('refuses an ambiguous prefix rather than moving the wrong worktree', async () => {
       await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'aaaabbbb-3333-4444' })
-      const outcome = await run('group-move', 'release', { session: 'aaaabbbb' })
+      const outcome = await run('group-move', 'release', { worktree: 'aaaabbbb' })
       expect(outcome.ok).toBe(false)
       // The fix is a longer prefix, so the message says so rather than
       // sending the caller back to `list` for an id it already has.
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
     })
 
-    it('needs a session to move', async () => {
+    it('needs a worktree to move', async () => {
       const outcome = await run('group-move', 'release')
-      expect(outcome).toEqual({ ok: false, error: 'group move needs a session id' })
+      expect(outcome).toEqual({ ok: false, error: 'group move needs a worktree id' })
     })
   })
 

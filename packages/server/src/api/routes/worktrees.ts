@@ -24,7 +24,7 @@ import {
   removeProvisioning,
   renameWorktreeEntry,
   resolveGroup,
-  resolveSessionInProject,
+  resolveWorktreeInProject,
   resolveWorktreeContainer,
   resolveWorktreeRecord,
   restartWorktree,
@@ -445,7 +445,7 @@ export const worktreeApp = new Hono()
       // An id or its unique short prefix, which is what every surface prints
       // — the membership write itself matches exactly, so a prefix reaching
       // it would file nothing and report success.
-      const found = await resolveSessionInProject(projectSlug, worktreeId)
+      const found = await resolveWorktreeInProject(projectSlug, worktreeId)
       if (!found.ok) {
         // An ambiguous prefix is an under-specified request, not a missing
         // worktree: the caller holds the right id and typed too little of

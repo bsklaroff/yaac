@@ -4,7 +4,7 @@ vi.mock('#domain/worktrees/create', () => ({ createWorktree: vi.fn() }))
 import { createWorktree } from '#domain/worktrees/create'
 import type { WorktreeCreateOptions, WorktreeCreateResult } from '#domain/worktrees/create'
 import {
-  SPAWN_MAX_IN_FLIGHT_PER_SESSION,
+  SPAWN_MAX_IN_FLIGHT_PER_WORKTREE,
   SPAWN_MAX_PROMPT_CHARS,
   decideSpawn,
   type SpawnRequest,
@@ -177,7 +177,7 @@ describe('decideSpawn', () => {
         worktreeId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       } as WorktreeCreateResult
     })
-    for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_SESSION; i++) {
+    for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_WORKTREE; i++) {
       expect((await decideSpawn(makeRequest({ callerWorkspaceId, requestId: `r${i}` }))).ok).toBe(true)
     }
     const over = await decideSpawn(makeRequest({ callerWorkspaceId, requestId: 'r-over' }))
@@ -196,7 +196,7 @@ describe('decideSpawn', () => {
     // ok:true — the fire is already acked; the failure is a lost fire.
     expect((await decideSpawn(makeRequest({ callerWorkspaceId }))).ok).toBe(true)
     await settle()
-    for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_SESSION; i++) {
+    for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_WORKTREE; i++) {
       expect((await decideSpawn(makeRequest({ callerWorkspaceId, requestId: `r${i}` }))).ok).toBe(true)
       await settle()
     }

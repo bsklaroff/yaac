@@ -1,17 +1,17 @@
 #!/bin/sh
-# yaac-mama — ask the yaac server that runs this session to do something.
+# yaac-mama — ask the yaac server that runs this worktree to do something.
 #
 # Usage:
 #   yaac-mama list
 #   yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"
-#   yaac-mama rename [<session>] "<title>"
-#   yaac-mama stop [<session>]
+#   yaac-mama rename [<worktree>] "<title>"
+#   yaac-mama stop [<worktree>]
 #   yaac-mama group create "<name>"
-#   yaac-mama group move <session> ["<group>"]
+#   yaac-mama group move <worktree> ["<group>"]
 #   yaac-mama models
 #
 # A strict subset of the `yaac` CLI: see what this project is running, start
-# another session, file sessions into named groups, and stop one. Stopping is
+# another worktree, file worktrees into named groups, and stop one. Stopping is
 # in reach because it is reversible — the checkout and the conversation
 # survive it. Nothing here deletes, restarts or reconfigures anything; that
 # stays with the user.
@@ -20,9 +20,9 @@
 # body} — because they differ only in where it goes and how the caller is
 # identified:
 #
-#   - Containerless ($YAAC_MAMA_URL set): the session is a host process
+#   - Containerless ($YAAC_MAMA_URL set): the worktree is a host process
 #     beside the server, so it POSTs to the server's own /worktree/mama and
-#     proves which session it is with $YAAC_MAMA_TOKEN.
+#     proves which worktree it is with $YAAC_MAMA_TOKEN.
 #   - Containers (no $YAAC_MAMA_URL): the pod cannot dial the host, so it
 #     POSTs to the egress proxy's magic host, which holds the request until
 #     the server drains it. Attribution is by source pod IP — no token and no
@@ -39,36 +39,36 @@ MAX_TIME=150
 
 usage() {
   cat <<'EOF'
-yaac-mama — ask the yaac server running this session to do something.
+yaac-mama — ask the yaac server running this worktree to do something.
 
 Usage:
-  yaac-mama list                                   # sessions + groups here
-  yaac-mama create [opts] "<prompt>"               # start another session
-  yaac-mama rename [<session>] "<title>"           # retitle (default: yourself)
-  yaac-mama stop [<session>]                       # stop it (default: yourself)
+  yaac-mama list                                   # worktrees + groups here
+  yaac-mama create [opts] "<prompt>"               # start another worktree
+  yaac-mama rename [<worktree>] "<title>"          # retitle (default: yourself)
+  yaac-mama stop [<worktree>]                      # stop it (default: yourself)
   yaac-mama group create "<name>"                  # make an empty group
-  yaac-mama group move <session> ["<group>"]       # omit the group to ungroup
+  yaac-mama group move <worktree> ["<group>"]      # omit the group to ungroup
   yaac-mama models                                 # tools/models available
   yaac-mama --help
 
 Options for create:
-  --tool <tool>    agent for the new session: claude, codex, opencode, or pi.
-                   Omitted, inherits this session's tool, then the project
+  --tool <tool>    agent for the new worktree: claude, codex, opencode, or pi.
+                   Omitted, inherits this worktree's tool, then the project
                    default, then claude. Must be logged in on the host (see
                    `yaac-mama models`) or the new agent can't authenticate.
   --model <model>  model id the agent launches with — any id the tool accepts:
                    a model id/alias for claude/codex (e.g. opus), provider/model
                    for opencode and pi (e.g. anthropic/claude-opus-4-8).
-  --group <name>   file the new session under this group, creating it if needed.
+  --group <name>   file the new worktree in this group, creating it if needed.
 
-create prints the new session's id; the session provisions in the background
+create prints the new worktree's id; it provisions in the background
 (watch it in the yaac webapp). Everything else prints a short report.
 
-stop ends a session's running container/tmux server and keeps its checkout,
+stop ends a worktree's running container/tmux server and keeps its checkout,
 title, group and conversation, so the user can restart it. Stopping YOURSELF
 tears down what this command's own reply travels over, so the confirmation
-may never print — the session ending is the confirmation. Do everything that
-must outlive the session (commit, push, report) before you run it.
+may never print — the worktree ending is the confirmation. Do everything that
+must outlive the worktree (commit, push, report) before you run it.
 EOF
 }
 
@@ -180,15 +180,15 @@ case "$1" in
 
   rename)
     shift
-    # One argument retitles the caller, two retitle the session named first.
+    # One argument retitles the caller, two retitle the worktree named first.
     if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama rename [<session>] "<title>"' >&2
+      echo 'usage: yaac-mama rename [<worktree>] "<title>"' >&2
       exit 2
     fi
     if [ $# -eq 1 ]; then
       run rename "$1"
     else
-      run rename "$2" session "$1"
+      run rename "$2" worktree "$1"
     fi
     ;;
 
@@ -196,7 +196,7 @@ case "$1" in
     shift
     # No argument stops the caller — the same "omitted means me" idiom rename
     # uses, and the common case here. `run` drops an empty-valued pair, so
-    # that sends no `session` at all, which is what the server reads as "me".
+    # that sends no `worktree` at all, which is what the server reads as "me".
     #
     # An argument that is present but EMPTY is refused rather than treated as
     # absent, which is the one place those two must not mean the same thing:
@@ -204,10 +204,10 @@ case "$1" in
     # name a sibling, and letting it fall through to the default would stop
     # the caller instead — silently, and unstoppably by then.
     if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ -z "$1" ]; }; then
-      echo 'usage: yaac-mama stop [<session>]   (omit the session to stop yourself)' >&2
+      echo 'usage: yaac-mama stop [<worktree>]   (omit the worktree to stop yourself)' >&2
       exit 2
     fi
-    run stop '' session "${1:-}"
+    run stop '' worktree "${1:-}"
     ;;
 
   group)
@@ -227,10 +227,10 @@ case "$1" in
         # group" — the same idiom `yaac group move` uses, where a bare `--`
         # could never work (its parser eats it as end-of-options).
         if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ]; then
-          echo 'usage: yaac-mama group move <session> ["<group>"]   (omit the group to ungroup)' >&2
+          echo 'usage: yaac-mama group move <worktree> ["<group>"]   (omit the group to ungroup)' >&2
           exit 2
         fi
-        run group-move "${2:-}" session "$1"
+        run group-move "${2:-}" worktree "$1"
         ;;
       *)
         echo "yaac-mama: unknown group subcommand '$sub' (expected: create, move)" >&2
