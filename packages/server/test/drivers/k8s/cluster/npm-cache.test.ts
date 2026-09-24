@@ -72,6 +72,8 @@ describe('ensureNpmCache', () => {
       strategy: { type: 'Recreate' },
       template: {
         spec: {
+          // The uplink resolves as-is, never via the node's search domains.
+          dnsConfig: { options: [{ name: 'ndots', value: '1' }] },
           containers: [{ image: `localhost:5001/${VERDACCIO_MIRROR_TAG}` }],
           volumes: expect.arrayContaining([
             { name: 'storage', persistentVolumeClaim: { claimName: 'yaac-npm-cache-storage-ddh16' } },

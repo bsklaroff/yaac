@@ -221,6 +221,15 @@ function buildNpmCacheManifests(
             // A block-storage claim arrives root-owned; fsGroup hands it to
             // the image's group. (kind's local-path volume is 0777 anyway.)
             securityContext: { fsGroup: VERDACCIO_GID },
+            // The uplink's name has two dots, under the default `ndots:5`,
+            // so every fetch would first try it against each search domain
+            // — and the list ends with the node's own, which CoreDNS
+            // forwards to a host resolver that can hang (a VPN owning the
+            // host's DNS). `ndots:1` tries a dotted name as-is first; the
+            // cache resolves no short cluster names. (A trailing dot in
+            // the uplink URL would do the same, but ends up in its TLS
+            // Host/SNI.)
+            dnsConfig: { options: [{ name: 'ndots', value: '1' }] },
             containers: [{
               name: 'verdaccio',
               image: imageRef,
