@@ -396,14 +396,21 @@ two are dubious even single-user):
   `registry:2` that accepts pushes to any `repo:tag` from pods running
   agent-authored Dockerfile `RUN` steps; docs/trust-split-builds.md states
   this open risk plainly, and the per-project build-cache repo says its
-  confinement "is not a boundary". The per-project registries in
-  `#drivers/k8s/cluster` are a different feature (nested `docker push`
-  targets) and do not sit on the builder path. Single-user it is
-  self-poisoning; multi-user it is one user's *agent* overwriting the image
-  another user's next worktree boots — and consumption is by content-hash
-  *tag*, so an overwritten tag is what the next pod pulls. Containment
-  (registry auth / per-project push scopes / digest-pinned consumption)
-  graduates from "open risk" to a phase-3 prerequisite.
+  confinement "is not a boundary". Single-user it is self-poisoning;
+  multi-user it is one user's *agent* overwriting the image another user's
+  next worktree boots — and consumption is by content-hash *tag*, so an
+  overwritten tag is what the next pod pulls. Containment is write grants
+  on the main registry, in docs/plans/isolation-groundwork.md workstream 5,
+  which ships before this plan's phase 3.
+- **The per-project registries are a cross-user channel too.** They are
+  not on the builder path, but they are written from *inside* worktree
+  sandboxes (nested-image salvage), unauthenticated, by every worktree of
+  the project, and the node image store materializes their contents into
+  every nested worktree of the project — upstream names included. Within a
+  communal project that is one user's agent choosing the images another
+  user's nested worktree resolves locally. Phase 3 derives the registry
+  name and store path from (project id, owner) rather than the project id
+  (docs/plans/isolation-groundwork.md 5.6).
 
 **Stays shared by design** (availability or teammate-trust class, named
 rather than fixed):
@@ -491,7 +498,9 @@ flaws. Two structural facts frame all of them:
 ### Preconditions — pre-existing bugs that make ownership meaningless until fixed
 
 These are exploitable in the *current* single-user server too; ownership
-cannot be enforced on top of them.
+cannot be enforced on top of them. They are planned in detail, with the
+dispositions some of them have since changed to, in
+docs/plans/isolation-groundwork.md workstream 1.
 
 - **Empty/prefix worktree-id resolution → a shell in an arbitrary pod.**
   `findWorktreePod` (`drivers/k8s/substrate/pods.ts`) matches
@@ -742,15 +751,14 @@ processes, no new arrows:
 
 ## Phasing
 
-0. **Precondition hardening — ship now, independent of tenancy.** The
-   audit's "preconditions" are live bugs in the single-user server:
-   exact-match worktree-id resolution (reject empty/prefix, in the pod-side
-   resolver and the WS upgrade handlers), pin server-side git config +
-   `core.hooksPath` and prefer a read-only `/repo/.git`, narrow the
-   `.cached-packages` mount and validate `cacheVolumes` keys, apply
-   `isForwardablePort` to config-declared forwards, and gate `POST
-   /auth/fake` on `testEnv`. None of this needs a `Principal`; all of it is
-   required before any owner check is meaningful.
+0. **Precondition hardening — ship now, independent of tenancy.** Planned
+   in docs/plans/isolation-groundwork.md: the audit's preconditions
+   (workstream 1, with the read-only `/repo/.git` delivered by
+   docs/plans/worktree-reference-clones.md), plus globally unique worktree
+   ids, server I/O confined on sandbox-writable paths, immutable project
+   ids for everything named outside the data dir, and main-registry write
+   grants. None of it needs a `Principal`; all of it is required before
+   any owner check is meaningful.
 1. **Identity without tokens — ship as a single-user simplification.**
    The middleware resolves local vs. proxied and returns a principal (the
    signature the whole plan hangs off); `YAAC_IDENTITY` replaces
@@ -818,11 +826,6 @@ second-principal case in phase 3.
 - **tui transcript fidelity**: claude's JSONL replays into chat form
   today; codex/pi vary — per-tool structured rendering vs. the current
   `NOT_SUPPORTED` refusal.
-- **Registry containment mechanism**: registry auth with per-project push
-  scopes vs. digest-pinned consumption (the promoter records the digest a
-  build produced and pods reference it, making stray tag writes inert).
-  Lean digest-pinning — it needs no registry auth stack and the promoter
-  already sits in the right place.
 - **Team objects** (phase 4+): whether `owner` references a principal id
   that can name a team from day one, or users only until teams are real.
   Lean: principal id from day one, it costs a type.
