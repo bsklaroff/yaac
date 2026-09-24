@@ -440,6 +440,62 @@ export async function writeNodeMainRegistryHostsToml(): Promise<void> {
  *  one-time upstream pull of the pinned registry:2. */
 const ROLLOUT_TIMEOUT_MS = 300_000
 
+/** A healthy rollout takes seconds; past this, the pod netns is checked for
+ *  the one host setting that makes it hang for the whole timeout. */
+const ROLLOUT_STALL_MS = 60_000
+
+async function waitForRegistryRollout(timeoutMs: number): Promise<void> {
+  await kubectlWithRetry([
+    'rollout', 'status', `deployment/${REGISTRY_SERVICE_NAME}`, '-n', REGISTRY_NAMESPACE,
+    `--timeout=${Math.floor(timeoutMs / 1000)}s`,
+  ], { timeout: timeoutMs + 10_000, maxAttempts: 2 })
+}
+
+/**
+ * Throw an actionable error when the registry pod's netns ignores the
+ * node's ARP. Calico gives a pod a /32 on eth0, so under `arp_ignore=2`
+ * (reply only to senders in the target's subnet) or `8` (never reply) the
+ * node can never resolve the pod: the container runs, and every kubelet
+ * probe times out, forever.
+ *
+ * The pod does not choose the value. With the kernel default
+ * `net.core.devconf_inherit_init_net=0`, a new netns copies IPv4
+ * `conf/{all,default}` from the HOST's root netns rather than from the kind
+ * node that creates it, so a host that sets `arp_ignore=2` — a VPN client,
+ * for instance — breaks every pod created after it did. `=3` makes a netns
+ * copy its creator's settings instead: the node's, which are clean.
+ *
+ * Silent when the pod cannot be exec'd into (it may still be pulling): the
+ * caller keeps waiting and reports a plain timeout.
+ */
+async function refuseArpIgnoringPodNetns(): Promise<void> {
+  let out: string
+  try {
+    out = await mainRegistryExec(
+      ['cat', '/proc/sys/net/ipv4/conf/all/arp_ignore', '/proc/sys/net/ipv4/conf/eth0/arp_ignore'],
+      15_000,
+    )
+  } catch {
+    return
+  }
+  // The kernel applies the larger of the `all` and per-interface values.
+  const arpIgnore = Math.max(...out.split(/\s+/).filter(Boolean).map(Number))
+  if (arpIgnore !== 2 && arpIgnore !== 8) return
+  throw new Error(
+    'The in-cluster registry pod is running but never becomes ready: its network namespace has '
+    + `net.ipv4.conf.all.arp_ignore=${arpIgnore}, so it never answers the node's ARP and the `
+    + 'kubelet cannot reach it. New pod namespaces copy that setting from this host\'s root '
+    + 'namespace, where something (a VPN client, for instance) has set it. Make new namespaces '
+    + 'copy from the kind node instead, then recreate the cluster — every pod created so far '
+    + 'already has the setting:\n'
+    + '  sudo sysctl -w net.core.devconf_inherit_init_net=3\n'
+    + '  yaac cluster delete\n'
+    + '  yaac cluster install\n'
+    + 'To keep the setting across reboots:\n'
+    + '  echo \'net.core.devconf_inherit_init_net = 3\' | sudo tee /etc/sysctl.d/90-yaac-netns.conf',
+  )
+}
+
 /** The slice of a registry Deployment the conversion gate reads. */
 interface RawRegistryDeploy {
   spec?: { template?: { spec?: { volumes?: Array<Record<string, unknown>> } } }
@@ -516,25 +572,26 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   await kubectlApply(buildMainRegistryDeploymentManifest())
   await kubectlApply(buildMainRegistryServiceManifest())
   await kubectlApply(buildMainRegistryIngressNetworkPolicyManifest(await nodeIpBlocks()))
-  try {
-    await kubectlWithRetry([
-      'rollout', 'status', `deployment/${REGISTRY_SERVICE_NAME}`, '-n', REGISTRY_NAMESPACE,
-      `--timeout=${Math.floor(ROLLOUT_TIMEOUT_MS / 1000)}s`,
-    ], { timeout: ROLLOUT_TIMEOUT_MS + 10_000, maxAttempts: 2 })
-  } catch (err) {
-    // kubectl reports only that it timed out, and the diagnoses that matter
-    // are all one command away. The PVC is named alongside the pods because
-    // a cluster with no DEFAULT StorageClass leaves the claim Pending
-    // forever, which shows up as a Pending pod with no scheduling reason of
-    // its own.
-    throw new Error(
-      `${err instanceof Error ? err.message : String(err)}\n`
-      + `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods,pvc `
-      + `-l app=${MAIN_REGISTRY_APP_LABEL}\` — Pending means the node had no `
-      + 'room, ImagePullBackOff means it could not fetch the pinned '
-      + 'registry:2 from upstream, and a Pending PVC means the cluster has '
-      + 'no default StorageClass to bind it.',
-    )
+  const rolledOut = await waitForRegistryRollout(ROLLOUT_STALL_MS).then(() => true, () => false)
+  if (!rolledOut) {
+    await refuseArpIgnoringPodNetns()
+    try {
+      await waitForRegistryRollout(ROLLOUT_TIMEOUT_MS - ROLLOUT_STALL_MS)
+    } catch (err) {
+      // kubectl reports only that it timed out, and the diagnoses that matter
+      // are all one command away. The PVC is named alongside the pods because
+      // a cluster with no DEFAULT StorageClass leaves the claim Pending
+      // forever, which shows up as a Pending pod with no scheduling reason of
+      // its own.
+      throw new Error(
+        `${err instanceof Error ? err.message : String(err)}\n`
+        + `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods,pvc `
+        + `-l app=${MAIN_REGISTRY_APP_LABEL}\` — Pending means the node had no `
+        + 'room, ImagePullBackOff means it could not fetch the pinned '
+        + 'registry:2 from upstream, and a Pending PVC means the cluster has '
+        + 'no default StorageClass to bind it.',
+      )
+    }
   }
   await writeNodeMainRegistryHostsToml()
 

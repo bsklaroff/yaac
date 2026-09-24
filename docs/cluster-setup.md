@@ -156,9 +156,10 @@ steps if the rootful socket isn't reachable.
 
 ## Linux: VPN and firewall interference
 
-Two host-level blockers that both present as "container is up but its
-published port doesn't answer" (kind's API server on `127.0.0.1:<port>`,
-or the loopback end of a `kubectl port-forward`):
+Host-level blockers that present as "the container is up but does not
+answer": the first and last as a published port that does not (kind's API
+server on `127.0.0.1:<port>`, or the loopback end of a `kubectl
+port-forward`), the second as a pod that runs and never turns Ready:
 
 - **VPN firewalls (e.g. Mullvad)** reject traffic to the podman bridge
   subnets — including loopback-published ports, whose destination is
@@ -167,6 +168,16 @@ or the loopback end of a `kubectl port-forward`):
   captures nothing. Enable the VPN's LAN exemption (Mullvad:
   `mullvad lan set allow`). Split tunneling does not help — the blocked
   traffic is kernel-forwarded, not owned by any process.
+- **A host `arp_ignore=2` leaves pods unreachable from their node.** A new
+  pod netns copies IPv4 `conf/all` from the host's root netns (the kernel
+  default `net.core.devconf_inherit_init_net=0`), not from the kind node
+  that creates it. Calico gives each pod a `/32`, so under `arp_ignore=2`
+  the pod answers no ARP from the node: containers run and every kubelet
+  probe times out. VPN clients set it (Mullvad is a suspected source).
+  Install detects this when the registry stalls and says to run
+  `sudo sysctl -w net.core.devconf_inherit_init_net=3` (new namespaces
+  copy from their creator, the node), persist it in `/etc/sysctl.d`, and
+  recreate the cluster.
 - **ufw hosts: pin netavark's iptables firewall driver.** The nftables
   driver keeps its rules in a separate table that ufw's default-deny can
   override, and it has been seen not intercepting loopback-published ports

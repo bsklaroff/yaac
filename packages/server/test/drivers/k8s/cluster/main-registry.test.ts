@@ -308,6 +308,42 @@ describe('ensureMainRegistry', () => {
     await expect(ensureMainRegistry()).rejects.toThrow(/no default StorageClass/)
   })
 
+  it('refuses a stalled rollout whose pod netns ignores the node\'s ARP', async () => {
+    mockRetry.mockImplementation((args: string[]) => {
+      if (args[0] === 'rollout') return Promise.reject(new Error('timed out waiting for the condition'))
+      if (args[0] === 'exec') return Promise.resolve({ stdout: '2\n0\n', stderr: '' })
+      return Promise.resolve({ stdout: '', stderr: '' })
+    })
+    // The pod runs and never turns Ready, so the fix — which is on the host,
+    // and needs every pod recreated — is the whole message; the generic
+    // Pending/ImagePullBackOff hint would send the user the wrong way.
+    const err = await ensureMainRegistry().then(() => null, (e: unknown) => e as Error)
+    expect(err?.message).toMatch(/arp_ignore=2/)
+    expect(err?.message).toContain('sudo sysctl -w net.core.devconf_inherit_init_net=3')
+    expect(err?.message).toMatch(/yaac cluster delete\n\s+yaac cluster install/)
+    expect(err?.message).not.toMatch(/get pods,pvc/)
+    // Refused at the stall check, not after sitting out the full timeout.
+    expect(retryArgs().filter((a) => a[0] === 'rollout')).toHaveLength(1)
+    expect(retryArgs().find((a) => a[0] === 'exec')).toEqual([
+      'exec', '-n', 'yaac', 'deploy/yaac-registry', '--',
+      'cat', '/proc/sys/net/ipv4/conf/all/arp_ignore', '/proc/sys/net/ipv4/conf/eth0/arp_ignore',
+    ])
+  })
+
+  it('keeps waiting out a slow rollout whose pod netns answers ARP', async () => {
+    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    let rollouts = 0
+    mockRetry.mockImplementation((args: string[]) => {
+      if (args[0] === 'rollout' && rollouts++ === 0) return Promise.reject(new Error('timed out'))
+      if (args[0] === 'exec') return Promise.resolve({ stdout: '0\n0\n', stderr: '' })
+      return Promise.resolve({ stdout: '', stderr: '' })
+    })
+    await ensureMainRegistry()
+    // A slow upstream pull is not a stall: the rest of the budget is spent.
+    expect(retryArgs().filter((a) => a[0] === 'rollout').map((a) => a.at(-1)))
+      .toEqual(['--timeout=60s', '--timeout=240s'])
+  })
+
   it('writes one hosts.toml pod per node, reaping strays first', async () => {
     mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
     serveCluster({ nodes: ['node-a', 'node-b'] })
