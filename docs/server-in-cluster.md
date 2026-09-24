@@ -104,9 +104,11 @@ environment must say about that origin.
 **On kind** the fronting is a ClusterIP Service plus a *forwarder*: a
 one-replica `yaac-server-front` Deployment running stock Envoy (the same
 mirrored image netd uses) with `hostNetwork` on the control-plane node,
-listening on port 30787 and TCP-proxying to `yaac-server.<ns>.svc` by
-name (`dnsPolicy: ClusterFirstWithHostNet` is what lets a host-networked
-process resolve a cluster name). The kind `extraPortMapping`, written when
+listening on port 30787 and TCP-proxying to the absolute name
+`yaac-server.<ns>.svc.cluster.local.` (`dnsPolicy: ClusterFirstWithHostNet`
+is what lets a host-networked process resolve a cluster name; the trailing
+dot keeps it from first trying the node's own search domains, which
+CoreDNS forwards to a host resolver that may hang). The kind `extraPortMapping`, written when
 the cluster is created, delivers `127.0.0.1:<server port>` on the host to
 that node port. The browser, the CLI, the desktop app and the auth daemon
 all resolve that origin through `server.json`, which is the only thing

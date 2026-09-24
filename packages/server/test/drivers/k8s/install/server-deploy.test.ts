@@ -465,7 +465,8 @@ describe('deployServerWorkload', () => {
     expect(envoy.command).toContain('--use-dynamic-base-id')
     const [config] = applied('ConfigMap')
     expect(config.data?.['bootstrap.yaml']).toContain(`port_value: ${String(SERVER_FRONT_PORT)}`)
-    expect(config.data?.['bootstrap.yaml']).toContain(`${SERVER_APP_NAME}.test-ns.svc.cluster.local`)
+    // Absolute, so the node's search domains (forwarded upstream) are never tried.
+    expect(config.data?.['bootstrap.yaml']).toContain(`address: ${SERVER_APP_NAME}.test-ns.svc.cluster.local.,`)
     // Rolled out before the origin is probed, like the server itself.
     expect(retried().some((c) => c.includes(`rollout status deployment/${SERVER_FRONT_APP_NAME}`))).toBe(true)
   })

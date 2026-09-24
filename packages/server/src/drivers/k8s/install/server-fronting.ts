@@ -258,9 +258,17 @@ const FRONT_CONFIG_DIR = '/etc/yaac-server-front'
  * to be re-rendered when the Service is recreated; the pod's
  * `ClusterFirstWithHostNet` DNS policy is what lets a host-networked
  * process resolve a cluster name.
+ *
+ * The trailing dot makes the name absolute. It has four dots, under the
+ * pod's `ndots:5`, so it would otherwise be tried against every search
+ * domain first — and a hostNetwork pod's list ends with the NODE's (the
+ * podman network's, a tailnet's), which CoreDNS forwards upstream. Where
+ * that upstream hangs (a VPN owning the host's DNS), resolution never
+ * reaches the bare name and the server's origin never answers. Absolute,
+ * it is one query CoreDNS answers itself.
  */
 export function buildServerFrontConfigMapManifest(): Record<string, unknown> {
-  const upstream = `${SERVER_APP_NAME}.${k8sNamespace()}.svc.cluster.local`
+  const upstream = `${SERVER_APP_NAME}.${k8sNamespace()}.svc.cluster.local.`
   const bootstrap = [
     'static_resources:',
     '  listeners:',
