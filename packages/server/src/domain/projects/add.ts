@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo, isGitAuthError } from '#domain/git'
-import { parseGitRemote, resolveCredentialForUrl } from './credentials'
+import { parseGitRemote, resolveCredentialForRemote } from './credentials'
 import { getProjectRow, recordProject } from '#db'
 import {
   loadClaudeCredentialsFile,
@@ -33,19 +33,24 @@ export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRem
 
 export interface AddProjectResult {
   project: ProjectMeta
+  /** The host key an SSH credential's assignment trusted, for the user to
+   *  compare against what the host publishes. */
+  knownHostsEntry: string | null
 }
 
 /**
  * Clone a git repo into the data dir as a yaac project. Throws
  * `ServerError` for user-facing failures (bad URL, duplicate slug,
- * missing credential, clone failure) so the server can map them to
+ * rejected credential, clone failure) so the server can map them to
  * the right HTTP status and CLI exit code.
+ *
+ * The credential the clone runs with becomes the project's
+ * (docs/git-credentials.md).
  */
-export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
+export async function addProject(remoteUrl: string, gitCredentialId: string): Promise<AddProjectResult> {
   const parsed = validateGitRemoteUrl(remoteUrl)
   // The slug is baked into image tags (yaac-user-<slug>:<hash>), which Docker/
-  // Podman require to be all-lowercase. URL and credential-pattern case is
-  // preserved everywhere else.
+  // Podman require to be all-lowercase. URL case is preserved everywhere else.
   const slug = (parsed.path.split('/').pop() as string).toLowerCase()
   const dir = projectDir(slug)
 
@@ -67,13 +72,7 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
     // doesn't exist — good
   }
 
-  const credential = await resolveCredentialForUrl(remoteUrl)
-  if (!credential) {
-    throw new ServerError(
-      'AUTH_REQUIRED',
-      `No git credential configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
-    )
-  }
+  const { credential, knownHostsEntry } = await resolveCredentialForRemote(gitCredentialId, remoteUrl)
 
   await fs.mkdir(dir, { recursive: true })
 
@@ -84,9 +83,9 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
     const message = err instanceof Error ? err.message : String(err)
     if (isGitAuthError(message)) {
       throw new ServerError(
-        'AUTH_REQUIRED',
-        `git authentication failed for ${parsed.host} — the stored credential was rejected `
-        + '(expired or revoked token?). Run "yaac auth update" to replace it, then retry.',
+        'VALIDATION',
+        `git authentication failed for ${parsed.host} — the credential was rejected `
+        + '(a revoked token, or a key not yet registered with the host?).',
       )
     }
     throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
@@ -112,7 +111,7 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
   // Both: the row is what the server answers from, and `project.json` is
   // what the adoption shim reads on a data dir an older yaac wrote.
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta, null, 2) + '\n')
-  await recordProject(meta)
+  await recordProject(meta, { id: gitCredentialId, knownHostsEntry })
 
-  return { project: meta }
+  return { project: meta, knownHostsEntry }
 }

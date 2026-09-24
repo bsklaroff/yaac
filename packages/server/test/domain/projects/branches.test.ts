@@ -85,7 +85,7 @@ describe('getProjectBranches', () => {
     expect((await getProjectBranches(slug, { refresh: true })).branches).toContain('feature/new')
   })
 
-  it('surfaces a rejected credential as AUTH_REQUIRED, pointing at auth update', async () => {
+  it('surfaces a rejected credential as VALIDATION, pointing at Settings', async () => {
     // git's `ext::` transport runs an arbitrary command as the wire protocol,
     // so a stub can produce the exact stderr a real rejected credential does
     // — the string isGitAuthError classifies on — with no network.
@@ -97,7 +97,8 @@ describe('getProjectBranches', () => {
     await recordProject({ slug, remoteUrl: `ext::${stub}`, addedAt: '2026-01-01T00:00:00.000Z' })
 
     await expect(getProjectBranches(slug, { refresh: true })).rejects.toMatchObject({
-      code: 'AUTH_REQUIRED',
+      code: 'VALIDATION',
+      message: expect.stringMatching(/Settings/) as string,
     })
   })
 

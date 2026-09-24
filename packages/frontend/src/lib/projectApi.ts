@@ -1,10 +1,24 @@
 import { api } from './api'
 import type { ProjectEnvVar, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 
-/** Clone a git repo as a new project. Throws ServerError (e.g. AUTH_REQUIRED). */
-export async function addProject(remoteUrl: string): Promise<{ slug: string }> {
-  const { project } = await api.project.add.$post({ json: { remoteUrl } })
-  return project
+/** Clone a git repo as a new project, with (and assigned) a git credential.
+ *  `knownHostsEntry` is the host key an SSH key's clone trusted. */
+export async function addProject(
+  remoteUrl: string,
+  gitCredentialId: string,
+): Promise<{ slug: string; knownHostsEntry: string | null }> {
+  const { project, knownHostsEntry } = await api.project.add.$post({ json: { remoteUrl, gitCredentialId } })
+  return { slug: project.slug, knownHostsEntry }
+}
+
+/** Assign the project its git credential; answers the host key an SSH key's
+ *  assignment trusted. */
+export async function setProjectGitCredential(slug: string, credentialId: string): Promise<string | null> {
+  const { knownHostsEntry } = await api.project[':slug']['git-credential'].$put({
+    param: { slug },
+    json: { credentialId },
+  })
+  return knownHostsEntry
 }
 
 /** Remove a project (and its worktrees/worktrees). */

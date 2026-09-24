@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { clearAuth } from '#domain/auth'
-import { closeDb, listGitSshKeys, upsertGitSshKey } from '#db'
-import { generateSshKey } from '#lib/ssh-key'
-import { addEntry, loadCredentials } from '#domain/projects/credentials'
+import { closeDb } from '#db'
+import { addHttpsCredential, listCredentialSummaries } from '#domain/projects'
 import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
@@ -40,11 +39,12 @@ const SAMPLE_CODEX: CodexOAuthBundle = {
   accountId: 'acct_x',
 }
 
-/** Everything a clear could plausibly remove: a git credential, all four
+/** Everything a clear could plausibly remove, and a git credential it must
+ *  not: all four
  *  tool bundles, and the two per-project placeholder files. Each test seeds
  *  the lot so the assertions can say what survived as well as what went. */
 async function seedEverything(): Promise<void> {
-  await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_x' })
+  await addHttpsCredential({ name: 'gh', token: 'ghp_x' })
   await saveClaudeOAuthBundle(SAMPLE_CLAUDE)
   await saveCodexCredentialsFile({
     kind: 'oauth',
@@ -73,22 +73,12 @@ describe('clearAuth', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('clear "all" wipes both git stores, every tool bundle, and both placeholders', async () => {
-    // Two stores, not one: https tokens live in the credentials file and ssh
-    // keys in the database, and the half a clear must not leave behind is
-    // the one that is actual key material.
-    const key = generateSshKey('yaac git.example.com/*')
-    await upsertGitSshKey({
-      pattern: 'git.example.com/*',
-      seed: key.seed,
-      publicKey: key.publicKey,
-      knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-    })
-
+  it('clear "all" wipes every tool bundle and both placeholders, but no git credential', async () => {
+    // A git credential is not a tool sign-in: projects are assigned it, and
+    // it goes only when deleted on its own, once none does.
     await clearAuth('all')
 
-    expect((await loadCredentials()).tokens).toEqual([])
-    expect(await listGitSshKeys()).toEqual([])
+    expect((await listCredentialSummaries()).map((c) => c.name)).toEqual(['gh'])
     expect(await loadClaudeCredentialsFile()).toBeNull()
     expect(await loadCodexCredentialsFile()).toBeNull()
     expect(await loadToolAuthEntry('opencode')).toBeNull()
@@ -100,9 +90,6 @@ describe('clearAuth', () => {
   it('clear "claude" only touches the claude bundle + its placeholders', async () => {
     await clearAuth('claude')
 
-    expect((await loadCredentials()).tokens).toEqual([
-      { kind: 'https', pattern: 'github.com/*', token: 'ghp_x' },
-    ])
     expect(await loadClaudeCredentialsFile()).toBeNull()
     expect(await loadCodexCredentialsFile()).not.toBeNull()
     await expect(fs.access(projectClaudeCredentialsFile('demo'))).rejects.toThrow()
@@ -129,7 +116,6 @@ describe('clearAuth', () => {
     await clearAuth('pi')
     expect(await loadToolAuthEntry('pi')).toBeNull()
 
-    expect((await loadCredentials()).tokens).toHaveLength(1)
     expect(await loadClaudeCredentialsFile()).not.toBeNull()
     expect(await loadCodexCredentialsFile()).not.toBeNull()
     await fs.access(projectClaudeCredentialsFile('demo'))

@@ -227,7 +227,7 @@ describe('createWorktree git identity', () => {
   })
 
   /** The failure that means "an identity was found and the create moved on". */
-  const PAST_THE_GATE = /No git credential configured/
+  const PAST_THE_GATE = /has no git credential/
   const NO_IDENTITY = /No git identity is set on this server/
 
   it('commits under the identity the server setting holds', async () => {

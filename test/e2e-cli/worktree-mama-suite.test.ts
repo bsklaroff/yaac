@@ -11,6 +11,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
+import { assignTestGitCredential } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -60,9 +61,6 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     testEnv = await createYaacTestEnv()
     const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
-      tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }],
-    }) + '\n')
     await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
       kind: 'api-key',
       savedAt: new Date().toISOString(),
@@ -111,6 +109,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
       remoteUrl: fakeRemote,
       addedAt: new Date().toISOString(),
     }) + '\n')
+    await assignTestGitCredential(server, SLUG, 'fake-ghp-token')
 
     const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'worktree', 'create', SLUG)
     if (exitCode !== 0) {

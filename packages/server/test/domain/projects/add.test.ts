@@ -3,23 +3,26 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// The clone is the one thing this feature shells out for. Faking it (and
-// only it) keeps every credential lookup, slug derivation, and rollback
-// running for real, with `isGitAuthError` still classifying the failure.
+// The clone and the host-key fetch are the two things this feature shells
+// out for. Faking them (and only them) keeps every credential lookup, slug
+// derivation, and rollback running for real, with `isGitAuthError` still
+// classifying the failure.
+const HOST_KEY = 'git.example.com ssh-ed25519 AAAAHOST'
 vi.mock('#domain/git', async (importOriginal) => ({
   ...(await importOriginal<typeof gitModule>()),
   cloneRepo: vi.fn(),
+  fetchKnownHostsEntry: vi.fn(() => Promise.resolve(HOST_KEY)),
 }))
 
 import { cloneRepo } from '#domain/git'
 import type * as gitModule from '#domain/git'
-import { addProject } from '#domain/projects'
-import { addEntry } from '#domain/projects'
-import { upsertGitSshKey } from '#db'
-import { generateSshKey } from '#lib/ssh-key'
-
-/** A key-shaped string. The store seals whatever it is handed; nothing here
- *  makes ssh parse it. */
+import {
+  addHttpsCredential,
+  addProject,
+  generateSshCredential,
+  resolveProjectCredential,
+} from '#domain/projects'
+import { closeDb } from '#db'
 import {
   projectDir,
   repoDir,
@@ -36,9 +39,12 @@ import type { ProjectMeta } from '@yaac/shared/types'
 const mockClone = vi.mocked(cloneRepo)
 
 let tmpDir: string
+/** A token credential every case may clone with. */
+let token: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
+  token = (await addHttpsCredential({ name: 'default', token: 'ghp_default' })).id
   mockClone.mockReset()
   // A successful clone leaves a repo behind; mirror that so the rollback
   // cases have something real to remove.
@@ -48,6 +54,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  await closeDb()
   await cleanupTempDir(tmpDir)
 })
 
@@ -58,10 +65,10 @@ async function readMeta(slug: string): Promise<ProjectMeta> {
 }
 
 describe('addProject', () => {
-  it('clones with the matching credential and records the project', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_secret' })
+  it('clones with the credential it is given and records the project with it', async () => {
+    const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_secret' })
 
-    const { project } = await addProject('https://github.com/acme/Widgets.git')
+    const { project, knownHostsEntry } = await addProject('https://github.com/acme/Widgets.git', id)
 
     // The slug is baked into image tags, which podman requires lowercase.
     expect(project.slug).toBe('widgets')
@@ -74,35 +81,35 @@ describe('addProject', () => {
       repoDir('widgets'),
       { kind: 'https', token: 'ghp_secret' },
     )
+    expect(knownHostsEntry).toBeNull()
+    expect(await resolveProjectCredential('widgets')).toEqual({ kind: 'https', token: 'ghp_secret' })
   })
 
-  it('accepts an SCP-style remote against an ssh credential', async () => {
-    const key = generateSshKey('yaac git.example.com/*')
-    await upsertGitSshKey({
-      pattern: 'git.example.com/*',
-      seed: key.seed,
-      publicKey: key.publicKey,
-      knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-    })
+  it('clones an SCP-style remote with an ssh key, trusting the host key it fetched', async () => {
+    const key = await generateSshCredential({ name: 'deploy' })
 
-    const { project } = await addProject('git@git.example.com:group/sub/Repo.git')
+    const { project, knownHostsEntry } = await addProject(
+      'git@git.example.com:group/sub/Repo.git', key.id,
+    )
 
     expect(project.slug).toBe('repo')
+    expect(knownHostsEntry).toBe(HOST_KEY)
     // The clone is handed the public halves only: the agent signs.
-    expect(mockClone).toHaveBeenCalledWith(
-      'git@git.example.com:group/sub/Repo.git',
-      repoDir('repo'),
-      {
-        kind: 'ssh',
-        pattern: 'git.example.com/*',
-        publicKey: key.publicKey,
-        knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-      },
-    )
+    const credential = { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY }
+    expect(mockClone).toHaveBeenCalledWith('git@git.example.com:group/sub/Repo.git', repoDir('repo'), credential)
+    expect(await resolveProjectCredential('repo')).toEqual(credential)
+  })
+
+  it('refuses a credential of the wrong kind, or none that exists, before cloning', async () => {
+    await expect(addProject('git@github.com:acme/repo.git', token))
+      .rejects.toThrow(/needs an SSH key, not a token/)
+    await expect(addProject('https://github.com/acme/repo.git', '00000000-0000-4000-8000-000000000000'))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(mockClone).not.toHaveBeenCalled()
+    await expect(fs.access(projectDir('repo'))).rejects.toThrow()
   })
 
   it('seeds the project with placeholder tool credentials when the user has them', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_secret' })
     await saveClaudeOAuthBundle({
       accessToken: 'real-access',
       refreshToken: 'real-refresh',
@@ -118,7 +125,7 @@ describe('addProject', () => {
       lastRefresh: '2026-01-01T00:00:00.000Z',
     })
 
-    await addProject('https://github.com/acme/repo.git')
+    await addProject('https://github.com/acme/repo.git', token)
 
     // Placeholders, never the real tokens — the proxy swaps them per request.
     const claude = JSON.parse(
@@ -133,9 +140,7 @@ describe('addProject', () => {
   })
 
   it('leaves the tool credential dirs empty when the user has no oauth login', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_secret' })
-
-    await addProject('https://github.com/acme/repo.git')
+    await addProject('https://github.com/acme/repo.git', token)
 
     await expect(fs.access(projectClaudeCredentialsFile('repo'))).rejects.toThrow()
     await expect(fs.access(projectCodexAuthFile('repo'))).rejects.toThrow()
@@ -150,45 +155,34 @@ describe('addProject', () => {
       'acme/foo',
       'not a url',
     ]) {
-      await expect(addProject(bad)).rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(addProject(bad, token)).rejects.toMatchObject({ code: 'VALIDATION' })
     }
     expect(mockClone).not.toHaveBeenCalled()
   })
 
   it('refuses to overwrite an existing project', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_secret' })
-    await addProject('https://github.com/acme/repo.git')
+    await addProject('https://github.com/acme/repo.git', token)
 
-    await expect(addProject('https://github.com/other/repo.git'))
+    await expect(addProject('https://github.com/other/repo.git', token))
       .rejects.toMatchObject({ code: 'CONFLICT' })
     // The first project's remote is untouched.
     expect((await readMeta('repo')).remoteUrl).toBe('https://github.com/acme/repo.git')
   })
 
-  it('requires a configured credential before cloning', async () => {
-    await addEntry({ kind: 'https', pattern: 'gitlab.com/*', token: 'glp_x' })
-
-    await expect(addProject('https://github.com/acme/repo.git'))
-      .rejects.toMatchObject({ code: 'AUTH_REQUIRED' })
-    expect(mockClone).not.toHaveBeenCalled()
-    await expect(fs.access(projectDir('repo'))).rejects.toThrow()
-  })
-
-  it('maps a rejected credential to AUTH_REQUIRED and rolls the project dir back', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_stale' })
+  it('maps a rejected credential to VALIDATION and rolls the project dir back', async () => {
+    const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_stale' })
     mockClone.mockRejectedValue(new Error('fatal: Authentication failed for https://github.com/'))
 
-    const attempt = addProject('https://github.com/acme/repo.git')
-    await expect(attempt).rejects.toMatchObject({ code: 'AUTH_REQUIRED' })
+    const attempt = addProject('https://github.com/acme/repo.git', id)
+    await expect(attempt).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(attempt).rejects.toThrow(/git authentication failed for github\.com/)
     await expect(fs.access(projectDir('repo'))).rejects.toThrow()
   })
 
   it('maps any other clone failure to INTERNAL and rolls the project dir back', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_secret' })
     mockClone.mockRejectedValue(new Error('fatal: repository not found'))
 
-    const attempt = addProject('https://github.com/acme/repo.git')
+    const attempt = addProject('https://github.com/acme/repo.git', token)
     await expect(attempt).rejects.toMatchObject({ code: 'INTERNAL' })
     await expect(attempt).rejects.toThrow(/Failed to clone: fatal: repository not found/)
     await expect(fs.access(projectDir('repo'))).rejects.toThrow()

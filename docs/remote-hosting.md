@@ -143,9 +143,10 @@ against a local or remote server:
   your machine** (via the auto-started auth server — the broker that owns
   the vendor login CLIs) and ships the captured bundle to the server. The
   webapp's sign-in cards drive the same flow; if no auth server is running
-  they say what to start. An SSH git credential is a key the SERVER
-  generates and keeps encrypted; you only ever see the public half, which
-  you register with the git host (docs/ssh-keys.md).
+  they say what to start. Git credentials are managed in the webapp and
+  assigned per project; an SSH one is a key the SERVER generates and keeps
+  encrypted, and you only ever see the public half, which you register with
+  the git host (docs/git-credentials.md).
 - Project environment and secrets: edited in the webapp, stored with the
   project, secrets encrypted at rest. Under `k8s` a secret's value never
   enters a worktree — the egress proxy injects it in flight.

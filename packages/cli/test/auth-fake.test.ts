@@ -37,18 +37,18 @@ describe('authFake', () => {
   it('posts every kind in one request', async () => {
     const post = vi.fn().mockResolvedValue(undefined)
     mockClient(post)
-    await authFake(['claude-oauth', 'opencode-openrouter', 'pi-openrouter', 'github'])
+    await authFake(['claude-oauth', 'opencode-openrouter', 'pi-openrouter'])
     expect(post).toHaveBeenCalledTimes(1)
     expect(post).toHaveBeenCalledWith({
-      json: { kinds: ['claude-oauth', 'opencode-openrouter', 'pi-openrouter', 'github'] },
+      json: { kinds: ['claude-oauth', 'opencode-openrouter', 'pi-openrouter'] },
     })
   })
 
   it('de-dupes repeated kinds before posting', async () => {
     const post = vi.fn().mockResolvedValue(undefined)
     mockClient(post)
-    await authFake(['github', 'github', 'claude-oauth'])
-    expect(post).toHaveBeenCalledWith({ json: { kinds: ['github', 'claude-oauth'] } })
+    await authFake(['pi-openrouter', 'pi-openrouter', 'claude-oauth'])
+    expect(post).toHaveBeenCalledWith({ json: { kinds: ['pi-openrouter', 'claude-oauth'] } })
   })
 
   it('throws when the server returns an error response', async () => {
@@ -56,6 +56,6 @@ describe('authFake', () => {
     // propagate (no per-call ok check).
     const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'server error'))
     mockClient(post)
-    await expect(authFake(['github'])).rejects.toThrow('server error')
+    await expect(authFake(['pi-openrouter'])).rejects.toThrow('server error')
   })
 })

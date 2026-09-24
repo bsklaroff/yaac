@@ -10,7 +10,9 @@ import {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectGitCredential,
 } from '#db/project-store'
+import { insertGitCredential } from '#db/git-credential-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('recordProject', () => {
@@ -33,8 +35,28 @@ describe('recordProject', () => {
     await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
 
     expect(await getProjectRow('app')).toEqual({
-      slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01', createDefaults: {},
+      slug: 'app',
+      remoteUrl: 'https://x/app.git',
+      addedAt: '2026-01-01',
+      createDefaults: {},
+      gitCredentialId: null,
+      knownHostsEntry: null,
     })
+  })
+
+  // A host key was trusted for the remote it was fetched from; the same
+  // record under a different remote must not carry it over.
+  it('records the credential it was added with, and drops its host key when the remote changes', async () => {
+    const cred = await insertGitCredential({ name: 'k', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac k' })
+    await recordProject(
+      { slug: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' },
+      { id: cred.id, knownHostsEntry: 'x ssh-ed25519 HOST' },
+    )
+    await recordProject({ slug: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' })
+    expect(await getProjectRow('app')).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
+
+    await recordProject({ slug: 'app', remoteUrl: 'git@y:app.git', addedAt: '2026-01-01' })
+    expect(await getProjectRow('app')).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: null })
   })
 
   // Re-adding the same slug is how a re-clone lands; the original addedAt is
@@ -112,7 +134,7 @@ describe('listProjectRows', () => {
     })
 
     expect(await listProjectRows()).toEqual([
-      { slug: 'legacy', remoteUrl: 'https://x/legacy.git', addedAt: '2025-12-31', createDefaults: {} },
+      { slug: 'legacy', remoteUrl: 'https://x/legacy.git', addedAt: '2025-12-31', createDefaults: {}, gitCredentialId: null, knownHostsEntry: null },
     ])
   })
 
@@ -157,7 +179,7 @@ describe('listProjectRows', () => {
     await listProjectRows()
 
     expect(await listProjectRows()).toEqual([
-      { slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01', createDefaults: {} },
+      { slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01', createDefaults: {}, gitCredentialId: null, knownHostsEntry: null },
     ])
   })
 
@@ -225,5 +247,28 @@ describe('recordProjectCreate', () => {
     // remote (an `add` of a project that already exists).
     await recordProject({ slug: 'p', remoteUrl: 'git@h:o/moved.git', addedAt: 'now' })
     expect((await getProjectRow('p'))?.lastTool).toBe('claude')
+  })
+})
+
+describe('setProjectGitCredential', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('assigns the credential with its host key, replacing both, and reports an unknown slug', async () => {
+    const a = await insertGitCredential({ name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac a' })
+    const b = await insertGitCredential({ name: 'b', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 BBBB yaac b' })
+    await recordProject({ slug: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' })
+
+    expect(await setProjectGitCredential('app', a.id, 'x ssh-ed25519 ONE')).toBe(true)
+    expect(await setProjectGitCredential('app', b.id, 'x ssh-ed25519 TWO')).toBe(true)
+    expect(await getProjectRow('app')).toMatchObject({ gitCredentialId: b.id, knownHostsEntry: 'x ssh-ed25519 TWO' })
+    expect(await setProjectGitCredential('nope', a.id, null)).toBe(false)
   })
 })

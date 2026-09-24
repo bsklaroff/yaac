@@ -194,7 +194,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   //    create popover would if opened and confirmed untouched: the agent the
   //    project was last created with, and that agent's remembered model,
   //    posture and UI — ignored while that agent has no stored credential
-  //    (sign in via settings → credentials).
+  //    or the project no git credential (both set in settings → credentials).
   //  - Alt+D deletes the selected worktree, through the same confirm dialog
   //    as the sidebar row's × (Enter confirms — the button holds focus).
   // The ref keeps the single listener reading the current render's state.
@@ -202,7 +202,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const createDefaults = useCreateDefaults(activeProjectSlug)
   const createWorktree = useCreateWorktree()
   const newWorktree = (): void => {
-    if (!activeProjectSlug || !createDefaults.ready) return
+    if (!activeProjectSlug || !createDefaults.ready || !createDefaults.hasGitCredential) return
     const tool = createDefaults.lastTool
     if (!createDefaults.configured.has(tool)) return
     const setup = createDefaults.forTool(tool)

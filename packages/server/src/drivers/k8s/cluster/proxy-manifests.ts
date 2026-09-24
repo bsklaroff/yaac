@@ -334,11 +334,14 @@ function secretData(files: Record<string, string>): Record<string, string> {
 }
 
 /**
- * The credentials Secret: every host-store file verbatim (a signed-out
- * tool contributes no key, which the proxy reads as signed out) plus the
- * ssh keys the agent is loaded from. Replaced whole on every push — the
- * set is one install-wide thing, and a key's absence is as much a fact as
- * its presence.
+ * The credentials Secret: every tool's host-store file verbatim (a
+ * signed-out tool contributes no key, which the proxy reads as signed out)
+ * plus the git credentials, each entry naming the projects it is assigned
+ * to — `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
+ * (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`),
+ * which the agent is loaded from. Replaced whole on every push — the set is
+ * one install-wide thing, and a key's absence is as much a fact as its
+ * presence.
  */
 export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): Record<string, unknown> {
   const files: Record<string, string> = {}
@@ -346,7 +349,7 @@ export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): R
     const file = bundle[tool]
     if (file) files[`${tool}.json`] = JSON.stringify(file)
   }
-  files['github.json'] = JSON.stringify({ tokens: bundle.git })
+  files['git-tokens.json'] = JSON.stringify(bundle.git)
   files['ssh-keys.json'] = JSON.stringify(bundle.ssh)
   return {
     apiVersion: 'v1',

@@ -31,21 +31,12 @@ export interface ApiClientOptions {
    * true.
    */
   warnOnBuildSkew?: boolean
-  /**
-   * Interactive "please re-authenticate" handler. Invoked once when the
-   * server replies with `AUTH_REQUIRED`; after it resolves the request
-   * is retried once. Provided by the caller so this shared module has
-   * no value-level dependency on the interactive `authUpdate` command
-   * (which would create a `shared → @/commands` edge). The CLI wires
-   * this to `authUpdate` once in `src/cli.ts`; tests inject their own.
-   */
-  onAuthRequired?: () => Promise<void>
 }
 
 /**
  * Returns a fetch-shaped function that targets the resolved server:
  * lazily resolves + caches the target, injects the bearer header, and
- * handles BAD_BEARER / AUTH_REQUIRED retry. Input paths may be a bare
+ * handles BAD_BEARER retry. Input paths may be a bare
  * pathname or a full URL — only the path+search are used; the host is
  * always the resolved target. Consumed by `getApiClient`.
  */
@@ -55,7 +46,6 @@ export function createServerFetch(
   const warnOnBuildSkew = opts.warnOnBuildSkew !== false
   const resolveTarget = opts.resolveTarget ?? resolveServerTarget
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
-  const onAuthRequired = opts.onAuthRequired ?? (async () => { /* no-op */ })
 
   // Resolved on the first request, not at construction, so a module can hold
   // the client as a singleton: `server.json` (and any test env override) is
@@ -114,10 +104,6 @@ export function createServerFetch(
           + `<name>\`) and run: yaac remote set ${active.baseUrl} --token <token>`,
         )
       }
-    } else if (body?.error.code === 'AUTH_REQUIRED') {
-      await onAuthRequired()
-      res = await send()
-      // A second AUTH_REQUIRED is fatal — let the caller surface it.
     }
     return res
   }
@@ -258,8 +244,8 @@ export function exitOnApiError(err: unknown): never {
  * Typed Hono API client for the server. Built by the shared `createApiClient`
  * (so a non-2xx rejects with a `ServerError` and a success resolves to its
  * unwrapped body — callers never check `res.ok` or call `res.json()`), over a
- * fetch from `createServerFetch` (so lock resolution and AUTH_REQUIRED /
- * BAD_BEARER retry logic are shared). Synchronous — the target resolves
+ * fetch from `createServerFetch` (so lock resolution and BAD_BEARER retry
+ * logic are shared). Synchronous — the target resolves
  * lazily on the first request — so callers can hold the result as a singleton.
  *
  * Usage:

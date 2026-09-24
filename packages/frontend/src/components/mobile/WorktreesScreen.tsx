@@ -66,8 +66,9 @@ export function WorktreesScreen({
       <div className="flex shrink-0 items-center gap-2 px-3 py-2 empty:hidden">
         <UsageBadge />
         <ImageBuildIndicator projectSlug={projectSlug} />
-        {gitAuthFailures.length > 0 && (
+        {projectSlug && gitAuthFailures.length > 0 && (
           <GitAuthFailureBadge
+            projectSlug={projectSlug}
             failures={gitAuthFailures}
             iconSize={11}
             className="hover:bg-[#d65858]/25"

@@ -129,16 +129,22 @@ range:
 - **DNS**, udp/53: the pod's only resolver (`dnsPolicy: None`), answered by
   the proxy's split-horizon stub.
 - **ssh-agent**, tcp/10261: the proxy speaks the ssh-agent protocol here,
-  spliced to the agent running in its own pod. A worktree pod whose project
+  relayed to the agent running in its own pod. A worktree pod whose project
   has an SSH remote runs a socat forwarder (started by `yaac-worktree-init`)
   that re-exposes it as the UNIX socket `SSH_AUTH_SOCK` names, so the ssh
-  client in the pod is unmodified. Private keys stay in the proxy's memory,
-  and each identity is loaded with `ssh-add -h <host>`, so it signs for one
-  destination. The client→agent direction is parsed rather than spliced and
-  admits two message types — list identities, and sign; add/remove/lock/
-  extension are answered with the agent's own `SSH_AGENT_FAILURE` and never
-  reach it, so one worktree cannot lock or empty the agent that every other
-  worktree shares.
+  client in the pod is unmodified. Private keys stay in the proxy's memory.
+  Each key is loaded once, with one `ssh-add -h <host>` per host among the
+  projects it is assigned to, so it signs for those destinations only. The
+  agent holds every project's keys, so the relay parses both directions
+  and shows a worktree only its own project's: an identities answer is
+  rewritten to list just those keys, and a sign request naming any other
+  key is answered with `SSH_AGENT_FAILURE` without reaching the agent. The
+  assignment is read per message, so a reassignment reaches an open
+  connection's next request. Besides listing and signing, the relay admits
+  only the `session-bind@openssh.com` extension (without which an agent
+  will not sign with a host-constrained key); add/remove/lock and every
+  other extension are refused the same way, so one worktree cannot lock or
+  empty the agent that every other worktree shares.
 
 Neither reaches anything outside the cluster, and neither is a way around
 the allowlist — git-over-SSH still tunnels through the proxy's transparent
@@ -187,7 +193,7 @@ writer and one reader:
 
 | object | kind | writer | reader | content |
 |---|---|---|---|---|
-| `yaac-proxy-credentials` | Secret | server | proxy informer | `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `github.json` (each host-store file's JSON verbatim; a signed-out tool contributes no key) and `ssh-keys.json` (`[{pattern, host, privateKey, knownHostsEntry}]`, OpenSSH-encoded from the sealed seeds) |
+| `yaac-proxy-credentials` | Secret | server | proxy informer | `claude.json`, `codex.json`, `opencode.json`, `pi.json` (each tool's host-store file's JSON verbatim; a signed-out tool contributes no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` names the project slugs a credential is assigned to: a worktree's HTTPS token is the one assigned to its registration's project, sent only to its https remote's host (and, for github.com, the `gh` API host), and its agent connection sees only that project's keys |
 | `yaac-proxy-secrets-<project>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<slug>/<NAME>": value }` — the opened secret values behind that project's `secretRef` rules |
 | `yaac-proxy-reg-<worktreeId>` | ConfigMap, one per worktree | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, test redirects |
 | `yaac-proxy-refreshed` | Secret | proxy | server informer | `claude.json`, `codex.json`: OAuth bundles the proxy captured from a worktree's refresh, in the credentials-file shape |
@@ -197,9 +203,10 @@ writer and one reader:
 Inputs carry `yaac.proxy-input=<kind>` and outputs `yaac.proxy-output=
 <kind>`; both sides select by label (`list` and `watch` cannot be
 name-scoped anyway). The server writes the credentials Secret whole on
-every host-store write — a login, a clear, a git credential added or
-removed, a refresh the plan-usage poller persisted — and once per start,
-so the objects converge on the store whatever the last server left. A
+every host-store write that changes what it carries — a login, a clear, a
+git credential assigned to a project (or a project added with one), a
+refresh the plan-usage poller persisted — and once per start, so the objects converge on the store
+whatever the last server left. A
 project's values are rewritten when one of its secrets is edited, and go
 with the project. A registration is written before the worktree's Job
 (after `ensureRunning`, so a create never registers against a proxy that

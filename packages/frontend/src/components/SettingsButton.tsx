@@ -15,8 +15,6 @@ import {
   SettingsIcon,
 } from '#lib/icons'
 import {
-  addGitCredential,
-  generateSshKey,
   cancelToolInstall,
   cancelToolLogin,
   clearToolAuth,
@@ -37,6 +35,8 @@ import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import {
   SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type ShortcutId,
 } from '#lib/shortcuts'
+import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
+import { GitCredentials } from '#components/settings/GitCredentials'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { ServerSettings } from '#components/settings/ServerSettings'
 import { serverBridge } from '#lib/desktopServer'
@@ -100,7 +100,7 @@ function visibleSections(buildsImages: boolean): typeof SECTIONS {
 /**
  * Rail gear → settings. Notion-style modal: a left nav of sections over a
  * scrollable content pane (General: theme and sound; Credentials: tool sign-in +
- * git tokens). Open state lives in the store so other surfaces (the
+ * git credentials). Open state lives in the store so other surfaces (the
  * new-worktree menu's "Sign in") can open it onto a specific section.
  */
 export function SettingsButton(
@@ -303,11 +303,12 @@ function UserDockerfilePane(): JSX.Element {
 }
 
 /**
- * Per-tool sign-in plus git tokens. Each tool row shows its stored credential
- * (masked) with a sign-out, or a sign-in expander: claude/codex can import the
- * native login already on the server's machine or take a pasted API key;
- * opencode takes a provider pick + API key. New-worktree creation is blocked
- * per tool until a credential lands here.
+ * Per-tool sign-in plus git credentials. Each tool row shows its stored
+ * credential (masked) with a sign-out, or a sign-in expander: claude/codex can
+ * import the native login already on the server's machine or take a pasted API
+ * key; opencode takes a provider pick + API key. New-worktree creation is
+ * blocked per tool until a credential lands here, and per project until it
+ * has a git credential (GitCredentials).
  */
 function CredentialsPane(): JSX.Element {
   const auth = useAuthList()
@@ -321,7 +322,7 @@ function CredentialsPane(): JSX.Element {
     <section>
       <h2 className="text-sm font-semibold">Credentials</h2>
       <Field label="Agent tools" hint="Sign in to create worktrees with a tool. Keys stay on this machine — containers only ever see placeholders.">
-        <div className="space-y-1.5 text-xs">
+        <div className="space-y-2 text-xs">
           {TOOLS.map((t) => (
             <ToolAuthRow
               key={t}
@@ -333,21 +334,7 @@ function CredentialsPane(): JSX.Element {
           ))}
         </div>
       </Field>
-      <Field label="Git credentials" hint="HTTPS tokens the proxy injects, and SSH keys yaac generated — register the public key with the host.">
-        <div className="space-y-1.5 text-xs">
-          {auth?.gitCredentials.map((c) => (
-            c.publicKey !== undefined
-              ? <SshKeyRow key={c.pattern} pattern={c.pattern} publicKey={c.publicKey} preview={c.preview} />
-              : <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
-          ))}
-          {auth && auth.gitCredentials.length === 0 && (
-            <p className="text-text-faint">No git credentials configured.</p>
-          )}
-        </div>
-      </Field>
-      <Field label="Add git credential" hint="An HTTPS token for a host pattern (e.g. github.com/*), or a generated SSH key for one.">
-        <AddGitCredential onAdded={refresh} />
-      </Field>
+      <GitCredentials />
     </section>
   )
 }
@@ -486,18 +473,13 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
             <button
               onClick={() => void run('signout', () => clearToolAuth(tool))}
               disabled={busy !== null}
-              className="rounded px-1.5 py-0.5 text-[11px] text-text-faint transition hover:text-text
-                disabled:opacity-50"
+              className={TEXT_BUTTON}
             >
               {busy === 'signout' ? 'Signing out…' : 'Sign out'}
             </button>
           </span>
         ) : (
-          <button
-            onClick={() => { setError(null); setExpanded((e) => !e) }}
-            className="ml-2 shrink-0 rounded-md bg-surface-3 px-2.5 py-0.5 text-[11px] font-medium text-text
-              transition hover:bg-border-strong"
-          >
+          <button onClick={() => { setError(null); setExpanded((e) => !e) }} className={clsx(BUTTON, 'ml-2')}>
             Sign in
           </button>
         )}
@@ -524,7 +506,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
               onChange={setProvider}
             />
           )}
-          <form onSubmit={(e) => void saveKey(e)} className="flex gap-2">
+          <form onSubmit={(e) => void saveKey(e)} className="flex items-center gap-2">
             <input
               name="apiKey"
               type="password"
@@ -532,12 +514,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
               className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs
                 text-text outline-none focus:border-border-strong"
             />
-            <button
-              type="submit"
-              disabled={busy !== null}
-              className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
-                hover:bg-border-strong disabled:opacity-50"
-            >
+            <button type="submit" disabled={busy !== null} className={BUTTON}>
               {busy === 'save' ? 'Saving…' : 'Save'}
             </button>
           </form>
@@ -647,17 +624,10 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
         <div className="flex flex-col gap-1.5">
           <p className="text-[11px] text-red-400">{install.error ?? 'install failed'}</p>
           <div className="flex gap-2">
-            <button
-              onClick={() => void installCli()}
-              className="w-fit rounded-md border border-border px-2.5 py-1 text-[11px] text-text-dim
-                transition hover:border-border-strong hover:text-text"
-            >
+            <button onClick={() => void installCli()} className={BUTTON}>
               Try again
             </button>
-            <button
-              onClick={cancelInstall}
-              className="w-fit rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
-            >
+            <button onClick={cancelInstall} className={BUTTON}>
               Cancel
             </button>
           </div>
@@ -670,10 +640,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
           <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
             Installing {toolName}…
           </p>
-          <button
-            onClick={cancelInstall}
-            className="shrink-0 rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
-          >
+          <button onClick={cancelInstall} className={BUTTON}>
             Cancel
           </button>
         </div>
@@ -688,12 +655,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
         {justInstalled && (
           <p className="text-[11px] text-emerald-400">{toolName} installed — try signing in again.</p>
         )}
-        <button
-          onClick={() => void start()}
-          disabled={busy}
-          className="w-fit rounded-md bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent transition
-            hover:bg-accent/25 disabled:opacity-50"
-        >
+        <button onClick={() => void start()} disabled={busy} className={BUTTON}>
           {busy ? 'Starting…' : label}
         </button>
         <p className="text-[11px] text-text-faint">
@@ -709,18 +671,10 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
         <div className="flex flex-col gap-1.5">
           <p className="text-[11px] text-text-dim">{toolName} isn't installed on this machine.</p>
           <div className="flex gap-2">
-            <button
-              onClick={() => void installCli()}
-              disabled={busy}
-              className="w-fit rounded-md bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent
-                transition hover:bg-accent/25 disabled:opacity-50"
-            >
+            <button onClick={() => void installCli()} disabled={busy} className={BUTTON}>
               {busy ? 'Starting…' : `Install ${toolName}`}
             </button>
-            <button
-              onClick={cancel}
-              className="w-fit rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
-            >
+            <button onClick={cancel} className={BUTTON}>
               Cancel
             </button>
           </div>
@@ -730,11 +684,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
     return (
       <div className="flex flex-col gap-1.5">
         <p className="text-[11px] text-red-400">{login.error ?? 'sign-in failed'}</p>
-        <button
-          onClick={cancel}
-          className="w-fit rounded-md border border-border px-2.5 py-1 text-[11px] text-text-dim transition
-            hover:border-border-strong hover:text-text"
-        >
+        <button onClick={cancel} className={BUTTON}>
           Try again
         </button>
       </div>
@@ -766,10 +716,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
           Finish signing in from the browser window that just opened. No window? Use
           the sign-in link the CLI printed below.
         </p>
-        <button
-          onClick={cancel}
-          className="shrink-0 rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
-        >
+        <button onClick={cancel} className={BUTTON}>
           Cancel
         </button>
       </div>
@@ -784,11 +731,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
               className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono
                 text-xs text-text outline-none focus:border-border-strong"
             />
-            <button
-              type="submit"
-              className="shrink-0 rounded-md bg-surface-3 px-3 py-1 text-xs font-medium text-text transition
-                hover:bg-border-strong"
-            >
+            <button type="submit" className={BUTTON}>
               Send
             </button>
           </form>
@@ -978,15 +921,6 @@ function Field({ label, hint, children }: { label: string; hint?: ReactNode; chi
   )
 }
 
-function Row({ left, right }: { left: string; right: string }): JSX.Element {
-  return (
-    <div className="flex items-center justify-between rounded-md bg-bg px-2.5 py-1.5">
-      <span className="truncate font-mono text-text-dim">{left}</span>
-      <span className="ml-2 shrink-0 font-mono text-text-faint">{right}</span>
-    </div>
-  )
-}
-
 /**
  * The git identity this server's worktrees commit under.
  *
@@ -1069,116 +1003,5 @@ function GitIdentityField(): JSX.Element {
         {error !== null && <p className="mt-2 text-xs text-red-400">{error}</p>}
       </form>
     </Field>
-  )
-}
-
-/** One generated SSH key: the pattern and its public half, with a copy
- *  button — the public key is the whole of what there is to show. */
-function SshKeyRow({ pattern, publicKey, preview }: {
-  pattern: string
-  publicKey: string
-  preview: string
-}): JSX.Element {
-  const [copied, setCopied] = useState(false)
-  const copy = (): void => {
-    void navigator.clipboard?.writeText(publicKey)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-  return (
-    <div className="flex items-center gap-2 rounded-md bg-bg px-2.5 py-1.5">
-      <span className="shrink-0 font-mono text-text-dim">{`ssh · ${pattern}`}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-text-faint" title={preview}>{preview}</span>
-      <button
-        type="button"
-        onClick={copy}
-        className="shrink-0 rounded-md bg-surface-3 px-2 py-0.5 text-xs text-text transition hover:bg-border-strong"
-      >
-        {copied ? 'Copied' : 'Copy'}
-      </button>
-    </div>
-  )
-}
-
-function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
-  const [kind, setKind] = useState<'https' | 'ssh'>('https')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [generated, setGenerated] = useState<{ pattern: string; publicKey: string; knownHostsEntry: string } | null>(null)
-
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    // event.currentTarget is nulled once the handler yields, so grab it now.
-    const formElement = event.currentTarget
-    const form = new FormData(formElement)
-    const rawPattern = form.get('pattern')
-    const rawToken = form.get('token')
-    const pattern = (typeof rawPattern === 'string' ? rawPattern : '').trim()
-    const token = (typeof rawToken === 'string' ? rawToken : '').trim()
-    if (!pattern || (kind === 'https' && !token)) return
-    setBusy(true)
-    setError(null)
-    try {
-      if (kind === 'https') {
-        await addGitCredential(pattern, token)
-        setGenerated(null)
-      } else {
-        const { publicKey, knownHostsEntry } = await generateSshKey(pattern)
-        setGenerated({ pattern, publicKey, knownHostsEntry })
-      }
-      formElement.reset()
-      onAdded()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed to add credential')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-2">
-      <div className="flex gap-2">
-        <select
-          value={kind}
-          onChange={(e) => setKind(e.target.value === 'ssh' ? 'ssh' : 'https')}
-          className="shrink-0 rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none"
-        >
-          <option value="https">HTTPS token</option>
-          <option value="ssh">SSH key</option>
-        </select>
-        <input
-          name="pattern"
-          placeholder="github.com/*"
-          className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-            outline-none focus:border-border-strong"
-        />
-      </div>
-      {kind === 'https' && (
-        <input
-          name="token"
-          type="password"
-          placeholder="token"
-          className="rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-            outline-none focus:border-border-strong"
-        />
-      )}
-      <button
-        type="submit"
-        disabled={busy}
-        className="self-start rounded-md bg-surface-3 px-3 py-1.5 text-xs font-medium text-text transition
-          hover:bg-border-strong disabled:opacity-50 max-md:py-2.5"
-      >
-        {busy ? (kind === 'ssh' ? 'Generating…' : 'Adding…') : (kind === 'ssh' ? 'Generate' : 'Add')}
-      </button>
-      {generated && (
-        <div className="space-y-1 break-all font-mono text-xs text-text-dim">
-          <p>Public key for {generated.pattern} — register it with the host: {generated.publicKey}</p>
-          {/* The host key this generate trusted, on first use: shown so it can
-              be compared against what the host publishes. */}
-          <p>Host key trusted: {generated.knownHostsEntry}</p>
-        </div>
-      )}
-      {error && <p className="text-xs text-red-400">{error}</p>}
-    </form>
   )
 }

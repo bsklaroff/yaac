@@ -38,7 +38,7 @@ import {
   CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { loadKnownHostsEntryForHost, parseGitRemote, projectRemoteUrl, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { missingCredentialError, parseGitRemote, projectRemoteUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -816,17 +816,13 @@ export async function createWorktree(
   // (docs/remote-hosting.md).
   const projectEnv = await resolveProjectEnv(projectSlug)
 
-  // Resolve the git credential (HTTPS token or SSH key) for this project's
-  // remote URL and parse the remote so we know the scheme and host.
+  // The project's git credential (HTTPS token or SSH key), and its remote
+  // parsed so we know the scheme and host. A project with none cannot
+  // create: a worktree's agent could neither fetch nor push.
   const remoteUrl = await projectRemoteUrl(projectSlug)
   const parsedRemote = parseGitRemote(remoteUrl)
-  const credential = await resolveCredentialForUrl(remoteUrl)
-  if (!credential) {
-    throw new ServerError(
-      'VALIDATION',
-      `No git credential configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
-    )
-  }
+  const credential = await resolveProjectCredential(projectSlug)
+  if (!credential) throw missingCredentialError(projectSlug)
 
   // Hard error if the project's remote host isn't in the resolved allowlist —
   // worktrees would otherwise produce a confusing in-container 403 from the
@@ -1048,9 +1044,9 @@ export async function createWorktree(
         const msg = err instanceof Error ? err.message : String(err)
         if (isGitAuthError(msg)) {
           throw new ServerError(
-            'AUTH_REQUIRED',
-            `git authentication failed for ${parsedRemote.host} — the stored credential was `
-            + 'rejected (expired or revoked token?). Run "yaac auth update" to replace it, '
+            'VALIDATION',
+            `git authentication failed for ${parsedRemote.host} — the project's credential was `
+            + 'rejected (expired or revoked?). Assign it a new one in Settings → Git credentials, '
             + 'then retry.',
           )
         }
@@ -1180,23 +1176,16 @@ export async function createWorktree(
 
     // SSH remotes: the worktree talks git over SSH with no private key
     // inside the container, which needs a host key to verify against. That
-    // half is here — the credential must exist, and the project-scoped
-    // known_hosts is written host-side from it. How that file, the
+    // half is here — the project-scoped known_hosts is written host-side
+    // from the host key its credential was assigned with. How that file, the
     // forwarded agent and the tunnel reach the pod is the runtime's (all
     // three are properties of its own egress path), so only the path
     // travels on the spec.
     let sshKnownHostsFile: string | undefined
-    if (parsedRemote.scheme === 'ssh') {
-      const knownHostsEntry = await loadKnownHostsEntryForHost(parsedRemote.host)
-      if (!knownHostsEntry) {
-        throw new ServerError(
-          'VALIDATION',
-          `No SSH known_hosts entry for ${parsedRemote.host}. Run "yaac auth update" to register one.`,
-        )
-      }
+    if (credential.kind === 'ssh') {
       // GLOBAL: written under the project dir by the server, read in-pod.
       sshKnownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
-      await writeKnownHostsFile([knownHostsEntry], sshKnownHostsFile)
+      await writeKnownHostsFile([credential.knownHostsEntry], sshKnownHostsFile)
     }
 
     // Bring the per-project credential files up to what this worktree should
@@ -1597,7 +1586,7 @@ export async function createWorktree(
   if (!mediatedEgress) {
     gitCredential = credential.kind === 'https'
       ? { kind: 'https', host: parsedRemote.host, token: credential.token }
-      : { kind: 'ssh', privateKey: await sshKeyMaterial(credential.pattern) }
+      : { kind: 'ssh', privateKey: await sshKeyMaterial(credential.id) }
   }
 
   const spec: WorkspaceSpec = {

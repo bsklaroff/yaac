@@ -16,7 +16,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 const PUBLIC_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/MVah8bw8Kp+X9jKkU6CqcHq+8itZO9NwG6kOC+rTD yaac git.example.com/*'
 const SSH_CREDENTIAL = {
   kind: 'ssh' as const,
-  pattern: 'git.example.com/*',
+  id: '00000000-0000-4000-8000-000000000001',
   publicKey: PUBLIC_KEY,
   knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
 }

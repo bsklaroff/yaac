@@ -44,18 +44,20 @@ export {
   legacySecretImportPending,
 } from './legacy-config-import'
 export {
-  addEntry,
+  addHttpsCredential,
+  assignProjectCredential,
   generateSshCredential,
-  listEntries,
-  listSshEntries,
-  loadCredentials,
-  loadKnownHostsEntryForHost,
+  listCredentialSummaries,
+  missingCredentialError,
   parseGitRemote,
-  removeEntryChecked,
-  resolveCredentialForUrl,
-  saveCredentials,
+  removeCredential,
+  renameCredential,
+  replaceCredential,
+  resolveProjectCredential,
+  runtimeGitCredentials,
   sshKeyMaterial,
 } from './credentials'
+export { importLegacyGitCredentials } from './legacy-git-credentials'
 export {
   assertProjectExists,
   getProjectDetail,

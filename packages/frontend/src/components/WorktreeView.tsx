@@ -845,6 +845,7 @@ export function WorktreeView({
           )}
           {gitAuthFailures.length > 0 && (
             <GitAuthFailureBadge
+              projectSlug={worktree.projectSlug}
               failures={gitAuthFailures}
               iconSize={12}
               className="hover:bg-[#d65858]/25"

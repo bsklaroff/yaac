@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { listEntries, saveCredentials, seedFakeAuth } from '#domain/projects'
-// The pattern `auth fake github` claims. Not under test here.
-import { FAKE_GITHUB_PATTERN } from '#domain/projects/fake-auth'
+import { assignProjectCredential, listCredentialSummaries, resolveProjectCredential, seedFakeAuth } from '#domain/projects'
+import { closeDb, recordProject } from '#db'
 import {
   loadClaudeCredentialsFile,
   loadOpencodeCredentialsFile,
@@ -22,6 +21,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  await closeDb()
   await cleanupTempDir(tmpDir)
 })
 
@@ -66,19 +66,21 @@ describe('seedFakeAuth', () => {
     }
   })
 
-  it('seeds github as a placeholder token, replacing only its own pattern', async () => {
-    await saveCredentials({
-      tokens: [
-        { kind: 'https', pattern: 'gitlab.com/*', token: 'keep-me' },
-        { kind: 'https', pattern: FAKE_GITHUB_PATTERN, token: 'stale' },
-      ],
-    })
-
+  it('seeds github as the fake-github token credential, once', async () => {
+    await seedFakeAuth('github')
     await seedFakeAuth('github')
 
-    expect(await listEntries()).toEqual([
-      { kind: 'https', pattern: 'gitlab.com/*', preview: '***p-me' },
-      { kind: 'https', pattern: FAKE_GITHUB_PATTERN, preview: `***${PLACEHOLDER_GH_TOKEN.slice(-4)}` },
-    ])
+    const listing = await listCredentialSummaries()
+    expect(listing).toEqual([{
+      id: expect.any(String) as string,
+      name: 'fake-github',
+      kind: 'https',
+      preview: `***${PLACEHOLDER_GH_TOKEN.slice(-4)}`,
+      projects: [],
+    }])
+    // A project added with it clones with the placeholder a parent proxy swaps.
+    await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
+    await assignProjectCredential('web', listing[0].id)
+    expect(await resolveProjectCredential('web')).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
   })
 })

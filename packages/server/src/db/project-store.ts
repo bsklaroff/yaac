@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
@@ -21,13 +21,44 @@ import {
  * the metadata, so that answering "which projects are there" never depends on
  * a filesystem the server may not share (docs/layered-server.md).
  */
-export async function recordProject(meta: ProjectMeta): Promise<void> {
+export async function recordProject(
+  meta: ProjectMeta,
+  gitCredential?: { id: string; knownHostsEntry: string | null },
+): Promise<void> {
   const db = await getDb()
-  await db.insert(projects).values(meta).onConflictDoUpdate({
+  await db.insert(projects).values({
+    ...meta,
+    gitCredentialId: gitCredential?.id ?? null,
+    knownHostsEntry: gitCredential?.knownHostsEntry ?? null,
+  }).onConflictDoUpdate({
     target: projects.slug,
-    set: { remoteUrl: meta.remoteUrl },
+    set: {
+      remoteUrl: meta.remoteUrl,
+      // A host key was trusted for the remote it was fetched from; a
+      // different remote has to earn its own.
+      knownHostsEntry: sql`case when ${projects.remoteUrl} = excluded.remote_url
+        then ${projects.knownHostsEntry} end`,
+    },
   })
   notifyWorktreeListChanged()
+}
+
+/**
+ * Assign the project's git credential, with the host key that goes with it
+ * (null for an https token). Written together because a host key was
+ * trusted for one credential's assignment; the next one fetches its own.
+ * False when there is no such project.
+ */
+export async function setProjectGitCredential(
+  slug: string,
+  gitCredentialId: string,
+  knownHostsEntry: string | null,
+): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ gitCredentialId, knownHostsEntry })
+    .where(eq(projects.slug, slug)).returning({ slug: projects.slug })
+  notifyWorktreeListChanged()
+  return rows.length > 0
 }
 
 /**
@@ -39,6 +70,10 @@ export async function recordProject(meta: ProjectMeta): Promise<void> {
 export interface ProjectRow extends ProjectMeta {
   lastTool?: AgentTool
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
+  gitCredentialId: string | null
+  /** The remote's host key, for an SSH credential. Null for a token, and
+   *  once the remote changed — until the key is assigned again. */
+  knownHostsEntry: string | null
 }
 
 type DefaultsRow = typeof projectToolDefaults.$inferSelect
@@ -63,6 +98,8 @@ function toProjectRow(
     addedAt: r.addedAt,
     ...(r.lastTool !== null ? { lastTool: normalizeTool(r.lastTool) } : {}),
     createDefaults,
+    gitCredentialId: r.gitCredentialId,
+    knownHostsEntry: r.knownHostsEntry,
   }
 }
 

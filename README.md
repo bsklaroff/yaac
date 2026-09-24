@@ -260,7 +260,7 @@ Commands:
   project         Manage projects
   worktree        Manage worktrees (a git worktree + its container and agents)
   config          Edit project configuration files (via the server)
-  auth            Manage credentials (GitHub tokens and tool API keys)
+  auth            Manage credentials (git credentials and tool sign-ins)
   remote          Point this CLI at a remote yaac server
 
 yaac cluster <command>
@@ -279,7 +279,10 @@ yaac cluster <command>
 
 yaac project <command>
   list              List all projects
-  add <remote-url>  Add a project (HTTPS URL or SSH URL like git@host:path)
+  add <remote-url> <credential>
+                    Add a project (HTTPS URL or SSH URL like git@host:path),
+                    cloned with — and assigned — the named git credential
+                    (names are listed by `yaac auth list`)
 
 yaac worktree <command>
   create [options] <project>  Create a new worktree for a project
@@ -305,9 +308,12 @@ yaac config <command>
   edit-user-dockerfile        Open the global ~/.yaac/server-local/build/Dockerfile.user in $EDITOR
 
 yaac auth <command>
-  list                List configured credentials (masked)
-  update              Add or update credentials (GitHub, Claude Code, Codex, OpenCode, or Pi)
-  clear               Remove stored credentials (interactive)
+  list                List configured credentials (masked; git credentials by name)
+  update              Add a git credential (HTTPS token or generated SSH key), or
+                      sign in a tool (Claude Code, Codex, OpenCode, or Pi)
+  clear               Remove stored tool credentials (interactive)
+  fake <kinds...>     Seed placeholder credentials (yaac-in-yaac and tests):
+                      claude-oauth, opencode-openrouter, pi-openrouter, github
   token <command>     Durable access tokens for remote clients
     create <name>       Mint a token (printed once) for a remote client
     list                List tokens (masked)
@@ -331,7 +337,6 @@ shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-
 
 yaac centralizes credentials on the host and injects them into worktree traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/server-local/.credentials/` (directory permissions `0700`, files `0600`), split by service:
 
-- `~/.yaac/server-local/.credentials/github.json` — GitHub tokens
 - `~/.yaac/server-local/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
 - `~/.yaac/server-local/.credentials/codex.json` — Codex credentials
 - `~/.yaac/server-local/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
@@ -343,37 +348,38 @@ worktree can spend any credential the host has signed in**. The proxy only
 rewrites requests carrying the placeholder sentinel it put in the container's
 env, so traffic you authenticate yourself passes through untouched.
 
-The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running worktree immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
+Git credentials are the exception: they live encrypted in the server's database (see below). The proxy is handed every credential whenever one changes, so updates via `yaac auth update` or the web app propagate to every running worktree immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
 
-### GitHub tokens
+### Git credentials
 
-yaac requires one or more GitHub Personal Access Tokens (PATs) for git operations and GitHub API access inside worktree containers. Multiple tokens can be scoped to different owners so you can use separate tokens for different orgs or personal repos.
+A project's git operations — the server's clones and fetches, and every
+fetch and push from its worktrees — authenticate with **one git credential
+assigned to that project**. Credentials are named, and one can serve many
+projects. There are two kinds:
 
-Tokens are stored as an ordered list. When yaac needs a token for a given repo, it walks the list and uses the first matching entry:
+- **HTTPS token** — a personal access token you paste in, for projects with an
+  `https://` remote.
+- **SSH key** — a key yaac generates, for projects with a `git@host:path`
+  remote. You only ever see its public half, which you register with the git
+  host as a deploy key or account key.
 
-```json
-{
-  "tokens": [
-    { "kind": "https", "pattern": "github.com/acme-corp/*", "token": "ghp_org_scoped_token" },
-    { "kind": "https", "pattern": "github.com/my-user/private-repo", "token": "ghp_repo_scoped_token" },
-    { "kind": "https", "pattern": "gitlab.com/group/sub/*", "token": "glpat_subgroup_token" },
-    { "kind": "https", "pattern": "github.com/*", "token": "ghp_fallback_token" }
-  ]
-}
-```
+They are managed in the web app: **Settings → Git credentials** lists each
+credential with the projects using it, adds new ones, renames them, and lists
+any project that has none. Adding a project there picks or creates its
+credential as part of the add. From the CLI, `yaac auth update` adds one and
+`yaac auth list` shows their names; `yaac project add <url> <credential>`
+clones with the one named and assigns it. A project without a credential
+cannot create worktrees — its create button reads "Add git authentication…"
+and opens that settings page. To move a project to another credential,
+assign it a new one. **Replace** swaps a leaked or expired credential for a
+new token or key and keeps every project on it; **Delete** always works and
+leaves its projects with no credential until they are assigned another.
 
-Each pattern is host-prefixed and takes one of these forms:
-- `<host>/*` — matches every repo on `<host>`
-- `<host>/<path>` — matches a specific repo at `<path>` (any depth: `acme/foo`, `group/sub/repo`, or a single segment like `myrepo` for Gerrit-style hosts)
-- `<host>/<prefix>/*` — matches every repo whose path starts with `<prefix>` (the prefix itself can span multiple segments, e.g. `gitlab.com/group/sub/*`)
-
-First match wins, so put more specific patterns before broader ones. On first run, yaac prompts for a token if none are configured.
-
-Tokens are used for:
-- **Host-side git operations** — clone and fetch use HTTPS with the matching token embedded in the request.
-- **Worktree-side GitHub requests** — the MITM proxy injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `api.github.com`. The token is never written into the container filesystem. Each worktree uses the single token that matches its project's remote URL.
-
-Token injection only happens over HTTPS. Plain HTTP requests through the proxy never receive credentials.
+Under `k8s` a credential never enters a worktree: the proxy injects a
+project's token into its HTTPS git and `github.com`/`api.github.com` requests
+(over HTTPS only), and signs for its SSH key through a forwarded agent that
+offers each worktree its own project's key and no other. See
+[docs/git-credentials.md](docs/git-credentials.md).
 
 ### Agent tool credentials
 
@@ -467,7 +473,7 @@ a prefix) or a form/JSON body parameter, and an optional path glob. Under
 directly.
 
 GitHub authentication (`github.com` and `api.github.com`) is handled
-automatically from your stored PAT — you do not need a `GITHUB_TOKEN` secret
+automatically from the project's HTTPS git credential — you do not need a `GITHUB_TOKEN` secret
 for it.
 
 There is no way to mount a host directory into a worktree: a path on the
@@ -478,8 +484,9 @@ the contents into the project image.
 ## Secrets at rest
 
 Everything secret this server stores is encrypted in its database: a
-project's proxied secrets, and the SSH private keys git authenticates with
-(which yaac generates itself and never shows — see [docs/ssh-keys.md](docs/ssh-keys.md)).
+project's proxied secrets, and the git credentials — HTTPS tokens, and the
+SSH private keys yaac generates itself and never shows (see
+[docs/git-credentials.md](docs/git-credentials.md)).
 The cipher is [better-auth](https://better-auth.com)'s `symmetricEncrypt`:
 XChaCha20-Poly1305 with a random nonce per value, keyed by the SHA-256 of a
 secret string, and a versioned envelope so a key can be rotated without

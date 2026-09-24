@@ -105,13 +105,14 @@ function renderRunning(worktrees: WorktreeListEntry[], groupNames: Map<string, s
 function renderGitAuthFailures(failuresByProject: Record<string, GitAuthFailure[]>): void {
   const slugs = Object.keys(failuresByProject).sort()
   if (slugs.length === 0) return
-  console.log('GIT AUTH FAILED — the stored credential was rejected (expired or revoked token?):')
+  console.log('GIT AUTH FAILED — the project\'s credential was rejected (expired or revoked token?):')
   for (const slug of slugs) {
     for (const f of failuresByProject[slug]) {
       console.log(`  ${slug}  ${f.host} returned HTTP ${f.status}`)
     }
   }
-  console.log('Run "yaac auth update" to refresh it; the fix reaches running worktrees immediately.')
+  console.log('Assign the project a new credential in the web app (Settings → Git credentials);')
+  console.log('running worktrees pick it up immediately.')
   console.log('')
 }
 

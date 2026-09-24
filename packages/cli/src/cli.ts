@@ -349,8 +349,9 @@ project
 
 project
   .command('add')
-  .description('Add a project from a git remote')
+  .description('Add a project from a git remote, cloned with — and assigned — the named git credential')
   .argument('<remote-url>', 'Git remote URL')
+  .argument('<credential>', 'Name of the git credential to clone with and assign (see `yaac auth list`)')
   .action(projectAdd)
 
 const group = program
@@ -537,22 +538,22 @@ remote
 
 const auth = program
   .command('auth')
-  .description('Manage credentials (GitHub tokens and tool API keys)')
+  .description('Manage credentials (git credentials and tool sign-ins)')
   .configureHelp({ formatHelp: nestedHelp })
 
 auth
   .command('list')
-  .description('List configured credentials (masked)')
+  .description('List configured credentials (masked), git credentials by name')
   .action(authList)
 
 auth
   .command('update')
-  .description('Add or update credentials (GitHub, Claude Code, Codex, OpenCode, or Pi)')
+  .description('Add a git credential (HTTPS token or generated SSH key), or sign in a tool (Claude Code, Codex, OpenCode, or Pi)')
   .action(authUpdate)
 
 auth
   .command('clear')
-  .description('Remove stored credentials (interactive)')
+  .description('Remove stored tool credentials (interactive)')
   .action(authClear)
 
 auth

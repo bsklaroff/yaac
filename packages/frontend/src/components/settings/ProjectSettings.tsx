@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState, type JSX } from 'react'
+import { remoteKind } from '#components/GitCredentialPicker'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
@@ -33,6 +34,7 @@ export function ProjectSettings(): JSX.Element {
     : (activeProjectSlug && projects.some((p) => p.slug === activeProjectSlug)
         ? activeProjectSlug
         : (projects[0]?.slug ?? null))
+  const remoteUrl = projects.find((p) => p.slug === slug)?.remoteUrl
 
   const loadConfig = useCallback(async (): Promise<string> => {
     if (!slug) return '{}'
@@ -91,6 +93,14 @@ export function ProjectSettings(): JSX.Element {
                 <option key={p.slug} value={p.slug}>{p.slug}</option>
               ))}
             </select>
+            {remoteUrl !== undefined && (
+              <p className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px]">
+                <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 font-medium text-text-dim">
+                  {remoteKind(remoteUrl).toUpperCase()}
+                </span>
+                <span title={remoteUrl} className="truncate font-mono text-text-faint">{remoteUrl}</span>
+              </p>
+            )}
           </div>
 
           <div className="mt-6">

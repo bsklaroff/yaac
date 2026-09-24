@@ -37,6 +37,7 @@ import { migrateDataDirLayout } from '@yaac/shared/data-dir-layout'
 import { startReconciler } from '#main/reconciler'
 import { setWorktreeDriver, worktreeDriver } from '#drivers/driver'
 import {
+  importLegacyGitCredentials,
   importLegacyProjectConfig,
   legacySecretImportPending,
   resolveProjectEnv,
@@ -585,7 +586,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // What a killed predecessor's git calls left in scratch. Under the lock and
   // before anything can run git, so no live call's dir is in there.
   await clearGitScratch()
-  // The agent the server's own git signs through (docs/ssh-keys.md). After
+  // The agent the server's own git signs through (docs/git-credentials.md). After
   // the DB, because every request reads the sealed rows.
   await startGitSshAgent()
 
@@ -753,6 +754,7 @@ async function convergeRuntimeCredentials(): Promise<void> {
 async function importLegacyState(): Promise<void> {
   for (const [what, run] of [
     ['project env settings', importLegacyProjectConfig],
+    ['git credentials', importLegacyGitCredentials],
     ['git identity', seedLegacyGitIdentity],
   ] as const) {
     try {

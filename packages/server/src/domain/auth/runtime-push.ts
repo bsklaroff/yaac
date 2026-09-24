@@ -7,7 +7,7 @@ import {
   saveClaudeOAuthBundle,
   saveCodexOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { listSshEntries, loadCredentials } from '#domain/projects'
+import { runtimeGitCredentials } from '#domain/projects'
 import { worktreeDriver } from '#drivers/driver'
 import { serverLog } from '#log'
 import { claudeBundleIsNewer, codexBundleIsNewer } from './credential-sync'
@@ -17,7 +17,7 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  * The host store's two-way link with the runtime that injects from it.
  *
  * Down: every writer of the host store — a login, a clear, a git credential
- * added or removed, a plan-usage refresh that rotated a token — calls
+ * added, renamed, removed or assigned, a plan-usage refresh that rotated a token — calls
  * `pushCredentialsToRuntime` afterwards, and the runtime is handed the whole
  * set. Wholesale because the set is one install-wide thing, and because
  * nothing re-reads it on a schedule of its own: the store is the authority,
@@ -29,16 +29,18 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  * so the runtime sees its own capture echoed and stops preferring it.
  */
 
-async function pushOnce(): Promise<void> {
+/** One push; the failure, if any, logged and handed back. */
+async function pushOnce(): Promise<Error | undefined> {
   try {
-    const [tools, git, ssh] = await Promise.all([
+    const [tools, git] = await Promise.all([
       loadToolCredentialBundle(),
-      loadCredentials(),
-      listSshEntries(),
+      runtimeGitCredentials(),
     ])
-    await worktreeDriver().syncCredentials({ ...tools, git: git.tokens, ssh })
+    await worktreeDriver().syncCredentials({ ...tools, ...git })
+    return undefined
   } catch (err) {
     serverLog(`[server] credential push to the runtime failed: ${String(err)}`)
+    return err instanceof Error ? err : new Error(String(err))
   }
 }
 
@@ -47,24 +49,27 @@ async function pushOnce(): Promise<void> {
 // could be left behind the store until the next write. One push runs at a
 // time; a request that lands while one is running is served by exactly one
 // more, which reads the store after every write that asked for it.
-let inflight: Promise<void> | null = null
+let inflight: Promise<Error | undefined> | null = null
 let rerun = false
 
-/** Hand the runtime the whole credential set, swallowing a failure: the
- *  write that prompted this already succeeded, and the next push carries
- *  the same set. Resolves once a push that read the store after this call
- *  has completed. */
-export function pushCredentialsToRuntime(): Promise<void> {
+/** Hand the runtime the whole credential set, never rejecting: the write
+ *  that prompted this already succeeded, and the next push carries the same
+ *  set. Resolves once a push that read the store after this call has
+ *  completed — to that push's failure, for the caller whose write must not
+ *  be reported done while the runtime still holds what it replaced. */
+export function pushCredentialsToRuntime(): Promise<Error | undefined> {
   if (inflight) {
     rerun = true
     return inflight
   }
   inflight = (async () => {
     try {
+      let failure: Error | undefined
       do {
         rerun = false
-        await pushOnce()
+        failure = await pushOnce()
       } while (rerun)
+      return failure
     } finally {
       inflight = null
     }

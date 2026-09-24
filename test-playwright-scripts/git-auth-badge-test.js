@@ -16,7 +16,7 @@
  *   3. asserts the UI shows no badge, then runs `git fetch` inside the
  *      session pod (fails with 401) and waits for the badge to appear in
  *      the sidebar and header, and for the popover to name the host,
- *      status, and `yaac auth update`
+ *      status, and the "Change git credential…" fix
  *   4. flips the mock to 200, re-runs `git fetch`, and waits for the badge
  *      to self-clear
  *   5. cleans up: removes the upstream redirect and the mock pod/service
@@ -273,8 +273,8 @@ async function main() {
     await page.waitForSelector('text=github.com — HTTP 401', { timeout: 5_000 })
     check('popover names the host and status',
       await page.locator('text=github.com — HTTP 401').count() >= 1)
-    check('popover tells the user to run yaac auth update',
-      await page.locator('text=yaac auth update').count() >= 1)
+    check('popover offers to change the project\'s git credential',
+      await page.getByRole('button', { name: 'Change git credential…' }).count() >= 1)
     await page.screenshot({ path: path.join(shotDir, 'git-auth-badge-popover.png') })
     await page.keyboard.press('Escape')
 

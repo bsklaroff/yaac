@@ -4,6 +4,7 @@ import { z } from 'zod'
 import {
   addProject,
   assertProjectExists,
+  assignProjectCredential,
   getProjectBranches,
   getProjectDetail,
   listProjectEnv,
@@ -20,6 +21,7 @@ import {
   resolveProjectEnv,
 } from '#domain/projects'
 import { removeProject } from '#domain/worktrees'
+import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { remoteBranchExists } from '#domain/git'
@@ -65,10 +67,17 @@ export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
   .post(
     '/add',
-    zv('json', z.object({ remoteUrl: z.string().min(1) })),
+    zv('json', z.object({
+      remoteUrl: z.string().min(1),
+      /** The credential to clone with and assign. */
+      gitCredentialId: z.uuid(),
+    })),
     async (c) => {
-      const { remoteUrl } = c.req.valid('json')
-      return c.json(await addProject(remoteUrl))
+      const { remoteUrl, gitCredentialId } = c.req.valid('json')
+      const result = await addProject(remoteUrl, gitCredentialId)
+      // One more project its runtime serves the credential to.
+      await pushCredentialsToRuntime()
+      return c.json(result)
     },
   )
   .get('/:slug', async (c) => c.json(await getProjectDetail(c.req.param('slug'))))
@@ -76,6 +85,17 @@ export const projectApp = new Hono()
     await assertProjectExists(c.req.param('slug'))
     return c.body(null, 204)
   })
+  // Assign the project its git credential. The answer is the host key an
+  // SSH key's assignment trusted, for the user to compare.
+  .put(
+    '/:slug/git-credential',
+    zv('json', z.object({ credentialId: z.uuid() })),
+    async (c) => {
+      const result = await assignProjectCredential(c.req.param('slug'), c.req.valid('json').credentialId)
+      await pushCredentialsToRuntime()
+      return c.json(result)
+    },
+  )
   .delete('/:slug', async (c) => {
     await removeProject(c.req.param('slug'))
     return c.body(null, 204)

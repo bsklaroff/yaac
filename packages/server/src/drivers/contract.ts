@@ -4,7 +4,6 @@ import type {
   AgentTool,
   DriverKind,
   GitAuthFailure,
-  HttpsGitCredentialEntry,
   ImageBuildEntry,
   PendingMamaRequest,
   PortForwardConfig,
@@ -176,19 +175,30 @@ export interface WorkspaceRegistration {
 }
 
 /**
- * One SSH remote the egress path can act as.
+ * One HTTPS token and the projects entitled to it. Scoped by project rather
+ * than by URL: a credential is assigned to projects (docs/git-credentials.md),
+ * and the egress path hands it only to a worktree of one of them.
+ */
+export interface HttpsCredentialEntry {
+  token: string
+  projects: string[]
+}
+
+/**
+ * One SSH key the egress path can sign with, and the projects entitled to
+ * it — each with the host its remote names and the host key assigning it
+ * trusted.
  *
  * The key material itself, because there is no file to name: a key is a
- * sealed row the server generated (docs/ssh-keys.md), and the only copies
- * outside the database are the ones a runtime puts somewhere a process can
- * use them — the proxy's in-memory ssh-agent, or a per-worktree agent under
- * a driver with no proxy.
+ * sealed row the server generated, and the only copies outside the database
+ * are the ones a runtime puts somewhere a process can use them — the proxy's
+ * in-memory ssh-agent, or a per-worktree agent under a driver with no proxy.
  */
 export interface SshCredentialEntry {
-  pattern: string
-  host: string
   privateKey: string
-  knownHostsEntry: string
+  /** The public half, one OpenSSH line — what a worktree's agent may offer. */
+  publicKey: string
+  projects: Array<{ slug: string; host: string; knownHostsEntry: string }>
 }
 
 /**
@@ -201,7 +211,7 @@ export interface SshCredentialEntry {
  * — it is told. A runtime that mediates no egress ignores it.
  */
 export interface CredentialBundle extends ToolCredentialBundle {
-  git: HttpsGitCredentialEntry[]
+  git: HttpsCredentialEntry[]
   ssh: SshCredentialEntry[]
 }
 

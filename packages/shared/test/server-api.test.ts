@@ -135,43 +135,6 @@ describe('createServerFetch', () => {
     vi.unstubAllEnvs()
   })
 
-  it('on AUTH_REQUIRED invokes onAuthRequired and retries once', async () => {
-    const onAuthRequired = vi.fn().mockResolvedValue(undefined)
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(
-        '{"error":{"code":"AUTH_REQUIRED","message":"need login"}}',
-        401,
-      ))
-      .mockResolvedValueOnce(jsonResponse('{"ok":true}'))
-    const serverFetch = createServerFetch({
-      resolveTarget: () => Promise.resolve(target),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      onAuthRequired,
-    })
-    const res = await serverFetch('/auth/github/tokens', { method: 'POST' })
-    expect(await res.json()).toEqual({ ok: true })
-    expect(onAuthRequired).toHaveBeenCalledTimes(1)
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-  })
-
-  it('returns a second AUTH_REQUIRED response unchanged for the caller to surface', async () => {
-    const onAuthRequired = vi.fn().mockResolvedValue(undefined)
-    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(
-      '{"error":{"code":"AUTH_REQUIRED","message":"still need login"}}',
-      401,
-    )))
-    const serverFetch = createServerFetch({
-      resolveTarget: () => Promise.resolve(target),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      onAuthRequired,
-    })
-    const res = await serverFetch('/tool/default')
-    expect(res.status).toBe(401)
-    expect(res.ok).toBe(false)
-    expect(onAuthRequired).toHaveBeenCalledTimes(1)
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-  })
-
   it('accepts a full URL input and uses only path+search', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
       Promise.resolve(jsonResponse('[]')),

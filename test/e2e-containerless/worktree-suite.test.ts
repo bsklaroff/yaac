@@ -13,6 +13,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
+import { assignTestGitCredential } from '@yaac/test-utils/api'
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
 import {
@@ -25,7 +26,6 @@ import { defaultModelFor } from '@yaac/server/domain/auth'
 import { ACP_ADAPTERS, AGENT_TOOLS, toolSupportsPermissionMode } from '@yaac/shared/types'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
-import { PLACEHOLDER_GH_TOKEN } from '@yaac/shared/tool-auth'
 
 const execFileAsync = promisify(execFile)
 
@@ -56,6 +56,8 @@ let repoPath: string
 let worktreeId: string
 
 const SLUG = 'cl-demo'
+/** The project's git credential: an HTTPS token, assigned in beforeAll. */
+const GIT_TOKEN = 'ghp_containerless_test'
 
 /** Whether this host can run the suite at all — the same two binaries
  *  `yaac host check` calls required. */
@@ -366,17 +368,17 @@ beforeAll(async () => {
   )
   server = await spawnYaacServer(serverEnv)
 
-  // A credential has to exist before a create resolves one; the fake is what
-  // the auth suites use.
+  // A tool credential has to exist before a create resolves one; the fake
+  // is what the auth suites use.
   await runYaac(serverEnv, 'auth', 'fake', 'claude-oauth')
-  await runYaac(serverEnv, 'auth', 'fake', 'github')
 
   repoPath = await createTestRepo(path.join(testEnv.scratchDir, SLUG))
   // The row's remote is what a create parses and resolves a credential for,
   // and a local path is refused as a remote. A plausible GitHub URL instead
-  // — nothing ever dials it (YAAC_E2E_SKIP_FETCH), and the fake github
-  // credential above is what resolves for it.
+  // — nothing ever dials it (YAAC_E2E_SKIP_FETCH) — with the git credential
+  // a create resolves assigned to it.
   await addTestProject(repoPath, { remoteUrl: `https://github.com/test/${SLUG}.git` })
+  await assignTestGitCredential(server, SLUG, GIT_TOKEN)
 })
 
 afterAll(async () => {
@@ -553,7 +555,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(filled).toContain('username=x-access-token')
     // The REAL stored token, not a sentinel: there is no proxy here to swap
     // one for the other (docs/containerless-driver.md).
-    expect(filled).toContain(`password=${PLACEHOLDER_GH_TOKEN}`)
+    expect(filled).toContain(`password=${GIT_TOKEN}`)
   })
 
   it('opens a shell window through the same exec transport the webapp uses', async () => {

@@ -15,6 +15,9 @@ import { AlertDialog } from '@base-ui/react/alert-dialog'
  * Pass `confirmText` to require typing that exact text before confirm
  * enables (GitHub-style guard for high-blast-radius deletes). The input
  * takes initial focus instead, and Enter confirms once it matches.
+ *
+ * Pass `requireClick` where a stray Enter must never confirm: Cancel takes
+ * initial focus, and the confirm button ignores key activation.
  */
 export function ConfirmDialog({
   open,
@@ -26,6 +29,7 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   destructive = true,
   busy = false,
+  requireClick = false,
   onConfirm,
 }: {
   open: boolean
@@ -38,9 +42,11 @@ export function ConfirmDialog({
   cancelLabel?: string
   destructive?: boolean
   busy?: boolean
+  requireClick?: boolean
   onConfirm: () => void
 }): JSX.Element {
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [typed, setTyped] = useState('')
   useEffect(() => { if (open) setTyped('') }, [open])
@@ -53,7 +59,7 @@ export function ConfirmDialog({
         <AlertDialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
         <AlertDialog.Popup
-          initialFocus={confirmText !== undefined ? inputRef : confirmRef}
+          initialFocus={confirmText !== undefined ? inputRef : requireClick ? cancelRef : confirmRef}
           className="fixed left-1/2 top-1/2 w-[400px] max-w-[calc(100vw-2rem)] -translate-x-1/2
             -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)]
             outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
@@ -82,6 +88,7 @@ export function ConfirmDialog({
           )}
           <div className="mt-5 flex justify-end gap-2">
             <AlertDialog.Close
+              ref={cancelRef}
               disabled={busy}
               className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
                 hover:bg-surface-3 hover:text-text disabled:opacity-50"
@@ -91,6 +98,7 @@ export function ConfirmDialog({
             <button
               ref={confirmRef}
               onClick={onConfirm}
+              onKeyDown={(e) => { if (requireClick && (e.key === 'Enter' || e.key === ' ')) e.preventDefault() }}
               disabled={busy || unmatched}
               className={clsx(
                 'flex h-8 items-center rounded-md px-3 text-xs font-medium transition disabled:opacity-50',

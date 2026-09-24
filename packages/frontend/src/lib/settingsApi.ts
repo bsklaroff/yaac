@@ -6,14 +6,35 @@ export async function getAuthList(): Promise<AuthListResult> {
   return api.auth.list.$get()
 }
 
-export async function addGitCredential(pattern: string, token: string): Promise<void> {
-  await api.auth.git.credentials.$post({ json: { kind: 'https', pattern, token } })
+/** Store a pasted HTTPS token under a name; answers the new credential's id. */
+export async function addHttpsCredential(name: string, token: string): Promise<string> {
+  const { id } = await api.auth.git.credentials.$post({ json: { name, token } })
+  return id
 }
 
-/** Generate (or replace) the SSH key for a pattern; the server fetches the
- *  host key and answers with the public half to register with the host. */
-export async function generateSshKey(pattern: string): Promise<{ publicKey: string; knownHostsEntry: string }> {
-  return api.auth.git['ssh-keys'].$post({ json: { pattern } })
+/** Generate an SSH key under a name; answers its public half, for the user
+ *  to register with their git host before a project uses it. */
+export async function generateSshKey(name: string): Promise<{ id: string; publicKey: string }> {
+  return api.auth.git['ssh-keys'].$post({ json: { name } })
+}
+
+export async function renameGitCredential(id: string, name: string): Promise<void> {
+  await api.auth.git.credentials[':id'].$patch({ param: { id }, json: { name } })
+}
+
+/** A new secret under the same name and projects — the pasted `token`, or
+ *  (SSH, no token) a newly generated key whose public half is answered. The
+ *  credential's id changes. */
+export async function replaceGitCredential(
+  id: string,
+  token?: string,
+): Promise<{ id: string; publicKey?: string }> {
+  return api.auth.git.credentials[':id'].replace.$post({ param: { id }, json: token === undefined ? {} : { token } })
+}
+
+/** The projects using it are left with none. */
+export async function deleteGitCredential(id: string): Promise<void> {
+  await api.auth.git.credentials[':id'].$delete({ param: { id } })
 }
 
 /** Save a pasted API key as the tool's credential (provider: opencode/pi only). */
