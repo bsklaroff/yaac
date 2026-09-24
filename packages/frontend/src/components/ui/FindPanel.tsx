@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactElement, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import clsx from 'clsx'
 import { Tooltip } from '@base-ui/react/tooltip'
@@ -10,6 +10,7 @@ import {
   setSearchQuery,
 } from '@codemirror/search'
 import { IS_MAC } from '#lib/platform'
+import { Tip, WithTip } from '#components/ui/Tooltip'
 import { MatchCounter, NO_MATCHES, type Matches } from '#lib/matchCount'
 import {
   ChevronIcon, CloseIcon, MatchCaseIcon, NextMatchIcon, PrevMatchIcon, RegexIcon, ReplaceAllIcon, ReplaceIcon,
@@ -216,7 +217,7 @@ function FindBar({ view, query, matches, current, commit }: {
   return (
     // One grid for both rows, so the replace field lines up under the find
     // field and each row's buttons sit right against its field.
-    <Tooltip.Provider delay={400}>
+    <Tooltip.Provider>
       <div
         onKeyDown={onKeyDown}
         className="grid grid-cols-[auto_minmax(0,380px)_auto] items-center justify-start gap-x-1 gap-y-1 bg-surface px-1.5 py-1
@@ -344,37 +345,6 @@ function Field({ invalid = false, children }: { invalid?: boolean; children: Rea
     )}>
       {children}
     </div>
-  )
-}
-
-/** A tooltip's body: what the control does, why, and its key. */
-function Tip({ title, hint, keys }: { title: string; hint?: string; keys?: string }): JSX.Element {
-  return (
-    <>
-      <span className="text-text">{title}</span>
-      {keys && <kbd className="ml-2 font-sans text-text-faint">{keys}</kbd>}
-      {hint && <span className="block text-text-dim">{hint}</span>}
-    </>
-  )
-}
-
-/** A styled hover tooltip — quicker and more legible than `title`. */
-function WithTip({ tip, children }: { tip: ReactNode; children: ReactElement }): JSX.Element {
-  return (
-    <Tooltip.Root>
-      <Tooltip.Trigger render={children} />
-      <Tooltip.Portal>
-        <Tooltip.Positioner side="bottom" sideOffset={6}>
-          <Tooltip.Popup
-            className="z-50 max-w-[240px] rounded-md border border-border bg-surface-2 px-2 py-1 text-[11px] leading-snug
-              shadow-[0_8px_24px_var(--shadow-color)] transition-opacity duration-100
-              data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
-          >
-            {tip}
-          </Tooltip.Popup>
-        </Tooltip.Positioner>
-      </Tooltip.Portal>
-    </Tooltip.Root>
   )
 }
 
