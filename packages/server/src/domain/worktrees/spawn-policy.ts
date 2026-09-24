@@ -36,7 +36,7 @@ export const SPAWN_MAX_PROMPT_CHARS = 10_000
  * The proxy already bounds queue depth; this bounds fan-out across ticks
  * while creates (which take tens of seconds) are still in flight.
  */
-export const SPAWN_MAX_IN_FLIGHT_PER_SESSION = 8
+export const SPAWN_MAX_IN_FLIGHT_PER_WORKTREE = 8
 
 /** callerWorkspaceId → number of spawn-initiated creates still provisioning. */
 const inFlightByCaller = new Map<string, number>()
@@ -81,8 +81,8 @@ export async function decideSpawn(
   }
 
   const inFlight = inFlightByCaller.get(request.callerWorkspaceId) ?? 0
-  if (inFlight >= SPAWN_MAX_IN_FLIGHT_PER_SESSION) {
-    return fail(`too many concurrent spawns (max ${SPAWN_MAX_IN_FLIGHT_PER_SESSION} provisioning at once)`)
+  if (inFlight >= SPAWN_MAX_IN_FLIGHT_PER_WORKTREE) {
+    return fail(`too many concurrent spawns (max ${SPAWN_MAX_IN_FLIGHT_PER_WORKTREE} provisioning at once)`)
   }
 
   // Tool precedence: explicit request > the caller's own tool > the agent
@@ -120,8 +120,8 @@ export async function decideSpawn(
       // it at a prompt no one will ever answer.
       onProgress,
     })).then(
-    () => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned session ${workspaceId.slice(0, 8)}... in ${projectSlug}`),
-    (err: unknown) => serverLog(`[spawn] session create for ${request.callerWorkspaceId.slice(0, 8)}... failed: ${String(err)}`),
+    () => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned worktree ${workspaceId.slice(0, 8)}... in ${projectSlug}`),
+    (err: unknown) => serverLog(`[spawn] worktree create for ${request.callerWorkspaceId.slice(0, 8)}... failed: ${String(err)}`),
   ).finally(() => {
     const n = (inFlightByCaller.get(request.callerWorkspaceId) ?? 1) - 1
     if (n <= 0) inFlightByCaller.delete(request.callerWorkspaceId)

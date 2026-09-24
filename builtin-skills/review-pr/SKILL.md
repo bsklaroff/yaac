@@ -1,10 +1,10 @@
 ---
 name: review-pr
-description: Review a GitHub PR and own it to completion — check out its head, post findings, keep watching for follow-up commits and comments, re-review as it changes, and say "Approved" only once every finding has been resolved by a commit or an answer, then stop this session. Use when this session's job is to be a PR's reviewer. Takes the PR number as its argument.
+description: Review a GitHub PR and own it to completion — check out its head, post findings, keep watching for follow-up commits and comments, re-review as it changes, and say "Approved" only once every finding has been resolved by a commit or an answer, then stop this worktree. Use when this worktree's job is to be a PR's reviewer. Takes the PR number as its argument.
 ---
 
 You are running **inside a yaac worktree**, and for as long as it lives this
-session is **one PR's reviewer**. Its whole job is that PR: review it, post
+worktree is **one PR's reviewer**. Its whole job is that PR: review it, post
 the findings to GitHub, keep watching it, re-review as it changes, and stop
 once the PR has your approval.
 
@@ -44,7 +44,7 @@ this project's rules at this commit.
 ## 2. Review it
 
 Use `/code-review` if you have it, plus any angles the prompt that spawned
-this session named — those are the PR-specific risks somebody already
+this worktree named — those are the PR-specific risks somebody already
 identified, and they come *on top of* a normal review, not instead of one.
 
 Review the **execution** of a decision, not the decision: where the project
@@ -100,7 +100,7 @@ When the ledger does empty, post one comment that:
    run and what passed. An approval with no such list reads as "fully
    verified"; if there is genuinely nothing left to run, say that outright.
 
-Then go to step 7 — that comment is the last thing this session does.
+Then go to step 7 — that comment is the last thing this worktree does.
 
 ## 5. Keep watching the PR
 
@@ -138,17 +138,17 @@ own comments come back as events — recognize what you wrote and ignore it.
 
 After either, if the ledger is now empty, approve per step 4.
 
-## 7. Stop this session
+## 7. Stop this worktree
 
-Once the "Approved" comment is posted, this session's job is done:
+Once the "Approved" comment is posted, this worktree's job is done:
 
 - Say to the user, **first**, that the PR is approved and what you left on it
   — stopping tears down the channel your reply comes back over, so nothing
   after it reaches them.
-- Then run `yaac-mama stop` (no session argument — that stops yourself) as
+- Then run `yaac-mama stop` (no worktree argument — that stops yourself) as
   the **last** action of the turn. Nothing after it happens; do not run any
   command, or post any comment, after it.
-- The session ending *is* the confirmation. The command's own reply may never
+- The worktree ending *is* the confirmation. The command's own reply may never
   print, and a missing reply is neither an error nor something to retry.
 
 Stop the same way if the PR is **merged or closed** while you are watching

@@ -54,7 +54,7 @@ export const MAMA_TTL_MS = 120_000
 export const MAMA_MAX_BODY_BYTES = 64 * 1024
 /** Body character limit — mirrors the server's own check. */
 export const MAMA_MAX_BODY_CHARS = 10_000
-export const MAMA_MAX_PENDING_PER_SESSION = 8
+export const MAMA_MAX_PENDING_PER_WORKTREE = 8
 export const MAMA_MAX_PENDING_TOTAL = 32
 
 /**
@@ -75,7 +75,7 @@ const ARG_SHAPES: Record<string, RegExp> = {
   // into anything that renders it.
   group: /^[^\n\r]{1,200}$/,
   // A worktree id or its short prefix.
-  session: /^[A-Za-z0-9-]{1,64}$/,
+  worktree: /^[A-Za-z0-9-]{1,64}$/,
 }
 
 /** Command names the proxy will queue. Deliberately a SHAPE, not a list: the
@@ -219,7 +219,7 @@ export class MamaQueue {
     if (this.pending.size + this.claimed.size >= MAMA_MAX_PENDING_TOTAL) {
       return { ok: false, status: 429, error: 'too many pending yaac-mama requests' }
     }
-    if (this.pendingCountFor(req.worktreeId) >= MAMA_MAX_PENDING_PER_SESSION) {
+    if (this.pendingCountFor(req.worktreeId) >= MAMA_MAX_PENDING_PER_WORKTREE) {
       return {
         ok: false,
         status: 429,

@@ -25,7 +25,7 @@ import { decideSpawn } from './spawn-policy'
 import { listActiveWorktrees } from './list'
 import { listWorktreeGroups, resolveGroup } from './groups'
 import { getProjectWorktreeRows, setWorktreeGroup, setWorktreeTitle } from '#db'
-import { resolveSessionInProject } from './resolve'
+import { resolveWorktreeInProject } from './resolve'
 import { stopWorktree } from './stop'
 import { ServerError } from '@yaac/shared/errors'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
@@ -66,7 +66,7 @@ export type MamaOutcome =
  * bound themselves by too. Anything longer is refused rather than accepted
  * and truncated on the way to the table, where two distinct long names
  * sharing their first `MAX_TITLE_LENGTH` characters would resolve to one
- * group and file a session into a group nobody named.
+ * group and file a worktree into a group nobody named.
  */
 const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 
@@ -83,10 +83,10 @@ const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: [],
   create: ['tool', 'model', 'group'],
-  rename: ['session'],
-  stop: ['session'],
+  rename: ['worktree'],
+  stop: ['worktree'],
   'group-create': [],
-  'group-move': ['session'],
+  'group-move': ['worktree'],
   models: [],
 }
 
@@ -151,10 +151,10 @@ async function runList(caller: MamaCaller): Promise<MamaOutcome> {
 
   const lines: string[] = []
   if (worktrees.length === 0) {
-    lines.push(`No running sessions in ${caller.projectSlug}.`)
+    lines.push(`No running worktrees in ${caller.projectSlug}.`)
   } else {
-    lines.push(`Running sessions in ${caller.projectSlug}:`, '')
-    lines.push(...renderSessions(worktrees, names, caller.workspaceId))
+    lines.push(`Running worktrees in ${caller.projectSlug}:`, '')
+    lines.push(...renderWorktrees(worktrees, names, caller.workspaceId))
   }
   lines.push('')
   lines.push(groups.length === 0
@@ -163,7 +163,7 @@ async function runList(caller: MamaCaller): Promise<MamaOutcome> {
   return { ok: true, output: lines.join('\n') }
 }
 
-function renderSessions(
+function renderWorktrees(
   worktrees: WorktreeListEntry[],
   groupNames: Map<string, string>,
   callerId: string,
@@ -172,7 +172,7 @@ function renderSessions(
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((w) => ({
       // The caller marks its own row: an agent reading this list is usually
-      // deciding what to do about the OTHER sessions.
+      // deciding what to do about the OTHER worktrees.
       id: `${w.worktreeId.slice(0, 8)}${w.worktreeId === callerId ? ' (you)' : ''}`,
       tool: w.tool,
       status: w.status,
@@ -183,19 +183,19 @@ function renderSessions(
 
   const width = (header: string, pick: (r: typeof rows[number]) => string): number =>
     Math.max(header.length, ...rows.map((r) => pick(r).length))
-  const idW = width('SESSION', (r) => r.id)
+  const idW = width('WORKTREE', (r) => r.id)
   const toolW = width('TOOL', (r) => r.tool)
   const statusW = width('STATUS', (r) => r.status)
   const groupW = width('GROUP', (r) => r.group)
   // `rename` is one of the six commands, so its result has to be readable
-  // here — otherwise an agent can retitle a session and never see it. Shown
+  // here — otherwise an agent can retitle a worktree and never see it. Shown
   // only once something has a title, like the CLI's own listings.
   const hasTitles = rows.some((r) => r.title !== '')
   const titleW = hasTitles ? width('TITLE', (r) => r.title) : 0
   const titleCell = (v: string): string => hasTitles ? `${v.padEnd(titleW)}  ` : ''
 
   return [
-    `${'SESSION'.padEnd(idW)}  ${'TOOL'.padEnd(toolW)}  ${'STATUS'.padEnd(statusW)}  ${'GROUP'.padEnd(groupW)}  ${titleCell('TITLE')}PROMPT`,
+    `${'WORKTREE'.padEnd(idW)}  ${'TOOL'.padEnd(toolW)}  ${'STATUS'.padEnd(statusW)}  ${'GROUP'.padEnd(groupW)}  ${titleCell('TITLE')}PROMPT`,
     ...rows.map((r) =>
       `${r.id.padEnd(idW)}  ${r.tool.padEnd(toolW)}  ${r.status.padEnd(statusW)}  ${r.group.padEnd(groupW)}  ${titleCell(r.title)}${r.prompt}`),
   ]
@@ -236,15 +236,15 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
 }
 
 /**
- * Retitle a session — the label the sidebar shows in place of its id.
+ * Retitle a worktree — the label the sidebar shows in place of its id.
  *
  * The one command whose most useful target is the CALLER: an agent that has
  * worked out what it is actually doing can say so, and the user reads it
- * without opening the session. Naming a sibling works too, and is scoped the
+ * without opening the worktree. Naming a sibling works too, and is scoped the
  * same way everything here is.
  */
 async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const target = await resolveTargetSession(caller, request.args.session)
+  const target = await resolveTargetWorktree(caller, request.args.worktree)
   if (!target.ok) return target
   const worktreeId = target.worktreeId
 
@@ -258,63 +258,63 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
 }
 
 /**
- * Which session a command that names one is aimed at.
+ * Which worktree a command that names one is aimed at.
  *
- * Shared by the two commands that take a `--session`, so both say "me" the
+ * Shared by the two commands that take a `--worktree`, so both say "me" the
  * same way: omitted means the caller, which saves an agent looking up an id
  * it would only be using to name itself. Resolution is
- * `resolveSessionInProject`'s, so an id from another project simply is not
+ * `resolveWorktreeInProject`'s, so an id from another project simply is not
  * here, and an ambiguous prefix resolves to nothing rather than to whichever
  * row came back first.
  */
-async function resolveTargetSession(
+async function resolveTargetWorktree(
   caller: MamaCaller,
-  session: string | undefined,
+  worktree: string | undefined,
 ): Promise<{ ok: true; worktreeId: string } | { ok: false; error: string }> {
-  const target = session === undefined || session.trim() === ''
+  const target = worktree === undefined || worktree.trim() === ''
     ? caller.workspaceId
-    : session.trim()
-  const resolved = await resolveSessionInProject(caller.projectSlug, target)
+    : worktree.trim()
+  const resolved = await resolveWorktreeInProject(caller.projectSlug, target)
   return resolved.ok
     ? resolved
-    : { ok: false, error: sessionError(caller.projectSlug, target, resolved.reason) }
+    : { ok: false, error: worktreeError(caller.projectSlug, target, resolved.reason) }
 }
 
 /**
- * What to tell a caller whose session argument resolved to nothing.
+ * What to tell a caller whose worktree argument resolved to nothing.
  *
  * The two failures need different next moves, and behind a destructive verb
  * that difference is the whole message: an unknown id means look again, an
  * ambiguous prefix means the caller already holds the right id and simply
- * did not type enough of it. Answering both with "no session" sends an agent
+ * did not type enough of it. Answering both with "no worktree" sends an agent
  * back to `list` when it needed one more character.
  */
-function sessionError(
+function worktreeError(
   projectSlug: string,
   target: string,
   reason: 'not-found' | 'ambiguous',
 ): string {
   return reason === 'ambiguous'
-    ? `'${target}' matches more than one session in ${projectSlug} — use a longer prefix`
-    : `no session '${target}' in ${projectSlug}`
+    ? `'${target}' matches more than one worktree in ${projectSlug} — use a longer prefix`
+    : `no worktree '${target}' in ${projectSlug}`
 }
 
 /**
- * Stop a session: the running unit goes, everything that makes it
+ * Stop a worktree: the running unit goes, everything that makes it
  * restartable stays.
  *
- * Omitting the session stops the CALLER, and that is the case this exists
- * for — a fanned-out session that has finished its work winding itself down.
+ * Omitting the worktree stops the CALLER, and that is the case this exists
+ * for — a fanned-out worktree that has finished its work winding itself down.
  * The cost is that a self-stop's confirmation is best-effort: the caller is
  * tearing down the very transport its reply rides (its pod under k8s, the
  * tmux server hosting the command under containerless). `stopWorktree`
  * schedules the teardown detached, so this returns and the reply is written
- * before it proceeds — but whether that reaches a session being torn down is
+ * before it proceeds — but whether that reaches a worktree being torn down is
  * not something this can promise, which is why the script and the skill both
- * say the session ending IS the confirmation.
+ * say the worktree ending IS the confirmation.
  */
 async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const target = await resolveTargetSession(caller, request.args.session)
+  const target = await resolveTargetWorktree(caller, request.args.worktree)
   if (!target.ok) return target
 
   try {
@@ -323,9 +323,9 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
     // `stopWorktree`'s own NOT_FOUND sends the caller to `yaac worktree
     // list`, which an agent does not have. It also means something narrower
     // here than it does at the CLI: the id already resolved against this
-    // project's rows, so the session exists — it just has no running unit.
+    // project's rows, so the worktree exists — it just has no running unit.
     if (err instanceof ServerError && err.code === 'NOT_FOUND') {
-      return { ok: false, error: `session ${target.worktreeId.slice(0, 8)} is not running` }
+      return { ok: false, error: `worktree ${target.worktreeId.slice(0, 8)} is not running` }
     }
     throw err
   }
@@ -355,16 +355,16 @@ async function runGroupCreate(
 }
 
 async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const session = request.args.session
-  if (session === undefined || session.trim() === '') {
-    return { ok: false, error: 'group move needs a session id' }
+  const worktree = request.args.worktree
+  if (worktree === undefined || worktree.trim() === '') {
+    return { ok: false, error: 'group move needs a worktree id' }
   }
   // Resolved against the caller's OWN project's rows, which is what scopes
-  // the move: a session id from another project simply is not here, so there
+  // the move: a worktree id from another project simply is not here, so there
   // is no cross-project move to refuse separately.
-  const found = await resolveSessionInProject(caller.projectSlug, session.trim())
+  const found = await resolveWorktreeInProject(caller.projectSlug, worktree.trim())
   if (!found.ok) {
-    return { ok: false, error: sessionError(caller.projectSlug, session.trim(), found.reason) }
+    return { ok: false, error: worktreeError(caller.projectSlug, worktree.trim(), found.reason) }
   }
   const worktreeId = found.worktreeId
 
@@ -403,7 +403,7 @@ async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
     auth: await loadToolAuthEntry(tool),
   })))
 
-  const lines = [`Agent tools on this host (this session runs: ${caller.tool ?? 'unknown'})`, '']
+  const lines = [`Agent tools on this host (this worktree runs: ${caller.tool ?? 'unknown'})`, '']
   for (const { tool, auth } of entries) {
     if (!auth) {
       lines.push(`${tool.padEnd(9)} not configured — its agent cannot authenticate`)

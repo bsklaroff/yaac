@@ -426,7 +426,7 @@ shape the difference list below rejects.
 
 `yaac-mama` is the in-worktree command channel — a strict subset of the yaac
 CLI an agent may run against the server that started it: list the project's
-sessions, start another, retitle one, stop one (its own session included),
+worktrees, start another, retitle one, stop one (its own included),
 and make and fill sidebar groups. Stopping is in reach because it is
 reversible — the checkout, the row and the conversation survive it, so the
 user can restart what an agent wound down; deleting, restarting and
@@ -617,7 +617,7 @@ startup rather than letting a create fail with a spawn error:
 - **an agent CLI** on `PATH` (claude, codex, opencode, pi) — there is no
   image to have installed one.
 - **lsof**: port detection; without it worktrees run fine and report no ports.
-- **curl**: how `yaac-mama` reaches this server from inside a session;
+- **curl**: how `yaac-mama` reaches this server from inside a worktree;
   nothing else uses it.
 
 Nothing gates on the tools the agents themselves reach for — `ripgrep` and

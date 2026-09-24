@@ -807,10 +807,10 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(env.HOME).not.toBe(process.env.HOME)
   })
 
-  it('lists this project’s sessions from inside the worktree', async () => {
+  it('lists this project’s worktrees from inside the worktree', async () => {
     const { code, out } = await runMama('list')
     expect(code).toBe(0)
-    expect(out).toMatch(/SESSION\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
+    expect(out).toMatch(/WORKTREE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
     // Attributed by the token alone: the request never names a worktree, and
     // the row it marks is the caller's.
     expect(out).toContain(`${worktreeId.slice(0, 8)} (you)`)
@@ -836,7 +836,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   })
 
   it('renames itself, which the server records against the caller\u2019s own id', async () => {
-    // No session named: the token alone says who is asking, so an agent can
+    // No worktree named: the token alone says who is asking, so an agent can
     // label itself without knowing its own id.
     const renamed = await runMama('rename', 'wiring up the mama channel')
     expect(renamed.code).toBe(0)
@@ -854,7 +854,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   it('attributes a request to the token\u2019s OWN worktree, not the one asking', async () => {
     // The security property the whole design rests on: a request never names
     // a worktree, so the token is the only thing that says who is calling.
-    // Proving it needs a second worktree — one token, run with no session
+    // Proving it needs a second worktree — one token, run with no worktree
     // argument, must retitle ITS worktree and leave the other alone.
     const otherId = await createWorktree()
     try {
@@ -892,13 +892,13 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(denied.code).toBe(2)
     expect(denied.out).toContain('unknown command')
 
-    // An empty session argument is a usage error, not a self-stop: it never
+    // An empty worktree argument is a usage error, not a self-stop: it never
     // leaves the script, so this is safe to run against the live subject.
     // `stop "$id"` with $id unset is a caller that meant to name a sibling,
     // and falling through to the default would stop THIS worktree instead.
     const empty = await runMama('stop', '')
     expect(empty.code).toBe(2)
-    expect(empty.out).toContain('omit the session to stop yourself')
+    expect(empty.out).toContain('omit the worktree to stop yourself')
 
     // Straight at the route, past the script: the server refuses the same
     // command, and refuses a caller it cannot identify.
@@ -917,7 +917,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(await post(server.lock.secret, 'list')).toBe(401)
   })
 
-  it('stops a session it names, and stops ITSELF when it names none', async () => {
+  it('stops a worktree it names, and stops ITSELF when it names none', async () => {
     // Its own subject, because both halves destroy one — and the second half
     // destroys the very worktree it is running in, which is the whole point:
     // under this driver the tmux server hosting the command IS the unit the
@@ -935,12 +935,12 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       return { code: Number(m[1]), out: stdout.slice(0, m.index) }
     }
 
-    // A session it cannot see is refused rather than half-resolved.
-    const missing = await asDoomed('stop', 'no-such-session')
+    // A worktree it cannot see is refused rather than half-resolved.
+    const missing = await asDoomed('stop', 'no-such-worktree')
     expect(missing.code).toBe(1)
-    expect(missing.out).toContain('no session')
+    expect(missing.out).toContain('no worktree')
 
-    // No session named: the token says who is asking, and the answer is the
+    // No worktree named: the token says who is asking, and the answer is the
     // caller. Its reply may not survive its own teardown, so what is
     // asserted is the tmux server going away — the contract the skill
     // states, rather than the line it hopes to print.

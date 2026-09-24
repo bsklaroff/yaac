@@ -84,20 +84,20 @@ export async function resolveWorktreeRecord(
 }
 
 /**
- * What a session id, or its short prefix, resolved to within one project.
+ * What a worktree id, or its short prefix, resolved to within one project.
  *
  * The two failures are told apart because they ask the caller for different
  * things: an unknown id means look again, an ambiguous prefix means type
  * more of the one you already have. Reported rather than resolved — a move,
- * a rename or a STOP aimed at the wrong session is silent, so a prefix
+ * a rename or a STOP aimed at the wrong worktree is silent, so a prefix
  * naming several must never land on whichever row came back first.
  */
-export type SessionResolution =
+export type WorktreeResolution =
   | { ok: true; worktreeId: string }
   | { ok: false; reason: 'not-found' | 'ambiguous' }
 
 /**
- * Resolve a session id, or its unique short prefix, WITHIN one project.
+ * Resolve a worktree id, or its unique short prefix, WITHIN one project.
  *
  * Project-scoped by construction rather than by a check afterwards: this is
  * what an in-worktree caller uses (`yaac-mama`) and what the name-addressed
@@ -108,11 +108,11 @@ export type SessionResolution =
  *
  * Rows in any state match: a stopped worktree keeps its title and its group.
  */
-export async function resolveSessionInProject(
+export async function resolveWorktreeInProject(
   projectSlug: string,
-  session: string,
-): Promise<SessionResolution> {
-  const trimmed = session.trim()
+  idOrPrefix: string,
+): Promise<WorktreeResolution> {
+  const trimmed = idOrPrefix.trim()
   if (trimmed === '') return { ok: false, reason: 'not-found' }
   const rows = await getProjectWorktreeRows(projectSlug)
   if (rows.has(trimmed)) return { ok: true, worktreeId: trimmed }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   MAMA_MAX_BODY_CHARS,
-  MAMA_MAX_PENDING_PER_SESSION,
+  MAMA_MAX_PENDING_PER_WORKTREE,
   MAMA_MAX_PENDING_TOTAL,
   MAMA_TTL_MS,
   MamaQueue,
@@ -130,8 +130,8 @@ describe('validateMamaRequest', () => {
     expect(validateMamaRequest('group-move', { group: 'a\nb' }, 'p').ok).toBe(false)
     expect(validateMamaRequest('group-move', { group: 'x'.repeat(201) }, 'p').ok).toBe(false)
 
-    expect(validateMamaRequest('group-move', { session: 'a1b2c3d4' }, 'p')).toEqual({ ok: true })
-    expect(validateMamaRequest('group-move', { session: 'a/b' }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('group-move', { worktree: 'a1b2c3d4' }, 'p')).toEqual({ ok: true })
+    expect(validateMamaRequest('group-move', { worktree: 'a/b' }, 'p').ok).toBe(false)
   })
 })
 
@@ -263,7 +263,7 @@ describe('MamaQueue', () => {
 
   it('caps pending requests per worktree at 429, counting claimed ones too', () => {
     const q = new MamaQueue()
-    for (let i = 0; i < MAMA_MAX_PENDING_PER_SESSION - 1; i++) enqueue(q, 's1')
+    for (let i = 0; i < MAMA_MAX_PENDING_PER_WORKTREE - 1; i++) enqueue(q, 's1')
     q.drain() // claimed entries still count toward the worktree cap
     enqueue(q, 's1')
     const rejected = q.enqueue(
@@ -279,7 +279,7 @@ describe('MamaQueue', () => {
     const q = new MamaQueue()
     for (let i = 0; i < MAMA_MAX_PENDING_TOTAL; i++) {
       // Spread across worktrees so the per-worktree cap never trips first.
-      enqueue(q, `s${Math.floor(i / (MAMA_MAX_PENDING_PER_SESSION - 1))}`)
+      enqueue(q, `s${Math.floor(i / (MAMA_MAX_PENDING_PER_WORKTREE - 1))}`)
     }
     const rejected = q.enqueue(
       { worktreeId: 'fresh', command: 'create', args: {}, body: 'p' }, () => {},
@@ -291,7 +291,7 @@ describe('MamaQueue', () => {
   it('frees capacity when requests complete', () => {
     const q = new MamaQueue()
     const held = Array.from(
-      { length: MAMA_MAX_PENDING_PER_SESSION },
+      { length: MAMA_MAX_PENDING_PER_WORKTREE },
       () => enqueue(q, 's1'),
     )
     q.drain()
