@@ -29,6 +29,7 @@ export type WorktreeEvent =
   | SessionsLaunched
   | SessionsDiscovered
   | SessionsActive
+  | PermissionModeChanged
   | WorktreeStopped
 
 /**
@@ -200,6 +201,20 @@ export interface ActiveSession {
   agentSessionId: string
   tool: AgentTool
   paneId?: string
+}
+
+/**
+ * The posture a worktree's running agent is in moved away from the one it was
+ * launched with — the user changed mode inside the agent, or the agent moved
+ * itself (entering plan mode, a plan-exit answer). The row follows, because
+ * it is what a restart relaunches and what `yaac-mama create` caps a sibling
+ * at: both mean the posture the agent is in now, not the one it started in.
+ */
+export interface PermissionModeChanged {
+  type: 'permission-mode-changed'
+  projectSlug: string
+  worktreeId: string
+  permissionMode: PermissionMode
 }
 
 /**

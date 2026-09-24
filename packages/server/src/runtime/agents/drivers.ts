@@ -77,6 +77,14 @@ export type AgentObservation =
   | { kind: 'live-agents'; agents: LiveAgent[] }
   | { kind: 'status'; handle: string; status: AgentPaneStatus }
   /**
+   * The worktree's posture moved while its agent ran — the user changed mode
+   * inside the agent, or the agent moved itself (entering plan mode, a
+   * plan-exit answer). Only a mode that maps to a `PermissionMode` is
+   * reported; the caller records it, since a restart relaunches what the row
+   * says (docs/permission-modes.md).
+   */
+  | { kind: 'permission-mode'; mode: PermissionMode }
+  /**
    * A read-only command channel into the pod, or null when it goes away.
    * `tui` publishes its tmux control-mode client here so unrelated read-only
    * tmux queries (the webapp's terminal listing) ride the open stream instead

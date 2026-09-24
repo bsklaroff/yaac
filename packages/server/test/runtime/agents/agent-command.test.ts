@@ -1,4 +1,7 @@
 import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   buildAgentCmd,
@@ -19,6 +22,7 @@ import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
 interface OpencodeConfig {
   model?: string
   default_agent?: string
+  plugins?: string[]
   permissions?: Array<{ action: string; resource: string; effect: string }>
 }
 
@@ -138,22 +142,22 @@ describe('buildAgentCmd', () => {
     // asserted on every claude launch shape below, not just once.
     it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
     })
 
     it('swaps --session-id for --resume when resuming', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
     })
 
     it('inserts --model when a model override is given', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: false, model: 'claude-opus-4-8', permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
     })
 
     it('combines a model override with resume', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, model: 'opus', permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
     })
   })
 
@@ -196,7 +200,10 @@ describe('buildAgentCmd', () => {
         expect(cmd).not.toContain("'")
         expect(cmd).not.toContain('--auto')
         expect(cmd).not.toContain('--agent')
-        return opencodeConfigOf(cmd)
+        // The posture plugin rides every TUI launch; the rules are the posture.
+        const { plugins, ...posture } = opencodeConfigOf(cmd)
+        expect(plugins).toEqual(['$HOME/.local/share/yaac/opencode-plugin'])
+        return posture
       }
       const rule = (action: string, effect: string) => ({ action, resource: '*', effect })
 
@@ -241,15 +248,35 @@ describe('buildAgentCmd', () => {
     // `respawn-window '<cmd>'` and then run by a shell, so a quote or brace
     // that does not survive leaves opencode reading a broken value — and a
     // config value opencode cannot parse fails OPEN.
-    it('delivers the opencode posture through the shell it is embedded in', () => {
-      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'manual' })
-      const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
-      // Exactly how it travels: single-quoted inside the tmux argument, which
-      // a shell then unwraps and runs.
-      const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], {
-        encoding: 'utf8',
-      })
-      expect(JSON.parse(out) as OpencodeConfig).toEqual(opencodeConfigOf(cmd))
+    //
+    // The whole launch runs here, against stand-ins on PATH: the posture
+    // plugin has to be copied into the directory the config names, and that
+    // name is `$HOME`-relative, expanded by the same shell.
+    it('delivers the opencode posture, and its posture plugin, through the shell it is embedded in', () => {
+      const scratch = mkdtempSync(path.join(os.tmpdir(), 'yaac-opencode-launch-'))
+      try {
+        const bin = path.join(scratch, 'bin')
+        mkdirSync(bin)
+        writeFileSync(path.join(bin, 'yaac-opencode-posture'), '// the plugin\n', { mode: 0o755 })
+        writeFileSync(path.join(bin, 'opencode'),
+          '#!/bin/sh\nprintf "%s\\n%s" "$YAAC_PERMISSION_MODE" "$OPENCODE_CONFIG_CONTENT"\n', { mode: 0o755 })
+        const home = path.join(scratch, 'home')
+        const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'plan' })
+        // Exactly how it travels: single-quoted inside the tmux argument,
+        // which a shell then unwraps and runs.
+        const out = execFileSync('sh', ['-c', cmd], {
+          encoding: 'utf8',
+          env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home },
+        })
+        const [launched, config] = out.split('\n')
+        expect(launched).toBe('plan')
+        const plugin = path.join(home, '.local', 'share', 'yaac', 'opencode-plugin')
+        expect(JSON.parse(config ?? '') as OpencodeConfig)
+          .toEqual({ ...opencodeConfigOf(cmd), plugins: [plugin] })
+        expect(readFileSync(path.join(plugin, 'server.js'), 'utf8')).toBe('// the plugin\n')
+      } finally {
+        rmSync(scratch, { recursive: true, force: true })
+      }
     })
 
     // A posture the tool does not have can still reach here off a worktree

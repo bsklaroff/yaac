@@ -419,10 +419,31 @@ export function translateSessionUpdate(params: unknown): TranslatedUpdate | unde
       return patch === undefined ? undefined : { kind: 'tool', patch }
     }
     default:
-      // `current_mode_update` and anything a newer adapter adds. Deliberately
-      // silent: an unknown variant is not an error.
+      // A mode change is not something a pane renders — the conversation reads
+      // it off the socket (`sessionModeUpdate`) and it becomes the worktree's
+      // posture. Anything a newer adapter adds is dropped the same way: an
+      // unknown variant is not an error.
       return undefined
   }
+}
+
+/**
+ * The mode a `session/update` says the session is in now, or undefined when it
+ * says nothing about one.
+ *
+ * Two variants carry it, because adapters disagree about which to send:
+ * claude's adapter sends `current_mode_update` when the agent moves itself (an
+ * ExitPlanMode answer, EnterPlanMode), while codex-acp reports every change as
+ * a `config_option_update` naming its `mode` option — the same two shapes
+ * `acpModeOffered` reads a handshake reply in.
+ */
+export function sessionModeUpdate(params: unknown): string | undefined {
+  const update = asRecord(asRecord(params)?.update)
+  if (update?.sessionUpdate === 'current_mode_update') return asString(update.currentModeId)
+  if (update?.sessionUpdate !== 'config_option_update') return undefined
+  const options = Array.isArray(update.configOptions) ? update.configOptions : []
+  const mode = options.map(asRecord).find((o) => asString(o?.id) === 'mode')
+  return asString(mode?.currentValue)
 }
 
 function event(e: AcpEventInit): TranslatedUpdate {

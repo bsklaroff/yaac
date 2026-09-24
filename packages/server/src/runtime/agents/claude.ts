@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import { scanJsonlBackward, scanJsonlForward } from './jsonl'
+import type { PermissionMode } from '@yaac/shared/types'
 
 /**
  * Classifies Claude Code's "actively working" state from the pane's OSC
@@ -167,6 +168,41 @@ const CLAUDE_HOME_NAME = 'claude'
 export const CLAUDE_HOOK_COMMAND =
   `yaac-agent-links "$HOME/.${CLAUDE_HOME_NAME}" ${CLAUDE_HOME_NAME}`
 
+/**
+ * The permission-mode hook (`worktree-bin/yaac-permission-mode`), which
+ * publishes the posture claude is in onto its tmux pane. claude has no event
+ * for a mode change itself, so it rides the two that carry `permission_mode`
+ * at the moments a change takes hold: the next prompt, and the end of a turn
+ * the agent moved itself during.
+ */
+const PERMISSION_MODE_HOOK_COMMAND = 'yaac-permission-mode'
+
+/** Every hook yaac registers, by the event it runs on. */
+const YAAC_HOOKS: Array<{ event: string; matcher?: string; command: string }> = [
+  { event: 'SessionStart', matcher: '*', command: CLAUDE_HOOK_COMMAND },
+  { event: 'UserPromptSubmit', command: PERMISSION_MODE_HOOK_COMMAND },
+  { event: 'Stop', command: PERMISSION_MODE_HOOK_COMMAND },
+]
+
+/**
+ * claude's own names for its modes, as its hooks report them, read back as
+ * yaac's postures. `manual` is an input alias claude reports as `default`, and
+ * `dontAsk` is a mode yaac has no posture for — so it is not here, and is left
+ * unrecorded rather than rounded to a neighbour.
+ */
+const CLAUDE_POSTURES: Record<string, PermissionMode> = {
+  bypassPermissions: 'bypass',
+  auto: 'auto',
+  acceptEdits: 'accept-edits',
+  plan: 'plan',
+  default: 'manual',
+}
+
+export function claudePermissionMode(reported: string): PermissionMode | undefined {
+  const mode = reported.trim()
+  return Object.hasOwn(CLAUDE_POSTURES, mode) ? CLAUDE_POSTURES[mode] : undefined
+}
+
 /** Commands written by installs that registered the hook by its in-image path,
  *  before it became a staged worktree-bin script. Matched by prefix so any
  *  argument variant is caught. See docs/legacy-compat-shims.md. */
@@ -192,12 +228,12 @@ interface ClaudeSettings {
 }
 
 /**
- * Merge yaac's `SessionStart` hook into a project's `~/.claude/settings.json`.
+ * Merge yaac's hooks (`YAAC_HOOKS`) into a project's `~/.claude/settings.json`.
  *
  * Idempotent and additive: unrelated settings keys (the bypass-prompt flag and
  * cleanup period `seedClaudeSettings` writes, whatever theme claude-code wrote
  * itself) and any user-registered hooks survive, and a settings file that
- * already carries our entry is left byte-identical. A malformed settings file
+ * already carries our entries is left byte-identical. A malformed settings file
  * is replaced rather than propagated — claude would ignore it anyway, and the
  * two keys yaac cares about are re-seeded on every session create.
  *
@@ -205,9 +241,10 @@ interface ClaudeSettings {
  * script by its in-image path. That command is dead under both drivers now,
  * and left in place it errors on every session start.
  *
- * Best-effort by contract: losing the hook costs conversation discovery for
+ * Best-effort by contract: losing the hooks costs conversation discovery for
  * that session (it falls back to the one conversation pinned by
- * `--session-id`), which must never be worth failing a session create over.
+ * `--session-id`) and leaves its posture untracked, neither of which is worth
+ * failing a session create over.
  */
 export async function ensureClaudeHooks(settingsPath: string): Promise<void> {
   let settings: ClaudeSettings = {}
@@ -218,34 +255,29 @@ export async function ensureClaudeHooks(settingsPath: string): Promise<void> {
   }
 
   const hooks = { ...settings.hooks }
-  let stripped = false
-  const sessionStart: HookMatcher[] = []
-  for (const matcher of hooks.SessionStart ?? []) {
-    if (matcher.hooks === undefined) {
-      sessionStart.push(matcher)
-      continue
+  let changed = false
+  for (const { event, matcher, command } of YAAC_HOOKS) {
+    const kept: HookMatcher[] = []
+    for (const m of hooks[event] ?? []) {
+      const rest = m.hooks?.filter((h) => !h.command?.startsWith(LEGACY_HOOK_PREFIX))
+      if (rest === undefined || rest.length === m.hooks?.length) {
+        kept.push(m)
+        continue
+      }
+      changed = true
+      // A matcher whose every hook was ours has nothing left to match on.
+      if (rest.length > 0) kept.push({ ...m, hooks: rest })
     }
-    const kept = matcher.hooks.filter((h) => !h.command?.startsWith(LEGACY_HOOK_PREFIX))
-    if (kept.length === matcher.hooks.length) {
-      sessionStart.push(matcher)
-      continue
+    if (!kept.some((m) => m.hooks?.some((h) => h.command === command) ?? false)) {
+      kept.push({
+        ...(matcher !== undefined ? { matcher } : {}),
+        hooks: [{ type: 'command', command, timeout: 10 }],
+      })
+      changed = true
     }
-    stripped = true
-    // A matcher whose every hook was ours has nothing left to match on.
-    if (kept.length > 0) sessionStart.push({ ...matcher, hooks: kept })
+    hooks[event] = kept
   }
-  const already = sessionStart.some((m) =>
-    m.hooks?.some((h) => h.command === CLAUDE_HOOK_COMMAND) ?? false,
-  )
-  if (already && !stripped) return
-
-  if (!already) {
-    sessionStart.push({
-      matcher: '*',
-      hooks: [{ type: 'command', command: CLAUDE_HOOK_COMMAND, timeout: 10 }],
-    })
-  }
-  hooks.SessionStart = sessionStart
+  if (!changed) return
   settings.hooks = hooks
 
   // Written through a temp file in the same directory and renamed, because

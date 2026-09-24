@@ -57,6 +57,12 @@ export interface StatusWatcherDeps {
    */
   permissionMode?: (session: WatchedWorktree) => Promise<PermissionMode | undefined>
   /**
+   * The other direction: a posture the running agent moved to, which the row
+   * has to follow — injected for the same reason, since recording it is a
+   * write this layer may not make.
+   */
+  onPermissionMode?: (session: WatchedWorktree, mode: PermissionMode) => void
+  /**
    * Injected for tests — the stream-daemon self-heal (see scheduleRespawn).
    * Default: the driver's own `reviveStatusStream`.
    */
@@ -152,6 +158,9 @@ export class WorktreeStatusWatcher {
         return
       case 'command-channel':
         this.setCommandChannel(obs.send)
+        return
+      case 'permission-mode':
+        this.deps.onPermissionMode?.(this.session, obs.mode)
         return
       case 'down':
         this.onConnectionDown(generation, obs.reason)

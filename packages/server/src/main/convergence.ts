@@ -1,7 +1,7 @@
 import { worktreeDriver } from '#drivers/driver'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
 import { restoreAllWorkspaceForwarders } from '#runtime/ports'
-import { findWorktreeRow, recordedConversationHandles } from '#db'
+import { applyWorktreeEvent, findWorktreeRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { serverLog } from '#log'
 import type { DriverDeps, ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
@@ -61,6 +61,19 @@ export async function attachConvergence(opts: {
     // absence is passed on as the absence it is.
     permissionMode: async (session) =>
       (await findWorktreeRow(session.worktreeId))?.permissionMode,
+    // And the other way: a posture the running agent moved to becomes the
+    // row's, which is what a restart relaunches it in.
+    onPermissionMode: (session, permissionMode) => {
+      applyWorktreeEvent({
+        type: 'permission-mode-changed',
+        projectSlug: session.slug,
+        worktreeId: session.worktreeId,
+        permissionMode,
+      }).catch((err: unknown) => {
+        serverLog(`[server] ${session.worktreeId}: could not record permission mode `
+          + `${permissionMode}: ${String(err)}`)
+      })
+    },
   })
   statusWatchers = manager
 

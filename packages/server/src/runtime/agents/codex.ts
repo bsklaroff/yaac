@@ -1,4 +1,5 @@
 import { scanJsonlBackward, scanJsonlForward } from './jsonl'
+import type { PermissionMode } from '@yaac/shared/types'
 
 // ---------------------------------------------------------------------------
 // Status + first-message
@@ -72,4 +73,66 @@ export async function getCodexModel(jsonlPath: string): Promise<string | undefin
     const model = parsed.payload?.model
     return typeof model === 'string' && model.length > 0 ? model : undefined
   })
+}
+
+/** The settings codex records for a thread, as far as a posture goes. */
+interface CodexThreadSettings {
+  approval_policy?: unknown
+  approvals_reviewer?: unknown
+  permission_profile?: { type?: unknown; file_system?: { entries?: unknown } }
+  collaboration_mode?: { mode?: unknown }
+}
+
+/**
+ * The posture codex is running under, from the newest settings its rollout
+ * records — or undefined when the rollout names none, or names settings no
+ * posture stands for.
+ *
+ * Two entries carry them, and the newer wins. A `turn_context` is written at
+ * every turn boundary, and a `thread_settings_applied` event the moment the
+ * user changes something mid-session (`/permissions`, Shift+Tab into plan
+ * mode) — so a change lands here within a second or two, not a turn later.
+ * Both carry the approval policy, who reviews approvals, the permission
+ * profile and the collaboration mode (verified against codex-cli 0.156.1).
+ *
+ * The profile is read rather than `sandbox_policy`, because only
+ * `turn_context` has the latter: `disabled` is full access, and a managed one
+ * is workspace-write when it grants a write anywhere and read-only when it
+ * grants none. That inverts the launch table in `buildAgentCmd`, plus codex's
+ * own plan mode, which is what the user asked for by entering it.
+ */
+export async function getCodexPermissionMode(jsonlPath: string): Promise<PermissionMode | undefined> {
+  return scanJsonlBackward(jsonlPath, (entry) => {
+    const parsed = entry as {
+      type?: unknown
+      payload?: CodexThreadSettings & { type?: unknown; thread_settings?: CodexThreadSettings }
+    }
+    const settings = parsed.type === 'turn_context'
+      ? parsed.payload
+      : parsed.type === 'event_msg' && parsed.payload?.type === 'thread_settings_applied'
+        ? parsed.payload.thread_settings
+        : undefined
+    // `null` stops the scan: the newest settings are the answer even when
+    // they name no posture, rather than an older entry that did.
+    return settings === undefined ? undefined : codexPosture(settings) ?? null
+  }).then((mode) => mode ?? undefined)
+}
+
+function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
+  if (s.collaboration_mode?.mode === 'plan') return 'plan'
+  const profile = s.permission_profile
+  const entries = Array.isArray(profile?.file_system?.entries) ? profile.file_system.entries : []
+  const sandbox = profile?.type === 'disabled'
+    ? 'full'
+    : profile?.type !== 'managed'
+      ? undefined
+      : entries.some((e) => (e as { access?: unknown } | null)?.access === 'write') ? 'workspace' : 'read-only'
+  const reviewer = s.approvals_reviewer ?? 'user'
+  if (s.approval_policy === 'never' && sandbox === 'full') return 'bypass'
+  if (s.approval_policy === 'untrusted' && sandbox === 'workspace') return 'manual'
+  if (s.approval_policy !== 'on-request') return undefined
+  if (sandbox === 'read-only' && reviewer === 'user') return 'plan'
+  if (sandbox !== 'workspace') return undefined
+  if (reviewer === 'auto_review') return 'auto'
+  return reviewer === 'user' ? 'accept-edits' : undefined
 }

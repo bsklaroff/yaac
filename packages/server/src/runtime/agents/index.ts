@@ -54,6 +54,7 @@ export {
   classifyAgentObservation,
   getAgentSessionFirstMessage,
   getAgentSessionModel,
+  getAgentSessionPermissionMode,
   type AgentPaneStatus,
 } from './agent-tools'
 export {

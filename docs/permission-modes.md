@@ -212,7 +212,9 @@ another.
 
 The resolved answer is recorded on `worktrees.permissionMode`, because a
 worktree outlives the request that made it: a restart must relaunch its
-agents the way the user asked, not the way today's default would. A restart
+agents the way the user asked, not the way today's default would. The row
+then follows the agent while it runs (see "Following the agent" below), so
+"the way the user asked" includes a mode they changed since. A restart
 therefore re-states the row's posture, which is neither remembered (it is
 not a person choosing) nor refused when unsupported (a row written by a
 different build would otherwise strand a checkout).
@@ -250,8 +252,82 @@ One posture is *not* re-asserted: a reattach leaves a live adapter's mode
 alone. Leaving plan mode is itself a permission ask whose options are mode
 ids, so a user who accepted "yes, and auto-accept edits" moved the session to
 `acceptEdits`; re-stating the row on the next relay hiccup would drag them
-back. The row wins again at the next restart, which is where it is the durable
-answer.
+back. The row has followed them there instead, so the next restart brings the
+session back in the mode it was left in.
+
+## Following the agent
+
+A posture is chosen at launch, but the agent can leave it: a user presses
+Shift+Tab in claude's TUI, answers a plan-exit ask with "yes, and auto-accept
+edits", or the agent enters plan mode on its own. The row records the mode
+the agent is in *now*, because both of its readers mean that — a restart
+relaunches in it, and `yaac-mama create` caps a sibling at it. Every change
+reaches the row the same way: the agent driver reports a `permission-mode`
+observation, the status watcher hands it up, and it lands through the event
+door as `permission-mode-changed`. Only a mode that maps to a posture is
+recorded; one that maps to none (claude's `dontAsk`, pi's thinking levels) is
+left out rather than rounded to a neighbour.
+
+**Under `acp` the adapter says so.** Claude's adapter announces a move it
+made itself (EnterPlanMode, a plan-exit answer) as a `current_mode_update`;
+codex-acp reports every change as a `config_option_update` naming its `mode`
+option. The conversation reads both off its socket and maps the id back
+through the adapter profile's `modeIds`. The same posture decides who answers
+the next ask, from the moment it arrives — so a `bypass` worktree whose agent
+entered plan mode shows its plan-exit ask in the pane instead of approving it
+for the user. opencode's adapter never reports a mode (its only one, `plan`,
+is set by yaac), and pi's are thinking levels. A move made while no
+connection was attached — the server down — is not recovered; the row keeps
+the last mode it heard.
+
+**Under `tui` each tool is followed where it records a posture.** None of
+them announces a change as it happens to anything outside the process, so
+each is read from the one place its posture is written down:
+
+- **claude** — its hooks carry the mode it is in as `permission_mode`
+  (`manual` arrives as `default`), but no hook fires on the change itself. So
+  yaac registers `worktree-bin/yaac-permission-mode` on the two that fire when
+  a change takes hold: `UserPromptSubmit`, since a mode picked between turns
+  is in force by the next prompt, and `Stop`, for one the agent moved to
+  mid-turn. The hook publishes the value as the pane option
+  `@yaac-permission-mode`. claude runs with `$TMUX` hidden
+  (docs/agent-modes.md), so its launch passes the server's address on as
+  `YAAC_TMUX` for the hook.
+- **opencode** — its Tab switches between its `build` and `plan` agents, and
+  changes only the TUI's draft until a prompt is sent, when its server emits
+  `session.agent.selected`. The TUI launch installs a server plugin
+  (`worktree-bin/yaac-opencode-posture`, copied into a directory under the
+  workspace's HOME, since opencode loads plugins from directories) and names it
+  in `OPENCODE_CONFIG_CONTENT`; it publishes `<launch posture>/<agent>` onto
+  the same pane option. An agent is only half a posture — the rules ride the
+  launch config — so the pair is read against the launch table: `plan` and
+  `manual` share their rules, so a switch between the agents moves between
+  those two, and `build` under any other launch is that launch. The plan agent
+  over `bypass`'s or `accept-edits`' rules is no posture yaac has and is left
+  unrecorded. So is the TUI's auto-accept toggle: it writes a file shared by
+  every worktree of the project, and nothing tells which one flipped it.
+- **codex** — its hooks carry `permission_mode` too, but only as
+  `bypassPermissions` or `default`, two answers for five postures. Its rollout
+  says more, and says it at once: a `thread_settings_applied` event is written
+  the moment `/permissions` or Shift+Tab changes anything, and a
+  `turn_context` at every turn, both naming the approval policy, its reviewer,
+  the permission profile and the collaboration mode. The conversation sweep
+  reads the newest of them from each recorded rollout (through the same
+  stamp-gated cache as the model) and maps it back through the launch table,
+  codex's own plan mode reading as `plan`. It runs on the reconcile pass rather
+  than by push, and under containerless no codex conversation has a recorded
+  rollout (docs/containerless-driver.md), so there it is not followed.
+- **pi** has no permission system to move.
+
+claude and opencode reach the server by push: the status watcher's
+control-mode client subscribes to the pane option beside the pane title, and
+tmux sends each change. A mode changed and never prompted in is not seen by
+either — and has not yet done anything.
+
+The value comes from inside the workspace, so an agent that can run commands
+can publish a posture it is not in. That is no new power: a posture that lets
+an agent run `tmux` or write its own rollout unasked is one where it could
+already start a second agent with any flag it likes.
 
 ## Prewarmed spares
 

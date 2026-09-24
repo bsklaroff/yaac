@@ -232,7 +232,7 @@ describe('ensureClaudeHooks', () => {
     return JSON.parse(await fs.readFile(settingsPath, 'utf8')) as Settings
   }
 
-  it('registers the SessionStart hook alongside the settings create.ts seeds', async () => {
+  it('registers its hooks alongside the settings create.ts seeds', async () => {
     // The real ordering: seedClaudeSettings owns the file first, then the hook
     // is merged in. Both keys have to survive.
     await seedClaudeSettings(settingsPath)
@@ -249,6 +249,11 @@ describe('ensureClaudeHooks', () => {
     // /usr/local/bin in a pod and under the workspace's own home on a host,
     // and no absolute form of either names it correctly in both.
     expect(CLAUDE_HOOK_COMMAND).toBe('yaac-agent-links "$HOME/.claude" claude')
+    // The posture hook rides the two events that carry `permission_mode` when
+    // a change takes hold — claude has no event for the change itself.
+    const posture = [{ hooks: [{ type: 'command', command: 'yaac-permission-mode', timeout: 10 }] }]
+    expect(settings.hooks?.UserPromptSubmit).toEqual(posture)
+    expect(settings.hooks?.Stop).toEqual(posture)
   })
 
   it('is idempotent across the session creates that re-run it', async () => {

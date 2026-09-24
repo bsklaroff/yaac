@@ -3,11 +3,13 @@ import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
   getAgentSessionModel,
+  getAgentSessionPermissionMode,
   readAcpFirstPrompt,
   readAcpModel,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
+  transcriptStamp,
 } from '#runtime/agents'
 import {
   applyWorktreeEvent,
@@ -23,8 +25,8 @@ import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
-import type { DiscoveredSession } from '#db'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { AgentSessionLinkRow, DiscoveredSession } from '#db'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**
  * Reconcile the agent-session model from what the pods report.
@@ -240,6 +242,7 @@ export async function reconcileWorktreeAgentSessions(
     if (Object.keys(capture).length === 0) return
     await setAgentSessionCapture(projectSlug, l.tool, l.agentSessionId, capture)
   }))
+  await followTranscriptPosture(projectSlug, worktreeId, row?.permissionMode, links)
 
   // Intersect the recorded handles with what the status watcher can see. When
   // the watcher has no live set yet (a pod whose connection hasn't attached),
@@ -258,6 +261,42 @@ export async function reconcileWorktreeAgentSessions(
     .filter((l) => l.paneId !== undefined && handles.has(l.paneId))
     .map((l) => ({ tool: l.tool, agentSessionId: l.agentSessionId, paneId: l.paneId as string }))
   await applyWorktreeEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
+}
+
+/**
+ * Record the posture a transcript says the agent moved to — codex writes its
+ * settings into its rollout the moment the user changes them
+ * (`getAgentSessionPermissionMode`). claude's reaches the row by push instead,
+ * through its pane (docs/permission-modes.md), and the other tools record none.
+ *
+ * Read through the same stamp-gated cache as the model, so a settled
+ * conversation costs a `stat` a tick. Of several conversations, the one whose
+ * transcript moved last speaks for the worktree: it is the latest change.
+ */
+async function followTranscriptPosture(
+  projectSlug: string,
+  worktreeId: string,
+  recorded: PermissionMode | undefined,
+  links: AgentSessionLinkRow[],
+): Promise<void> {
+  let newest: { mode: PermissionMode; at: number } | undefined
+  for (const l of links) {
+    const transcript = absoluteTranscriptPath(l)
+    const mode = await captureModel(
+      `${projectSlug}/${l.tool}/${l.agentSessionId}/posture`,
+      transcript,
+      (file) => getAgentSessionPermissionMode(l.tool, file),
+    ) as PermissionMode | undefined
+    if (mode === undefined || transcript === undefined) continue
+    const stamp = await transcriptStamp(transcript)
+    if (stamp !== undefined && (newest === undefined || stamp.mtimeMs > newest.at)) {
+      newest = { mode, at: stamp.mtimeMs }
+    }
+  }
+  if (newest === undefined || newest.mode === recorded) return
+  await applyWorktreeEvent({
+    type: 'permission-mode-changed', projectSlug, worktreeId, permissionMode: newest.mode,
+  })
 }
 
 /**

@@ -1,0 +1,46 @@
+// yaac opencode posture plugin: publishes which agent opencode's TUI is
+// running as onto its own tmux pane, where the server's control-mode client
+// has a subscription on it and records the posture that adds up to as the
+// worktree's — which is what a restart relaunches in
+// (docs/permission-modes.md).
+//
+// An opencode v2 *server* plugin, not a script: it is staged on PATH like
+// every worktree-bin file, and the TUI launch copies it in as
+// `$HOME/.yaac/opencode-plugin/server.js` (opencode loads a plugin from a
+// directory, never a bare file) and names that directory in the
+// `plugins` of the OPENCODE_CONFIG_CONTENT it launches with.
+//
+// opencode's Tab switch between its `build` and `plan` agents changes only
+// the TUI's draft — no event, nothing written — until a prompt is sent, when
+// the server emits `session.agent.selected` (and every step after carries
+// the agent too). So a switch is seen when it takes effect, which is also the
+// first moment it can matter. What the agent means depends on the rules the
+// process was launched with, so the value is `<launch posture>/<agent>`,
+// read from YAAC_PERMISSION_MODE, and the server maps the pair.
+//
+// Best-effort throughout: a plugin that throws or a tmux that is gone must
+// never cost the user their session.
+import { execFile } from 'node:child_process'
+
+const socket = (process.env.TMUX ?? '').split(',')[0]
+const pane = process.env.TMUX_PANE
+const launched = process.env.YAAC_PERMISSION_MODE
+
+export default {
+  id: 'yaac-posture',
+  setup(ctx) {
+    if (!socket || !pane || !launched) return
+    let published
+    void (async () => {
+      for await (const event of ctx.event.subscribe()) {
+        if (event?.type !== 'session.agent.selected' && event?.type !== 'session.step.started') continue
+        const agent = event.data?.agent
+        if (typeof agent !== 'string' || agent === published) continue
+        published = agent
+        execFile('tmux', [
+          '-S', socket, 'set-option', '-p', '-t', pane, '@yaac-permission-mode', `${launched}/${agent}`,
+        ], () => {})
+      }
+    })().catch(() => {})
+  },
+}

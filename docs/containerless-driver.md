@@ -587,8 +587,10 @@ answer under both drivers on one line.
   it through a *managed* hook declared in `/etc/codex/requirements.toml`, the
   trusted image layer that bypasses its per-change `/hooks` trust prompt.
   There is no image to carry that here, so a codex worktree knows only the
-  conversation `--session-id` pinned. Claude registers the same script from
-  its own settings.json and is unaffected.
+  conversation `--session-id` pinned — and with no rollout recorded, a
+  posture changed inside codex is not followed onto the row either
+  (docs/permission-modes.md). Claude registers the same script from its own
+  settings.json and is unaffected.
 
 ## Host requirements
 

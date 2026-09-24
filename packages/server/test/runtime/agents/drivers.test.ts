@@ -157,13 +157,14 @@ const permissionAsk = (id: number): string =>
 async function attachedUnder(
   permissionMode: PermissionMode,
   agentSessionId: string,
+  window = 'claude',
 ): Promise<{ stream: FakeStream; seen: AgentObservation[] }> {
   const stream = new FakeStream()
-  podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+  podExec.mockResolvedValue({ stdout: `${window}\n`, stderr: '' })
   const seen: AgentObservation[] = []
   connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
     dial: () => stream,
-    recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId }]),
+    recordedSessions: () => Promise.resolve([{ handle: window, agentSessionId }]),
     permissionMode: () => Promise.resolve(permissionMode),
     log: () => {},
   }))
@@ -316,6 +317,9 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 101 1\n%7 claude\n%end 1 101 1\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('refresh-client -B'))
     stream.feed('%begin 1 102 1\n%end 1 102 1\n')
+    // claude's pane also publishes the posture it runs under, via its hook.
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain("'mode-7:%7:#{@yaac-permission-mode}'"))
+    stream.feed('%begin 1 103 1\n%end 1 103 1\n')
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     // The conversation's handle is its pane id; which conversation sits on it
@@ -328,6 +332,10 @@ describe('agentDriver', () => {
     expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'running' })
     stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
     expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'waiting' })
+
+    // claude's own spelling, read back as yaac's posture.
+    stream.feed('%subscription-changed mode-7 $0 @0 0 %7 : acceptEdits\n')
+    expect(seen).toContainEqual({ kind: 'permission-mode', mode: 'accept-edits' })
   })
 
   it('reports a dropped tui stream as down, and retracts the command channel', async () => {
@@ -656,6 +664,55 @@ describe('agentDriver', () => {
     expect(stream.sent().find((m) => m.id === 99)!.result)
       .toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
     expect(conversation.isAwaitingPermission).toBe(false)
+  })
+
+  /**
+   * A posture is what the session runs under NOW. The agent can move itself —
+   * claude's adapter announces EnterPlanMode and a plan-exit answer as a
+   * `current_mode_update` — and from then on both the row and the answer to
+   * the next ask have to follow, or a bypass worktree that entered plan mode
+   * would have its plan approved for the user.
+   */
+  it('reports a mode the adapter moves to as the posture, and answers asks by it', async () => {
+    const { stream, seen } = await attachedUnder('bypass', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+    const modeUpdate = (update: Record<string, unknown>): string =>
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-1', update } })}\n`
+    const postures = (): PermissionMode[] =>
+      seen.flatMap((o) => (o.kind === 'permission-mode' ? [o.mode] : []))
+
+    // ACP's `default` is yaac's `manual`: the inverse of the launch mapping.
+    stream.feed(modeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'default' }))
+    // `dontAsk` stands for no posture, so it is left unrecorded rather than
+    // rounded to a neighbour.
+    stream.feed(modeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'dontAsk' }))
+    stream.feed(modeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'plan' }))
+    await vi.waitFor(() => expect(postures()).toEqual(['manual', 'plan']))
+
+    // The row said bypass, but the session is in plan mode now: its ask to
+    // leave it is the user's to answer.
+    stream.feed(permissionAsk(99))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 99)).toBe(false)
+  })
+
+  it('reads a mode change reported as a config option, which is how codex-acp says it', async () => {
+    const { stream, seen } = await attachedUnder('accept-edits', 'acp-1', 'codex')
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId: 'acp-1',
+        update: {
+          sessionUpdate: 'config_option_update',
+          configOptions: [
+            { id: 'mode', currentValue: 'agent-full-access' },
+            { id: 'model', currentValue: 'gpt-5.2-codex' },
+          ],
+        },
+      },
+    })}\n`)
+    await vi.waitFor(() => expect(seen).toContainEqual({ kind: 'permission-mode', mode: 'bypass' }))
   })
 
   it('answers a dismissal as cancelled, and ignores a second answer for the same ask', async () => {

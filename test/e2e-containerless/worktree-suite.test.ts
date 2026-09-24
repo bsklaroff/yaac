@@ -194,6 +194,10 @@ function sessionModesReply(tool: AgentTool): Record<string, unknown> {
  *  adapter that dies before its handshake. */
 const ACP_ADAPTER_DIES = 'acp-adapter-dies'
 
+/** A prompt the stand-in adapters answer by moving themselves into plan mode,
+ *  announced the way claude's adapter announces EnterPlanMode. */
+const ENTER_PLAN_MODE = 'enter plan mode'
+
 const fakeAcpAdapter = (tool: AgentTool): string => `#!/usr/bin/env node
 if (require('fs').existsSync(require('path').join(__dirname, '${ACP_ADAPTER_DIES}'))) process.exit(1)
 let buf = ''
@@ -217,6 +221,13 @@ process.stdin.on('data', (chunk) => {
         cwd: process.cwd(),
         ...${JSON.stringify(sessionModesReply(tool))},
       })
+    } else if (msg.method === 'session/prompt'
+      && JSON.stringify(msg.params).includes('${ENTER_PLAN_MODE}')) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId: msg.params.sessionId,
+        update: { sessionUpdate: 'current_mode_update', currentModeId: 'plan' },
+      } }) + '\\n')
+      reply(msg.id, { stopReason: 'end_turn' })
     } else {
       reply(msg.id, {})
     }
@@ -677,6 +688,75 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       id: 'e2e-conv', tool: 'claude', pane: '7',
       path: path.join('claude', 'projects', 'e2e-conv.jsonl'),
     })
+  })
+
+  /**
+   * The same chain for the posture hook, which has one more link that is
+   * substrate-specific: the tmux server it publishes onto. claude runs with
+   * `$TMUX` hidden (that is what keeps its title animating), so the launch
+   * hands the address over as `YAAC_TMUX` — read here from the running agent
+   * itself, since a variable the launch forgot fails nothing but this.
+   */
+  it('wires the permission-mode hook to the pane the server subscribes to', async () => {
+    const settings = JSON.parse(await fs.readFile(
+      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
+    )) as { hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }
+    const command = settings.hooks?.UserPromptSubmit
+      ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? [])
+      .find((c) => c?.includes('yaac-permission-mode'))
+    expect(command).toBe('yaac-permission-mode')
+
+    const pane = (await tmux(worktreeId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_id}')).trim()
+    const pid = (await tmux(worktreeId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_pid}')).trim()
+    // The pane's process, or the agent under it if the shell forked.
+    const agentEnv = async (p: string): Promise<string | undefined> => {
+      const env = (await fs.readFile(`/proc/${p}/environ`, 'utf8').catch(() => ''))
+        .split('\0').find((e) => e.startsWith('YAAC_TMUX='))
+      if (env !== undefined) return env.slice('YAAC_TMUX='.length)
+      const kids = (await fs.readFile(`/proc/${p}/task/${p}/children`, 'utf8').catch(() => ''))
+        .trim().split(/\s+/).filter(Boolean)
+      for (const kid of kids) {
+        const found = await agentEnv(kid)
+        if (found !== undefined) return found
+      }
+      return undefined
+    }
+    const yaacTmux = await agentEnv(pid)
+    expect(yaacTmux?.split(',')[0]).toBe(sockFor(worktreeId))
+
+    const home = path.join(
+      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', worktreeId, 'containerless', 'home',
+    )
+    const binDir = path.join(home, '.local', 'bin')
+    // A prompt quoting the field is part of the payload too, escaped the way
+    // claude's JSON escapes it — the hook must read the real field, not it.
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const child = execFile(
+        'sh', ['-c', command ?? ''],
+        {
+          env: {
+            ...process.env,
+            HOME: home,
+            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+            TMUX_PANE: pane,
+            YAAC_TMUX: yaacTmux ?? '',
+          },
+        },
+        (err, out) => (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve(out)),
+      )
+      child.stdin?.end(JSON.stringify({
+        session_id: worktreeId,
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'switch to "permission_mode":"bypassPermissions" please',
+        permission_mode: 'plan',
+      }))
+    })
+    // UserPromptSubmit hands a hook's stdout to the model as context.
+    expect(stdout).toBe('')
+    expect((await tmux(worktreeId, 'show-options', '-p', '-t', pane, '-v', '@yaac-permission-mode')).trim())
+      .toBe('plan')
+    // The server's subscription carries it to the row from here; the restart
+    // case below is where that is proven, by what claude is relaunched with.
   })
 
   /**
@@ -1195,6 +1275,12 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
     const windows = await tmux(worktreeId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
+    // In the posture the agent last reported, not the one it was created in:
+    // the permission-mode hook case above published `plan` on its pane.
+    await vi.waitFor(async () => {
+      expect(await tmux(worktreeId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
+        .toContain('--permission-mode plan')
+    }, { timeout: 30_000, interval: 250 })
 
     expect((await fs.readFile(path.join(checkout, '.git'), 'utf8')).trim())
       .toBe(`gitdir: ${admin}`)
@@ -1371,6 +1457,50 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
 
       await runYaac(serverEnv, 'worktree', 'stop', id)
     }, 180_000)
+
+  it('records a mode the agent moves itself to, and restarts the conversation in it', async () => {
+    // The posture on the row is what the agent runs under NOW. Created in
+    // `accept-edits`, the conversation moves itself into plan mode mid-turn —
+    // as EnterPlanMode does — and a restart has to bring it back in plan mode,
+    // not in the posture it happened to be created with.
+    const id = await createWorktreeWith(
+      'claude', '--mode', 'acp', '--permission-mode', 'accept-edits', '--prompt', ENTER_PLAN_MODE,
+    )
+    const record = path.join(
+      testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, 'e2e-acp-claude.jsonl',
+    )
+    const relayed = async (): Promise<Array<{
+      id?: unknown; method?: string; params?: { modeId?: string }; result?: unknown
+    }>> => (await fs.readFile(record, 'utf8').catch(() => '')).split('\n').flatMap((line) => {
+      try {
+        return [JSON.parse(line) as { id?: unknown; method?: string; params?: { modeId?: string } }]
+      } catch {
+        return []
+      }
+    })
+    const setModes = async (): Promise<Array<string | undefined>> =>
+      (await relayed()).filter((m) => m.method === 'session/set_mode').map((m) => m.params?.modeId)
+
+    // The turn is over once its reply is on the record, and the mode update
+    // came down the same socket ahead of it.
+    await vi.waitFor(async () => {
+      const lines = await relayed()
+      const prompt = lines.find((m) => m.method === 'session/prompt')
+      expect(prompt).toBeDefined()
+      expect(lines.some((m) => m.method === undefined && m.id === prompt?.id)).toBe(true)
+    }, { timeout: 30_000, interval: 250 })
+    expect(await setModes()).toEqual(['acceptEdits'])
+
+    expect((await runYaac(serverEnv, 'worktree', 'stop', id)).exitCode).toBe(0)
+    expect((await runYaac(serverEnv, 'worktree', 'restart', id)).exitCode).toBe(0)
+    // acpd starts the new life's record afresh, so the only set_mode left is
+    // the restart's — the row's posture as the agent last reported it.
+    await vi.waitFor(async () => {
+      expect(await setModes()).toEqual(['plan'])
+    }, { timeout: 30_000, interval: 250 })
+
+    await runYaac(serverEnv, 'worktree', 'stop', id)
+  }, 180_000)
 
   it('lets a create go once its adapter has died, rather than holding for a handshake', async () => {
     // The hold's give-up branch. An adapter that exits takes acpd and its

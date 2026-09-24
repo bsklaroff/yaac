@@ -1,4 +1,5 @@
 import { worktreeDriver } from '#drivers/driver'
+import { PERMISSION_MODES, type PermissionMode } from '@yaac/shared/types'
 
 /**
  * Status markers + first-message lookup for opencode sessions.
@@ -84,4 +85,25 @@ export async function getSessionOpencodeFirstUserMessage(
 ): Promise<string | undefined> {
   const sessions = await probeOpencode(jobName)
   return sessions ? pickOpencodeSession(sessions)?.title : undefined
+}
+
+/**
+ * The posture a value published by yaac's opencode plugin stands for — the
+ * pair `<launch posture>/<agent>` (see `worktree-bin/yaac-opencode-posture`).
+ *
+ * opencode's in-TUI switch is between its agents, and an agent is only half a
+ * posture: the permission rules ride the launch config either way. So the
+ * pair is read against yaac's launch table. `plan` launches the plan agent
+ * over the same ask-to-act rules `manual` has, which makes those two postures
+ * one switch apart in both directions; `build` under any other launch is that
+ * launch. The plan agent over a looser launch's rules is no posture yaac has,
+ * and neither is an agent of the project's own — both are left unrecorded.
+ */
+export function opencodePermissionMode(published: string): PermissionMode | undefined {
+  const [launched, agent] = published.trim().split('/')
+  const mode = PERMISSION_MODES.find((m) => m === launched)
+  if (mode === undefined) return undefined
+  if (agent === 'build') return mode === 'plan' ? 'manual' : mode
+  if (agent === 'plan') return mode === 'plan' || mode === 'manual' ? 'plan' : undefined
+  return undefined
 }

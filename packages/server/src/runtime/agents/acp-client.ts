@@ -51,6 +51,7 @@ import {
   chooseAllowOption,
   clientCapabilities,
   permissionReply,
+  sessionModeUpdate,
   toStopReason,
   type AcpInitializeResult,
   type AcpNewSessionResult,
@@ -59,7 +60,7 @@ import {
   type AcpLoadSessionResult,
   type AcpSessionModes,
 } from './acp-protocol'
-import type { AcpAdapterProfile } from './acp-adapters'
+import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
 import { serverLog } from '#log'
 import type { AcpEventInit } from '@yaac/shared/acp'
 import type { PermissionMode } from '@yaac/shared/types'
@@ -137,6 +138,14 @@ export interface AcpConversationDeps {
    * is running, this says the turn is not going anywhere until a human answers.
    */
   onPermissionPending?: (pending: boolean) => void
+  /**
+   * The adapter moved the session to a mode that stands for a posture — the
+   * agent entered plan mode, or the user answered a plan-exit ask with "yes,
+   * and auto-accept edits". What the session runs under from here, so the
+   * caller records it as the worktree's posture. A mode no posture maps to is
+   * not reported.
+   */
+  onPermissionMode?: (mode: PermissionMode) => void
   onDown: (reason: string) => void
   log?: (msg: string) => void
 }
@@ -389,12 +398,17 @@ export class AcpConversation {
         return
       }
       case ACP.sessionUpdate:
-        // Deliberately ignored. Conversation content reaches a pane by one
-        // path only — acpd's record — because the record and this socket carry
-        // the same notifications and ACP gives notifications no identity, so
-        // joining the two at an unknown point would either duplicate the
-        // overlap or drop it. What is left here is the RPC half: our requests
-        // and their replies, and the agent's own questions.
+        // Content is deliberately ignored. It reaches a pane by one path only —
+        // acpd's record — because the record and this socket carry the same
+        // notifications and ACP gives notifications no identity, so joining
+        // the two at an unknown point would either duplicate the overlap or
+        // drop it. What is left here is the RPC half: our requests and their
+        // replies, and the agent's own questions.
+        //
+        // A mode change is the one update read here, because it is not
+        // content: it is the adapter saying which posture the session runs
+        // under now, and nothing needs it but the worktree's row.
+        this.onModeUpdate(sessionModeUpdate(params))
         return
       default:
         return
@@ -459,6 +473,21 @@ export class AcpConversation {
   private permissionMode(): PermissionMode | undefined {
     if (this.deps.permissionMode === undefined) return 'bypass'
     return this.deps.permissionMode()
+  }
+
+  /**
+   * Follow a mode the adapter reports moving to. Held so `currentModeId` stays
+   * the session's own answer, and reported as a posture when one maps — which
+   * includes the echo of this client's own `session/set_mode`, harmless since
+   * it names the posture the row already holds.
+   */
+  private onModeUpdate(modeId: string | undefined): void {
+    if (modeId === undefined) return
+    this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
+    const mode = this.deps.profile === undefined
+      ? undefined
+      : acpPermissionModeFor(this.deps.profile, modeId)
+    if (mode !== undefined) this.deps.onPermissionMode?.(mode)
   }
 
   /** The mode the session says it is in, in whichever shape its adapter

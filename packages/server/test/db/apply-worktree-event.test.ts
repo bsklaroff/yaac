@@ -67,6 +67,22 @@ describe('applyWorktreeEvent', () => {
     })
   })
 
+  // A posture the running agent moved to replaces the launch's, leaving the
+  // rest of the launch alone — it is what a restart relaunches in.
+  it('follows the posture the running agent moved to', async () => {
+    await created('wt-launch', { permissionMode: 'bypass', model: 'claude-opus-5-5', mode: 'acp' })
+    await applyWorktreeEvent({
+      type: 'permission-mode-changed',
+      projectSlug: 'proj',
+      worktreeId: 'wt-launch',
+      permissionMode: 'plan',
+    })
+
+    expect(await rowOf('wt-launch')).toMatchObject({
+      permissionMode: 'plan', model: 'claude-opus-5-5', mode: 'acp',
+    })
+  })
+
   it('stamps a resolved base branch onto an existing row', async () => {
     await applyWorktreeEvent({
       type: 'base-branch-resolved',

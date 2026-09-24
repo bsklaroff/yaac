@@ -21,6 +21,10 @@
  * Because of that, every connection attaches `no-output`: agent TUI redraws
  * never cross the stream, only the short status value does.
  *
+ * A claude pane carries a second subscription, on the posture its hook
+ * publishes as a pane option (`agentPermissionModeFormat`), so a mode changed
+ * inside the agent reaches the worktree's row the same way a status does.
+ *
  * A conversation's handle here is its tmux pane id (`%3`). Which conversation
  * a pane has loaded is deliberately not known — that is the in-pod hook's
  * session-starts log to answer, and the registry joins the two.
@@ -30,7 +34,13 @@ import { StringDecoder } from 'node:string_decoder'
 import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
 import { serverLog } from '#log'
 import { ControlModeClient, type ControlModeNotification } from './control-mode'
-import { agentStatusFormat, agentWindowTool, classifyAgentObservation } from './agent-tools'
+import {
+  agentPermissionModeFormat,
+  agentStatusFormat,
+  agentWindowTool,
+  classifyAgentObservation,
+  classifyAgentPermissionMode,
+} from './agent-tools'
 import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
 import { worktreeDriver } from '#drivers/driver'
 import type {
@@ -46,6 +56,8 @@ import type { AgentTool } from '@yaac/shared/types'
 
 /** Subscription names are per pane, never shared — see `subscriptionName`. */
 const SUBSCRIPTION_PREFIX = 'status-'
+/** The same, for the subscription on a pane's published posture. */
+const MODE_SUBSCRIPTION_PREFIX = 'mode-'
 
 /**
  * The tmux subscription name for one agent pane.
@@ -59,8 +71,8 @@ const SUBSCRIPTION_PREFIX = 'status-'
  *
  * The pane id's `%` is dropped so the name stays alphanumeric.
  */
-function subscriptionName(paneId: string): string {
-  return `${SUBSCRIPTION_PREFIX}${paneId.replace('%', '')}`
+function subscriptionName(paneId: string, prefix = SUBSCRIPTION_PREFIX): string {
+  return `${prefix}${paneId.replace('%', '')}`
 }
 
 /**
@@ -212,6 +224,15 @@ class TuiConnection implements AgentConnection {
       // value is expanded later, per-client — it's not on this command line).
       await this.send(`refresh-client -B '${subscriptionName(paneId)}:${paneId}:${agentStatusFormat(tool)}'`)
       if (this.done) return
+      // And the posture it runs under, for a tool whose hook publishes one.
+      // tmux pushes it on every change — which is exactly when the row has
+      // to follow — and once on subscribing, so a server that restarted
+      // re-learns whatever moved while it was down.
+      const modeFormat = agentPermissionModeFormat(tool)
+      if (modeFormat !== undefined) {
+        await this.send(`refresh-client -B '${subscriptionName(paneId, MODE_SUBSCRIPTION_PREFIX)}:${paneId}:${modeFormat}'`)
+        if (this.done) return
+      }
       this.subscribed.set(paneId, tool)
     }
     const liveIds = panes.map((p) => p.paneId)
@@ -236,7 +257,13 @@ class TuiConnection implements AgentConnection {
     }
     if (n.kind === 'subscription') {
       const tool = this.subscribed.get(n.paneId)
-      if (!n.name.startsWith(SUBSCRIPTION_PREFIX) || tool === undefined) return
+      if (tool === undefined) return
+      if (n.name.startsWith(MODE_SUBSCRIPTION_PREFIX)) {
+        const mode = classifyAgentPermissionMode(tool, n.value)
+        if (mode !== undefined) this.sink({ kind: 'permission-mode', mode })
+        return
+      }
+      if (!n.name.startsWith(SUBSCRIPTION_PREFIX)) return
       this.sink({
         kind: 'status',
         handle: n.paneId,

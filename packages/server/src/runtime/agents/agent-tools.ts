@@ -12,10 +12,24 @@
  * ever being classified.
  */
 import { AGENT_TOOLS } from '@yaac/shared/types'
-import type { AgentTool } from '@yaac/shared/types'
-import { classifyClaudeTitle, getClaudeModel, getFirstUserMessage } from './claude'
-import { classifyCodexTitle, getCodexFirstUserMessage, getCodexModel } from './codex'
-import { OPENCODE_BUSY_MARKERS, getSessionOpencodeFirstUserMessage } from './opencode'
+import type { AgentTool, PermissionMode } from '@yaac/shared/types'
+import {
+  claudePermissionMode,
+  classifyClaudeTitle,
+  getClaudeModel,
+  getFirstUserMessage,
+} from './claude'
+import {
+  classifyCodexTitle,
+  getCodexFirstUserMessage,
+  getCodexModel,
+  getCodexPermissionMode,
+} from './codex'
+import {
+  OPENCODE_BUSY_MARKERS,
+  getSessionOpencodeFirstUserMessage,
+  opencodePermissionMode,
+} from './opencode'
 import { PI_BUSY_MARKERS, getPiFirstUserMessage, getPiModel } from './pi'
 
 /** What an agent pane is doing, as every display path reads it. */
@@ -71,6 +85,20 @@ export async function getAgentSessionModel(
 }
 
 /**
+ * The posture a `tui` conversation's transcript says it is running under, for
+ * the tool that records one there: codex writes its settings into the rollout
+ * the moment they change (`getCodexPermissionMode`). claude's arrives by push
+ * instead (`agentPermissionModeFormat`), and the other tools record none.
+ */
+export async function getAgentSessionPermissionMode(
+  tool: AgentTool,
+  transcriptPath: string | undefined,
+): Promise<PermissionMode | undefined> {
+  if (tool !== 'codex' || transcriptPath === undefined) return undefined
+  return getCodexPermissionMode(transcriptPath)
+}
+
+/**
  * Build a tmux format that resolves to `running`/`waiting` by searching the
  * visible pane for any of `markers` (each an ERE, matched case-insensitively
  * via `#{C/ri:}` — a content search over the visible grid). The markers are
@@ -109,6 +137,32 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Age
   if (tool === 'codex') return classifyCodexTitle(observed)
   if (tool === 'opencode' || tool === 'pi') return observed.trim() === 'running' ? 'running' : 'waiting'
   return classifyClaudeTitle(observed)
+}
+
+/** The tmux pane option the posture hook and plugin publish into. */
+const PERMISSION_MODE_OPTION = '@yaac-permission-mode'
+
+/**
+ * The tmux format a running `tui` agent's posture is pushed through, for the
+ * tools that publish one onto their pane option: claude, from a hook
+ * carrying the mode it is in (`worktree-bin/yaac-permission-mode`), and
+ * opencode, from a plugin naming the agent it runs as
+ * (`worktree-bin/yaac-opencode-posture`). codex's hooks carry
+ * `permission_mode` too, but only as `bypassPermissions` or `default` — two
+ * answers for five postures — so codex is read from its rollout instead
+ * (`getAgentSessionPermissionMode`). pi has no permission system to move.
+ */
+export function agentPermissionModeFormat(tool: AgentTool): string | undefined {
+  return tool === 'claude' || tool === 'opencode' ? `#{${PERMISSION_MODE_OPTION}}` : undefined
+}
+
+/** The posture a value pushed for `agentPermissionModeFormat` stands for, or
+ *  undefined when it names none (an unset option, a mode yaac has no posture
+ *  for). */
+export function classifyAgentPermissionMode(tool: AgentTool, observed: string): PermissionMode | undefined {
+  if (tool === 'claude') return claudePermissionMode(observed)
+  if (tool === 'opencode') return opencodePermissionMode(observed)
+  return undefined
 }
 
 /**

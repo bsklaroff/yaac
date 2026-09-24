@@ -4,6 +4,7 @@ import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import {
   WorktreeStatusWatcher,
   StatusWatcherManager,
+  type StatusWatcherDeps,
   type WatchedWorktree,
 } from '#runtime/status/status-watcher'
 import type { RuntimeHandle, StreamChild } from '#drivers/contract'
@@ -65,6 +66,7 @@ function makeWatcher(tool: WatchedWorktree['tool'], deps: {
   heartbeatIntervalMs?: number
   commandTimeoutMs?: number
   respawnDelayMs?: number
+  onPermissionMode?: StatusWatcherDeps['onPermissionMode']
 } = {}): { watcher: WorktreeStatusWatcher; children: FakeAttachChild[]; revives: string[] } {
   const children: FakeAttachChild[] = []
   const revives: string[] = []
@@ -79,6 +81,7 @@ function makeWatcher(tool: WatchedWorktree['tool'], deps: {
       revives.push(jobName)
       return Promise.resolve()
     },
+    ...(deps.onPermissionMode !== undefined ? { onPermissionMode: deps.onPermissionMode } : {}),
     heartbeatIntervalMs: deps.heartbeatIntervalMs ?? 60_000,
     commandTimeoutMs: deps.commandTimeoutMs ?? 1_000,
     respawnDelayMs: deps.respawnDelayMs ?? 5,
@@ -101,8 +104,13 @@ async function connectWatcher(
   child.feedBanner()
   await vi.waitFor(() => expect(child.commandCount).toBe(1)) // list-panes
   child.feedReply(`${paneId} ${tool}`)
-  await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B
-  child.feedReply('')
+  // refresh-client -B for the status, and for the tools that publish one,
+  // the posture as well.
+  const subscriptions = tool === 'claude' || tool === 'opencode' ? 2 : 1
+  for (let n = 1; n <= subscriptions; n++) {
+    await vi.waitFor(() => expect(child.commandCount).toBe(1 + n))
+    child.feedReply('')
+  }
   await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
 }
 
@@ -151,8 +159,9 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     expect(send).toBeDefined()
 
     // A command through the channel rides the same control-mode stream.
+    const before = child.commandCount
     const reply = send!('list-windows -t yaac')
-    await vi.waitFor(() => expect(child.commandCount).toBe(3))
+    await vi.waitFor(() => expect(child.commandCount).toBe(before + 1))
     expect(child.writes.join('')).toContain('list-windows -t yaac')
     child.feedReply('0|@0|claude')
     await expect(reply).resolves.toBe('0|@0|claude')
@@ -173,6 +182,29 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     expect(readWorktreeStatus('demo', 's1')).toBe('running')
 
     child.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+  })
+
+  // The row is the caller's to write, so what a pane's hook published is
+  // handed up as the worktree's posture — once per change tmux pushes.
+  it('hands a posture the pane published to the caller, in its own terms', async () => {
+    const recorded: Array<[string, string]> = []
+    const { watcher, children } = makeWatcher('claude', {
+      onPermissionMode: (s, mode) => recorded.push([s.worktreeId, mode]),
+    })
+    watchers.push(watcher)
+    watcher.start()
+    const child = children[0]
+    await connectWatcher(child)
+    expect(child.writes.join('')).toContain("refresh-client -B 'mode-7:%7:#{@yaac-permission-mode}'")
+
+    // Unset until the hook first fires, and `dontAsk` stands for no posture.
+    child.feed('%subscription-changed mode-7 $0 @0 0 %7 : \n')
+    child.feed('%subscription-changed mode-7 $0 @0 0 %7 : dontAsk\n')
+    child.feed('%subscription-changed mode-7 $0 @0 0 %7 : plan\n')
+    child.feed('%subscription-changed mode-7 $0 @0 0 %7 : default\n')
+    expect(recorded).toEqual([['s1', 'plan'], ['s1', 'manual']])
+    // A posture is not a status.
     expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
   })
 
@@ -202,13 +234,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     expect(readWorktreeStatus('demo', 's1')).toBe('running') // sticky
 
     await vi.waitFor(() => expect(children.length).toBe(2))
-    const second = children[1]
-    second.feedBanner()
-    await vi.waitFor(() => expect(second.commandCount).toBe(1))
-    second.feedReply('%7 claude')
-    await vi.waitFor(() => expect(second.commandCount).toBe(2))
-    second.feedReply('')
-    await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
+    await connectWatcher(children[1])
   })
 
   it('tears down and respawns when the heartbeat gets no reply', async () => {
@@ -241,7 +267,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     watcher.start()
     const child = children[0]
     await connectWatcher(child)
-    await vi.waitFor(() => expect(child.commandCount).toBe(3)) // heartbeat sent
+    await vi.waitFor(() => expect(child.commandCount).toBe(4)) // heartbeat sent
     child.feedReply('ok')
     await new Promise((r) => setTimeout(r, 30))
     expect(children.length).toBe(1)
@@ -304,6 +330,30 @@ describe('WorktreeStatusWatcher (pane tools)', () => {
     expect(sent).not.toContain('capture-pane')
   })
 
+  // opencode's plugin publishes `<launch posture>/<agent>`: a Tab between its
+  // agents is a posture only where the launch's rules make it one.
+  it('hands up the posture an opencode agent switch adds up to', async () => {
+    const recorded: string[] = []
+    const { watcher, children } = makeWatcher('opencode', {
+      onPermissionMode: (_s, mode) => recorded.push(mode),
+    })
+    watchers.push(watcher)
+    watcher.start()
+    const child = children[0]
+    await connectWatcher(child, '%2', 'opencode')
+    expect(child.writes.join('')).toContain("refresh-client -B 'mode-2:%2:#{@yaac-permission-mode}'")
+
+    // plan and manual share their rules, so the agent is the whole difference.
+    child.feed('%subscription-changed mode-2 $0 @0 0 %2 : plan/build\n')
+    child.feed('%subscription-changed mode-2 $0 @0 0 %2 : manual/plan\n')
+    // The plan agent over bypass's allow-everything rules is no posture yaac
+    // has, and a project's own agent is not one either.
+    child.feed('%subscription-changed mode-2 $0 @0 0 %2 : bypass/plan\n')
+    child.feed('%subscription-changed mode-2 $0 @0 0 %2 : manual/reviewer\n')
+    child.feed('%subscription-changed mode-2 $0 @0 0 %2 : bypass/build\n')
+    expect(recorded).toEqual(['manual', 'plan', 'bypass'])
+  })
+
   it('records the verdict pushed by the tmux-side subscription', async () => {
     const { watcher, children } = makeWatcher('pi')
     watchers.push(watcher)
@@ -324,9 +374,10 @@ describe('WorktreeStatusWatcher (pane tools)', () => {
     watcher.start()
     const child = children[0]
     await connectWatcher(child, '%2', 'opencode')
+    const before = child.commandCount
     child.feed('%output %2 leftover redraw bytes\n')
     await new Promise((r) => setTimeout(r, 25))
-    expect(child.commandCount).toBe(2) // no capture-pane issued
+    expect(child.commandCount).toBe(before) // no capture-pane issued
   })
 })
 

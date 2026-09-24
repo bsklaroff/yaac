@@ -9,6 +9,7 @@ import {
   classifyAgentObservation,
   getAgentSessionFirstMessage,
   getAgentSessionModel,
+  getAgentSessionPermissionMode,
 } from '#runtime/agents/agent-tools'
 // The marker lists are the tool modules' business — imported here as setup
 // values so the format assertions survive a wording change to either.
@@ -295,5 +296,101 @@ describe('getAgentSessionModel', () => {
       { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-5' } },
     ])
     await expect(getAgentSessionModel('opencode', jsonl)).resolves.toBeUndefined()
+  })
+})
+
+describe('getAgentSessionPermissionMode', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-posture-'))
+  })
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  const rollout = async (entries: unknown[]): Promise<string> => {
+    const jsonl = path.join(dir, `rollout-${String(Math.random()).slice(2)}.jsonl`)
+    await fs.writeFile(jsonl, entries.map((e) => JSON.stringify(e)).join('\n') + '\n')
+    return jsonl
+  }
+
+  // The permission profiles codex 0.156.1 writes: full access is `disabled`,
+  // and a managed profile is workspace-write when it grants a write, read-only
+  // when it grants none.
+  const FULL = { type: 'disabled' }
+  const WORKSPACE = {
+    type: 'managed',
+    file_system: {
+      type: 'restricted',
+      entries: [
+        { path: { type: 'special', value: { kind: 'root' } }, access: 'read' },
+        { path: { type: 'path', path: '/workspace' }, access: 'write' },
+      ],
+    },
+  }
+  const READ_ONLY = {
+    type: 'managed',
+    file_system: { type: 'restricted', entries: [{ path: { type: 'special', value: { kind: 'root' } }, access: 'read' }] },
+  }
+  const settings = (s: Record<string, unknown>): Record<string, unknown> => ({
+    approval_policy: 'on-request',
+    approvals_reviewer: 'user',
+    permission_profile: WORKSPACE,
+    collaboration_mode: { mode: 'default' },
+    ...s,
+  })
+  const turnContext = (s: Record<string, unknown> = {}): unknown =>
+    ({ type: 'turn_context', payload: { model: 'gpt-6-astra', ...settings(s) } })
+  const applied = (s: Record<string, unknown> = {}): unknown => ({
+    type: 'event_msg',
+    payload: { type: 'thread_settings_applied', thread_id: 't', thread_settings: settings(s) },
+  })
+
+  // Each of yaac's codex launches, read back out of the settings it produced.
+  it('inverts every codex launch the posture table makes', async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ approval_policy: 'never', permission_profile: FULL }, 'bypass'],
+      [{ approvals_reviewer: 'auto_review' }, 'auto'],
+      [{}, 'accept-edits'],
+      [{ permission_profile: READ_ONLY }, 'plan'],
+      [{ approval_policy: 'untrusted' }, 'manual'],
+    ]
+    for (const [s, mode] of cases) {
+      await expect(getAgentSessionPermissionMode('codex', await rollout([turnContext(s)])))
+        .resolves.toBe(mode)
+    }
+  })
+
+  // A `/permissions` pick or a Shift+Tab lands in the rollout as a settings
+  // event straight away — the newest entry wins, whichever kind it is.
+  it('follows a mid-session change without waiting for the next turn', async () => {
+    const jsonl = await rollout([
+      turnContext(),
+      { type: 'response_item', payload: { type: 'message', role: 'assistant' } },
+      applied({ approval_policy: 'never', permission_profile: FULL }),
+    ])
+    await expect(getAgentSessionPermissionMode('codex', jsonl)).resolves.toBe('bypass')
+
+    // Codex's own plan mode is what the user asked for by entering it.
+    await fs.appendFile(jsonl, JSON.stringify(applied({
+      approval_policy: 'never', permission_profile: FULL, collaboration_mode: { mode: 'plan' },
+    })) + '\n')
+    await expect(getAgentSessionPermissionMode('codex', jsonl)).resolves.toBe('plan')
+  })
+
+  // Settings no posture stands for are the answer — not an older entry that
+  // named one, which would claim a posture codex has since left.
+  it('answers nothing for settings no posture stands for', async () => {
+    const jsonl = await rollout([
+      turnContext(),
+      applied({ approval_policy: 'on-request', permission_profile: FULL }),
+    ])
+    await expect(getAgentSessionPermissionMode('codex', jsonl)).resolves.toBeUndefined()
+  })
+
+  it('reads no posture from a tool that records none in its transcript', async () => {
+    const jsonl = await rollout([turnContext()])
+    await expect(getAgentSessionPermissionMode('claude', jsonl)).resolves.toBeUndefined()
+    await expect(getAgentSessionPermissionMode('codex', undefined)).resolves.toBeUndefined()
   })
 })

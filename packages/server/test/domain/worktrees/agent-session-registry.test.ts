@@ -16,7 +16,7 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
 // is the only place its firing (or its silence) can be asserted.
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 import { closeDb } from '#db/client'
-import { acpLogDir, claudeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
+import { acpLogDir, claudeDir, codexDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 import {
   reconcileAgentSessions,
   reconcileWorktreeAgentSessions,
@@ -27,7 +27,7 @@ import {
 } from '#db/agent-session-store'
 import { _resetModelCaptureForTests } from '#domain/worktrees/model-capture'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
-import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
+import { getWorktreeRow, recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
 import { sessionStartsLogSize } from '#domain/worktrees/session-starts'
 import { serverLog } from '#log'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
@@ -499,6 +499,40 @@ describe('reconcileWorktreeAgentSessions', () => {
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
     expect(await modelOf('conv-a')).toBe('claude-opus-5')
+  })
+
+  // codex writes its settings into the rollout the moment the user changes
+  // them, so a `/permissions` pick reaches the row on the next sweep — and a
+  // restart relaunches what the row says.
+  it('follows the posture a codex rollout records, from launch through a change', async () => {
+    const rel = path.join('codex', 'sessions', '2026', '09', '24', 'rollout-conv-x.jsonl')
+    const rollout = path.join(codexDir('demo'), 'sessions', '2026', '09', '24', 'rollout-conv-x.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+    const workspace = {
+      type: 'managed',
+      file_system: { type: 'restricted', entries: [{ path: { type: 'path', path: '/workspace' }, access: 'write' }] },
+    }
+    await fs.writeFile(rollout, `${JSON.stringify({
+      type: 'turn_context',
+      payload: { approval_policy: 'on-request', approvals_reviewer: 'user', permission_profile: workspace },
+    })}\n`)
+    const log = worktreeSessionStartsPath('demo', 'wt-1')
+    await fs.mkdir(path.dirname(log), { recursive: true })
+    await fs.appendFile(log, `${JSON.stringify({ id: 'conv-x', tool: 'codex', pane: '0', path: rel })}\n`)
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('accept-edits')
+
+    await fs.appendFile(rollout, `${JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'thread_settings_applied',
+        thread_settings: { approval_policy: 'never', approvals_reviewer: 'user', permission_profile: { type: 'disabled' } },
+      },
+    })}\n`)
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('bypass')
   })
 
   it('keeps an ordinal stable once assigned, so a restart\'s windows do not reshuffle', async () => {

@@ -8,6 +8,7 @@ import {
   recordWorktreeStopped,
   restoreWorktreeStop,
   setWorktreeBaseBranch,
+  setWorktreePermissionMode,
   type PriorStop,
 } from './worktree-store'
 import { notifyWorktreeListChanged } from '#notify'
@@ -61,6 +62,9 @@ async function applyEvent(event: WorktreeEvent): Promise<void> {
       return
     case 'sessions-active':
       await setActiveAgentSessions(event.projectSlug, event.worktreeId, event.active)
+      return
+    case 'permission-mode-changed':
+      await setWorktreePermissionMode(event.projectSlug, event.worktreeId, event.permissionMode)
       return
     case 'worktree-stopped':
       await recordWorktreeStopped(event.projectSlug, event.worktreeId, event.cause)

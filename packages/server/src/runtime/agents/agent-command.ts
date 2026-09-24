@@ -199,10 +199,28 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  * it early, and bare `{...}` would hit zsh brace expansion. Serialized rather
  * than hand-written so the escaping cannot drift from the shape.
  */
-export function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
-  const config = { ...OPENCODE_POSTURE[mode], ...(model === undefined ? {} : { model }) }
+export function opencodeConfigArg(
+  mode: PermissionMode,
+  model: string | undefined,
+  plugins?: string[],
+): string {
+  const config = {
+    ...OPENCODE_POSTURE[mode],
+    ...(model === undefined ? {} : { model }),
+    ...(plugins === undefined ? {} : { plugins }),
+  }
   return envJsonAssignment('OPENCODE_CONFIG_CONTENT', config)
 }
+
+/**
+ * Where an opencode TUI launch installs yaac's posture plugin
+ * (`worktree-bin/yaac-opencode-posture`): opencode loads a plugin from a
+ * directory holding `server.js`, never from a bare file, and worktree-bin
+ * stages files. In the workspace's own HOME, which both drivers give it and
+ * the image creates `~/.local/share` in owned by the agent's user. Expanded by
+ * the shell at launch — it sits inside the double-quoted config value.
+ */
+const OPENCODE_PLUGIN_DIR = '$HOME/.local/share/yaac/opencode-plugin'
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {
   const { tool, worktreeId, piProvider, model } = spec
@@ -293,8 +311,21 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // per-worktree data dir. The TUI takes no model or agent flag — both
     // ride in the config (`opencodeConfigArg`) — and refuses an unknown one
     // outright (usage, exit: a dead window), so none is invented here.
+    //
+    // The posture plugin rides the same config, and is what follows a Tab
+    // between opencode's `build` and `plan` agents onto the worktree's row
+    // (docs/permission-modes.md). The directory is always made — opencode
+    // raises a "Plugin failed" toast for one that is missing, and loads an
+    // empty one silently — while the copy is best-effort, so a build that
+    // staged no plugin launches untracked rather than not at all. The plugin
+    // reads the launch posture from YAAC_PERMISSION_MODE, since what an agent
+    // switch adds up to depends on the rules it was launched with.
+    const dir = `"${OPENCODE_PLUGIN_DIR}"`
     return [
-      opencodeConfigArg(mode, model),
+      `mkdir -p ${dir} 2>/dev/null;`,
+      `cp "$(command -v yaac-opencode-posture)" ${dir}/server.js 2>/dev/null;`,
+      `YAAC_PERMISSION_MODE=${mode}`,
+      opencodeConfigArg(mode, model, [OPENCODE_PLUGIN_DIR]),
       'opencode --standalone',
       resume ? '--continue' : '',
     ].filter(Boolean).join(' ')
@@ -331,7 +362,10 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // Only `TMUX` is dropped. `TMUX_PANE` stays, because the agent-links hook
   // reads it to record which pane a conversation started in
   // (worktree-bin/yaac-agent-links) — dropping it would silently cost
-  // conversation discovery.
+  // conversation discovery. And the server's address survives under another
+  // name, `YAAC_TMUX`, which claude does not read: the permission-mode hook
+  // needs it to publish the posture onto this pane
+  // (worktree-bin/yaac-permission-mode).
   //
   // What claude gives up, largest first:
   //  - Agent teams lose the tmux pane backend. Claude picks it by the same
@@ -345,7 +379,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   //    the browser terminal anyway.
   //  - A scrollback hint in its footer.
   return [
-    `env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
+    `env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${model}` : '',
     resume ? `--resume ${worktreeId}` : `--session-id ${worktreeId}`,
   ].filter(Boolean).join(' ')

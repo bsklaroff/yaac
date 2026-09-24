@@ -561,6 +561,16 @@ export async function setWorktreeBaseBranch(
   }
 }
 
+/** Record the posture a worktree's agent moved to while it ran. */
+export async function setWorktreePermissionMode(
+  projectSlug: string,
+  worktreeId: string,
+  permissionMode: PermissionMode,
+): Promise<void> {
+  const db = await getDb()
+  await db.update(worktrees).set({ permissionMode }).where(key(projectSlug, worktreeId))
+}
+
 /**
  * Worktrees recorded as live (no recorded stop) — the reaper's input for
  * spotting a row whose pod is gone. `ran` says whether the agent ever got

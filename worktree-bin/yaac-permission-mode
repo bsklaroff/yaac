@@ -1,0 +1,30 @@
+#!/bin/sh
+# yaac permission-mode hook: publishes the posture claude is running under
+# NOW onto its own tmux pane, where the server's control-mode client has a
+# subscription on it and records every change as the worktree's posture —
+# which is what a restart relaunches in (docs/permission-modes.md).
+#
+# Registered for UserPromptSubmit and Stop, because claude has no hook for a
+# mode change itself (Shift+Tab fires nothing) and those two carry
+# `permission_mode` at the two moments a change can matter: a mode picked
+# between turns is in force by the next prompt, and one the agent moved to
+# mid-turn (EnterPlanMode, a plan-exit answer) is reported when the turn
+# ends. The value is claude's own spelling (`default`, `acceptEdits`, ...);
+# the server maps it.
+#
+# claude runs with $TMUX unset (see buildAgentCmd), so the launch hands the
+# server's address over as $YAAC_TMUX instead — same "socket,pid,session"
+# value, of which only the socket is needed. $TMUX_PANE is inherited as-is.
+#
+# Prints NOTHING: UserPromptSubmit feeds a hook's stdout to the model as
+# context. Always exits 0 — a broken publish must never block a prompt.
+INPUT=$(cat)
+[ -n "${YAAC_TMUX:-}" ] || exit 0
+[ -n "${TMUX_PANE:-}" ] || exit 0
+# The payload is one line of JSON, and a quote inside a string field (the
+# prompt, the last message) is escaped — so only the real field matches.
+MODE=$(printf '%s' "$INPUT" | sed -n 's/.*"permission_mode"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*/\1/p')
+[ -n "$MODE" ] || exit 0
+tmux -S "${YAAC_TMUX%%,*}" set-option -p -t "$TMUX_PANE" @yaac-permission-mode "$MODE" \
+  >/dev/null 2>&1
+exit 0

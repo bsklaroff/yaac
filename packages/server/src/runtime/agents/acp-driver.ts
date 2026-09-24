@@ -426,6 +426,14 @@ class AcpConnection implements AgentConnection {
           status: entry.conversation?.status ?? (busy ? 'running' : 'waiting'),
         })
       },
+      onPermissionMode: (mode) => {
+        // Answered by from here on, without waiting for the row the caller
+        // writes to come back on the next sweep: an agent that just entered
+        // plan mode asks to leave it straight away, and that ask belongs to the
+        // pane, not to a `bypass` read before the move.
+        this.permissionMode = mode
+        this.sink({ kind: 'permission-mode', mode })
+      },
       onPermissionPending: () => {
         // A status change with no turn boundary behind it: the agent stopped
         // working and started waiting on a person, which is exactly the
