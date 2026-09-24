@@ -176,21 +176,24 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
     expect(stdout).toContain('HTTP:422')
   }, 120_000)
 
-  it('spawns a sibling worktree with the prompt and --model delivered to its agent', async () => {
+  it('spawns a sibling worktree with the prompt and every create option delivered to its agent', async () => {
     // Watch the webapp snapshot stream: a spawned worktree must provision in
     // the sidebar exactly like a user-initiated create (row while building,
     // then the ready worktree in its place).
     //
-    // --model rides along on this spawn rather than getting a worktree of its
-    // own: the two are orthogonal flags read off different surfaces of the
-    // same pod (the agent pane vs. the window's start command), and a
-    // sibling bring-up is the most expensive thing in this file.
+    // The create options ride along on this spawn rather than getting a
+    // worktree of their own: they are orthogonal flags read off different
+    // surfaces of the same pod (the agent pane vs. the window's start
+    // command), and a sibling bring-up is the most expensive thing in this
+    // file. `--permission-mode plan` sits under the caller's own posture (the
+    // k8s default, bypass), and the args pass the proxy's shape checks.
     const sub = collectSnapshots(server!.lock.port, server!.lock.secret)
     await sub.opened
 
     const PROMPT = 'hello from spawn e2e'
     const { exitCode, output } = await runMama(
-      `create --model claude-opus-4-8 --group "release train" "${PROMPT}"`)
+      'create --model claude-opus-4-8 --permission-mode plan --mode tui --branch main '
+      + `--group "release train" "${PROMPT}"`)
     expect(exitCode).toBe(0)
     const newWorktreeId = output.trim()
     expect(newWorktreeId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
@@ -255,8 +258,8 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
     if (!found) console.error('final spawned pane:\n' + pane)
     expect(found).toBe(true)
 
-    // The agent window's launch command carries the --model override — the
-    // flag claude was actually started with, whatever the TUI renders.
+    // The agent window's launch command carries the posture and --model —
+    // the flags claude was actually started with, whatever the TUI renders.
     let startCmd = ''
     for (let i = 0; i < 60; i++) {
       try {
@@ -271,7 +274,7 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
       }
       await sleep(1000)
     }
-    expect(startCmd).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-8')
+    expect(startCmd).toContain('claude --permission-mode plan --model claude-opus-4-8')
   }, 420_000)
 
   it('lists the project\u2019s worktrees, marking the caller and its group', async () => {

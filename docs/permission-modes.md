@@ -158,6 +158,38 @@ gets the opposite treatment — it may have been recorded under the other agent
 mode, or before a tool update dropped it — so a posture the agent no longer
 offers falls through to its default.
 
+### A spawned worktree's posture
+
+`yaac-mama create` (the spawn policy) does not go through that chain. It
+starts from the **caller's** posture, which is read from the caller's row
+and never taken from the request, and it treats that posture as a ceiling. A
+sibling may run at most as permissively as its parent, in the order `bypass >
+auto > accept-edits > manual > plan`. Otherwise an agent that the user left in
+`plan` could get its work done unrestrained by asking a sibling to do it.
+The project's remembered posture is skipped here too: a spawned sibling runs
+with nobody attached, so a `plan` inherited from someone's last webapp create
+would leave it waiting for an answer that never comes.
+
+A named `--permission-mode` above the ceiling, or one the tool lacks, is
+refused. This is the last point where a refusal can reach the caller,
+because the create itself runs detached. An unnamed posture that the tool lacks
+steps down to the most permissive posture the tool has below the ceiling. If
+there is none, for example pi under a caller that is not in `bypass`, it is
+refused.
+
+The ceiling has two limits. First, it is the caller's posture as recorded on
+its row, which is the posture it launched in. A mode changed inside the
+running agent (claude's Shift+Tab, or the ACP plan-exit ask that moves a
+conversation to `acceptEdits`) never reaches the row. Second, it binds the
+`yaac-mama` channel, not every way to create a worktree. Under k8s that
+channel is the only one a pod has, because the proxy attributes the caller by
+source IP and the ingress policy keeps pods off the server's API. Under
+containerless there is no such boundary (docs/containerless-driver.md): a
+loopback-only server accepts an uncredentialed `/worktree/create` from the
+agent, and every worktree runs as the same user. So there, the ceiling holds
+only as far as the agent's own tool restrains the commands it runs, the same
+as everything else on that driver.
+
 ### The rest of the create form's memory
 
 The same row remembers the agent's model and agent mode, and the project row

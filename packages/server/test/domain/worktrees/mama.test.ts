@@ -112,7 +112,10 @@ describe('runMamaCommand', () => {
     expect(proto.ok).toBe(false)
 
     // What each command DOES take still passes.
-    expect((await run('create', 'p', { tool: 'claude', model: 'opus', group: 'g' })).ok).toBe(true)
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-worktree' })
+    expect((await run('create', 'p', {
+      tool: 'claude', model: 'opus', 'permission-mode': 'plan', mode: 'acp', branch: 'b', group: 'g',
+    })).ok).toBe(true)
   })
 
   it('answers rather than throws when a command fails', async () => {
@@ -160,6 +163,12 @@ describe('runMamaCommand', () => {
   })
 
   describe('create', () => {
+    beforeEach(async () => {
+      await recordWorktreeCreated({
+        projectSlug: 'proj', worktreeId: 'caller-worktree', permissionMode: 'auto',
+      })
+    })
+
     it('starts a worktree in the caller\'s project and returns just the id', async () => {
       const outcome = await run('create', 'write the report')
       expect(outcome.ok).toBe(true)
@@ -170,7 +179,33 @@ describe('runMamaCommand', () => {
       expect(vi.mocked(createWorktree)).toHaveBeenCalledTimes(1)
       const [slug, opts] = vi.mocked(createWorktree).mock.calls[0]
       expect(slug).toBe('proj')
-      expect(opts).toMatchObject({ initialPrompt: 'write the report', tool: 'codex' })
+      // The caller's own tool and posture, absent a request for others.
+      expect(opts).toMatchObject({ initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto' })
+    })
+
+    it('takes every option the webapp\'s create form has, capped at the caller\'s own posture', async () => {
+      expect((await run('create', 'do it', {
+        tool: 'claude', model: 'opus', 'permission-mode': 'accept-edits', mode: 'acp', branch: 'feature/x',
+      })).ok).toBe(true)
+      await settle()
+      expect(vi.mocked(createWorktree).mock.calls[0][1]).toMatchObject({
+        tool: 'claude', model: 'opus', permissionMode: 'accept-edits', mode: 'acp', branch: 'feature/x',
+      })
+
+      // The ceiling is read off the caller's recorded row, which the request
+      // cannot speak for.
+      const above = await run('create', 'do it', { 'permission-mode': 'bypass' })
+      expect(above.ok).toBe(false)
+      if (!above.ok) expect(above.error).toContain("more permissive than this worktree's own ('auto')")
+      await settle()
+      expect(vi.mocked(createWorktree)).toHaveBeenCalledTimes(1)
+    })
+
+    it('refuses a caller with no recorded posture to cap the spawn at', async () => {
+      const outcome = await runMamaCommand({ ...CALLER, workspaceId: 'unrecorded' }, {
+        command: 'create', args: {}, body: 'do it',
+      })
+      expect(outcome).toEqual({ ok: false, error: 'this worktree has no recorded permission mode' })
     })
 
     it('files the new worktree into a group, creating it by name', async () => {

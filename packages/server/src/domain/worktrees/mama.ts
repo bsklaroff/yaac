@@ -24,7 +24,7 @@
 import { decideSpawn } from './spawn-policy'
 import { listActiveWorktrees } from './list'
 import { listWorktreeGroups, resolveGroup } from './groups'
-import { getProjectWorktreeRows, setWorktreeGroup, setWorktreeTitle } from '#db'
+import { getProjectWorktreeRows, getWorktreeRow, setWorktreeGroup, setWorktreeTitle } from '#db'
 import { resolveWorktreeInProject } from './resolve'
 import { stopWorktree } from './stop'
 import { ServerError } from '@yaac/shared/errors'
@@ -82,7 +82,7 @@ const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: [],
-  create: ['tool', 'model', 'group'],
+  create: ['tool', 'model', 'permission-mode', 'mode', 'branch', 'group'],
   rename: ['worktree'],
   stop: ['worktree'],
   'group-create': [],
@@ -208,12 +208,19 @@ function flatten(text: string, max: number): string {
 
 /**
  * Start a sibling worktree in the caller's project. The decision — tool
- * precedence, the fan-out cap, the id it gets and the row it provisions
- * under — is `decideSpawn`'s; this only resolves the group name, since a
- * group is the one argument that has to exist before the create can carry it.
+ * precedence, the posture ceiling, the fan-out cap, the id it gets and the
+ * row it provisions under — is `decideSpawn`'s; this resolves the two things
+ * it needs from the store: the group name, since a group has to exist before
+ * the create can carry it, and the caller's own posture, off its row.
  */
 async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const group = request.args.group
+  const callerRow = await getWorktreeRow(caller.projectSlug, caller.workspaceId)
+  // Every running worktree has a row (create writes it before provisioning),
+  // so a caller without one has no posture to cap a spawn at — refuse rather
+  // than guess one.
+  if (!callerRow) return { ok: false, error: 'this worktree has no recorded permission mode' }
+  const { args } = request
+  const group = args.group
   const groupId = group === undefined
     ? undefined
     : (await resolveGroup(caller.projectSlug, group, { create: true })).groupId
@@ -223,9 +230,13 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     callerWorkspaceId: caller.workspaceId,
     callerProjectSlug: caller.projectSlug,
     ...(caller.tool !== undefined ? { callerTool: caller.tool } : {}),
+    callerPermissionMode: callerRow.permissionMode,
     prompt: request.body,
-    ...(request.args.tool !== undefined ? { tool: request.args.tool } : {}),
-    ...(request.args.model !== undefined ? { model: request.args.model } : {}),
+    ...(args.tool !== undefined ? { tool: args.tool } : {}),
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(args['permission-mode'] !== undefined ? { permissionMode: args['permission-mode'] } : {}),
+    ...(args.mode !== undefined ? { mode: args.mode } : {}),
+    ...(args.branch !== undefined ? { branch: args.branch } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
   })
   return decision.ok

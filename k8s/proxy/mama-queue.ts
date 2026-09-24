@@ -68,6 +68,10 @@ export const MAMA_MAX_PENDING_TOTAL = 32
  */
 const ARG_SHAPES: Record<string, RegExp> = {
   tool: /^[a-z0-9-]{1,32}$/,
+  'permission-mode': /^[a-z-]{1,32}$/,
+  mode: /^[a-z-]{1,32}$/,
+  // A git branch name: git itself refuses whitespace in one.
+  branch: /^\S{1,255}$/,
   // Mirrors the server's MODEL_RE.
   model: /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/,
   // A group NAME, which is free-form user text (and may be `--`, meaning no
