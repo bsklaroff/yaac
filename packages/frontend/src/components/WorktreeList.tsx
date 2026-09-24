@@ -1118,7 +1118,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
     ? `died${entry.stoppedAt ? ` ${relativeAge(entry.stoppedAt)}` : ''} — ${describeWorktreeDeathReason(entry.deathReason)}`
     : entry.stoppedAt
       ? `stopped ${relativeAge(entry.stoppedAt)}`
-      : 'stopped'
+      : `last active ${relativeAge(entry.lastActiveAt ?? entry.createdAt)}`
 
   return (
     <div className="group relative mx-2">

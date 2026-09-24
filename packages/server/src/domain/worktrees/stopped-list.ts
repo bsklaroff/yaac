@@ -23,9 +23,13 @@ import type { StoppedWorktreeEntry } from '@yaac/shared/types'
  * is what makes the restart action meaningful. If the cluster is not
  * reachable, every recorded worktree is treated as stopped.
  *
- * Entries are sorted newest-first and sliced to `limit` before any file is
- * touched, so only the rows the caller will render pay for their
- * last-activity stat. Pass `undefined` / `0` to disable the limit.
+ * Entries are sorted newest-first and sliced to `limit` before the stopped
+ * rows' transcripts are touched, so of those only the ones the caller will
+ * render pay for their last-activity stat — a row with no recorded stop pays
+ * it up front, since that stat is its sort key. Few rows qualify: the stale
+ * reaper stamps a podless row stopped within its grace window, so only rows
+ * inside that window pay it (or every live row, when the substrate listing
+ * fails). Pass `undefined` / `0` to disable the limit.
  */
 export async function listStoppedWorktrees(
   projectFilter?: string,
@@ -45,9 +49,21 @@ export async function listStoppedWorktrees(
   const rows = (await listWorktreeRows(projectFilter))
     .filter((r) => !runningIds.has(r.worktreeId))
 
-  // Newest-stopped first, falling back to creation time for a worktree
-  // removed out of band (no recorded stop).
-  const sortKey = (r: WorktreeRow): number => (r.stoppedAt ?? r.createdAt).getTime()
+  const linksByWorktree = await getAgentSessionsFor(rows.map((r) => ({
+    projectSlug: r.projectSlug,
+    worktreeId: r.worktreeId,
+  })))
+  const linksOf = (r: WorktreeRow): AgentSessionLinkRow[] =>
+    linksByWorktree.get(`${r.projectSlug}/${r.worktreeId}`) ?? []
+  const activeMs = async (r: WorktreeRow): Promise<number> =>
+    await lastActiveMs(r, linksOf(r)) ?? r.createdAt.getTime()
+
+  // Newest-stopped first. A worktree removed out of band (no recorded stop)
+  // sorts by when it was last active instead, so its stamp is read now.
+  const unstoppedActive = new Map(await Promise.all(rows
+    .filter((r) => r.stoppedAt === undefined)
+    .map(async (r) => [r, await activeMs(r)] as const)))
+  const sortKey = (r: WorktreeRow): number => r.stoppedAt?.getTime() ?? unstoppedActive.get(r) ?? 0
   rows.sort((a, b) => sortKey(b) - sortKey(a) || b.createdAt.getTime() - a.createdAt.getTime())
 
   // A grouped worktree drives a ghost row in its sidebar group, so it survives
@@ -60,13 +76,8 @@ export async function listStoppedWorktrees(
     ? rows.filter((r, i) => i < limit || r.groupId !== undefined)
     : rows
 
-  const linksByWorktree = await getAgentSessionsFor(capped.map((r) => ({
-    projectSlug: r.projectSlug,
-    worktreeId: r.worktreeId,
-  })))
-
   return Promise.all(capped.map(async (r) => {
-    const links = linksByWorktree.get(`${r.projectSlug}/${r.worktreeId}`) ?? []
+    const links = linksOf(r)
     const first = links[0]
     const prompt = await stoppedPrompt(r, links)
     return {
@@ -77,7 +88,7 @@ export async function listStoppedWorktrees(
       // claude, which is what restart falls back to as well.
       tool: first?.tool ?? 'claude',
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
-      lastActiveAt: formatUtcTimestamp(await lastActiveMs(r, links) ?? r.createdAt.getTime()),
+      lastActiveAt: formatUtcTimestamp(unstoppedActive.get(r) ?? await activeMs(r)),
       agentSessions: links.map((l) => toAgentSessionEntry(l)),
       seen: r.deathSeen,
       ...(prompt !== undefined ? { prompt } : {}),

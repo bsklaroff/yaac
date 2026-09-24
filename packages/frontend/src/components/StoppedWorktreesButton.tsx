@@ -38,9 +38,10 @@ const label = (d: StoppedWorktreeEntry): string => d.title || d.prompt || 'New w
  * this lives in the sidebar; open state lives in the store so the overlay is a
  * sibling of the workspace, not nested in a row.
  *
- * The overlay is a search-filtered master/detail list ordered newest-deleted
- * first; picking a row shows its history metadata and a Restart action that
- * recreates the container and resumes the tool from where it left off.
+ * The overlay is a search-filtered master/detail list ordered newest-stopped
+ * first (last active, for one with no recorded stop); picking a row shows its
+ * history metadata and a Restart action that recreates the container and
+ * resumes the tool from where it left off.
  */
 export function StoppedWorktreesButton({
   projectSlug,
@@ -289,7 +290,7 @@ export function StoppedWorktreesButton({
                             <span className="truncate">
                               {d.deathReason
                                 ? `died ${relativeAge(d.stoppedAt)} — ${describeWorktreeDeathReason(d.deathReason)}`
-                                : d.stoppedAt ? `stopped ${relativeAge(d.stoppedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
+                                : d.stoppedAt ? `stopped ${relativeAge(d.stoppedAt)}` : `last active ${relativeAge(d.lastActiveAt ?? d.createdAt)}`}
                             </span>
                             <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
                           </span>

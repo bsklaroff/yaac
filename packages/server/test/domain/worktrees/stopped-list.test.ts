@@ -138,15 +138,31 @@ describe('listStoppedWorktrees', () => {
     expect((await listStoppedWorktrees('demo')).map((r) => r.worktreeId)).toEqual(['second', 'first'])
   })
 
-  it('falls back to creation time for a session removed out of band', async () => {
-    // `old` was created first but never recorded as deleted; `recent` was
-    // deleted just now. Newest-deleted-first ⇒ recent before old.
-    await seedWorktree('demo', 'old')
+  it('orders a session removed out of band by its last activity', async () => {
+    // Neither `busy` nor `idle` has a recorded stop, so each sorts by when it
+    // was last active: `idle` (no transcript) by its birth, just before
+    // `recent` was stopped, and `busy` — born first — by a transcript written
+    // after both.
+    const dir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(dir, { recursive: true })
+    const transcript = path.join(dir, 'busy.jsonl')
+    await fs.writeFile(transcript, '{}\n')
+    await seedWorktree('demo', 'busy')
+    await recordAgentSessions('demo', 'busy', [{
+      tool: 'claude',
+      agentSessionId: 'busy',
+      transcriptPath: path.join('claude', 'projects', '-workspace', 'busy.jsonl'),
+    }])
+    await new Promise((r) => setTimeout(r, 5))
+    await seedWorktree('demo', 'idle', { tool: 'opencode' })
     await new Promise((r) => setTimeout(r, 5))
     await seedWorktree('demo', 'recent', { deleted: true })
+    const later = new Date(Date.now() + 60_000)
+    await fs.utimes(transcript, later, later)
+
     const result = await listStoppedWorktrees('demo')
-    expect(result.map((r) => r.worktreeId)).toEqual(['recent', 'old'])
-    expect(result.find((r) => r.worktreeId === 'old')?.stoppedAt).toBeUndefined()
+    expect(result.map((r) => r.worktreeId)).toEqual(['busy', 'recent', 'idle'])
+    expect(result.find((r) => r.worktreeId === 'idle')?.stoppedAt).toBeUndefined()
   })
 
   it('carries the recorded death cause and its seen flag on the entry', async () => {

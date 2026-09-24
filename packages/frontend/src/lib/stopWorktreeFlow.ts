@@ -1,5 +1,6 @@
 import { stopWorktree } from '#lib/createWorktree'
 import { useUiStore } from '#store'
+import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { WorktreeListEntry } from '@yaac/shared/types'
 
 /**
@@ -43,6 +44,7 @@ export function stopWorktreeOptimistic(worktree: WorktreeListEntry, rowIds: stri
       projectSlug: worktree.projectSlug,
       tool: worktree.tool,
       createdAt: worktree.createdAt,
+      stoppedAt: formatUtcTimestamp(Date.now()),
       prompt: worktree.prompt,
       title: worktree.title,
       // A user stop, never an abnormal death, so `seen` is moot — but the
