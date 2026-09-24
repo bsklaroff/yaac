@@ -10,8 +10,7 @@ import {
   encodeCa,
   encodeRefreshed,
   encodeState,
-  matchPattern,
-  parsePattern,
+  sshKeyBlobsByProject,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
 } from 'yaac-proxy-sidecar/objects'
@@ -33,6 +32,11 @@ const CLAUDE_BUNDLE: ClaudeOAuthBundle = {
   accessToken: 'claude-access', refreshToken: 'claude-refresh',
   expiresAt: 1_900_000_000_000, scopes: ['user:inference'], subscriptionType: 'max',
 }
+const SSH_ENTRY = {
+  privateKey: 'KEY',
+  publicKey: `ssh-ed25519 ${Buffer.from('key-blob').toString('base64')} yaac key`,
+  projects: [{ slug: 'acme', host: 'github.com', knownHostsEntry: 'github.com ssh-ed25519 AAA' }],
+}
 const CODEX_BUNDLE: CodexOAuthBundle = {
   accessToken: 'codex-access', refreshToken: 'codex-refresh', idTokenRawJwt: 'h.p.s',
   expiresAt: 1_900_000_000_000, lastRefresh: '2026-09-01T00:00:00.000Z', accountId: 'acct',
@@ -45,19 +49,15 @@ describe('decodeCredentials', () => {
       'codex.json': { kind: 'oauth', savedAt: 'x', codexOauth: CODEX_BUNDLE },
       'opencode.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-or', provider: 'openrouter' },
       'pi.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant', provider: 'anthropic' },
-      'github.json': { tokens: [
-        { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp' },
-        // An ssh entry in the same file is the server's business, not ours.
-        { kind: 'ssh', pattern: 'github.com/acme/private' },
-      ] },
-      'ssh-keys.json': [{ pattern: 'github.com/*', host: 'github.com', privateKey: 'KEY', knownHostsEntry: 'github.com ssh-ed25519 AAA' }],
+      'git-tokens.json': [{ token: 'ghp', projects: ['acme', 'other'] }],
+      'ssh-keys.json': [SSH_ENTRY],
     }))
     expect(creds.claude).toEqual({ kind: 'oauth', bundle: CLAUDE_BUNDLE })
     expect(creds.codex).toEqual({ kind: 'oauth', bundle: CODEX_BUNDLE })
     expect(creds.opencode).toEqual({ kind: 'api-key', apiKey: 'sk-or', provider: 'openrouter' })
     expect(creds.pi).toEqual({ kind: 'api-key', apiKey: 'sk-ant', provider: 'anthropic' })
-    expect(creds.git).toEqual([{ pattern: 'github.com/acme/*', token: 'ghp' }])
-    expect(creds.ssh).toEqual([{ host: 'github.com', privateKey: 'KEY', knownHostsEntry: 'github.com ssh-ed25519 AAA' }])
+    expect(creds.git).toEqual([{ token: 'ghp', projects: ['acme', 'other'] }])
+    expect(creds.ssh).toEqual([SSH_ENTRY])
   })
 
   it('reads api-key claude and codex, and an absent key as signed out', () => {
@@ -84,27 +84,58 @@ describe('decodeCredentials', () => {
       // An unknown (or prototype-chain) provider must not select a host.
       'opencode.json': { kind: 'api-key', apiKey: 'k', provider: 'constructor' },
       'pi.json': { kind: 'api-key', apiKey: 'k' },
-      // A bare git pattern names no host; a tokenless entry injects nothing.
-      'github.json': { tokens: [
-        { pattern: 'acme/*', token: 'ghp' },
-        { pattern: 'github.com/acme/*', token: '' },
-        { pattern: 'github.com/acme/*', token: 'kept' },
-      ] },
-      // An ssh entry without its known_hosts line cannot be constrained.
-      'ssh-keys.json': [{ host: 'h', privateKey: 'KEY', knownHostsEntry: '' }, 'junk'],
+      // A tokenless entry injects nothing, and one naming no project list
+      // is not scoped at all; a non-slug in the list is dropped on its own.
+      'git-tokens.json': [
+        { token: '', projects: ['acme'] },
+        { token: 'ghp' },
+        { token: 'kept', projects: ['acme', 3, ''] },
+        'junk',
+      ],
+      'ssh-keys.json': [
+        // A public line with no blob could never be offered or signed with.
+        { ...SSH_ENTRY, publicKey: 'ssh-ed25519' },
+        { ...SSH_ENTRY, privateKey: '' },
+        { ...SSH_ENTRY, projects: 'acme' },
+        // A grant without its known_hosts line cannot be constrained; the
+        // key stays, with the grants that can be.
+        { ...SSH_ENTRY, projects: [{ slug: 'acme', host: 'h', knownHostsEntry: '' }, ...SSH_ENTRY.projects] },
+        'junk',
+      ],
     }))
     expect(creds.codex).toBeNull()
     expect(creds.claude).toBeNull()
     expect(creds.opencode).toBeNull()
     expect(creds.pi).toBeNull()
-    expect(creds.git).toEqual([{ pattern: 'github.com/acme/*', token: 'kept' }])
-    expect(creds.ssh).toEqual([])
+    expect(creds.git).toEqual([{ token: 'kept', projects: ['acme'] }])
+    expect(creds.ssh).toEqual([SSH_ENTRY])
   })
 
   it('reads a malformed file as absent rather than throwing', () => {
-    const creds = decodeCredentials({ data: { 'claude.json': b64('{not json'), 'github.json': b64('[]') } })
+    const creds = decodeCredentials({ data: {
+      'claude.json': b64('{not json'), 'git-tokens.json': b64('{"tokens":[]}'), 'ssh-keys.json': b64('[oops'),
+    } })
     expect(creds.claude).toBeNull()
     expect(creds.git).toEqual([])
+    expect(creds.ssh).toEqual([])
+  })
+})
+
+describe('sshKeyBlobsByProject', () => {
+  it('indexes each key\'s canonical blob under every project it is assigned to', () => {
+    const blobA = Buffer.from('key-a').toString('base64')
+    const blobB = Buffer.from('key-b').toString('base64')
+    const grant = (slug: string) => ({ slug, host: 'github.com', knownHostsEntry: 'github.com ssh-ed25519 H' })
+    const index = sshKeyBlobsByProject([
+      { privateKey: 'A', publicKey: `ssh-ed25519 ${blobA} yaac a`, projects: [grant('one'), grant('two')] },
+      { privateKey: 'B', publicKey: `ssh-ed25519 ${blobB}`, projects: [grant('two')] },
+      // Unassigned: in no project's set.
+      { privateKey: 'C', publicKey: `ssh-ed25519 ${Buffer.from('key-c').toString('base64')}`, projects: [] },
+    ])
+    expect(index).toEqual(new Map([
+      ['one', new Set([blobA])],
+      ['two', new Set([blobA, blobB])],
+    ]))
   })
 })
 
@@ -213,27 +244,5 @@ describe('encodeState', () => {
       gitAuthFailures: { demo: [{ host: 'h', status: 401, atMs: 1 }] },
     })
     expect(decodeState({ data: { 'blocked-hosts.json': '{oops' } })).toEqual({ blockedHosts: {}, gitAuthFailures: {} })
-  })
-})
-
-describe('parsePattern', () => {
-  it('parses the three shapes and rejects the rest', () => {
-    expect(parsePattern('github.com/*')).toEqual({ host: 'github.com', kind: 'any', path: '' })
-    expect(parsePattern('github.com/acme/repo')).toEqual({ host: 'github.com', kind: 'exact', path: 'acme/repo' })
-    expect(parsePattern('github.com/acme/*')).toEqual({ host: 'github.com', kind: 'prefix', path: 'acme' })
-    expect(parsePattern('acme/*')).toBeNull()
-    expect(parsePattern('*.github.com/x')).toBeNull()
-    expect(parsePattern('github.com/a b')).toBeNull()
-  })
-})
-
-describe('matchPattern', () => {
-  it('matches on host and path shape', () => {
-    expect(matchPattern('github.com/*', 'github.com', 'anything/at/all')).toBe(true)
-    expect(matchPattern('github.com/acme/*', 'github.com', 'acme')).toBe(true)
-    expect(matchPattern('github.com/acme/*', 'github.com', 'acme/repo')).toBe(true)
-    expect(matchPattern('github.com/acme/*', 'github.com', 'acmeco/repo')).toBe(false)
-    expect(matchPattern('github.com/acme/repo', 'github.com', 'acme/repo')).toBe(true)
-    expect(matchPattern('github.com/acme/repo', 'gitlab.com', 'acme/repo')).toBe(false)
   })
 })

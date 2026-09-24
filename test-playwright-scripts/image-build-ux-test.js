@@ -31,7 +31,7 @@
  *
  * Run: node test-playwright-scripts/image-build-ux-test.js [--project hello-world]
  * Needs a running server with a wired cluster and the project registered
- * (`yaac auth fake github && curl … /project/add`). Reads port/secret from
+ * (`yaac auth fake github && yaac project add <url> fake-github`). Reads port/secret from
  * $YAAC_DATA_DIR/.server.lock. Screenshots go to $SCREENSHOT_DIR (or $TMPDIR).
  * playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers.

@@ -9,7 +9,6 @@ describe('shared errors', () => {
         VALIDATION: 400,
         CONFLICT: 409,
         RUNTIME_UNAVAILABLE: 503,
-        AUTH_REQUIRED: 401,
         AUTH_AGENT_DISCONNECTED: 503,
         BAD_BEARER: 401,
         UNAUTHENTICATED: 401,
@@ -48,7 +47,6 @@ describe('shared errors', () => {
       expect(new ServerError('VALIDATION', 'x').httpStatus).toBe(400)
       expect(new ServerError('CONFLICT', 'x').httpStatus).toBe(409)
       expect(new ServerError('RUNTIME_UNAVAILABLE', 'x').httpStatus).toBe(503)
-      expect(new ServerError('AUTH_REQUIRED', 'x').httpStatus).toBe(401)
       expect(new ServerError('INTERNAL', 'x').httpStatus).toBe(500)
     })
 

@@ -184,8 +184,9 @@ export function Sidebar({
             <ImageBuildIndicator projectSlug={projectSlug} />
             {/* Project-wide: the stored credential is the project's, so the
                 flag lives on the project header, not on individual worktrees. */}
-            {gitAuthFailures.length > 0 && (
+            {projectSlug && gitAuthFailures.length > 0 && (
               <GitAuthFailureBadge
+                projectSlug={projectSlug}
                 failures={gitAuthFailures}
                 iconSize={11}
                 className="hover:bg-[#d65858]/25"

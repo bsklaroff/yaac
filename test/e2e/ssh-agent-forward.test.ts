@@ -46,10 +46,11 @@ import {
  * source pod to a session, the SSH-remote entitlement passes, and a real
  * ssh client speaks the agent protocol across the splice.
  *
- * The complement — that the transport is not a hole — is the two refusal
+ * The complement — that the transport is not a hole — is the refusal
  * cases: a session whose registered remote is HTTPS gets nothing (that is
  * exactly the set of pods the server used to withhold the socket mount
- * from), and a pod with no session identity cannot even connect.
+ * from), a pod with no session identity cannot even connect, and a session
+ * of a project the key is not assigned to is shown no key.
  */
 
 const execFileAsync = promisify(execFile)
@@ -71,7 +72,9 @@ let proxyHost = ''
 let fingerprint = ''
 
 /** A client keypair plus the host key that becomes SSH_HOST's known_hosts. */
-async function makeTestKey(dir: string): Promise<{ privateKey: string; fingerprint: string; knownHostsEntry: string }> {
+async function makeTestKey(dir: string): Promise<{
+  privateKey: string; publicKey: string; fingerprint: string; knownHostsEntry: string
+}> {
   const keyPath = path.join(dir, 'id')
   const hostKeyPath = path.join(dir, 'hostkey')
   await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-N', '', '-q'])
@@ -82,6 +85,7 @@ async function makeTestKey(dir: string): Promise<{ privateKey: string; fingerpri
   return {
     // The key itself: what the server holds sealed, and what it uploads.
     privateKey: await fs.readFile(keyPath, 'utf8'),
+    publicKey: (await fs.readFile(`${keyPath}.pub`, 'utf8')).trim(),
     fingerprint: stdout.trim().split(/\s+/)[1],
     knownHostsEntry: `${SSH_HOST} ${keyType} ${keyBlob}`,
   }
@@ -229,10 +233,14 @@ beforeAll(async () => {
   const key = await makeTestKey(keyDir)
   fingerprint = key.fingerprint
   // The key reaches the proxy's agent through the credentials Secret,
-  // exactly as the server hands it over.
+  // exactly as the server hands it over, assigned to the sessions' project.
   await syncProxyCredentials({
     claude: null, codex: null, opencode: null, pi: null, git: [],
-    ssh: [{ pattern: `${SSH_HOST}/*`, host: SSH_HOST, privateKey: key.privateKey, knownHostsEntry: key.knownHostsEntry }],
+    ssh: [{
+      privateKey: key.privateKey,
+      publicKey: key.publicKey,
+      projects: [{ slug: 'agentfwd', host: SSH_HOST, knownHostsEntry: key.knownHostsEntry }],
+    }],
   })
 
   // The entitlement the proxy gates on is the session's registered remote:
@@ -319,5 +327,24 @@ describe('ssh-agent forwarding over the proxy', () => {
     const dial = await shInPod(strayPod,
       `timeout 15 socat -T5 /dev/null TCP:${proxyHost}:${SSH_AGENT_PORT}`)
     expect(dial.exit, `a non-session pod reached the agent port: ${dial.out}`).not.toBe(0)
+  }, 300_000)
+
+  // Last: it moves the SSH session to another project.
+  it('shows a session only the keys assigned to its own project', async () => {
+    // Same pod, same forwarder, same agent: re-registered under a project
+    // the key is not assigned to, the session's next request lists nothing.
+    await applyWorktreeRegistration(sshSession, {
+      rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd-other',
+      repoUrl: `git@${SSH_HOST}:acme/app.git`,
+    })
+    let listed = { exit: 0, out: '' }
+    const deadline = Date.now() + 60_000
+    do {
+      listed = await shInPod(sshPod, 'timeout 30 ssh-add -l')
+      if (!listed.out.includes(fingerprint)) break
+      await new Promise((r) => setTimeout(r, 1000))
+    } while (Date.now() < deadline)
+    expect(listed.out, `another project's key is still listed${await diagnose(sshPod)}`).not.toContain(fingerprint)
+    expect(listed.out).toContain('no identities')
   }, 300_000)
 })

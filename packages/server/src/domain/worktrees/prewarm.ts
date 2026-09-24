@@ -42,7 +42,7 @@ import {
   resolveRemoteRef,
   worktreeUpstreamBranch,
 } from '#domain/git'
-import { projectRemoteUrl, resolveCredentialForUrl, resolveProjectConfig } from '#domain/projects'
+import { projectRemoteUrl, resolveProjectConfig, resolveProjectCredential } from '#domain/projects'
 import { shellEscape } from '#lib/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -340,7 +340,7 @@ export async function tryClaimPrewarmed(
       // as the cold path (pre-populated bare repos, no reachable remote).
       if (!testEnv.e2eSkipFetch) {
         const remoteUrl = await projectRemoteUrl(projectSlug)
-        await fetchOrigin(repo, remoteUrl, await resolveCredentialForUrl(remoteUrl))
+        await fetchOrigin(repo, remoteUrl, await resolveProjectCredential(projectSlug))
       }
       if (!(await remoteBranchExists(repo, rebranchTo))) {
         // Pre-mutation user error: propagate instead of burning the spare

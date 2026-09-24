@@ -23,8 +23,8 @@ import { gitSshAgentSock } from './agent'
  * Everything git needs to authenticate against a remote, in the two forms it
  * accepts. Defined here rather than where credentials are looked up because
  * this is what consumes it: the lookup in #domain/projects resolves a
- * configured entry down to this shape precisely so the git primitives never
- * have to know about project config.
+ * project's assigned credential down to this shape precisely so the git
+ * primitives never have to know about projects.
  *
  * The ssh form carries NO private material. The server's git signs through
  * the in-process agent (`agent.ts`), which opens the seed itself; what the
@@ -33,7 +33,7 @@ import { gitSshAgentSock } from './agent'
  */
 export type ResolvedGitCredential =
   | { kind: 'https'; token: string }
-  | { kind: 'ssh'; pattern: string; publicKey: string; knownHostsEntry: string }
+  | { kind: 'ssh'; id: string; publicKey: string; knownHostsEntry: string }
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)

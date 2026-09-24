@@ -71,11 +71,16 @@ const BRANCHES: ProjectBranches = {
 
 /** A snapshot for project `proj` with the given create memory. */
 function project(memory: Record<string, unknown> = {}, driver = 'k8s'): unknown {
-  return { driver, projects: [{ slug: 'proj', createDefaults: {}, ...memory }] }
+  return {
+    driver,
+    projects: [{ slug: 'proj', createDefaults: {}, gitCredential: { id: 'c1', name: 'github.com token' }, ...memory }],
+  }
 }
 
 beforeEach(() => {
-  useUiStore.setState({ settingsOpen: false, settingsSection: 'general', settingsFocusTool: null })
+  useUiStore.setState({
+    settingsOpen: false, settingsSection: 'general', settingsFocusTool: null, settingsFocusProject: null,
+  })
   vi.clearAllMocks()
   snapshot.mockReturnValue(project())
   vi.mocked(getAuthList).mockResolvedValue(CLAUDE_ONLY)
@@ -111,7 +116,7 @@ async function openReady(): Promise<void> {
 const branchInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Reference branch')
 const modelInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Model')
 const select = (label: string): HTMLSelectElement => screen.getByLabelText<HTMLSelectElement>(label)
-const createButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^Create$|^Sign in to/ })
+const createButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^Create$|^Sign in to|^Add git/ })
 const option = (label: string, text: string): HTMLOptionElement =>
   [...select(label).options].find((o) => o.textContent?.startsWith(text))!
 
@@ -257,6 +262,22 @@ describe('NewWorktreeButton', () => {
     expect(state.settingsOpen).toBe(true)
     expect(state.settingsSection).toBe('credentials')
     expect(state.settingsFocusTool).toBe('codex')
+  })
+
+  it('routes a project without a git credential to its row in settings instead of creating', async () => {
+    snapshot.mockReturnValue(project({ gitCredential: null }))
+    await openReady()
+
+    expect(screen.getByText('This project has no git credential')).toBeTruthy()
+    // Enter takes the same route as the button.
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' })
+
+    expect(provision).not.toHaveBeenCalled()
+    const state = useUiStore.getState()
+    expect(state.settingsOpen).toBe(true)
+    expect(state.settingsSection).toBe('credentials')
+    expect(state.settingsFocusProject).toBe('proj')
+    expect(screen.queryByLabelText('Agent')).toBeNull() // closed
   })
 
   it('renders a labeled trigger in the cta variant', () => {

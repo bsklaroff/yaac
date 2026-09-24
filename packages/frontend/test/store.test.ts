@@ -468,12 +468,20 @@ describe('settings modal state', () => {
     expect(state.settingsFocusTool).toBe('codex')
   })
 
-  it('closeSettings clears the focus tool but keeps the section sticky', () => {
-    useUiStore.getState().openSettings('credentials', 'codex')
+  it('openSettings can target a project\'s git credential instead', () => {
+    useUiStore.getState().openSettings('credentials', undefined, 'proj')
+    const state = useUiStore.getState()
+    expect(state.settingsFocusTool).toBeNull()
+    expect(state.settingsFocusProject).toBe('proj')
+  })
+
+  it('closeSettings clears the focus but keeps the section sticky', () => {
+    useUiStore.getState().openSettings('credentials', 'codex', 'proj')
     useUiStore.getState().closeSettings()
     const state = useUiStore.getState()
     expect(state.settingsOpen).toBe(false)
     expect(state.settingsFocusTool).toBeNull()
+    expect(state.settingsFocusProject).toBeNull()
     expect(state.settingsSection).toBe('credentials')
   })
 

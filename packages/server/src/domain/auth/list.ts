@@ -1,4 +1,4 @@
-import { listEntries } from '#domain/projects'
+import { listCredentialSummaries } from '#domain/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { defaultModelFor, modelsForTool } from './models'
 import type {
@@ -36,13 +36,13 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
 
 /**
  * Aggregate the masked view over git credentials and per-tool credentials
- * used by `yaac auth list` and the create form (which reads each configured
+ * used by the settings page, `yaac auth list` and the create form (which reads each configured
  * tool's model list off it). Never returns the raw tokens, key bytes, or
  * API keys.
  */
 export async function listAuth(): Promise<AuthListResult> {
   const [gitCredentials, claude, codex, opencode, pi] = await Promise.all([
-    listEntries(),
+    listCredentialSummaries(),
     toolAuthSummary('claude'),
     toolAuthSummary('codex'),
     toolAuthSummary('opencode'),

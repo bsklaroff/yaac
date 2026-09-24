@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
-import { addEntry, generateSshCredential } from '#domain/projects'
-import { closeDb, openDb } from '#db'
+import { addHttpsCredential, assignProjectCredential } from '#domain/projects'
+import { closeDb, openDb, recordProject } from '#db'
 import { installFakeWorktreeDriver, resetWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir } from '@yaac/shared/project-paths'
 import {
@@ -25,7 +25,7 @@ import type { CredentialBundle } from '#drivers/contract'
 
 /**
  * The host store's link with the runtime, run for real against a temp data
- * dir: the credential files and the ssh rows are the actual store, and the
+ * dir: the credential files and the git credential rows are the actual store, and the
  * only stand-in is the driver, which is the thing being handed the bundle.
  */
 
@@ -70,8 +70,11 @@ describe('pushCredentialsToRuntime', () => {
     await saveClaudeCredentialsFile({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant' })
     await saveCodexOAuthBundle(codexBundle())
     await saveOpencodeCredentialsFile({ kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or' })
-    await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp' })
-    await generateSshCredential({ pattern: 'git.example.com/*', knownHostsEntry: 'git.example.com ssh-ed25519 AAAA' })
+    // Only a credential a project uses is handed over, with the projects
+    // that may use it (runtimeGitCredentials' own tests cover the ssh half).
+    await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
+    await assignProjectCredential('web', (await addHttpsCredential({ name: 'gh', token: 'ghp' })).id)
+    await addHttpsCredential({ name: 'unused', token: 'ghp_unused' })
 
     await pushCredentialsToRuntime()
 
@@ -83,13 +86,8 @@ describe('pushCredentialsToRuntime', () => {
     // Signed out is carried as such: a runtime replacing its set whole must
     // learn an absence too.
     expect(bundle.pi).toBeNull()
-    expect(bundle.git).toEqual([{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp' }])
-    expect(bundle.ssh).toEqual([expect.objectContaining({
-      pattern: 'git.example.com/*',
-      host: 'git.example.com',
-      knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-      privateKey: expect.stringContaining('OPENSSH PRIVATE KEY') as string,
-    })])
+    expect(bundle.git).toEqual([{ token: 'ghp', projects: ['web'] }])
+    expect(bundle.ssh).toEqual([])
   })
 
   it('coalesces overlapping pushes so the runtime ends on the store’s latest state', async () => {
@@ -116,8 +114,12 @@ describe('pushCredentialsToRuntime', () => {
     expect(synced.map((b) => (b.claude as { apiKey: string }).apiKey)).toEqual(['first', 'second'])
   })
 
-  it('swallows a runtime that refuses: the write it followed already succeeded', async () => {
+  it('never rejects on a runtime that refuses, but reports the failure to a caller that asks', async () => {
+    // The write it followed already succeeded; a delete or replace still
+    // needs to know the runtime holds the old secret.
     installFakeWorktreeDriver({ syncCredentials: () => Promise.reject(new Error('no cluster')) })
+    await expect(pushCredentialsToRuntime()).resolves.toMatchObject({ message: 'no cluster' })
+    installFakeWorktreeDriver({ syncCredentials: () => Promise.resolve() })
     await expect(pushCredentialsToRuntime()).resolves.toBeUndefined()
   })
 })

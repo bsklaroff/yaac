@@ -97,8 +97,8 @@ Branch config the server reads back (`branch.<name>.merge`, for
 ## Remote URLs come from the project row
 
 The URL a fetch goes to, the credential it is matched with, and the
-`repoUrl` the k8s proxy uses to choose an https credential and gate the ssh
-agent all come from `projectRemoteUrl(slug)` in `#domain/projects`, which
+`repoUrl` the k8s proxy uses to bound its project's https credential to one
+host and to gate the ssh agent all come from `projectRemoteUrl(slug)` in `#domain/projects`, which
 reads the project row. `fetchOrigin` takes that URL as an argument and
 fetches by explicit URL and refspec. It never uses the name `origin`, so the
 repository's `remote.origin.*` never affects where a fetch goes or which

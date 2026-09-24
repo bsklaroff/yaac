@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
+import { ServerError } from '@yaac/shared/errors'
 import {
   authAgentHub,
   clearAuth,
@@ -10,15 +11,34 @@ import {
   requestPlanUsageRefresh,
   runtimeMediatesEgress,
 } from '#domain/auth'
-import { addEntry, generateSshCredential, removeEntryChecked, seedFakeAuth } from '#domain/projects'
+import {
+  addHttpsCredential,
+  generateSshCredential,
+  removeCredential,
+  renameCredential,
+  replaceCredential,
+  seedFakeAuth,
+} from '#domain/projects'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 
-const httpsCredentialSchema = z.object({
-  kind: z.literal('https'),
-  pattern: z.string(),
-  token: z.string().min(1),
-})
+/**
+ * Push the credential set, and fail the request when the runtime could not
+ * take it. For the writes that take a credential AWAY (a delete, a replace
+ * — the ways out of a leak): the row is gone either way, so a caller told
+ * only "done" would believe the old secret dead while the egress proxy went
+ * on injecting it. The next push or server start converges it.
+ */
+async function requireRuntimeTold(applied: string): Promise<void> {
+  const failure = await pushCredentialsToRuntime()
+  if (!failure) return
+  throw new ServerError(
+    'RUNTIME_UNAVAILABLE',
+    `${applied}, but the egress proxy could not be updated, so worktrees running right now `
+    + `still hold the old one: ${failure.message}. It is dropped when the proxy is next reachable `
+    + '(any credential change, or a server restart) — revoke it at the git host meanwhile.',
+  )
+}
 
 export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))
@@ -47,7 +67,7 @@ export const authApp = new Hono()
     zv('json', z.object({ kinds: z.array(z.enum(FAKE_AUTH_KINDS)).min(1) })),
     async (c) => {
       const { kinds } = c.req.valid('json')
-      // De-dupe so `auth fake github github` seeds once; order is irrelevant
+      // De-dupe so `auth fake pi-openrouter pi-openrouter` seeds once; order is irrelevant
       // (each seed is independent).
       for (const kind of new Set(kinds)) {
         await seedFakeAuth(kind)
@@ -56,41 +76,53 @@ export const authApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // Every writer of the host store below hands the runtime the whole set
-  // afterwards — an https token, an ssh key, a removal — because the
-  // runtime injects from what it was last told, never from the disk.
+  // Named git credentials (docs/git-credentials.md). A replace and a delete
+  // push; a new credential serves no project until it is assigned
+  // (`PUT /project/:slug/git-credential`, which pushes), and a rename
+  // changes only a key's comment, which authenticates nothing.
   .post(
     '/git/credentials',
-    zv('json', httpsCredentialSchema),
+    zv('json', z.object({ name: z.string(), token: z.string().min(1) })),
+    async (c) => c.json(await addHttpsCredential(c.req.valid('json'))),
+  )
+  // Generate an SSH key; the answer is its public half, for the user to
+  // register with their git host before a project uses it.
+  .post(
+    '/git/ssh-keys',
+    zv('json', z.object({ name: z.string() })),
+    async (c) => c.json(await generateSshCredential(c.req.valid('json'))),
+  )
+  .patch(
+    '/git/credentials/:id',
+    zv('param', z.object({ id: z.uuid() })),
+    zv('json', z.object({ name: z.string() })),
     async (c) => {
-      await addEntry(c.req.valid('json'))
-      await pushCredentialsToRuntime()
+      await renameCredential(c.req.valid('param').id, c.req.valid('json').name)
       return c.body(null, 204)
     },
   )
-  // Generate (or replace) the SSH key for a pattern; the answer is the only
-  // time the public key is handed out with the host key beside it. The
-  // push rides along — a key the proxy's agent has not been told about is
-  // one no in-pod push can use.
+  // A new secret under the same name and projects: a pasted token, or a
+  // newly generated key whose public half is the answer.
   .post(
-    '/git/ssh-keys',
-    zv('json', z.object({
-      pattern: z.string(),
-      /** Pasted rather than fetched — for a host the server cannot reach
-       *  unauthenticated. */
-      knownHostsEntry: z.string().min(1).optional(),
-    })),
+    '/git/credentials/:id/replace',
+    zv('param', z.object({ id: z.uuid() })),
+    zv('json', z.object({ token: z.string().optional() })),
     async (c) => {
-      const generated = await generateSshCredential(c.req.valid('json'))
-      await pushCredentialsToRuntime()
-      return c.json(generated)
+      const replaced = await replaceCredential(c.req.valid('param').id, c.req.valid('json'))
+      await requireRuntimeTold('The credential is replaced')
+      return c.json(replaced)
     },
   )
-  .delete('/git/credentials/:pattern', async (c) => {
-    await removeEntryChecked(decodeURIComponent(c.req.param('pattern')))
-    await pushCredentialsToRuntime()
-    return c.body(null, 204)
-  })
+  .delete(
+    '/git/credentials/:id',
+    zv('param', z.object({ id: z.uuid() })),
+    async (c) => {
+      await removeCredential(c.req.valid('param').id)
+      // The projects that used it lose it now, not at their next restart.
+      await requireRuntimeTold('The credential is deleted')
+      return c.body(null, 204)
+    },
+  )
   // Whether an auth server (the user's-machine login broker) is connected.
   .get('/agent', (c) => c.json({ connected: authAgentHub.connected() }))
   // Web-driven sign-in: relayed to the auth server on the user's machine

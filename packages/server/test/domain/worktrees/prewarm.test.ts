@@ -37,7 +37,7 @@ vi.mock('#domain/git', () => ({
   worktreeUpstreamBranch: vi.fn(),
 }))
 vi.mock('#domain/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
-vi.mock('#domain/projects/credentials', () => ({ resolveCredentialForUrl: vi.fn() }))
+vi.mock('#domain/projects/credentials', () => ({ resolveProjectCredential: vi.fn() }))
 vi.mock('#domain/projects/detail', async (importOriginal) => ({
   ...await importOriginal<object>(),
   projectRemoteUrl: vi.fn(() => Promise.resolve('https://example.com/p.git')),

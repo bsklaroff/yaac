@@ -29,6 +29,8 @@ export interface CreateDefaults {
    *  containerless server as sandboxed and offer `bypass` — so nothing may
    *  create. */
   ready: boolean
+  /** The project has a git credential; without one nothing may create. */
+  hasGitCredential: boolean
   /** The agent this project was last created with, else claude. */
   lastTool: AgentTool
   /** The agents with a stored credential; only these can create. */
@@ -52,6 +54,7 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
   const driver = snapshot?.driver
   return {
     ready: driver !== undefined && driver !== null && auth !== undefined,
+    hasGitCredential: (project?.gitCredential ?? null) !== null,
     lastTool: project?.lastTool ?? 'claude',
     configured: configuredTools(auth),
     forTool: (tool) => {

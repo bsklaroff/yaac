@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { spawn as nodeSpawn } from 'node:child_process'
 import { ProxyObjects } from 'yaac-proxy-sidecar/object-watch'
-import { LABEL_WORKTREE_ID, type SshKeyEntry, type WorktreeRegistration } from 'yaac-proxy-sidecar/objects'
-import { createAgentKeyLoader } from 'yaac-proxy-sidecar/agent-keys'
+import { LABEL_WORKTREE_ID, type SshCredentialEntry, type WorktreeRegistration } from 'yaac-proxy-sidecar/objects'
+import { createAgentKeyLoader, type AgentIdentity } from 'yaac-proxy-sidecar/agent-keys'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -36,15 +36,26 @@ function registrationObject(worktreeId: string, reg: Partial<WorktreeRegistratio
   }
 }
 
+const PUBLIC_KEY = `ssh-ed25519 ${Buffer.from('blob').toString('base64')} yaac`
+const grant = (slug: string, host = 'github.com') =>
+  ({ slug, host, knownHostsEntry: `${host} ssh-ed25519 H` })
+const sshKey = (...projects: SshCredentialEntry['projects']): SshCredentialEntry =>
+  ({ privateKey: 'K', publicKey: PUBLIC_KEY, projects })
+
 const claudeBundle = (accessToken: string, expiresAt: number) => ({
   accessToken, refreshToken: `${accessToken}-refresh`, expiresAt, scopes: [] as string[],
 })
 
-/** A fake `spawn` for ssh-add: records argv and stdin, exits 0. */
-function fakeSshAdd(): { spawn: typeof nodeSpawn; calls: Array<{ args: string[]; stdin: string }> } {
-  const calls: Array<{ args: string[]; stdin: string }> = []
+/** A fake `spawn` for ssh-add: records argv, stdin and — since ssh-add
+ *  reads it while it runs — the known_hosts file's contents; exits 0. */
+function fakeSshAdd(knownHostsFile: string): {
+  spawn: typeof nodeSpawn
+  calls: Array<{ args: string[]; stdin: string; knownHosts: string }>
+} {
+  const calls: Array<{ args: string[]; stdin: string; knownHosts: string }> = []
   const spawn = vi.fn((_cmd: string, args: string[]) => {
-    const call = { args, stdin: '' }
+    const knownHosts = fs.existsSync(knownHostsFile) ? fs.readFileSync(knownHostsFile, 'utf8') : ''
+    const call = { args, stdin: '', knownHosts }
     calls.push(call)
     const child = new EventEmitter() as EventEmitter & {
       stdin: { end: (s: string) => void }
@@ -62,38 +73,59 @@ function fakeSshAdd(): { spawn: typeof nodeSpawn; calls: Array<{ args: string[];
 
 describe('ProxyObjects', () => {
   it('replaces the whole credential set on each update and reloads the agent', async () => {
-    const loads: SshKeyEntry[][] = []
+    const loads: AgentIdentity[][] = []
     const objects = new ProxyObjects({ loadSshKeys: (e) => { loads.push(e); return Promise.resolve() }, log: () => {} })
     expect(objects.credentials.claude).toBeNull()
 
     await objects.applyCredentials(credentialsSecret({
       'claude.json': { kind: 'api-key', apiKey: 'sk-ant' },
-      'ssh-keys.json': [{ host: 'github.com', privateKey: 'K', knownHostsEntry: 'github.com ssh-ed25519 A' }],
+      'ssh-keys.json': [sshKey(grant('demo'))],
     }))
     expect(objects.credentials.claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant' })
-    expect(loads).toEqual([[{ host: 'github.com', privateKey: 'K', knownHostsEntry: 'github.com ssh-ed25519 A' }]])
+    expect(loads).toEqual([[{ privateKey: 'K', hosts: ['github.com'], knownHosts: ['github.com ssh-ed25519 H'] }]])
 
     // A token-only change leaves the agent alone: a reload empties it
-    // under whatever ssh operation is in flight, so it runs only when the
-    // key set itself moved.
+    // under whatever ssh operation is in flight, so it runs only when what
+    // the agent holds moved.
     await objects.applyCredentials(credentialsSecret({
       'claude.json': { kind: 'api-key', apiKey: 'sk-ant-rotated' },
-      'ssh-keys.json': [{ host: 'github.com', privateKey: 'K', knownHostsEntry: 'github.com ssh-ed25519 A' }],
+      'ssh-keys.json': [sshKey(grant('demo'))],
     }))
     expect(objects.credentials.claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant-rotated' })
     expect(loads).toHaveLength(1)
 
+    // So does assigning the key to another project on a host it already
+    // serves: which worktrees may use it is the relay's live lookup, and
+    // the decoded set carries the new assignment for it.
+    await objects.applyCredentials(credentialsSecret({
+      'ssh-keys.json': [sshKey(grant('other'), grant('demo'))],
+    }))
+    expect(loads).toHaveLength(1)
+    expect(objects.credentials.ssh[0].projects.map((p) => p.slug)).toEqual(['other', 'demo'])
+
+    // A new host is a new constraint, which only a reload can add…
+    await objects.applyCredentials(credentialsSecret({
+      'ssh-keys.json': [sshKey(grant('demo'), grant('gl', 'gitlab.com'))],
+    }))
+    expect(loads[1]).toEqual([{
+      privateKey: 'K',
+      hosts: ['github.com', 'gitlab.com'],
+      knownHosts: ['github.com ssh-ed25519 H', 'gitlab.com ssh-ed25519 H'],
+    }])
+    // …and a key unassigned from every project leaves the agent.
+    await objects.applyCredentials(credentialsSecret({ 'ssh-keys.json': [sshKey()] }))
+    expect(loads[2]).toEqual([])
+
     // Replace semantics: a Secret rewritten without claude.json signs
-    // claude out, and an emptied key list empties the agent.
+    // claude out.
     await objects.applyCredentials(credentialsSecret({ 'codex.json': { kind: 'api-key', apiKey: 'sk-oai' } }))
     expect(objects.credentials.claude).toBeNull()
     expect(objects.credentials.codex).toEqual({ kind: 'api-key', apiKey: 'sk-oai' })
-    expect(loads[1]).toEqual([])
 
     // The object going away is the same as an empty one.
     await objects.applyCredentials(credentialsSecret({}), true)
     expect(objects.credentials.codex).toBeNull()
-    expect(loads).toHaveLength(2)
+    expect(loads).toHaveLength(3)
   })
 
   it('takes credentials only from the one object that is the credentials Secret, on every verb', async () => {
@@ -208,24 +240,24 @@ describe('ProxyObjects', () => {
 })
 
 describe('createAgentKeyLoader', () => {
-  it('clears the agent, then adds each key constrained to its host', async () => {
+  it('clears the agent, then adds each key once, constrained to every host it serves', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-agent-keys-'))
     const knownHostsFile = path.join(dir, '.ssh', 'known_hosts')
-    const { spawn, calls } = fakeSshAdd()
+    const { spawn, calls } = fakeSshAdd(knownHostsFile)
     const loader = createAgentKeyLoader({ agentSock: '/tmp/agent.sock', knownHostsFile, spawn, log: () => {} })
 
     await loader.reload([
-      { host: 'a.example', privateKey: 'KEY-A', knownHostsEntry: 'a.example ssh-ed25519 AAA' },
-      { host: 'b.example', privateKey: 'KEY-B', knownHostsEntry: 'b.example ssh-ed25519 BBB' },
+      { privateKey: 'KEY-A', hosts: ['a.example', 'b.example'], knownHosts: ['a.example ssh-ed25519 AAA', 'b.example ssh-ed25519 BBB'] },
+      { privateKey: 'KEY-C', hosts: ['c.example'], knownHosts: ['c.example ssh-ed25519 CCC'] },
     ])
     expect(calls.map((c) => c.args)).toEqual([
       ['-D'],
-      ['-H', knownHostsFile, '-h', 'a.example', '-'],
-      ['-H', knownHostsFile, '-h', 'b.example', '-'],
+      ['-H', knownHostsFile, '-h', 'a.example', '-h', 'b.example', '-'],
+      ['-H', knownHostsFile, '-h', 'c.example', '-'],
     ])
-    expect(calls[1].stdin).toBe('KEY-A')
-    // The file ssh-add is pointed at holds every host's line by the end.
-    expect(fs.readFileSync(knownHostsFile, 'utf8')).toBe('a.example ssh-ed25519 AAA\nb.example ssh-ed25519 BBB\n')
+    expect(calls.map((c) => c.stdin)).toEqual(['', 'KEY-A', 'KEY-C'])
+    // Each add sees exactly its own key's host keys.
+    expect(calls.map((c) => c.knownHosts)).toEqual(['', 'a.example ssh-ed25519 AAA\nb.example ssh-ed25519 BBB\n', 'c.example ssh-ed25519 CCC\n'])
 
     // An empty set empties the agent.
     await loader.reload([])

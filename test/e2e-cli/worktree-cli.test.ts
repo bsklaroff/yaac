@@ -357,7 +357,7 @@ describe('yaac open (real CLI + real server)', () => {
  * From here on, tests seed projects into the SHARED data dir. Every slug
  * is unique across the file (a slug can only be added once), and none of
  * these tests seed credentials — the session-create tests below assert
- * the "No git credential configured" error against the still-empty
+ * the "has no git credential" error against the still-empty
  * credentials dir.
  */
 describe('with seeded projects', () => {
@@ -851,7 +851,7 @@ describe('with seeded projects', () => {
         'claude',
       )
       expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/No git credential configured/)
+      expect(stderr).toMatch(/has no git credential/)
     })
 
     it('rejects an unknown --tool value via server VALIDATION', async () => {
@@ -880,7 +880,7 @@ describe('with seeded projects', () => {
         testEnv.env, 'worktree', 'create', 'repo-demo-opencode', '--tool', 'opencode',
       )
       expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/No git credential configured/)
+      expect(stderr).toMatch(/has no git credential/)
     })
 
     it('accepts --model for a non-claude tool (passes through to the git-credential check)', async () => {
@@ -897,7 +897,7 @@ describe('with seeded projects', () => {
         '--tool', 'codex', '--model', 'gpt-5.2-codex',
       )
       expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/No git credential configured/)
+      expect(stderr).toMatch(/has no git credential/)
     })
 
     it('rejects a --model value with shell-unsafe characters via schema validation', async () => {

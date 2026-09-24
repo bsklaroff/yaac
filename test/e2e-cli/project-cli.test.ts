@@ -16,11 +16,10 @@ import { makeServerApiClient } from '@yaac/test-utils/api'
  * tests sequentially in declaration order:
  *  - The empty-state `project list` test must run before anything seeds a
  *    project, so it is declared first.
- *  - The `project add` validation tests leave NO residue: URL-validation
- *    rejects throw before any state is written, and the interactive-cancel
- *    tests cancel at the auth menu — `addProject` throws AUTH_REQUIRED at
- *    credential resolution, BEFORE it mkdirs the project dir, and the
- *    cancelled auth menu writes nothing either.
+ *  - The `project add` validation tests leave NO project residue:
+ *    URL-validation rejects throw before any state is written, and a clone
+ *    that fails rolls its project dir back. They all name the `fake-github`
+ *    credential beforeAll seeds, since `project add` requires one.
  *  - The CONFLICT tests pre-create bare project dirs (`repo`, `myrepo`)
  *    that persist for the rest of the file, so the seeded `project list`
  *    test is declared before them to keep its expected output exact.
@@ -34,6 +33,7 @@ let server: SpawnedServer
 beforeAll(async () => {
   testEnv = await createYaacTestEnv()
   server = await spawnYaacServer(testEnv.env)
+  expect((await runYaac(testEnv.env, 'auth', 'fake', 'github')).exitCode).toBe(0)
 })
 
 afterAll(async () => {
@@ -51,35 +51,42 @@ describe('yaac project (real CLI + real server)', () => {
     expect(stdout).toContain('yaac project add')
   })
 
-  it('project add accepts a non-GitHub HTTPS URL (no longer rejected on host)', async () => {
-    // Without credentials the CLI drops into the interactive auth flow.
-    // Cancel out of that flow with a single newline; we just need to assert
-    // that URL validation did NOT reject the non-github host.
-    const { stdout, stderr } = await runYaac(
-      testEnv.env, 'project', 'add', 'https://gitlab.example.com/foo/bar',
-      { stdin: '\n' },
+  it('project add accepts a non-GitHub HTTPS URL, cloning it with the named credential', async () => {
+    // The host does not exist, so the clone fails — at the clone, which
+    // proves URL validation let the non-github host through — and the
+    // project dir is rolled back.
+    const { stdout, stderr, exitCode } = await runYaac(
+      testEnv.env, 'project', 'add', 'https://gitlab.example.com/foo/bar', 'fake-github',
     )
     const combined = stdout + stderr
-    // The old "Only GitHub repositories are supported" error must be gone.
+    expect(exitCode).not.toBe(0)
     expect(combined).not.toMatch(/only github/i)
-    // The interactive auth-update menu must have been shown — proves the
-    // URL reached the server (rather than being blocked by validation).
-    expect(combined).toMatch(/What would you like to authenticate\?/)
+    expect(combined).toMatch(/Failed to clone|git authentication failed/)
   })
 
-  it('project add accepts SCP-style SSH URLs', async () => {
-    const { stdout, stderr } = await runYaac(
-      testEnv.env, 'project', 'add', 'git@github.com:org/repo.git',
-      { stdin: '\n' },
+  it('project add accepts SCP-style SSH URLs, which need an SSH key credential', async () => {
+    const { stdout, stderr, exitCode } = await runYaac(
+      testEnv.env, 'project', 'add', 'git@github.com:org/repo.git', 'fake-github',
     )
     const combined = stdout + stderr
+    expect(exitCode).not.toBe(0)
     expect(combined).not.toMatch(/SSH URLs are not supported/i)
-    expect(combined).toMatch(/What would you like to authenticate\?/)
+    expect(combined).toMatch(/needs an SSH key, not a token/)
+  })
+
+  it('project add requires a credential, and one that exists', async () => {
+    const missing = await runYaac(testEnv.env, 'project', 'add', 'https://github.com/org/repo')
+    expect(missing.exitCode).not.toBe(0)
+    expect(missing.stderr).toMatch(/missing required argument 'credential'/)
+
+    const unknown = await runYaac(testEnv.env, 'project', 'add', 'https://github.com/org/repo', 'nope')
+    expect(unknown.exitCode).not.toBe(0)
+    expect(unknown.stderr).toContain('No git credential named "nope"')
   })
 
   it('project add rejects plain HTTP URLs', async () => {
     const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'add', 'http://github.com/org/repo',
+      testEnv.env, 'project', 'add', 'http://github.com/org/repo', 'fake-github',
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/HTTPS/i)
@@ -87,7 +94,7 @@ describe('yaac project (real CLI + real server)', () => {
 
   it('project add rejects ssh:// URLs pointing at SCP-style instead', async () => {
     const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'add', 'ssh://git@github.com/org/repo',
+      testEnv.env, 'project', 'add', 'ssh://git@github.com/org/repo', 'fake-github',
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/SCP-style/)
@@ -95,7 +102,7 @@ describe('yaac project (real CLI + real server)', () => {
 
   it('project add rejects unparseable URLs', async () => {
     const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'add', 'not-a-url',
+      testEnv.env, 'project', 'add', 'not-a-url', 'fake-github',
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/Unrecognized|Invalid|HTTPS/i)
@@ -130,7 +137,7 @@ describe('yaac project (real CLI + real server)', () => {
     await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'repo'), { recursive: true })
 
     const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'add', 'https://github.com/org/repo',
+      testEnv.env, 'project', 'add', 'https://github.com/org/repo', 'fake-github',
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toContain('already exists')
@@ -145,14 +152,14 @@ describe('yaac project (real CLI + real server)', () => {
     await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'myrepo'), { recursive: true })
 
     const github = await runYaac(
-      testEnv.env, 'project', 'add', 'https://github.com/Acme/MyRepo',
+      testEnv.env, 'project', 'add', 'https://github.com/Acme/MyRepo', 'fake-github',
     )
     expect(github.exitCode).not.toBe(0)
     expect(github.stderr).toContain('"myrepo"')
     expect(github.stderr).toContain('already exists')
 
     const gitlab = await runYaac(
-      testEnv.env, 'project', 'add', 'https://gitlab.com/Acme/MyRepo',
+      testEnv.env, 'project', 'add', 'https://gitlab.com/Acme/MyRepo', 'fake-github',
     )
     expect(gitlab.exitCode).not.toBe(0)
     expect(gitlab.stderr).toContain('"myrepo"')

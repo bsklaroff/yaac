@@ -94,7 +94,9 @@ export function credentialsDir(): string {
   return serverLocalPath('.credentials')
 }
 
-/** SERVER-LOCAL — see {@link credentialsDir}. */
+/** SERVER-LOCAL — see {@link credentialsDir}. The pattern-matched https
+ *  tokens an older install kept; read only by the legacy importer
+ *  (docs/legacy-compat-shims.md). */
 export function githubCredentialsPath(): string {
   return path.join(credentialsDir(), 'github.json')
 }

@@ -82,12 +82,18 @@ export {
   setShortcutOverride,
 } from './preferences'
 export {
-  deleteGitSshKey,
-  deleteAllGitSshKeys,
-  listGitSshKeys,
-  upsertGitSshKey,
-  type GitSshKeyRow,
-} from './git-ssh-key-store'
+  deleteGitCredential,
+  deleteLegacyGitSshKeys,
+  getGitCredential,
+  getGitCredentialByName,
+  importLegacyGitSshKeys,
+  insertGitCredential,
+  listGitCredentials,
+  renameGitCredential,
+  replaceGitCredential,
+  type GitCredentialKind,
+  type GitCredentialRow,
+} from './git-credential-store'
 export {
   deleteProjectEnvVar,
   deleteProjectEnvVars,
@@ -102,6 +108,7 @@ export {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectGitCredential,
   type ProjectRow,
 } from './project-store'
 export {

@@ -65,6 +65,14 @@ export function publicKeyLine(seed: Buffer, comment: string): string {
   return `${KEY_TYPE} ${sshPublicKeyBlob(seed).toString('base64')} ${comment}`
 }
 
+/** A public line with its comment replaced. The comment is not part of the
+ *  key: a host that has the key registered matches the blob alone, so this
+ *  changes nothing about what authenticates. */
+export function withKeyComment(line: string, comment: string): string {
+  const [type, blob] = line.split(' ')
+  return `${type} ${blob} ${comment}`
+}
+
 /** The wire blob back out of a public line — so an identity can be listed
  *  and matched from the stored public half, with nothing opened. */
 export function sshPublicKeyBlobFromLine(line: string): Buffer {

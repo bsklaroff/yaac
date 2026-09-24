@@ -69,11 +69,18 @@ export type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: string 
 
 export type PiCreds = { kind: 'api-key'; apiKey: string; provider: string }
 
-export type HttpsCredentialEntry = { pattern: string; token: string }
+/** One HTTPS token and the slugs of the projects it is assigned to — a
+ *  worktree is handed it only when its registration names one of them. */
+export type HttpsCredentialEntry = { token: string; projects: string[] }
 
-/** One ssh identity for the agent: the OpenSSH-encoded private key and the
- *  known_hosts line `ssh-add -h <host>` needs to constrain it. */
-export type SshKeyEntry = { host: string; privateKey: string; knownHostsEntry: string }
+/** One project an ssh key is assigned to: the host its remote names, and the
+ *  known_hosts line that project trusts for it. */
+export type SshProjectGrant = { slug: string; host: string; knownHostsEntry: string }
+
+/** One ssh identity for the agent: the OpenSSH-encoded private key, its
+ *  public line (`<type> <base64 blob> <comment>` — the blob is what the
+ *  agent protocol names the key by) and the projects it is assigned to. */
+export type SshCredentialEntry = { privateKey: string; publicKey: string; projects: SshProjectGrant[] }
 
 /** Everything the credentials Secret carries, decoded. */
 export type ProxyCredentials = {
@@ -82,7 +89,7 @@ export type ProxyCredentials = {
   opencode: OpencodeCreds | null
   pi: PiCreds | null
   git: HttpsCredentialEntry[]
-  ssh: SshKeyEntry[]
+  ssh: SshCredentialEntry[]
 }
 
 export const EMPTY_CREDENTIALS: ProxyCredentials = {
@@ -159,61 +166,6 @@ export interface RawObject {
   data?: Record<string, string>
 }
 
-// ── Git credential patterns ────────────────────────────────────────────
-
-type ParsedPattern = { host: string; kind: 'any' | 'exact' | 'prefix'; path: string }
-
-function isHostSegment(s: string): boolean {
-  return s.includes('.') || s === 'localhost'
-}
-
-export function parsePattern(pattern: string): ParsedPattern | null {
-  if (!pattern || pattern.includes(' ')) return null
-  const parts = pattern.split('/')
-  if (parts.length < 2) return null
-  const host = parts[0]
-  if (!host || host.includes('*') || !isHostSegment(host)) return null
-  const rest = parts.slice(1)
-  if (rest.length === 1 && rest[0] === '*') {
-    return { host, kind: 'any', path: '' }
-  }
-  if (rest[rest.length - 1] === '*') {
-    const prefixParts = rest.slice(0, -1)
-    if (prefixParts.some((p) => !p || p.includes('*'))) return null
-    return { host, kind: 'prefix', path: prefixParts.join('/') }
-  }
-  if (rest.some((p) => !p || p.includes('*'))) return null
-  return { host, kind: 'exact', path: rest.join('/') }
-}
-
-export function matchPattern(pattern: string, host: string, path: string): boolean {
-  const p = parsePattern(pattern)
-  if (!p) return false
-  if (p.host !== host) return false
-  if (p.kind === 'any') return true
-  if (p.kind === 'exact') return path === p.path
-  return path === p.path || path.startsWith(p.path + '/')
-}
-
-/**
- * Patterns already complained about, so a dropped entry is named once
- * rather than on every credentials update. The server logs the same
- * rejection with the same rewrite (its `patternComplaint`); this side says
- * it too because the proxy is where the request that lost its credential
- * actually dies.
- */
-const complainedPatterns = new Set<string>()
-
-function complainAboutPattern(pattern: string): void {
-  if (complainedPatterns.has(pattern)) return
-  complainedPatterns.add(pattern)
-  const qualified = `github.com/${pattern}`
-  const complaint = parsePattern(qualified)
-    ? `names no host — use "${qualified}" to mean the same thing on github.com`
-    : 'is not a valid <host>/<path> pattern'
-  console.log(`[proxy] ignoring git credential: pattern "${pattern}" ${complaint}`)
-}
-
 // ── Decoders ───────────────────────────────────────────────────────────
 
 /** A Secret's `data` is base64; a ConfigMap's is plain text. */
@@ -231,6 +183,16 @@ function parseJson(text: string | undefined): Record<string, unknown> | null {
       : null
   } catch {
     return null
+  }
+}
+
+function parseJsonArray(text: string | undefined): unknown[] {
+  if (text === undefined) return []
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
   }
 }
 
@@ -314,49 +276,72 @@ function decodeApiKeyTool(
   return { kind: 'api-key', apiKey: o.apiKey, provider }
 }
 
-function decodeGit(o: Record<string, unknown> | null): HttpsCredentialEntry[] {
-  if (!o || !Array.isArray(o.tokens)) return []
-  const result: HttpsCredentialEntry[] = []
-  for (const entry of o.tokens as unknown[]) {
-    if (!entry || typeof entry !== 'object') continue
-    const e = entry as Record<string, unknown>
-    if ((e.kind ?? 'https') !== 'https') continue
-    if (typeof e.pattern !== 'string' || typeof e.token !== 'string' || !e.token) continue
-    if (!parsePattern(e.pattern)) {
-      complainAboutPattern(e.pattern)
-      continue
-    }
-    result.push({ pattern: e.pattern, token: e.token })
-  }
-  return result
+/** The second field of an OpenSSH public key line, canonicalized — the
+ *  base64 of the key blob the agent protocol names the key by — or null
+ *  when the line has none. */
+export function publicKeyBlob(publicKey: string): string | null {
+  const field = publicKey.trim().split(/\s+/)[1]
+  if (!field) return null
+  const canonical = Buffer.from(field, 'base64').toString('base64')
+  return canonical === field ? canonical : null
 }
 
-function decodeSsh(text: string | undefined): SshKeyEntry[] {
-  if (text === undefined) return []
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return []
-  }
-  if (!Array.isArray(parsed)) return []
-  const out: SshKeyEntry[] = []
-  for (const entry of parsed as unknown[]) {
+const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v !== ''
+
+function decodeGit(entries: unknown[]): HttpsCredentialEntry[] {
+  const out: HttpsCredentialEntry[] = []
+  for (const entry of entries) {
     if (!entry || typeof entry !== 'object') continue
     const e = entry as Record<string, unknown>
-    if (typeof e.host !== 'string' || !e.host
-      || typeof e.privateKey !== 'string' || !e.privateKey
-      || typeof e.knownHostsEntry !== 'string' || !e.knownHostsEntry) continue
-    out.push({ host: e.host, privateKey: e.privateKey, knownHostsEntry: e.knownHostsEntry })
+    if (!nonEmpty(e.token) || !Array.isArray(e.projects)) continue
+    out.push({ token: e.token, projects: e.projects.filter(nonEmpty) })
+  }
+  return out
+}
+
+function decodeSshGrant(grant: unknown): SshProjectGrant | null {
+  if (!grant || typeof grant !== 'object') return null
+  const { slug, host, knownHostsEntry } = grant as Record<string, unknown>
+  return nonEmpty(slug) && nonEmpty(host) && nonEmpty(knownHostsEntry) ? { slug, host, knownHostsEntry } : null
+}
+
+/** A key whose public line names no blob is dropped: the relay could never
+ *  offer or sign with it, so loading it would only look like it works. */
+function decodeSsh(entries: unknown[]): SshCredentialEntry[] {
+  const out: SshCredentialEntry[] = []
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    if (!nonEmpty(e.privateKey) || !nonEmpty(e.publicKey) || publicKeyBlob(e.publicKey) === null
+      || !Array.isArray(e.projects)) continue
+    const projects = e.projects.map(decodeSshGrant).filter((g): g is SshProjectGrant => g !== null)
+    out.push({ privateKey: e.privateKey, publicKey: e.publicKey, projects })
+  }
+  return out
+}
+
+/** project slug → the key blobs (publicKeyBlob) assigned to it. */
+export function sshKeyBlobsByProject(ssh: SshCredentialEntry[]): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>()
+  for (const entry of ssh) {
+    const blob = publicKeyBlob(entry.publicKey)
+    if (blob === null) continue
+    for (const { slug } of entry.projects) {
+      let blobs = out.get(slug)
+      if (!blobs) out.set(slug, blobs = new Set())
+      blobs.add(blob)
+    }
   }
   return out
 }
 
 /**
- * The credentials Secret: one key per host-store file (`claude.json`,
- * `codex.json`, `opencode.json`, `pi.json`, `github.json`, each the file's
- * JSON verbatim) plus `ssh-keys.json`. A missing or malformed key reads as
- * "no credential of that kind", exactly as a missing file did.
+ * The credentials Secret: one key per tool's host-store file (`claude.json`,
+ * `codex.json`, `opencode.json`, `pi.json`, each the file's JSON verbatim)
+ * plus the git credentials, each a JSON array of entries scoped to the
+ * projects they are assigned to — `git-tokens.json` (HTTPS tokens) and
+ * `ssh-keys.json` (ssh keys). A missing or malformed key reads as "no
+ * credential of that kind"; a malformed entry is dropped on its own.
  */
 export function decodeCredentials(secret: RawObject): ProxyCredentials {
   return {
@@ -364,8 +349,8 @@ export function decodeCredentials(secret: RawObject): ProxyCredentials {
     codex: decodeCodex(parseJson(secretString(secret, 'codex.json'))),
     opencode: decodeApiKeyTool(parseJson(secretString(secret, 'opencode.json')), OPENCODE_PROVIDER_HOSTS),
     pi: decodeApiKeyTool(parseJson(secretString(secret, 'pi.json')), PI_PROVIDER_HOSTS),
-    git: decodeGit(parseJson(secretString(secret, 'github.json'))),
-    ssh: decodeSsh(secretString(secret, 'ssh-keys.json')),
+    git: decodeGit(parseJsonArray(secretString(secret, 'git-tokens.json'))),
+    ssh: decodeSsh(parseJsonArray(secretString(secret, 'ssh-keys.json'))),
   }
 }
 

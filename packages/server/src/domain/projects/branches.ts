@@ -5,7 +5,7 @@ import {
   listRemoteBranches,
 } from '#domain/git'
 import { resolveProjectConfig } from './config'
-import { resolveCredentialForUrl } from './credentials'
+import { resolveProjectCredential } from './credentials'
 import { projectRemoteUrl } from './detail'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -32,18 +32,18 @@ export async function getProjectBranches(slug: string, opts: { refresh?: boolean
 
   if (opts.refresh) {
     const remoteUrl = await projectRemoteUrl(slug)
-    // A local-path remote (test fixtures) isn't parseable as https/scp —
-    // fetch it unauthenticated instead of failing the refresh.
-    const credential = await resolveCredentialForUrl(remoteUrl).catch(() => null)
+    // No credential (or a local-path remote, in test fixtures) fetches
+    // unauthenticated rather than failing the refresh.
+    const credential = await resolveProjectCredential(slug)
     try {
       await fetchOrigin(repo, remoteUrl, credential)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (isGitAuthError(msg)) {
         throw new ServerError(
-          'AUTH_REQUIRED',
-          'git authentication failed — the stored credential was rejected. '
-          + 'Run "yaac auth update" to replace it, then retry.',
+          'VALIDATION',
+          'git authentication failed — the project\'s credential was rejected. '
+          + 'Assign it a new one in Settings → Git credentials, then retry.',
         )
       }
       throw new ServerError('INTERNAL', `could not fetch from remote: ${msg}`)

@@ -1,5 +1,6 @@
 import { listProjectRows } from '#db'
 import { worktreeDriver } from '#drivers/driver'
+import { projectCredentialNames } from './credentials'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
@@ -16,6 +17,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     listProjectRows(),
     worktreeDriver().count(),
   ])
+  const credentials = await projectCredentialNames(rows)
   return rows.map((meta) => ({
     slug: meta.slug,
     remoteUrl: meta.remoteUrl,
@@ -25,5 +27,6 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     // would run (see `resolveToolCreateDefaults`).
     ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),
     createDefaults: meta.createDefaults,
+    gitCredential: credentials.get(meta.slug) ?? null,
   }))
 }

@@ -1,13 +1,18 @@
-import { useState, type FormEvent, type JSX } from 'react'
+import { useState, type JSX } from 'react'
 import { Dialog } from '@base-ui/react/dialog'
+import { useQueryClient } from '@tanstack/react-query'
+import { GitCredentialPicker, remoteKind, remoteSlug, TrustedHostKey } from '#components/GitCredentialPicker'
 import { AddIcon } from '#lib/icons'
 import { addProject } from '#lib/projectApi'
+import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useUiStore } from '#store'
 
 /**
- * Rail "+": add a project by cloning a git repo. On success selects the
- * new project. Surfaces the server's error (e.g. AUTH_REQUIRED when no git
- * credential matches the host).
+ * Rail "+": add a project by cloning a git repo, with the git credential it
+ * will authenticate with — a stored one of the kind its remote takes, or a
+ * new one (GitCredentialPicker). On success selects the new project; an SSH
+ * clone first shows the host key it trusted. A failed clone keeps any
+ * credential just created, offered for the retry.
  */
 export function NewProjectButton(
   /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
@@ -15,30 +20,31 @@ export function NewProjectButton(
   { variant = 'rail' }: { variant?: 'rail' | 'row' } = {},
 ): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
+  const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [url, setUrl] = useState('')
+  const [trusted, setTrusted] = useState<string | null>(null)
+  const remoteUrl = url.trim()
 
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    const raw = new FormData(event.currentTarget).get('url')
-    const url = (typeof raw === 'string' ? raw : '').trim()
-    if (!url) return
-    setBusy(true)
-    setError(null)
-    try {
-      const { slug } = await addProject(url)
-      setActiveProject(slug)
-      setOpen(false)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed to add project')
-    } finally {
-      setBusy(false)
+  const onOpenChange = (next: boolean): void => {
+    setOpen(next)
+    if (!next) {
+      setUrl('')
+      setTrusted(null)
     }
   }
 
+  const add = async (credentialId: string): Promise<void> => {
+    const { slug, knownHostsEntry } = await addProject(remoteUrl, credentialId)
+    // The credential now lists one more project.
+    void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
+    setActiveProject(slug)
+    if (knownHostsEntry !== null) setTrusted(knownHostsEntry)
+    else onOpenChange(false)
+  }
+
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => { if (!busy) setOpen(next) }}>
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <button
         onClick={() => setOpen(true)}
         title="New project"
@@ -61,35 +67,40 @@ export function NewProjectButton(
           data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
           <Dialog.Title className="text-sm font-semibold">Add project</Dialog.Title>
           <Dialog.Description className="mt-1 text-xs text-text-dim">
-            Clone a git repo as a new project.
+            Clone a git repo as a new project, with the credential its git authenticates with.
           </Dialog.Description>
-          <form onSubmit={(e) => void submit(e)} className="mt-4 flex flex-col gap-3">
-            <input
-              name="url"
-              autoFocus
-              placeholder="https://github.com/owner/repo.git"
-              className="rounded-md border border-border bg-bg px-3 py-2 font-mono text-xs text-text outline-none
-                focus:border-border-strong"
-            />
-            {error && <p className="text-xs text-red-400">{error}</p>}
-            <div className="flex justify-end gap-2">
-              <Dialog.Close
-                disabled={busy}
-                className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
-                  hover:bg-surface-3 hover:text-text disabled:opacity-50"
-              >
-                Cancel
-              </Dialog.Close>
-              <button
-                type="submit"
-                disabled={busy}
-                className="flex h-8 items-center rounded-md bg-accent px-3 text-xs font-medium text-bg transition
-                  hover:brightness-110 disabled:opacity-50"
-              >
-                {busy ? 'Adding…' : 'Add'}
-              </button>
+          {trusted === null ? (
+            <div className="mt-4 flex flex-col gap-3">
+              <input
+                aria-label="Repository URL"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                autoFocus
+                placeholder="https://github.com/owner/repo.git"
+                className="rounded-md border border-border bg-bg px-3 py-2 font-mono text-xs text-text outline-none
+                  focus:border-border-strong"
+              />
+              <GitCredentialPicker
+                kind={remoteKind(remoteUrl)}
+                project={remoteSlug(remoteUrl)}
+                actionLabel="Add"
+                disabled={remoteUrl === ''}
+                onSubmit={add}
+                onCancel={() => onOpenChange(false)}
+              />
             </div>
-          </form>
+          ) : (
+            <div className="mt-4 flex flex-col gap-3">
+              <p className="text-xs text-text-dim">Project added.</p>
+              <TrustedHostKey entry={trusted} />
+              <Dialog.Close
+                className="self-end rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-bg transition
+                  hover:brightness-110"
+              >
+                Done
+              </Dialog.Close>
+            </div>
+          )}
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

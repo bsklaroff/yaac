@@ -58,6 +58,8 @@ const SELECT = 'min-w-0 flex-1 rounded-md border border-border bg-surface-2 h-[2
  *
  * An agent without a stored credential can't create: picking it turns the
  * button into "Sign in", which opens settings → credentials on that agent.
+ * Nor can a project without a git credential: the button is then "Add git
+ * authentication", which opens settings → credentials on the project.
  */
 export function NewWorktreeButton(
   { projectSlug, variant = 'icon' }: { projectSlug: string; variant?: 'icon' | 'cta' },
@@ -87,6 +89,8 @@ export function NewWorktreeButton(
   const permissionMode = picks.permissionMode ?? base.permissionMode
   const modelName = base.models.find((m) => m.id === model)?.name
   const signedIn = defaults.configured.has(tool)
+  // Only once the snapshot has said so — before it lands nothing creates anyway.
+  const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
   const branchesKey = projectBranchesKey(projectSlug)
   const { data: branchData } = useQuery({
@@ -133,6 +137,11 @@ export function NewWorktreeButton(
     : null
 
   const submit = (): void => {
+    if (needsGitAuth) {
+      onOpenChange(false)
+      openSettings('credentials', undefined, projectSlug)
+      return
+    }
     if (!signedIn) {
       onOpenChange(false)
       openSettings('credentials', tool)
@@ -266,7 +275,11 @@ export function NewWorktreeButton(
               </select>
             </Row>
 
-            {signedIn ? (
+            {needsGitAuth ? (
+              <div className="mx-1 mb-1 px-1 py-1 text-[11px] text-text-faint">
+                This project has no git credential
+              </div>
+            ) : signedIn ? (
               <>
                 <Row label="Model">
                   <div className="min-w-0 flex-1">
@@ -347,12 +360,12 @@ export function NewWorktreeButton(
               <button
                 type="button"
                 onClick={submit}
-                disabled={signedIn && blocked !== null}
-                title={signedIn ? blocked ?? undefined : undefined}
+                disabled={!needsGitAuth && signedIn && blocked !== null}
+                title={!needsGitAuth && signedIn ? blocked ?? undefined : undefined}
                 className="w-full rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
                   text-text outline-none transition hover:bg-border-strong disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {signedIn ? 'Create' : `Sign in to ${TOOL_LABEL[tool]}…`}
+                {needsGitAuth ? 'Add git authentication…' : signedIn ? 'Create' : `Sign in to ${TOOL_LABEL[tool]}…`}
               </button>
             </div>
           </Popover.Popup>

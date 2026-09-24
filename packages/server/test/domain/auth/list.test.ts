@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { addEntry } from '#domain/projects/credentials'
+import { addHttpsCredential } from '#domain/projects'
+import { closeDb } from '#db'
 import { saveClaudeCredentialsFile, saveToolAuth } from '@yaac/shared/tool-auth'
 import { listAuth } from '#domain/auth'
 
@@ -12,6 +13,7 @@ describe('listAuth', () => {
   })
 
   afterEach(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
@@ -21,12 +23,12 @@ describe('listAuth', () => {
   })
 
   it('lists git credentials with masked previews', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_abcdef123456' })
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_xxyz' })
+    const acme = await addHttpsCredential({ name: 'acme', token: 'ghp_abcdef123456' })
+    const other = await addHttpsCredential({ name: 'other', token: 'ghp_fallback_xxyz' })
     const result = await listAuth()
     expect(result.gitCredentials).toEqual([
-      { kind: 'https', pattern: 'github.com/acme/*', preview: '***3456' },
-      { kind: 'https', pattern: 'github.com/*', preview: '***xxyz' },
+      { id: acme.id, name: 'acme', kind: 'https', preview: '***3456', projects: [] },
+      { id: other.id, name: 'other', kind: 'https', preview: '***xxyz', projects: [] },
     ])
   })
 

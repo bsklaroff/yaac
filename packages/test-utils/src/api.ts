@@ -39,3 +39,24 @@ export function makeServerApiClient(server: SpawnedServer) {
     },
   })
 }
+
+/**
+ * Give a project a git credential the way the webapp's Settings does: store
+ * an HTTPS token under a name, then assign it. The project may be one staged
+ * on disk — the server adopts it on the first read. Throws on any non-2xx,
+ * since a fixture that silently lacks a credential fails far from here.
+ */
+export async function assignTestGitCredential(
+  server: SpawnedServer,
+  slug: string,
+  token: string,
+): Promise<void> {
+  const client = makeServerApiClient(server)
+  const created = await client.auth.git.credentials.$post({ json: { name: `${slug} token`, token } })
+  if (!created.ok) throw new Error(`creating the git credential failed: ${await created.text()}`)
+  const { id } = await created.json()
+  const assigned = await client.project[':slug']['git-credential'].$put({
+    param: { slug }, json: { credentialId: id },
+  })
+  if (!assigned.ok) throw new Error(`assigning the git credential failed: ${await assigned.text()}`)
+}

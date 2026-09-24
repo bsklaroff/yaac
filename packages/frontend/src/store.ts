@@ -694,9 +694,14 @@ interface UiState {
   /** Tool whose sign-in form the credentials section auto-expands — set when
    *  settings was opened via a "Sign in" affordance; cleared on close. */
   settingsFocusTool: AgentTool | null
+  /** Project whose git-credential row the credentials section scrolls to and
+   *  highlights — set by an "Add git authentication" affordance; cleared on
+   *  close. */
+  settingsFocusProject: string | null
   /** Open settings — optionally onto a section, with a tool's sign-in form
-   *  expanded. Without args it reopens on the last-viewed section. */
-  openSettings: (section?: SettingsSection, focusTool?: AgentTool) => void
+   *  expanded or a project's git-credential row in view. Without args it
+   *  reopens on the last-viewed section. */
+  openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusProject?: string) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
   /** Whether the full-screen deleted-worktrees view is open. Opened from the
@@ -822,12 +827,14 @@ export const useUiStore = create<UiState>((set) => ({
   settingsOpen: false,
   settingsSection: 'general',
   settingsFocusTool: null,
-  openSettings: (section, focusTool) => set((s) => ({
+  settingsFocusProject: null,
+  openSettings: (section, focusTool, focusProject) => set((s) => ({
     settingsOpen: true,
     settingsSection: section ?? s.settingsSection,
     settingsFocusTool: focusTool ?? null,
+    settingsFocusProject: focusProject ?? null,
   })),
-  closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null }),
+  closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null, settingsFocusProject: null }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   stoppedOverlayOpen: false,
   stoppedOverlayFocus: null,

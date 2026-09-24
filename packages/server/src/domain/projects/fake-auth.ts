@@ -8,11 +8,11 @@ import {
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
-import { addEntry } from './credentials'
+import { getGitCredentialByName, insertGitCredential } from '#db'
 import type { ClaudeOAuthBundle, FakeAuthKind } from '@yaac/shared/types'
 
-/** Credential pattern seeded by `auth fake github`. */
-export const FAKE_GITHUB_PATTERN = 'github.com/*'
+/** The git credential `auth fake github` seeds. */
+export const FAKE_GITHUB_CREDENTIAL_NAME = 'fake-github'
 
 /**
  * Scopes Claude Code's real OAuth bundle carries. Mirrored into the fake bundle
@@ -66,17 +66,18 @@ export async function seedFakeClaudeOAuth(): Promise<void> {
 // owns the account id.
 
 /**
- * Seed a fake HTTPS GitHub credential (`github.com/*`) into the data dir.
- * The token is the proxy placeholder (`yaac-ph-gh-token`), not a random
- * fake — same trick as the fake Claude bundle above. A parent yaac's MITM
- * proxy swaps the sentinel for the real GitHub token, so `gh` (and HTTPS
- * git) inside a worktree authenticate against the real API over the
- * chained-egress path. A genuinely fake value would instead be forwarded
- * as-is and rejected (401) one hop too early. Merges with any existing
- * entries (replaces only the matching pattern).
+ * Seed the fake HTTPS GitHub credential, `fake-github`, unless it exists —
+ * what `yaac project add <url> fake-github` then clones with. The token
+ * is the proxy placeholder (`yaac-ph-gh-token`), not a random fake — same
+ * trick as the fake Claude bundle above. A parent yaac's MITM proxy swaps
+ * the sentinel for the real GitHub token, so `gh` (and HTTPS git) inside a
+ * worktree authenticate against the real API over the chained-egress path.
+ * A genuinely fake value would instead be forwarded as-is and rejected
+ * (401) one hop too early.
  */
 export async function seedFakeGithubCredential(): Promise<void> {
-  await addEntry({ kind: 'https', pattern: FAKE_GITHUB_PATTERN, token: PLACEHOLDER_GH_TOKEN })
+  if (await getGitCredentialByName(FAKE_GITHUB_CREDENTIAL_NAME)) return
+  await insertGitCredential({ name: FAKE_GITHUB_CREDENTIAL_NAME, kind: 'https', secret: PLACEHOLDER_GH_TOKEN })
 }
 
 /**

@@ -28,7 +28,7 @@ import type { DriverKind } from '@yaac/shared/types'
 export type Expected = number | number[]
 
 export interface RouteCase {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   /** Exactly as Hono registered it, params and all. */
   path: string
   /** Concrete path to request — params filled with values that resolve to
@@ -70,6 +70,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/project/:slug', request: '/project/nope', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/project/:slug/exists', request: '/project/nope/exists', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/project/:slug', request: '/project/nope', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/project/:slug/git-credential', request: '/project/nope/git-credential', body: { credentialId: '00000000-0000-4000-8000-000000000000' }, k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/project/:slug/config', request: '/project/nope/config', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/project/:slug/config/raw', request: '/project/nope/config/raw', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/project/:slug/config', request: '/project/nope/config', body: { config: {} }, k8s: MISSING, containerless: MISSING },
@@ -196,7 +197,9 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/auth/claude/usage/refresh', body: {}, k8s: [200, 204, 400, 401, 404], containerless: [200, 204, 400, 401, 404] },
   { method: 'POST', path: '/auth/git/credentials', body: {}, k8s: 400, containerless: 400 },
   { method: 'POST', path: '/auth/git/ssh-keys', body: {}, k8s: 400, containerless: 400 },
-  { method: 'DELETE', path: '/auth/git/credentials/:pattern', request: '/auth/git/credentials/nope', k8s: [200, 204, 404], containerless: [200, 204, 404] },
+  { method: 'PATCH', path: '/auth/git/credentials/:id', request: '/auth/git/credentials/00000000-0000-4000-8000-000000000000', body: { name: 'x' }, k8s: 404, containerless: 404 },
+  { method: 'POST', path: '/auth/git/credentials/:id/replace', request: '/auth/git/credentials/00000000-0000-4000-8000-000000000000/replace', body: { token: 'x' }, k8s: 404, containerless: 404 },
+  { method: 'DELETE', path: '/auth/git/credentials/:id', request: '/auth/git/credentials/00000000-0000-4000-8000-000000000000', k8s: 404, containerless: 404 },
   { method: 'POST', path: '/auth/:tool/login/start', request: '/auth/claude/login/start', body: {}, k8s: [200, 400, 409, 503], containerless: [200, 400, 409, 503] },
   { method: 'GET', path: '/auth/login/:id', request: '/auth/login/nope', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/auth/login/:id/input', request: '/auth/login/nope/input', body: { input: 'x' }, k8s: [400, 404], containerless: [400, 404] },

@@ -366,7 +366,7 @@ describe('the storage-tier layout migration (real CLI, old layout rebuilt by han
     // A project, a credential, and a database with rows in it.
     const repo = await createTestRepo(path.join(testEnv.scratchDir, 'old-layout-repo'))
     await addTestProject(repo)
-    expect((await runYaac(testEnv.env, 'auth', 'fake', 'github')).exitCode).toBe(0)
+    expect((await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')).exitCode).toBe(0)
     expect((await runYaac(testEnv.env, 'project', 'list')).stdout).toContain('old-layout-repo')
     expect((await runYaac(testEnv.env, 'server', 'stop')).exitCode).toBe(0)
 
@@ -390,7 +390,7 @@ describe('the storage-tier layout migration (real CLI, old layout rebuilt by han
     const listed = await runYaac(testEnv.env, 'project', 'list')
     expect(listed.stdout).toContain('old-layout-repo')
     const creds = await runYaac(testEnv.env, 'auth', 'list')
-    expect(creds.stdout).toMatch(/github\.com/)
+    expect(creds.stdout).toMatch(/claude\s+\*\*\*.*oauth/)
     expect(await readLock()).not.toBeNull()
     expect(serverLockPath()).toBe(path.join(testEnv.dataDir, 'server-local', '.server.lock'))
   })

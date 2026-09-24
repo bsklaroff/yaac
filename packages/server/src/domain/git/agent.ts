@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
 import { installTmpDir } from '@yaac/shared/paths'
-import { listGitSshKeys } from '#db'
+import { listGitCredentials } from '#db'
 import { sshPublicKeyBlobFromLine, sshSign, sshString, sshUint32 } from '#lib/ssh-key'
 import { serverLog } from '#log'
 
@@ -10,7 +10,7 @@ import { serverLog } from '#log'
  * The ssh-agent the server's OWN git signs through.
  *
  * `ssh` takes a private key as a path or an agent, and a path is the one
- * thing a generated key must never have (docs/ssh-keys.md). So the server
+ * thing a generated key must never have (docs/git-credentials.md). So the server
  * is its own agent: a UNIX socket that answers the two requests an ssh
  * client makes of one — which identities exist, and sign this — and
  * refuses everything else. Identities are answered from the public column;
@@ -95,13 +95,13 @@ async function answer(message: Buffer): Promise<Buffer> {
   const type = message[0]
   if (type === SSH_AGENTC_REQUEST_IDENTITIES) {
     // From the public column: nothing is opened to say which keys exist.
-    const keys = await listGitSshKeys()
+    const keys = await listSshKeys()
     return frame(Buffer.concat([
       Buffer.from([SSH_AGENT_IDENTITIES_ANSWER]),
       sshUint32(keys.length),
       ...keys.map((k) => Buffer.concat([
         sshString(sshPublicKeyBlobFromLine(k.publicKey)),
-        sshString(k.pattern),
+        sshString(k.name),
       ])),
     ]))
   }
@@ -109,15 +109,19 @@ async function answer(message: Buffer): Promise<Buffer> {
     // string key blob, string data, uint32 flags (none apply to ed25519).
     const blob = readString(message, 1)
     const data = readString(message, 1 + 4 + blob.length)
-    const key = (await listGitSshKeys()).find((k) => sshPublicKeyBlobFromLine(k.publicKey).equals(blob))
-    const seed = await key?.openSeed()
-    if (!seed) return FAILURE
+    const key = (await listSshKeys()).find((k) => sshPublicKeyBlobFromLine(k.publicKey).equals(blob))
+    const seed = await key?.openSecret()
+    if (seed === undefined) return FAILURE
     return frame(Buffer.concat([
       Buffer.from([SSH_AGENT_SIGN_RESPONSE]),
-      sshString(sshSign(seed, data)),
+      sshString(sshSign(Buffer.from(seed, 'base64'), data)),
     ]))
   }
   return FAILURE
+}
+
+async function listSshKeys(): Promise<Array<{ name: string; publicKey: string; openSecret: () => Promise<string | undefined> }>> {
+  return (await listGitCredentials()).flatMap((c) => c.publicKey === null ? [] : [{ ...c, publicKey: c.publicKey }])
 }
 
 /** Wire framing: uint32 length, then the message (type byte first). */

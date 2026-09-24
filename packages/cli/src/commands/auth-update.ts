@@ -2,7 +2,6 @@ import readline from 'node:readline/promises'
 import { getApiClient } from '@yaac/shared/server-api'
 import { ensureAuthDaemon } from '@yaac/shared/auth-daemon'
 import { runRelayedToolLogin } from '#commands/relayed-login'
-import { validatePattern, parsePattern } from '@yaac/shared/credentials'
 import {
   buildAuthPayload,
   promptForApiKey,
@@ -13,7 +12,7 @@ import type { AgentTool } from '@yaac/shared/types'
 export async function authUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   console.log('What would you like to authenticate?')
-  console.log('  1) Git credentials (HTTPS token or SSH key)')
+  console.log('  1) Git credential (HTTPS token or SSH key)')
   console.log('  2) Claude Code (Anthropic)')
   console.log('  3) Codex (OpenAI)')
   console.log('  4) OpenCode (any supported provider)')
@@ -25,103 +24,59 @@ export async function authUpdate(): Promise<void> {
     await runGitUpdate()
     return
   }
-  if (answer === '2') {
-    await runToolUpdate('claude')
+  const choices: Partial<Record<string, AgentTool>> = { 2: 'claude', 3: 'codex', 4: 'opencode', 5: 'pi' }
+  const tool = choices[answer]
+  if (tool === undefined) {
+    console.log('Cancelled.')
     return
   }
-  if (answer === '3') {
-    await runToolUpdate('codex')
-    return
-  }
-  if (answer === '4') {
-    await runToolUpdate('opencode')
-    return
-  }
-  if (answer === '5') {
-    await runToolUpdate('pi')
-    return
-  }
-  console.log('Cancelled.')
+  await runToolUpdate(tool)
 }
 
+/**
+ * Add a named git credential: a pasted HTTPS token, or an SSH key the server
+ * generates (docs/git-credentials.md). The name is what `yaac project add`
+ * takes; Enter accepts a default no other credential has.
+ */
 async function runGitUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   console.log('Credential type:')
   console.log('  a) HTTPS (personal access token)')
   console.log('  b) SSH (a key yaac generates)')
   const kindAnswer = (await rl.question('Choice [a/b]: ')).trim().toLowerCase()
-  rl.close()
-
-  if (kindAnswer === 'a' || kindAnswer === 'https') {
-    await runHttpsUpdate()
+  const kind = kindAnswer === 'a' || kindAnswer === 'https' ? 'https'
+    : kindAnswer === 'b' || kindAnswer === 'ssh' ? 'ssh'
+    : null
+  if (kind === null) {
+    rl.close()
+    console.log('Cancelled.')
     return
   }
-  if (kindAnswer === 'b' || kindAnswer === 'ssh') {
-    await runSshUpdate()
-    return
-  }
-  console.log('Cancelled.')
-}
-
-async function runHttpsUpdate(): Promise<void> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('Add an HTTPS git credential.')
-  console.log('Pattern examples: github.com/*, github.com/acme/*, github.com/acme/repo, gitlab.com/group/sub/*')
-  const pattern = (await rl.question('Repo pattern: ')).trim()
-  if (!pattern) {
-    rl.close()
-    console.error('Pattern cannot be empty.')
-    process.exit(1)
-  }
-  if (!validatePattern(pattern)) {
-    rl.close()
-    console.error('Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.')
-    process.exit(1)
-  }
-  const token = (await rl.question('Token (PAT): ')).trim()
-  rl.close()
-  if (!token) {
-    console.error('Token cannot be empty.')
-    process.exit(1)
-  }
-  const client = getApiClient()
-  await client.auth.git.credentials.$post({
-    json: { kind: 'https', pattern, token },
-  })
-  console.log(`Credential saved for pattern "${pattern}".`)
-}
-
-async function runSshUpdate(): Promise<void> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('Generate an SSH key for a git host. The server keeps the private key encrypted')
-  console.log('and never shows it; you register the public key with the host.')
-  console.log('Pattern examples: git.example.com/*, git.example.com/team/*, git.example.com/team/repo')
-  const pattern = (await rl.question('Repo pattern: ')).trim()
-  if (!pattern) {
-    rl.close()
-    console.error('Pattern cannot be empty.')
-    process.exit(1)
-  }
-  if (!validatePattern(pattern)) {
-    rl.close()
-    console.error('Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.')
-    process.exit(1)
-  }
-  const host = parsePattern(pattern).host
-
-  console.log(`Known-hosts entry for ${host} — press Enter to let the server fetch it via ssh, or paste the line:`)
-  const knownHostsEntry = (await rl.question('Entry: ')).trim()
-  rl.close()
 
   const client = getApiClient()
-  const generated = await client.auth.git['ssh-keys'].$post({
-    json: { pattern, ...(knownHostsEntry ? { knownHostsEntry } : {}) },
-  })
-  console.log(`SSH key generated for pattern "${pattern}". If this pattern already had a key,`)
-  console.log('the previous public key no longer works.')
-  console.log(`Host key: ${generated.knownHostsEntry}`)
-  console.log(`Public key — add it to ${host} as a deploy key, or to your account:`)
-  console.log(generated.publicKey)
+  const taken = (await client.auth.list.$get()).gitCredentials.map((c) => c.name)
+  const base = kind === 'https' ? 'git-token' : 'git-key'
+  let fallback = base
+  for (let n = 2; taken.includes(fallback); n++) fallback = `${base}-${n}`
+  const name = (await rl.question(`Name [${fallback}]: `)).trim() || fallback
+
+  if (kind === 'https') {
+    const token = (await rl.question('Token (PAT): ')).trim()
+    rl.close()
+    if (!token) {
+      console.error('Token cannot be empty.')
+      process.exit(1)
+    }
+    await client.auth.git.credentials.$post({ json: { name, token } })
+    console.log(`Git credential "${name}" saved.`)
+  } else {
+    rl.close()
+    const { publicKey } = await client.auth.git['ssh-keys'].$post({ json: { name } })
+    console.log(`SSH key "${name}" generated. The server keeps the private key encrypted and never`)
+    console.log('shows it. Register this public key with your git host, as a deploy key or on your account:')
+    console.log(publicKey)
+  }
+  console.log(`Add a project with it: yaac project add <remote-url> '${name}'`)
 }
 
 async function runToolUpdate(tool: AgentTool): Promise<void> {

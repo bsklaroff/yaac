@@ -770,8 +770,11 @@ describe('syncProxyCredentials', () => {
       codex: null,
       opencode: { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-secret' },
       pi: null,
-      git: [{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp-secret' }],
-      ssh: [{ pattern: 'g.example/*', host: 'g.example', privateKey: 'KEY-secret', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+      git: [{ token: 'ghp-secret', projects: ['acme'] }],
+      ssh: [{
+        privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
+        projects: [{ slug: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+      }],
     })
     const secret = applied()[0]
     expect(secret.kind).toBe('Secret')
@@ -780,12 +783,13 @@ describe('syncProxyCredentials', () => {
       labels: { app: 'yaac-proxy', 'yaac.proxy-input': 'credentials' },
     })
     // A signed-out tool contributes no key: replace semantics carry absence.
-    expect(Object.keys(secret.data!).sort()).toEqual(['claude.json', 'github.json', 'opencode.json', 'ssh-keys.json'])
+    expect(Object.keys(secret.data!).sort()).toEqual(['claude.json', 'git-tokens.json', 'opencode.json', 'ssh-keys.json'])
     expect(JSON.parse(b64d(secret.data!['claude.json']))).toEqual({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' })
-    expect(JSON.parse(b64d(secret.data!['github.json']))).toEqual({ tokens: [{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp-secret' }] })
-    expect(JSON.parse(b64d(secret.data!['ssh-keys.json']))).toEqual([
-      { pattern: 'g.example/*', host: 'g.example', privateKey: 'KEY-secret', knownHostsEntry: 'g.example ssh-ed25519 A' },
-    ])
+    expect(JSON.parse(b64d(secret.data!['git-tokens.json']))).toEqual([{ token: 'ghp-secret', projects: ['acme'] }])
+    expect(JSON.parse(b64d(secret.data!['ssh-keys.json']))).toEqual([{
+      privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
+      projects: [{ slug: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+    }])
     for (const [msg] of vi.mocked(serverLog).mock.calls) expect(msg).not.toContain('secret')
   })
 })

@@ -176,7 +176,8 @@ vi.mock('@yaac/server/domain/projects/env', () => ({
 }))
 
 vi.mock('@yaac/server/domain/projects/credentials', () => ({
-  resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
+  resolveProjectCredential: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
+  missingCredentialError: (slug: string) => new Error(`no credential for ${slug}`) as never,
   parseGitRemote: (url: string) => {
     if (url.startsWith('https://')) {
       const u = new URL(url)
@@ -187,7 +188,6 @@ vi.mock('@yaac/server/domain/projects/credentials', () => ({
     const path = m[2].replace(/\.git$/, '')
     return { scheme: 'ssh', host: m[1], path }
   },
-  loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
 } satisfies Partial<typeof credentialsModule>))
 
 vi.mock('@yaac/shared/tool-auth', () => ({
@@ -291,7 +291,7 @@ import { proxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { resolveProjectConfig } from '@yaac/server/domain/projects/config'
 import { resolveProjectEnv } from '@yaac/server/domain/projects/env'
 import { getGitIdentity } from '@yaac/server/db/preferences'
-import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/domain/projects/credentials'
+import { resolveProjectCredential } from '@yaac/server/domain/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
@@ -409,7 +409,7 @@ describe('createWorktree', () => {
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(resolveCredentialForUrl).mockResolvedValue({ kind: 'https', token: 'token' } as never)
+    vi.mocked(resolveProjectCredential).mockResolvedValue({ kind: 'https', token: 'token' } as never)
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
@@ -830,7 +830,9 @@ describe('createWorktree', () => {
     // redirects to the proxy tunnel listener, carrying no proxy-auth — so
     // identity is the source pod IP (not a leakable bearer credential).
     vi.mocked(projectRemoteUrl).mockResolvedValue('git@github.com:example/repo.git')
-    vi.mocked(loadKnownHostsEntryForHost).mockResolvedValue('github.com ssh-ed25519 AAAAC3')
+    vi.mocked(resolveProjectCredential).mockResolvedValue({
+      kind: 'ssh', id: 'k', publicKey: 'ssh-ed25519 AAAA yaac k', knownHostsEntry: 'github.com ssh-ed25519 AAAAC3',
+    })
 
     await createWorktree('demo', { tool: 'claude', worktreeId: 'abcd1234' })
 

@@ -50,7 +50,7 @@ import {
   encodeCa,
   encodeRefreshed,
   encodeState,
-  matchPattern,
+  sshKeyBlobsByProject,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
   type GitAuthFailureRecord,
@@ -440,51 +440,29 @@ function decodeJwtExp(jwt: string): number | null {
   }
 }
 
-/** Parse a git remote URL. Accepts https:// and SCP-style only. */
-function parseGitRemote(remoteUrl: string | undefined): {
-  scheme: 'https' | 'ssh'
-  host: string
-  path: string
-} | null {
-  if (!remoteUrl || typeof remoteUrl !== 'string') return null
-  if (remoteUrl.startsWith('https://')) {
-    try {
-      const url = new URL(remoteUrl)
-      const path = url.pathname.replace(/^\//, '').replace(/\.git$/, '')
-      if (!path) return null
-      return { scheme: 'https', host: url.hostname, path }
-    } catch {
-      return null
-    }
+/** The host of an `https://` git remote naming a repo path, else null. */
+function httpsRemoteHost(remoteUrl: string | undefined): string | null {
+  if (!remoteUrl?.startsWith('https://')) return null
+  try {
+    const url = new URL(remoteUrl)
+    return url.pathname.replace(/^\//, '').replace(/\.git$/, '') ? url.hostname : null
+  } catch {
+    return null
   }
-  const m = /^(?:([\w._-]+)@)?([\w.-]+):(?!\/)(.+)$/.exec(remoteUrl)
-  if (m) {
-    const host = m[2]
-    const path = m[3].replace(/\.git$/, '')
-    if (!path) return null
-    return { scheme: 'ssh', host, path }
-  }
-  return null
 }
 
 /**
- * Resolve the HTTPS credential for a worktree's repoUrl, returning the matched
- * token along with the (host, path) it matched on so callers can guard against
- * cross-host token leakage.
+ * The HTTPS credential assigned to a worktree's project, with the host of
+ * the worktree's registered https remote — the one host it may be sent to,
+ * which every caller checks so a token cannot leak onto another MITM'd host.
  */
-function resolveHttpsCredentialForRepo(repoUrl: string | undefined): {
-  token: string; host: string; path: string
-} | null {
-  const creds = objects.credentials.git
-  if (creds.length === 0) return null
-  const parsed = parseGitRemote(repoUrl)
-  if (!parsed || parsed.scheme !== 'https') return null
-  for (const entry of creds) {
-    if (matchPattern(entry.pattern, parsed.host, parsed.path)) {
-      return { token: entry.token, host: parsed.host, path: parsed.path }
-    }
-  }
-  return null
+function resolveHttpsCredentialForWorktree(worktreeId: string): { token: string; host: string } | null {
+  const registration = registrationOf(worktreeId)
+  if (!registration) return null
+  const entry = objects.credentials.git.find((e) => e.projects.includes(registration.projectSlug))
+  if (!entry) return null
+  const host = httpsRemoteHost(registration.repoUrl)
+  return host ? { token: entry.token, host } : null
 }
 
 /**
@@ -778,7 +756,7 @@ function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port:
 }
 
 function worktreeHasHttpsCredentialForHost(worktreeId: string, hostname: string): boolean {
-  const cred = resolveHttpsCredentialForRepo(registrationOf(worktreeId)?.repoUrl)
+  const cred = resolveHttpsCredentialForWorktree(worktreeId)
   return cred?.host === hostname
 }
 
@@ -799,7 +777,7 @@ function ghApiHostForGitHost(host: string): string | null {
  * unrelated MITM'd hosts.
  */
 function resolveGithubApiTokenForWorktree(worktreeId: string, hostname: string): string | null {
-  const cred = resolveHttpsCredentialForRepo(registrationOf(worktreeId)?.repoUrl)
+  const cred = resolveHttpsCredentialForWorktree(worktreeId)
   if (!cred) return null
   if (ghApiHostForGitHost(cred.host) !== hostname) return null
   return cred.token
@@ -863,7 +841,7 @@ function buildDynamicRules(
   // host matches the current MITM hostname. The host equality guard keeps a
   // token scoped to e.g. github.com from leaking into a request to
   // chatgpt.com (which is also MITM'd for other reasons).
-  const httpsCred = resolveHttpsCredentialForRepo(registrationOf(worktreeId)?.repoUrl)
+  const httpsCred = resolveHttpsCredentialForWorktree(worktreeId)
   if (httpsCred && httpsCred.host === hostname) {
     const basic = 'Basic ' + Buffer.from(`x-access-token:${httpsCred.token}`).toString('base64')
     rules.push({
@@ -874,9 +852,9 @@ function buildDynamicRules(
 
   // GitHub CLI (`gh`) auth: the container's GH_TOKEN carries the placeholder.
   // gh sends it to the GitHub API host (api.github.com — REST + GraphQL) as
-  // `Authorization: token <placeholder>` (or `Bearer`). Swap in the worktree's
-  // real github.com HTTPS git token, preserving gh's auth scheme. Gated on the
-  // worktree having a matching GitHub credential AND on the placeholder
+  // `Authorization: token <placeholder>` (or `Bearer`). Swap in the HTTPS git
+  // token assigned to the worktree's project, preserving gh's auth scheme.
+  // Gated on the worktree's https remote being on github.com AND on the placeholder
   // sentinel, so traffic carrying a user-supplied token passes through.
   const ghApiToken = resolveGithubApiTokenForWorktree(worktreeId, hostname)
   if (ghApiToken) {
@@ -1822,7 +1800,8 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 // ── ssh-agent identities ──────────────────────────────────────────────
 //
 // Loaded from the credentials Secret's `ssh-keys.json` by the credentials
-// handler (agent-keys.ts). Key bytes live only in the agent's memory.
+// handler (agent-keys.ts). Key bytes live only in the agent's memory; which
+// worktrees may use each one is the relay's per-project scoping below.
 
 // HOME (deployment) and SSH_AUTH_SOCK (entrypoint.sh) are required env the
 // proxy is always launched with; a missing value means a broken
@@ -2512,14 +2491,21 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
 //
 // The transport that replaced the hostPath socket the proxy and worktree pods
 // used to share: a worktree pod's local forwarder splices its SSH_AUTH_SOCK
-// UNIX socket to this listener, which splices to the agent. Identity is the
+// UNIX socket to this listener, which relays to the agent. Identity is the
 // source pod IP (pod-watch), entitlement is the worktree's registered SSH
-// remote — see ssh-agent-relay.ts for the full gate.
+// remote, and the keys it sees are its project's — see ssh-agent-relay.ts
+// for the full gate. The relay asks per message, so the answer is read off
+// the live credentials and registration every time.
+function allowedKeysFor(worktreeId: string): Set<string> {
+  const slug = registrationOf(worktreeId)?.projectSlug
+  return (slug ? sshKeyBlobsByProject(objects.credentials.ssh).get(slug) : undefined) ?? new Set()
+}
 const sshAgentServer = SSH_AGENT_PORT
   ? createSshAgentServer({
     agentSock: AGENT_SOCK,
     resolveWorktree,
     repoUrlFor: (worktreeId) => registrationOf(worktreeId)?.repoUrl,
+    allowedKeysFor,
   })
   : null
 if (sshAgentServer && SSH_AGENT_PORT) {

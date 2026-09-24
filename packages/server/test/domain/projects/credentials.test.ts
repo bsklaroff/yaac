@@ -1,170 +1,256 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
+import type * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import {
-  addEntry,
+  addHttpsCredential,
+  assignProjectCredential,
   generateSshCredential,
-  listEntries,
-  listSshEntries,
-  loadKnownHostsEntryForHost,
+  listCredentialSummaries,
+  missingCredentialError,
   parseGitRemote,
-  removeEntryChecked,
-  resolveCredentialForUrl,
-  saveCredentials,
+  removeCredential,
+  renameCredential,
+  replaceCredential,
+  resolveProjectCredential,
+  runtimeGitCredentials,
   sshKeyMaterial,
 } from '#domain/projects'
-import { githubCredentialsPath, secretKeyPath } from '@yaac/shared/project-paths'
+import { closeDb, recordProject } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
-import { ServerError } from '@yaac/shared/errors'
-import { serverLog } from '#log'
+import { secretKeyPath } from '@yaac/shared/project-paths'
 
-// Asserted on: a dropped credential entry is announced, and the announcement
-// never carries the token.
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
+// The process boundary a host-key fetch crosses: `ssh` is driven against the
+// host and writes the key it negotiated into the known_hosts file it was
+// named. Stood in for here by writing HOST_KEY there, so no network is used.
+const HOST_KEY = 'git.example.com ssh-ed25519 AAAAHOST'
+const sshRuns: string[][] = []
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcess>()
+  return {
+    ...actual,
+    spawn: vi.fn((cmd: string, args: string[], opts: unknown) => {
+      if (cmd !== 'ssh') return actual.spawn(cmd, args, opts as never)
+      sshRuns.push(args)
+      const file = args.find((a) => a.startsWith('UserKnownHostsFile='))!.split('=')[1]
+      const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter() })
+      void fs.writeFile(file, `${HOST_KEY}\n`).then(() => child.emit('close', 255))
+      return child
+    }),
+  }
+})
 
 const execFileAsync = promisify(execFile)
-const mockServerLog = vi.mocked(serverLog)
-
-const KNOWN_HOSTS = 'git.example.com ssh-ed25519 AAAA'
-const PUBLIC_KEY_RE = /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ yaac \S+$/
+const PUBLIC_KEY_RE = /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ /
 
 let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  mockServerLog.mockClear()
+  sshRuns.length = 0
 })
 
 afterEach(async () => {
+  await closeDb()
   await cleanupTempDir(tmpDir)
 })
 
-/** Write github.json by hand, bypassing the writers — the shape an older
- *  yaac, or a hand edit, can leave behind. */
-async function storeRaw(raw: string): Promise<void> {
-  await fs.mkdir(path.dirname(githubCredentialsPath()), { recursive: true })
-  await fs.writeFile(githubCredentialsPath(), raw)
+function project(slug: string, remoteUrl: string): Promise<void> {
+  return recordProject({ slug, remoteUrl, addedAt: '2026-01-01' })
 }
 
-/** Generate a key for a pattern with the host key pasted, so no network
- *  is touched. */
-function generate(pattern: string, knownHostsEntry = KNOWN_HOSTS): ReturnType<typeof generateSshCredential> {
-  return generateSshCredential({ pattern, knownHostsEntry })
-}
-
-describe('saveCredentials', () => {
-  it('writes the https tokens 0600 inside the data dir', async () => {
-    // The file is the https half only: an ssh key is a sealed row, and this
-    // directory is bind-mounted into the proxy pod.
-    await saveCredentials({ tokens: [
-      { kind: 'https', pattern: 'github.com/*', token: 'ghp_test' },
-    ] })
-
-    expect(githubCredentialsPath()).toBe(path.join(getDataDir(), 'server-local', '.credentials', 'github.json'))
-    expect((await fs.stat(githubCredentialsPath())).mode & 0o777).toBe(0o600)
-    expect(await listEntries()).toEqual([
-      { kind: 'https', pattern: 'github.com/*', preview: '***test' },
+describe('addHttpsCredential', () => {
+  it('stores a token under a trimmed name, and refuses a blank name or token', async () => {
+    const { id } = await addHttpsCredential({ name: '  gh  ', token: 'ghp_abcd1234' })
+    expect(await listCredentialSummaries()).toEqual([
+      { id, name: 'gh', kind: 'https', preview: '***1234', projects: [] },
     ])
-  })
-
-  it('replaces the stored list wholesale', async () => {
-    await saveCredentials({ tokens: [{ kind: 'https', pattern: 'github.com/*', token: 'ghp_a' }] })
-    await saveCredentials({ tokens: [] })
-    expect(await listEntries()).toEqual([])
+    await expect(addHttpsCredential({ name: ' ', token: 'x' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(addHttpsCredential({ name: 'x', token: '  ' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(addHttpsCredential({ name: 'a\nb', token: 'x' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(addHttpsCredential({ name: 'gh', token: 'x' })).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 })
 
-describe('listEntries', () => {
-  it('masks https tokens, shows an ssh key as its public half, and is [] when unset', async () => {
-    expect(await listEntries()).toEqual([])
-    await saveCredentials({ tokens: [
-      { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_abcdef1234' },
-      { kind: 'https', pattern: 'github.com/tiny/*', token: 'abc' },
-    ] })
-    const { publicKey } = await generate('git.example.com/*')
-
-    expect(await listEntries()).toEqual([
-      { kind: 'https', pattern: 'github.com/acme/*', preview: '***1234' },
-      // A token too short to mask meaningfully is hidden outright.
-      { kind: 'https', pattern: 'github.com/tiny/*', preview: '****' },
-      // The public key IS the preview: it is the half the user needs, and
-      // the only half there is to show.
-      { kind: 'ssh', pattern: 'git.example.com/*', preview: publicKey, publicKey },
-    ])
+describe('generateSshCredential', () => {
+  it('answers the public key at once, commented with the name, touching no host', async () => {
+    const { id, publicKey } = await generateSshCredential({ name: 'deploy' })
     expect(publicKey).toMatch(PUBLIC_KEY_RE)
-  })
-
-  it('drops entries a reader could not act on', async () => {
-    await storeRaw(JSON.stringify({ tokens: [
-      { pattern: 'github.com/*', token: '' }, // no token
-      { pattern: '*', token: 'ghp_x' }, // no host axis
-      { pattern: 'acme/*', token: 'ghp_x' }, // owner with no host
-      { pattern: 'a/b/c', token: 'ghp_x' }, // no host segment
-      { pattern: 'bad host/*', token: 'ghp_x' }, // not a host
-      { kind: 'ssh', pattern: 'git.example.com/*', privateKeyPath: '/k' }, // ssh lives in the db
-      { kind: 'gpg', pattern: 'github.com/*' }, // unknown kind
-      'not-an-object',
-      null,
-      { kind: 'https', pattern: 'github.com/org/*', token: 'ghp_valid' },
-    ] }))
-
-    expect(await listEntries()).toEqual([
-      { kind: 'https', pattern: 'github.com/org/*', preview: '***alid' },
+    expect(publicKey.endsWith(' deploy')).toBe(true)
+    expect(sshRuns).toEqual([])
+    expect(await listCredentialSummaries()).toEqual([
+      { id, name: 'deploy', kind: 'ssh', preview: publicKey, publicKey, projects: [] },
     ])
   })
+})
 
-  // A dropped entry is otherwise invisible: git auth for that repo just stops,
-  // with nothing said at the point of use. Every rejected pattern is named,
-  // and one that only lacks a host is named with the rewrite that fixes it.
-  it('names every dropped pattern, and never a token, on the way past', async () => {
-    await storeRaw(JSON.stringify({ tokens: [
-      { pattern: '*', token: 'ghp_secret1' },
-      { pattern: 'acme/*', token: 'ghp_secret2' },
-      { pattern: 'bad host/*', token: 'ghp_secret3' },
-      { kind: 'https', pattern: 'github.com/org/*', token: 'ghp_kept' },
-    ] }))
+describe('renameCredential', () => {
+  it('renames, re-commenting a key without changing it', async () => {
+    const { id, publicKey } = await generateSshCredential({ name: 'old' })
+    await renameCredential(id, 'new')
+    const [summary] = await listCredentialSummaries()
+    expect(summary.name).toBe('new')
+    expect(summary.publicKey?.split(' ').slice(0, 2)).toEqual(publicKey.split(' ').slice(0, 2))
+    expect(summary.publicKey?.endsWith(' new')).toBe(true)
+    // The private half carries the new comment too, and is the same key.
+    const keyPath = path.join(getDataDir(), 'probe')
+    await fs.writeFile(keyPath, await sshKeyMaterial(id), { mode: 0o600 })
+    const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
+    expect(stdout.trim().split(' ').slice(0, 2)).toEqual(publicKey.split(' ').slice(0, 2))
 
-    await listEntries()
-    const logged = mockServerLog.mock.calls.map(([line]) => line).join('\n')
-
-    expect(logged).toContain('"*" names no host — use "github.com/*"')
-    expect(logged).toContain('"acme/*" names no host — use "github.com/acme/*"')
-    // No github.com/ rewrite can rescue a pattern whose host has a space.
-    expect(logged).toContain('"bad host/*" is not a valid <host>/<path> pattern')
-    // The entry that survived has nothing to announce.
-    expect(logged).not.toContain('github.com/org/*')
-    for (const secret of ['ghp_secret1', 'ghp_secret2', 'ghp_secret3', 'ghp_kept']) {
-      expect(logged).not.toContain(secret)
-    }
+    await expect(renameCredential('00000000-0000-4000-8000-000000000000', 'x'))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
+})
 
-  it('marks a key the secret key no longer opens, and resolve skips it', async () => {
-    const { publicKey } = await generate('git.example.com/*')
+describe('assignProjectCredential', () => {
+  it('assigns a matching credential — fetching an ssh remote\'s host key — and refuses a mismatched kind', async () => {
+    await project('web', 'https://github.com/acme/web.git')
+    await project('svc', 'git@git.example.com:acme/svc.git')
+    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
+    const key = await generateSshCredential({ name: 'deploy' })
+
+    expect(await assignProjectCredential('web', token.id)).toEqual({ knownHostsEntry: null })
+    expect(sshRuns).toEqual([])
+    expect(await assignProjectCredential('svc', key.id)).toEqual({ knownHostsEntry: HOST_KEY })
+    expect(sshRuns.at(-1)).toContain('nobody@git.example.com')
+
+    await expect(assignProjectCredential('web', key.id)).rejects.toThrow(/needs a token, not an SSH key/)
+    await expect(assignProjectCredential('svc', token.id)).rejects.toThrow(/needs an SSH key, not a token/)
+    await expect(assignProjectCredential('nope', token.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect((await listCredentialSummaries()).map((c) => [c.name, c.projects]))
+      .toEqual([['gh', ['web']], ['deploy', ['svc']]])
+  })
+})
+
+describe('resolveProjectCredential', () => {
+  it('resolves the assigned credential for git, and nothing for a project without a usable one', async () => {
+    await project('web', 'https://github.com/acme/web.git')
+    await project('svc', 'git@git.example.com:acme/svc.git')
+    await project('bare', 'https://github.com/acme/bare.git')
+    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
+    const key = await generateSshCredential({ name: 'deploy' })
+    await assignProjectCredential('web', token.id)
+    await assignProjectCredential('svc', key.id)
+
+    expect(await resolveProjectCredential('web')).toEqual({ kind: 'https', token: 'ghp_abcd1234' })
+    expect(await resolveProjectCredential('svc')).toEqual({
+      kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY,
+    })
+    expect(await resolveProjectCredential('bare')).toBeNull()
+    expect(await resolveProjectCredential('nope')).toBeNull()
+
+    // A remote that changes under a key loses the host key it was assigned
+    // with, and with it the credential, until the key is assigned again.
+    await project('svc', 'git@other.example.com:acme/svc.git')
+    expect(await resolveProjectCredential('svc')).toBeNull()
+
+    // A secret that no longer opens resolves to nothing rather than to
+    // something the remote would refuse.
     await fs.writeFile(secretKeyPath(), 'a-completely-different-key\n', { mode: 0o600 })
     forgetSecretConfig()
-
-    expect(await listEntries()).toEqual([{
-      kind: 'ssh',
-      pattern: 'git.example.com/*',
-      preview: `${publicKey} (unreadable — generate a new key)`,
-      publicKey,
-    }])
-    // Handing the match out would fail at the remote, where the cause is
-    // invisible; the listing above is where it is visible.
-    expect(await resolveCredentialForUrl('git@git.example.com:acme/repo.git')).toBeNull()
+    expect(await resolveProjectCredential('web')).toBeNull()
+    expect((await listCredentialSummaries())[0].preview).toMatch(/unreadable/)
   })
+})
 
-  it('is [] for a file that is missing, unparseable, or the wrong shape', async () => {
-    expect(await listEntries()).toEqual([])
-    await storeRaw('not json')
-    expect(await listEntries()).toEqual([])
-    await storeRaw(JSON.stringify({ tokens: 'not-an-array' }))
-    expect(await listEntries()).toEqual([])
-    await storeRaw(JSON.stringify([{ pattern: 'github.com/*', token: 'x' }]))
-    expect(await listEntries()).toEqual([])
+describe('missingCredentialError', () => {
+  it('names the project and where to fix it', () => {
+    expect(missingCredentialError('web')).toMatchObject({
+      code: 'VALIDATION',
+      message: expect.stringMatching(/"web" has no git credential.*Settings/) as string,
+    })
+  })
+})
+
+describe('removeCredential', () => {
+  it('deletes a credential in use, stranding its projects with none', async () => {
+    // A leaked credential has to be removable at once.
+    await project('web', 'https://github.com/acme/web.git')
+    const a = await addHttpsCredential({ name: 'a', token: 'ghp_aaaa' })
+    await assignProjectCredential('web', a.id)
+
+    await removeCredential(a.id)
+    expect(await listCredentialSummaries()).toEqual([])
+    expect(await resolveProjectCredential('web')).toBeNull()
+    expect((await runtimeGitCredentials()).git).toEqual([])
+    await expect(removeCredential(a.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('replaceCredential', () => {
+  it('replaces a token or a key in place for every project that used it', async () => {
+    await project('web', 'https://github.com/acme/web.git')
+    await project('svc', 'git@git.example.com:acme/svc.git')
+    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_leaked' })
+    const key = await generateSshCredential({ name: 'deploy' })
+    await assignProjectCredential('web', token.id)
+    await assignProjectCredential('svc', key.id)
+    sshRuns.length = 0
+
+    await expect(replaceCredential(token.id, {})).rejects.toMatchObject({ code: 'VALIDATION' })
+    await replaceCredential(token.id, { token: 'ghp_fresh' })
+    expect(await resolveProjectCredential('web')).toEqual({ kind: 'https', token: 'ghp_fresh' })
+
+    const replaced = await replaceCredential(key.id, {})
+    expect(replaced.publicKey).toMatch(PUBLIC_KEY_RE)
+    expect(replaced.publicKey).not.toBe(key.publicKey)
+    // Same host, so the host key it trusted carries over with no fetch.
+    expect(await resolveProjectCredential('svc')).toEqual({
+      kind: 'ssh', id: replaced.id, publicKey: replaced.publicKey, knownHostsEntry: HOST_KEY,
+    })
+    expect(sshRuns).toEqual([])
+    expect((await listCredentialSummaries()).map((c) => [c.name, c.projects])).toEqual([['gh', ['web']], ['deploy', ['svc']]])
+    await expect(replaceCredential(key.id, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('runtimeGitCredentials', () => {
+  it('hands the runtime each used credential with the projects entitled to it', async () => {
+    await project('web', 'https://github.com/acme/web.git')
+    await project('api', 'https://github.com/acme/api.git')
+    await project('svc', 'git@git.example.com:acme/svc.git')
+    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
+    await addHttpsCredential({ name: 'unused', token: 'ghp_zzzz' })
+    const key = await generateSshCredential({ name: 'deploy' })
+    await assignProjectCredential('web', token.id)
+    await assignProjectCredential('api', token.id)
+    await assignProjectCredential('svc', key.id)
+
+    const { git, ssh } = await runtimeGitCredentials()
+    expect(git).toEqual([{ token: 'ghp_abcd1234', projects: ['web', 'api'] }])
+    expect(ssh).toEqual([{
+      privateKey: expect.stringContaining('BEGIN OPENSSH PRIVATE KEY') as string,
+      publicKey: key.publicKey,
+      projects: [{ slug: 'svc', host: 'git.example.com', knownHostsEntry: HOST_KEY }],
+    }])
+  })
+})
+
+describe('sshKeyMaterial', () => {
+  it('opens a key in the form ssh-add reads, and refuses anything else', async () => {
+    const { id, publicKey } = await generateSshCredential({ name: 'deploy' })
+    const keyPath = path.join(getDataDir(), 'probe')
+    await fs.writeFile(keyPath, await sshKeyMaterial(id), { mode: 0o600 })
+    const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
+    expect(stdout.trim()).toBe(publicKey)
+
+    await expect(sshKeyMaterial('00000000-0000-4000-8000-000000000000')).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+})
+
+describe('listCredentialSummaries', () => {
+  it('never carries a secret, and lists each credential with its projects', async () => {
+    await project('web', 'https://github.com/acme/web.git')
+    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_secret_abcd' })
+    await assignProjectCredential('web', token.id)
+    const listing = await listCredentialSummaries()
+    expect(JSON.stringify(listing)).not.toContain('ghp_secret')
+    expect(listing).toEqual([{ id: token.id, name: 'gh', kind: 'https', preview: '***abcd', projects: ['web'] }])
   })
 })
 
@@ -202,195 +288,5 @@ describe('parseGitRemote', () => {
     expect(() => parseGitRemote('https://github.com/')).toThrow(/Cannot parse repo path/)
     expect(() => parseGitRemote('git@github.com:.git')).toThrow(/Cannot parse repo path/)
     expect(() => parseGitRemote('not-a-url')).toThrow(/Unrecognized git remote URL/)
-  })
-})
-
-describe('resolveCredentialForUrl', () => {
-  it('takes the first pattern that covers the remote, most specific first', async () => {
-    await saveCredentials({ tokens: [
-      { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme' },
-      { kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback' },
-    ] })
-    expect(await resolveCredentialForUrl('https://github.com/acme/repo.git'))
-      .toEqual({ kind: 'https', token: 'ghp_acme' })
-    expect(await resolveCredentialForUrl('https://github.com/other/repo.git'))
-      .toEqual({ kind: 'https', token: 'ghp_fallback' })
-  })
-
-  it('returns an ssh credential carrying only public halves', async () => {
-    // The server's own git signs through its agent; what the invocation
-    // needs is the identity to pin and the host key to check.
-    const { publicKey } = await generate('git.example.com/*')
-    expect(await resolveCredentialForUrl('git@git.example.com:acme/repo.git')).toEqual({
-      kind: 'ssh',
-      pattern: 'git.example.com/*',
-      publicKey,
-      knownHostsEntry: KNOWN_HOSTS,
-    })
-  })
-
-  it('returns null with no match, and never crosses https <-> ssh', async () => {
-    await saveCredentials({ tokens: [
-      { kind: 'https', pattern: 'github.com/*', token: 'ghp_x' },
-    ] })
-    expect(await resolveCredentialForUrl('https://git.example.com/a/b')).toBeNull()
-    expect(await resolveCredentialForUrl('git@github.com:acme/repo.git')).toBeNull()
-  })
-
-  it('rejects a remote URL it cannot parse', async () => {
-    await expect(resolveCredentialForUrl('not-a-url')).rejects.toThrow(/Unrecognized/)
-  })
-})
-
-describe('loadKnownHostsEntryForHost', () => {
-  it('returns the first ssh entry whose pattern host matches', async () => {
-    await saveCredentials({ tokens: [
-      { kind: 'https', pattern: 'git.example.com/*', token: 'ghp_x' },
-    ] })
-    await generate('other.example.com/*', 'other ssh-rsa BBB')
-    await generate('git.example.com/acme/*')
-    expect(await loadKnownHostsEntryForHost('git.example.com')).toBe(KNOWN_HOSTS)
-  })
-
-  it('returns null when no ssh entry matches', async () => {
-    await saveCredentials({ tokens: [
-      { kind: 'https', pattern: 'github.com/*', token: 'ghp_x' },
-    ] })
-    expect(await loadKnownHostsEntryForHost('github.com')).toBeNull()
-  })
-})
-
-describe('listSshEntries', () => {
-  it('returns every ssh entry with its host and a key ssh-keygen reads', async () => {
-    await saveCredentials({ tokens: [
-      { kind: 'https', pattern: 'github.com/*', token: 'ghp_x' },
-    ] })
-    const a = await generate('git.example.com/acme/*')
-    const b = await generate('other.example.com/*', 'other ssh-rsa BBB')
-
-    const entries = await listSshEntries()
-    expect(entries).toEqual([
-      {
-        pattern: 'git.example.com/acme/*',
-        host: 'git.example.com',
-        privateKey: expect.stringMatching(/^-----BEGIN OPENSSH PRIVATE KEY-----\n/) as string,
-        knownHostsEntry: KNOWN_HOSTS,
-      },
-      {
-        pattern: 'other.example.com/*',
-        host: 'other.example.com',
-        privateKey: expect.stringMatching(/^-----BEGIN OPENSSH PRIVATE KEY-----\n/) as string,
-        knownHostsEntry: 'other ssh-rsa BBB',
-      },
-    ])
-    // The material is the key the public half was generated with — proven
-    // by the parser the proxy and the containerless driver feed it to.
-    for (const [entry, generated] of [[entries[0], a], [entries[1], b]] as const) {
-      const keyPath = path.join(getDataDir(), 'probe')
-      await fs.writeFile(keyPath, entry.privateKey, { mode: 0o600 })
-      const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
-      expect(stdout.trim()).toBe(generated.publicKey)
-      await fs.rm(keyPath)
-    }
-  })
-
-  it('is [] when only https credentials are stored', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_x' })
-    expect(await listSshEntries()).toEqual([])
-  })
-})
-
-describe('addEntry', () => {
-  it('adds, replaces by exact pattern, and preserves the case as typed', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_old' })
-    await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' })
-    await addEntry({ kind: 'https', pattern: 'github.com/Acme/Repo', token: 'ghp_cased' })
-
-    expect(await listEntries()).toEqual([
-      { kind: 'https', pattern: 'github.com/acme/*', preview: '***_new' },
-      { kind: 'https', pattern: 'github.com/Acme/Repo', preview: '***ased' },
-    ])
-  })
-
-  it('rejects an invalid pattern or an empty token', async () => {
-    await expect(addEntry({ kind: 'https', pattern: '*', token: 'ghp_x' }))
-      .rejects.toBeInstanceOf(ServerError)
-    await expect(addEntry({ kind: 'https', pattern: 'github.com/*', token: '' }))
-      .rejects.toBeInstanceOf(ServerError)
-  })
-})
-
-describe('generateSshCredential', () => {
-  it('seals a fresh key, answers its public half, and leaves nothing on disk', async () => {
-    const generated = await generate('git.example.com/*')
-    expect(generated).toEqual({
-      pattern: 'git.example.com/*',
-      publicKey: expect.stringMatching(PUBLIC_KEY_RE) as string,
-      knownHostsEntry: KNOWN_HOSTS,
-    })
-    expect(generated.publicKey).toMatch(/ yaac git\.example\.com\/\*$/)
-
-    // Nothing under the data dir holds the private half — not the
-    // credentials dir the proxy pod mounts, nor anywhere else.
-    const { stdout } = await execFileAsync('grep', ['-rl', 'PRIVATE KEY', getDataDir()])
-      .catch(() => ({ stdout: '' }))
-    expect(stdout).toBe('')
-  })
-
-  it('replaces the key for a pattern, so the previous public half stops working', async () => {
-    const first = await generate('git.example.com/*')
-    const second = await generate('git.example.com/*', 'git.example.com ssh-ed25519 BBBB')
-    expect(second.publicKey).not.toBe(first.publicKey)
-    expect(await listEntries()).toEqual([
-      { kind: 'ssh', pattern: 'git.example.com/*', preview: second.publicKey, publicKey: second.publicKey },
-    ])
-    expect(await loadKnownHostsEntryForHost('git.example.com')).toBe('git.example.com ssh-ed25519 BBBB')
-  })
-
-  it('rejects an invalid pattern before generating anything', async () => {
-    await expect(generate('acme/*')).rejects.toMatchObject({ code: 'VALIDATION' })
-    expect(await listEntries()).toEqual([])
-  })
-
-  it('fetches the host key when none is pasted, and says so when it cannot', async () => {
-    // `.invalid` never resolves, so the fetch fails at DNS; the complaint
-    // names the way out, and nothing is stored for a host that could not
-    // be verified.
-    await expect(generateSshCredential({ pattern: 'nonexistent.invalid/*' }))
-      .rejects.toThrow(/Could not fetch the host key for nonexistent\.invalid .*paste a known_hosts line/)
-    expect(await listEntries()).toEqual([])
-  })
-})
-
-describe('sshKeyMaterial', () => {
-  it('opens the key for a pattern in the form ssh-add reads', async () => {
-    const { publicKey } = await generate('git.example.com/*')
-    const material = await sshKeyMaterial('git.example.com/*')
-    const keyPath = path.join(getDataDir(), 'probe')
-    await fs.writeFile(keyPath, material, { mode: 0o600 })
-    const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
-    expect(stdout.trim()).toBe(publicKey)
-  })
-
-  it('refuses a pattern with no key', async () => {
-    await expect(sshKeyMaterial('missing.example.com/*')).rejects.toMatchObject({ code: 'VALIDATION' })
-  })
-})
-
-describe('removeEntryChecked', () => {
-  it('removes the exactly-matching pattern, https or ssh, leaving the others', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme' })
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback' })
-    await generate('git.example.com/*')
-    await removeEntryChecked('github.com/acme/*')
-    expect((await listEntries()).map((e) => e.pattern)).toEqual(['github.com/*', 'git.example.com/*'])
-    await removeEntryChecked('git.example.com/*')
-    expect((await listEntries()).map((e) => e.pattern)).toEqual(['github.com/*'])
-  })
-
-  it('throws NOT_FOUND for a pattern that is not stored', async () => {
-    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_x' })
-    await expect(removeEntryChecked('missing/*')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect((await listEntries()).map((e) => e.pattern)).toEqual(['github.com/*'])
   })
 })

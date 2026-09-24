@@ -301,6 +301,58 @@ cluster install` on a build that no longer states the pair, at which point
 the variables are gone from the Deployment and this reads nothing. The
 accessor and the seed go together.
 
+## Pattern-matched git credentials: `importLegacyGitCredentials`
+
+`importLegacyGitCredentials` (`domain/projects/legacy-git-credentials.ts`,
+run from `importLegacyState` at every start) turns an older install's
+pattern-matched git credentials into named ones and assigns each project the
+one its pattern resolved to (docs/git-credentials.md). Its helpers are
+`importLegacyGitSshKeys` / `deleteLegacyGitSshKeys` in
+`db/git-credential-store.ts`, the `legacyGitSshKeys` table definition in
+`db/schema.ts`, and `githubCredentialsPath` in `shared/src/project-paths.ts`,
+whose only reader it is. It carries its own copy of the old pattern grammar.
+
+**What it reads:** the https tokens in `server-local/.credentials/github.json`
+(`{ tokens: [{ pattern, token }] }`) and the rows of the `git_ssh_keys` table
+(`{ pattern, sealed seed, public key, known_hosts line }`). Each becomes a
+credential named `<pattern> (token)` or `<pattern> (ssh key)`, and each
+project with no credential gets the first whose pattern matches its remote,
+with the key's host key (a key whose seed no longer opens is skipped, as the
+old lookup skipped it). Then the file is deleted and the table emptied, so
+it is a no-op from the next start on — except for a file that does not
+parse, which is left in place, logged at every start, and imported once the
+user fixes it: it holds plaintext tokens that deleting would lose.
+
+**What breaks silently if it is deleted too early:** an install upgrading
+from before named credentials keeps its tokens and keys where nothing reads
+them, and every project reads as having no credential — no create works
+until each is re-assigned by hand, and its ssh keys (which the user
+registered with their git hosts) are gone for good.
+
+**How to tell it is safe to remove:** no install still has a `github.json`
+or a non-empty `git_ssh_keys`. When it goes, the table goes too: delete
+`legacyGitSshKeys` from the schema and generate the migration that drops it.
+
+## The pre-scoped proxy window
+
+The credentials Secret's git keys changed shape when credentials became
+per-project: `git-tokens.json` (`[{ token, projects }]`) replaces
+`github.json`, and each `ssh-keys.json` entry is `{ privateKey, publicKey,
+projects }` rather than `{ host, privateKey, knownHostsEntry }`. A proxy pod
+from before reads neither — no token matches, and every ssh entry fails its
+decoder — so between a server upgrade and the proxy's roll (the next
+worktree create, when `ensureRunning` finds the Deployment stale) running
+k8s worktrees' git fetches and pushes fail closed.
+
+**What it reads:** nothing. It is the absence of a dual-format write.
+
+**What breaks silently if it goes too early:** nothing goes; this entry
+records the window's cost so it is chosen knowingly.
+
+**How to tell it is safe to remove:** it is prose; delete it once no install
+can still be running a proxy from before per-project credentials, which
+drains at the first create after upgrade.
+
 ## `adoptLegacyClaudeJson`
 
 `adoptLegacyClaudeJson` (`domain/worktrees/seed.ts`), called once per create,

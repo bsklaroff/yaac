@@ -1,113 +1,22 @@
-import fs from 'node:fs/promises'
-import {
-  credentialsDir,
-  githubCredentialsPath,
-  ensureDataDir,
-} from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
-import { parsePattern, validatePattern, matchPattern } from '@yaac/shared/credentials'
-import { deleteGitSshKey, listGitSshKeys, upsertGitSshKey } from '#db'
-import { serverLog } from '#log'
+import {
+  deleteGitCredential,
+  getGitCredential,
+  getProjectRow,
+  insertGitCredential,
+  listGitCredentials,
+  listProjectRows,
+  renameGitCredential,
+  replaceGitCredential,
+  setProjectGitCredential,
+  type GitCredentialRow,
+  type ProjectRow,
+} from '#db'
 import { fetchKnownHostsEntry } from '#domain/git'
 import type { ResolvedGitCredential } from '#domain/git'
-import { encodeOpenSshPrivateKey, generateSshKey } from '#lib/ssh-key'
-import type {
-  GitCredentialSummary,
-  GitCredentialsFile,
-  HttpsGitCredentialEntry,
-} from '@yaac/shared/types'
-
-async function ensureCredentialsDir(): Promise<void> {
-  await ensureDataDir()
-  await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
-}
-
-/**
- * Why a stored entry was ignored, phrased for the person who has to fix it.
- *
- * Dropping one is otherwise invisible from the outside: git auth for that
- * repo simply stops, with no error at the point of use. The pattern is safe
- * to name — it is a host/path glob, never the token — and naming it is the
- * difference between a support thread and a one-line edit. A pattern with no
- * host axis is the common case, since that is the shape older yaac versions
- * wrote, so it gets the rewrite that fixes it rather than just a complaint.
- */
-function patternComplaint(pattern: string): string {
-  const qualified = `github.com/${pattern}`
-  return validatePattern(qualified)
-    ? `names no host — use "${qualified}" to mean the same thing on github.com`
-    : 'is not a valid <host>/<path> pattern'
-}
-
-/**
- * One entry of the credentials FILE, which holds https tokens only.
- *
- * An ssh entry in it is what an install from before keys were sealed rows
- * wrote: a path into the user's home. It is named on the way past rather
- * than silently dropped, because the file would otherwise go on looking
- * authoritative while that project's SSH auth had stopped.
- */
-function normalizeEntry(raw: Record<string, unknown>): HttpsGitCredentialEntry | null {
-  const kind = raw.kind ?? 'https'
-  if (kind === 'ssh') {
-    serverLog(`[credentials] ignoring the ssh entry for "${String(raw.pattern)}" in `
-      + '.credentials/github.json: keys are generated now — run `yaac auth update` '
-      + 'to make one, then remove the entry')
-    return null
-  }
-  if (kind === 'https') {
-    if (typeof raw.pattern !== 'string' || typeof raw.token !== 'string' || !raw.token) {
-      return null
-    }
-    if (!validatePattern(raw.pattern)) {
-      serverLog('[credentials] ignoring git credential: pattern '
-        + `"${raw.pattern}" ${patternComplaint(raw.pattern)}`)
-      return null
-    }
-    return { kind: 'https', pattern: raw.pattern, token: raw.token }
-  }
-  return null
-}
-
-/**
- * The https half: what the credentials file holds. A file, like the tool
- * credentials beside it, and handed to the runtime with them on every
- * change; the ssh half lives in the database.
- */
-export async function loadCredentials(): Promise<GitCredentialsFile> {
-  try {
-    const raw = await fs.readFile(githubCredentialsPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      !Array.isArray(parsed) &&
-      Array.isArray((parsed as Record<string, unknown>).tokens)
-    ) {
-      const rawTokens = (parsed as Record<string, unknown>).tokens as unknown[]
-      const tokens: HttpsGitCredentialEntry[] = []
-      for (const t of rawTokens) {
-        if (t && typeof t === 'object') {
-          const normalized = normalizeEntry(t as Record<string, unknown>)
-          if (normalized) tokens.push(normalized)
-        }
-      }
-      return { tokens }
-    }
-    return { tokens: [] }
-  } catch {
-    return { tokens: [] }
-  }
-}
-
-export async function saveCredentials(creds: GitCredentialsFile): Promise<void> {
-  await ensureCredentialsDir()
-  await fs.writeFile(
-    githubCredentialsPath(),
-    JSON.stringify(creds, null, 2) + '\n',
-    { mode: 0o600 },
-  )
-}
+import { encodeOpenSshPrivateKey, generateSshKey, withKeyComment } from '#lib/ssh-key'
+import type { GitCredentialSummary } from '@yaac/shared/types'
+import type { HttpsCredentialEntry, SshCredentialEntry } from '#drivers/contract'
 
 /**
  * Parse a git remote URL. Two forms are supported:
@@ -159,207 +68,263 @@ export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   throw new Error(`Unrecognized git remote URL: "${remoteUrl}"`)
 }
 
+const MAX_NAME_LENGTH = 100
+
+function validName(raw: string): string {
+  const name = raw.trim()
+  if (!name) throw new ServerError('VALIDATION', 'A git credential needs a name.')
+  if (name.length > MAX_NAME_LENGTH || /[\r\n]/.test(name)) {
+    throw new ServerError('VALIDATION', `A git credential name is one line of at most ${MAX_NAME_LENGTH} characters.`)
+  }
+  return name
+}
+
+/** Store an HTTPS token under a name. */
+export async function addHttpsCredential(params: { name: string; token: string }): Promise<{ id: string }> {
+  const token = params.token.trim()
+  if (!token) throw new ServerError('VALIDATION', 'Token cannot be empty.')
+  const row = await insertGitCredential({ name: validName(params.name), kind: 'https', secret: token })
+  return { id: row.id }
+}
+
 /**
- * Resolve a credential for a remote URL by walking the credentials file and
- * returning the first kind-matching entry whose pattern covers (host, owner,
- * repo). Returns null if nothing matches.
+ * Generate an SSH key under a name and seal it (docs/git-credentials.md).
+ * The answer is the public half, for the user to register with their git
+ * host before a project uses the key — nothing is fetched from any host
+ * here, since the key is not tied to one until it is assigned.
  */
-export async function resolveCredentialForUrl(
+export async function generateSshCredential(params: { name: string }): Promise<{ id: string; publicKey: string }> {
+  const name = validName(params.name)
+  const key = generateSshKey(name)
+  const row = await insertGitCredential({
+    name, kind: 'ssh', secret: key.seed.toString('base64'), publicKey: key.publicKey,
+  })
+  return { id: row.id, publicKey: key.publicKey }
+}
+
+/**
+ * Rename a credential. For a key that also re-comments its public line —
+ * which authenticates nothing, so a copy already registered with a host
+ * keeps working under its old comment.
+ */
+export async function renameCredential(id: string, rawName: string): Promise<void> {
+  const name = validName(rawName)
+  const cred = await getGitCredential(id)
+  if (!cred) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  const publicKey = cred.publicKey === null ? null : withKeyComment(cred.publicKey, name)
+  await renameGitCredential(id, name, publicKey)
+}
+
+/**
+ * Replace a credential with a new secret of its kind — a pasted token, or a
+ * freshly generated key — keeping its name and every project assigned to
+ * it. A key's answer is its new public half, which the user registers with
+ * the git host before those projects' git works again.
+ */
+export async function replaceCredential(
+  id: string,
+  params: { token?: string },
+): Promise<{ id: string; publicKey?: string }> {
+  const cred = await getGitCredential(id)
+  if (!cred) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  if (cred.kind === 'https') {
+    const token = params.token?.trim()
+    if (!token) throw new ServerError('VALIDATION', 'Token cannot be empty.')
+    const row = await replaceGitCredential(id, { secret: token })
+    if (!row) throw new ServerError('NOT_FOUND', 'No such git credential.')
+    return { id: row.id }
+  }
+  const key = generateSshKey(cred.name)
+  const row = await replaceGitCredential(id, { secret: key.seed.toString('base64'), publicKey: key.publicKey })
+  if (!row) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  return { id: row.id, publicKey: key.publicKey }
+}
+
+/** Delete a credential; the projects that used it are left with none. */
+export async function removeCredential(id: string): Promise<void> {
+  if (!await deleteGitCredential(id)) throw new ServerError('NOT_FOUND', 'No such git credential.')
+}
+
+/**
+ * Check a credential can authenticate `remoteUrl`, and resolve it for git:
+ * the kind must match the remote's scheme, the secret must open, and an ssh
+ * key gets the remote's host key — fetched here, trust on first use, and
+ * handed back so the caller can store it and show it.
+ */
+export async function resolveCredentialForRemote(
+  credentialId: string,
   remoteUrl: string,
-): Promise<ResolvedGitCredential | null> {
-  const { scheme, host, path: repoPath } = parseGitRemote(remoteUrl)
-  if (scheme === 'https') {
-    const creds = await loadCredentials()
-    for (const entry of creds.tokens) {
-      if (!matchPattern(entry.pattern, host, repoPath)) continue
-      return { kind: 'https', token: entry.token }
-    }
-    return null
-  }
-  for (const key of await listGitSshKeys()) {
-    if (!matchPattern(key.pattern, host, repoPath)) continue
-    // An unreadable key is skipped rather than returned: the agent would
-    // refuse to sign with it and the fetch would fail at the remote, where
-    // the cause is invisible. The store has already said which row.
-    if (await key.openSeed() === undefined) continue
-    return {
-      kind: 'ssh',
-      pattern: key.pattern,
-      publicKey: key.publicKey,
-      knownHostsEntry: key.knownHostsEntry,
-    }
-  }
-  return null
-}
-
-/**
- * Return the first SSH entry's knownHostsEntry whose pattern's host matches.
- * Used by worktree-create to assemble the container's known_hosts file.
- */
-export async function loadKnownHostsEntryForHost(host: string): Promise<string | null> {
-  for (const key of await listGitSshKeys()) {
-    // `parsePattern` cannot throw here: every stored pattern was validated
-    // on the way in.
-    if (parsePattern(key.pattern).host === host) return key.knownHostsEntry
-  }
-  return null
-}
-
-/**
- * Add or replace an https credential. Matches existing by exact pattern.
- */
-export async function addEntry(entry: HttpsGitCredentialEntry): Promise<void> {
-  if (!validatePattern(entry.pattern)) {
+): Promise<{ credential: ResolvedGitCredential; knownHostsEntry: string | null }> {
+  const cred = await getGitCredential(credentialId)
+  if (!cred) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  const { scheme, host } = parseGitRemote(remoteUrl)
+  if (cred.kind !== scheme) {
     throw new ServerError(
       'VALIDATION',
-      'Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.',
+      scheme === 'ssh'
+        ? `${remoteUrl} is an SSH remote; it needs an SSH key, not a token.`
+        : `${remoteUrl} is an HTTPS remote; it needs a token, not an SSH key.`,
     )
   }
-  if (!entry.token) {
-    throw new ServerError('VALIDATION', 'Token cannot be empty.')
+  const secret = await cred.openSecret()
+  if (secret === undefined) {
+    throw new ServerError('VALIDATION', `The git credential "${cred.name}" cannot be opened; replace it.`)
   }
-  const creds = await loadCredentials()
-  const existingIdx = creds.tokens.findIndex((t) => t.pattern === entry.pattern)
-  if (existingIdx >= 0) {
-    creds.tokens[existingIdx] = entry
-  } else {
-    creds.tokens.push(entry)
-  }
-  await saveCredentials(creds)
-}
-
-/** What a generated key hands back: everything about it that is public. */
-export interface GeneratedSshCredential {
-  pattern: string
-  publicKey: string
-  knownHostsEntry: string
-}
-
-/**
- * Generate the SSH key for a repo pattern and seal it (docs/ssh-keys.md).
- *
- * A pattern that already has a key gets a NEW one — the row is replaced,
- * and the previous public key stops working the moment this returns. The
- * host key is fetched here unless the caller pasted one, and echoed back
- * either way so the user can compare a fingerprint: this is trust on first
- * use, and the response is where the "first use" is shown.
- */
-export async function generateSshCredential(params: {
-  pattern: string
-  knownHostsEntry?: string
-}): Promise<GeneratedSshCredential> {
-  const { pattern } = params
-  if (!validatePattern(pattern)) {
+  if (cred.kind === 'https') return { credential: { kind: 'https', token: secret }, knownHostsEntry: null }
+  let knownHostsEntry: string
+  try {
+    knownHostsEntry = await fetchKnownHostsEntry(host)
+  } catch (err) {
     throw new ServerError(
       'VALIDATION',
-      'Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.',
+      `Could not fetch the host key for ${host}: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
-  const host = parsePattern(pattern).host
-  let knownHostsEntry = params.knownHostsEntry?.trim() ?? ''
-  if (!knownHostsEntry) {
-    try {
-      knownHostsEntry = await fetchKnownHostsEntry(host)
-    } catch (err) {
-      throw new ServerError(
-        'VALIDATION',
-        `Could not fetch the host key for ${host} (${err instanceof Error ? err.message : String(err)}); `
-        + 'paste a known_hosts line instead.',
-      )
-    }
-  }
-  const key = generateSshKey(`yaac ${pattern}`)
-  await upsertGitSshKey({ pattern, seed: key.seed, publicKey: key.publicKey, knownHostsEntry })
-  return { pattern, publicKey: key.publicKey, knownHostsEntry }
+  return { credential: sshCredential(cred, knownHostsEntry), knownHostsEntry }
+}
+
+function sshCredential(cred: GitCredentialRow, knownHostsEntry: string): ResolvedGitCredential {
+  return { kind: 'ssh', id: cred.id, publicKey: cred.publicKey ?? '', knownHostsEntry }
+}
+
+/** Assign a project its git credential; answers the host key it trusted. */
+export async function assignProjectCredential(
+  slug: string,
+  credentialId: string,
+): Promise<{ knownHostsEntry: string | null }> {
+  const row = await getProjectRow(slug)
+  if (!row) throw new ServerError('NOT_FOUND', `Project "${slug}" not found`)
+  const { knownHostsEntry } = await resolveCredentialForRemote(credentialId, row.remoteUrl)
+  await setProjectGitCredential(slug, credentialId, knownHostsEntry)
+  return { knownHostsEntry }
 }
 
 /**
- * The private key for a pattern, in the form `ssh-add -` reads — for a
- * workspace on a substrate with no proxy to sign for it, which loads it
+ * Whether a project's assignment is one git can use as it stands: the
+ * credential exists, its kind is the remote's scheme, and a key has the
+ * host key it was assigned with. Anything else — a remote that changed
+ * under it included — reads as no credential, so the project asks for one
+ * rather than failing somewhere less visible.
+ */
+function usableAssignment(row: ProjectRow, cred: GitCredentialRow | undefined): cred is GitCredentialRow {
+  if (!cred) return false
+  let scheme: 'https' | 'ssh'
+  try {
+    scheme = parseGitRemote(row.remoteUrl).scheme
+  } catch {
+    return false
+  }
+  return cred.kind === scheme && (scheme === 'https' || row.knownHostsEntry !== null)
+}
+
+/** The credential each project can use, by slug — for the listing. */
+export async function projectCredentialNames(
+  rows: ProjectRow[],
+): Promise<Map<string, { id: string; name: string }>> {
+  const creds = new Map((await listGitCredentials()).map((c) => [c.id, c]))
+  const out = new Map<string, { id: string; name: string }>()
+  for (const row of rows) {
+    const cred = row.gitCredentialId === null ? undefined : creds.get(row.gitCredentialId)
+    if (usableAssignment(row, cred)) out.set(row.slug, { id: cred.id, name: cred.name })
+  }
+  return out
+}
+
+/** The project's git credential, resolved for git; null when it has none
+ *  it can use. */
+export async function resolveProjectCredential(slug: string): Promise<ResolvedGitCredential | null> {
+  const row = await getProjectRow(slug)
+  if (row?.gitCredentialId == null) return null
+  const cred = await getGitCredential(row.gitCredentialId)
+  if (!usableAssignment(row, cred)) return null
+  // An unreadable secret resolves to nothing rather than to a credential
+  // git would fail with at the remote, where the cause is invisible; the
+  // store has already said which row.
+  const secret = await cred.openSecret()
+  if (secret === undefined) return null
+  return cred.kind === 'https'
+    ? { kind: 'https', token: secret }
+    : sshCredential(cred, row.knownHostsEntry ?? '')
+}
+
+/** The error a project with no usable credential answers a create with. */
+export function missingCredentialError(slug: string): ServerError {
+  return new ServerError(
+    'VALIDATION',
+    `Project "${slug}" has no git credential. Assign one in Settings → Git credentials.`,
+  )
+}
+
+/**
+ * The private key of an ssh credential, in the form `ssh-add -` reads — for
+ * a workspace on a substrate with no proxy to sign for it, which loads it
  * into an agent of its own. Opened here and handed on, never written.
  */
-export async function sshKeyMaterial(pattern: string): Promise<string> {
-  const seed = await (await listGitSshKeys()).find((k) => k.pattern === pattern)?.openSeed()
-  if (!seed) {
-    throw new ServerError('VALIDATION', `The SSH key for "${pattern}" cannot be opened; generate a new one.`)
+export async function sshKeyMaterial(credentialId: string): Promise<string> {
+  const cred = await getGitCredential(credentialId)
+  const seed = await cred?.openSecret()
+  if (!cred || seed === undefined) {
+    throw new ServerError('VALIDATION', 'The SSH key cannot be opened; assign a new one.')
   }
-  return encodeOpenSshPrivateKey(seed, `yaac ${pattern}`)
+  return encodeOpenSshPrivateKey(Buffer.from(seed, 'base64'), cred.name)
 }
 
 /**
- * Remove a credential entry by exact pattern match. Returns true if found.
- */
-export async function removeEntry(pattern: string): Promise<boolean> {
-  const creds = await loadCredentials()
-  const idx = creds.tokens.findIndex((t) => t.pattern === pattern)
-  if (idx >= 0) {
-    creds.tokens.splice(idx, 1)
-    await saveCredentials(creds)
-    return true
-  }
-  return await deleteGitSshKey(pattern)
-}
-
-export async function removeEntryChecked(pattern: string): Promise<void> {
-  const removed = await removeEntry(pattern)
-  if (!removed) {
-    throw new ServerError('NOT_FOUND', `No git credential found for pattern "${pattern}".`)
-  }
-}
-
-/**
- * List every credential with a masked preview.
+ * Every credential with a masked preview and the projects that use it.
  *
  * An ssh row's preview is its public key: that is the half the user needs
  * to see, and the only half there is to show. Each row is opened here — a
  * user-initiated listing is the right place — so one the secret key no
- * longer opens is marked as needing regeneration rather than listed like a
+ * longer opens is marked as needing replacement rather than listed like a
  * good one.
  */
-export async function listEntries(): Promise<GitCredentialSummary[]> {
-  const creds = await loadCredentials()
-  const https: GitCredentialSummary[] = creds.tokens.map((t) => ({
-    kind: 'https' as const,
-    pattern: t.pattern,
-    preview: t.token.length > 4 ? '***' + t.token.slice(-4) : '****',
-  }))
-  const ssh: GitCredentialSummary[] = []
-  for (const k of await listGitSshKeys()) {
-    const readable = await k.openSeed() !== undefined
-    ssh.push({
-      kind: 'ssh' as const,
-      pattern: k.pattern,
-      preview: readable ? k.publicKey : `${k.publicKey} (unreadable — generate a new key)`,
-      publicKey: k.publicKey,
-    })
+export async function listCredentialSummaries(): Promise<GitCredentialSummary[]> {
+  const [creds, rows] = await Promise.all([listGitCredentials(), listProjectRows()])
+  const out: GitCredentialSummary[] = []
+  for (const c of creds) {
+    const secret = await c.openSecret()
+    const projects = rows.filter((r) => r.gitCredentialId === c.id).map((r) => r.slug)
+    if (c.kind === 'https') {
+      const preview = secret === undefined ? '(unreadable — replace it)'
+        : secret.length > 4 ? '***' + secret.slice(-4) : '****'
+      out.push({ id: c.id, name: c.name, kind: 'https', preview, projects })
+    } else {
+      const publicKey = c.publicKey ?? ''
+      const preview = secret === undefined ? `${publicKey} (unreadable — replace it)` : publicKey
+      out.push({ id: c.id, name: c.name, kind: 'ssh', preview, publicKey, projects })
+    }
   }
-  return [...https, ...ssh]
+  return out
 }
 
 /**
- * Every ssh key, with the material the proxy's in-memory agent is loaded
- * from — the one listing that opens every seed, because that is what it is
- * for. Rows that will not open are left out: the agent cannot hold a key
- * the server cannot read, and the store has already logged which.
+ * The git half of what the runtime is handed: each credential with the
+ * projects entitled to it, so an egress path can give it to a worktree of
+ * those projects and no other. Opens every secret, because that is what it
+ * is for; a row that will not open, or that no project can use, is left out.
  */
-export async function listSshEntries(): Promise<Array<{
-  pattern: string
-  host: string
-  privateKey: string
-  knownHostsEntry: string
-}>> {
-  const out: Array<{ pattern: string; host: string; privateKey: string; knownHostsEntry: string }> = []
-  for (const key of await listGitSshKeys()) {
-    const seed = await key.openSeed()
-    if (seed === undefined) continue
-    out.push({
-      pattern: key.pattern,
-      // Safe for the same reason as loadKnownHostsEntryForHost: every stored
-      // pattern was validated on the way in.
-      host: parsePattern(key.pattern).host,
-      privateKey: encodeOpenSshPrivateKey(seed, `yaac ${key.pattern}`),
-      knownHostsEntry: key.knownHostsEntry,
+export async function runtimeGitCredentials(): Promise<{ git: HttpsCredentialEntry[]; ssh: SshCredentialEntry[] }> {
+  const [creds, rows] = await Promise.all([listGitCredentials(), listProjectRows()])
+  const git: HttpsCredentialEntry[] = []
+  const ssh: SshCredentialEntry[] = []
+  for (const c of creds) {
+    const users = rows.filter((r) => r.gitCredentialId === c.id && usableAssignment(r, c))
+    if (users.length === 0) continue
+    const secret = await c.openSecret()
+    if (secret === undefined) continue
+    if (c.kind === 'https') {
+      git.push({ token: secret, projects: users.map((r) => r.slug) })
+      continue
+    }
+    ssh.push({
+      privateKey: encodeOpenSshPrivateKey(Buffer.from(secret, 'base64'), c.name),
+      publicKey: c.publicKey ?? '',
+      projects: users.map((r) => ({
+        slug: r.slug,
+        host: parseGitRemote(r.remoteUrl).host,
+        knownHostsEntry: r.knownHostsEntry ?? '',
+      })),
     })
   }
-  return out
+  return { git, ssh }
 }

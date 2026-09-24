@@ -248,20 +248,20 @@ Where things live today, because it decides what "owner-keyed" means for
 each:
 
 - Tool OAuth/API-key bundles are flat files, `.credentials/<tool>.json`
-  under the data dir, mirrored into each project's tool home; git HTTPS
-  credentials are `.credentials/github.json`. The server hands the proxy
-  the whole set as a Secret on every write, and adopts the rotations the
-  proxy captures from another Secret (docs/worktree-egress.md).
-- Git SSH keys are sealed rows (`git_ssh_keys`), handed to the proxy in
-  that same Secret, a containerless worktree's agent, or a short-lived
-  host file. Project env and proxied secrets are sealed rows too
+  under the data dir, mirrored into each project's tool home. The server
+  hands the proxy the whole set as a Secret on every write, and adopts the
+  rotations the proxy captures from another Secret (docs/worktree-egress.md).
+- Git credentials — HTTPS tokens and generated SSH keys — are named sealed
+  rows (`git_credentials`), each assigned to projects
+  (docs/git-credentials.md), handed to the proxy in that same Secret scoped
+  by project, or to a containerless worktree's own agent. Project env and proxied secrets are sealed rows too
   (`project_env_vars`), handed to the proxy as one Secret of opened values
   per project — registrations carry only `secretRef`s.
 
 Two moves, not one:
 
 - Host-side credential bundles move from `.credentials/<tool>.json` to
-  `.credentials/<user>/<tool>.json` (and `github.json` likewise). The
+  `.credentials/<user>/<tool>.json`. The
   auth-daemon flow already rides an authenticated connection, so the server
   knows which user's bundle is arriving. Per-user quota falls out: each user
   signs into their own Claude/Codex accounts. The sealed-row stores gain an
@@ -304,8 +304,8 @@ allowlists and injection rules; the change is that a registration gains a
 credential-set key, staged by the server from the worktree's owner, and
 every credential path resolves through it: sentinel swaps, the GitHub token
 pool, and which ssh-agent identities a worktree's connections may list and
-sign with (today's `sshAgentGate` checks only that the caller is a worktree
-and the remote is SSH-shaped, not whose key it is). The OAuth **refresh
+sign with (today the relay scopes them to the keys assigned to the
+worktree's project, not to its owner). The OAuth **refresh
 write-back** must route the same way — the proxy captures Claude/Codex
 token-refresh responses and overwrites the stored bundle, so today any
 worktree can rotate the credential every other worktree uses; under

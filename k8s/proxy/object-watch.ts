@@ -20,6 +20,7 @@
 
 import { makeInformer, PatchStrategy, setHeaderOptions, type KubernetesObject } from '@kubernetes/client-node'
 import { inClusterClient, superviseInformer } from './pod-watch'
+import { agentIdentities, type AgentIdentity } from './agent-keys'
 import {
   CA_SECRET_NAME,
   CREDENTIALS_SECRET_NAME,
@@ -36,14 +37,13 @@ import {
   type ProxyCredentials,
   type RawObject,
   type RefreshedBundles,
-  type SshKeyEntry,
   type WorktreeRegistration,
 } from './objects'
 
 export interface ProxyObjectsDeps {
   /** Replace the ssh-agent's identities — the credentials handler's side
    *  effect, injected so the maps can be tested without an agent. */
-  loadSshKeys: (entries: SshKeyEntry[]) => Promise<void>
+  loadSshKeys: (identities: AgentIdentity[]) => Promise<void>
   /** A worktree's registration changed (or went, on `null`): the listener
    *  prunes its blocked-host record against the new allowlist. */
   onRegistration?: (worktreeId: string, registration: WorktreeRegistration | null) => void
@@ -82,8 +82,9 @@ export class ProxyObjects {
    * sign the worktree out. Dropped the moment the pushed bundle catches up.
    */
   private captured: RefreshedBundles = {}
-  /** The ssh set the agent was last loaded from, so a token-only rotation
-   *  (or the adopt echo) does not empty and refill the agent under an
+  /** The identities the agent was last loaded with, so a token-only
+   *  rotation, the adopt echo, or a key reassigned between projects on
+   *  hosts it already serves does not empty and refill the agent under an
    *  in-flight ssh operation. */
   private loadedSsh: string | null = null
   private readonly seeded = new Set<string>()
@@ -146,8 +147,8 @@ export class ProxyObjects {
 
   /**
    * The credentials Secret changed (or went, on `gone`): replace the whole
-   * set — it is one install-wide thing — and reload the agent when the ssh
-   * keys moved.
+   * set — it is one install-wide thing — and reload the agent when what it
+   * holds (the keys and their host constraints) moved.
    *
    * By name as well as by label, on every verb: the label is what the
    * informer selects on, but only one object is the credentials Secret,
@@ -174,10 +175,11 @@ export class ProxyObjects {
     const authed = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => this.creds[t] !== null)
     this.log(`[proxy] credentials: ${authed.length ? authed.join(', ') : 'no tools'} signed in, `
       + `${this.creds.git.length} git token(s), ${this.creds.ssh.length} ssh key(s)`)
-    const ssh = JSON.stringify(this.creds.ssh)
+    const identities = agentIdentities(this.creds.ssh)
+    const ssh = JSON.stringify(identities)
     if (ssh === this.loadedSsh) return Promise.resolve()
     this.loadedSsh = ssh
-    return this.loadSshKeys(this.creds.ssh).catch((err: unknown) => {
+    return this.loadSshKeys(identities).catch((err: unknown) => {
       // Next time the set changes it is loaded again; until then the agent
       // holds whatever the failed reload left.
       this.loadedSsh = null

@@ -2,9 +2,9 @@ import readline from 'node:readline/promises'
 import { api } from '#commands/api'
 
 export async function authClear(): Promise<void> {
-  const { gitCredentials, toolAuth } = await api.auth.list.$get()
+  const { toolAuth } = await api.auth.list.$get()
 
-  if (gitCredentials.length === 0 && toolAuth.length === 0) {
+  if (toolAuth.length === 0) {
     console.log('No credentials configured.')
     return
   }
@@ -15,20 +15,6 @@ export async function authClear(): Promise<void> {
   }
 
   const entries: Entry[] = []
-  for (const { kind, pattern, preview } of gitCredentials) {
-    entries.push({
-      label: `Git ${kind}: ${pattern} (${preview})`,
-      run: async () => {
-        // Path segment must be URL-encoded: patterns like "github.com/acme/*"
-        // carry literal slashes that the Hono client would otherwise pass
-        // through, breaking the :pattern route match.
-        await api.auth.git.credentials[':pattern'].$delete({
-          param: { pattern: encodeURIComponent(pattern) },
-        })
-        console.log(`Removed git credential for pattern "${pattern}".`)
-      },
-    })
-  }
   for (const entry of toolAuth) {
     const label =
       entry.tool === 'claude' ? 'Claude Code' :

@@ -30,6 +30,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
+import { assignTestGitCredential } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -159,9 +160,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   async function seedCredentials(): Promise<void> {
     const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
-      tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }],
-    }) + '\n')
     await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
       kind: 'api-key',
       savedAt: new Date().toISOString(),
@@ -182,6 +180,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
       slug, remoteUrl: fakeRemote, addedAt: new Date().toISOString(),
     }) + '\n')
+    await assignTestGitCredential(server!, slug, 'fake-ghp-token')
     const configDir = path.join(projectPath, 'config')
     await fs.mkdir(configDir, { recursive: true })
     await fs.writeFile(

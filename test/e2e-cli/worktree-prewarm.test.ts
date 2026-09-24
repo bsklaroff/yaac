@@ -13,6 +13,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
+import { assignTestGitCredential } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -84,7 +85,8 @@ describe('yaac prewarmed sessions', () => {
     await testEnv.cleanup()
   })
 
-  /** Stage a yaac project + fake creds on disk (same shape as `project add`). */
+  /** Stage a yaac project + fake tool creds on disk (same shape as
+   *  `project add`); its git credential is assigned once the server is up. */
   async function stageProject(): Promise<void> {
     const projectDir = path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo')
     const repoDir = path.join(projectDir, 'repo')
@@ -100,10 +102,6 @@ describe('yaac prewarmed sessions', () => {
 
     const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(
-      path.join(credsDir, 'github.json'),
-      JSON.stringify({ tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }] }) + '\n',
-    )
     await fs.writeFile(
       path.join(credsDir, 'claude.json'),
       JSON.stringify({ kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-fake-real-key' }) + '\n',
@@ -151,6 +149,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await assignTestGitCredential(server, 'repo-demo', 'fake-ghp-token')
 
     // 1. First (cold) create — the project now has an open session.
     const first = await runYaac(serverEnv, 'worktree', 'create', 'repo-demo', '--tool', 'claude')

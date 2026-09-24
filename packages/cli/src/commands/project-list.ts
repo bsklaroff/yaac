@@ -4,7 +4,7 @@ export async function projectList(): Promise<void> {
   const projects = await api.project.list.$get()
 
   if (projects.length === 0) {
-    console.log('No projects found. Add one with: yaac project add <remote-url>')
+    console.log('No projects found. Add one with: yaac project add <remote-url> <credential>')
     return
   }
 

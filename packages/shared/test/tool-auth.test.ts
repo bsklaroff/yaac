@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { loadCredentials, saveCredentials } from '@yaac/server/domain/projects/credentials'
 import {
   claudeCredentialsPath,
   codexCredentialsPath,
@@ -188,13 +187,6 @@ describe('tool-auth', () => {
       await saveToolAuth('codex', 'sk-proj-openai', 'api-key')
       const raw = await fs.readFile(codexCredentialsPath(), 'utf8')
       expect(JSON.parse(raw)).toMatchObject({ kind: 'api-key', apiKey: 'sk-proj-openai' })
-    })
-
-    it('leaves git credentials untouched', async () => {
-      await saveCredentials({ tokens: [{ kind: 'https', pattern: 'github.com/*', token: 'ghp_test' }] })
-      await saveToolAuth('claude', 'sk-ant-api03-xyz', 'api-key')
-      const creds = await loadCredentials()
-      expect(creds.tokens).toEqual([{ kind: 'https', pattern: 'github.com/*', token: 'ghp_test' }])
     })
   })
 

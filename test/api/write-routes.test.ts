@@ -6,7 +6,7 @@ import { buildApp } from '@yaac/server/main/server'
 import { git } from '@yaac/test-utils/git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { addEntry, listEntries, loadCredentials } from '@yaac/server/domain/projects/credentials'
+import { addHttpsCredential, assignProjectCredential, listCredentialSummaries } from '@yaac/server/domain/projects/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
@@ -187,23 +187,27 @@ describe('write routes', () => {
       expect(res.status).toBe(400)
     })
 
-    it('rejects requests with a missing remoteUrl', async () => {
+    it('rejects requests missing the remoteUrl or the git credential', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/project/add', withAuth({
-        method: 'POST',
-        body: JSON.stringify({}),
-      }))
-      expect(res.status).toBe(400)
+      for (const body of [{ gitCredentialId: '00000000-0000-4000-8000-000000000001' }, { remoteUrl: 'x/foo' }]) {
+        const res = await app.request('/project/add', withAuth({
+          method: 'POST',
+          body: JSON.stringify(body),
+        }))
+        expect(res.status).toBe(400)
+      }
     })
 
     it('delegates to addProject and returns 200 on success', async () => {
       mockAddProject.mockResolvedValue({
         project: { slug: 'foo', remoteUrl: 'https://github.com/x/foo', addedAt: 'now' },
+        knownHostsEntry: null,
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.project.add.$post({ json: { remoteUrl: 'x/foo' } })
+      const id = '00000000-0000-4000-8000-000000000001'
+      const res = await client.project.add.$post({ json: { remoteUrl: 'x/foo', gitCredentialId: id } })
       expect(res.status).toBe(200)
-      expect(mockAddProject).toHaveBeenCalledWith('x/foo')
+      expect(mockAddProject).toHaveBeenCalledWith('x/foo', id)
     })
   })
 
@@ -1017,128 +1021,168 @@ describe('write routes', () => {
   })
 
   describe('POST /auth/git/credentials', () => {
-    it('rejects a missing pattern', async () => {
+    it('rejects a missing name or token', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/git/credentials', withAuth({
-        method: 'POST',
-        body: JSON.stringify({ kind: 'https', token: 'ghp_x' }),
-      }))
-      expect(res.status).toBe(400)
+      for (const body of [{ token: 'ghp_x' }, { name: 'gh' }, { name: 'gh', token: '' }]) {
+        const res = await app.request('/auth/git/credentials', withAuth({
+          method: 'POST', body: JSON.stringify(body),
+        }))
+        expect(res.status).toBe(400)
+      }
     })
 
-    it('adds an https credential and hands the runtime the whole set', async () => {
-      // Spied rather than replaced: the driver is the project's, installed
-      // once for the file, and the route is what is under test.
+    it('stores a named token without pushing — no project uses it yet — and refuses a taken name', async () => {
       const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-        const res = await client.auth.git.credentials.$post({
-          json: { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
-        })
-        expect(res.status).toBe(204)
-        expect((await loadCredentials()).tokens).toEqual([
-          { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
+        const res = await client.auth.git.credentials.$post({ json: { name: 'gh', token: 'ghp_new' } })
+        expect(res.status).toBe(200)
+        const { id } = await res.json()
+        expect(await listCredentialSummaries()).toEqual([
+          { id, name: 'gh', kind: 'https', preview: '***_new', projects: [] },
         ])
-        // The runtime injects from what it was last told, never from disk.
-        expect(synced).toHaveBeenCalledTimes(1)
-        expect(synced.mock.calls[0][0].git).toEqual([{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' }])
+        expect(synced).not.toHaveBeenCalled()
+
+        const again = await client.auth.git.credentials.$post({ json: { name: 'gh', token: 'ghp_other' } })
+        expect(again.status).toBe(409)
+      } finally {
+        synced.mockRestore()
+      }
+    })
+  })
+
+  describe('POST /auth/git/ssh-keys', () => {
+    it('generates a named key, answers the public half, and leaves no private material behind', async () => {
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.auth.git['ssh-keys'].$post({ json: { name: 'deploy' } })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toEqual({
+        id: expect.any(String) as string,
+        publicKey: expect.stringMatching(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ deploy$/) as string,
+      })
+      expect((await listCredentialSummaries())[0]).toMatchObject({ name: 'deploy', kind: 'ssh', publicKey: body.publicKey })
+      // Nothing under the data dir's credentials holds anything about it.
+      const credDir = path.join(tmpDir, 'server-local', '.credentials')
+      for (const name of await fs.readdir(credDir).catch(() => [] as string[])) {
+        expect(await fs.readFile(path.join(credDir, name), 'utf8')).not.toContain('ssh-ed25519')
+      }
+    })
+
+    it('rejects a blank name', async () => {
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.auth.git['ssh-keys'].$post({ json: { name: '  ' } })
+      expect(res.status).toBe(400)
+    })
+  })
+
+  describe('PATCH /auth/git/credentials/:id', () => {
+    it('renames a credential, and 404s an unknown id', async () => {
+      const { id } = await addHttpsCredential({ name: 'old', token: 'ghp_x' })
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.auth.git.credentials[':id'].$patch({ param: { id }, json: { name: 'new' } })
+      expect(res.status).toBe(204)
+      expect((await listCredentialSummaries()).map((c) => c.name)).toEqual(['new'])
+
+      const missing = await client.auth.git.credentials[':id'].$patch({
+        param: { id: '00000000-0000-4000-8000-000000000000' }, json: { name: 'x' },
+      })
+      expect(missing.status).toBe(404)
+    })
+  })
+
+  describe('DELETE /auth/git/credentials/:id', () => {
+    it('deletes a credential in use and takes it from the runtime at once', async () => {
+      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      const a = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
+      await assignProjectCredential('web', a.id)
+      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      try {
+        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const res = await client.auth.git.credentials[':id'].$delete({ param: { id: a.id } })
+        expect(res.status).toBe(204)
+        expect(await listCredentialSummaries()).toEqual([])
+        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([])
       } finally {
         synced.mockRestore()
       }
     })
 
-    it('surfaces invalid patterns as VALIDATION', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git.credentials.$post({
-        json: { kind: 'https', pattern: '*', token: 'ghp_x' },
-      })
-      expect(res.status).toBe(400)
-    })
-
-    it('refuses an ssh entry: keys are generated, never brought', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git.credentials.$post({
-        // @ts-expect-error — the shape an older client would send
-        json: { kind: 'ssh', pattern: 'git.example.com/*', privateKey: 'x', knownHostsEntry: 'h' },
-      })
-      expect(res.status).toBe(400)
-    })
-  })
-
-  describe('POST /auth/git/ssh-keys', () => {
-    it('generates a key, answers the public half, and leaves no private material behind', async () => {
-      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git['ssh-keys'].$post({
-        json: { pattern: 'git.example.com/*', knownHostsEntry: 'git.example.com ssh-ed25519 AAAA' },
-      })
-      // The private half went one place: to the runtime, which loads its
-      // agent from it. (Restoring the spy also clears its calls, so it is
-      // read first.)
-      const pushed = synced.mock.calls.map(([bundle]) => bundle)
-      synced.mockRestore()
-      expect(res.status).toBe(200)
-      const body = await res.json()
-      expect(pushed).toHaveLength(1)
-      expect(pushed[0].ssh).toEqual([expect.objectContaining({
-        host: 'git.example.com',
-        knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-        privateKey: expect.stringContaining('OPENSSH PRIVATE KEY') as string,
-      })])
-      expect(body).toEqual({
-        pattern: 'git.example.com/*',
-        publicKey: expect.stringMatching(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ yaac git\.example\.com\/\*$/) as string,
-        knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-      })
-
-      expect(await listEntries()).toEqual([{
-        kind: 'ssh',
-        pattern: 'git.example.com/*',
-        preview: body.publicKey,
-        publicKey: body.publicKey,
-      }])
-      // Nothing under the credentials dir holds anything about it.
-      expect((await loadCredentials()).tokens).toEqual([])
-      const credDir = path.join(tmpDir, 'server-local', '.credentials')
-      for (const name of await fs.readdir(credDir).catch(() => [] as string[])) {
-        expect(await fs.readFile(path.join(credDir, name), 'utf8')).not.toContain('ssh-ed25519')
+    it('deletes, but answers RUNTIME_UNAVAILABLE when the runtime could not be told', async () => {
+      // A delete is how a leak is dealt with: "done" must not be said while
+      // the proxy still holds the credential.
+      const { id } = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
+      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockRejectedValue(new Error('apiserver down'))
+      try {
+        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const res = await client.auth.git.credentials[':id'].$delete({ param: { id } })
+        expect(res.status).toBe(503)
+        expect(await res.text()).toMatch(/deleted, but the egress proxy could not be updated.*apiserver down/)
+        expect(await listCredentialSummaries()).toEqual([])
+      } finally {
+        synced.mockRestore()
       }
-
-      // A second generate for the pattern is a replacement.
-      const again = await client.auth.git['ssh-keys'].$post({
-        json: { pattern: 'git.example.com/*', knownHostsEntry: 'git.example.com ssh-ed25519 AAAA' },
-      })
-      const replaced = await again.json()
-      expect(replaced.publicKey).not.toBe(body.publicKey)
-      expect((await listEntries()).map((e) => e.publicKey)).toEqual([replaced.publicKey])
     })
 
-    it('rejects an invalid pattern', async () => {
+    it('returns 404 for an unknown id, and 400 for a malformed one', async () => {
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git['ssh-keys'].$post({
-        json: { pattern: 'acme/*', knownHostsEntry: 'h ssh-ed25519 AAAA' },
-      })
-      expect(res.status).toBe(400)
+      expect((await client.auth.git.credentials[':id'].$delete({
+        param: { id: '00000000-0000-4000-8000-000000000000' },
+      })).status).toBe(404)
+      expect((await client.auth.git.credentials[':id'].$delete({ param: { id: 'nope' } })).status).toBe(400)
     })
   })
 
-  describe('DELETE /auth/git/credentials/:pattern', () => {
-    it('removes an existing credential', async () => {
-      await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme' })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git.credentials[':pattern'].$delete({
-        param: { pattern: encodeURIComponent('github.com/acme/*') },
-      })
-      expect(res.status).toBe(204)
-      expect((await loadCredentials()).tokens).toEqual([])
+  describe('POST /auth/git/credentials/:id/replace', () => {
+    it('replaces the secret under the same name and projects, and pushes it', async () => {
+      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_leaked' })
+      await assignProjectCredential('web', id)
+      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      try {
+        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const res = await client.auth.git.credentials[':id'].replace.$post({ param: { id }, json: { token: 'ghp_fresh' } })
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(await listCredentialSummaries()).toEqual([
+          { id: body.id, name: 'gh', kind: 'https', preview: '***resh', projects: ['web'] },
+        ])
+        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_fresh', projects: ['web'] }])
+      } finally {
+        synced.mockRestore()
+      }
+    })
+  })
+
+  describe('PUT /project/:slug/git-credential', () => {
+    it('assigns the credential and hands the runtime what the project may now use', async () => {
+      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
+      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      try {
+        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const res = await client.project[':slug']['git-credential'].$put({
+          param: { slug: 'web' }, json: { credentialId: id },
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ knownHostsEntry: null })
+        // The runtime injects from what it was last told, never from the store.
+        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_web', projects: ['web'] }])
+      } finally {
+        synced.mockRestore()
+      }
     })
 
-    it('returns 404 for an unknown pattern', async () => {
+    it('404s an unknown project or credential', async () => {
+      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git.credentials[':pattern'].$delete({
-        param: { pattern: 'unknown' },
-      })
-      expect(res.status).toBe(404)
+      expect((await client.project[':slug']['git-credential'].$put({
+        param: { slug: 'nope' }, json: { credentialId: id },
+      })).status).toBe(404)
+      expect((await client.project[':slug']['git-credential'].$put({
+        param: { slug: 'web' }, json: { credentialId: '00000000-0000-4000-8000-000000000000' },
+      })).status).toBe(404)
     })
   })
 

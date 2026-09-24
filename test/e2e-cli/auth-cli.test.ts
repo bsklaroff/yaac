@@ -55,7 +55,7 @@ describe('yaac auth (real CLI + shared server)', () => {
   /**
    * Reset the shared data dir's `.credentials` to empty. Because every
    * test shares one data dir, state-sensitive tests call this first so
-   * leftovers from earlier tests (extra github.json tokens, a stray
+   * leftovers from earlier tests (a stray
    * claude.json/codex.json/opencode.json) can't change list output or
    * shift `auth clear` menu indexes.
    */
@@ -66,37 +66,15 @@ describe('yaac auth (real CLI + shared server)', () => {
     return credsDir
   }
 
-  /**
-   * Seed github.json with exactly these tokens and nothing else in the
-   * credentials dir. The `auth clear` menu enumerates git AND tool
-   * credentials, so the reset is what keeps the menu indexes ("1", ...)
-   * pointing at the git entries these tests expect.
-   */
-  async function seedTokens(tokens: Array<Record<string, unknown>>): Promise<void> {
+  /** Seed the claude and codex api-key credentials and nothing else, so
+   *  the `auth clear` menu lists exactly those two, in that order. */
+  async function seedToolCreds(): Promise<void> {
     const credsDir = await resetCreds()
-    await fs.writeFile(
-      path.join(credsDir, 'github.json'),
-      JSON.stringify({ tokens }) + '\n',
-    )
-  }
-
-  /**
-   * Drive `yaac auth update`'s interactive SSH branch to completion. Nothing
-   * on this machine is read: the server generates the key, and the host key
-   * is pasted because there is no sshd here to fetch one from.
-   */
-  function generateSshCredential(): ReturnType<typeof runYaac> {
-    return runYaac(
-      testEnv.env, 'auth', 'update',
-      {
-        stdinOnPrompt: [
-          { when: /Choice \[1-5\]: /, send: '1\n' },
-          { when: /Choice \[a\/b\]: /, send: 'b\n' },
-          { when: /Repo pattern: /, send: 'git.example.com/*\n' },
-          { when: /Entry: /, send: 'git.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTAAAA\n' },
-        ],
-      },
-    )
+    for (const [file, apiKey] of [['claude.json', 'sk-ant-api03-clear-me'], ['codex.json', 'sk-codex-clear-me']]) {
+      await fs.writeFile(path.join(credsDir, file), JSON.stringify({
+        kind: 'api-key', savedAt: '2026-01-15T00:00:00.000Z', apiKey,
+      }) + '\n')
+    }
   }
 
   // Pristine-state assertions — these MUST run before anything writes a
@@ -106,7 +84,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Git credentials:')
-      expect(stdout).toContain('(none configured)')
+      expect(stdout).toContain('(none configured')
       expect(stdout).toContain('Tool credentials:')
       expect(stdout).toMatch(/claude\s+not configured/)
       expect(stdout).toMatch(/codex\s+not configured/)
@@ -120,17 +98,8 @@ describe('yaac auth (real CLI + shared server)', () => {
   })
 
   describe('auth list', () => {
-    it('auth list renders masked previews for every credential kind', async () => {
+    it('auth list renders masked previews for every tool credential', async () => {
       const credsDir = await resetCreds()
-      await fs.writeFile(
-        path.join(credsDir, 'github.json'),
-        JSON.stringify({
-          tokens: [
-            { pattern: 'github.com/acme/*', token: 'ghp_abcdef123456' },
-            { pattern: 'github.com/*', token: 'ghp_fallback_token' },
-          ],
-        }) + '\n',
-      )
       await fs.writeFile(
         path.join(credsDir, 'claude.json'),
         JSON.stringify({
@@ -151,30 +120,10 @@ describe('yaac auth (real CLI + shared server)', () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
       expect(exitCode).toBe(0)
 
-      expect(stdout).toContain('github.com/acme/*')
-      expect(stdout).toContain('github.com/*')
-      expect(stdout).toContain('***3456')
-      expect(stdout).toContain('***oken')
-      expect(stdout).not.toContain('ghp_abcdef123456')
-      expect(stdout).not.toContain('ghp_fallback_token')
-
       expect(stdout).toMatch(/claude\s+\*\*\*-key.*api-key.*2026-01-15/)
       expect(stdout).toMatch(/codex\s+\*\*\*-key.*api-key.*2026-02-20/)
       expect(stdout).not.toContain('sk-ant-api03-fake-claude-key')
       expect(stdout).not.toContain('sk-fake-codex-key')
-    })
-
-    it('auth list shows an ssh key as its public half, and nothing else about it', async () => {
-      await resetCreds()
-      const { stdout: generated } = await generateSshCredential()
-      const publicKey = /^(ssh-ed25519 \S+ yaac git\.example\.com\/\*)$/m.exec(generated)![1]
-
-      const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('ssh')
-      expect(stdout).toContain('git.example.com/*')
-      expect(stdout).toContain(publicKey)
-      expect(stdout).not.toContain('PRIVATE KEY')
     })
   })
 
@@ -194,21 +143,14 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(parsed.claudeAiOauth.refreshToken).toBe('yaac-ph-refresh')
     })
 
-    it('auth fake github seeds an https github.com/* credential', async () => {
-      // No reset needed: seeding merges by pattern into github.json and
-      // the assertion is toContainEqual, so residual entries (the ssh
-      // credential from the auth list test) can't affect it.
-      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'github')
-      expect(exitCode, stderr).toBe(0)
-
-      const parsed = JSON.parse(await fs.readFile(credPath('github.json'), 'utf8')) as {
-        tokens: Array<{ kind: string; pattern: string; token: string }>
+    it('auth fake github seeds the fake-github git credential, once', async () => {
+      for (let i = 0; i < 2; i++) {
+        const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'github')
+        expect(exitCode, stderr).toBe(0)
       }
-      expect(parsed.tokens).toContainEqual({
-        kind: 'https',
-        pattern: 'github.com/*',
-        token: 'yaac-ph-gh-token',
-      })
+      // Git credentials are rows, listed by the name `project add` takes.
+      const { stdout } = await runYaac(testEnv.env, 'auth', 'list')
+      expect(stdout.match(/^\s+fake-github\s+https\s+\*\*\*oken$/gm)).toHaveLength(1)
     })
 
     it('auth fake opencode-openrouter seeds a placeholder openrouter api-key', async () => {
@@ -241,13 +183,12 @@ describe('yaac auth (real CLI + shared server)', () => {
 
     it('seeds several kinds passed in one invocation (variadic)', async () => {
       const { exitCode, stdout, stderr } = await runYaac(
-        testEnv.env, 'auth', 'fake', 'claude-oauth', 'opencode-openrouter', 'github',
+        testEnv.env, 'auth', 'fake', 'claude-oauth', 'opencode-openrouter',
       )
       expect(exitCode, stderr).toBe(0)
       // One confirmation line per seeded kind.
       expect(stdout).toContain('Claude OAuth')
       expect(stdout).toContain('OpenCode OpenRouter')
-      expect(stdout).toContain('github.com/*')
 
       const claude = JSON.parse(await fs.readFile(credPath('claude.json'), 'utf8')) as {
         claudeAiOauth: { accessToken: string }
@@ -256,23 +197,15 @@ describe('yaac auth (real CLI + shared server)', () => {
         provider: string
         apiKey: string
       }
-      const github = JSON.parse(await fs.readFile(credPath('github.json'), 'utf8')) as {
-        tokens: Array<{ kind: string; pattern: string; token: string }>
-      }
       expect(claude.claudeAiOauth.accessToken).toBe('yaac-ph-access')
       expect(opencode.provider).toBe('openrouter')
       expect(opencode.apiKey).toBe('yaac-ph-api-key')
-      expect(github.tokens).toContainEqual({
-        kind: 'https',
-        pattern: 'github.com/*',
-        token: 'yaac-ph-gh-token',
-      })
     })
 
     it('rejects an unknown kind', async () => {
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'bogus')
       expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/claude-oauth|github|Allowed choices/i)
+      expect(stderr).toMatch(/claude-oauth|Allowed choices/i)
     })
 
     it('requires at least one kind', async () => {
@@ -283,65 +216,36 @@ describe('yaac auth (real CLI + shared server)', () => {
   })
 
   describe('auth clear', () => {
-    // These are menu-index-sensitive: seedTokens resets .credentials so
-    // the clear menu lists exactly the seeded git credentials (a leftover
-    // claude.json/codex.json/opencode.json would add menu entries and
-    // shift the indexes).
-    it('removes a specific git credential by menu index', async () => {
-      await seedTokens([
-        { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme_token_xxxx' },
-        { kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_token_yy' },
-      ])
+    // Menu-index-sensitive: seedToolCreds resets .credentials so the menu
+    // lists exactly claude then codex.
+    it('removes a specific tool credential by menu index', async () => {
+      await seedToolCreds()
 
-      const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'auth', 'clear', { stdin: '1\n' },
-      )
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'clear', { stdin: '1\n' })
       expect(exitCode).toBe(0)
-      expect(stdout).toContain('Removed git credential for pattern "github.com/acme/*"')
-
-      const raw = await fs.readFile(
-        path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json'), 'utf8',
-      )
-      expect(JSON.parse(raw)).toEqual({
-        tokens: [{ kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_token_yy' }],
-      })
+      expect(stdout).toContain('Removed Claude Code credentials.')
+      await expect(fs.access(credPath('claude.json'))).rejects.toThrow()
+      await fs.access(credPath('codex.json'))
     })
 
     it('removes every credential when the user answers "all"', async () => {
-      await seedTokens([
-        { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme_token_xxxx' },
-        { kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_token_yy' },
-      ])
+      await seedToolCreds()
 
-      const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'auth', 'clear', { stdin: 'all\n' },
-      )
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'clear', { stdin: 'all\n' })
       expect(exitCode).toBe(0)
       expect(stdout).toContain('All credentials removed.')
-
-      const raw = await fs.readFile(
-        path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json'), 'utf8',
-      )
-      expect(JSON.parse(raw)).toEqual({ tokens: [] })
+      await expect(fs.access(credPath('claude.json'))).rejects.toThrow()
+      await expect(fs.access(credPath('codex.json'))).rejects.toThrow()
     })
 
     it('prints "Cancelled." on an out-of-range menu choice', async () => {
-      await seedTokens([
-        { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme_token_xxxx' },
-      ])
+      await seedToolCreds()
 
-      const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'auth', 'clear', { stdin: '99\n' },
-      )
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'clear', { stdin: '99\n' })
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Cancelled.')
-
-      // Nothing removed.
-      const raw = await fs.readFile(
-        path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json'), 'utf8',
-      )
-      const parsed = JSON.parse(raw) as { tokens: unknown[] }
-      expect(parsed.tokens).toHaveLength(1)
+      await fs.access(credPath('claude.json'))
+      await fs.access(credPath('codex.json'))
     })
   })
 
@@ -356,82 +260,68 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(stdout).toContain('Cancelled.')
     })
 
-    it('adds an HTTPS git credential through the menu + piped prompts', async () => {
-      // Reset: the assertion is whole-file equality on github.json, and
-      // git credential saves merge into the existing tokens array — a
-      // leftover token from the auth clear tests would break toEqual.
-      await resetCreds()
-      // authUpdate opens a fresh readline per prompt; answer each prompt
-      // only after it renders so the handoff can't eat a chunk (see
-      // RunYaacOptions.stdinOnPrompt).
+    it('adds a named HTTPS git credential through the menu + piped prompts', async () => {
+      // authUpdate asks each question only after the last is answered, so
+      // each is answered as it renders (see RunYaacOptions.stdinOnPrompt).
       const { stdout, exitCode } = await runYaac(
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
             { when: /Choice \[1-5\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'a\n' },
-            { when: /Repo pattern: /, send: 'github.com/acme/*\n' },
+            { when: /Name \[git-token\]: /, send: 'acme\n' },
             { when: /Token \(PAT\): /, send: 'ghp_test_token_xyz\n' },
           ],
         },
       )
       expect(exitCode).toBe(0)
-      expect(stdout).toContain('Credential saved for pattern "github.com/acme/*"')
+      expect(stdout).toContain('Git credential "acme" saved.')
+      expect(stdout).toContain("yaac project add <remote-url> 'acme'")
 
-      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'github.json')
-      const raw = await fs.readFile(credsPath, 'utf8')
-      expect(JSON.parse(raw)).toEqual({
-        tokens: [{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_test_token_xyz' }],
-      })
+      const { stdout: listed } = await runYaac(testEnv.env, 'auth', 'list')
+      expect(listed).toMatch(/^\s+acme\s+https\s+\*\*\*_xyz$/m)
+      expect(listed).not.toContain('ghp_test_token_xyz')
     })
 
-    it('exits 1 when the pattern prompt is answered with a blank line', async () => {
+    it('exits 1 when the token prompt is answered with a blank line', async () => {
       const { stderr, exitCode } = await runYaac(
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
             { when: /Choice \[1-5\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'a\n' },
-            { when: /Repo pattern: /, send: '\n' },
+            { when: /Name \[git-token\]: /, send: '\n' },
+            { when: /Token \(PAT\): /, send: '\n' },
           ],
         },
       )
       expect(exitCode).toBe(1)
-      expect(stderr).toMatch(/Pattern cannot be empty/)
+      expect(stderr).toMatch(/Token cannot be empty/)
     })
 
-    it('rejects bare patterns missing a host', async () => {
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'auth', 'update',
-        {
-          stdinOnPrompt: [
-            { when: /Choice \[1-5\]: /, send: '1\n' },
-            { when: /Choice \[a\/b\]: /, send: 'a\n' },
-            { when: /Repo pattern: /, send: 'acme/*\n' },
-          ],
-        },
-      )
-      expect(exitCode).toBe(1)
-      expect(stderr).toMatch(/<host>\/\*/)
-    })
-
-    it('generates an SSH key on the server and prints only its public half', async () => {
+    it('generates an SSH key on the server under the default name and prints only its public half', async () => {
       // No key is read off this machine, and none lands on the server's
-      // disk: the whole data dir is searched for one, not just the
-      // credentials file the proxy pod mounts.
-      await resetCreds()
-      const { exitCode, stdout } = await generateSshCredential()
+      // disk: the whole data dir is searched for one.
+      const { exitCode, stdout } = await runYaac(
+        testEnv.env, 'auth', 'update',
+        {
+          stdinOnPrompt: [
+            { when: /Choice \[1-5\]: /, send: '1\n' },
+            { when: /Choice \[a\/b\]: /, send: 'b\n' },
+            { when: /Name \[git-key\]: /, send: '\n' },
+          ],
+        },
+      )
       expect(exitCode).toBe(0)
-      expect(stdout).toContain('SSH key generated for pattern "git.example.com/*"')
-      expect(stdout).toContain('Host key: git.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTAAAA')
-      expect(stdout).toMatch(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ yaac git\.example\.com\/\*$/m)
+      expect(stdout).toContain('SSH key "git-key" generated.')
+      const publicKey = /^(ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ git-key)$/m.exec(stdout)?.[1]
+      expect(publicKey).toBeDefined()
       expect(stdout).not.toContain('PRIVATE KEY')
-
       const grep = spawnSync('grep', ['-rl', 'PRIVATE KEY', testEnv.dataDir])
       expect(grep.stdout.toString()).toBe('')
 
       const { stdout: listed } = await runYaac(testEnv.env, 'auth', 'list')
-      expect(listed).toContain('git.example.com/*')
+      expect(listed).toContain(publicKey)
     })
 
     it('persists a Claude OAuth bundle end-to-end via the test-only login hook', async () => {

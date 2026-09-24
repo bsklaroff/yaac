@@ -48,7 +48,8 @@ const execFileAsync = promisify(execFile)
  * pod and one bare worktree pod shared by every case:
  *
  * - the credentials Secret is what injects (an api key, a git token), and
- *   rewriting it without a tool signs that tool out of a running worktree
+ *   rewriting it without a tool signs that tool out of a running worktree;
+ *   a git token reaches only worktrees of the projects it is assigned to
  * - the ssh keys reach the agent through the same Secret
  * - a refresh a worktree drives is captured into `yaac-proxy-refreshed`
  * - a blocked host lands in `yaac-proxy-state`, and widening the
@@ -71,6 +72,8 @@ const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 
 const EMPTY: CredentialBundle = { claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [] }
+/** The git token, assigned to the suite worktree's project. */
+const GIT_TOKENS: CredentialBundle['git'] = [{ token: 'ghp-real-token', projects: ['creds-suite'] }]
 
 let restoreNamespace: (() => void) | null = null
 let tempDataDir: string | null = null
@@ -80,6 +83,7 @@ const client = new ProxyClient(TEST_PROXY_CONFIG)
 
 interface TestKey {
   privateKey: string
+  publicKey: string
   fingerprint: string
   knownHostsEntry: string
 }
@@ -98,6 +102,7 @@ async function makeTestKey(dir: string, host: string, name: string): Promise<Tes
   const [keyType, keyBlob] = hostPub.trim().split(/\s+/)
   return {
     privateKey: encodeOpenSshPrivateKey(key.seed, `yaac ${name}`),
+    publicKey: key.publicKey,
     fingerprint,
     knownHostsEntry: `${host} ${keyType} ${keyBlob}`,
   }
@@ -253,6 +258,9 @@ async function curlUntil(
 const probeArgs = (extra: string): string =>
   `--cacert ${CA_PATH} --resolve ${MITM_HOST}:443:${FAKE_IP} ${extra} https://${MITM_HOST}/v1/messages`
 
+/** An HTTPS git request to the worktree's registered remote. */
+const gitProbe = `--cacert ${CA_PATH} --resolve ${GIT_HOST}:443:${FAKE_IP} https://${GIT_HOST}/acme/app.git/info/refs?service=git-upload-pack`
+
 /** What the proxy's agent holds, read in its own pod. */
 async function agentFingerprints(): Promise<string[]> {
   const { stdout } = await kubectlWithRetry([
@@ -305,7 +313,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     await ensureNamespace()
     await syncProxyCredentials({
       ...EMPTY,
-      git: [{ kind: 'https', pattern: `${GIT_HOST}/acme/*`, token: 'ghp-real-token' }],
+      git: GIT_TOKENS,
     })
     await client.ensureRunning()
     const proxyHost = await proxyServiceClusterIp()
@@ -344,10 +352,10 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       (r) => r.exit === 0)
     expect(before.exit, before.out).toBe(0)
     expect(echoedOf(before.out).headers['x-api-key']).toBe(PLACEHOLDER_API_KEY)
-    // The git token was there from the start, gated on the worktree's
-    // registered remote: an HTTPS request to that host carries it as Basic.
-    const git = await curlInPod(podName,
-      `--cacert ${CA_PATH} --resolve ${GIT_HOST}:443:${FAKE_IP} https://${GIT_HOST}/acme/app.git/info/refs?service=git-upload-pack`)
+    // The git token was there from the start, assigned to the worktree's
+    // project and gated on its registered remote: an HTTPS request to that
+    // host carries it as Basic.
+    const git = await curlInPod(podName, gitProbe)
     expect(git.exit, git.out).toBe(0)
     expect(echoedOf(git.out).headers.authorization)
       .toBe('Basic ' + Buffer.from('x-access-token:ghp-real-token').toString('base64'))
@@ -357,7 +365,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     await syncProxyCredentials({
       ...EMPTY,
       claude: { kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-real-key' },
-      git: [{ kind: 'https', pattern: `${GIT_HOST}/acme/*`, token: 'ghp-real-token' }],
+      git: GIT_TOKENS,
     })
     const after = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
       (r) => r.exit === 0 && echoedOf(r.out).headers['x-api-key'] === 'sk-ant-real-key')
@@ -370,7 +378,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   it('signs a running worktree out when the Secret is rewritten without the tool', async () => {
     await syncProxyCredentials({
       ...EMPTY,
-      git: [{ kind: 'https', pattern: `${GIT_HOST}/acme/*`, token: 'ghp-real-token' }],
+      git: GIT_TOKENS,
     })
     const r = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
       (res) => res.exit === 0 && echoedOf(res.out).headers['x-api-key'] === PLACEHOLDER_API_KEY)
@@ -383,10 +391,9 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     const withKeys = (keys: TestKey[]): CredentialBundle => ({
       ...EMPTY,
       ssh: keys.map((k, i) => ({
-        pattern: `git.${i === 0 ? 'a' : 'b'}.example/*`,
-        host: `git.${i === 0 ? 'a' : 'b'}.example`,
         privateKey: k.privateKey,
-        knownHostsEntry: k.knownHostsEntry,
+        publicKey: k.publicKey,
+        projects: [{ slug: 'creds-suite', host: `git.${i === 0 ? 'a' : 'b'}.example`, knownHostsEntry: k.knownHostsEntry }],
       })),
     })
     // Two hosts, so the known_hosts rewrite accumulates entries; the
@@ -465,6 +472,22 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     expect(allowed.exit, allowed.out).toBe(0)
     const pruned = await pollUntil(readState, (s) => !(s.blockedHosts[worktreeId] ?? []).includes(BLOCKED_HOST))
     expect(pruned.blockedHosts[worktreeId] ?? []).not.toContain(BLOCKED_HOST)
+  }, 180_000)
+
+  it('injects a git token only into worktrees of the projects it is assigned to', async () => {
+    await syncProxyCredentials({ ...EMPTY, git: GIT_TOKENS })
+    await curlUntil(podName, gitProbe, (r) => r.exit === 0 && echoedOf(r.out).headers.authorization !== undefined)
+    // Same pod, same remote: re-registered under a project the token is
+    // not assigned to, its next request goes out with no credential.
+    await applyWorktreeRegistration(worktreeId, { ...registration, projectSlug: 'creds-other' })
+    try {
+      const r = await curlUntil(podName, gitProbe,
+        (res) => res.exit === 0 && echoedOf(res.out).headers.authorization === undefined)
+      expect(r.exit, r.out).toBe(0)
+      expect(echoedOf(r.out).headers.authorization).toBeUndefined()
+    } finally {
+      await applyWorktreeRegistration(worktreeId, registration)
+    }
   }, 180_000)
 
   // LAST: it replaces the shared proxy pod.
