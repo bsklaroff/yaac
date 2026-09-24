@@ -124,6 +124,15 @@ describe('validateMamaRequest', () => {
     expect(validateMamaRequest('create', { model: "o'pus" }, 'p').ok).toBe(false)
     expect(validateMamaRequest('create', { model: '-opus' }, 'p').ok).toBe(false)
 
+    expect(validateMamaRequest('create', { 'permission-mode': 'accept-edits', mode: 'acp' }, 'p'))
+      .toEqual({ ok: true })
+    expect(validateMamaRequest('create', { 'permission-mode': 'Bypass!' }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('create', { mode: 'a'.repeat(33) }, 'p').ok).toBe(false)
+
+    expect(validateMamaRequest('create', { branch: 'feature/x-1.2' }, 'p')).toEqual({ ok: true })
+    expect(validateMamaRequest('create', { branch: 'two words' }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('create', { branch: 'x'.repeat(256) }, 'p').ok).toBe(false)
+
     // Group names are free-form user text, but bounded and single-line so
     // they cannot smuggle a second line into anything rendering them.
     expect(validateMamaRequest('group-move', { group: 'release train' }, 'p')).toEqual({ ok: true })

@@ -18,6 +18,7 @@ function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
     callerWorkspaceId: 'caller-session',
     callerProjectSlug: 'proj',
     callerTool: 'codex',
+    callerPermissionMode: 'bypass',
     prompt: 'write the report',
     ...over,
   }
@@ -52,6 +53,8 @@ describe('decideSpawn', () => {
       tool: 'codex', // the caller's own tool, absent an explicit request
       initialPrompt: 'write the report',
       worktreeId: 'minted-id',
+      mode: 'tui',
+      permissionMode: 'bypass', // the caller's own posture, likewise
       onProgress: expect.any(Function) as (message: string) => void,
     })
     await settle()
@@ -130,6 +133,8 @@ describe('decideSpawn', () => {
       initialPrompt: 'write the report',
       worktreeId: 'minted-id',
       model: 'claude-opus-4-8',
+      mode: 'tui',
+      permissionMode: 'bypass',
       onProgress: expect.any(Function) as (message: string) => void,
     })
     await settle()
@@ -141,6 +146,76 @@ describe('decideSpawn', () => {
     expect((await decideSpawn(makeRequest({ model: 'openai/gpt-5.2' }))).ok).toBe(true)
     expect(create.mock.calls[0][1]).toMatchObject({ tool: 'codex', model: 'openai/gpt-5.2' })
     await settle()
+  })
+
+  it('threads the UI mode and reference branch into the create', async () => {
+    const create = stubCreate()
+    expect((await decideSpawn(makeRequest({ mode: 'acp', branch: 'feature/x' }))).ok).toBe(true)
+    expect(create.mock.calls[0][1]).toMatchObject({ mode: 'acp', branch: 'feature/x' })
+    await settle()
+  })
+
+  it('inherits the caller\'s posture, stepping down to the most the tool has', async () => {
+    const posture = async (over: Partial<SpawnRequest>): Promise<unknown> => {
+      const create = stubCreate()
+      const decision = await decideSpawn(makeRequest(over))
+      await settle()
+      return decision.ok ? create.mock.calls[0][1].permissionMode : decision
+    }
+    expect(await posture({ callerPermissionMode: 'auto' })).toBe('auto')
+    // The headline case: a `plan` caller's sibling is `plan`, not the
+    // driver's default (`bypass` in a container).
+    expect(await posture({ callerPermissionMode: 'plan', tool: 'claude' })).toBe('plan')
+    // opencode has no `auto`; the next one down is what it inherits.
+    expect(await posture({ callerPermissionMode: 'auto', tool: 'opencode' })).toBe('accept-edits')
+    // Stepping down never goes UP: codex's adapter has nothing at or below
+    // `manual`, and pi has nothing below `bypass`, so both are refused.
+    expect(await posture({ callerPermissionMode: 'manual', mode: 'acp' })).toEqual({
+      ok: false,
+      error: "codex has no permission mode under acp at or below this worktree's own ('manual')",
+    })
+    expect(await posture({ callerPermissionMode: 'plan', tool: 'pi' })).toMatchObject({ ok: false })
+  })
+
+  it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
+    const create = stubCreate()
+    const at = (callerPermissionMode: SpawnRequest['callerPermissionMode'], permissionMode: string) =>
+      decideSpawn(makeRequest({ callerPermissionMode, permissionMode }))
+
+    expect((await at('accept-edits', 'accept-edits')).ok).toBe(true)
+    expect((await at('accept-edits', 'manual')).ok).toBe(true)
+    expect((await at('manual', 'plan')).ok).toBe(true)
+    await settle()
+    expect(create.mock.calls.map((c) => c[1].permissionMode)).toEqual(['accept-edits', 'manual', 'plan'])
+    create.mockClear()
+
+    // bypass > auto > accept-edits > manual > plan: anything left of the
+    // caller's own is refused, never clamped.
+    expect(await at('accept-edits', 'auto')).toEqual({
+      ok: false,
+      error: "permission mode 'auto' is more permissive than this worktree's own ('accept-edits'); "
+        + 'a spawned worktree may be granted at most that (bypass > auto > accept-edits > manual > plan)',
+    })
+    for (const [caller, asked] of [['plan', 'bypass'], ['plan', 'manual'], ['manual', 'accept-edits'], ['auto', 'bypass']] as const) {
+      expect((await at(caller, asked)).ok, `${caller} → ${asked}`).toBe(false)
+    }
+    // Within the ceiling but not a posture the tool has under that UI.
+    expect(await decideSpawn(makeRequest({ permissionMode: 'plan', mode: 'acp' }))).toEqual({
+      ok: false, error: "codex has no 'plan' permission mode under acp",
+    })
+    // A caller row holding a posture this build does not rank (written by
+    // another build) cannot be compared, so it grants nothing — named or not.
+    const unknown = 'dontAsk' as SpawnRequest['callerPermissionMode']
+    for (const asked of ['bypass', 'plan', undefined]) {
+      expect(await decideSpawn(makeRequest({
+        callerPermissionMode: unknown, tool: 'claude', ...(asked !== undefined ? { permissionMode: asked } : {}),
+      }))).toEqual({
+        ok: false, error: "this worktree's recorded permission mode 'dontAsk' is not one this server knows",
+      })
+    }
+    expect(await at('bypass', 'yolo')).toMatchObject({ ok: false, error: expect.stringContaining("invalid permission mode 'yolo'") as string })
+    expect(await decideSpawn(makeRequest({ mode: 'gui' }))).toMatchObject({ ok: false })
+    expect(create).not.toHaveBeenCalled()
   })
 
   it('rejects a malformed model without creating', async () => {

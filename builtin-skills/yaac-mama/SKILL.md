@@ -11,9 +11,9 @@ same project**. Use it directly — this skill is just the manual.
 
 ```
 yaac-mama list                                    # worktrees + groups here
-yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"
-yaac-mama rename [<worktree>] "<title>"           # omit the worktree to rename yourself
-yaac-mama stop [<worktree>]                       # omit the worktree to stop yourself
+yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M] [--branch B] [--group G] "<prompt>"
+yaac-mama rename [<worktree>] "<title>"            # omit the worktree to rename yourself
+yaac-mama stop [<worktree>]                        # omit the worktree to stop yourself
 yaac-mama group create "<name>"
 yaac-mama group move <worktree> ["<group>"]       # omit the group to ungroup
 yaac-mama models                                  # tools/models available
@@ -50,7 +50,21 @@ pass — the server resolves who is calling and answers for that project only.
     `anthropic/claude-opus-5`), where the provider must be the one that tool
     is authed for. There is no fixed list yaac enforces, only a shape check,
     so a typo'd id spawns and fails at the vendor.
-  - **`--group`**: file the new worktree under this group, creating the group
+  - **`--permission-mode`**: how much the new agent may do before it asks —
+    `bypass`, `auto`, `accept-edits`, `manual` or `plan`, most permissive
+    first. Omitted, it **inherits this worktree's own** (or, when the tool
+    lacks that one, the most permissive it has below it). You can grant a
+    sibling **at most your own permission mode**: asking for a more
+    permissive one is refused with an error, never quietly lowered. So is
+    one the tool lacks (pi has only `bypass`; codex under `--mode acp` has no
+    `manual` or `plan`).
+  - **`--mode`**: `tui` (the default — the agent's own terminal UI) or `acp`
+    (a chat pane in the yaac webapp).
+  - **`--branch`**: the branch on origin the new worktree starts from.
+    Omitted, the project's reference branch. Push a branch first to hand a
+    sibling work from here. A branch that is not on origin is not caught
+    here: the id comes back and the worktree then fails to provision.
+  - **`--group`**: file the new worktree in this group, creating the group
     if it does not exist. Good for a fan-out you want kept together.
 
 - **`rename [<worktree>] "<title>"`** — set the label the sidebar shows in
@@ -107,7 +121,8 @@ pass — the server resolves who is calling and answers for that project only.
   spawn-started worktrees provisioning at once per caller — over that is an
   **HTTP 429**; wait and retry.
 - **HTTP 422** is a server-side refusal with the reason in the text: an
-  unknown command or option, a malformed `--model`, a worktree id that names
+  unknown command or option, a malformed `--model`, a `--permission-mode`
+  more permissive than yours, a worktree id that names
   nothing in this project, a group name that matches two groups. Read the
   message — it says what to pass instead.
 - **HTTP 504** (containerized worktrees) means the request timed out waiting

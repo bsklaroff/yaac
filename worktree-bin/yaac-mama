@@ -3,7 +3,8 @@
 #
 # Usage:
 #   yaac-mama list
-#   yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"
+#   yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M]
+#                    [--branch B] [--group G] "<prompt>"
 #   yaac-mama rename [<worktree>] "<title>"
 #   yaac-mama stop [<worktree>]
 #   yaac-mama group create "<name>"
@@ -59,6 +60,16 @@ Options for create:
   --model <model>  model id the agent launches with — any id the tool accepts:
                    a model id/alias for claude/codex (e.g. opus), provider/model
                    for opencode and pi (e.g. anthropic/claude-opus-4-8).
+  --permission-mode <mode>
+                   how much the new agent may do before it asks: bypass, auto,
+                   accept-edits, manual or plan, most permissive first.
+                   Omitted, it inherits this worktree's own. It can never be
+                   more permissive than this worktree's: asking for more is an
+                   error. Not every tool has every mode (pi has only bypass).
+  --mode <mode>    how the agent is driven: tui (its terminal UI, the default)
+                   or acp (a chat pane in the yaac webapp).
+  --branch <name>  reference branch on origin for the new worktree. Omitted,
+                   the project's default branch.
   --group <name>   file the new worktree in this group, creating it if needed.
 
 create prints the new worktree's id; it provisions in the background
@@ -162,20 +173,24 @@ case "$1" in
 
   create)
     shift
-    tool=""; model=""; group=""
+    tool=""; model=""; perm=""; mode=""; branch=""; group=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --tool) tool="${2:?yaac-mama: --tool needs a value}"; shift 2 ;;
         --model) model="${2:?yaac-mama: --model needs a value}"; shift 2 ;;
+        --permission-mode) perm="${2:?yaac-mama: --permission-mode needs a value}"; shift 2 ;;
+        --mode) mode="${2:?yaac-mama: --mode needs a value}"; shift 2 ;;
+        --branch) branch="${2:?yaac-mama: --branch needs a value}"; shift 2 ;;
         --group) group="${2:?yaac-mama: --group needs a value}"; shift 2 ;;
         *) break ;;
       esac
     done
     if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"' >&2
+      echo 'usage: yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M] [--branch B] [--group G] "<prompt>"' >&2
       exit 2
     fi
-    run create "$1" tool "$tool" model "$model" group "$group"
+    run create "$1" tool "$tool" model "$model" permission-mode "$perm" \
+      mode "$mode" branch "$branch" group "$group"
     ;;
 
   rename)

@@ -851,6 +851,32 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(mine?.title).toBe('wiring up the mama channel')
   })
 
+  it('spawns a sibling with the create form\u2019s options, never above its own posture', async () => {
+    // This file's subject took the containerless default, which is the
+    // ceiling: a sibling may be granted that or less, never more.
+    const above = await runMama('create', '--permission-mode', 'bypass', 'x')
+    expect(above.code).toBe(1)
+    expect(above.out).toContain("more permissive than this worktree's own ('accept-edits')")
+
+    const { stdout: branch } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])
+    const made = await runMama(
+      'create', '--permission-mode', 'plan', '--mode', 'tui', '--branch', branch.trim(), 'plan the work',
+    )
+    expect(made.code).toBe(0)
+    const sibling = made.out.trim()
+    try {
+      // The id answers before the workspace is up, so the launch is waited
+      // for — and read off what the window execs, which is where a posture
+      // lost on the way would show.
+      await vi.waitFor(async () => {
+        const cmd = await tmux(sibling, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}')
+        expect(cmd).toContain('--permission-mode plan')
+      }, { timeout: 60_000, interval: 500 })
+    } finally {
+      await runYaac(serverEnv, 'worktree', 'stop', sibling)
+    }
+  }, 120_000)
+
   it('attributes a request to the token\u2019s OWN worktree, not the one asking', async () => {
     // The security property the whole design rests on: a request never names
     // a worktree, so the token is the only thing that says who is calling.
