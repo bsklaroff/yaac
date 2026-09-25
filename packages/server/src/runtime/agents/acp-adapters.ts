@@ -204,6 +204,20 @@ export function acpAdapterFor(tool: AgentTool): AcpAdapterProfile {
   return PROFILES[tool]
 }
 
+/**
+ * The posture a session mode id stands for — `modeIds` read backwards, which
+ * is how a mode the adapter moved to by itself becomes the conversation's
+ * posture. Undefined for an id no posture maps to (claude's `dontAsk`, pi's
+ * thinking levels), which is left unrecorded rather than rounded to a
+ * neighbour.
+ */
+export function acpPermissionModeFor(
+  profile: Pick<AcpAdapterProfile, 'modeIds'>,
+  modeId: string,
+): PermissionMode | undefined {
+  return (Object.keys(profile.modeIds) as PermissionMode[]).find((m) => profile.modeIds[m] === modeId)
+}
+
 /** Test-only: the table itself, to check it against the shared adapter list
  *  and the versions the image installs. */
 export const _ACP_PROFILES = PROFILES

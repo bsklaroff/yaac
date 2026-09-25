@@ -7,6 +7,9 @@ import {
   AGENT_TOOLS,
   MODEL_RE,
   PERMISSION_MODES,
+  PERMISSIVENESS,
+  isRankedPermissionMode,
+  morePermissive,
   toolSupportsPermissionMode,
   type AgentMode,
   type AgentTool,
@@ -54,15 +57,6 @@ export const SPAWN_MAX_PROMPT_CHARS = 10_000
  * while creates (which take tens of seconds) are still in flight.
  */
 export const SPAWN_MAX_IN_FLIGHT_PER_WORKTREE = 8
-
-/**
- * Postures ranked from most to least permissive — a Record, so a new
- * `PermissionMode` member cannot go unranked. A spawned worktree may run at most
- * as permissively as its caller: otherwise an agent the user left in `plan`
- * could get its work done unrestrained by asking for a sibling to do it.
- */
-const RANK: Record<PermissionMode, number> = { bypass: 0, auto: 1, 'accept-edits': 2, manual: 3, plan: 4 }
-const PERMISSIVENESS = (Object.keys(RANK) as PermissionMode[]).sort((a, b) => RANK[a] - RANK[b])
 
 /** callerWorkspaceId → number of spawn-initiated creates still provisioning. */
 const inFlightByCaller = new Map<string, number>()
@@ -194,12 +188,14 @@ function spawnPermissionMode(
   // The row's column is plain text, so a row written by another build can
   // hold a posture this one does not rank. Refused, because it cannot be
   // compared: treating it as unranked would grant anything at all.
-  if (!Object.hasOwn(RANK, ceiling)) {
+  if (!isRankedPermissionMode(ceiling)) {
     return { ok: false, error: `this worktree's recorded permission mode '${ceiling}' is not one this server knows` }
   }
   const where = mode === 'acp' ? ' under acp' : ''
   if (requested !== undefined) {
-    if (RANK[requested] < RANK[ceiling]) {
+    // At most as permissive as the caller: otherwise an agent the user left in
+    // `plan` could get its work done unrestrained by asking a sibling to do it.
+    if (morePermissive(requested, ceiling)) {
       return {
         ok: false,
         error: `permission mode '${requested}' is more permissive than this worktree's own `
@@ -211,7 +207,7 @@ function spawnPermissionMode(
       ? { ok: true, permissionMode: requested }
       : { ok: false, error: `${tool} has no '${requested}' permission mode${where}` }
   }
-  const inherited = PERMISSIVENESS.filter((m) => RANK[m] >= RANK[ceiling])
+  const inherited = PERMISSIVENESS.filter((m) => !morePermissive(m, ceiling))
     .find((m) => toolSupportsPermissionMode(tool, m, mode))
   return inherited !== undefined
     ? { ok: true, permissionMode: inherited }

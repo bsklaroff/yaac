@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import { scanJsonlForward } from './jsonl'
+import type { PermissionMode } from '@yaac/shared/types'
 
 /**
  * Classifies Claude Code's "actively working" state from the pane's OSC
@@ -102,6 +103,24 @@ export async function getFirstUserMessage(jsonlPath: string): Promise<string | u
 }
 
 /**
+ * claude's own names for its permission modes, as its hooks report them, read
+ * back as yaac's postures. `manual` is an input alias claude reports as
+ * `default`, and `dontAsk` is a mode yaac has no posture for — so it is not
+ * here, and is left unrecorded rather than rounded to a neighbour.
+ */
+const CLAUDE_POSTURES: Record<string, PermissionMode> = {
+  bypassPermissions: 'bypass',
+  auto: 'auto',
+  acceptEdits: 'accept-edits',
+  plan: 'plan',
+  default: 'manual',
+}
+
+export function claudePermissionMode(reported: string): PermissionMode | undefined {
+  return Object.hasOwn(CLAUDE_POSTURES, reported) ? CLAUDE_POSTURES[reported] : undefined
+}
+
+/**
  * Registration of yaac's agent-session discovery hook with Claude Code.
  *
  * The hook script itself is `worktree-bin/yaac-agent-links`, staged per
@@ -148,12 +167,17 @@ export const CLAUDE_HOOK_COMMAND =
   `yaac-agent-links "$HOME/.${CLAUDE_HOME_NAME}" ${CLAUDE_HOME_NAME}`
 
 /**
- * The model reporter (`worktree-bin/yaac-agent-model`), run on the two events
- * whose payload can name the model: `PostModelSwitch` (its `to_model`), which
- * claude fires the moment `/model` lands — any cause, no reply needed — and
- * `SessionStart` (its `model`). The script puts it on the pane as
- * `@yaac-model`, which the status watcher is subscribed to. Its stdout must
- * stay empty: claude hands a hook's stdout to the model on both events.
+ * The agent reporter (`worktree-bin/yaac-agent-report`), run on the events
+ * whose payload can name the model or the permission mode. The model:
+ * `PostModelSwitch` (its `to_model`), which claude fires the moment `/model`
+ * lands — any cause, no reply needed — and `SessionStart` (its `model`). The
+ * mode: `UserPromptSubmit` and `Stop` (their `permission_mode`). No event
+ * fires on a mode change itself — Shift+Tab runs nothing — so the mode is
+ * reported when a change takes hold: a mode picked between turns is in force
+ * by the next prompt, and one the agent moved to mid-turn (EnterPlanMode, a
+ * plan-exit answer) is reported as the turn ends. The script puts both on the
+ * pane, which the status watcher is subscribed to. Its stdout must stay empty:
+ * claude hands a hook's stdout to the model on these events.
  *
  * `SessionStart` names the model only on an interactive startup (and on a
  * compact, or a resume from inside a session) — NOT on a CLI `--resume`, which
@@ -163,16 +187,18 @@ export const CLAUDE_HOOK_COMMAND =
  *
  * Guarded, because claude hot-reloads this project-shared file: a worktree
  * whose staged bin predates the script would otherwise show a hook error on
- * every `/clear` and `/model`. `exec` keeps the payload on stdin.
+ * every prompt and `/model`. `exec` keeps the payload on stdin.
  */
-export const CLAUDE_MODEL_HOOK_COMMAND =
-  'command -v yaac-agent-model >/dev/null && exec yaac-agent-model || true'
+export const CLAUDE_REPORT_HOOK_COMMAND =
+  'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true'
 
 /** Every hook yaac registers, by event. */
 const CLAUDE_HOOKS: ReadonlyArray<readonly [string, string]> = [
   ['SessionStart', CLAUDE_HOOK_COMMAND],
-  ['SessionStart', CLAUDE_MODEL_HOOK_COMMAND],
-  ['PostModelSwitch', CLAUDE_MODEL_HOOK_COMMAND],
+  ['SessionStart', CLAUDE_REPORT_HOOK_COMMAND],
+  ['PostModelSwitch', CLAUDE_REPORT_HOOK_COMMAND],
+  ['UserPromptSubmit', CLAUDE_REPORT_HOOK_COMMAND],
+  ['Stop', CLAUDE_REPORT_HOOK_COMMAND],
 ]
 
 /** Commands written by installs that registered the hook by its in-image path,

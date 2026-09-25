@@ -287,7 +287,10 @@ the model the session opened with — in either shape, because adapters disagree
 about which they use (a `models` block, a `configOptions` entry with
 `id: model`, or both) — and every change since arrives as the adapter's
 `config_option_update`, the moment it lands. The conversation publishes it on
-the live agent set, which is what the row is written from.
+the live agent set, which is what the row is written from. A mode the adapter
+moves the session to travels the same way (a `current_mode_update`, or the
+`mode` option in a `config_option_update`), and becomes the worktree's posture
+(docs/permission-modes.md, "Following the agent").
 
 The row is still written by the reconciler's conversation sweep, and the
 handshake that mints the id moves nothing the informers watch — so the id

@@ -119,11 +119,11 @@ export function onStreamHealthLost(fn: () => void): void {
 /**
  * Register the handler fired when a worktree's *set* of live conversations
  * changes — one appeared, one went, one finally learned its id, or one
- * switched model (which is how a `/model` reaches the row: pushed, not polled
- * out of a transcript). Separate from the snapshot notification on purpose:
- * that one fires on every turn boundary, and its consumer only pushes a
- * snapshot. This one drives a reconcile pass, and a pass per turn would be a
- * pod sweep per turn.
+ * switched model or permission mode (which is how a `/model` or a Shift+Tab
+ * reaches the row: pushed, not polled out of a transcript). Separate from the
+ * snapshot notification on purpose: that one fires on every turn boundary,
+ * and its consumer only pushes a snapshot. This one drives a reconcile pass,
+ * and a pass per turn would be a pod sweep per turn.
  *
  * The signal matters most for `acp`, where the conversation id arrives from
  * the handshake rather than from a substrate event: nothing else would mark
@@ -275,11 +275,12 @@ export function setLiveAgents(slug: string, worktreeId: string, agents: LiveAgen
   const changed = previous === undefined
     || previous.length !== agents.length
     || agents.some((a) => !previous.some((p) =>
-      p.handle === a.handle && p.agentSessionId === a.agentSessionId && p.model === a.model))
+      p.handle === a.handle && p.agentSessionId === a.agentSessionId && p.model === a.model
+      && p.reportedMode === a.reportedMode))
   e.liveAgents = agents
   for (const handle of [...e.agents.keys()]) if (!next.has(handle)) e.agents.delete(handle)
   e.updatedAtMs = Date.now()
-  // A membership, id or model change is what the agent-session registry joins
+  // A membership, id, model or mode change is what the agent-session registry joins
   // against, so it gets its own notification: the reconcile pass it kicks is
   // how a just-handshaken ACP conversation becomes a row without waiting for
   // the resync.

@@ -168,7 +168,10 @@ auto > accept-edits > manual > plan`. Otherwise an agent that the user left in
 `plan` could get its work done unrestrained by asking a sibling to do it.
 The project's remembered posture is skipped here too: a spawned sibling runs
 with nobody attached, so a `plan` inherited from someone's last webapp create
-would leave it waiting for an answer that never comes.
+would leave it waiting for an answer that never comes. The same is true, and
+intended, of a `bypass` sibling whose agent enters plan mode on its own: its
+plan-exit ask is a question for a person, so it is held for one rather than
+approved (see "Following the agent"), and the sibling shows as waiting.
 
 A named `--permission-mode` above the ceiling, or one the tool lacks, is
 refused. This is the last point where a refusal can reach the caller,
@@ -177,11 +180,12 @@ steps down to the most permissive posture the tool has below the ceiling. If
 there is none, for example pi under a caller that is not in `bypass`, it is
 refused.
 
-The ceiling has two limits. First, it is the caller's posture as recorded on
-its row, which is the posture it launched in. A mode changed inside the
-running agent (claude's Shift+Tab, or the ACP plan-exit ask that moves a
-conversation to `acceptEdits`) never reaches the row. Second, it binds the
-`yaac-mama` channel, not every way to create a worktree. Under k8s that
+The ceiling is the caller's posture as its row holds it, which follows the
+running agent (see "Following the agent"): a caller that moved into plan
+mode caps its siblings at `plan`. A move read from inside the workspace can
+only lower the row, or bring it back up to what a person chose — never past
+that — so no in-workspace claim can raise a caller's ceiling. The ceiling
+binds the `yaac-mama` channel, not every way to create a worktree. Under k8s that
 channel is the only one a pod has, because the proxy attributes the caller by
 source IP and the ingress policy keeps pods off the server's API. Under
 containerless there is no such boundary (docs/containerless-driver.md): a
@@ -212,10 +216,13 @@ another.
 
 The resolved answer is recorded on `worktrees.permissionMode`, because a
 worktree outlives the request that made it: a restart must relaunch its
-agents the way the user asked, not the way today's default would. A restart
-therefore re-states the row's posture, which is neither remembered (it is
-not a person choosing) nor refused when unsupported (a row written by a
-different build would otherwise strand a checkout).
+agents the way the user asked, not the way today's default would. That
+column is the posture a person *chose*; the row also follows the agent while
+it runs, clamped at the choice (see "Following the agent"), and a restart
+relaunches in what that adds up to. It re-states it rather than recording it
+again, so it is neither remembered (it is not a person choosing) nor refused
+when unsupported (a row written by a different build would otherwise strand a
+checkout).
 
 ## How a conversation honors one
 
@@ -250,8 +257,119 @@ One posture is *not* re-asserted: a reattach leaves a live adapter's mode
 alone. Leaving plan mode is itself a permission ask whose options are mode
 ids, so a user who accepted "yes, and auto-accept edits" moved the session to
 `acceptEdits`; re-stating the row on the next relay hiccup would drag them
-back. The row wins again at the next restart, which is where it is the durable
-answer.
+back. The row has followed them there instead, so the next restart brings the
+conversation back in the mode it was left in.
+
+## Following the agent
+
+A posture is chosen at launch, but the agent can leave it: a user presses
+Shift+Tab in claude's TUI or picks `/permissions` in codex's, answers a
+plan-exit ask with "yes, and auto-accept edits", or the agent enters plan
+mode on its own. The row follows, because both of its readers mean the
+posture the agent is in *now* — a restart relaunches in it, and `yaac-mama
+create` caps a sibling at it.
+
+**What a move may do depends on where it was seen.** The row keeps two
+columns: `permissionMode`, the posture a person chose (at create or claim),
+and `observedPermissionMode`, the posture the running agent was since seen in.
+The worktree runs under the observed one if set, else the chosen one
+(`WorktreeRow.permissionMode`), and that is what a restart and the spawn
+ceiling read.
+
+**Every move is an observation.** Anything running in the workspace could
+have made it: the agent, a script it wrote that a person later ran, a
+dependency's install script. A pane option or a codex rollout is written
+there outright. An ACP adapter's report is no better: the adapter moves for
+any client that sets its `mode`, and acpd's socket path belongs to the
+agent's own user, so whatever listens there is what the server's connection
+reaches. Not even a person's answer in yaac's pane vouches for a move — a
+plan-exit ask's options are mode ids, but the ask, the labels the pane shows
+and the ids behind them all come from inside the workspace, so a green
+"Allow" can carry `bypassPermissions`.
+
+So a move is recorded at most as permissively as the chosen posture. It can
+take the worktree down, and back up to what a person chose, never past it; a
+claim of `bypass` in a worktree created in `plan` changes nothing. The cost is
+that a real move above the choice — a Shift+Tab from `accept-edits` into
+`auto`, "yes, and bypass permissions" on a plan-exit ask — does not carry
+across a restart or into the spawn ceiling, which is the side to fail on.
+
+A create or a claim is a person choosing again, so it forgets what was
+observed under the last choice. A restart does not: it relaunches in the
+posture the row already holds.
+
+Only a *change* in what an agent reports is recorded, not a difference from
+the row: the row follows every agent in the worktree, and a report that has
+not moved is not news about any of them. Every source reports per pane or per
+conversation, and the registry's reconcile pass writes the result through the
+event door (`permission-mode-changed`). A mode no posture stands for —
+claude's `dontAsk`, pi's thinking levels — is left unrecorded rather than
+rounded to a neighbour.
+
+**Under `acp` the adapter says so.** Claude's adapter announces a move it made
+itself (EnterPlanMode, a plan-exit answer) as a `current_mode_update`;
+codex-acp reports every change as a `config_option_update` naming its `mode`
+option. The conversation reads both off its socket, and the mode id rides the
+live agent set to the registry (`LiveAgent.reportedMode`), read back through
+the adapter profile's `modeIds`. opencode's adapter
+never reports a mode (its one mode, `plan`, is set by yaac), and pi's are
+thinking levels.
+
+A conversation also answers its own asks by its own session's posture, on
+the same terms: it starts from the worktree's and follows its adapter down,
+never up — so no line claiming `bypassPermissions`, and no click on an option
+that carries it, starts auto-approving. Each
+adapter holds its own mode, so one conversation entering plan mode leaves
+another still in `bypassPermissions` answering as before, and a person
+answering "yes, and bypass permissions" in one pane does not start
+auto-approving another's asks. A reattach is a new conversation object, and
+the row may hold another conversation's raise, so it starts from the
+stricter of the row and the mode its own acpd record last shows; an ask that
+arrives while it reads that record waits for the answer. A `bypass`
+conversation that enters plan mode shows its plan-exit ask in the pane, as
+the TUI would, instead of approving it.
+
+**Under `tui` each tool is read where it writes its posture down.** None of
+them announces a change to anything outside the process as it happens:
+
+- **claude** — its hooks carry the mode it is in as `permission_mode`
+  (`manual` arrives as `default`), but no hook fires on the change itself. So
+  the reporter (`worktree-bin/yaac-agent-report`, the same script that reports
+  the model) also runs on the two that fire when a change takes hold:
+  `UserPromptSubmit`, since a mode picked between turns is in force by the
+  next prompt, and `Stop`, for one the agent moved to mid-turn. It sets the
+  pane option `@yaac-permission-mode`.
+- **opencode** — its Tab switches between its `build` and `plan` agents, and
+  changes only the TUI's draft until a prompt is sent, when its server emits
+  `session.agent.selected`. The same plugin that reports the model reports
+  the agent. An agent is only half a posture — the rules ride the launch
+  config — so it is read against the posture the worktree runs under: `plan`
+  and `manual` share their rules, so a switch moves between those two, and
+  `build` under any other posture is that posture. The plan agent over
+  `bypass`'s or `accept-edits`' rules is no posture yaac has, and is left
+  unrecorded; so is the TUI's auto-accept toggle, which writes a file every
+  worktree of the project shares.
+- **codex** — its hooks carry `permission_mode` only as `bypassPermissions` or
+  `default`, two answers for five postures. Its rollout says more, and at
+  once: a `thread_settings_applied` event is written the moment `/permissions`
+  or Shift+Tab changes anything, and a `turn_context` at every turn, both
+  naming the approval policy, its reviewer, the permission profile and the
+  collaboration mode. The registry reads the newest from each recorded
+  rollout and maps it back through the launch table, codex's own plan mode
+  reading as `plan`. It is read on the reconcile pass rather than pushed. A
+  reading is news when it changed since the last, or — on the first — when
+  its entry was written during the current pod life: a restart resumes a
+  rollout whose newest entry is the old process's until codex writes its
+  first turn, and that is where the worktree stands, not a move. Under
+  containerless no codex rollout is recorded (docs/containerless-driver.md),
+  so there it is not followed.
+- **pi** has no permission system to move.
+
+claude and opencode reach the server by push: the reporter's option rides the
+same per-pane subscription as the model, filtered inside the format so a value
+anything in the workspace sets cannot forge control-mode lines. A mode changed
+and never prompted in is not seen, and has not yet done anything either. A
+move made while no server was watching is not recovered.
 
 ## Prewarmed spares
 

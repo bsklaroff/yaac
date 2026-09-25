@@ -64,7 +64,7 @@ import {
   buildWindowsExec,
   buildWorktreeLinkExec,
   ensureClaudeHooks,
-  ensureModelReporters,
+  ensureAgentReporters,
   validateInitWindows,
   verifyAgentWindowAlive,
   type InitWindow,
@@ -1233,7 +1233,7 @@ export async function createWorktree(
     // pi and opencode report their model from code loaded into the tool, which
     // lives in their homes the same way. Best-effort for the same reason: a
     // missed write costs the model label, not the session.
-    await ensureModelReporters({
+    await ensureAgentReporters({
       piAgentDir: path.join(pi, 'agent'),
       opencodeConfigDir: opencodeConfig,
     }).catch(() => {})

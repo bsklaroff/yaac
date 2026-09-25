@@ -204,7 +204,7 @@ describe('buildAgentCmd', () => {
         expect(cmd).not.toContain('--agent')
         // Every posture also loads yaac's model reporter.
         const { plugins, ...posture } = opencodeConfigOf(cmd)
-        expect(plugins).toEqual(['$HOME/.config/opencode/yaac-model'])
+        expect(plugins).toEqual(['$HOME/.config/opencode/yaac-report'])
         return posture
       }
       const rule = (action: string, effect: string) => ({ action, resource: '*', effect })
@@ -263,7 +263,7 @@ describe('buildAgentCmd', () => {
       // expands to the workspace's own opencode config home.
       expect(JSON.parse(out) as OpencodeConfig).toEqual({
         ...opencodeConfigOf(cmd),
-        plugins: ['/home/someone/.config/opencode/yaac-model'],
+        plugins: ['/home/someone/.config/opencode/yaac-report'],
       })
     })
 

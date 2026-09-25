@@ -418,8 +418,10 @@ export function translateSessionUpdate(params: unknown): TranslatedUpdate | unde
       return patch === undefined ? undefined : { kind: 'tool', patch }
     }
     default:
-      // `current_mode_update` and anything a newer adapter adds. Deliberately
-      // silent: an unknown variant is not an error.
+      // A mode change is session state, not something a pane renders — the
+      // conversation reads it off its socket (`sessionModeId`). Anything a
+      // newer adapter adds is dropped the same way: an unknown variant is not
+      // an error.
       return undefined
   }
 }
@@ -571,4 +573,29 @@ export function sessionModel(state: unknown): string | undefined {
     if (asString(o?.id) === 'model') return asString(o?.currentValue)
   }
   return undefined
+}
+
+/**
+ * The session mode an update says the session is in now, or undefined when it
+ * says nothing about one.
+ *
+ * Two variants carry it, because adapters disagree about which to send:
+ * claude's adapter sends `current_mode_update` when the agent moves itself (an
+ * ExitPlanMode answer, EnterPlanMode), while codex-acp reports every change as
+ * a `config_option_update` naming its `mode` option — the same two shapes
+ * `acpModeOffered` reads a handshake reply in.
+ */
+export function sessionModeId(update: Record<string, unknown>): string | undefined {
+  if (update.sessionUpdate === 'current_mode_update') return asString(update.currentModeId)
+  return update.sessionUpdate === 'config_option_update' ? sessionStateModeId(update) : undefined
+}
+
+/** The mode a message carrying the session's state names — a `session/new`
+ *  or `session/load` reply, a `config_option_update` — in either shape. */
+export function sessionStateModeId(state: unknown): string | undefined {
+  const r = asRecord(state)
+  const current = asString(asRecord(r?.modes)?.currentModeId)
+  if (current !== undefined) return current
+  const options = Array.isArray(r?.configOptions) ? r.configOptions : []
+  return asString(options.map(asRecord).find((o) => asString(o?.id) === 'mode')?.currentValue)
 }

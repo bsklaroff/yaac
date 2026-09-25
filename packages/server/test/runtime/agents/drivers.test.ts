@@ -316,12 +316,14 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 101 1\n%7 claude\n%end 1 101 1\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'status-7:%7:#{pane_title}'"))
     stream.feed('%begin 1 102 1\n%end 1 102 1\n')
-    // A second subscription per pane follows its model: the option claude's
-    // hooks set the moment `/model` lands — filtered to printable ASCII and
-    // bounded by tmux itself, since anything in the workspace can set it and
-    // tmux would otherwise pass a newline straight into this stream.
-    await vi.waitFor(() => expect(stream.writes.join(''))
-      .toContain("refresh-client -B 'model-7:%7:#{=128;s/[^ -~]//:@yaac-model}'"))
+    // A second subscription per pane follows what its tool reports: the model
+    // option claude's hooks set the moment `/model` lands, and the permission
+    // mode they set as a change takes hold — each filtered and bounded by tmux
+    // itself, since anything in the workspace can set them and tmux would
+    // otherwise pass a newline straight into this stream.
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain(
+      "refresh-client -B 'report-7:%7:#{=128;s/[^ -~]//:@yaac-model}|#{=32;s/[^A-Za-z-]//:@yaac-permission-mode}'",
+    ))
     stream.feed('%begin 1 103 1\n%end 1 103 1\n')
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
@@ -340,16 +342,28 @@ describe('agentDriver', () => {
     // republish the live set with it.
     const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
     const before = agentSets().length
-    stream.feed('%subscription-changed model-7 $0 @0 0 %7 : \n')
-    stream.feed('%subscription-changed model-7 $0 @0 0 %7 : claude-opus-5-5[1m]\n')
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : \n')
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-opus-5-5[1m]\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-opus-5-5[1m]' }],
     }))
-    stream.feed('%subscription-changed model-7 $0 @0 0 %7 : claude-sonnet-5\n')
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-sonnet-5' }],
     }))
     expect(agentSets().length).toBe(before + 2)
+
+    // The mode rides the same push, in claude's own words — which posture it
+    // stands for is decided where the worktree's row is, not here.
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|acceptEdits\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents',
+      agents: [{ handle: '%7', tool: 'claude', model: 'claude-sonnet-5', reportedMode: 'acceptEdits' }],
+    }))
+    // An unchanged push is not a change, and an empty half leaves the last
+    // report standing.
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|\n')
+    expect(agentSets().length).toBe(before + 3)
   })
 
   it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
@@ -366,14 +380,14 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 101 1\n%2 codex\n%end 1 101 1\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'status-2:"))
     stream.feed('%begin 1 102 1\n%end 1 102 1\n')
-    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'model-2:%2:#{?#{m/r: [|] ,"))
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'report-2:%2:#{?#{m/r: [|] ,"))
     stream.feed('%begin 1 103 1\n%end 1 103 1\n')
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
 
     // No cache — api-key auth and a failed fetch never write one — but the
     // title still shows a display name from codex's bundled catalog, so the
     // catalogs' own spelling rule stands in.
-    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : GPT-6-Astra\n')
+    stream.feed('%subscription-changed report-2 $0 @0 0 %2 : GPT-6-Astra\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'gpt-6-astra' }],
     }))
@@ -386,16 +400,16 @@ describe('agentDriver', () => {
         { slug: 'odd-slug', display_name: 'Odd Name' },
       ],
     }))
-    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : GPT-5.6-Sol\n')
+    stream.feed('%subscription-changed report-2 $0 @0 0 %2 : GPT-5.6-Sol\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'gpt-5.6-sol' }],
     }))
-    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : Odd Name\n')
+    stream.feed('%subscription-changed report-2 $0 @0 0 %2 : Odd Name\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'odd-slug' }],
     }))
     // A model the catalog does not list is titled by its slug already.
-    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : my-made-up-model\n')
+    stream.feed('%subscription-changed report-2 $0 @0 0 %2 : my-made-up-model\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'my-made-up-model' }],
     }))
@@ -751,6 +765,153 @@ describe('agentDriver', () => {
     expect(stream.sent().find((m) => m.id === 99)!.result)
       .toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
     expect(conversation.isAwaitingPermission).toBe(false)
+  })
+
+  /** A `session/update` notification, as a line off the wire. */
+  const updateLine = (agentSessionId: string, update: Record<string, unknown>): string =>
+    `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: agentSessionId, update } })}\n`
+
+  /** Every mode the connection published on its live set, in order. */
+  const reportedModes = (seen: AgentObservation[]): string[] => seen.flatMap((o) =>
+    o.kind === 'live-agents' ? o.agents.flatMap((a) => (a.reportedMode !== undefined ? [a.reportedMode] : [])) : [])
+
+  /**
+   * An adapter can move a session by itself — claude's announces EnterPlanMode
+   * and a plan-exit answer as a `current_mode_update` — and the mode it is in
+   * from then on is what it answers asks by, and what the worktree's row is
+   * told about.
+   */
+  it('publishes a mode the adapter moves to, and answers its asks by it', async () => {
+    const { stream, seen } = await attachedUnder('bypass', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+
+    stream.feed(updateLine('acp-1', { sessionUpdate: 'current_mode_update', currentModeId: 'plan' }))
+    await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('plan'))
+
+    // The row said bypass, but this session is in plan mode now: its ask to
+    // leave it is the user's to answer.
+    stream.feed(permissionAsk(99))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 99)).toBe(false)
+  })
+
+  // Nothing on this stream says who asked for a move: acpd's socket path is
+  // the agent's own, and the adapter moves for any client that sets its mode.
+  // So a move up is not believed — only a move a person picked in the pane.
+  it('never starts answering for the user on a mode it did not see a person pick', async () => {
+    const { stream, seen } = await attachedUnder('manual', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+    stream.feed(updateLine('acp-1', { sessionUpdate: 'current_mode_update', currentModeId: 'bypassPermissions' }))
+    // Still reported — as an observation, which the row clamps.
+    await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('bypassPermissions'))
+
+    stream.feed(permissionAsk(99))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 99)).toBe(false)
+  })
+
+  // A plan-exit ask's options ARE mode ids — but the ask, the labels a pane
+  // shows and the ids behind them all come from inside the workspace, so a
+  // green "Allow" can carry `bypassPermissions`. A person's click on it is not
+  // a person choosing bypass, and neither is an answer to an ask this
+  // connection never received.
+  it('takes no answer in the pane as a person choosing a looser mode', async () => {
+    const { stream, seen } = await attachedUnder('plan', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'acp-1',
+        toolCall: { toolCallId: 'call-5', title: 'Run pnpm test', kind: 'execute' },
+        options: [
+          { optionId: 'bypassPermissions', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+        ],
+      },
+    })}\n`)
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    conversation.answerPermission('5', 'bypassPermissions')
+    conversation.answerPermission('x1', 'bypassPermissions')
+    // The adapter echoing the move is only its word.
+    stream.feed(updateLine('acp-1', { sessionUpdate: 'current_mode_update', currentModeId: 'bypassPermissions' }))
+    await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('bypassPermissions'))
+
+    stream.feed(permissionAsk(6))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 6)).toBe(false)
+  })
+
+  // A reattach is a new conversation object, and the row it reads may hold
+  // ANOTHER conversation's raise. Its own record says what its own session
+  // was last in, and the stricter of the two is what it answers by.
+  it('seeds a reattach with the stricter of the row and its own record', async () => {
+    await record('acp-1', [
+      lifeLine,
+      { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
+      { jsonrpc: '2.0', id: 'h-1', result: { sessionId: 'acp-1', modes: { currentModeId: 'default' } } },
+    ])
+    const { stream } = await attachedUnder('bypass', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+    stream.feed(permissionAsk(7))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 7)).toBe(false)
+  })
+
+  it('reads a mode change reported as a config option, which is how codex-acp says it', async () => {
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'codex\n', stderr: '' })
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'codex', agentSessionId: 'acp-1' }]),
+      permissionMode: () => Promise.resolve('accept-edits'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
+    stream.feed(helloLine(false))
+    stream.feed(updateLine('acp-1', {
+      sessionUpdate: 'config_option_update',
+      configOptions: [
+        { id: 'mode', currentValue: 'agent-full-access' },
+        { id: 'model', currentValue: 'gpt-5.2-codex' },
+      ],
+    }))
+    await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('agent-full-access'))
+  })
+
+  /**
+   * The posture an ask is answered by belongs to the conversation, not the
+   * worktree: each adapter holds its own mode, so one conversation entering
+   * plan mode says nothing about another still bypassing permissions.
+   */
+  it('keeps each conversation on its own posture', async () => {
+    const streams = new Map([['claude', new FakeStream()], ['claude-2', new FakeStream()]])
+    podExec.mockResolvedValue({ stdout: 'claude\nclaude-2\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: (_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`${h}.sock`))!)!,
+      recordedSessions: () => Promise.resolve([
+        { handle: 'claude', agentSessionId: 'acp-a' },
+        { handle: 'claude-2', agentSessionId: 'acp-b' },
+      ]),
+      permissionMode: () => Promise.resolve('bypass'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-b')).toBeDefined())
+    const a = streams.get('claude')!
+    const b = streams.get('claude-2')!
+    a.feed(helloLine(false))
+    b.feed(helloLine(false))
+
+    a.feed(updateLine('acp-a', { sessionUpdate: 'current_mode_update', currentModeId: 'plan' }))
+    a.feed(permissionAsk(1))
+    b.feed(permissionAsk(2))
+    // The other conversation's adapter still bypasses permissions, so its ask
+    // is answered for the user as before.
+    await vi.waitFor(() => expect(b.sent().some((m) => m.id === 2)).toBe(true))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-a')!.isAwaitingPermission).toBe(true))
+    expect(a.sent().some((m) => m.id === 1)).toBe(false)
   })
 
   it('answers a dismissal as cancelled, and ignores a second answer for the same ask', async () => {

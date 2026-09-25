@@ -2,7 +2,9 @@ import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
+  getAgentSessionPermissionMode,
   readAcpFirstPrompt,
+  resolveAgentPermissionMode,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
@@ -20,9 +22,9 @@ import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
-import type { AgentSessionLinkRow, DiscoveredSession } from '#db'
+import type { AgentSessionLinkRow, DiscoveredSession, WorktreeRow } from '#db'
 import type { LiveAgent } from '#runtime/agents'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**
  * Reconcile the agent-session model from what the pods report.
@@ -109,6 +111,9 @@ export async function reconcileWorktreeAgentSessions(
   // refusal for the create path, which calls in directly.
   const row = await getWorktreeRow(projectSlug, worktreeId)
   if (row?.spare === true) return
+  // Ahead of the history, because a pane reports its posture whether or not
+  // any conversation on it has been recorded yet.
+  await followReportedModes(projectSlug, worktreeId, 'tui', row, liveAgents(projectSlug, worktreeId))
 
   // Fold whatever the in-pod hook has appended into rows. The hook is the
   // only witness of a user-started session — `/clear`, a hand-typed
@@ -239,6 +244,7 @@ export async function reconcileWorktreeAgentSessions(
     if (Object.keys(capture).length === 0) return
     await setAgentSessionCapture(projectSlug, l.tool, l.agentSessionId, capture)
   }))
+  if (row !== undefined) await followTranscriptModes(projectSlug, worktreeId, row, links)
 
   // Intersect the recorded handles with what the status watcher can see. When
   // the watcher has no live set yet (a pod whose connection hasn't attached),
@@ -256,6 +262,98 @@ export async function reconcileWorktreeAgentSessions(
     .filter((l) => l.paneId !== undefined && handles.has(l.paneId))
     .map((l) => ({ tool: l.tool, agentSessionId: l.agentSessionId, paneId: l.paneId as string }))
   await applyWorktreeEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
+}
+
+/**
+ * What each live agent last reported, per worktree, for the pod life it was
+ * reported in — handles restart at `%0` (or the tool's name) in a new pod, so
+ * a report is only ever compared with its own life's.
+ */
+const reportedModes = new Map<string, { life: number; byHandle: Map<string, string> }>()
+
+/** What each codex rollout was last read to say, per conversation. */
+const transcriptModes = new Map<string, PermissionMode>()
+
+/** Test helper: forget every mode seen so far. */
+export function _resetReportedModesForTests(): void {
+  reportedModes.clear()
+  transcriptModes.clear()
+}
+
+/**
+ * Record the posture moves the live agents report — a Shift+Tab, an agent
+ * entering plan mode, a plan-exit answer taking effect.
+ *
+ * Only a CHANGE in what an agent reports is recorded, never a mere difference
+ * from the row: the row also follows the worktree's other agents, and a report
+ * that has not moved is not news about any of them. A first report is a
+ * change, since a pane or conversation says nothing until it has something to
+ * say.
+ *
+ * Every move is an observation — nothing that reports one can say who asked
+ * for it — so the row takes it at most as permissively as the posture a
+ * person chose (`setWorktreePermissionMode`).
+ */
+async function followReportedModes(
+  projectSlug: string,
+  worktreeId: string,
+  mode: AgentMode,
+  row: WorktreeRow | undefined,
+  observed: LiveAgent[] | undefined,
+): Promise<void> {
+  if (row === undefined || observed === undefined) return
+  const key = `${projectSlug}/${worktreeId}`
+  const life = row.lifeStartedAt?.getTime() ?? 0
+  let seen = reportedModes.get(key)
+  if (seen?.life !== life) {
+    seen = { life, byHandle: new Map() }
+    reportedModes.set(key, seen)
+  }
+  for (const a of observed) {
+    if (a.reportedMode === undefined || seen.byHandle.get(a.handle) === a.reportedMode) continue
+    seen.byHandle.set(a.handle, a.reportedMode)
+    const posture = resolveAgentPermissionMode(mode, a.tool, a.reportedMode, row.permissionMode)
+    if (posture === undefined || posture === row.permissionMode) continue
+    await applyWorktreeEvent({ type: 'permission-mode-changed', projectSlug, worktreeId, permissionMode: posture })
+  }
+}
+
+/**
+ * The same for the tool whose posture is read rather than pushed: codex,
+ * whose rollout records every settings change (`getAgentSessionPermissionMode`).
+ *
+ * A reading is news when it changed since the last one — or, on the first,
+ * when it was written during the current pod life. A restart resumes the same
+ * rollout, whose newest entry is the OLD process's until codex writes its
+ * first turn, and reading that as news would drag the row off the posture the
+ * restart just relaunched in; an entry written since is this process's own,
+ * even on a first reading (a Shift+Tab before the first prompt).
+ */
+async function followTranscriptModes(
+  projectSlug: string,
+  worktreeId: string,
+  row: WorktreeRow,
+  links: AgentSessionLinkRow[],
+): Promise<void> {
+  for (const l of links) {
+    const read = await getAgentSessionPermissionMode(l.tool, absoluteTranscriptPath(l))
+    // Nothing read is no news — a rollout not written yet, or settings no
+    // posture stands for — and must not make the next reading look like one.
+    if (read === undefined) continue
+    const key = `${projectSlug}/${l.tool}/${l.agentSessionId}`
+    const previous = transcriptModes.get(key)
+    transcriptModes.set(key, read.permissionMode)
+    const news = previous === undefined
+      ? read.atMs >= (row.lifeStartedAt?.getTime() ?? 0)
+      : read.permissionMode !== previous
+    if (!news || read.permissionMode === row.permissionMode) continue
+    await applyWorktreeEvent({
+      type: 'permission-mode-changed',
+      projectSlug,
+      worktreeId,
+      permissionMode: read.permissionMode,
+    })
+  }
 }
 
 /**
@@ -399,6 +497,9 @@ async function reconcileAcpAgentSessions(
 ): Promise<void> {
   const observed = liveAgents(projectSlug, worktreeId)
   if (observed === undefined) return
+  await followReportedModes(
+    projectSlug, worktreeId, 'acp', await getWorktreeRow(projectSlug, worktreeId), observed,
+  )
   const live = await Promise.all(
     observed
       .filter((a) => a.agentSessionId !== undefined)

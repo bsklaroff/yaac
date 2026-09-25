@@ -206,7 +206,7 @@ option, `@yaac-model`, which the status watcher subscribes to over control mode
 exactly as it does to the pane's status — through a format that strips
 anything unprintable and bounds the length, because anything in the workspace
 can set the option and tmux would otherwise pass a newline straight into the
-control stream. The tools set it through `worktree-bin/yaac-agent-model`:
+control stream. The tools set it through `worktree-bin/yaac-agent-report`:
 
 - claude from its `PostModelSwitch` hook, on any switch, and its `SessionStart`
   hook, which names the model on an interactive startup — but not on the CLI
@@ -222,7 +222,11 @@ control stream. The tools set it through `worktree-bin/yaac-agent-model`:
   the title and maps codex's display name back to the slug — through the
   catalog codex caches in its home, else by the catalogs' spelling rule.
 
-`ensureModelReporters` writes the pi extension and opencode plugin into the
+The same script, subscription and plugin carry the permission mode the agent
+is in, as a second pane option (`@yaac-permission-mode`) — what that means for
+the worktree's row is docs/permission-modes.md's "Following the agent".
+
+`ensureAgentReporters` writes the pi extension and opencode plugin into the
 project's tool homes; claude's hooks are registered beside its discovery hook.
 A pushed model belongs to the pane, so it is written to whichever conversation
 owns the pane now — the last one the worktree's session-starts log saw start

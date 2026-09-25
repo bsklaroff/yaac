@@ -5,7 +5,7 @@ import os from 'node:os'
 
 import {
   CLAUDE_HOOK_COMMAND,
-  CLAUDE_MODEL_HOOK_COMMAND,
+  CLAUDE_REPORT_HOOK_COMMAND,
   classifyClaudeTitle,
   ensureClaudeHooks,
   getFirstUserMessage,
@@ -236,7 +236,7 @@ describe('ensureClaudeHooks', () => {
   const hook = (command: string): HookMatcher =>
     ({ matcher: '*', hooks: [{ type: 'command', command, timeout: 10 }] })
 
-  it('registers the discovery and model hooks alongside the settings create.ts seeds', async () => {
+  it('registers the discovery and report hooks alongside the settings create.ts seeds', async () => {
     // The real ordering: seedClaudeSettings owns the file first, then the hook
     // is merged in. Both keys have to survive.
     await seedClaudeSettings(settingsPath)
@@ -245,10 +245,14 @@ describe('ensureClaudeHooks', () => {
     const settings = await read()
     expect(settings.skipDangerousModePermissionPrompt).toBe(true)
     expect(settings.cleanupPeriodDays).toBe(36500)
-    expect(settings.hooks?.SessionStart).toEqual([hook(CLAUDE_HOOK_COMMAND), hook(CLAUDE_MODEL_HOOK_COMMAND)])
+    expect(settings.hooks?.SessionStart).toEqual([hook(CLAUDE_HOOK_COMMAND), hook(CLAUDE_REPORT_HOOK_COMMAND)])
     // The model reporter also runs on the switch itself, which claude fires
     // the moment `/model` lands, before anything answers as the new model.
-    expect(settings.hooks?.PostModelSwitch).toEqual([hook(CLAUDE_MODEL_HOOK_COMMAND)])
+    expect(settings.hooks?.PostModelSwitch).toEqual([hook(CLAUDE_REPORT_HOOK_COMMAND)])
+    // And on the two events that carry the permission mode when a change
+    // takes hold — claude has no event for the change itself.
+    expect(settings.hooks?.UserPromptSubmit).toEqual([hook(CLAUDE_REPORT_HOOK_COMMAND)])
+    expect(settings.hooks?.Stop).toEqual([hook(CLAUDE_REPORT_HOOK_COMMAND)])
     // Bare name and `$HOME`, because this file is shared by a whole project
     // and read by worktrees of either substrate: the staged script sits at
     // /usr/local/bin in a pod and under the workspace's own home on a host,
@@ -256,8 +260,8 @@ describe('ensureClaudeHooks', () => {
     expect(CLAUDE_HOOK_COMMAND).toBe('yaac-agent-links "$HOME/.claude" claude')
     // Guarded: the file is hot-reloaded by claudes whose staged bin may
     // predate the script, and an absent one must not surface as a hook error.
-    expect(CLAUDE_MODEL_HOOK_COMMAND)
-      .toBe('command -v yaac-agent-model >/dev/null && exec yaac-agent-model || true')
+    expect(CLAUDE_REPORT_HOOK_COMMAND)
+      .toBe('command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true')
   })
 
   it('is idempotent across the session creates that re-run it', async () => {
@@ -285,7 +289,7 @@ describe('ensureClaudeHooks', () => {
     expect(settings.theme).toBe('dark')
     expect(settings.hooks?.PreToolUse).toHaveLength(1)
     expect(settings.hooks?.SessionStart?.map((m) => m.hooks?.[0]?.command))
-      .toEqual(['mine.sh', CLAUDE_HOOK_COMMAND, CLAUDE_MODEL_HOOK_COMMAND])
+      .toEqual(['mine.sh', CLAUDE_HOOK_COMMAND, CLAUDE_REPORT_HOOK_COMMAND])
   })
 
   it('replaces the dead in-image form of our own hook, keeping the user their own', async () => {
@@ -313,7 +317,7 @@ describe('ensureClaudeHooks', () => {
       ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? [])
     // Any argument variant goes, and the matcher left holding nothing goes
     // with it — while the user's own hook stays where they put it.
-    expect(commands).toEqual(['mine.sh', CLAUDE_HOOK_COMMAND, CLAUDE_MODEL_HOOK_COMMAND])
+    expect(commands).toEqual(['mine.sh', CLAUDE_HOOK_COMMAND, CLAUDE_REPORT_HOOK_COMMAND])
   })
 
   it('strips the legacy entry even when the current one is already registered', async () => {
@@ -331,7 +335,7 @@ describe('ensureClaudeHooks', () => {
     await ensureClaudeHooks(settingsPath)
 
     expect((await read()).hooks?.SessionStart)
-      .toEqual([hook(CLAUDE_HOOK_COMMAND), hook(CLAUDE_MODEL_HOOK_COMMAND)])
+      .toEqual([hook(CLAUDE_HOOK_COMMAND), hook(CLAUDE_REPORT_HOOK_COMMAND)])
     // And having done it once, it settles: the next create rewrites nothing.
     const migrated = await fs.readFile(settingsPath, 'utf8')
     await ensureClaudeHooks(settingsPath)

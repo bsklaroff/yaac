@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { scanJsonlForward } from './jsonl'
+import type { PermissionMode } from '@yaac/shared/types'
 
 // ---------------------------------------------------------------------------
 // Status + first-message
@@ -103,4 +104,123 @@ export async function codexModelSlug(codexHome: string, shown: string): Promise<
     // No cache yet, or one this reader does not understand.
   }
   return shown.toLowerCase().replace(/ /g, '-')
+}
+
+/** How much of a rollout's end is read for its newest settings. They are
+ *  written at every turn's start and on every change, so they sit near the
+ *  end; a turn whose output has pushed them further back than this reads as
+ *  saying nothing, which leaves the last answer standing. */
+const ROLLOUT_TAIL_BYTES = 1024 * 1024
+
+/** What each rollout last answered, against the size and mtime it had then —
+ *  a settled conversation costs a `stat`, not a read. */
+const rolloutPostures = new Map<string, { size: number; mtimeMs: number; posture: CodexPosture | undefined }>()
+
+/** The posture a rollout's newest settings stand for, and when they were
+ *  written — which is what says whether they are this process's or the one
+ *  before a restart. */
+export interface CodexPosture {
+  permissionMode: PermissionMode
+  atMs: number
+}
+
+/**
+ * The posture codex is running under, from the newest settings its rollout
+ * records, with when they were written — or undefined when those name no
+ * posture yaac has, or none were found.
+ *
+ * codex's hooks carry `permission_mode` only as `bypassPermissions` or
+ * `default`, two answers for five postures, but its rollout says more, and at
+ * once. A `thread_settings_applied` event is written the moment `/permissions`
+ * or Shift+Tab changes anything, and a `turn_context` at every turn, both
+ * naming the approval policy, who reviews approvals, the permission profile
+ * and the collaboration mode (verified against codex-cli 0.156.1). The newer
+ * of the two wins.
+ *
+ * The profile is read rather than `sandbox_policy`, which only `turn_context`
+ * has: `disabled` is full access, and a managed one is workspace-write when it
+ * grants a write anywhere and read-only when it grants none. That inverts the
+ * launch table in `buildAgentCmd`, plus codex's own plan mode, which is what a
+ * user entering it asked for.
+ */
+export async function getCodexPermissionMode(rollout: string): Promise<CodexPosture | undefined> {
+  let handle: fs.FileHandle | undefined
+  try {
+    handle = await fs.open(rollout, 'r')
+    const { size, mtimeMs } = await handle.stat()
+    const known = rolloutPostures.get(rollout)
+    if (known?.size === size && known.mtimeMs === mtimeMs) return known.posture
+    const start = Math.max(0, size - ROLLOUT_TAIL_BYTES)
+    const buf = Buffer.alloc(size - start)
+    const { bytesRead } = await handle.read(buf, 0, buf.length, start)
+    const lines = buf.subarray(0, bytesRead).toString('utf8').split('\n')
+    // A read that starts mid-file starts mid-line.
+    if (start > 0) lines.shift()
+    let posture: CodexPosture | undefined
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const entry = rolloutSettings(lines[i])
+      if (entry === undefined) continue
+      const permissionMode = codexPosture(entry.settings)
+      if (permissionMode !== undefined) posture = { permissionMode, atMs: entry.atMs }
+      break
+    }
+    rolloutPostures.set(rollout, { size, mtimeMs, posture })
+    return posture
+  } catch {
+    return undefined
+  } finally {
+    await handle?.close()
+  }
+}
+
+/** The settings a rollout line records, when it is one that records them. */
+interface CodexThreadSettings {
+  approval_policy?: unknown
+  approvals_reviewer?: unknown
+  permission_profile?: { type?: unknown; file_system?: { entries?: unknown } }
+  collaboration_mode?: { mode?: unknown }
+}
+
+function rolloutSettings(line: string): { settings: CodexThreadSettings; atMs: number } | undefined {
+  let entry: {
+    timestamp?: unknown
+    type?: unknown
+    payload?: CodexThreadSettings & { type?: unknown; thread_settings?: CodexThreadSettings }
+  }
+  try {
+    entry = JSON.parse(line) as typeof entry
+  } catch {
+    return undefined
+  }
+  const settings = entry.type === 'turn_context'
+    ? entry.payload
+    : entry.type === 'event_msg' && entry.payload?.type === 'thread_settings_applied'
+      ? entry.payload.thread_settings
+      : undefined
+  const atMs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : Number.NaN
+  return settings === undefined ? undefined : { settings, atMs: Number.isNaN(atMs) ? 0 : atMs }
+}
+
+function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
+  if (s.collaboration_mode?.mode === 'plan') return 'plan'
+  const profile = s.permission_profile
+  const entries: unknown[] = Array.isArray(profile?.file_system?.entries) ? profile.file_system.entries : []
+  const sandbox = profile?.type === 'disabled'
+    ? 'full'
+    : profile?.type !== 'managed'
+      ? undefined
+      : entries.some((e) => (e as { access?: unknown } | null)?.access === 'write') ? 'workspace' : 'read-only'
+  const reviewer = s.approvals_reviewer ?? 'user'
+  if (s.approval_policy === 'never' && sandbox === 'full') return 'bypass'
+  if (s.approval_policy === 'untrusted' && sandbox === 'workspace') return 'manual'
+  if (s.approval_policy !== 'on-request') return undefined
+  if (sandbox === 'read-only' && reviewer === 'user') return 'plan'
+  if (sandbox !== 'workspace') return undefined
+  if (reviewer === 'auto_review') return 'auto'
+  return reviewer === 'user' ? 'accept-edits' : undefined
+}
+
+/** Test helper: forget what each rollout last answered. */
+export function _resetCodexPosturesForTests(): void {
+  rolloutPostures.clear()
 }

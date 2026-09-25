@@ -2,18 +2,19 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 /**
- * The in-tool halves of model reporting for pi and opencode: code each tool
- * loads into itself that hands the model it is running to
- * `worktree-bin/yaac-agent-model` (which puts it on the pane as `@yaac-model`,
- * where the status watcher is subscribed). claude needs no code, only hooks
- * (`ensureClaudeHooks`), and codex runs nothing on a switch at all — it is read
- * from its title instead.
+ * The in-tool halves of agent reporting for pi and opencode: code each tool
+ * loads into itself that hands what it says about itself to
+ * `worktree-bin/yaac-agent-report` (which puts it on the pane, where the status
+ * watcher is subscribed) — the model it is running, and for opencode the agent
+ * it runs as, which is its half of a permission posture. claude needs no code,
+ * only hooks (`ensureClaudeHooks`), and codex runs nothing on a switch at all —
+ * its model is read from its title and its posture from its rollout.
  *
  * Written into the project's tool homes at create, the way claude's hooks are,
  * rather than staged per worktree: both tools find their extensions under a
  * home that every worktree of the project already mounts, and the files are
  * the same bytes for all of them. Each carries its own guard — an absent
- * `yaac-agent-model` (a stripped build) is a failed report, never a failed
+ * `yaac-agent-report` (a stripped build) is a failed report, never a failed
  * agent.
  *
  * Verified against the pinned binaries (pi 0.84.4, @opencode/cli 2.0.12).
@@ -25,11 +26,11 @@ import path from 'node:path'
  * restore), and `session_start` covers what it does not — startup, resume,
  * `/new` — with the session's current model.
  */
-const PI_EXTENSION = `// Written by yaac: reports the model to the pane (see yaac-agent-model).
+const PI_EXTENSION = `// Written by yaac: reports the model to the pane (see yaac-agent-report).
 export default function (pi) {
   const report = (model) => {
     if (model === undefined) return
-    pi.exec('yaac-agent-model', [model.provider + '/' + model.id]).catch(() => {})
+    pi.exec('yaac-agent-report', [model.provider + '/' + model.id]).catch(() => {})
   }
   pi.on('session_start', (_event, ctx) => report(ctx.model))
   pi.on('model_select', (event) => report(event.model))
@@ -38,7 +39,7 @@ export default function (pi) {
 
 /**
  * opencode: a server plugin, loaded from the directory named in the launch
- * config's `plugins` (`OPENCODE_MODEL_PLUGIN`). The directory, not a file — a
+ * config's `plugins` (`OPENCODE_REPORT_PLUGIN`). The directory, not a file — a
  * file path is refused — and opencode finds the server entry by its NAME
  * (`index` or `server`), which is why the file is `index.ts`.
  *
@@ -51,25 +52,34 @@ export default function (pi) {
  * no session, and a first prompt that lands before the plugin has loaded
  * (plugins load in the background after the server starts serving). So a
  * resumed or early conversation reports at its first turn.
+ *
+ * The agent is heard the same way and at the same moment: a Tab between
+ * `build` and `plan` changes only the TUI's draft until a prompt is sent, when
+ * the server emits `session.agent.selected`, and every step names its agent
+ * too. Both halves go out in one report whenever either moves.
  */
-const OPENCODE_PLUGIN = `// Written by yaac: reports the model to the pane (see yaac-agent-model).
+const OPENCODE_PLUGIN = `// Written by yaac: reports the model and agent to the pane (see yaac-agent-report).
 import { execFile } from 'node:child_process'
 
-const EVENTS = new Set(['session.model.selected', 'session.created', 'session.step.started'])
+const MODEL_EVENTS = new Set(['session.model.selected', 'session.created', 'session.step.started'])
+const AGENT_EVENTS = new Set(['session.agent.selected', 'session.step.started'])
 
 export default {
-  id: 'yaac-model',
+  id: 'yaac-report',
   setup(api) {
     const abort = new AbortController()
-    let reported
+    let model = ''
+    let agent = ''
     void (async () => {
       for await (const event of api.event.subscribe({ signal: abort.signal })) {
-        const model = EVENTS.has(event.type) ? event.data?.model : undefined
-        if (!model) continue
-        const id = model.providerID + '/' + model.id
-        if (id === reported) continue
-        reported = id
-        execFile('yaac-agent-model', [id], () => {})
+        const m = MODEL_EVENTS.has(event.type) ? event.data?.model : undefined
+        const a = AGENT_EVENTS.has(event.type) ? event.data?.agent : undefined
+        const nextModel = m ? m.providerID + '/' + m.id : model
+        const nextAgent = typeof a === 'string' ? a : agent
+        if (nextModel === model && nextAgent === agent) continue
+        model = nextModel
+        agent = nextAgent
+        execFile('yaac-agent-report', [model, agent], () => {})
       }
     })().catch(() => {})
     return () => abort.abort()
@@ -77,23 +87,23 @@ export default {
 }
 `
 
-const OPENCODE_PLUGIN_NAME = 'yaac-model'
+const OPENCODE_PLUGIN_NAME = 'yaac-report'
 
 /** Where the launch config points opencode's `plugins`: the plugin's dir in
  *  the opencode config home, which every workspace reaches `$HOME`-relative
  *  (and the launch command's shell expands). */
-export const OPENCODE_MODEL_PLUGIN = `$HOME/.config/opencode/${OPENCODE_PLUGIN_NAME}`
+export const OPENCODE_REPORT_PLUGIN = `$HOME/.config/opencode/${OPENCODE_PLUGIN_NAME}`
 
 /**
  * Write both reporters into a project's tool homes: pi's agent dir (what
  * `PI_CODING_AGENT_DIR` names) and opencode's config dir. Idempotent, and
  * leaves a file that already holds these bytes untouched.
  */
-export async function ensureModelReporters(homes: {
+export async function ensureAgentReporters(homes: {
   piAgentDir: string
   opencodeConfigDir: string
 }): Promise<void> {
-  await install(path.join(homes.piAgentDir, 'extensions', 'yaac-model.ts'), PI_EXTENSION)
+  await install(path.join(homes.piAgentDir, 'extensions', 'yaac-report.ts'), PI_EXTENSION)
   await install(path.join(homes.opencodeConfigDir, OPENCODE_PLUGIN_NAME, 'index.ts'), OPENCODE_PLUGIN)
 }
 
