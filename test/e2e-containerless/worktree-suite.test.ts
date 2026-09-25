@@ -139,6 +139,9 @@ async function installFakeAgents(binDir: string): Promise<void> {
 
 /** A file beside the stand-in codex that makes it run rather than fail. */
 const CODEX_RUNS = 'codex-runs'
+/** A file beside it that makes a resumed one leave its title undrawn, as
+ *  codex does behind a startup dialog (an update offer) nobody has answered. */
+const CODEX_HOLDS_TITLE = 'codex-holds-title'
 
 /**
  * The stand-in codex TUI, as codex-cli 0.156.1 treats the disk and the pane
@@ -149,7 +152,8 @@ const CODEX_RUNS = 'codex-runs'
  * prompt — and is moved to full access at once, as a `/permissions` pick
  * would be. A typed `/new` begins another conversation the same way. `resume
  * <id>` refuses an id with no rollout, as codex does, and otherwise appends the
- * settings it resumed under to the rollout it has.
+ * settings it resumed under to the rollout it has — and names it in the title
+ * unless `CODEX_HOLDS_TITLE` is beside it.
  */
 const FAKE_CODEX = `#!/usr/bin/env node
 const fs = require('fs')
@@ -216,7 +220,7 @@ if (resume >= 0) {
     process.exit(1)
   }
   fs.appendFileSync(rollout, settings(args.includes('--yolo')))
-  title(id)
+  if (!fs.existsSync(path.join(__dirname, '${CODEX_HOLDS_TITLE}'))) title(id)
   converse(id, false)
 } else {
   const id = require('crypto').randomUUID()
@@ -1778,6 +1782,7 @@ describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
 describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
   it('starts anew until prompted, then resumes by its own id in the posture it moved to', async () => {
     const marker = path.join(testEnv.scratchDir, 'bin', CODEX_RUNS)
+    const holdsTitle = path.join(testEnv.scratchDir, 'bin', CODEX_HOLDS_TITLE)
     await fs.writeFile(marker, '')
     let id: string | undefined
     try {
@@ -1850,8 +1855,19 @@ describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
       await vi.waitFor(async () => {
         expect(await sessionOf(second)).toMatchObject({ active: true, prompt: 'second codex prompt' })
       }, { timeout: 30_000, interval: 250 })
+
+      // Restarted into a codex that has not drawn its title — behind an update
+      // offer nobody answers — then restarted again once its pass has run. The
+      // pane names nothing, so it is the conversation it was launched to
+      // resume that holds it, and that the next restart brings back.
+      await fs.writeFile(holdsTitle, '')
+      await restart()
+      await settled()
+      await restart()
+      expect(await startCommand()).toContain(`--yolo resume ${second}`)
     } finally {
       await fs.rm(marker, { force: true })
+      await fs.rm(holdsTitle, { force: true })
       if (id !== undefined) await runYaac(serverEnv, 'worktree', 'stop', id)
     }
   }, 180_000)

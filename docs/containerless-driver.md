@@ -605,7 +605,8 @@ and its rollout as the transcript path. This is what a restart resumes
 (`codex resume <id>`) and what the posture is followed by
 (docs/permission-modes.md). A conversation that never took a turn has no
 rollout and is not recorded; a codex worktree restarted with none starts
-codex anew, because codex refuses to resume an id it has no rollout for.
+codex anew, in the model it was created with, because codex refuses to resume
+an id it has no rollout for.
 
 `codex resume` appends to the rollout the conversation began and records the
 settings it resumed under the moment it starts (verified against codex-cli
@@ -621,7 +622,10 @@ status watcher already receives each codex pane's title, and hands on that
 prefix (`LiveAgent.sessionIdPrefix`). A conversation is on the pane whose
 title its id starts with, which is exact however many codex panes a worktree
 has. A conversation whose pane now names another, such as one a `/new` left
-behind, is recorded without a pane and so goes inactive. A conversation that
+behind, is recorded without a pane and so goes inactive. codex draws the title
+only once past any startup dialog, and an update offer holds it there until
+someone answers. Until then a pane keeps the conversation it was launched to
+resume, so a stop in the meantime still freezes it as active. A conversation that
 runs outside this checkout is not recorded at all, since its rollout names
 another cwd: a `/resume` of one begun elsewhere, or one `/new` starts in the
 new worktree it offers. Its pane then holds nothing recorded, so a restart

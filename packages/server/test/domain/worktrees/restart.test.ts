@@ -202,6 +202,35 @@ describe('restartWorktree', () => {
     expect(rows()).toEqual([expect.objectContaining({ worktreeId: 'sid-1', groupId: 'grp-1' })])
   })
 
+  // A codex worktree with nothing recorded to resume starts codex anew (see
+  // create), so in the model it was created with. Every other tool resumes its
+  // pinned conversation, which runs in its own.
+  it('starts a codex worktree with nothing to resume in the model it was created with', async () => {
+    vi.mocked(findWorktreeRow).mockResolvedValue({
+      projectSlug: 'proj',
+      worktreeId: 'sid-1',
+      createdAt: new Date(0),
+      deathSeen: false,
+      spare: false,
+      lifeLogBytes: 0,
+      permissionMode: 'bypass',
+      model: 'gpt-6-sol',
+    })
+    try {
+      mockFind.mockResolvedValue({ ...handle('sid-1'), tool: 'codex' })
+      await restartWorktree('sid-1')
+      expect(mockCreate).toHaveBeenLastCalledWith('proj', expect.objectContaining({
+        tool: 'codex', resumeAgentSessions: [], model: 'gpt-6-sol',
+      }))
+
+      mockFind.mockResolvedValue(handle('sid-1'))
+      await restartWorktree('sid-1')
+      expect(mockCreate.mock.lastCall?.[1]).not.toHaveProperty('model')
+    } finally {
+      vi.mocked(findWorktreeRow).mockResolvedValue(undefined)
+    }
+  })
+
   // The webapp registers up front so its row renders during the resolve, and
   // the sidebar sorts oldest-first. Re-registering would take a fresh
   // insertion order and jump the row to the bottom of a list the user is

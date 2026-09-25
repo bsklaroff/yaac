@@ -639,8 +639,15 @@ describe('reconcileWorktreeAgentSessions', () => {
     fake.override({ kind: 'containerless' })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'read-only' })
     await recordWorktreeLife('demo', 'wt-1', 0)
-    // What create records: codex mints its own id, so the pin is no conversation.
-    await recordAgentSessions('demo', 'wt-1', [{ tool: 'codex', agentSessionId: 'wt-1', firstPrompt: 'fix it' }])
+    // What create records: codex mints its own id, so the pin is no conversation
+    // — and no pane holds it while codex has yet to draw its title.
+    await applyWorktreeEvent({
+      type: 'sessions-launched', projectSlug: 'demo', worktreeId: 'wt-1',
+      sessions: [{ tool: 'codex', agentSessionId: 'wt-1', mode: 'tui', firstPrompt: 'fix it' }],
+    })
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }, { handle: '%1', tool: 'codex' }])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect(await states()).toEqual([['wt-1', false]])
     const panes = (second: string): void => setLiveAgents('demo', 'wt-1', [
       { handle: '%0', tool: 'codex', sessionIdPrefix: shown(X), model: 'gpt-5.6-sol' },
       { handle: '%1', tool: 'codex', sessionIdPrefix: shown(second) },
@@ -714,8 +721,15 @@ describe('reconcileWorktreeAgentSessions', () => {
       sessions: [{ tool: 'codex', agentSessionId: X, mode: 'tui' }],
     })
     _resetWorktreeStatusStoreForTests()
-    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex', sessionIdPrefix: shown(X) }])
     await fs.appendFile(rollout, `${JSON.stringify(codexSettings(new Date(), false))}\n`)
+    // codex has not drawn its title yet — an update offer holds it until
+    // someone answers — so the pane names nothing, pass after pass. It keeps
+    // the conversation it was launched to resume, or a stop now would lose it.
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: X, paneId: '%0' }])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex', sessionIdPrefix: shown(X) }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
     expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: X, paneId: '%0' }])
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')

@@ -181,6 +181,12 @@ export async function restartWorktree(
       mode: active[0]?.mode ?? 'tui',
       resumeAgentSessions: resume,
       ...(recorded !== undefined ? { permissionMode: recorded.permissionMode } : {}),
+      // A codex worktree with nothing to resume starts anew (see create), so in
+      // the model it was created with. Only then: a resumed conversation keeps
+      // its own, and `--model` would switch it.
+      ...(tool === 'codex' && resume.length === 0 && recorded?.model !== undefined
+        ? { model: recorded.model }
+        : {}),
       onProgress,
     })
 

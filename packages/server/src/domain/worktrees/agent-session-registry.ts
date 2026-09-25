@@ -404,8 +404,9 @@ async function followRolloutModes(
  * resumes it into the rollout it began, however many days back, and the
  * recorded one takes the pane its title names. A recorded conversation still
  * holding a pane that now names another is reported without it, which is
- * what marks one a `/new` left behind inactive. With no live set yet nothing
- * is reported, since a report without a pane clears one.
+ * what marks one a `/new` left behind inactive. Until a pane's title names
+ * anything, it keeps the conversation it was launched to resume. With no live
+ * set yet nothing is reported, since a report without a pane clears one.
  */
 async function discoverCodexSessions(
   projectSlug: string,
@@ -414,13 +415,32 @@ async function discoverCodexSessions(
 ): Promise<void> {
   const observed = liveAgents(projectSlug, worktreeId)
   if (observed === undefined || row.lifeStartedAt === undefined) return
-  const paneOf = (sessionId: string): string | undefined => observed.find((a) =>
-    a.tool === 'codex' && a.sessionIdPrefix !== undefined && sessionId.startsWith(a.sessionIdPrefix))?.handle
+  const panes = observed.filter((a) => a.tool === 'codex')
+  const named = (sessionId: string): string | undefined => panes.find((a) =>
+    a.sessionIdPrefix !== undefined && sessionId.startsWith(a.sessionIdPrefix))?.handle
+  const links = (await listWorktreeAgentSessions(projectSlug, worktreeId)).filter((l) => l.tool === 'codex')
+  // A pane whose title names nothing yet keeps the conversation it was
+  // launched to resume: codex draws the title only once past any startup
+  // dialog, and an update offer holds it there until someone answers. That is
+  // a live conversation with a rollout and no pane of its own — never the
+  // create's pin, which has no rollout — and it is held in launch order, the
+  // one already holding such a pane keeping it.
+  const unnamed = panes.filter((a) => a.sessionIdPrefix === undefined).map((a) => a.handle)
+  const held = new Map<string, string>()
+  const launched = links.filter((l) => l.active && l.transcriptPath !== undefined
+    && named(l.agentSessionId) === undefined && (l.paneId === undefined || unnamed.includes(l.paneId)))
+  for (const l of launched) if (l.paneId !== undefined) held.set(l.agentSessionId, l.paneId)
+  const free = unnamed.filter((p) => ![...held.values()].includes(p))
+  for (const l of launched) {
+    const pane = held.has(l.agentSessionId) ? undefined : free.shift()
+    if (pane !== undefined) held.set(l.agentSessionId, pane)
+  }
+  const paneOf = (sessionId: string): string | undefined => named(sessionId) ?? held.get(sessionId)
   // Keyed by conversation, holding the rollout only where it is newly found:
   // a recorded conversation keeps the transcript it has.
   const conversations = new Map<string, string | undefined>()
-  for (const l of await listWorktreeAgentSessions(projectSlug, worktreeId)) {
-    if (l.tool === 'codex' && (l.paneId !== undefined || paneOf(l.agentSessionId) !== undefined)) {
+  for (const l of links) {
+    if (l.paneId !== undefined || paneOf(l.agentSessionId) !== undefined) {
       conversations.set(l.agentSessionId, undefined)
     }
   }
