@@ -130,18 +130,22 @@ export interface CodexPosture {
  * posture yaac has, or none were found.
  *
  * codex's hooks carry `permission_mode` only as `bypassPermissions` or
- * `default`, two answers for five postures, but its rollout says more, and at
+ * `default`, two answers for four postures, but its rollout says more, and at
  * once. A `thread_settings_applied` event is written the moment `/permissions`
  * or Shift+Tab changes anything, and a `turn_context` at every turn, both
- * naming the approval policy, who reviews approvals, the permission profile
- * and the collaboration mode (verified against codex-cli 0.156.1). The newer
- * of the two wins.
+ * naming the approval policy, who reviews approvals and the permission
+ * profile (verified against codex-cli 0.156.1). The newer of the two wins.
  *
  * The profile is read rather than `sandbox_policy`, which only `turn_context`
  * has: `disabled` is full access, and a managed one is workspace-write when it
  * grants a write anywhere and read-only when it grants none. That inverts the
- * launch table in `buildAgentCmd`, plus codex's own plan mode, which is what a
- * user entering it asked for.
+ * launch table in `buildAgentCmd`. A combination the table never launches
+ * (the `never` policy over a sandbox, `on-request` over full access) reads as
+ * the nearest posture no looser than it, rather than as nothing.
+ *
+ * The collaboration mode those entries also name is not read: codex's plan
+ * mode is instructions to the model over whatever sandbox is in force, so it
+ * restrains nothing the posture is about.
  */
 export async function getCodexPermissionMode(rollout: string): Promise<CodexPosture | undefined> {
   let handle: fs.FileHandle | undefined
@@ -178,7 +182,6 @@ interface CodexThreadSettings {
   approval_policy?: unknown
   approvals_reviewer?: unknown
   permission_profile?: { type?: unknown; file_system?: { entries?: unknown } }
-  collaboration_mode?: { mode?: unknown }
 }
 
 function rolloutSettings(line: string): { settings: CodexThreadSettings; atMs: number } | undefined {
@@ -202,7 +205,6 @@ function rolloutSettings(line: string): { settings: CodexThreadSettings; atMs: n
 }
 
 function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
-  if (s.collaboration_mode?.mode === 'plan') return 'plan'
   const profile = s.permission_profile
   const entries: unknown[] = Array.isArray(profile?.file_system?.entries) ? profile.file_system.entries : []
   const sandbox = profile?.type === 'disabled'
@@ -211,13 +213,14 @@ function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
       ? undefined
       : entries.some((e) => (e as { access?: unknown } | null)?.access === 'write') ? 'workspace' : 'read-only'
   const reviewer = s.approvals_reviewer ?? 'user'
-  if (s.approval_policy === 'never' && sandbox === 'full') return 'bypass'
-  if (s.approval_policy === 'untrusted' && sandbox === 'workspace') return 'manual'
-  if (s.approval_policy !== 'on-request') return undefined
-  if (sandbox === 'read-only' && reviewer === 'user') return 'plan'
-  if (sandbox !== 'workspace') return undefined
-  if (reviewer === 'auto_review') return 'auto'
-  return reviewer === 'user' ? 'accept-edits' : undefined
+  if (sandbox === undefined || (s.approval_policy !== 'on-request' && s.approval_policy !== 'never')) return undefined
+  // Past the launch table, a combination reads as the most permissive posture
+  // that lets the agent do no more unasked than it can: nothing sandboxes a
+  // full-access agent, and a policy that never asks does not widen a sandbox.
+  if (sandbox === 'full') return 'bypass'
+  if (reviewer === 'auto_review' && s.approval_policy === 'on-request') return 'auto'
+  if (reviewer !== 'user' && reviewer !== 'auto_review') return undefined
+  return sandbox === 'read-only' ? 'read-only' : 'accept-edits'
 }
 
 /** Test helper: forget what each rollout last answered. */

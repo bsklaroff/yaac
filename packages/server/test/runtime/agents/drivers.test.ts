@@ -20,7 +20,7 @@ import type { AcpEventInit } from '@yaac/shared/acp'
 import {
   ACP_SUPPORTED_PERMISSION_MODES,
   AGENT_TOOLS,
-  PERMISSION_MODES,
+  SUPPORTED_PERMISSION_MODES,
 } from '@yaac/shared/types'
 import { _ACP_PROFILES } from '#runtime/agents/acp-adapters'
 import type { PermissionMode } from '@yaac/shared/types'
@@ -241,7 +241,7 @@ describe('agentDriver', () => {
     // test: what drives them is the launch command and the handshakes in this
     // same describe.
     for (const tool of AGENT_TOOLS) {
-      const withModeId = PERMISSION_MODES.filter(
+      const withModeId = SUPPORTED_PERMISSION_MODES[tool].filter(
         (m) => _ACP_PROFILES[tool].modeIds[m] !== undefined,
       )
       // Never a mode id for a posture create would refuse: that would be one
@@ -251,7 +251,8 @@ describe('agentDriver', () => {
     }
     // The carried-elsewhere cases, stated so a silent change to either table
     // has to be deliberate.
-    expect(PERMISSION_MODES.filter((m) => _ACP_PROFILES.claude.modeIds[m] === undefined)).toEqual([])
+    expect(SUPPORTED_PERMISSION_MODES.claude.filter((m) => _ACP_PROFILES.claude.modeIds[m] === undefined))
+      .toEqual([])
     expect(_ACP_PROFILES.opencode.modeIds).toEqual({ plan: 'plan' })
     expect(_ACP_PROFILES.pi.modeIds).toEqual({})
   })

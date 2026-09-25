@@ -179,7 +179,6 @@ describe('buildAgentCmd', () => {
       ['codex', 'auto', ' --approve-for-me'],
       ['codex', 'accept-edits', 'codex'],
       ['codex', 'plan', ' --sandbox read-only'],
-      ['codex', 'manual', ' --ask-for-approval untrusted'],
     ]
 
     it.each(CASES)('%s in %s mode', (tool, permissionMode, expected) => {
@@ -213,9 +212,6 @@ describe('buildAgentCmd', () => {
       // policy, which already asks for out-of-tree access and .env reads: an
       // unstated bypass is not one.
       expect(postureOf('bypass')).toEqual({ permissions: [rule('*', 'allow')] })
-      // Accept-edits adds one ask to that base policy — running commands —
-      // which is the whole distinction from bypass.
-      expect(postureOf('accept-edits')).toEqual({ permissions: [rule('shell', 'ask')] })
       // Manual asks before anything that acts, wildcard first so what the
       // base policy allows without this file naming it (websearch, subagents,
       // skills, Code Mode, MCP tools) is covered; reads come back to allow,
@@ -227,6 +223,10 @@ describe('buildAgentCmd', () => {
         { action: 'read', resource: '*.env.*', effect: 'ask' },
       ]
       expect(postureOf('manual')).toEqual({ permissions: askToAct })
+      // Accept-edits is the same with editing let through, as claude's is —
+      // `edit` is what the edit, write and patch tools all assert — while
+      // commands, fetches, subagents, Code Mode and MCP tools still ask.
+      expect(postureOf('accept-edits')).toEqual({ permissions: [...askToAct, rule('edit', 'allow')] })
       // Plan selects opencode's own plan agent for its `edit: deny`, and
       // carries the same rules because that agent says nothing about shell:
       // on its own it would run commands unprompted.
@@ -269,7 +269,8 @@ describe('buildAgentCmd', () => {
 
     // A posture the tool does not have can still reach here off a worktree
     // row written by a different build. Refusing would strand the checkout,
-    // so each falls back to the nearest posture that tool really has.
+    // so each falls back to the most permissive posture that tool really has
+    // no looser than the row's.
     it('falls back to the nearest posture a tool actually has', () => {
       // pi has no permission system at all: every posture is bypass in fact,
       // and its command is the same one `bypass` produces.
@@ -280,6 +281,15 @@ describe('buildAgentCmd', () => {
       // rather than on the unrestrained `--auto` flag.
       expect(buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'auto' }))
         .toBe(buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'accept-edits' }))
+      // codex's `manual` was the `untrusted` policy the pinned codex no longer
+      // has, and the next stricter posture is its read-only sandbox — never
+      // the unrestrained default a looser fallback would give.
+      expect(buildAgentCmd({ tool: 'codex', worktreeId: 's', permissionMode: 'manual' }))
+        .toBe(buildAgentCmd({ tool: 'codex', worktreeId: 's', permissionMode: 'plan' }))
+      // A posture this build does not rank compares with nothing: the
+      // tool's strictest, never the first one offered.
+      expect(buildAgentCmd({ tool: 'claude', worktreeId: 's', permissionMode: 'dontAsk' as PermissionMode }))
+        .toContain('--permission-mode plan')
     })
   })
 })

@@ -99,6 +99,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import {
   defaultPermissionMode,
+  launchablePermissionMode,
   resolveToolCreateDefaults,
   supportedPermissionModes,
   toolSupportsPermissionMode,
@@ -662,13 +663,15 @@ async function reportCreateFailed(
  *
  * A `resume` is the exception. Its posture is the row's, not a person's, so
  * it is not refused for being unsupported — a row written by a different
- * build would otherwise make the worktree unrestartable, and stranding a
- * checkout is worse than launching it at this tool's default.
+ * build would otherwise make the worktree unrestartable. It launches in the
+ * nearest posture the tool has that is no looser, else its strictest
+ * (`launchablePermissionMode`): never the driver default, which would turn an
+ * old codex `plan` row into `bypass` in a container.
  *
  * The two agent modes do NOT always answer the same way, because a posture is
  * a launch flag for a TUI and an advertised session mode for an adapter, and
  * the adapters offer fewer: codex-acp collapses codex's approval × sandbox
- * grid into three modes with no `plan` and no `manual` among them. A posture
+ * grid into three modes, none of them a read-only sandbox. A posture
  * an adapter cannot express is refused here rather than clamped to a
  * neighbour, for the same reason the TUI refuses one: the caller asked for a
  * restraint, and launching with a weaker one is the failure worth being loud
@@ -690,13 +693,13 @@ export function launchPermissionMode(args: {
   const fallback = defaultPermissionMode(driver, tool)
   if (requested === undefined) return fallback
   if (args.resume === true) {
-    return toolSupportsPermissionMode(tool, requested, agentMode) ? requested : fallback
+    return launchablePermissionMode(tool, requested, agentMode)
   }
   if (!toolSupportsPermissionMode(tool, requested, agentMode)) {
     const supported = supportedPermissionModes(tool, agentMode).join(', ')
-    // Named only when it is the reason: `codex has no "plan" permission mode`
-    // sends someone to codex's docs, where plan mode plainly exists — it is
-    // codex's ACP adapter that has no mode for it.
+    // Named only when it is the reason: `codex has no "read-only" permission
+    // mode` sends someone to codex's docs, where the read-only sandbox plainly
+    // exists — it is codex's ACP adapter that has no mode for it.
     const where = agentMode === 'acp' ? ' under acp' : ''
     throw new ServerError(
       'VALIDATION',
@@ -1434,6 +1437,9 @@ export async function createWorktree(
   // egress proxy doing it). Set unconditionally (only opencode reads it) so
   // a spare retooled to opencode gets it.
   env.push('OPENCODE_DISABLE_AUTOUPDATE=1')
+  // The same for claude, whose native install updates itself in the
+  // background (verified against 2.1.282).
+  env.push('DISABLE_AUTOUPDATER=1')
 
   // Point pi at its worktree-log dir inside its `.pi` home so its JSONL
   // transcripts are readable on the host (first-message / status). pi resumes

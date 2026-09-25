@@ -8,10 +8,11 @@
  * `yaac host check`'s advice reads from the same table, and two hand-kept
  * copies of an install command drift the moment one package is renamed.
  *
- * Unpinned, deliberately: a host wants whatever the tool's current release
- * is, and a version fixed here would rot silently. That is the opposite of
- * the image's pins (dockerfiles/Dockerfile.tools), which exist so every
- * worktree in a cluster runs the same build.
+ * Pinned to `AGENT_CLIS`, the same versions the image installs: yaac's
+ * postures are written against each CLI's flags and read back from what it
+ * reports, so a host running another release is a host where a posture can
+ * silently mean something else. That covers what yaac installs; a CLI the
+ * host already has is used as it is (docs/containerless-driver.md).
  *
  * npm over each vendor's curl-installer, also deliberately: npm's global bin
  * is on the PATH the server itself was started from (node is how yaac runs),
@@ -19,28 +20,25 @@
  * into a directory the server's environment never searches — which reads,
  * to every check here, as an install that did nothing.
  */
-import { ACP_ADAPTERS, AGENT_TOOLS, type AgentTool } from '#types'
+import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS, type AgentTool } from '#types'
 
-export const AGENT_INSTALL: Record<AgentTool, string> = {
-  claude: 'npm install -g @anthropic-ai/claude-code',
-  codex: 'npm install -g @openai/codex',
-  opencode: 'npm install -g @opencode/cli',
-  // --ignore-scripts matches how the image installs it: its postinstall
-  // fetches a platform binary yaac does not need.
-  pi: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent',
-}
+export const AGENT_INSTALL = Object.fromEntries(AGENT_TOOLS.map((tool) => {
+  const { package: pkg, version } = AGENT_CLIS[tool]
+  // --ignore-scripts for pi matches how the image installs it: its
+  // postinstall fetches a platform binary yaac does not need.
+  return [tool, `npm install -g ${tool === 'pi' ? '--ignore-scripts ' : ''}${pkg}@${version}`]
+})) as Record<AgentTool, string>
 
 /**
  * Keyed by the adapter's BINARY name — what `--mode acp` execs and what a PATH
  * probe looks for — not by the tool it adapts, and derived from `ACP_ADAPTERS`
  * so the version a host installs is the version yaac's description of that
- * adapter was verified against. That is the opposite of the agent CLIs above,
- * and deliberately: what yaac reads off an adapter is its advertised session
- * modes, and an adapter that stops advertising one runs in its default rather
- * than failing.
+ * adapter was verified against: what yaac reads off an adapter is its
+ * advertised session modes, and an adapter that stops advertising one runs in
+ * its default rather than failing.
  *
  * opencode is absent because its adapter IS its CLI (`opencode acp`), so
- * `AGENT_INSTALL` already answers for it — unpinned, on the CLI's own terms.
+ * `AGENT_INSTALL` already answers for it.
  * `installCommandFor` checks the tools first, which is what makes that fall
  * through correctly.
  *

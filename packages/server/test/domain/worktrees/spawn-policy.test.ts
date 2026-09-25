@@ -180,7 +180,7 @@ describe('decideSpawn', () => {
   it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
     const create = stubCreate()
     const at = (callerPermissionMode: SpawnRequest['callerPermissionMode'], permissionMode: string) =>
-      decideSpawn(makeRequest({ callerPermissionMode, permissionMode }))
+      decideSpawn(makeRequest({ tool: 'claude', callerPermissionMode, permissionMode }))
 
     expect((await at('accept-edits', 'accept-edits')).ok).toBe(true)
     expect((await at('accept-edits', 'manual')).ok).toBe(true)
@@ -189,19 +189,34 @@ describe('decideSpawn', () => {
     expect(create.mock.calls.map((c) => c[1].permissionMode)).toEqual(['accept-edits', 'manual', 'plan'])
     create.mockClear()
 
-    // bypass > auto > accept-edits > manual > plan: anything left of the
-    // caller's own is refused, never clamped.
+    // bypass > auto > accept-edits > manual > plan = read-only: anything left
+    // of the caller's own is refused, never clamped.
     expect(await at('accept-edits', 'auto')).toEqual({
       ok: false,
       error: "permission mode 'auto' is more permissive than this worktree's own ('accept-edits'); "
-        + 'a spawned worktree may be granted at most that (bypass > auto > accept-edits > manual > plan)',
+        + 'a spawned worktree may be granted at most that '
+        + '(bypass > auto > accept-edits > manual > plan = read-only)',
     })
+    // plan and read-only share the strictest place, so each tool's strictest
+    // posture is grantable under the other's — named or inherited.
+    expect(await decideSpawn(makeRequest({ callerPermissionMode: 'plan', permissionMode: 'read-only' })))
+      .toMatchObject({ ok: true })
+    expect(await at('read-only', 'plan')).toMatchObject({ ok: true })
+    await settle()
+    create.mockClear()
+    expect(await decideSpawn(makeRequest({ callerPermissionMode: 'plan' }))).toMatchObject({ ok: true })
+    await settle()
+    expect(create.mock.calls.map((c) => c[1].permissionMode)).toEqual(['read-only'])
+    create.mockClear()
     for (const [caller, asked] of [['plan', 'bypass'], ['plan', 'manual'], ['manual', 'accept-edits'], ['auto', 'bypass']] as const) {
       expect((await at(caller, asked)).ok, `${caller} → ${asked}`).toBe(false)
     }
     // Within the ceiling but not a posture the tool has under that UI.
     expect(await decideSpawn(makeRequest({ permissionMode: 'plan', mode: 'acp' }))).toEqual({
       ok: false, error: "codex has no 'plan' permission mode under acp",
+    })
+    expect(await decideSpawn(makeRequest({ permissionMode: 'manual' }))).toEqual({
+      ok: false, error: "codex has no 'manual' permission mode",
     })
     // A caller row holding a posture this build does not rank (written by
     // another build) cannot be compared, so it grants nothing — named or not.

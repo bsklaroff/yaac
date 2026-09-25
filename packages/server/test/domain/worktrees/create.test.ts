@@ -19,6 +19,7 @@ import {
   recordProjectCreate,
 } from '#db/project-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
+import type { PermissionMode } from '@yaac/shared/types'
 
 // The rule a failed create's rollback consults before removing a checkout.
 // Both exclusions are here because getting either backwards destroys work
@@ -119,11 +120,25 @@ describe('launchPermissionMode', () => {
   })
 
   // A restart re-states the row's posture rather than a person's. Refusing
-  // one written by a different build would strand a checkout, and stranding
-  // work is worse than launching at this tool's default.
-  it('treats a resumed posture as a preference, not a demand', () => {
-    expect(launch({ resume: true, tool: 'pi', requested: 'plan' })).toBe('bypass')
+  // one written by a different build would strand a checkout — but the driver
+  // default would hand an old codex `plan` row `bypass` in a container, so it
+  // launches in the nearest posture the tool has, else its strictest.
+  it('treats a resumed posture as a preference, never looser than the tool can help', () => {
     expect(launch({ resume: true, requested: 'manual' })).toBe('manual')
+    for (const driver of ['k8s', 'containerless'] as const) {
+      expect(launch({ resume: true, driver, tool: 'codex', requested: 'plan' })).toBe('read-only')
+      expect(launch({ resume: true, driver, tool: 'codex', requested: 'manual' })).toBe('read-only')
+    }
+    expect(launch({ resume: true, tool: 'claude', requested: 'read-only' })).toBe('plan')
+    // Nothing that strict under the adapter: its strictest, not the default.
+    expect(launch({ resume: true, tool: 'codex', requested: 'read-only', agentMode: 'acp' })).toBe('accept-edits')
+    // pi has nothing but bypass.
+    expect(launch({ resume: true, tool: 'pi', requested: 'plan' })).toBe('bypass')
+    // A row from a newer build, holding a posture this one does not rank,
+    // compares with nothing: the strictest, never bypass.
+    const unranked = 'dontAsk' as PermissionMode
+    expect(launch({ resume: true, tool: 'codex', requested: unranked })).toBe('read-only')
+    expect(launch({ resume: true, tool: 'claude', requested: unranked, agentMode: 'acp' })).toBe('plan')
   })
 })
 
@@ -163,15 +178,18 @@ describe('resolveCreate', () => {
     await recordProjectCreate('p', 'codex', { model: 'gpt-5.5', permissionMode: 'plan', mode: 'acp' })
 
     // The mode is not taken from memory for the route's callers — the CLI
-    // can only show a terminal — so codex opens in `tui`, where plan exists.
+    // can only show a terminal — so codex opens in `tui`. It has no `plan`
+    // there either, so the remembered one becomes its nearest posture no
+    // looser — `read-only` — never a default that restrains less.
     expect(await resolveCreate('p', {})).toEqual({
-      tool: 'codex', model: 'gpt-5.5', permissionMode: 'plan', mode: 'tui',
+      tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
     })
     // The pool warms what the webapp would send, remembered mode included —
-    // and codex's chat adapter has no plan mode, so the remembered posture
-    // falls through to the default rather than being refused.
+    // and codex's chat adapter has nothing that strict, so the remembered
+    // posture lands on the adapter's strictest rather than being refused, and
+    // never on the container default of bypass.
     expect(await resolveCreate('p', {}, { modeFromMemory: true })).toEqual({
-      tool: 'codex', model: 'gpt-5.5', permissionMode: 'bypass', mode: 'acp',
+      tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits', mode: 'acp',
     })
     // Another agent brings its own memory.
     expect(await resolveCreate('p', { tool: 'claude' })).toMatchObject({ model: 'claude-sonnet-5' })

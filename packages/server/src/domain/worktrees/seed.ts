@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { AGENT_CLIS } from '@yaac/shared/types'
 
-// Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
-// ships a newer onboarding flow, a stale value lets the first-run wizard
-// reappear. `lastOnboardingVersion` must be >= the running CLI version.
-const CLAUDE_ONBOARDING_VERSION = '2.1.111'
+// `lastOnboardingVersion` must be >= the running CLI's version, or a newer
+// onboarding flow lets the first-run wizard reappear — so it is the pinned one.
+const CLAUDE_ONBOARDING_VERSION = AGENT_CLIS.claude.version
 
 interface ClaudeJsonState {
   hasCompletedOnboarding?: boolean

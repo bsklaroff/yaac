@@ -62,7 +62,8 @@ Options for create:
                    for opencode and pi (e.g. anthropic/claude-opus-4-8).
   --permission-mode <mode>
                    how much the new agent may do before it asks: bypass, auto,
-                   accept-edits, manual or plan, most permissive first.
+                   accept-edits, manual, then plan or read-only (codex's
+                   strictest), most permissive first.
                    Omitted, it inherits this worktree's own. It can never be
                    more permissive than this worktree's: asking for more is an
                    error. Not every tool has every mode (pi has only bypass).

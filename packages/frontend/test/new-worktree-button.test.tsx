@@ -125,21 +125,21 @@ describe('NewWorktreeButton', () => {
     vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
     snapshot.mockReturnValue(project({
       lastTool: 'codex',
-      createDefaults: { codex: { model: 'gpt-5.5', permissionMode: 'plan' } },
+      createDefaults: { codex: { model: 'gpt-5.5', permissionMode: 'read-only' } },
     }))
     await openReady()
 
     expect(select('Agent').value).toBe('codex')
     // Shown by name, sent by id.
     expect(modelInput().value).toBe('GPT-5.5')
-    expect(select('Permissions').value).toBe('plan')
+    expect(select('Permissions').value).toBe('read-only')
     expect(select('UI').value).toBe('tui')
 
     fireEvent.click(createButton())
     // Every field is sent, so every field becomes the next default. The
     // branch is omitted: the picker is on the project's default.
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
-      model: 'gpt-5.5', permissionMode: 'plan', mode: 'tui',
+      model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
     })
     // The provisioning row names the model from its first frame.
     expect(provision.mock.calls[0][6]).toEqual({ model: 'gpt-5.5', modelName: 'GPT-5.5' })
@@ -197,14 +197,16 @@ describe('NewWorktreeButton', () => {
     fireEvent.change(select('Agent'), { target: { value: 'codex' } })
 
     fireEvent.change(select('UI'), { target: { value: 'acp' } })
-    expect(option('Permissions', 'Plan').disabled).toBe(true)
-    expect(option('Permissions', 'Manual').disabled).toBe(true)
+    expect(option('Permissions', 'Read-only').disabled).toBe(true)
     expect(option('Permissions', 'Accept').disabled).toBe(false)
+    // Not codex postures in either UI, so not offered at all.
+    expect(option('Permissions', 'Manual')).toBeUndefined()
+    expect(option('Permissions', 'Plan')).toBeUndefined()
 
     fireEvent.change(select('UI'), { target: { value: 'tui' } })
-    fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
+    fireEvent.change(select('Permissions'), { target: { value: 'read-only' } })
     expect(option('UI', 'Chat').disabled).toBe(true)
-    expect(select('Permissions').value).toBe('plan')
+    expect(select('Permissions').value).toBe('read-only')
   })
 
   it('searches models by name or id, and Enter picks before it creates', async () => {

@@ -617,7 +617,13 @@ startup rather than letting a create fail with a spawn error:
   implementations — codex-acp drives `codex app-server`, pi-acp drives
   `pi --mode rpc` — so those creates ask for the tool's CLI as well.
 - **an agent CLI** on `PATH` (claude, codex, opencode, pi) — there is no
-  image to have installed one.
+  image to have installed one. What yaac installs (`--install-missing`, the
+  webapp's install button) is the version the image pins (`AGENT_CLIS`), but
+  a CLI the host already has is used at whatever version it is: the preflight
+  checks only that one is on `PATH`. yaac's postures are written against the
+  pinned release, so on another one a posture can mean something else — codex
+  0.156 dropping the `untrusted` policy is the case that made the pin. Keeping
+  a host's CLIs at the pin is the host's to do.
 - **lsof**: port detection; without it worktrees run fine and report no ports.
 - **curl**: how `yaac-mama` reaches this server from inside a worktree;
   nothing else uses it.

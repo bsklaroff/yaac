@@ -54,6 +54,28 @@ export type AgentMode = 'tui' | 'acp'
 export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
 
 /**
+ * The agent CLI each tool is, pinned: what `dockerfiles/Dockerfile.tools`
+ * installs (a test ties the two) and what a host install asks npm for.
+ *
+ * Pinned because yaac speaks each CLI's own vocabulary in both directions — it
+ * launches a posture as the tool's flags or config, and reads the tool's own
+ * reports back as a posture (docs/permission-modes.md) — and a release that
+ * changes either does not fail loudly: codex 0.156 dropped the `untrusted`
+ * approval policy, so a launch naming it left a dead window. A version is
+ * moved only after both directions are re-checked against the new binary.
+ *
+ * Each adapter in `ACP_ADAPTERS` that drives a CLI is bumped with it: codex-acp
+ * names the codex it speaks to as its `@openai/codex` range, and pi-acp tracks
+ * `pi --mode rpc`'s event shapes.
+ */
+export const AGENT_CLIS = {
+  claude: { package: '@anthropic-ai/claude-code', version: '2.1.282' },
+  codex: { package: '@openai/codex', version: '0.156.1' },
+  opencode: { package: '@opencode/cli', version: '2.0.12' },
+  pi: { package: '@earendil-works/pi-coding-agent', version: '0.84.4' },
+} as const satisfies Record<AgentTool, { package: string; version: string }>
+
+/**
  * The ACP adapter each tool is driven through in `acp` mode.
  *
  * The one record every other list derives from — the image's install steps,
@@ -78,19 +100,19 @@ export const ACP_ADAPTERS = {
   claude: {
     binary: 'claude-agent-acp',
     package: '@agentclientprotocol/claude-agent-acp',
-    verified: '0.65.0',
+    verified: '0.81.2',
     needsCli: false,
   },
   codex: {
     binary: 'codex-acp',
     package: '@agentclientprotocol/codex-acp',
-    verified: '1.8.0',
+    verified: '1.13.1',
     needsCli: true,
   },
   opencode: {
     binary: 'opencode',
-    package: '@opencode/cli',
-    verified: '2.0.12',
+    package: AGENT_CLIS.opencode.package,
+    verified: AGENT_CLIS.opencode.version,
     needsCli: true,
   },
   pi: {
@@ -119,37 +141,35 @@ export const ACP_ADAPTERS = {
  *                   fails loudly in-pane when the account is ineligible.
  * - `accept-edits`  file edits in the worktree run unprompted; anything else
  *                   (other shells, out-of-tree paths, network) still asks.
- * - `plan`          read and explore only; no edits until a plan is approved.
  * - `manual`        every tool use asks first.
+ * - `plan`          read and explore only; no edits until a plan is approved.
+ * - `read-only`     read and explore freely; every edit, and anything that
+ *                   reaches the network, asks first. What codex offers where
+ *                   the others offer `plan`: its sandbox enforces it, where
+ *                   codex's own plan mode is only instructions to the model.
  *
  * Not every tool has every posture — ask `SUPPORTED_PERMISSION_MODES`, never
  * assume. There is deliberately no "the tool's own default" member: what a
  * bare `claude` does differs from a bare `codex` or `opencode`, so a worktree
  * records the posture it actually launched with.
  */
-export type PermissionMode = 'bypass' | 'auto' | 'accept-edits' | 'plan' | 'manual'
-
-export const PERMISSION_MODES: readonly PermissionMode[] = [
-  'bypass',
-  'auto',
-  'accept-edits',
-  'plan',
-  'manual',
-]
+export type PermissionMode = 'bypass' | 'auto' | 'accept-edits' | 'manual' | 'plan' | 'read-only'
 
 /**
  * Postures ranked from most to least permissive — a Record, so a new
  * `PermissionMode` member cannot go unranked. Two things cap a posture by it:
  * a spawned worktree runs at most as permissively as its caller, and a mode
  * read from inside a workspace is recorded at most as permissively as the
- * posture a person chose for it.
+ * posture a person chose for it. `plan` and `read-only` share the strictest
+ * place, so either tool's strictest posture may be granted under the other.
  */
 const PERMISSIVENESS_RANK: Record<PermissionMode, number> = {
-  bypass: 0, auto: 1, 'accept-edits': 2, manual: 3, plan: 4,
+  bypass: 0, auto: 1, 'accept-edits': 2, manual: 3, plan: 4, 'read-only': 4,
 }
 
-/** Every posture, most permissive first. */
-export const PERMISSIVENESS: readonly PermissionMode[] = (Object.keys(PERMISSIVENESS_RANK) as PermissionMode[])
+/** Every posture, most permissive first — the order every list of them is
+ *  shown in, so a dropdown reads as the hierarchy it is. */
+export const PERMISSION_MODES: readonly PermissionMode[] = (Object.keys(PERMISSIVENESS_RANK) as PermissionMode[])
   .sort((a, b) => PERMISSIVENESS_RANK[a] - PERMISSIVENESS_RANK[b])
 
 /** Whether `mode` is ranked (a value read off a row written by another build
@@ -163,11 +183,21 @@ export function morePermissive(mode: PermissionMode, ceiling: PermissionMode): b
   return PERMISSIVENESS_RANK[mode] < PERMISSIVENESS_RANK[ceiling]
 }
 
+/** `modes` in hierarchy order, however they were listed. */
+function ranked(...modes: PermissionMode[]): readonly PermissionMode[] {
+  return PERMISSION_MODES.filter((m) => modes.includes(m))
+}
+
 /**
  * Which postures each tool can actually be launched in.
  *
- * - claude and codex carry all five (claude `--permission-mode`, codex's
- *   approval-policy × sandbox pair plus `--approve-for-me`).
+ * - claude carries all but `read-only`, one `--permission-mode` value each.
+ * - codex carries four as an approval-policy × sandbox pair (plus
+ *   `--approve-for-me`). `read-only` is its read-only sandbox. No `plan`: its
+ *   plan mode is a collaboration mode that only instructs the model, over
+ *   whatever sandbox is in force, and no flag launches into it. No `manual`:
+ *   the policy that asked before everything, `untrusted`, is gone from the
+ *   pinned codex (0.156.1 accepts only `on-request` and `never`).
  * - opencode has no reviewer-model posture, so no `auto`.
  * - pi has no permission system at all — by design, per its own docs: tools
  *   execute immediately and nothing prompts. Rather than dress that up as a
@@ -175,10 +205,10 @@ export function morePermissive(mode: PermissionMode, ceiling: PermissionMode): b
  *   anything else.
  */
 export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
-  claude: PERMISSION_MODES,
-  codex: PERMISSION_MODES,
-  opencode: ['bypass', 'accept-edits', 'plan', 'manual'],
-  pi: ['bypass'],
+  claude: ranked('bypass', 'auto', 'accept-edits', 'manual', 'plan'),
+  codex: ranked('bypass', 'auto', 'accept-edits', 'read-only'),
+  opencode: ranked('bypass', 'accept-edits', 'manual', 'plan'),
+  pi: ranked('bypass'),
 }
 
 /**
@@ -186,13 +216,13 @@ export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMo
  * the *adapter's*, not the CLI's — and the two differ, because a posture is a
  * launch flag for a TUI and an advertised session mode for an adapter.
  *
- * - claude's adapter offers a mode for all five, one per flag.
+ * - claude's adapter offers a mode for each of its five, one per flag.
  * - codex-acp collapses codex's approval × sandbox grid into three modes:
  *   `read-only` (on-request approval over a workspace-write sandbox with no
- *   network — the codex CLI's own default preset, i.e. `accept-edits`),
- *   `agent` (a reviewer model adjudicates — `auto`, and the ADAPTER's default,
- *   which is not the CLI's), and `agent-full-access` (`bypass`). Nothing
- *   there is `plan` or `manual`, so neither is offered.
+ *   network — despite its name, the codex CLI's own default preset, i.e.
+ *   `accept-edits`), `agent` (a reviewer model adjudicates — `auto`, and the
+ *   ADAPTER's default, which is not the CLI's), and `agent-full-access`
+ *   (`bypass`). Nothing there is yaac's `read-only`, so it is not offered.
  * - opencode's ACP "modes" are its AGENTS (`build`, `plan`), not postures;
  *   everything but `plan` is carried by `OPENCODE_PERMISSION` at launch,
  *   exactly as the TUI does, so the same four postures survive.
@@ -203,10 +233,10 @@ export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMo
  * does not have.
  */
 export const ACP_SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
-  claude: PERMISSION_MODES,
-  codex: ['bypass', 'auto', 'accept-edits'],
-  opencode: ['bypass', 'accept-edits', 'plan', 'manual'],
-  pi: ['bypass'],
+  claude: SUPPORTED_PERMISSION_MODES.claude,
+  codex: ranked('bypass', 'auto', 'accept-edits'),
+  opencode: SUPPORTED_PERMISSION_MODES.opencode,
+  pi: ranked('bypass'),
 }
 
 /**
@@ -231,13 +261,49 @@ export function toolSupportsPermissionMode(
   return supportedPermissionModes(tool, agentMode).includes(mode)
 }
 
+/**
+ * The most permissive posture `tool` offers under `agentMode` that is no
+ * looser than `mode`, or undefined when it has nothing that strict — which a
+ * spawn refuses, since its ceiling is a demand.
+ *
+ * Also undefined for a `mode` this build does not rank (a row written by a
+ * newer build, read with a bare cast): nothing compares with it, and the
+ * comparison would otherwise match the first posture offered, `bypass`.
+ */
+export function nearestPermissionMode(
+  tool: AgentTool,
+  mode: PermissionMode,
+  agentMode: AgentMode = 'tui',
+): PermissionMode | undefined {
+  if (!isRankedPermissionMode(mode)) return undefined
+  return supportedPermissionModes(tool, agentMode).find((m) => !morePermissive(m, mode))
+}
+
+/**
+ * What to launch `tool` in for a posture it may lack — a row from another
+ * build, a restart, a remembered choice: the nearest it has no looser
+ * (`nearestPermissionMode`), else its strictest — as is a posture this build
+ * does not rank. Never the driver default, which in a container is `bypass`:
+ * whatever restraint was recorded, the agent gets as much of it as the tool
+ * can give. pi, having nothing but `bypass`, gets that.
+ */
+export function launchablePermissionMode(
+  tool: AgentTool,
+  mode: PermissionMode,
+  agentMode: AgentMode = 'tui',
+): PermissionMode {
+  const supported = supportedPermissionModes(tool, agentMode)
+  return nearestPermissionMode(tool, mode, agentMode) ?? supported[supported.length - 1]
+}
+
 /** Dropdown labels — the enum's user-facing vocabulary, in one place. */
 export const PERMISSION_MODE_COPY: Record<PermissionMode, string> = {
   bypass: 'Bypass permissions',
   auto: 'Auto permissions',
   'accept-edits': 'Accept edits',
-  plan: 'Plan mode',
   manual: 'Manual permissions',
+  plan: 'Plan mode',
+  'read-only': 'Read-only',
 }
 
 /**
@@ -274,9 +340,11 @@ export interface ToolCreateDefaults {
  * form to show it, the server to launch it — so the form always shows what an
  * untouched create would run.
  *
- * A remembered posture must still be one the tool offers under `agentMode`
- * (it may have been recorded under the other mode, or before a tool update
- * dropped it). A remembered model must name the credential's current provider
+ * A remembered posture the tool no longer offers under `agentMode` (it may
+ * have been recorded under the other mode, or before a tool update dropped
+ * it) becomes the nearest one it does that is no looser, else its strictest
+ * (`launchablePermissionMode`) — never the fallback, which in a container is
+ * `bypass`. A remembered model must name the credential's current provider
  * for the tools whose ids carry one (`provider/model`); for claude and codex
  * any remembered id stands, since the catalog is a convenience rather than an
  * allowlist and the user may have typed one it lacks.
@@ -299,8 +367,8 @@ export function resolveToolCreateDefaults(args: {
     && (!qualified || provider === undefined || model.startsWith(`${provider}/`))
   return {
     model: modelFits ? model : args.defaultModel,
-    permissionMode: posture !== undefined && toolSupportsPermissionMode(tool, posture, agentMode)
-      ? posture
+    permissionMode: posture !== undefined
+      ? launchablePermissionMode(tool, posture, agentMode)
       : defaultPermissionMode(driver, tool),
   }
 }

@@ -33,16 +33,18 @@ ENV EDITOR=nvim
 # Builds have no --no-cache path, deliberately (see builderBuildArgs), and the
 # registry step cache is keyed on step TEXT: a step whose text did not change
 # is replayed from cache and reinstalls exactly what it installed last time.
-# So a pinned step upgrades by bumping its pin, and an unpinned one upgrades
-# only if its text changes too — which is what the dated CLAUDE_CODE_REFRESH /
-# CODEX_REFRESH / PI_REFRESH tokens below are for. None is read by the tool it
-# prefixes; each exists solely to be bumped. Cache invalidation cascades, so
-# bumping one also re-runs every step *below* it: bump the topmost step you
-# want refreshed, and the rest come along.
+# So a step upgrades by bumping its pin.
+#
+# Every agent CLI is pinned, to the version in `AGENT_CLIS`
+# (packages/shared/src/types.ts), which a unit test ties to this file. yaac
+# writes each tool's permission postures as launch flags and reads them back
+# from what the tool reports (docs/permission-modes.md), and a release that
+# drops a flag value does not fail the build: it kills the agent window at
+# launch, or quietly runs it in another posture. Re-verify both against the
+# new binary before moving a pin.
 RUN umask 002 && npm install -g chrome-devtools-mcp@0.24.0
-# Codex, deliberately unpinned. Bump the date to pull a newer release (this is
-# the topmost unpinned step, so bumping it refreshes pi and claude too).
-RUN umask 002 && CODEX_REFRESH=2026-09-22 npm install -g @openai/codex
+# Bump with codex-acp below: that adapter drives this CLI's app-server.
+RUN umask 002 && npm install -g @openai/codex@0.156.1
 # opencode 2 (`@opencode/cli`), pinned: yaac's launch command is written
 # against its flags and config (buildAgentCmd), and the session env sets
 # OPENCODE_DISABLE_AUTOUPDATE=1 (packages/server/src/domain/worktrees/create.ts)
@@ -53,19 +55,18 @@ RUN umask 002 && CODEX_REFRESH=2026-09-22 npm install -g @openai/codex
 # stays blank (anomalyco/opencode#29802) — and v2's client is what draws
 # again. Check the pane still draws whenever this pin moves.
 RUN umask 002 && npm install -g @opencode/cli@2.0.12
-# pi, PINNED — unlike codex and claude. Its ACP adapter (pi-acp, below) is a
-# bridge onto `pi --mode rpc`, pi's own JSON protocol, and tracks its event
-# shapes rather than a stable API; a pi release that moved them would break
-# `--mode acp` worktrees with nothing to catch it. Bump the two together, and
-# re-run the acp e2e tier after.
+# pi. Its ACP adapter (pi-acp, below) is a bridge onto `pi --mode rpc`, pi's
+# own JSON protocol, and tracks its event shapes rather than a stable API; a pi
+# release that moved them would break `--mode acp` worktrees with nothing to
+# catch it. Bump the two together, and re-run the acp e2e tier after.
 RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
-# Claude Code, deliberately unpinned. Bump the date to pull a newer release.
+# Claude Code, through its installer, which takes the version to install.
 # The installer picks its own modes (~/.claude/sessions lands 0700), and the
 # agent rewrites that whole tree every session — so normalize what it wrote
 # to group-writable in this same step, where it costs no copy-up. `find`
 # rather than a path list so a changed installer layout is caught: a path
 # that stops existing fails the build instead of silently going unwritable.
-RUN umask 002 && CLAUDE_CODE_REFRESH=2026-09-22 curl -fsSL https://claude.ai/install.sh | bash && \
+RUN umask 002 && curl -fsSL https://claude.ai/install.sh | bash -s 2.1.282 && \
     find /home/yaac/.claude* /home/yaac/.local/share/claude \
       ! -perm -g+w -exec chmod g=u {} +
 # The ACP adapters — the agent side of yaac's `acp` mode. Each speaks JSON-RPC
@@ -83,16 +84,16 @@ RUN umask 002 && CLAUDE_CODE_REFRESH=2026-09-22 curl -fsSL https://claude.ai/ins
 #
 # opencode has no line here: `opencode acp` is a subcommand of the CLI
 # installed above, so its adapter is pinned by that pin.
-RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
+RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.81.2
 # Drives `codex app-server` as a child — resolved as `CODEX_PATH ?? "codex"`,
-# i.e. the unpinned CLI installed above, which makes the app-server protocol
-# the unpinned half of this pair.
+# i.e. the CLI installed above, so the two move together: each codex-acp
+# release names the codex it speaks to (its `@openai/codex` dependency range).
 # --ignore-scripts because the package has no lifecycle script worth running
 # and a future one would be fetching a platform binary this image already has.
 # It does NOT avoid the second codex copy its dependency brings: that arrives
 # as an optionalDependency, which the flag does not skip. Harmless — nothing
 # execs it.
-RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@1.8.0
+RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@1.13.1
 # Drives `pi --mode rpc` as a child, so it needs the pi CLI above — and the
 # pinned one specifically (see that step).
 RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.33

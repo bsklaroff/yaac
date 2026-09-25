@@ -230,8 +230,7 @@ describe('getAgentSessionPermissionMode', () => {
       [{ approval_policy: 'never', permission_profile: FULL }, 'bypass'],
       [{ approvals_reviewer: 'auto_review' }, 'auto'],
       [{}, 'accept-edits'],
-      [{ permission_profile: READ_ONLY }, 'plan'],
-      [{ approval_policy: 'untrusted' }, 'manual'],
+      [{ permission_profile: READ_ONLY }, 'read-only'],
     ]
     for (const [s, mode] of cases) {
       expect((await getAgentSessionPermissionMode('codex', await rollout([turnContext(s)])))?.permissionMode).toBe(mode)
@@ -251,17 +250,32 @@ describe('getAgentSessionPermissionMode', () => {
     await expect(getAgentSessionPermissionMode('codex', jsonl))
       .resolves.toEqual({ permissionMode: 'bypass', atMs: Date.parse('2026-09-24T20:21:41.151Z') })
 
-    // Codex's own plan mode is what the user asked for by entering it.
+    // Codex's own plan mode is only instructions to the model, over whatever
+    // sandbox is in force, so it says nothing about the posture.
     await fs.appendFile(jsonl, JSON.stringify(applied({
       approval_policy: 'never', permission_profile: FULL, collaboration_mode: { mode: 'plan' },
     })) + '\n')
-    expect((await getAgentSessionPermissionMode('codex', jsonl))?.permissionMode).toBe('plan')
+    expect((await getAgentSessionPermissionMode('codex', jsonl))?.permissionMode).toBe('bypass')
   })
 
-  // Settings no posture stands for are the answer — not an older entry that
-  // named one, which would claim a posture codex has since left.
+  // Settings the launch table never makes read as the most permissive posture
+  // that lets the agent do no more unasked than they do.
+  it('reads settings past the launch table as the nearest posture no looser', async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ permission_profile: FULL }, 'bypass'],
+      [{ approval_policy: 'never' }, 'accept-edits'],
+      [{ approval_policy: 'never', permission_profile: READ_ONLY }, 'read-only'],
+      [{ approvals_reviewer: 'auto_review', permission_profile: READ_ONLY }, 'auto'],
+    ]
+    for (const [s, mode] of cases) {
+      expect((await getAgentSessionPermissionMode('codex', await rollout([turnContext(s)])))?.permissionMode).toBe(mode)
+    }
+  })
+
+  // Settings nothing can be said about are the answer — not an older entry
+  // that named one, which would claim a posture codex has since left.
   it('answers nothing for settings no posture stands for', async () => {
-    const jsonl = await rollout([turnContext(), applied({ permission_profile: FULL })])
+    const jsonl = await rollout([turnContext(), applied({ approval_policy: { granular: {} } })])
     await expect(getAgentSessionPermissionMode('codex', jsonl)).resolves.toBeUndefined()
   })
 

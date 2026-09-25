@@ -30,6 +30,7 @@ import {
 import { k8sNamespace, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import { AGENT_CLIS } from '@yaac/shared/types'
 import {
   startMockLLM,
   startMockGit,
@@ -496,7 +497,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // .git file points at /repo/.git.
       await fs.writeFile(path.join(projectPath, 'claude.json'), JSON.stringify({
         hasCompletedOnboarding: true,
-        lastOnboardingVersion: '2.1.116',
+        lastOnboardingVersion: AGENT_CLIS.claude.version,
         customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
         projects: {
           '/repo': { hasTrustDialogAccepted: true },
@@ -1967,7 +1968,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // headless create has no user to click through wizards.
       await fs.writeFile(path.join(projectPath, 'claude.json'), JSON.stringify({
         hasCompletedOnboarding: true,
-        lastOnboardingVersion: '2.1.116',
+        lastOnboardingVersion: AGENT_CLIS.claude.version,
         customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
         projects: {
           '/repo': { hasTrustDialogAccepted: true },
@@ -2330,8 +2331,8 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
       // Every tool has an adapter now, so the combination that cannot be
       // created is a posture rather than a tool: codex-acp collapses codex's
-      // approval × sandbox grid into three modes, and neither `plan` nor
-      // `manual` is among them. Refusing beats launching the nearest
+      // approval × sandbox grid into three modes, and yaac's `read-only` is
+      // not among them. Refusing beats launching the nearest
       // neighbour, which would hand back a worktree with a weaker restraint
       // than the one that was asked for — and quietly, since nothing in the
       // pane would say so.
@@ -2339,10 +2340,10 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const podsBefore = (await listWorktreePods('acp-unsupported')).length
       const bad = await runYaac(
         serverEnv, 'worktree', 'create', 'acp-unsupported',
-        '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'plan',
+        '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'read-only',
       )
       expect(bad.exitCode).not.toBe(0)
-      expect(bad.stdout + bad.stderr).toMatch(/codex has no "plan" permission mode under acp/)
+      expect(bad.stdout + bad.stderr).toMatch(/codex has no "read-only" permission mode under acp/)
       // The check runs before the worktree, the Job, or a database row exists.
       // The same posture through codex's own TUI is accepted — the limit is
       // the adapter's, not codex's — which the unit suite pins against the

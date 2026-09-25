@@ -7,8 +7,8 @@ packages:
 # package.json files are npm-installed inside their image builds, and npm
 # can't resolve catalog: specifiers, so their pins stay inline.
 catalog:
-  "@agentclientprotocol/claude-agent-acp": 0.65.0
-  "@anthropic-ai/claude-agent-sdk": 0.3.220
+  "@agentclientprotocol/claude-agent-acp": 0.81.2
+  "@anthropic-ai/claude-agent-sdk": 0.3.280
   "@electric-sql/pglite": 0.5.4
   "@hono/node-server": 1.19.14
   "@hono/node-ws": 1.3.1
@@ -40,3 +40,20 @@ minimumReleaseAgeExclude:
   # Adopted at days old (only release; the attention chime's one cue) after
   # reading its full source — see packages/frontend/src/lib/sound.ts.
   - cuelume
+  # Adopted at days old because they must match the claude CLI the worktree
+  # image pins (dockerfiles/Dockerfile.tools, `AGENT_CLIS`): the server replays
+  # stopped transcripts through the same adapter version the image runs live.
+  # Mode ids re-verified against this release (runtime/agents/acp-adapters.ts).
+  # The rest are what that adapter release pins exactly. Each is exempt at this
+  # version only, so a later release still waits out the age gate.
+  - "@agentclientprotocol/claude-agent-acp@0.81.2"
+  - "@agentclientprotocol/sdk@1.5.0"
+  - "@anthropic-ai/claude-agent-sdk@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-linux-x64@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.280"
+  - "@anthropic-ai/claude-agent-sdk-win32-x64@0.3.280"
