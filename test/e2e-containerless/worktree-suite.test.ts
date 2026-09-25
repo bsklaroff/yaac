@@ -1146,7 +1146,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
    * After the mama cases, deliberately: this moves the shared subject's
    * posture, which is the ceiling those cases read.
    */
-  it('follows a mode the agent reports, and never past the one it was created in', async () => {
+  it('follows a mode the agent reports, down and back up past the one it was created in', async () => {
     const settings = JSON.parse(await fs.readFile(
       path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
     )) as { hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }
@@ -1206,17 +1206,11 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       expect(await ceiling()).toContain("more permissive than this worktree's own ('plan')")
     }, { timeout: 30_000, interval: 500 })
 
-    // Anything in the workspace can set that option. Claiming bypass moves
-    // the worktree back up to what it was created in, and no further.
-    await prompt('bypassPermissions')
+    // A move up is recorded as readily, past the accept-edits it was created
+    // in — and left there for the restart case, which relaunches in it.
+    await prompt('auto')
     await vi.waitFor(async () => {
-      expect(await ceiling()).toContain("more permissive than this worktree's own ('accept-edits')")
-    }, { timeout: 30_000, interval: 500 })
-
-    // Left in plan for the restart case, which relaunches what the row says.
-    await prompt('plan')
-    await vi.waitFor(async () => {
-      expect(await ceiling()).toContain("more permissive than this worktree's own ('plan')")
+      expect(await ceiling()).toContain("more permissive than this worktree's own ('auto')")
     }, { timeout: 30_000, interval: 500 })
   }, 120_000)
 
@@ -1295,10 +1289,10 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const windows = await tmux(worktreeId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
     // In the posture the agent last reported, not the one it was created in:
-    // the mode-reporting case above left it in plan.
+    // the mode-reporting case above left it in auto.
     await vi.waitFor(async () => {
       expect(await tmux(worktreeId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
-        .toContain('--permission-mode plan')
+        .toContain('--permission-mode auto')
     }, { timeout: 30_000, interval: 250 })
 
     expect((await fs.readFile(path.join(checkout, '.git'), 'utf8')).trim())
@@ -1521,11 +1515,10 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     await runYaac(serverEnv, 'worktree', 'stop', id)
   }, 180_000)
 
-  // Nothing on the adapter's stream says who asked for a move, so one up —
-  // here a stand-in moving itself to bypassPermissions unasked — is only
-  // observed, and cannot raise what a restart relaunches in past what the
-  // create chose.
-  it('does not let a mode move nobody chose raise the posture a restart relaunches in', async () => {
+  // A move up is followed like a move down — here a stand-in moving itself to
+  // bypassPermissions, as a "yes, and bypass permissions" plan-exit answer
+  // does — so a restart relaunches in it rather than in the create's plan.
+  it('records a mode the agent moves itself up to, and restarts the conversation in it', async () => {
     const id = await createWorktreeWith(
       'claude', '--mode', 'acp', '--permission-mode', 'plan', '--prompt', 'enter bypassPermissions mode',
     )
@@ -1554,7 +1547,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     await vi.waitFor(async () => {
       expect(await life()).not.toBe(before)
       expect((await relayed()).filter((m) => m.method === 'session/set_mode').map((m) => m.params?.modeId))
-        .toEqual(['plan'])
+        .toEqual(['bypassPermissions'])
     }, { timeout: 30_000, interval: 250 })
 
     await runYaac(serverEnv, 'worktree', 'stop', id)

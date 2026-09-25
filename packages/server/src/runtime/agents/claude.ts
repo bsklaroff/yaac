@@ -105,8 +105,8 @@ export async function getFirstUserMessage(jsonlPath: string): Promise<string | u
 /**
  * claude's own names for its permission modes, as its hooks report them, read
  * back as yaac's postures. `manual` is an input alias claude reports as
- * `default`, and `dontAsk` is a mode yaac has no posture for — so it is not
- * here, and is left unrecorded rather than rounded to a neighbour.
+ * `default`, and `dontAsk` — deny anything not pre-approved, a mode yaac never
+ * launches in — reads as `manual`: nothing unapproved runs unasked.
  */
 const CLAUDE_POSTURES: Record<string, PermissionMode> = {
   bypassPermissions: 'bypass',
@@ -114,6 +114,7 @@ const CLAUDE_POSTURES: Record<string, PermissionMode> = {
   acceptEdits: 'accept-edits',
   plan: 'plan',
   default: 'manual',
+  dontAsk: 'manual',
 }
 
 export function claudePermissionMode(reported: string): PermissionMode | undefined {

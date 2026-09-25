@@ -115,9 +115,7 @@ async function applyCreated(event: WorktreeCreated): Promise<void> {
     worktreeId,
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(event.spare === true ? { spare: true } : {}),
-    // A restart relaunches in what the row says, so it says nothing new — and
-    // re-stamping it would turn a posture observed since into the chosen one.
-    ...(permissionMode !== undefined && resume !== true ? { permissionMode } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(mode !== undefined ? { mode } : {}),
   })

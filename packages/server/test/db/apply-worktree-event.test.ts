@@ -67,13 +67,10 @@ describe('applyWorktreeEvent', () => {
     })
   })
 
-  // The row follows the running agent, but nothing that reports a move can
-  // say who asked for it — anything in the workspace can write a pane option
-  // or a rollout, or put words in an adapter's mouth — so a move may lower the
-  // posture, and bring it back up to what a person chose, but never raise it
-  // past that.
-  it('follows a posture the agent moved to, never past the one a person chose', async () => {
-    const moved = (permissionMode: 'bypass' | 'plan' | 'accept-edits'): Promise<void> => applyWorktreeEvent({
+  // The row is the posture the running agent is in: every reported move
+  // lands, up or down, and a restart records what it relaunched in.
+  it('follows a posture the agent moved to, either way', async () => {
+    const moved = (permissionMode: 'bypass' | 'plan'): Promise<void> => applyWorktreeEvent({
       type: 'permission-mode-changed', projectSlug: 'proj', worktreeId: 'wt-p', permissionMode,
     })
     const posture = async (): Promise<string | undefined> => (await rowOf('wt-p'))?.permissionMode
@@ -81,23 +78,13 @@ describe('applyWorktreeEvent', () => {
 
     await moved('plan')
     expect(await posture()).toBe('plan')
-    // A forged (or real) raise past the choice lands on the choice itself.
     await moved('bypass')
-    expect(await posture()).toBe('accept-edits')
+    expect(await posture()).toBe('bypass')
 
-    // A restart relaunches in what the row says, and re-states nothing: the
-    // choice is still accept-edits, so a later raise stops there.
-    await moved('plan')
+    // A restart relaunching in another posture (the row's, where this tool
+    // lacks it) records the one it launched.
     await created('wt-p', { resume: true, permissionMode: 'plan' })
     expect(await posture()).toBe('plan')
-    await moved('bypass')
-    expect(await posture()).toBe('accept-edits')
-
-    // A fresh create (or a claim) is a person choosing again: what was
-    // observed under the last choice goes with it.
-    await moved('plan')
-    await created('wt-p', { permissionMode: 'bypass' })
-    expect(await posture()).toBe('bypass')
     expect(await rowOf('wt-p')).toMatchObject({ model: 'claude-opus-5-5', mode: 'tui' })
   })
 

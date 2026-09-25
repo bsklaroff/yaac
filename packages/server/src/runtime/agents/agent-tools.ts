@@ -21,8 +21,6 @@ import {
   classifyCodexTitle,
   codexModelSlug,
   getCodexFirstUserMessage,
-  getCodexPermissionMode,
-  type CodexPosture,
 } from './codex'
 import {
   OPENCODE_BUSY_MARKERS,
@@ -138,21 +136,6 @@ export function resolveAgentPermissionMode(
   if (tool === 'claude') return claudePermissionMode(reported)
   if (tool === 'opencode') return opencodePermissionMode(reported, current)
   return undefined
-}
-
-/**
- * The posture a `tui` conversation's transcript says it runs under, and when
- * that was written, for the one tool whose posture is read that way: codex, whose rollout records every
- * settings change the moment it is made (`getCodexPermissionMode`). Every
- * other tool answers without touching the disk — claude's and opencode's
- * arrive on the pane instead, and pi has none.
- */
-export async function getAgentSessionPermissionMode(
-  tool: AgentTool,
-  transcriptPath: string | undefined,
-): Promise<CodexPosture | undefined> {
-  if (tool !== 'codex' || transcriptPath === undefined) return undefined
-  return getCodexPermissionMode(transcriptPath)
 }
 
 /**

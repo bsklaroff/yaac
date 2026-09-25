@@ -587,10 +587,13 @@ answer under both drivers on one line.
   it through a *managed* hook declared in `/etc/codex/requirements.toml`, the
   trusted image layer that bypasses its per-change `/hooks` trust prompt.
   There is no image to carry that here, so a codex worktree knows only the
-  conversation `--session-id` pinned — and with no rollout recorded, a
-  posture changed inside codex is not followed onto the row either
-  (docs/permission-modes.md). Claude registers the same script from its own
-  settings.json and is unaffected.
+  conversation `--session-id` pinned. Claude registers the same script from
+  its own settings.json and is unaffected. A posture changed inside codex is
+  still followed onto the row (docs/permission-modes.md): with no rollout
+  recorded, the registry finds this worktree's rollouts in the project's
+  codex home instead (`findCodexRollouts`) — those modified during this life
+  whose opening `session_meta` names the checkout as their cwd, which only
+  this substrate makes unique to one worktree.
 
 ## Host requirements
 

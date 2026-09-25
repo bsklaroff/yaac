@@ -466,10 +466,8 @@ function promptText(params: unknown): string | undefined {
  * reply's, then every successful `session/set_mode` and every mode update the
  * adapter sent since — last one wins.
  *
- * What a reattach seeds its posture from, beside the worktree's row
- * (`AcpConversation.recoverPosture`). The record is written from inside the
- * workspace like everything else there, which is why it is only ever allowed
- * to LOWER the posture the row gives.
+ * What a reattach seeds its posture from (`AcpConversation.recoverMode`):
+ * the session may have moved while no connection was listening.
  */
 export async function readAcpModeId(logPath: string): Promise<string | undefined> {
   let raw: string

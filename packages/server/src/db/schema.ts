@@ -177,15 +177,17 @@ export const worktrees = snakeCase.table('worktrees', {
    */
   lifeLogBytes: integer().notNull().default(0),
   /**
-   * The permission posture this worktree's agents launch in — a
+   * The permission posture this worktree's agents run in — a
    * `PermissionMode`, spelled per tool at launch (claude's
    * `--permission-mode`, codex's approval/sandbox pair, opencode's permission
-   * config; pi has none and is always `bypass`).
+   * config; pi has none and is always `bypass`). Set at create or claim, then
+   * overwritten by each move the running agent reports, up or down
+   * (docs/permission-modes.md, "Following the agent").
    *
    * Durable rather than a launch-time decision because a worktree outlives
-   * the request that made it: a restart relaunches its agents, and it must
-   * relaunch them the way the user asked for rather than re-deriving the
-   * answer from whatever the default is now.
+   * the request that made it: a restart relaunches its agents in the posture
+   * they were last in, rather than re-deriving one from whatever the default
+   * is now.
    *
    * Defaults `bypass`, which is what a sandboxed runtime resolves to anyway:
    * the isolation is what justifies acting unprompted. Read back with a cast;
@@ -194,20 +196,6 @@ export const worktrees = snakeCase.table('worktrees', {
    * here, since the launch path re-checks against the tool.
    */
   permissionMode: text().notNull().default('bypass'),
-  /**
-   * The posture the running agent was last seen in, when that was read from
-   * inside the workspace (a pane option, a codex rollout) rather than chosen:
-   * already clamped at `permissionMode`, and null when no such move has been
-   * seen, or when the one seen came back up to it. What a restart relaunches
-   * in, and what `yaac-mama create` caps a sibling at, is this if set and
-   * `permissionMode` otherwise (`WorktreeRow.permissionMode`).
-   *
-   * A column of its own rather than a rewrite of `permissionMode`, because
-   * anything in the workspace can write where it is read from — so it may
-   * move the posture down, and back up to what a person chose, but never past
-   * it (docs/permission-modes.md).
-   */
-  observedPermissionMode: text(),
   /**
    * The model and the agent mode (`tui` / `acp`) its first agent was launched
    * with — recorded beside `permissionMode` for the same reason, and what a

@@ -118,6 +118,14 @@ const lifeLine = {
   params: { id: 'life-1', startedAt: '2026-01-01T00:00:00.000Z' },
 }
 
+/** The record a handshake that left the session in `modeId` writes — what a
+ *  real reattach always finds, and all it has to tell its posture by. */
+const recordMode = (agentSessionId: string, modeId: string): Promise<void> => record(agentSessionId, [
+  lifeLine,
+  { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
+  { jsonrpc: '2.0', id: 'h-1', result: { sessionId: agentSessionId, modes: { currentModeId: modeId } } },
+])
+
 /** A prompt as the record holds it: the client's own request, carrying the id
  *  its reply will arrive under. */
 const promptLine = (agentSessionId: string, id: string, text: string): unknown => ({
@@ -721,6 +729,7 @@ describe('agentDriver', () => {
   })
 
   it('grants tool permission rather than prompting under bypass, matching the sandbox posture', async () => {
+    await recordMode('acp-1', 'bypassPermissions')
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -796,27 +805,10 @@ describe('agentDriver', () => {
     expect(stream.sent().some((m) => m.id === 99)).toBe(false)
   })
 
-  // Nothing on this stream says who asked for a move: acpd's socket path is
-  // the agent's own, and the adapter moves for any client that sets its mode.
-  // So a move up is not believed — only a move a person picked in the pane.
-  it('never starts answering for the user on a mode it did not see a person pick', async () => {
-    const { stream, seen } = await attachedUnder('manual', 'acp-1')
-    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
-    stream.feed(updateLine('acp-1', { sessionUpdate: 'current_mode_update', currentModeId: 'bypassPermissions' }))
-    // Still reported — as an observation, which the row clamps.
-    await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('bypassPermissions'))
-
-    stream.feed(permissionAsk(99))
-    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
-    expect(stream.sent().some((m) => m.id === 99)).toBe(false)
-  })
-
-  // A plan-exit ask's options ARE mode ids — but the ask, the labels a pane
-  // shows and the ids behind them all come from inside the workspace, so a
-  // green "Allow" can carry `bypassPermissions`. A person's click on it is not
-  // a person choosing bypass, and neither is an answer to an ask this
-  // connection never received.
-  it('takes no answer in the pane as a person choosing a looser mode', async () => {
+  // A plan-exit ask's options ARE mode ids: "yes, and bypass permissions"
+  // moves the session up, and from then on this conversation answers its asks
+  // the way the adapter now runs.
+  it('follows a mode the adapter moves up to, as well as down', async () => {
     const { stream, seen } = await attachedUnder('plan', 'acp-1')
     const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
     stream.feed(`${JSON.stringify({
@@ -825,39 +817,91 @@ describe('agentDriver', () => {
       method: 'session/request_permission',
       params: {
         sessionId: 'acp-1',
-        toolCall: { toolCallId: 'call-5', title: 'Run pnpm test', kind: 'execute' },
+        toolCall: { toolCallId: 'call-5', title: 'Ready to code?', kind: 'switch_mode' },
         options: [
-          { optionId: 'bypassPermissions', name: 'Allow', kind: 'allow_once' },
-          { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+          { optionId: 'bypassPermissions', name: 'Yes, and bypass permissions', kind: 'allow_always' },
+          { optionId: 'plan', name: 'No, keep planning', kind: 'reject_once' },
         ],
       },
     })}\n`)
     await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
     conversation.answerPermission('5', 'bypassPermissions')
-    conversation.answerPermission('x1', 'bypassPermissions')
-    // The adapter echoing the move is only its word.
     stream.feed(updateLine('acp-1', { sessionUpdate: 'current_mode_update', currentModeId: 'bypassPermissions' }))
     await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('bypassPermissions'))
 
     stream.feed(permissionAsk(6))
-    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
-    expect(stream.sent().some((m) => m.id === 6)).toBe(false)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 6)).toBe(true))
   })
 
-  // A reattach is a new conversation object, and the row it reads may hold
-  // ANOTHER conversation's raise. Its own record says what its own session
-  // was last in, and the stricter of the two is what it answers by.
-  it('seeds a reattach with the stricter of the row and its own record', async () => {
-    await record('acp-1', [
+  // A reattach runs no handshake, so the mode its session is in is the one its
+  // own record last shows — possibly moved while no server was listening. It
+  // answers by that, whichever way it differs from the row, and reports it so
+  // the row catches up.
+  it('answers a reattach by the mode its own record shows, and reports it', async () => {
+    await recordMode('acp-1', 'default')
+    await record('acp-2', [
       lifeLine,
-      { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
-      { jsonrpc: '2.0', id: 'h-1', result: { sessionId: 'acp-1', modes: { currentModeId: 'default' } } },
+      { jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId: 'acp-2', update: { sessionUpdate: 'current_mode_update', currentModeId: 'bypassPermissions' },
+      } },
     ])
-    const { stream } = await attachedUnder('bypass', 'acp-1')
-    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
-    stream.feed(permissionAsk(7))
-    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
-    expect(stream.sent().some((m) => m.id === 7)).toBe(false)
+    const lowered = await attachedUnder('bypass', 'acp-1')
+    await vi.waitFor(() => expect(reportedModes(lowered.seen).at(-1)).toBe('default'))
+    lowered.stream.feed(permissionAsk(7))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')!.isAwaitingPermission).toBe(true))
+    expect(lowered.stream.sent().some((m) => m.id === 7)).toBe(false)
+
+    const raised = await attachedUnder('manual', 'acp-2')
+    await vi.waitFor(() => expect(reportedModes(raised.seen).at(-1)).toBe('bypassPermissions'))
+    raised.stream.feed(permissionAsk(8))
+    await vi.waitFor(() => expect(raised.stream.sent().some((m) => m.id === 8)).toBe(true))
+
+    // A record whose mode stands for no posture leaves nothing to answer by —
+    // and the row is no stand-in, since it may hold ANOTHER conversation's
+    // raise. So every ask is the person's.
+    await recordMode('acp-3', 'build')
+    const unknown = await attachedUnder('bypass', 'acp-3')
+    unknown.stream.feed(permissionAsk(9))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-3')!.isAwaitingPermission).toBe(true))
+    expect(unknown.stream.sent().some((m) => m.id === 9)).toBe(false)
+  })
+
+  // opencode's modes are agents, not postures, so an opencode conversation
+  // answers by the posture it launched in — read at launch. The row it came
+  // from moves with every other conversation in the worktree, and one taking
+  // "yes, and bypass permissions" must not start answering this one's asks.
+  it('answers by the posture it launched in where its mode names none', async () => {
+    const stream = new FakeStream()
+    let row: PermissionMode = 'accept-edits'
+    let reads = 0
+    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => { reads++; return Promise.resolve(row) },
+      heartbeatIntervalMs: 20,
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: created.id,
+      result: { sessionId: 'acp-oc', configOptions: [{ id: 'mode', currentValue: 'build' }] },
+    })}\n`)
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-oc')?.status).toBe('waiting'))
+
+    // Another conversation's raise lands on the row, and a sweep picks it up.
+    row = 'bypass'
+    const before = reads
+    await vi.waitFor(() => expect(reads).toBeGreaterThan(before + 1))
+    stream.feed(permissionAsk(4))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-oc')!.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 4)).toBe(false)
   })
 
   it('reads a mode change reported as a config option, which is how codex-acp says it', async () => {
@@ -888,6 +932,8 @@ describe('agentDriver', () => {
    * plan mode says nothing about another still bypassing permissions.
    */
   it('keeps each conversation on its own posture', async () => {
+    await recordMode('acp-a', 'bypassPermissions')
+    await recordMode('acp-b', 'bypassPermissions')
     const streams = new Map([['claude', new FakeStream()], ['claude-2', new FakeStream()]])
     podExec.mockResolvedValue({ stdout: 'claude\nclaude-2\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -1239,7 +1285,8 @@ describe('agentDriver', () => {
     // `bypassPermissions` is withheld by an adapter running as root outside a
     // sandbox, and `auto` by a model with no classifier. Setting one throws at
     // the adapter, and losing the conversation over it would be worse than
-    // running in its default — where the bypass auto-answer still applies.
+    // running in its default — which is then the conversation's posture, and
+    // the worktree's.
     //
     // But it is NOT silent. An adapter's default is not always at least as
     // strict as what was asked (codex-acp's is `agent`, where a reviewer model
@@ -1247,8 +1294,9 @@ describe('agentDriver', () => {
     // where the person who chose the posture will see it: the pane.
     const stream = new FakeStream()
     const events: AcpEventInit[] = []
+    const seen: AgentObservation[] = []
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: () => stream,
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
@@ -1282,10 +1330,13 @@ describe('agentDriver', () => {
     expect((reported[0] as { message: string }).message).toContain('default')
     expect((reported[0] as { message: string }).message).not.toContain('forwarded')
 
-    // And the conversation still works: the ask is auto-answered, because
-    // bypass is what this posture means however the adapter is running.
+    // And the conversation still works — in the mode it is actually in, which
+    // is reported upward and answers its asks: `default` asks the person.
+    await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('default'))
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
     stream.feed(permissionAsk(3))
-    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 3)).toBe(true))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 3)).toBe(false)
   })
 
   it('reports a mode the adapter REFUSED, which is where a codex worktree runs loose', async () => {
@@ -1421,6 +1472,7 @@ describe('agentDriver', () => {
   })
 
   it('decodes a multi-byte character split across two socket reads', async () => {
+    await recordMode('acp-1', 'bypassPermissions')
     // The relay delivers raw Buffers on TCP read boundaries, which land
     // wherever the network puts them. Decoded per chunk, a character split
     // across two reads becomes replacement characters in both halves — and
@@ -1522,6 +1574,7 @@ describe('agentDriver', () => {
   })
 
   it('survives a non-JSON line from the adapter instead of killing the conversation', async () => {
+    await recordMode('acp-1', 'bypassPermissions')
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
