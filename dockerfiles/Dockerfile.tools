@@ -1,5 +1,68 @@
 ARG BASE_IMAGE
+
+# bubblewrap, patched to run under gVisor — codex's sandbox (every codex
+# posture but bypass, docs/permission-modes.md). gVisor gives a new network
+# namespace an `lo` already holding 127.0.0.1, where Linux gives an empty
+# one, so bwrap's own RTM_NEWADDR fails EEXIST and `--unshare-net` aborts
+# ("loopback: Failed RTM_NEWADDR") before the command runs. The patch takes
+# EEXIST as done, and has every failed netlink read set errno, so only a
+# real EEXIST reply gets through rather than one left over from earlier.
+# codex prefers a bwrap on PATH to its bundled copy, so this one is what it
+# runs. Delete the stage once a pinned gVisor (GVISOR_VERSION) creates `lo`
+# empty (google/gvisor#13532) or bubblewrap tolerates it
+# (containers/bubblewrap#745) and codex bundles that release — the tripwire
+# in test/e2e/codex-sandbox.test.ts fails when either has happened.
+FROM docker.io/ubuntu:24.04 AS bwrap
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gcc libc6-dev libcap-dev meson ninja-build patch pkg-config xz-utils
+RUN curl -fsSLO https://github.com/containers/bubblewrap/releases/download/v0.13.0/bubblewrap-0.13.0.tar.xz && \
+    echo '4734237473c0e5d695e4e9034a34e43b2dbf5164655bd13fa59ae376b2b7a765  bubblewrap-0.13.0.tar.xz' | sha256sum -c && \
+    tar -xf bubblewrap-0.13.0.tar.xz
+WORKDIR /bubblewrap-0.13.0
+RUN patch -p1 <<'PATCH'
+--- a/network.c
++++ b/network.c
+@@ -79,15 +79,22 @@
+       while (received >= NLMSG_HDRLEN)
+         {
+           if (rheader->nlmsg_seq != seq_nr)
+-            return -1;
++            {
++              errno = EPROTO;
++              return -1;
++            }
+           if ((pid_t)rheader->nlmsg_pid != getpid ())
+-            return -1;
++            {
++              errno = EPROTO;
++              return -1;
++            }
+           if (rheader->nlmsg_type == NLMSG_ERROR)
+             {
+               uint32_t *err = NLMSG_DATA (rheader);
+               if (*err == 0)
+                 return 0;
+
++              errno = -(int32_t) *err;
+               return -1;
+             }
+           if (rheader->nlmsg_type == NLMSG_DONE)
+@@ -178,7 +185,7 @@
+
+   assert (header->nlmsg_len < sizeof (buffer));
+
+-  if (rtnl_do_request (rtnl_fd, header) != 0)
++  if (rtnl_do_request (rtnl_fd, header) != 0 && errno != EEXIST)
+     die_with_error ("loopback: Failed RTM_NEWADDR");
+
+   header = rtnl_setup_request (buffer, RTM_NEWLINK,
+PATCH
+RUN meson setup _build --buildtype=release -Dselinux=disabled -Dman=disabled -Dtests=false \
+      -Dbash_completion=disabled -Dzsh_completion=disabled && \
+    ninja -C _build
+
 FROM ${BASE_IMAGE}
+COPY --from=bwrap /bubblewrap-0.13.0/_build/bwrap /usr/bin/bwrap
 
 # Neovim — split out of Dockerfile.default so bumping the pinned release
 # re-runs only this layer, not the slow apt/Node base build. Needs root to
@@ -43,7 +106,9 @@ ENV EDITOR=nvim
 # launch, or quietly runs it in another posture. Re-verify both against the
 # new binary before moving a pin.
 RUN umask 002 && npm install -g chrome-devtools-mcp@0.24.0
-# Bump with codex-acp below: that adapter drives this CLI's app-server.
+# Bump with codex-acp below: that adapter drives this CLI's app-server. Its
+# sandbox must keep choosing /usr/bin/bwrap over its bundled one (the bwrap
+# stage above); test/e2e/codex-sandbox.test.ts is what says it still does.
 RUN umask 002 && npm install -g @openai/codex@0.156.1
 # opencode 2 (`@opencode/cli`), pinned: yaac's launch command is written
 # against its flags and config (buildAgentCmd), and the session env sets
