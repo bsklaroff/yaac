@@ -150,7 +150,8 @@ export interface LaunchedSession {
  *
  * Where the history comes from is the one thing that differs by mode. Under
  * `tui` the sweep folds whatever the in-pod hook has appended to the
- * worktree's session-starts log; under `acp` there is nothing to discover,
+ * worktree's session-starts log (or, for codex under containerless, where no
+ * hook runs, what its rollouts say); under `acp` there is nothing to discover,
  * because the server is the ACP client and the handshake handed it the id.
  */
 export interface SessionsDiscovered {

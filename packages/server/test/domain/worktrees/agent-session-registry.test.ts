@@ -16,16 +16,20 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
 // is the only place its firing (or its silence) can be asserted.
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 import { closeDb } from '#db/client'
-import { acpLogDir, claudeDir, codexDir, worktreeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
+import {
+  acpLogDir, claudeDir, codexDir, projectDir, worktreeDir, worktreeSessionStartsPath,
+} from '@yaac/shared/project-paths'
 import {
   _resetReportedModesForTests,
   reconcileAgentSessions,
   reconcileWorktreeAgentSessions,
 } from '#domain/worktrees/agent-session-registry'
 import {
+  listActiveAgentSessions,
   listWorktreeAgentSessions,
   recordAgentSessions,
 } from '#db/agent-session-store'
+import { applyWorktreeEvent } from '#db/apply-worktree-event'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { getWorktreeRow, recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
 import { _resetCodexPosturesForTests } from '#runtime/agents/codex'
@@ -584,38 +588,124 @@ describe('reconcileWorktreeAgentSessions', () => {
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('plan')
   })
 
-  // Under containerless no hook records a codex rollout, so the registry finds
-  // it in the project's codex home by the checkout codex recorded — and reads
-  // it the same way.
-  it('follows a codex rollout no hook recorded, found by its checkout', async () => {
+  /** A codex TUI rollout as 0.156.1 writes one, filed under the day `at`
+   *  falls on and last written then: its `session_meta`, then `lines`. */
+  async function codexRollout(
+    id: string, at: Date, lines: object[], meta: Record<string, unknown> = {},
+  ): Promise<string> {
+    const file = path.join(
+      codexDir('demo'), 'sessions', String(at.getFullYear()),
+      String(at.getMonth() + 1).padStart(2, '0'), String(at.getDate()).padStart(2, '0'),
+      `rollout-${id}.jsonl`,
+    )
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, [
+      { type: 'session_meta', payload: { id, session_id: id, cwd: worktreeDir('demo', 'wt-1'), source: 'cli', ...meta } },
+      ...lines,
+    ].map((e) => JSON.stringify(e)).join('\n') + '\n')
+    await fs.utimes(file, at, at)
+    return file
+  }
+  /** The entry codex writes when its settings change, and when it resumes. */
+  const codexSettings = (at: Date, bypass: boolean): object => ({
+    timestamp: at.toISOString(),
+    type: 'event_msg',
+    payload: {
+      type: 'thread_settings_applied',
+      thread_settings: bypass
+        ? { approval_policy: 'never', permission_profile: { type: 'disabled' } }
+        : { approval_policy: 'on-request', permission_profile: { type: 'managed', file_system: { entries: [] } } },
+    },
+  })
+  const codexPrompt = (message: string): object => ({ type: 'event_msg', payload: { type: 'user_message', message } })
+  const linkOf = async (id: string) =>
+    (await listWorktreeAgentSessions('demo', 'wt-1')).find((l) => l.agentSessionId === id)
+
+  /**
+   * Under containerless no hook records a codex conversation, so the registry
+   * finds its rollout in the project's codex home by the checkout it names, and
+   * records it as the hook would have: codex's own id, the rollout, the pane.
+   * Only this worktree's TUI conversations count, and only once they exist.
+   */
+  it('records a codex conversation no hook reported, on the pane writing it', async () => {
+    const fake = installFakeWorktreeDriver({ exec: podExec })
+    fake.override({ kind: 'containerless' })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'read-only' })
     await recordWorktreeLife('demo', 'wt-1', 0)
-    const now = new Date()
-    const day = path.join(
-      codexDir('demo'), 'sessions', String(now.getFullYear()),
-      String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0'),
-    )
-    await fs.mkdir(day, { recursive: true })
-    const rollout = (id: string, cwd: string): Promise<void> => fs.writeFile(path.join(day, `rollout-${id}.jsonl`), [
-      { type: 'session_meta', payload: { id, cwd } },
-      {
-        timestamp: new Date(Date.now() + 1000).toISOString(),
-        type: 'event_msg',
-        payload: {
-          type: 'thread_settings_applied',
-          thread_settings: { approval_policy: 'never', permission_profile: { type: 'disabled' } },
-        },
-      },
-    ].map((e) => JSON.stringify(e)).join('\n') + '\n')
-    // Another worktree's conversation in the same home says nothing about this one.
-    await rollout('other', worktreeDir('demo', 'wt-2'))
-    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+    // What create records: codex mints its own id, so the pin is no conversation.
+    await recordAgentSessions('demo', 'wt-1', [{ tool: 'codex', agentSessionId: 'wt-1', firstPrompt: 'fix it' }])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex', model: 'gpt-5.6-sol' }])
+    const soon = new Date(Date.now() + 1000)
+    // Another worktree's conversation, and a `codex exec` an agent ran here.
+    await codexRollout('other', soon, [codexSettings(soon, true)], { cwd: worktreeDir('demo', 'wt-2') })
+    await codexRollout('exec', soon, [codexSettings(soon, true)], { source: 'exec' })
+
+    // Not prompted yet, so no rollout: nothing to record, or to resume.
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect(await states()).toEqual([['wt-1', false]])
+
+    const first = await codexRollout('conv-x', soon, [codexPrompt('fix the flaky test'), codexSettings(soon, true)])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect(await linkOf('conv-x')).toMatchObject({
+      transcriptPath: path.relative(projectDir('demo'), first),
+      paneId: '%0',
+      active: true,
+      firstPrompt: 'fix the flaky test',
+      model: 'gpt-5.6-sol',
+    })
+    expect(await states()).toEqual([['wt-1', false], ['conv-x', true]])
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('bypass')
+
+    // A `/new`: the pane now writes another rollout, and the first stays history.
+    const later = new Date(Date.now() + 2000)
+    await codexRollout('conv-z', later, [codexPrompt('now the docs'), codexSettings(later, false)])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect(await states()).toEqual([['wt-1', false], ['conv-x', false], ['conv-z', true]])
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')
+  })
+
+  // A restart resumes a conversation into the rollout it began, filed under the
+  // day it began — here three days back, outside any window the search lists.
+  // The recorded rollout is what keeps it on its pane, so a later restart
+  // still resumes it, and what its posture is still followed by.
+  it('keeps resuming and following a codex conversation restarted days after it began', async () => {
+    const fake = installFakeWorktreeDriver({ exec: podExec })
+    fake.override({ kind: 'containerless' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'read-only' })
+    const began = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+    vi.useFakeTimers({ toFake: ['Date'], now: began })
+    let rollout: string
+    try {
+      await recordWorktreeLife('demo', 'wt-1', 0)
+      setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+      const written = new Date(began.getTime() + 1000)
+      rollout = await codexRollout('conv-x', written, [codexPrompt('fix it'), codexSettings(written, false)])
+      await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+      expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: 'conv-x' }])
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // The restart, as create runs it: a new life, then the conversation it
+    // resumes (`codex resume conv-x`), which codex marks by recording the
+    // settings it resumed under.
+    await recordWorktreeLife('demo', 'wt-1', 0)
+    await applyWorktreeEvent({
+      type: 'sessions-launched', projectSlug: 'demo', worktreeId: 'wt-1',
+      sessions: [{ tool: 'codex', agentSessionId: 'conv-x', mode: 'tui' }],
+    })
+    _resetWorktreeStatusStoreForTests()
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+    await fs.appendFile(rollout, `${JSON.stringify(codexSettings(new Date(), false))}\n`)
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: 'conv-x', paneId: '%0' }])
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')
 
-    await rollout('mine', worktreeDir('demo', 'wt-1'))
+    // A `/permissions` pick in the resumed conversation.
+    await fs.appendFile(rollout, `${JSON.stringify(codexSettings(new Date(Date.now() + 1000), true))}\n`)
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('bypass')
+    expect(await states()).toEqual([['conv-x', true]])
   })
 
   // A codex rollout's settings carry when they were written. An entry from

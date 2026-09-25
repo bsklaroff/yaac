@@ -582,18 +582,41 @@ answer under both drivers on one line.
 - **The prewarmed spare pool.** A spare amortizes an image pull and a pod
   boot; a tmux server in an existing checkout costs neither.
 - **Per-worktree module caching.** See the mount note above.
-- **Codex session discovery.** Every tool's `SessionStart` hook runs the same
-  staged `worktree-bin/yaac-agent-links`, which works here — but codex reaches
-  it through a *managed* hook declared in `/etc/codex/requirements.toml`, the
-  trusted image layer that bypasses its per-change `/hooks` trust prompt.
-  There is no image to carry that here, so a codex worktree knows only the
-  conversation `--session-id` pinned. Claude registers the same script from
-  its own settings.json and is unaffected. A posture changed inside codex is
-  still followed onto the row (docs/permission-modes.md): with no rollout
-  recorded, the registry finds this worktree's rollouts in the project's
-  codex home instead (`findCodexRollouts`) — those modified during this life
-  whose opening `session_meta` names the checkout as their cwd, which only
-  this substrate makes unique to one worktree.
+
+## Codex session discovery
+
+Every tool's `SessionStart` hook runs the same staged
+`worktree-bin/yaac-agent-links`, which works here, but codex reaches it
+through a *managed* hook declared in `/etc/codex/requirements.toml`, the
+trusted image layer that bypasses its per-change `/hooks` trust prompt. There
+is no image to carry that here, so the registry finds codex's conversations on
+disk instead (`discoverCodexSessions`) and reports them through the same event
+as the hook's sightings. Claude registers the same script from its own
+settings.json and is unaffected.
+
+codex files each conversation's rollout under the project's codex home by the
+day it began, and opens it with a `session_meta` naming codex's own session
+id, how it was started, and its cwd. A rollout whose cwd is this worktree's
+checkout (which only this substrate makes unique to one worktree), started by
+the TUI (`source: "cli"`, not an agent's `codex exec`) and written during the
+current life is one of the worktree's conversations. That covers the one yaac
+launched, a `/new`, and a codex started by hand. Each is recorded with its id
+and its rollout as the transcript path. This is what a restart resumes
+(`codex resume <id>`) and what the posture is followed by
+(docs/permission-modes.md). A conversation that never took a turn has no
+rollout and is not recorded; a codex worktree restarted with none starts
+codex anew, because codex refuses to resume an id it has no rollout for.
+
+`codex resume` appends to the rollout the conversation began and records the
+settings it resumed under the moment it starts (verified against codex-cli
+0.156.1). So a conversation resumed days after it began, filed under a day
+the search no longer lists, is still found through its recorded rollout.
+
+No hook names the pane a conversation runs on, so it is inferred: each codex
+pane writes one rollout at a time, so the live codex panes run the most
+recently written conversations, one each. With the one codex window yaac
+launches that is exact, short of a codex run by hand in a scratch window
+writing more recently than it.
 
 ## Host requirements
 

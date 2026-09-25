@@ -490,9 +490,12 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   // conversation the agent never opened.
   //
   // Only a *resume* passes `--resume`: a restart with nothing recorded falls
-  // back to the worktree-id pin, which is the pre-hook worktree's path.
+  // back to the worktree-id pin, which is the pre-hook worktree's path —
+  // except for codex, which mints its own ids and was never launched with the
+  // pin, so resuming it finds no rollout and kills the window. A codex
+  // worktree with no conversation recorded (one never prompted) starts anew.
   const resumesConversation = (options.resumeAgentSessions ?? []).length > 0
-    || options.resume === true
+    || (options.resume === true && tool !== 'codex')
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => ({
     tool: a.tool,

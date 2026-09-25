@@ -96,9 +96,10 @@ const CAN_RUN_PORTS = CAN_RUN
  *
  * `codex` is the deliberate exception: it stands in for an agent that is
  * installed but cannot run (a broken or half-installed binary), which is
- * exactly the launch failure a PATH check cannot predict. Nothing else in
- * this file creates a codex TUI worktree, so one tool can be the sick one —
- * and its ACP adapter is a different binary, so acp mode is unaffected.
+ * exactly the launch failure a PATH check cannot predict — unless its
+ * `CODEX_RUNS` marker is beside it (`fakeCodex`). Only the codex restart case
+ * lays that marker, so one tool can otherwise be the sick one — and its ACP
+ * adapter is a different binary, so acp mode is unaffected.
  *
  * The adapters are stood in for too, one per binary `--mode acp` can run
  * (`fakeAcpAdapter`). They are separate programs from the CLIs of the same
@@ -118,7 +119,7 @@ async function installFakeAgents(binDir: string): Promise<void> {
   for (const tool of ['claude', 'pi']) {
     await write(tool, '#!/bin/sh\nexec sleep infinity\n')
   }
-  await write('codex', '#!/bin/sh\necho "codex: cannot execute" >&2\nexit 127\n')
+  await write('codex', FAKE_CODEX)
 
   for (const tool of AGENT_TOOLS) {
     const { binary } = ACP_ADAPTERS[tool]
@@ -135,6 +136,71 @@ async function installFakeAgents(binDir: string): Promise<void> {
     + 'exec sleep infinity\n',
   )
 }
+
+/** A file beside the stand-in codex that makes it run rather than fail. */
+const CODEX_RUNS = 'codex-runs'
+
+/**
+ * The stand-in codex TUI, as codex-cli 0.156.1 treats the disk yaac reads
+ * where no hook runs. A fresh launch mints its own conversation id and files a
+ * rollout under `$CODEX_HOME/sessions/<local day>` at its first prompt, opened
+ * by a `session_meta` naming the id, its cwd and `source: "cli"`, then that
+ * prompt — and is moved to full access at once, as a `/permissions` pick
+ * would be. `resume <id>` refuses an id with no rollout, as codex does, and
+ * otherwise appends the settings it resumed under to the rollout it has.
+ */
+const FAKE_CODEX = `#!/usr/bin/env node
+const fs = require('fs')
+const path = require('path')
+if (!fs.existsSync(path.join(__dirname, '${CODEX_RUNS}'))) {
+  process.stderr.write('codex: cannot execute\\n')
+  process.exit(127)
+}
+const args = process.argv.slice(2)
+const settings = (bypass) => JSON.stringify({
+  timestamp: new Date().toISOString(),
+  type: 'event_msg',
+  payload: {
+    type: 'thread_settings_applied',
+    thread_settings: bypass
+      ? { approval_policy: 'never', permission_profile: { type: 'disabled' } }
+      : { approval_policy: 'on-request', permission_profile: { type: 'managed', file_system: { entries: [{ access: 'write' }] } } },
+  },
+}) + '\\n'
+const sessions = path.join(process.env.CODEX_HOME, 'sessions')
+const resume = args.indexOf('resume')
+if (resume >= 0) {
+  const id = args[resume + 1]
+  const find = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? find(path.join(d, e.name)) : e.name.endsWith('-' + id + '.jsonl') ? [path.join(d, e.name)] : [])
+  const [rollout] = fs.existsSync(sessions) ? find(sessions) : []
+  if (rollout === undefined) {
+    process.stderr.write('thread/resume failed: no rollout found for thread id ' + id + '\\n')
+    process.exit(1)
+  }
+  fs.appendFileSync(rollout, settings(args.includes('--yolo')))
+} else {
+  let typed = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', function first(chunk) {
+    typed += chunk
+    const nl = typed.search(/[\\r\\n]/)
+    if (nl < 0) return
+    process.stdin.off('data', first)
+    const now = new Date()
+    const id = 'e2e-codex-' + now.getTime()
+    const pad = (n) => String(n).padStart(2, '0')
+    const dir = path.join(sessions, String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()))
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'rollout-' + now.getTime() + '-' + id + '.jsonl'), [
+      JSON.stringify({ type: 'session_meta', payload: { id, session_id: id, cwd: process.cwd(), source: 'cli' } }) + '\\n',
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: typed.slice(0, nl) } }) + '\\n',
+      settings(true),
+    ].join(''))
+  })
+}
+setInterval(() => {}, 1 << 30)
+`
 
 /**
  * A stand-in ACP adapter: line-delimited JSON-RPC on stdio that answers the
@@ -1677,6 +1743,57 @@ describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
     expect(listed.stdout).toMatch(new RegExp(`${fresh!.worktreeId.slice(0, 8)}[^\\n]*friday batch`))
 
     await runYaac(serverEnv, 'worktree', 'stop', fresh!.worktreeId)
+  }, 180_000)
+})
+
+/**
+ * A codex TUI conversation under containerless, where no hook records it:
+ * the registry finds its rollout by the checkout it names, so a restart
+ * resumes codex's own id, in the posture the conversation last moved to.
+ */
+describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
+  it('starts anew until prompted, then resumes by its own id in the posture it moved to', async () => {
+    const marker = path.join(testEnv.scratchDir, 'bin', CODEX_RUNS)
+    await fs.writeFile(marker, '')
+    let id: string | undefined
+    try {
+      id = await createWorktreeWith('codex', '--permission-mode', 'accept-edits')
+      const created = id
+      const codexSession = async () => (await listWorktrees() as Array<ListedWorktree & {
+        agentSessions: Array<{ agentSessionId: string; active: boolean; prompt?: string }>
+      }>).find((w) => w.worktreeId === created)?.agentSessions.find((s) => s.agentSessionId.startsWith('e2e-codex-'))
+      const startCommand = async (): Promise<string> =>
+        tmux(created, 'display', '-p', '-t', 'yaac:codex', '#{pane_start_command}')
+      const restart = async (): Promise<void> => {
+        expect((await runYaac(serverEnv, 'worktree', 'stop', created)).exitCode).toBe(0)
+        const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'worktree', 'restart', created)
+        expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
+      }
+
+      // Never prompted, so there is no conversation to resume: codex was
+      // never launched with the worktree's id, and would refuse it.
+      await restart()
+      expect(await startCommand()).not.toContain('resume')
+
+      await tmux(created, 'send-keys', '-t', 'yaac:codex', 'e2e codex prompt', 'Enter')
+      await vi.waitFor(async () => {
+        expect(await codexSession()).toMatchObject({ active: true, prompt: 'e2e codex prompt' })
+      }, { timeout: 30_000, interval: 250 })
+      // The pass that marked it active followed its rollout first, so the row
+      // already holds the full access the conversation moved to.
+      const conversation = (await codexSession())?.agentSessionId ?? ''
+
+      await restart()
+      expect(await startCommand()).toContain(`--yolo resume ${conversation}`)
+      // And running it: codex refuses an id it has no rollout for, and the
+      // window would close with it, leaving no live pane to be active on.
+      await vi.waitFor(async () => {
+        expect(await codexSession()).toMatchObject({ agentSessionId: conversation, active: true })
+      }, { timeout: 30_000, interval: 250 })
+    } finally {
+      await fs.rm(marker, { force: true })
+      if (id !== undefined) await runYaac(serverEnv, 'worktree', 'stop', id)
+    }
   }, 180_000)
 })
 

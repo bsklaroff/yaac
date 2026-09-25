@@ -223,30 +223,43 @@ function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
   return sandbox === 'read-only' ? 'read-only' : 'accept-edits'
 }
 
-/** Each rollout's recorded cwd, which its first line fixes for good. */
-const rolloutCwds = new Map<string, string | null>()
+/** What each rollout's first line fixes for good: the conversation, and the
+ *  directory it runs in — or null for a line that is not a TUI's
+ *  `session_meta`. */
+const rolloutMetas = new Map<string, { sessionId: string; cwd: string } | null>()
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
+/** A conversation `findCodexRollouts` found, with when its rollout was last
+ *  written. */
+interface CodexRollout {
+  rollout: string
+  sessionId: string
+  mtimeMs: number
+}
+
 /**
- * The rollouts codex wrote under `codexHome` for conversations run in
- * `checkout`, modified since `sinceMs`, oldest first — how a conversation is
- * found where no hook recorded its rollout (containerless; see
- * docs/containerless-driver.md).
+ * The conversations codex's TUI began under `codexHome` in `checkout` and
+ * wrote to since `sinceMs`, oldest write first — how a conversation is found
+ * where no hook records it (containerless; see docs/containerless-driver.md).
  *
  * codex files a rollout under `sessions/YYYY/MM/DD` by the local day it began
- * and opens it with a `session_meta` line naming the directory it runs in.
- * That is the process's cwd as the kernel resolved it, symlinks and all, or
- * a `-C` argument as given (verified against codex-cli 0.156.1), so both
- * spellings of the checkout match. Only the day dirs from the day before
- * `sinceMs` on are listed. A conversation begun earlier than that and still
- * written to is one a person resumed by hand (`/resume`), and is missed: a
- * yaac restart cannot continue one here, having no codex session id to pass
- * (`codex resume <worktree id>` finds no rollout).
+ * and opens it with a `session_meta` line naming the conversation, how it was
+ * started, and the directory it runs in. That is the process's cwd as the
+ * kernel resolved it, symlinks and all, or a `-C` argument as given, so both
+ * spellings of the checkout match. Only the TUI's own conversations
+ * (`source: "cli"`) are this worktree's: a `codex exec` an agent runs in the
+ * checkout writes one too, marked `exec` (verified against codex-cli 0.156.1).
+ *
+ * Only the day dirs from the day before `sinceMs` on are listed, so a
+ * conversation begun earlier is not found here even while it is written to.
+ * That is the caller's to know already: `codex resume` appends to the
+ * rollout it began, so a conversation this finds once is recorded by its
+ * rollout and followed there on every later resume.
  */
-export async function findCodexRollouts(codexHome: string, checkout: string, sinceMs: number): Promise<string[]> {
+export async function findCodexRollouts(codexHome: string, checkout: string, sinceMs: number): Promise<CodexRollout[]> {
   const cwds = new Set([checkout, await fs.realpath(checkout).catch(() => checkout)])
-  const found: Array<{ rollout: string; mtimeMs: number }> = []
+  const found: CodexRollout[] = []
   for (let t = sinceMs - DAY_MS; t < Date.now() + DAY_MS; t += DAY_MS) {
     const day = new Date(t)
     const dir = path.join(
@@ -260,28 +273,35 @@ export async function findCodexRollouts(codexHome: string, checkout: string, sin
     for (const name of names) {
       if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) continue
       const rollout = path.join(dir, name)
-      let cwd = rolloutCwds.get(rollout)
-      if (cwd === undefined) {
+      let meta = rolloutMetas.get(rollout)
+      if (meta === undefined) {
         // Only the first line is read; a line still being written is no
         // answer yet, and is read again next time.
-        cwd = await scanJsonlForward(rollout, (entry) => {
-          const meta = entry as { type?: unknown; payload?: { cwd?: unknown } }
-          return meta.type === 'session_meta' && typeof meta.payload?.cwd === 'string' ? meta.payload.cwd : null
+        meta = await scanJsonlForward(rollout, (entry) => {
+          const { type, payload: p } = entry as {
+            type?: unknown
+            payload?: { id?: unknown; session_id?: unknown; cwd?: unknown; source?: unknown }
+          }
+          const sessionId = p?.id ?? p?.session_id
+          return type === 'session_meta' && p?.source === 'cli'
+            && typeof sessionId === 'string' && sessionId !== '' && typeof p.cwd === 'string'
+            ? { sessionId, cwd: p.cwd }
+            : null
         })
-        if (cwd !== undefined) rolloutCwds.set(rollout, cwd)
+        if (meta !== undefined) rolloutMetas.set(rollout, meta)
       }
       // Stat'ed only once known to be this checkout's, so a settled pass costs
       // a stat per rollout of its own rather than per rollout of the project.
-      if (typeof cwd !== 'string' || !cwds.has(cwd)) continue
+      if (!meta || !cwds.has(meta.cwd)) continue
       const mtimeMs = await fs.stat(rollout).then((st) => st.mtimeMs, () => 0)
-      if (mtimeMs >= sinceMs) found.push({ rollout, mtimeMs })
+      if (mtimeMs >= sinceMs) found.push({ rollout, sessionId: meta.sessionId, mtimeMs })
     }
   }
-  return found.sort((a, b) => a.mtimeMs - b.mtimeMs).map((f) => f.rollout)
+  return found.sort((a, b) => a.mtimeMs - b.mtimeMs)
 }
 
 /** Test helper: forget what each rollout last answered. */
 export function _resetCodexPosturesForTests(): void {
   rolloutPostures.clear()
-  rolloutCwds.clear()
+  rolloutMetas.clear()
 }

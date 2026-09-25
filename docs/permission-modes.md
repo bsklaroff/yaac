@@ -420,10 +420,12 @@ them announces a change to anything outside the process as it happens:
   reconcile pass rather than pushed. A reading is news when it changed since
   the last, or — on the first — when its entry was written during the current
   pod life: a restart resumes a rollout whose newest entry is the old
-  process's until codex writes its first turn, and that is where the worktree
-  stands, not a move. The rollouts read are the ones codex's hook recorded,
-  or under containerless, where no hook runs, the ones found by the checkout
-  they name (docs/containerless-driver.md).
+  process's until codex records the settings it resumed under, and that is
+  where the worktree stands, not a move. The rollouts read are the ones
+  recorded on the worktree's codex conversations — by codex's hook, or under
+  containerless, where no hook runs, by the registry finding them by the
+  checkout they name (docs/containerless-driver.md) — so a conversation is
+  followed wherever it is written, however long after it began.
 - **pi** has no permission system to move.
 
 claude and opencode reach the server by push: the reporter's option rides the

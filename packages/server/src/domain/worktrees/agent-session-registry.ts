@@ -45,7 +45,8 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  * that wrote it (a `/clear` leaves the previous session's handle in place
  * only until the pane is rewritten, and a pane that simply exited leaves a
  * live-looking one behind), and the pane list knows nothing about which
- * session is loaded.
+ * session is loaded. codex under containerless runs no hook, so its history
+ * is read off its rollouts instead (`discoverCodexSessions`).
  *
  * For `acp` there is no hook and no log to read, because there is nothing to
  * discover: the server IS the ACP client, so `session/new` hands it the
@@ -158,6 +159,12 @@ export async function reconcileWorktreeAgentSessions(
     await applyWorktreeEvent({
       type: 'sessions-discovered', projectSlug, worktreeId, sessions: sighted,
     })
+  }
+
+  // Where no hook runs for codex, its conversations are found on disk instead
+  // and reported the same way.
+  if (row !== undefined && worktreeDriver().kind === 'containerless') {
+    await discoverCodexSessions(projectSlug, worktreeId, row)
   }
 
   // The worktree's whole history, as db now holds it — the hook's
@@ -319,16 +326,16 @@ async function followReportedModes(
 /**
  * The same for the tool whose posture is read rather than pushed: codex,
  * whose rollout records every settings change (`getCodexPermissionMode`).
- * Its rollouts are the ones its hook recorded or, where no hook runs
- * (containerless), the ones codex wrote from this worktree's checkout during
- * this pod life (`findCodexRollouts`).
+ * Its rollouts are the ones recorded on its conversations — by its hook, or
+ * where none runs by `discoverCodexSessions` — so a conversation resumed any
+ * number of days after it began is still read where it is written.
  *
  * A reading is news when it changed since the last one — or, on the first,
  * when it was written during the current pod life. A restart resumes the same
- * rollout, whose newest entry is the OLD process's until codex writes its
- * first turn, and reading that as news would drag the row off the posture the
- * restart just relaunched in; an entry written since is this process's own,
- * even on a first reading (a Shift+Tab before the first prompt).
+ * rollout, whose newest entry is the OLD process's until codex records the
+ * settings it resumed under, and reading that as news would drag the row off
+ * the posture the restart just relaunched in; an entry written since is this
+ * process's own, even on a first reading (a Shift+Tab before the first prompt).
  */
 async function followRolloutModes(
   projectSlug: string,
@@ -337,16 +344,10 @@ async function followRolloutModes(
   links: AgentSessionLinkRow[],
 ): Promise<void> {
   const life = row.lifeStartedAt?.getTime() ?? 0
-  const recorded = links.flatMap((l) => {
+  const rollouts = links.flatMap((l) => {
     const rollout = l.tool === 'codex' ? absoluteTranscriptPath(l) : undefined
     return rollout === undefined ? [] : [rollout]
   })
-  // The search is harmless under k8s, where it can only run before the hook
-  // fires: a pod's rollouts name its `/workspace`, never a host checkout.
-  const rollouts = recorded.length > 0 || row.lifeStartedAt === undefined
-    || liveAgents(projectSlug, worktreeId)?.some((a) => a.tool === 'codex') !== true
-    ? recorded
-    : await findCodexRollouts(codexDir(projectSlug), worktreeDir(projectSlug, worktreeId), life)
   for (const rollout of rollouts) {
     const read = await getCodexPermissionMode(rollout)
     // Nothing read is no news — a rollout not written yet, or settings no
@@ -363,6 +364,63 @@ async function followRolloutModes(
       permissionMode: read.permissionMode,
     })
   }
+}
+
+/**
+ * Record the codex conversations a worktree ran, where no hook does: under
+ * containerless codex reaches `yaac-agent-links` only through a managed hook
+ * that needs an image to carry it (docs/containerless-driver.md).
+ *
+ * They are the TUI rollouts codex wrote from this checkout during the current
+ * life (`findCodexRollouts`), which covers a `/new` and a codex started by
+ * hand, together with the ones already recorded that were written since: a
+ * restart resumes a conversation into the rollout it began, however many
+ * days ago, and codex appends to it the moment it resumes (verified against
+ * codex-cli 0.156.1). Each is reported with its own session id and rollout,
+ * which is what a restart resumes and what the posture is followed by. A
+ * conversation that never took a turn has no rollout, and is not recorded:
+ * `codex resume` refuses an id with none.
+ *
+ * Nothing names the pane a conversation runs on, so it is inferred. Each codex
+ * pane writes one rollout at a time, so the conversations on the live codex
+ * panes are the most recently written ones, one per pane; the rest are
+ * reported with no pane, which is what marks one `/new` left behind inactive.
+ * With the one codex pane yaac launches that is exact, short of a codex run
+ * by hand in a scratch window writing more recently than it. With no live set
+ * yet nothing is reported, since a report without a pane clears one.
+ */
+async function discoverCodexSessions(
+  projectSlug: string,
+  worktreeId: string,
+  row: WorktreeRow,
+): Promise<void> {
+  const observed = liveAgents(projectSlug, worktreeId)
+  if (observed === undefined || row.lifeStartedAt === undefined) return
+  const life = row.lifeStartedAt.getTime()
+  const byRollout = new Map<string, { sessionId: string; mtimeMs: number }>()
+  for (const l of await listWorktreeAgentSessions(projectSlug, worktreeId)) {
+    const rollout = l.tool === 'codex' ? absoluteTranscriptPath(l) : undefined
+    const mtimeMs = rollout === undefined ? undefined : await transcriptLastActiveMs(rollout)
+    if (rollout === undefined || mtimeMs === undefined || mtimeMs < life) continue
+    byRollout.set(rollout, { sessionId: l.agentSessionId, mtimeMs })
+  }
+  for (const { rollout, ...found } of await findCodexRollouts(
+    codexDir(projectSlug), worktreeDir(projectSlug, worktreeId), life,
+  )) byRollout.set(rollout, found)
+  if (byRollout.size === 0) return
+  const panes = observed.filter((a) => a.tool === 'codex').map((a) => a.handle)
+  const sessions = [...byRollout]
+    .sort(([, a], [, b]) => b.mtimeMs - a.mtimeMs)
+    .map(([rollout, { sessionId }], i) => toReported(projectSlug, {
+      tool: 'codex',
+      agentSessionId: sessionId,
+      transcriptPath: rollout,
+      ...(i < panes.length ? { paneId: panes[i] } : {}),
+    }))
+    // Oldest first, the order the hook's log would have named them in, which
+    // is the order new ones take their ordinals.
+    .reverse()
+  await applyWorktreeEvent({ type: 'sessions-discovered', projectSlug, worktreeId, sessions })
 }
 
 /**

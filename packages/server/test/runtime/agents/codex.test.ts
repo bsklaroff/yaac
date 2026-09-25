@@ -286,25 +286,29 @@ describe('findCodexRollouts', () => {
     home(), 'sessions', String(at.getFullYear()),
     String(at.getMonth() + 1).padStart(2, '0'), String(at.getDate()).padStart(2, '0'),
   )
-  /** A rollout as codex 0.156.1 opens one: `session_meta` first, naming its
-   *  cwd, then whatever the conversation writes — last modified at `mtime`. */
-  const rollout = async (name: string, cwd: string, mtime: Date, at = mtime): Promise<string> => {
+  /** A rollout as codex 0.156.1 opens one: `session_meta` first, naming the
+   *  conversation, how it was started and its cwd, then whatever the
+   *  conversation writes — last modified at `mtime`. */
+  const rollout = async (
+    name: string, cwd: string, mtime: Date, at = mtime, source = 'cli',
+  ): Promise<{ rollout: string; sessionId: string; mtimeMs: number }> => {
     const file = path.join(dayDir(at), `rollout-${name}.jsonl`)
     await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.writeFile(file, `${JSON.stringify({
       timestamp: at.toISOString(),
       type: 'session_meta',
-      payload: { id: name, cwd, base_instructions: { text: 'x'.repeat(20_000) } },
+      payload: { id: `id-${name}`, session_id: `id-${name}`, cwd, source, base_instructions: { text: 'x'.repeat(20_000) } },
     })}\n${JSON.stringify({ type: 'turn_context', payload: {} })}\n`)
     await fs.utimes(file, mtime, mtime)
-    return file
+    return { rollout: file, sessionId: `id-${name}`, mtimeMs: (await fs.stat(file)).mtimeMs }
   }
 
   // A containerless worktree's rollouts share the project's codex home with
   // every other worktree's, and with its own previous lives'. What picks them
   // out is the checkout codex recorded, under either spelling: the resolved
-  // path an inherited cwd gives, or a symlink passed as given.
-  it("finds this life's rollouts written from the checkout, oldest first", async () => {
+  // path an inherited cwd gives, or a symlink passed as given. A `codex exec`
+  // run in the checkout is no conversation of the worktree's.
+  it("finds this life's TUI conversations in the checkout, oldest write first", async () => {
     const real = path.join(dir, 'worktrees', 'wt-1')
     await fs.mkdir(real, { recursive: true })
     const link = path.join(dir, 'link')
@@ -317,6 +321,7 @@ describe('findCodexRollouts', () => {
     const spelled = await rollout('b', link, new Date(Date.now() - 30_000))
     // Begun the day before this life and still being written to.
     const overnight = await rollout('c', real, new Date(Date.now() - 20_000), yesterday)
+    await rollout('exec', real, later, later, 'exec')
     await rollout('other-worktree', path.join(dir, 'worktrees', 'wt-2'), later)
     await rollout('last-life', real, new Date(life.getTime() - 60_000))
 
@@ -332,11 +337,12 @@ describe('findCodexRollouts', () => {
     const now = new Date()
     const file = path.join(dayDir(now), 'rollout-a.jsonl')
     await fs.mkdir(path.dirname(file), { recursive: true })
-    const meta = JSON.stringify({ type: 'session_meta', payload: { cwd: checkout } })
+    const meta = JSON.stringify({ type: 'session_meta', payload: { id: 'conv-a', cwd: checkout, source: 'cli' } })
     await fs.writeFile(file, meta.slice(0, 20))
     await expect(findCodexRollouts(home(), checkout, now.getTime() - 1000)).resolves.toEqual([])
     await fs.writeFile(file, `${meta}\n`)
-    await expect(findCodexRollouts(home(), checkout, now.getTime() - 1000)).resolves.toEqual([file])
+    await expect(findCodexRollouts(home(), checkout, now.getTime() - 1000)).resolves
+      .toEqual([{ rollout: file, sessionId: 'conv-a', mtimeMs: (await fs.stat(file)).mtimeMs }])
   })
 
   it('finds nothing in a codex home with no sessions', async () => {
