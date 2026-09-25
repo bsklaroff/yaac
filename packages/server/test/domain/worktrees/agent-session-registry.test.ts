@@ -25,7 +25,6 @@ import {
   listWorktreeAgentSessions,
   recordAgentSessions,
 } from '#db/agent-session-store'
-import { _resetModelCaptureForTests } from '#domain/worktrees/model-capture'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
 import { sessionStartsLogSize } from '#domain/worktrees/session-starts'
@@ -64,7 +63,6 @@ describe('reconcileWorktreeAgentSessions', () => {
     installFakeWorktreeDriver({ exec: podExec })
     _resetWorktreeStatusStoreForTests()
     _resetPromptCaptureForTests()
-    _resetModelCaptureForTests()
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
     // The life create would have stamped. The log is empty at this point, so
     // every sighting below belongs to it.
@@ -271,11 +269,12 @@ describe('reconcileWorktreeAgentSessions', () => {
 
   it('records an acp conversation off the live set, reading the record for the rest', async () => {
     // ACP mode has no hook and no log to fold: the server IS the ACP client, so
-    // `session/new` hands it the id and the live set carries it. Everything
-    // else comes from acpd's record, which is the one source that answers for
-    // every tool — three of the four leave no transcript this side of the pod
-    // can find — and which outlives the pod, so a stopped worktree can still
-    // be labelled and ordered.
+    // `session/new` hands it the id and the live set carries it — and the
+    // model the adapter reported with it. Everything else comes from acpd's
+    // record, which is the one source that answers for every tool — three of
+    // the four leave no transcript this side of the pod can find — and which
+    // outlives the pod, so a stopped worktree can still be labelled and
+    // ordered.
     await fs.mkdir(acpLogDir('demo', 'wt-1'), { recursive: true })
     await fs.writeFile(path.join(acpLogDir('demo', 'wt-1'), 'acp-1.jsonl'), [
       JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'session/new', params: {} }),
@@ -293,7 +292,7 @@ describe('reconcileWorktreeAgentSessions', () => {
       '',
     ].join('\n'))
     setLiveAgents('demo', 'wt-1', [
-      { handle: 'codex', tool: 'codex', agentSessionId: 'acp-1' },
+      { handle: 'codex', tool: 'codex', agentSessionId: 'acp-1', model: 'gpt-5.6-sol' },
     ])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex', 'acp')
@@ -304,8 +303,6 @@ describe('reconcileWorktreeAgentSessions', () => {
     // store keys this conversation's busy/idle by.
     expect(link.paneId).toBe('codex')
     expect(link.firstPrompt).toBe('ship the thing')
-    // codex names its rollouts by a thread id yaac never sees, so a transcript
-    // reader would answer nothing here. The record answers both.
     expect(link.model).toBe('gpt-5.6-sol')
     expect(link.transcriptPath).toBeUndefined()
     expect(link.lastActiveAt).toBeInstanceOf(Date)
@@ -439,66 +436,67 @@ describe('reconcileWorktreeAgentSessions', () => {
     expect(await states()).toEqual([])
   })
 
-  /**
-   * Make a conversation's transcript show an answer from `model`.
-   *
-   * Every append is pinned to the SAME mtime, which is the hostile case rather
-   * than a convenience: a data dir may sit on a filesystem with one-second
-   * timestamps, so two appends a moment apart genuinely can carry the same
-   * one. A capture that gated on mtime alone would call the file unchanged and
-   * serve a stale model until the next append happened to move the clock.
-   * Holding it fixed here means these tests only pass if the size is doing
-   * the work.
-   */
-  const FROZEN_MTIME = new Date('2026-08-15T00:00:00Z')
-
-  async function answerAs(id: string, model: string): Promise<void> {
-    const file = path.join(claudeDir('demo'), 'projects', '-workspace', `${id}.jsonl`)
-    await fs.appendFile(file, `${JSON.stringify({
-      type: 'assistant', message: { role: 'assistant', model },
-    })}\n`)
-    await fs.utimes(file, FROZEN_MTIME, FROZEN_MTIME)
-  }
-
   const modelOf = async (id: string): Promise<string | undefined> =>
     (await listWorktreeAgentSessions('demo', 'wt-1'))
       .find((l) => l.agentSessionId === id)?.model
 
-  it('records the model a conversation answers as, and follows a switch', async () => {
+  it('records the model each pane reports, for the conversation that owns the pane now', async () => {
     await link('conv-a', '%0')
+    // Before the tool has reported, the row says nothing rather than guessing.
     setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
-
-    // Before the agent has answered there is nothing to read, and the row says
-    // so rather than guessing from the launch — a worktree simply shows its
-    // bare tool name until its first reply.
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
     expect(await modelOf('conv-a')).toBeUndefined()
 
-    await answerAs('conv-a', 'claude-opus-5')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude', model: 'claude-opus-5' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
     expect(await modelOf('conv-a')).toBe('claude-opus-5')
 
-    // A `/model` mid-conversation. The transcript is the only source that
-    // knows — the launch said opus and still would.
-    await answerAs('conv-a', 'claude-fable-5')
+    // A `/model`: the pane's option moves, and nothing had to answer first.
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude', model: 'claude-fable-5' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
     expect(await modelOf('conv-a')).toBe('claude-fable-5')
+
+    // A `/clear` starts conv-b on the same pane. conv-a's row still names the
+    // pane it last ran in, but the pane — and its model — are conv-b's now,
+    // and conv-a keeps what it last ran as.
+    await link('conv-b', '%0')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude', model: 'claude-opus-5' }])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await modelOf('conv-b')).toBe('claude-opus-5')
+    expect(await modelOf('conv-a')).toBe('claude-fable-5')
+
+    // A pane that has not re-reported since a reconnect leaves the row alone.
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await modelOf('conv-b')).toBe('claude-opus-5')
   })
 
-  it('keeps a recorded model when a later sweep can no longer read one', async () => {
-    // The transcript going missing (a pruned tool home, an unresolvable path)
-    // must not blank the label — the conversation is still answering as
-    // whatever it last did.
-    await link('conv-a', '%0')
-    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
-    await answerAs('conv-a', 'claude-opus-5')
-    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
-    expect(await modelOf('conv-a')).toBe('claude-opus-5')
+  it("never gives a pane's model to another tool's conversation on the same pane", async () => {
+    // A prewarmed spare warmed with claude and retooled to pi at claim: the
+    // warm-time claude start is still in the log on the pane pi now runs in.
+    // pi's own conversation was recorded by the create, with no pane.
+    await recordAgentSessions('demo', 'wt-1', [{ tool: 'pi', agentSessionId: 'wt-1' }])
+    await link('conv-warm', '%0')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'pi', model: 'openrouter/z-ai/glm-5.3-flash:batch' }])
 
-    await fs.rm(path.join(claudeDir('demo'), 'projects', '-workspace', 'conv-a.jsonl'))
-    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'pi')
 
-    expect(await modelOf('conv-a')).toBe('claude-opus-5')
+    expect(await modelOf('wt-1')).toBe('openrouter/z-ai/glm-5.3-flash:batch')
+    expect(await modelOf('conv-warm')).toBeUndefined()
+  })
+
+  it("gives an opencode pane's model to its one conversation, which no hook reports", async () => {
+    // opencode writes no host transcript and fires no hook, so its pinned
+    // conversation is linked without a pane — the tool's only conversation is
+    // the one its pane is running.
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'opencode', model: 'opencode/big-pickle' }])
+    podExec.mockResolvedValue({ stdout: '', stderr: '' })
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'opencode')
+    expect(await modelOf('wt-1')).toBe('opencode/big-pickle')
+
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'opencode', model: 'anthropic/claude-opus-4-8' }])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'opencode')
+    expect(await modelOf('wt-1')).toBe('anthropic/claude-opus-4-8')
   })
 
   it('keeps an ordinal stable once assigned, so a restart\'s windows do not reshuffle', async () => {

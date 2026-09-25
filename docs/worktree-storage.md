@@ -189,31 +189,56 @@ that were live when the worktree stopped, each in its own tmux window, in the
 order they were first opened (`agentWindowName` — the first keeps the bare tool
 name so every existing `yaac:<tool>` target still resolves).
 
-Two things are read *out of* a conversation's transcript and kept on its row so
-no display path has to parse one: its opening message and the **model** it last
-answered as. They are captured on the same sweep and stored the same way, but
-they are not the same kind of fact, and the write rules differ accordingly. An
-opening message is true forever, so it is filled once and coalesced — re-reading
-a transcript that has since been compacted would otherwise replace it with
-whatever now sits at the head. A model is true *now*: `/model` mid-conversation
-changes it, so the column is overwritten whenever a later read finds a different
-one. Absent still means "not read" on both, and leaves the stored value alone —
-a sweep that could not resolve the transcript this tick must not blank a label.
+A conversation's row also carries two display facts, so no display path has
+to parse a transcript: its opening message and the **model** it is running.
+They are not the same kind of fact, and they arrive differently. An opening
+message is true forever: it is read out of the transcript once and coalesced —
+re-reading a transcript that has since been compacted would otherwise replace
+it with whatever now sits at the head. A model is true *now*: `/model`
+mid-conversation changes it, so the column is overwritten whenever the agent
+reports a different one. Absent still means "not reported" on both, and leaves
+the stored value alone.
 
-The model is read from the transcript rather than from the launch because the
-launch goes stale immediately (an override is not persisted, and the default
-case names nothing), and because that one source answers for both agent modes:
-an ACP conversation is the tool's own SDK under a different front end, writing
-the file its TUI would. Each tool records it somewhere different — claude on
-every assistant message, codex in the `turn_context` it writes at each turn
-boundary, pi on assistant messages and `model_change` entries — and each reader
-takes the *last* occurrence, scanning backward from EOF so a long conversation
-costs a tail read rather than a walk.
+The model is pushed by the agent rather than read, so a switch lands the moment
+it happens instead of on the next reply. Under `acp` the adapter reports it (see
+docs/agent-modes.md). Under `tui` each agent pane carries it as a tmux pane
+option, `@yaac-model`, which the status watcher subscribes to over control mode
+exactly as it does to the pane's status — through a format that strips
+anything unprintable and bounds the length, because anything in the workspace
+can set the option and tmux would otherwise pass a newline straight into the
+control stream. The tools set it through `worktree-bin/yaac-agent-model`:
+
+- claude from its `PostModelSwitch` hook, on any switch, and its `SessionStart`
+  hook, which names the model on an interactive startup — but not on the CLI
+  `--resume` a restart relaunches with, so a restarted claude pane reports
+  nothing until its first `/model`.
+- pi from an extension, on every switch and every session start.
+- opencode from a plugin. Its TUI keeps a `/models` pick to itself until the
+  next prompt is submitted, so that is when a switch is reported; the plugin
+  also reports the model each step runs on, which is what covers a restart's
+  `--continue` (reported at its first turn).
+- codex runs nothing on a switch but retitles its pane (yaac launches it with
+  the model among its title items), so its subscription cuts the model out of
+  the title and maps codex's display name back to the slug — through the
+  catalog codex caches in its home, else by the catalogs' spelling rule.
+
+`ensureModelReporters` writes the pi extension and opencode plugin into the
+project's tool homes; claude's hooks are registered beside its discovery hook.
+A pushed model belongs to the pane, so it is written to whichever conversation
+owns the pane now — the last one the worktree's session-starts log saw start
+there — which is what makes a `/clear` hand the new conversation its
+predecessor's model.
+
+Whenever no push arrives, the row keeps its last stored value — the launch seed
+or the last report. It is null only for a conversation launched without a model
+that has never reported. A conversation already running when this reporting was
+deployed has none of the hooks, extensions or title items, so its row stays at
+its last value until the worktree restarts, and is re-seeded then.
 
 opencode is the exception throughout: it keeps history in a per-worktree sqlite
 DB (`opencode-data/`) and leaves no host transcript, so no hook fires for it,
-its first message comes from an `opencode api` probe while the worktree runs,
-and it never has a model to show at all — there is no probe for that one. A
+and its first message comes from an `opencode api` probe while the worktree
+runs. A
 data dir written by the 1.x line holds its history as JSON under `storage/`
 instead, which opencode 2 has no importer for: such a worktree resumes into a
 fresh, empty session (with an error toast from its own `--continue` lookup),

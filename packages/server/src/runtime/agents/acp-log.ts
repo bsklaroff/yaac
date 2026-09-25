@@ -24,7 +24,7 @@
 
 import fs from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
-import { ACP, ACPD, AcpProjection, asRecord, asString } from './acp-protocol'
+import { ACP, ACPD, AcpProjection } from './acp-protocol'
 import { serverLog } from '#log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 
@@ -460,82 +460,3 @@ function promptText(params: unknown): string | undefined {
   return text === '' ? undefined : text
 }
 
-/**
- * The model this conversation is running, as the record says.
- *
- * The record is the one source that answers for every tool. A TUI
- * conversation's model is read from the transcript the tool writes, but an ACP
- * one has no such file to rely on: codex names its rollouts by a thread id
- * yaac never sees, opencode keeps its history in a container-side database, and
- * pi's log is named for a session id its adapter mints rather than the one yaac
- * asked for. What all four DO leave is this: the handshake reply naming the
- * model the session opened with, and a request for every change since.
- *
- * Both reply shapes are read because adapters differ over which they use — a
- * `models.currentModelId` block, a `configOptions` entry whose `id` is `model`,
- * or both. Changes are read from the requests rather than the replies for the
- * same reason: `session/set_model` answers with an empty object, so the new
- * value is only in what was asked. A request whose reply carried an `error` is
- * ignored — the agent refused, and the model did not change.
- *
- * Last one wins: a user who switches model mid-conversation is telling us the
- * later answer, exactly as the TUI readers take the last occurrence.
- */
-export async function readAcpModel(logPath: string): Promise<string | undefined> {
-  let raw: string
-  try {
-    raw = await fs.readFile(logPath, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      serverLog(`[server] acp log ${logPath}: ${String(err)}`)
-    }
-    return undefined
-  }
-  let model: string | undefined
-  // What each outstanding request would mean if it is answered without error,
-  // keyed the way a reply names it.
-  const proposed = new Map<string, string>()
-  for (const line of raw.split('\n')) {
-    const msg = parseLine(line)
-    if (msg === undefined) continue
-    const id = lineId(msg)
-    if (msg.method === ACP.sessionSetModel || msg.method === ACP.sessionSetConfigOption) {
-      const asked = requestedModel(msg.method, msg.params)
-      if (id !== undefined && asked !== undefined) proposed.set(id, asked)
-      continue
-    }
-    if (msg.method !== undefined) continue
-    // A reply. An `error` means the request did nothing.
-    if (id !== undefined && proposed.has(id)) {
-      if (msg.error === undefined) model = proposed.get(id)
-      proposed.delete(id)
-      continue
-    }
-    const reported = replyModel(msg.result)
-    if (reported !== undefined) model = reported
-  }
-  return model
-}
-
-/** The model a `session/set_model` or model-scoped `session/set_config_option`
- *  is asking for, or undefined for a config option about something else. */
-function requestedModel(method: string, params: unknown): string | undefined {
-  const p = asRecord(params)
-  if (method === ACP.sessionSetModel) return asString(p?.modelId)
-  return asString(p?.configId) === 'model' ? asString(p?.value) : undefined
-}
-
-/** The model a `session/new` or `session/load` reply reports, in whichever of
- *  the two shapes the adapter uses. */
-function replyModel(result: unknown): string | undefined {
-  const r = asRecord(result)
-  if (r === undefined) return undefined
-  const current = asString(asRecord(r.models)?.currentModelId)
-  if (current !== undefined) return current
-  const options = Array.isArray(r.configOptions) ? r.configOptions : []
-  for (const entry of options) {
-    const o = asRecord(entry)
-    if (asString(o?.id) === 'model') return asString(o?.currentValue)
-  }
-  return undefined
-}

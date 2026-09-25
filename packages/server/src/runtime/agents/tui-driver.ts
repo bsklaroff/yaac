@@ -21,6 +21,11 @@
  * Because of that, every connection attaches `no-output`: agent TUI redraws
  * never cross the stream, only the short status value does.
  *
+ * Each pane gets a second subscription the same way, on its model
+ * (`agentModelFormat`): a pane option the tool's own reporter sets, or for
+ * codex a cut of its title. A `/model` therefore arrives as a push too, and
+ * rides out on the live set.
+ *
  * A conversation's handle here is its tmux pane id (`%3`). Which conversation
  * a pane has loaded is deliberately not known — that is the in-pod hook's
  * session-starts log to answer, and the registry joins the two.
@@ -30,7 +35,13 @@ import { StringDecoder } from 'node:string_decoder'
 import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
 import { serverLog } from '#log'
 import { ControlModeClient, type ControlModeNotification } from './control-mode'
-import { agentStatusFormat, agentWindowTool, classifyAgentObservation } from './agent-tools'
+import {
+  agentModelFormat,
+  agentStatusFormat,
+  agentWindowTool,
+  classifyAgentObservation,
+  resolveAgentModel,
+} from './agent-tools'
 import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
 import { worktreeDriver } from '#drivers/driver'
 import type {
@@ -46,6 +57,8 @@ import type { AgentTool } from '@yaac/shared/types'
 
 /** Subscription names are per pane, never shared — see `subscriptionName`. */
 const SUBSCRIPTION_PREFIX = 'status-'
+/** The second subscription each agent pane gets: its model (`agentModelFormat`). */
+const MODEL_SUBSCRIPTION_PREFIX = 'model-'
 
 /**
  * The tmux subscription name for one agent pane.
@@ -59,8 +72,8 @@ const SUBSCRIPTION_PREFIX = 'status-'
  *
  * The pane id's `%` is dropped so the name stays alphanumeric.
  */
-function subscriptionName(paneId: string): string {
-  return `${SUBSCRIPTION_PREFIX}${paneId.replace('%', '')}`
+function subscriptionName(prefix: string, paneId: string): string {
+  return `${prefix}${paneId.replace('%', '')}`
 }
 
 /**
@@ -98,6 +111,11 @@ class TuiConnection implements AgentConnection {
    *  runs — a worktree's panes need not share one, and the pushed value is
    *  classified against that tool's grammar. */
   private readonly subscribed = new Map<string, AgentTool>()
+  /** Each pane's model, as its model subscription last resolved it. */
+  private readonly models = new Map<string, string>()
+  /** Each pane's latest pushed model value, so a resolution that finishes
+   *  after a newer push (codex's is a file read) is dropped, not published. */
+  private readonly modelPushes = new Map<string, string>()
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
   private done = false
@@ -210,16 +228,46 @@ class TuiConnection implements AgentConnection {
       // status format; single quotes carry the format string literally. Safe
       // because the format literal never contains a `'` (a pane title's runtime
       // value is expanded later, per-client — it's not on this command line).
-      await this.send(`refresh-client -B '${subscriptionName(paneId)}:${paneId}:${agentStatusFormat(tool)}'`)
+      await this.send(`refresh-client -B '${subscriptionName(SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentStatusFormat(tool)}'`)
+      if (this.done) return
+      await this.send(`refresh-client -B '${subscriptionName(MODEL_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentModelFormat(tool)}'`)
       if (this.done) return
       this.subscribed.set(paneId, tool)
     }
     const liveIds = panes.map((p) => p.paneId)
     for (const paneId of [...this.subscribed.keys()]) {
-      if (!liveIds.includes(paneId)) this.subscribed.delete(paneId)
+      if (liveIds.includes(paneId)) continue
+      this.subscribed.delete(paneId)
+      this.models.delete(paneId)
+      this.modelPushes.delete(paneId)
     }
-    const agents: LiveAgent[] = panes.map((p) => ({ handle: p.paneId, tool: p.tool }))
+    this.publishAgents()
+  }
+
+  /** The live set, each pane with the model it last reported. */
+  private publishAgents(): void {
+    const agents: LiveAgent[] = [...this.subscribed].map(([handle, tool]) => {
+      const model = this.models.get(handle)
+      return { handle, tool, ...(model !== undefined ? { model } : {}) }
+    })
     this.sink({ kind: 'live-agents', agents })
+  }
+
+  /**
+   * A pane's model format moved. Published as a change to the live set, which
+   * is what the agent-session registry joins against — so a `/model` reaches
+   * the conversation's row on its own reconcile pass, pushed by tmux rather
+   * than polled out of a transcript. An empty value (nothing reported yet)
+   * leaves the last one standing.
+   */
+  private async onModel(paneId: string, tool: AgentTool, value: string): Promise<void> {
+    this.modelPushes.set(paneId, value)
+    const model = await resolveAgentModel(tool, this.session.slug, value)
+    if (this.modelPushes.get(paneId) !== value) return
+    if (this.done || model === undefined || !this.subscribed.has(paneId)) return
+    if (this.models.get(paneId) === model) return
+    this.models.set(paneId, model)
+    this.publishAgents()
   }
 
   private onNotification(n: ControlModeNotification): void {
@@ -236,7 +284,12 @@ class TuiConnection implements AgentConnection {
     }
     if (n.kind === 'subscription') {
       const tool = this.subscribed.get(n.paneId)
-      if (!n.name.startsWith(SUBSCRIPTION_PREFIX) || tool === undefined) return
+      if (tool === undefined) return
+      if (n.name.startsWith(MODEL_SUBSCRIPTION_PREFIX)) {
+        void this.onModel(n.paneId, tool, n.value)
+        return
+      }
+      if (!n.name.startsWith(SUBSCRIPTION_PREFIX)) return
       this.sink({
         kind: 'status',
         handle: n.paneId,
@@ -294,6 +347,8 @@ class TuiConnection implements AgentConnection {
     this.child?.kill('SIGTERM')
     this.child = null
     this.subscribed.clear()
+    this.models.clear()
+    this.modelPushes.clear()
   }
 
   close(): void {

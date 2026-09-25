@@ -2,9 +2,7 @@ import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
-  getAgentSessionModel,
   readAcpFirstPrompt,
-  readAcpModel,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
@@ -16,14 +14,14 @@ import {
   setAgentSessionCapture,
 } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
-import { captureModel } from './model-capture'
 import { captureFirstPrompt } from './prompt-capture'
 import { readSessionStarts, type SessionStartSighting } from './session-starts'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
-import type { DiscoveredSession } from '#db'
+import type { AgentSessionLinkRow, DiscoveredSession } from '#db'
+import type { LiveAgent } from '#runtime/agents'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
@@ -179,11 +177,15 @@ export async function reconcileWorktreeAgentSessions(
     // opening message has to be probed out of the pod.
     const pinned = await sessionTranscriptPath(projectSlug, worktreeId, tool)
     if (pinned === undefined && tool !== 'opencode') return
+    // The pin is the only conversation there is, so the pane of its tool is
+    // its pane, and that pane's model is its model.
+    const model = liveAgents(projectSlug, worktreeId)?.find((a) => a.tool === tool)?.model
     const pinnedOnly = [await withFirstPrompt(
       {
         tool,
         agentSessionId: worktreeId,
         ...(pinned !== undefined ? { transcriptPath: pinned } : {}),
+        ...(model !== undefined ? { model } : {}),
       },
       projectSlug,
       jobName,
@@ -218,21 +220,18 @@ export async function reconcileWorktreeAgentSessions(
   // have to carry every conversation's pane back with it just to avoid
   // clearing them.
   //
-  // The model rides along on the same read, and is the one capture here that
-  // repeats: a `/model` is a new answer to the same question, so it is asked
-  // again whenever the transcript has moved (`captureModel` gates that on
-  // mtime). Written only when it actually differs from the row, which keeps a
-  // settled worktree at zero writes a tick.
+  // The model is not read at all: each live pane carries the one its tool
+  // last reported (see `LiveAgent.model`), and a switch arrives as a change to
+  // the live set, which is what triggers this pass. It belongs to whichever
+  // conversation owns the pane now. Written only when it differs from the row,
+  // which keeps a settled worktree at zero writes a pass.
+  const observed = liveAgents(projectSlug, worktreeId)
+  const models = paneModels(observed ?? [], links, sightings, boundary)
   await Promise.all(links.map(async (l) => {
-    const transcript = absoluteTranscriptPath(l)
     const firstPrompt = l.firstPrompt === undefined
-      ? await captureFirstPrompt(projectSlug, l.tool, l.agentSessionId, transcript, jobName)
+      ? await captureFirstPrompt(projectSlug, l.tool, l.agentSessionId, absoluteTranscriptPath(l), jobName)
       : undefined
-    const model = await captureModel(
-      `${projectSlug}/${l.tool}/${l.agentSessionId}`,
-      transcript,
-      (file) => getAgentSessionModel(l.tool, file),
-    )
+    const model = models.get(`${l.tool}/${l.agentSessionId}`)
     const capture = {
       ...(firstPrompt !== undefined ? { firstPrompt } : {}),
       ...(model !== undefined && model !== l.model ? { model } : {}),
@@ -245,7 +244,6 @@ export async function reconcileWorktreeAgentSessions(
   // the watcher has no live set yet (a pod whose connection hasn't attached),
   // leave the active set alone rather than blanking it — a transient stream
   // gap must never look like "every agent exited".
-  const observed = liveAgents(projectSlug, worktreeId)
   if (observed === undefined) return
   const handles = new Set(observed.map((a) => a.handle))
   // Every recorded handle belongs to the current life: the life that started
@@ -258,6 +256,46 @@ export async function reconcileWorktreeAgentSessions(
     .filter((l) => l.paneId !== undefined && handles.has(l.paneId))
     .map((l) => ({ tool: l.tool, agentSessionId: l.agentSessionId, paneId: l.paneId as string }))
   await applyWorktreeEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
+}
+
+/**
+ * Each live pane's reported model, keyed by the conversation it belongs to
+ * (`<tool>/<id>`).
+ *
+ * The model is a fact about the pane — the option stays put across a
+ * `/clear` — so it belongs to the conversation running there NOW: the last
+ * one this life's log saw start on the pane. A link's recorded pane cannot
+ * answer that alone, since the conversation a `/clear` left behind still names
+ * the pane it last ran in. With no sighting on the pane, the recorded pane
+ * decides, and failing that a tool with a single conversation here (opencode,
+ * which no hook reports, so its links carry no pane) takes it.
+ */
+function paneModels(
+  observed: LiveAgent[],
+  links: AgentSessionLinkRow[],
+  sightings: SessionStartSighting[],
+  lifeLogBytes: number,
+): Map<string, string> {
+  // Keyed by tool as well as pane: a pane's model is only ever its own tool's,
+  // and a pane can carry another tool's sighting — a prewarmed spare retooled
+  // at claim keeps its warm-time agent's start line on the pane the new tool
+  // now runs in.
+  const owner = new Map<string, string>()
+  for (const s of sightings) {
+    if (s.handle === undefined || s.atByte < lifeLogBytes) continue
+    owner.set(`${s.tool}/${s.handle}`, `${s.tool}/${s.agentSessionId}`)
+  }
+  const models = new Map<string, string>()
+  for (const a of observed) {
+    if (a.model === undefined) continue
+    const ofTool = links.filter((l) => l.tool === a.tool)
+    const recorded = ofTool.filter((l) => l.paneId === a.handle).at(-1)
+      ?? (ofTool.length === 1 ? ofTool[0] : undefined)
+    const key = owner.get(`${a.tool}/${a.handle}`)
+      ?? (recorded !== undefined ? `${recorded.tool}/${recorded.agentSessionId}` : undefined)
+    if (key !== undefined) models.set(key, a.model)
+  }
+  return models
 }
 
 /**
@@ -376,8 +414,10 @@ async function reconcileAcpAgentSessions(
         // minted rather than the one we asked for. The record is on disk
         // whether or not anything is attached, and it outlives the pod, which
         // is what lets a stopped worktree still be labelled and ordered.
+        //
+        // The model is the exception: the adapter pushes it, so it rides the
+        // live set rather than being read back out of the record.
         const firstPrompt = await readAcpFirstPrompt(record)
-        const model = await captureModel(`${projectSlug}/acp/${agentSessionId}`, record, readAcpModel)
         const lastActiveMs = await transcriptLastActiveMs(record)
         return {
           tool: a.tool,
@@ -386,7 +426,7 @@ async function reconcileAcpAgentSessions(
           mode: 'acp' as const,
           ...(firstPrompt !== undefined ? { firstPrompt } : {}),
           ...(lastActiveMs !== undefined ? { lastActiveMs } : {}),
-          ...(model !== undefined ? { model } : {}),
+          ...(a.model !== undefined ? { model: a.model } : {}),
         }
       }),
   )

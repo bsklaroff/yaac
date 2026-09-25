@@ -20,6 +20,7 @@ interface OpencodeConfig {
   model?: string
   default_agent?: string
   permissions?: Array<{ action: string; resource: string; effect: string }>
+  plugins?: string[]
 }
 
 /** The config document an opencode launch carries in OPENCODE_CONFIG_CONTENT. */
@@ -42,24 +43,29 @@ beforeEach(() => { installFakeWorktreeDriver({ exec: podExec }) })
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
+    // The title items are how a `/model` reaches yaac: codex rewrites its
+    // title's last segment the moment one lands. Double-quoted with escaped
+    // inner quotes, so the TOML array survives the single-quoted wrapper.
+    const TITLE = '-c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"model\\"]"'
+
     it('omits prompt arguments', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', permissionMode: 'bypass' })
-      expect(cmd).toBe('codex --yolo')
+      expect(cmd).toBe(`codex ${TITLE} --yolo`)
     })
 
     it('inserts the resume subcommand when resuming', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toBe('codex --yolo resume sess-1')
+      expect(cmd).toBe(`codex ${TITLE} --yolo resume sess-1`)
     })
 
     it('inserts --model when a model override is given', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: false, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
-      expect(cmd).toBe('codex --yolo --model gpt-5.2-codex')
+      expect(cmd).toBe(`codex ${TITLE} --yolo --model gpt-5.2-codex`)
     })
 
     it('places --model after the resume subcommand (codex resume parses it)', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'abc', resume: true, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
-      expect(cmd).toBe('codex --yolo resume abc --model gpt-5.2-codex')
+      expect(cmd).toBe(`codex ${TITLE} --yolo resume abc --model gpt-5.2-codex`)
     })
   })
 
@@ -138,22 +144,22 @@ describe('buildAgentCmd', () => {
     // asserted on every claude launch shape below, not just once.
     it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
     })
 
     it('swaps --session-id for --resume when resuming', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
     })
 
     it('inserts --model when a model override is given', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: false, model: 'claude-opus-4-8', permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
     })
 
     it('combines a model override with resume', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, model: 'opus', permissionMode: 'bypass' })
-      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
+      expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
     })
   })
 
@@ -169,11 +175,11 @@ describe('buildAgentCmd', () => {
       ['claude', 'accept-edits', 'claude --permission-mode acceptEdits'],
       ['claude', 'plan', 'claude --permission-mode plan'],
       ['claude', 'manual', 'claude --permission-mode manual'],
-      ['codex', 'bypass', 'codex --yolo'],
-      ['codex', 'auto', 'codex --approve-for-me'],
+      ['codex', 'bypass', ' --yolo'],
+      ['codex', 'auto', ' --approve-for-me'],
       ['codex', 'accept-edits', 'codex'],
-      ['codex', 'plan', 'codex --sandbox read-only'],
-      ['codex', 'manual', 'codex --ask-for-approval untrusted'],
+      ['codex', 'plan', ' --sandbox read-only'],
+      ['codex', 'manual', ' --ask-for-approval untrusted'],
     ]
 
     it.each(CASES)('%s in %s mode', (tool, permissionMode, expected) => {
@@ -196,7 +202,10 @@ describe('buildAgentCmd', () => {
         expect(cmd).not.toContain("'")
         expect(cmd).not.toContain('--auto')
         expect(cmd).not.toContain('--agent')
-        return opencodeConfigOf(cmd)
+        // Every posture also loads yaac's model reporter.
+        const { plugins, ...posture } = opencodeConfigOf(cmd)
+        expect(plugins).toEqual(['$HOME/.config/opencode/yaac-model'])
+        return posture
       }
       const rule = (action: string, effect: string) => ({ action, resource: '*', effect })
 
@@ -248,8 +257,14 @@ describe('buildAgentCmd', () => {
       // a shell then unwraps and runs.
       const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], {
         encoding: 'utf8',
+        env: { ...process.env, HOME: '/home/someone' },
       })
-      expect(JSON.parse(out) as OpencodeConfig).toEqual(opencodeConfigOf(cmd))
+      // The plugin path is the one part the shell is meant to change: it
+      // expands to the workspace's own opencode config home.
+      expect(JSON.parse(out) as OpencodeConfig).toEqual({
+        ...opencodeConfigOf(cmd),
+        plugins: ['/home/someone/.config/opencode/yaac-model'],
+      })
     })
 
     // A posture the tool does not have can still reach here off a worktree

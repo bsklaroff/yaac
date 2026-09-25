@@ -62,7 +62,7 @@ Steps subscribe to triggers; three lanes feed one serialized executor:
   going.
   One source in this lane is not an informer: `live-agents`, marked when a
   worktree's set of running conversations changes (one appeared, one went,
-  or one learned its id). An `acp` conversation's id comes out of an in-pod
+  one learned its id, or one switched model). An `acp` conversation's id comes out of an in-pod
   handshake that moves nothing the informers watch, so without it the
   conversation sweep — and the chat pane waiting on the row it writes —
   would sit out the rest of the resync interval.

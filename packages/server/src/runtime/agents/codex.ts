@@ -1,4 +1,6 @@
-import { scanJsonlBackward, scanJsonlForward } from './jsonl'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { scanJsonlForward } from './jsonl'
 
 // ---------------------------------------------------------------------------
 // Status + first-message
@@ -24,12 +26,11 @@ function getUserMessageText(entry: CodexEntry): string | undefined {
  * terminal title, mirroring claude-status.ts. Titles are pushed at the
  * server by the session's status watcher (`#runtime/status`)
  * via a tmux control-mode subscription; reads happen via the status
- * store, never by probing the pod. Codex's default terminal title is
- * built from the `[tui].terminal_title` items `["activity",
- * "project-name"]`: while a task is running the activity item renders a
+ * store, never by probing the pod. Codex builds its terminal title from
+ * the `[tui].terminal_title` items yaac launches it with
+ * (`CODEX_TITLE_ITEMS`): while a task is running the activity item renders a
  * Braille spinner frame (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, all inside U+2800–U+28FF) ahead of
- * the project name, and the moment the turn ends the title drops back to
- * the bare project name. When Codex blocks on user input (an approval
+ * the rest, and the moment the turn ends the spinner drops away. When Codex blocks on user input (an approval
  * prompt) the spinner is suppressed entirely and the title instead gains
  * a blinking "[ ! ] Action Required" prefix — so the leading-Braille test
  * classifies every user-blocked state as 'waiting', which is exactly what
@@ -56,20 +57,50 @@ export async function getCodexFirstUserMessage(jsonlPath: string): Promise<strin
 }
 
 /**
- * The model codex last ran a turn with, from the newest `turn_context` entry.
+ * The items codex builds its terminal title from — its default pair, plus the
+ * model. With them the idle title reads `workspace | GPT-5.6-Sol`, a turn in
+ * flight `⠙ workspace | GPT-5.6-Sol`, and a `/model` rewrites the last segment
+ * the moment it is confirmed, before any turn (verified against codex-cli
+ * 0.156.1). That is the only push codex offers: no hook fires on a model
+ * change, and the rollout does not exist until the first turn.
  *
- * codex records a `turn_context` at every turn boundary carrying that turn's
- * settings — model, approval policy, sandbox, effort — so the last one is
- * both the current model and what the next turn will use. The messages
- * themselves name no model, which is why this reads turn boundaries rather
- * than answers (verified against the rollout codex 0.142.4 writes:
- * `{"type":"turn_context","payload":{"model":"gpt-5.6-sol",…}}`).
+ * `activity` stays first, which is what keeps `classifyCodexTitle`'s
+ * leading-spinner test true; `project-name` stays ahead of the model, which is
+ * what gives `CODEX_MODEL_FORMAT` a separator to find.
  */
-export async function getCodexModel(jsonlPath: string): Promise<string | undefined> {
-  return scanJsonlBackward(jsonlPath, (entry) => {
-    const parsed = entry as { type?: unknown; payload?: { model?: unknown } }
-    if (parsed.type !== 'turn_context') return undefined
-    const model = parsed.payload?.model
-    return typeof model === 'string' && model.length > 0 ? model : undefined
-  })
+export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
+
+/**
+ * A tmux format resolving to the model segment of the title — everything after
+ * the last ` | ` — or empty before codex has set one (the pane then shows tmux's
+ * default, the hostname, which has no separator). Resolved inside tmux, so the
+ * subscription pushes when the model changes rather than on every spinner
+ * frame.
+ */
+export const CODEX_MODEL_FORMAT = '#{?#{m/r: [|] ,#{pane_title}},#{s/^.* [|] //:pane_title},}'
+
+/**
+ * The slug for a model codex's title names. The title shows the active
+ * catalog's display name (`GPT-5.6-Sol` for `gpt-5.6-sol`), and no title item
+ * carries the slug, so the name is looked up in the catalog codex caches in
+ * its home.
+ *
+ * That cache is not always there, or current: api-key auth and a failed fetch
+ * never write it, and one written by an older codex lacks the newer models —
+ * while the title still shows a display name from the catalog codex bundles.
+ * So a miss falls back to the spelling rule the catalogs follow (lowercase,
+ * spaces to dashes: `GPT-6-Astra` → `gpt-6-astra`), which also leaves a slug
+ * unchanged, and a model in no catalog is titled by its slug.
+ */
+export async function codexModelSlug(codexHome: string, shown: string): Promise<string> {
+  try {
+    const cache = JSON.parse(await fs.readFile(path.join(codexHome, 'models_cache.json'), 'utf8')) as {
+      models?: Array<{ slug?: unknown; display_name?: unknown }>
+    }
+    const slug = cache.models?.find((m) => m.display_name === shown)?.slug
+    if (typeof slug === 'string' && slug !== '') return slug
+  } catch {
+    // No cache yet, or one this reader does not understand.
+  }
+  return shown.toLowerCase().replace(/ /g, '-')
 }

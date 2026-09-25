@@ -60,6 +60,14 @@ export interface LiveAgent {
    * answer, and the registry joins the two.
    */
   agentSessionId?: string
+  /**
+   * The model it is running, as the agent itself last reported it — pushed
+   * the moment it switches, never polled. `acp` hears it from the adapter
+   * (the handshake's reply, then each `config_option_update`); `tui` from a
+   * pane option the tool's own reporter sets (see `MODEL_PANE_OPTION`).
+   * Absent until the agent has said.
+   */
+  model?: string
 }
 
 /**

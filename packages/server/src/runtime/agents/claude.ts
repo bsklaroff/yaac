@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises'
-import { scanJsonlBackward, scanJsonlForward } from './jsonl'
+import { scanJsonlForward } from './jsonl'
 
 /**
  * Classifies Claude Code's "actively working" state from the pane's OSC
@@ -102,26 +102,6 @@ export async function getFirstUserMessage(jsonlPath: string): Promise<string | u
 }
 
 /**
- * The model claude last answered as, from the newest `assistant` entry that
- * names one (`message.model`, e.g. `claude-opus-5`).
- *
- * `<synthetic>` is claude's own placeholder on entries it generated rather
- * than a model did — an interrupt notice, an API-error stand-in — and naming
- * it as the session's model would show a worktree answering as a model that
- * does not exist. Skipping it falls through to the last real answer, which is
- * still what the next turn will use.
- */
-export async function getClaudeModel(jsonlPath: string): Promise<string | undefined> {
-  return scanJsonlBackward(jsonlPath, (entry) => {
-    const parsed = entry as { type?: unknown; message?: { model?: unknown } }
-    if (parsed.type !== 'assistant') return undefined
-    const model = parsed.message?.model
-    if (typeof model !== 'string' || model.length === 0) return undefined
-    return model === '<synthetic>' ? undefined : model
-  })
-}
-
-/**
  * Registration of yaac's agent-session discovery hook with Claude Code.
  *
  * The hook script itself is `worktree-bin/yaac-agent-links`, staged per
@@ -167,6 +147,34 @@ const CLAUDE_HOME_NAME = 'claude'
 export const CLAUDE_HOOK_COMMAND =
   `yaac-agent-links "$HOME/.${CLAUDE_HOME_NAME}" ${CLAUDE_HOME_NAME}`
 
+/**
+ * The model reporter (`worktree-bin/yaac-agent-model`), run on the two events
+ * whose payload can name the model: `PostModelSwitch` (its `to_model`), which
+ * claude fires the moment `/model` lands — any cause, no reply needed — and
+ * `SessionStart` (its `model`). The script puts it on the pane as
+ * `@yaac-model`, which the status watcher is subscribed to. Its stdout must
+ * stay empty: claude hands a hook's stdout to the model on both events.
+ *
+ * `SessionStart` names the model only on an interactive startup (and on a
+ * compact, or a resume from inside a session) — NOT on a CLI `--resume`, which
+ * is how a restart relaunches every conversation, and not on `/clear`. A
+ * restarted claude pane therefore reports nothing until its first `/model`,
+ * and its row keeps the model it last had (verified against claude 2.1.282).
+ *
+ * Guarded, because claude hot-reloads this project-shared file: a worktree
+ * whose staged bin predates the script would otherwise show a hook error on
+ * every `/clear` and `/model`. `exec` keeps the payload on stdin.
+ */
+export const CLAUDE_MODEL_HOOK_COMMAND =
+  'command -v yaac-agent-model >/dev/null && exec yaac-agent-model || true'
+
+/** Every hook yaac registers, by event. */
+const CLAUDE_HOOKS: ReadonlyArray<readonly [string, string]> = [
+  ['SessionStart', CLAUDE_HOOK_COMMAND],
+  ['SessionStart', CLAUDE_MODEL_HOOK_COMMAND],
+  ['PostModelSwitch', CLAUDE_MODEL_HOOK_COMMAND],
+]
+
 /** Commands written by installs that registered the hook by its in-image path,
  *  before it became a staged worktree-bin script. Matched by prefix so any
  *  argument variant is caught. See docs/legacy-compat-shims.md. */
@@ -192,7 +200,7 @@ interface ClaudeSettings {
 }
 
 /**
- * Merge yaac's `SessionStart` hook into a project's `~/.claude/settings.json`.
+ * Merge yaac's hooks (`CLAUDE_HOOKS`) into a project's `~/.claude/settings.json`.
  *
  * Idempotent and additive: unrelated settings keys (the bypass-prompt flag and
  * cleanup period `seedClaudeSettings` writes, whatever theme claude-code wrote
@@ -234,18 +242,15 @@ export async function ensureClaudeHooks(settingsPath: string): Promise<void> {
     // A matcher whose every hook was ours has nothing left to match on.
     if (kept.length > 0) sessionStart.push({ ...matcher, hooks: kept })
   }
-  const already = sessionStart.some((m) =>
-    m.hooks?.some((h) => h.command === CLAUDE_HOOK_COMMAND) ?? false,
-  )
-  if (already && !stripped) return
-
-  if (!already) {
-    sessionStart.push({
-      matcher: '*',
-      hooks: [{ type: 'command', command: CLAUDE_HOOK_COMMAND, timeout: 10 }],
-    })
-  }
   hooks.SessionStart = sessionStart
+  let added = false
+  for (const [event, command] of CLAUDE_HOOKS) {
+    const matchers = hooks[event] ?? []
+    if (matchers.some((m) => m.hooks?.some((h) => h.command === command) ?? false)) continue
+    hooks[event] = [...matchers, { matcher: '*', hooks: [{ type: 'command', command, timeout: 10 }] }]
+    added = true
+  }
+  if (!added && !stripped) return
   settings.hooks = hooks
 
   // Written through a temp file in the same directory and renamed, because

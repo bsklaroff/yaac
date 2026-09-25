@@ -1,0 +1,35 @@
+#!/bin/sh
+# yaac model reporter: puts the model an agent is running on its tmux pane, as
+# the pane option @yaac-model, which the server's status watcher is subscribed
+# to over tmux control mode. That subscription is the whole transport — tmux
+# pushes the new value the moment it is set, so a model switch reaches the
+# worktree's row without anything reading a transcript.
+#
+# The model is $1 when a caller has it in hand (a plugin or extension), else
+# it is read from a hook payload on stdin: claude's PostModelSwitch carries
+# `to_model`, and its SessionStart `model` — on an interactive startup, not on
+# a CLI `--resume`. A payload naming neither (a SessionStart for `/clear`)
+# leaves the option alone, which is right for `/clear`: the model did not
+# change, and the option belongs to the pane, so the conversation that now
+# owns the pane inherits it.
+#
+# Staged per worktree beside yaac-agent-links, and run by bare name for the
+# same reason (see that script). The pane is $TMUX_PANE; the server is $TMUX,
+# or $YAAC_TMUX for claude, which runs with $TMUX hidden (see buildAgentCmd).
+#
+# Prints NOTHING: claude hands a hook's stdout to the model. Always exits 0 —
+# a failed report costs a stale label, never the agent.
+MODEL="${1:-}"
+if [ -z "$MODEL" ]; then
+  INPUT=$(cat)
+  MODEL=$(printf '%s' "$INPUT" | sed -n 's/.*"to_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  [ -n "$MODEL" ] \
+    || MODEL=$(printf '%s' "$INPUT" | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+fi
+[ -n "$MODEL" ] || exit 0
+[ -n "${TMUX_PANE:-}" ] || exit 0
+SERVER="${TMUX:-${YAAC_TMUX:-}}"
+[ -n "$SERVER" ] || exit 0
+# $TMUX is `<socket>,<pid>,<session>`.
+tmux -S "${SERVER%%,*}" set-option -p -t "$TMUX_PANE" @yaac-model "$MODEL" >/dev/null 2>&1
+exit 0

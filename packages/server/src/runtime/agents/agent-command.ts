@@ -13,6 +13,8 @@ import {
   type YaacConfig,
 } from '@yaac/shared/types'
 import { envJsonAssignment, shellEscape } from '#lib/shell'
+import { CODEX_TITLE_ITEMS } from './codex'
+import { OPENCODE_MODEL_PLUGIN } from './model-reporters'
 
 /**
  * Every `tmux` invocation this file authors routes through this prefix so
@@ -190,7 +192,8 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
 
 /**
  * The `OPENCODE_CONFIG_CONTENT` assignment for the launch command: the
- * posture, plus the model when one was asked for (`provider/model`; omitted,
+ * posture and yaac's model-reporting plugin, plus the model when one was
+ * asked for (`provider/model`; omitted,
  * opencode uses the model persisted in the shared config, or its own
  * default).
  *
@@ -200,7 +203,13 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  * than hand-written so the escaping cannot drift from the shape.
  */
 export function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
-  const config = { ...OPENCODE_POSTURE[mode], ...(model === undefined ? {} : { model }) }
+  const config = {
+    ...OPENCODE_POSTURE[mode],
+    ...(model === undefined ? {} : { model }),
+    // The model reporter (see `ensureModelReporters`). `$HOME` is left for the
+    // launch shell to expand, which the double quotes allow.
+    plugins: [OPENCODE_MODEL_PLUGIN],
+  }
   return envJsonAssignment('OPENCODE_CONFIG_CONTENT', config)
 }
 
@@ -227,8 +236,14 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // --model goes after the resume subcommand: codex defines -m/--model on
     // both the root TUI command and `codex resume`, so trailing placement
     // binds it to whichever command runs.
+    //
+    // The title items are how a `/model` reaches yaac (see
+    // `CODEX_TITLE_ITEMS`): a TOML array, double-quoted with escaped inner
+    // quotes for the same reason `envJsonAssignment` is.
+    const title = JSON.stringify(CODEX_TITLE_ITEMS).replace(/"/g, '\\"')
     return [
       'codex',
+      `-c "tui.terminal_title=${title}"`,
       posture,
       resume ? `resume ${worktreeId}` : '',
       model ? `--model ${model}` : '',
@@ -331,7 +346,9 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // Only `TMUX` is dropped. `TMUX_PANE` stays, because the agent-links hook
   // reads it to record which pane a conversation started in
   // (worktree-bin/yaac-agent-links) — dropping it would silently cost
-  // conversation discovery.
+  // conversation discovery. And the value itself survives as `YAAC_TMUX`,
+  // which is how the model hook finds the server to set its pane option on
+  // (worktree-bin/yaac-agent-model) without claude seeing a multiplexer.
   //
   // What claude gives up, largest first:
   //  - Agent teams lose the tmux pane backend. Claude picks it by the same
@@ -345,7 +362,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   //    the browser terminal anyway.
   //  - A scrollback hint in its footer.
   return [
-    `env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
+    `env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${model}` : '',
     resume ? `--resume ${worktreeId}` : `--session-id ${worktreeId}`,
   ].filter(Boolean).join(' ')

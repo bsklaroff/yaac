@@ -301,7 +301,7 @@ below also needs a test that fails if a new release changes it:
   ACP records.
 - **A server-side copy, for conversations sharing a worktree.** The server
   could copy each transcript into server-local storage, which no worktree
-  mounts, as the discovery sweep sees it grow (`transcriptStamp` already
+  mounts, as the discovery sweep sees it grow (an mtime-and-size stamp
   answers "has this changed?"). Readers would fall back to the copy when the
   original is gone. That is the only thing that protects one conversation
   from another in the same worktree, and it would also make "yaac can recover

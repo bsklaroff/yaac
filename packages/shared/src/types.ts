@@ -770,11 +770,9 @@ export interface AgentSessionEntry {
    * The model it is answering as, in the tool's own spelling
    * (`claude-opus-5`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`) — for
    * display beside the tool name, never to relaunch with. Seeded from the
-   * launch, then followed as observed, so it tracks a `/model` switch: read
-   * from what the conversation recorded — a `tui` one from the tool's own
-   * transcript, an `acp` one from acpd's record. A `tui` opencode
-   * conversation records nothing readable (its history is a container-side
-   * sqlite DB), so it keeps the launch value.
+   * launch, then pushed by the agent itself as it changes, so it tracks a
+   * `/model` switch the moment it lands (a `tui` opencode one at its next
+   * prompt, which is when opencode's TUI first tells anything).
    *
    * Absent only on a conversation launched without a model that has not
    * answered yet. A UI shows the bare tool name in that case.
@@ -1291,6 +1289,14 @@ export type DesktopServerOutcome =
  * so the copies cannot disagree.
  */
 export const MAX_PROMPT_LENGTH = 4000
+
+/**
+ * Cap on a recorded model id. Every one yaac knows is a few dozen characters;
+ * the bound is for a value the agent reported — a tmux pane option anything in
+ * the workspace can set, or an adapter's reply — which could otherwise be any
+ * length. Applied by the tmux format that reads the option and by the store.
+ */
+export const MAX_MODEL_LENGTH = 128
 
 /**
  * What a worktree's agent may ask its own yaac server to do, via the
