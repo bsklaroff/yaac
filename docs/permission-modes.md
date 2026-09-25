@@ -29,26 +29,41 @@ carries no flag because it *is* codex's own default preset
 what makes codex ask to escalate for anything reaching the network, rather
 than yaac having to arrange it. Its strictest posture is `read-only`, its
 "Read Only" preset: reads and sandboxed commands run unasked, and every edit
-or network reach asks. (Both depend on a sandbox that does not start in a k8s
-pod; see below.) It has no `manual` — its approval policy is only
+or network reach asks. It has no `manual` — its approval policy is only
 `on-request` or `never`, so nothing asks before every action — and no `plan`:
 codex's plan mode is a collaboration mode that instructs the model not to
 mutate anything, over whatever sandbox is in force, and no flag launches into
 it. A posture the sandbox enforces is the one worth naming.
 
-**Under k8s, codex's sandboxed postures cannot run commands.** Everything
-but `bypass` puts codex's shell behind its Linux sandbox (bubblewrap) with
-network off, and worktree pods run under gVisor, where bubblewrap cannot
-configure the new network namespace (`bwrap: loopback: Failed
-RTM_NEWADDR`). So every shell command fails to start — a read such as `ls`
-included — and codex does not ask to run it outside the sandbox; it reports
-the failure and carries on without it. Checked in a yaac k8s worktree pod
-(codex 0.156.1) for `read-only` and `accept-edits`; `auto` shares that
-sandbox. The restraint fails *closed*: nothing escapes the sandbox, and with
-network allowed bubblewrap starts and confines writes to the writable roots.
-But a codex worktree on k8s that is to run commands needs `bypass`, where the
-pod and its egress proxy are the containment. Under containerless the sandbox runs on the host kernel, and the
-postures mean what the table says.
+**Under k8s, codex's sandbox runs on a patched bubblewrap.** Every codex
+posture but `bypass` — and the ranking of `read-only` level with `plan` —
+rests on codex's Linux sandbox, which is bubblewrap with the network
+unshared. Worktree pods run under gVisor, which gives a new network
+namespace an `lo` that already holds 127.0.0.1 where Linux gives an empty
+one, so stock bubblewrap's own address assignment fails `EEXIST` and it
+aborts (`bwrap: loopback: Failed RTM_NEWADDR`) before the command runs. That
+fails closed and quietly, which is what makes it worth a test: every shell
+command, a read such as `ls` included, fails to start, and codex reports the
+failure and carries on without it rather than asking to run it outside the
+sandbox. So the tools image builds bubblewrap with that `EEXIST` taken as
+done and installs it as `/usr/bin/bwrap`, which codex prefers to the copy it
+bundles; the read-only and workspace sandboxes then hold as they do on
+Linux, network included. The sandbox also needs its helper to survive: each
+codex process spawns sandboxed commands through a `codex-linux-sandbox`
+alias in a directory under `$CODEX_HOME/tmp/arg0`, locked while it runs, and
+every codex start deletes the ones whose lock it can take. gVisor keeps file
+locks per sandbox, so over the project's shared codex home a codex starting
+in any other pod — a prewarmed spare, a sibling — would delete a running
+agent's helper, and every sandboxed command after it fails. So in a pod that
+`tmp` is a pod-local emptyDir (`codexHomeMounts`). `test/e2e/codex-sandbox.test.ts` checks both in a
+pod, and trips when the bundled copy starts working, which is when the
+patched build can go. That happens one of two ways: gVisor creates `lo` empty
+([google/gvisor#13438](https://github.com/google/gvisor/issues/13438), fixed
+by [#13532](https://github.com/google/gvisor/pull/13532) once
+`GVISOR_VERSION` moves past it), or bubblewrap tolerates the address
+([containers/bubblewrap#745](https://github.com/containers/bubblewrap/issues/745))
+and codex bundles that release. Under containerless the host kernel is Linux,
+and codex's own bubblewrap works as shipped.
 
 **opencode's posture is config, not flags** — its TUI has no posture, model
 or agent flag at all, and refuses an unknown one outright (usage, exit), so

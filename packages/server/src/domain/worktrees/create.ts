@@ -79,6 +79,7 @@ import {
 import { gitIdentityMissingMessage, resolveGitIdentity } from './git-identity'
 import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
+import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
   adoptLegacyClaudeJson,
   prepareModuleDirs,
@@ -127,8 +128,6 @@ const CLAUDE_CONTAINER_HOME = '/home/yaac/.claude'
 /** The project's per-worktree-shared package cache: pnpm's store, and the
  *  backing dirs of the ephemeral-modules mounts. */
 const CACHED_PACKAGES_CONTAINER_DIR = '/home/yaac/.cached-packages'
-/** In-pod codex home; the host-side `codexDir` is mounted here. */
-const CODEX_CONTAINER_HOME = '/home/yaac/.codex'
 /** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
  *  mirroring `~/.claude`), so every worktree's pi session logs are visible to all. */
 const PI_CONTAINER_HOME = '/home/yaac/.pi'
@@ -1523,8 +1522,8 @@ export async function createWorktree(
   //   GLOBAL     — the server and the worktree pod must see the same bytes.
   //   NODE-LOCAL — never has to leave the node it was written on.
   //   emptyDir   — the subset of NODE-LOCAL that nothing outside the pod
-  //                ever opens and nothing needs after it dies. Only the
-  //                tmux socket dir qualifies today.
+  //                ever opens and nothing needs after it dies: the tmux
+  //                socket dir, and codex's helper dirs (codexHomeMounts).
   //
   // opencode's data is the one place the list branches on the driver kind
   // — WHETHER the working-copy feature applies, which is the one kind of
@@ -1559,7 +1558,7 @@ export async function createWorktree(
       source: { kind: 'hostPath', path: sessionStarts, type: 'File' },
       mountPath: CONTAINER_SESSION_STARTS_LOG,
     },
-    { source: { kind: 'hostPath', path: codex }, mountPath: '/home/yaac/.codex' },
+    ...codexHomeMounts(runtime.kind, codex),
     ...opencodeMounts,
     // GLOBAL.
     { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
