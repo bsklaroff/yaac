@@ -621,7 +621,11 @@ status watcher already receives each codex pane's title, and hands on that
 prefix (`LiveAgent.sessionIdPrefix`). A conversation is on the pane whose
 title its id starts with, which is exact however many codex panes a worktree
 has. A conversation whose pane now names another, such as one a `/new` left
-behind, is recorded without a pane and so goes inactive.
+behind, is recorded without a pane and so goes inactive. A conversation that
+runs outside this checkout is not recorded at all, since its rollout names
+another cwd: a `/resume` of one begun elsewhere, or one `/new` starts in the
+new worktree it offers. Its pane then holds nothing recorded, so a restart
+starts codex anew there.
 
 ## Host requirements
 

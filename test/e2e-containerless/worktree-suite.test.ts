@@ -147,8 +147,9 @@ const CODEX_RUNS = 'codex-runs'
  * rollout under `$CODEX_HOME/sessions/<local day>` at its first prompt, opened
  * by a `session_meta` naming the id, its cwd and `source: "cli"`, then that
  * prompt — and is moved to full access at once, as a `/permissions` pick
- * would be. `resume <id>` refuses an id with no rollout, as codex does, and
- * otherwise appends the settings it resumed under to the rollout it has.
+ * would be. A typed `/new` begins another conversation the same way. `resume
+ * <id>` refuses an id with no rollout, as codex does, and otherwise appends the
+ * settings it resumed under to the rollout it has.
  */
 const FAKE_CODEX = `#!/usr/bin/env node
 const fs = require('fs')
@@ -171,6 +172,39 @@ const settings = (bypass) => JSON.stringify({
 const sessions = path.join(process.env.CODEX_HOME, 'sessions')
 // The title names the conversation cut short, between the project and the model.
 const title = (id) => process.stdout.write('\\x1b]2;workspace | ' + id.slice(0, 29) + '... | e2e-model\\x07')
+// Each typed line: \`/new\` begins another conversation, named at once; the
+// first prompt of a conversation not yet written opens its rollout.
+function converse(first, unwritten) {
+  let id = first
+  let pending = unwritten
+  let typed = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', (chunk) => {
+    typed += chunk
+    for (let nl = typed.search(/[\\r\\n]/); nl >= 0; nl = typed.search(/[\\r\\n]/)) {
+      const line = typed.slice(0, nl)
+      typed = typed.slice(nl + 1)
+      if (line === '') continue
+      if (line === '/new') {
+        id = require('crypto').randomUUID()
+        pending = true
+        title(id)
+        continue
+      }
+      if (!pending) continue
+      pending = false
+      const now = new Date()
+      const pad = (n) => String(n).padStart(2, '0')
+      const dir = path.join(sessions, String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()))
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'rollout-' + now.getTime() + '-' + id + '.jsonl'), [
+        JSON.stringify({ type: 'session_meta', payload: { id, session_id: id, cwd: process.cwd(), source: 'cli' } }) + '\\n',
+        JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: line } }) + '\\n',
+        settings(true),
+      ].join(''))
+    }
+  })
+}
 const resume = args.indexOf('resume')
 if (resume >= 0) {
   const id = args[resume + 1]
@@ -183,26 +217,11 @@ if (resume >= 0) {
   }
   fs.appendFileSync(rollout, settings(args.includes('--yolo')))
   title(id)
+  converse(id, false)
 } else {
   const id = require('crypto').randomUUID()
   title(id)
-  let typed = ''
-  process.stdin.setEncoding('utf8')
-  process.stdin.on('data', function first(chunk) {
-    typed += chunk
-    const nl = typed.search(/[\\r\\n]/)
-    if (nl < 0) return
-    process.stdin.off('data', first)
-    const now = new Date()
-    const pad = (n) => String(n).padStart(2, '0')
-    const dir = path.join(sessions, String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()))
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'rollout-' + now.getTime() + '-' + id + '.jsonl'), [
-      JSON.stringify({ type: 'session_meta', payload: { id, session_id: id, cwd: process.cwd(), source: 'cli' } }) + '\\n',
-      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: typed.slice(0, nl) } }) + '\\n',
-      settings(true),
-    ].join(''))
-  })
+  converse(id, true)
 }
 setInterval(() => {}, 1 << 30)
 `
@@ -1764,9 +1783,9 @@ describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
     try {
       id = await createWorktreeWith('codex', '--permission-mode', 'accept-edits')
       const created = id
-      const codexSession = async () => (await listWorktrees() as Array<ListedWorktree & {
+      const sessionOf = async (conversation: string) => (await listWorktrees() as Array<ListedWorktree & {
         agentSessions: Array<{ agentSessionId: string; active: boolean; prompt?: string }>
-      }>).find((w) => w.worktreeId === created)?.agentSessions.find((s) => s.agentSessionId !== created)
+      }>).find((w) => w.worktreeId === created)?.agentSessions.find((s) => s.agentSessionId === conversation)
       const startCommand = async (): Promise<string> =>
         tmux(created, 'display', '-p', '-t', 'yaac:codex', '#{pane_start_command}')
       const restart = async (): Promise<void> => {
@@ -1779,17 +1798,22 @@ describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
       await restart()
       expect(await startCommand()).not.toContain('resume')
 
-      // Prompted once this life's live set has settled, then restarted the
-      // moment the turn has opened its rollout. The status push that stamps
+      // Until this life's live set has settled. The status push that stamps
       // the waiting spell also carries the title's conversation id, and the
       // pass that publishing it kicks lands within a debounce; after that,
-      // nothing about a turn changes the live set, so no pass records the
-      // conversation before the restart. The restart's own sweep has to.
-      await vi.waitFor(async () => {
-        expect((await listWorktrees() as Array<ListedWorktree & { waitingSinceMs?: number }>)
-          .find((w) => w.worktreeId === created)?.waitingSinceMs).toBeDefined()
-      }, { timeout: 30_000, interval: 250 })
-      await new Promise((r) => setTimeout(r, 1_000))
+      // nothing about a turn changes the live set, so no pass records a
+      // conversation before a stop or restart does.
+      const settled = async (): Promise<void> => {
+        await vi.waitFor(async () => {
+          expect((await listWorktrees() as Array<ListedWorktree & { waitingSinceMs?: number }>)
+            .find((w) => w.worktreeId === created)?.waitingSinceMs).toBeDefined()
+        }, { timeout: 30_000, interval: 250 })
+        await new Promise((r) => setTimeout(r, 1_000))
+      }
+
+      // Prompted, then restarted the moment the turn has opened its rollout:
+      // the restart's own sweep is what records it.
+      await settled()
       await tmux(created, 'send-keys', '-t', 'yaac:codex', 'e2e codex prompt', 'Enter')
       const sessions = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', 'sessions')
       const rollouts = async (): Promise<string[]> =>
@@ -1803,7 +1827,28 @@ describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
       await restart()
       expect(await startCommand()).toContain(`--yolo resume ${conversation}`)
       await vi.waitFor(async () => {
-        expect(await codexSession()).toMatchObject({ agentSessionId: conversation, active: true, prompt: 'e2e codex prompt' })
+        expect(await sessionOf(conversation)).toMatchObject({ active: true, prompt: 'e2e codex prompt' })
+      }, { timeout: 30_000, interval: 250 })
+
+      // A `/new`, prompted, then a stop and a restart later — the common way to
+      // the freeze, where it is the stop's own sweep that records the new
+      // conversation. Once settled, the first one leaving the pane is the pass
+      // the retitled pane kicks; nothing after it changes the live set.
+      await settled()
+      expect(await sessionOf(conversation)).toMatchObject({ active: true })
+      await tmux(created, 'send-keys', '-t', 'yaac:codex', '/new', 'Enter')
+      await vi.waitFor(async () => {
+        expect(await sessionOf(conversation)).toMatchObject({ active: false })
+      }, { timeout: 30_000, interval: 250 })
+      await tmux(created, 'send-keys', '-t', 'yaac:codex', 'second codex prompt', 'Enter')
+      await vi.waitFor(async () => { expect(await rollouts()).toHaveLength(2) }, { timeout: 30_000, interval: 50 })
+      const second = (await rollouts()).map((f) => /-([0-9a-f-]{36})\.jsonl$/.exec(f)?.[1] ?? '')
+        .find((c) => c !== conversation) ?? ''
+      expect((await runYaac(serverEnv, 'worktree', 'stop', created)).exitCode).toBe(0)
+      await restart()
+      expect(await startCommand()).toContain(`--yolo resume ${second}`)
+      await vi.waitFor(async () => {
+        expect(await sessionOf(second)).toMatchObject({ active: true, prompt: 'second codex prompt' })
       }, { timeout: 30_000, interval: 250 })
     } finally {
       await fs.rm(marker, { force: true })
