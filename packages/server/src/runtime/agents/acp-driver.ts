@@ -38,7 +38,7 @@ import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { AcpConversation } from './acp-client'
-import { readAcpInFlight, readAcpPendingPermissions } from './acp-log'
+import { readAcpInFlight, readAcpModeId, readAcpPendingPermissions } from './acp-log'
 import { tmuxCmd } from './agent-command'
 import { agentWindowTool } from './agent-tools'
 import {
@@ -173,6 +173,7 @@ interface Attached {
   child: StreamChild
   agentSessionId?: string
   model?: string
+  modeId?: string
 }
 
 class AcpConnection implements AgentConnection {
@@ -403,6 +404,7 @@ class AcpConnection implements AgentConnection {
         recoverInFlight: () => readAcpInFlight(this.recordPath(resumeSessionId)),
         recoverPendingPermissions: () =>
           readAcpPendingPermissions(this.recordPath(resumeSessionId)),
+        recoverModeId: () => readAcpModeId(this.recordPath(resumeSessionId)),
       } : {}),
       onSessionId: (agentSessionId) => {
         entry.agentSessionId = agentSessionId
@@ -418,6 +420,10 @@ class AcpConnection implements AgentConnection {
       },
       onModel: (model) => {
         entry.model = model
+        this.publishAgents()
+      },
+      onModeId: (modeId) => {
+        entry.modeId = modeId
         this.publishAgents()
       },
       onBusy: (busy) => {
@@ -489,6 +495,7 @@ class AcpConnection implements AgentConnection {
       tool: e.tool,
       ...(e.agentSessionId !== undefined ? { agentSessionId: e.agentSessionId } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
+      ...(e.modeId !== undefined ? { reportedMode: e.modeId } : {}),
     }))
     this.sink({ kind: 'live-agents', agents })
     // Each conversation's status is pushed on every turn boundary, but a

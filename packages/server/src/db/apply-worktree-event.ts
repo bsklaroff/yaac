@@ -8,6 +8,7 @@ import {
   recordWorktreeStopped,
   restoreWorktreeStop,
   setWorktreeBaseBranch,
+  setWorktreePermissionMode,
   type PriorStop,
 } from './worktree-store'
 import { notifyWorktreeListChanged } from '#notify'
@@ -62,6 +63,9 @@ async function applyEvent(event: WorktreeEvent): Promise<void> {
     case 'sessions-active':
       await setActiveAgentSessions(event.projectSlug, event.worktreeId, event.active)
       return
+    case 'permission-mode-changed':
+      await setWorktreePermissionMode(event.projectSlug, event.worktreeId, event.permissionMode)
+      return
     case 'worktree-stopped':
       await recordWorktreeStopped(event.projectSlug, event.worktreeId, event.cause)
       return
@@ -111,7 +115,9 @@ async function applyCreated(event: WorktreeCreated): Promise<void> {
     worktreeId,
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(event.spare === true ? { spare: true } : {}),
-    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    // A restart relaunches in what the row says, so it says nothing new — and
+    // re-stamping it would turn a posture observed since into the chosen one.
+    ...(permissionMode !== undefined && resume !== true ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(mode !== undefined ? { mode } : {}),
   })

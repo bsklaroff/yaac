@@ -21,10 +21,11 @@
  * Because of that, every connection attaches `no-output`: agent TUI redraws
  * never cross the stream, only the short status value does.
  *
- * Each pane gets a second subscription the same way, on its model
- * (`agentModelFormat`): a pane option the tool's own reporter sets, or for
- * codex a cut of its title. A `/model` therefore arrives as a push too, and
- * rides out on the live set.
+ * Each pane gets a second subscription the same way, on what its tool reports
+ * about itself (`agentReportFormat`): its model — a pane option the tool's own
+ * reporter sets, or for codex a cut of its title — and its permission mode,
+ * another pane option. A `/model` or a Shift+Tab therefore arrives as a push
+ * too, and rides out on the live set.
  *
  * A conversation's handle here is its tmux pane id (`%3`). Which conversation
  * a pane has loaded is deliberately not known — that is the in-pod hook's
@@ -36,11 +37,12 @@ import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
 import { serverLog } from '#log'
 import { ControlModeClient, type ControlModeNotification } from './control-mode'
 import {
-  agentModelFormat,
+  agentReportFormat,
   agentStatusFormat,
   agentWindowTool,
   classifyAgentObservation,
   resolveAgentModel,
+  splitAgentReport,
 } from './agent-tools'
 import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
 import { worktreeDriver } from '#drivers/driver'
@@ -57,8 +59,9 @@ import type { AgentTool } from '@yaac/shared/types'
 
 /** Subscription names are per pane, never shared — see `subscriptionName`. */
 const SUBSCRIPTION_PREFIX = 'status-'
-/** The second subscription each agent pane gets: its model (`agentModelFormat`). */
-const MODEL_SUBSCRIPTION_PREFIX = 'model-'
+/** The second subscription each agent pane gets: what its tool reports
+ *  about itself (`agentReportFormat`). */
+const REPORT_SUBSCRIPTION_PREFIX = 'report-'
 
 /**
  * The tmux subscription name for one agent pane.
@@ -116,6 +119,8 @@ class TuiConnection implements AgentConnection {
   /** Each pane's latest pushed model value, so a resolution that finishes
    *  after a newer push (codex's is a file read) is dropped, not published. */
   private readonly modelPushes = new Map<string, string>()
+  /** Each pane's reported permission mode, as its tool last put it. */
+  private readonly modes = new Map<string, string>()
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
   private done = false
@@ -230,7 +235,7 @@ class TuiConnection implements AgentConnection {
       // value is expanded later, per-client — it's not on this command line).
       await this.send(`refresh-client -B '${subscriptionName(SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentStatusFormat(tool)}'`)
       if (this.done) return
-      await this.send(`refresh-client -B '${subscriptionName(MODEL_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentModelFormat(tool)}'`)
+      await this.send(`refresh-client -B '${subscriptionName(REPORT_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentReportFormat(tool)}'`)
       if (this.done) return
       this.subscribed.set(paneId, tool)
     }
@@ -240,6 +245,7 @@ class TuiConnection implements AgentConnection {
       this.subscribed.delete(paneId)
       this.models.delete(paneId)
       this.modelPushes.delete(paneId)
+      this.modes.delete(paneId)
     }
     this.publishAgents()
   }
@@ -248,7 +254,13 @@ class TuiConnection implements AgentConnection {
   private publishAgents(): void {
     const agents: LiveAgent[] = [...this.subscribed].map(([handle, tool]) => {
       const model = this.models.get(handle)
-      return { handle, tool, ...(model !== undefined ? { model } : {}) }
+      const reportedMode = this.modes.get(handle)
+      return {
+        handle,
+        tool,
+        ...(model !== undefined ? { model } : {}),
+        ...(reportedMode !== undefined ? { reportedMode } : {}),
+      }
     })
     this.sink({ kind: 'live-agents', agents })
   }
@@ -260,6 +272,19 @@ class TuiConnection implements AgentConnection {
    * than polled out of a transcript. An empty value (nothing reported yet)
    * leaves the last one standing.
    */
+  /**
+   * A pane's reported permission mode moved. Carried as the tool said it, to
+   * be read as a posture where the worktree's row is (`LiveAgent.reportedMode`)
+   * — opencode's agent means one thing under one launch and another under the
+   * next. Empty leaves the last one standing, as for the model.
+   */
+  private onMode(paneId: string, mode: string): void {
+    if (mode === '' || this.done || !this.subscribed.has(paneId)) return
+    if (this.modes.get(paneId) === mode) return
+    this.modes.set(paneId, mode)
+    this.publishAgents()
+  }
+
   private async onModel(paneId: string, tool: AgentTool, value: string): Promise<void> {
     this.modelPushes.set(paneId, value)
     const model = await resolveAgentModel(tool, this.session.slug, value)
@@ -285,8 +310,10 @@ class TuiConnection implements AgentConnection {
     if (n.kind === 'subscription') {
       const tool = this.subscribed.get(n.paneId)
       if (tool === undefined) return
-      if (n.name.startsWith(MODEL_SUBSCRIPTION_PREFIX)) {
-        void this.onModel(n.paneId, tool, n.value)
+      if (n.name.startsWith(REPORT_SUBSCRIPTION_PREFIX)) {
+        const { model, mode } = splitAgentReport(n.value)
+        this.onMode(n.paneId, mode)
+        void this.onModel(n.paneId, tool, model)
         return
       }
       if (!n.name.startsWith(SUBSCRIPTION_PREFIX)) return
@@ -349,6 +376,7 @@ class TuiConnection implements AgentConnection {
     this.subscribed.clear()
     this.models.clear()
     this.modelPushes.clear()
+    this.modes.clear()
   }
 
   close(): void {

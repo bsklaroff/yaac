@@ -52,6 +52,7 @@ import {
   chooseAllowOption,
   clientCapabilities,
   permissionReply,
+  sessionModeId,
   sessionModel,
   toStopReason,
   type AcpInitializeResult,
@@ -61,10 +62,10 @@ import {
   type AcpLoadSessionResult,
   type AcpSessionModes,
 } from './acp-protocol'
-import type { AcpAdapterProfile } from './acp-adapters'
+import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
 import { serverLog } from '#log'
 import type { AcpEventInit } from '@yaac/shared/acp'
-import type { PermissionMode } from '@yaac/shared/types'
+import { morePermissive, type PermissionMode } from '@yaac/shared/types'
 
 export interface AcpConversationDeps {
   /** The pod-side transport, already dialed. */
@@ -146,6 +147,24 @@ export interface AcpConversationDeps {
    * actually moves.
    */
   onModel?: (model: string) => void
+  /**
+   * The adapter says the session moved to another mode — the agent entered
+   * plan mode, a plan-exit answer took effect, or anything else that can reach
+   * this socket asked it to. The adapter's own mode id, which the caller reads
+   * as an OBSERVED posture: nothing here can say who asked — not even when a
+   * person just answered an ask whose options are mode ids, since the ask, its
+   * labels and its option ids all come from inside the workspace. Fires on the
+   * move itself, and only when the id actually changes.
+   */
+  onModeId?: (modeId: string) => void
+  /**
+   * The mode this conversation's record last shows the session in —
+   * `readAcpModeId` over it. Consulted on a reattach, which runs no handshake
+   * and so tells the adapter nothing: the conversation it takes over may have
+   * moved while it was away, and the worktree's row may hold another
+   * conversation's move.
+   */
+  recoverModeId?: () => Promise<string | undefined>
   onDown: (reason: string) => void
   log?: (msg: string) => void
 }
@@ -241,6 +260,10 @@ export class AcpConversation {
    *  on a reattach until the adapter next reports it — that skips the
    *  handshake, and with it the reply that names the model. */
   private currentModel: string | undefined
+  /** See `posture()`. */
+  private ownPosture: PermissionMode | undefined
+  /** Settles once a reattach has seeded its posture (`recoverPosture`). */
+  private postureRecovery: Promise<void> | undefined
 
   constructor(private readonly deps: AcpConversationDeps) {
     this.log = deps.log ?? serverLog
@@ -409,8 +432,12 @@ export class AcpConversation {
         // replies, the agent's own questions — and the session's state, which
         // is not content and has no pane to reach. A model switch (a `/model`
         // typed into the chat) arrives as the adapter's `config_option_update`.
+        //
+        // A mode change is the same kind of state: `current_mode_update`, or a
+        // `config_option_update` naming the `mode` option.
         const update = asRecord(asRecord(params)?.update)
         if (update?.sessionUpdate === 'config_option_update') this.setModel(sessionModel(update))
+        if (update !== undefined) this.setModeId(sessionModeId(update))
         return
       }
       default:
@@ -432,12 +459,16 @@ export class AcpConversation {
    */
   private onRequest(method: string, params: unknown, id: string | number): Promise<unknown> {
     if (method === ACP.requestPermission) {
+      // A reattach is still reading which posture it answers by — a moment's
+      // wait, and the answer this ask gets is the one that posture gives.
+      const recovering = this.postureRecovery
+      if (recovering !== undefined) return recovering.then(() => this.onRequest(method, params, id))
       // `bypass` waives permission prompts, and for most adapters that is all
       // an ask can be. pi is the exception: it has no permission system, so
       // what arrives on this method are its extensions' own questions — a
       // choice a person is being asked to make, which auto-answering would
       // make for them.
-      if (this.permissionMode() === 'bypass' && !this.forwardsAsksUnderBypass()) {
+      if (this.posture() === 'bypass' && !this.forwardsAsksUnderBypass()) {
         // See chooseAllowOption: a bypassed session grants rather than prompts.
         // `selected` with no option id would be malformed, so an agent that
         // offered none is refused instead.
@@ -476,6 +507,77 @@ export class AcpConversation {
   private permissionMode(): PermissionMode | undefined {
     if (this.deps.permissionMode === undefined) return 'bypass'
     return this.deps.permissionMode()
+  }
+
+  /**
+   * The posture THIS conversation answers asks by: the worktree's, as first
+   * known, then moved down by this conversation's own session alone.
+   *
+   * (An ask arriving while a reattach reads its record waits for it; see
+   * `onRequest`.)
+   *
+   * Per conversation, because a worktree can hold several and each adapter
+   * holds its own mode: one entering plan mode says nothing about another
+   * still in `bypassPermissions`, and a person answering "yes, and bypass
+   * permissions" in one pane must not start auto-approving asks in another
+   * whose adapter is still asking about everything. The worktree's row follows
+   * every conversation's moves (the caller records them), which is why it is
+   * read once and not again — and why a reattach, which is a new object, seeds
+   * it from its own record as well (`recoverPosture`).
+   */
+  private posture(): PermissionMode | undefined {
+    this.ownPosture ??= this.permissionMode()
+    return this.ownPosture
+  }
+
+  /** The posture a session mode id stands for, under this adapter. */
+  private postureOf(modeId: string): PermissionMode | undefined {
+    return this.deps.profile === undefined ? undefined : acpPermissionModeFor(this.deps.profile, modeId)
+  }
+
+  /**
+   * Follow a mode the adapter says the session moved to — but only down.
+   *
+   * Nothing on this socket can say who asked for a move. acpd is a dumb pipe
+   * and its socket path belongs to the agent's own user, so a line claiming
+   * `bypassPermissions` may be the agent's own; and the adapter itself moves
+   * for any client that sets its `mode`. Even a person's answer in the pane
+   * cannot vouch for one: the ask it answers, the labels it shows and the
+   * option ids behind them all come from inside the workspace, so a green
+   * "Allow" can carry `bypassPermissions`. A move to something stricter costs
+   * nothing to believe; a move to something looser is not believed at all.
+   */
+  private setModeId(modeId: string | undefined): void {
+    if (modeId === undefined || modeId === this.currentModeId()) return
+    this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
+    const mode = this.postureOf(modeId)
+    const current = this.posture()
+    if (mode !== undefined && current !== undefined && !morePermissive(mode, current)) this.ownPosture = mode
+    this.deps.onModeId?.(modeId)
+  }
+
+  /**
+   * Seed a reattached conversation's posture: the stricter of the worktree's
+   * and the mode its own record last shows. The row may carry another
+   * conversation's raise, and the record is written from inside the workspace,
+   * so each may lower what the other says and neither may raise it.
+   */
+  private async recoverPosture(): Promise<void> {
+    let recorded: string | undefined
+    try {
+      recorded = await this.deps.recoverModeId?.()
+    } catch (err) {
+      this.log(`[server] acp: could not recover the session mode: ${String(err)}`)
+    }
+    const row = this.permissionMode()
+    // An unknown row stays unknown — every ask forwarded, as on a first attach.
+    if (row === undefined) return
+    // A move this conversation followed while the record was being read is
+    // newer than both, and counts the same way.
+    const known = [row, recorded === undefined ? undefined : this.postureOf(recorded), this.ownPosture]
+    this.ownPosture = known.reduce<PermissionMode>(
+      (strictest, m) => (m !== undefined && morePermissive(strictest, m) ? m : strictest), row,
+    )
   }
 
   private setModel(model: string | undefined): void {
@@ -617,7 +719,10 @@ export class AcpConversation {
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
         // Ready before recovery: a prompt typed into the pane must not wait on
         // a file read to find out what the *previous* connection was doing.
+        // Its posture does wait: an ask meanwhile holds until it is known.
+        this.postureRecovery = this.recoverPosture().finally(() => { this.postureRecovery = undefined })
         this.markReady()
+        await this.postureRecovery
         await this.recover()
         return
       }
@@ -702,7 +807,7 @@ export class AcpConversation {
    */
   private async applyPermissionMode(): Promise<void> {
     if (this.sessionId === undefined) return
-    const mode = this.permissionMode()
+    const mode = this.posture()
     if (mode === undefined) {
       // Nothing to assert, and the adapter's own default is the strict one —
       // it asks about everything, and this conversation forwards all of it.

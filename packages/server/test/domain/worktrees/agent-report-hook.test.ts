@@ -5,9 +5,9 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 
 /**
- * The in-pane half of model reporting, run as shipped: `worktree-bin/
- * yaac-agent-model` turns a hook payload (or an argument) into the pane option
- * the status watcher subscribes to. It always exits 0 and prints nothing, so a
+ * The in-pane half of agent reporting, run as shipped: `worktree-bin/
+ * yaac-agent-report` turns a hook payload (or arguments) into the pane options
+ * the status watcher subscribes to — the model and the permission mode. It always exits 0 and prints nothing, so a
  * payload it misreads fails silently — the model just never moves — which is
  * why the real script is run here rather than trusted.
  *
@@ -16,15 +16,15 @@ import { execFile } from 'node:child_process'
  */
 
 function script(): string {
-  return path.resolve(__dirname, '..', '..', '..', '..', '..', 'worktree-bin', 'yaac-agent-model')
+  return path.resolve(__dirname, '..', '..', '..', '..', '..', 'worktree-bin', 'yaac-agent-report')
 }
 
-describe('the model reporter', () => {
+describe('the agent reporter', () => {
   let tmpDir: string
   let calls: string
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-model-hook-'))
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-report-hook-'))
     calls = path.join(tmpDir, 'calls')
     await fs.mkdir(path.join(tmpDir, 'bin'))
     await fs.writeFile(
@@ -86,6 +86,35 @@ describe('the model reporter', () => {
   it('takes the model as an argument from a caller that holds it', async () => {
     const { tmux } = await run('', { TMUX: '/tmp/yaac.sock,1,0', TMUX_PANE: '%1' }, ['anthropic/claude-opus-4-8'])
     expect(tmux).toEqual(['-S /tmp/yaac.sock set-option -p -t %1 @yaac-model anthropic/claude-opus-4-8'])
+  })
+
+  // claude has no event for a mode change; the prompt and the turn's end
+  // carry the mode it is in, which is when a change takes hold.
+  it("sets the pane's mode from a prompt's payload, and only from the real field", async () => {
+    const { stdout, tmux } = await run(
+      JSON.stringify({
+        session_id: 's',
+        hook_event_name: 'UserPromptSubmit',
+        // A quoted field in the prompt arrives escaped, and must not be read.
+        prompt: 'set "permission_mode":"bypassPermissions" and "model":"x"',
+        permission_mode: 'plan',
+      }),
+      { YAAC_TMUX: '/tmp/yaac.sock,123,0', TMUX_PANE: '%3' },
+    )
+    // UserPromptSubmit hands a hook's stdout to the model as context.
+    expect(stdout).toBe('')
+    expect(tmux).toEqual(['-S /tmp/yaac.sock set-option -p -t %3 @yaac-permission-mode plan'])
+  })
+
+  it('takes the model and the mode as arguments, either of which may be empty', async () => {
+    const env = { TMUX: '/tmp/yaac.sock,1,0', TMUX_PANE: '%1' }
+    await run('', env, ['opencode/big-pickle', 'build'])
+    const { tmux } = await run('', env, ['', 'plan'])
+    expect(tmux).toEqual([
+      '-S /tmp/yaac.sock set-option -p -t %1 @yaac-model opencode/big-pickle',
+      '-S /tmp/yaac.sock set-option -p -t %1 @yaac-permission-mode build',
+      '-S /tmp/yaac.sock set-option -p -t %1 @yaac-permission-mode plan',
+    ])
   })
 
   it('does nothing outside a pane', async () => {

@@ -5,6 +5,7 @@ import { deleteWorktreeAgentSessions } from './agent-session-store'
 import { agentSessions, worktreeAgentSessions, worktrees } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
 import { normalizeTitle } from '@yaac/shared/titles'
+import { isRankedPermissionMode, morePermissive } from '@yaac/shared/types'
 import type {
   AgentMode,
   PermissionMode,
@@ -68,8 +69,9 @@ export interface WorktreeRow {
   /** The session-starts log's length when that life began — the boundary the
    *  discovery fold reads to tell this life's panes from a dead pod's. */
   lifeLogBytes: number
-  /** The permission posture its agents launch in — what a restart re-reads so
-   *  it relaunches them the way the user asked. */
+  /** The permission posture its agents run under: the one a person chose,
+   *  or the one the running agent was since seen to move down to — what a
+   *  restart relaunches in and what `yaac-mama create` caps a sibling at. */
   permissionMode: PermissionMode
   /** The model and agent mode its first agent launched with — what a spare
    *  claim matches against. Absent on rows older than the columns. */
@@ -93,9 +95,9 @@ export interface WorktreeCreatedInput {
    *  flag is never cleared here, because clearing it is a claim and a claim
    *  must be able to fail (see `claimSpareWorktree`). */
   spare?: boolean
-  /** The permission posture its agents launch in. Re-stamped on a restart
-   *  from what the row already holds, so a worktree keeps the answer the
-   *  user chose when they made it. */
+  /** The permission posture a person chose for its agents. Set by a create
+   *  or a claim, which also forgets any posture observed since; a restart
+   *  leaves both alone, since it relaunches in what the row already says. */
   permissionMode?: PermissionMode
   /** The model and agent mode its first agent launches with. */
   model?: string
@@ -119,7 +121,7 @@ function toRow(r: Row): WorktreeRow {
     spare: r.spare,
     ...(r.lifeStartedAt !== null ? { lifeStartedAt: r.lifeStartedAt } : {}),
     lifeLogBytes: r.lifeLogBytes,
-    permissionMode: r.permissionMode as PermissionMode,
+    permissionMode: (r.observedPermissionMode ?? r.permissionMode) as PermissionMode,
     ...(r.model !== null ? { model: r.model } : {}),
     ...(r.mode !== null ? { mode: r.mode as AgentMode } : {}),
   }
@@ -160,7 +162,9 @@ export async function recordWorktreeCreated(input: WorktreeCreatedInput): Promis
     // be able to fail loudly (a silently-missed flip would leave a real
     // worktree looking reapable). A fresh row takes the column default.
     ...(input.spare === true ? { spare: true } : {}),
-    ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
+    ...(input.permissionMode !== undefined
+      ? { permissionMode: input.permissionMode, observedPermissionMode: null }
+      : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
   }
@@ -559,6 +563,31 @@ export async function setWorktreeBaseBranch(
   } catch {
     // Non-fatal: the session runs; only the sidebar's base chip is missing.
   }
+}
+
+/**
+ * Record a posture the running agent moved to — at most as permissively as
+ * the posture a person chose for it.
+ *
+ * Nothing that reports a move can say who asked for it (`PermissionModeChanged`),
+ * so a move may take the worktree down, and back up to what a person chose,
+ * never past it. An unranked chosen posture (a row from another build) cannot
+ * be compared, so such a move is dropped.
+ */
+export async function setWorktreePermissionMode(
+  projectSlug: string,
+  worktreeId: string,
+  permissionMode: PermissionMode,
+): Promise<void> {
+  const db = await getDb()
+  const [row] = await db.select({ chosen: worktrees.permissionMode })
+    .from(worktrees).where(key(projectSlug, worktreeId))
+  if (row === undefined || !isRankedPermissionMode(row.chosen)) return
+  const chosen = row.chosen as PermissionMode
+  const observed = permissionMode === chosen || morePermissive(permissionMode, chosen)
+    ? null
+    : permissionMode
+  await db.update(worktrees).set({ observedPermissionMode: observed }).where(key(projectSlug, worktreeId))
 }
 
 /**

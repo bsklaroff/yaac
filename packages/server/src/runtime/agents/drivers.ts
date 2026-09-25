@@ -68,6 +68,18 @@ export interface LiveAgent {
    * Absent until the agent has said.
    */
   model?: string
+  /**
+   * The permission mode it is in, in the agent's own words, as it last
+   * reported moving there: a session mode id under `acp`, and under `tui` the
+   * value its reporter publishes on the pane (claude's mode name, opencode's
+   * agent). `resolveAgentPermissionMode` reads it as a posture. Absent until
+   * the agent has said — which, for a tool with nothing to say, is always.
+   *
+   * An OBSERVATION: whatever reported it runs inside the workspace, or can be
+   * impersonated from there, so nothing here says a person asked for it — and
+   * so it may lower the worktree's posture, never raise it past a choice.
+   */
+  reportedMode?: string
 }
 
 /**

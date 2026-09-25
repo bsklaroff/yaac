@@ -14,7 +14,7 @@ import {
 } from '@yaac/shared/types'
 import { envJsonAssignment, shellEscape } from '#lib/shell'
 import { CODEX_TITLE_ITEMS } from './codex'
-import { OPENCODE_MODEL_PLUGIN } from './model-reporters'
+import { OPENCODE_REPORT_PLUGIN } from './agent-reporters'
 
 /**
  * Every `tmux` invocation this file authors routes through this prefix so
@@ -206,9 +206,9 @@ export function opencodeConfigArg(mode: PermissionMode, model: string | undefine
   const config = {
     ...OPENCODE_POSTURE[mode],
     ...(model === undefined ? {} : { model }),
-    // The model reporter (see `ensureModelReporters`). `$HOME` is left for the
+    // The model reporter (see `ensureAgentReporters`). `$HOME` is left for the
     // launch shell to expand, which the double quotes allow.
-    plugins: [OPENCODE_MODEL_PLUGIN],
+    plugins: [OPENCODE_REPORT_PLUGIN],
   }
   return envJsonAssignment('OPENCODE_CONFIG_CONTENT', config)
 }
@@ -348,7 +348,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // (worktree-bin/yaac-agent-links) — dropping it would silently cost
   // conversation discovery. And the value itself survives as `YAAC_TMUX`,
   // which is how the model hook finds the server to set its pane option on
-  // (worktree-bin/yaac-agent-model) without claude seeing a multiplexer.
+  // (worktree-bin/yaac-agent-report) without claude seeing a multiplexer.
   //
   // What claude gives up, largest first:
   //  - Agent teams lose the tmux pane backend. Claude picks it by the same

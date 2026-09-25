@@ -138,6 +138,32 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
 ]
 
 /**
+ * Postures ranked from most to least permissive — a Record, so a new
+ * `PermissionMode` member cannot go unranked. Two things cap a posture by it:
+ * a spawned worktree runs at most as permissively as its caller, and a mode
+ * read from inside a workspace is recorded at most as permissively as the
+ * posture a person chose for it.
+ */
+const PERMISSIVENESS_RANK: Record<PermissionMode, number> = {
+  bypass: 0, auto: 1, 'accept-edits': 2, manual: 3, plan: 4,
+}
+
+/** Every posture, most permissive first. */
+export const PERMISSIVENESS: readonly PermissionMode[] = (Object.keys(PERMISSIVENESS_RANK) as PermissionMode[])
+  .sort((a, b) => PERMISSIVENESS_RANK[a] - PERMISSIVENESS_RANK[b])
+
+/** Whether `mode` is ranked (a value read off a row written by another build
+ *  may not be), so a comparison against it means anything at all. */
+export function isRankedPermissionMode(mode: string): boolean {
+  return Object.hasOwn(PERMISSIVENESS_RANK, mode)
+}
+
+/** Whether `mode` lets an agent do more unasked than `ceiling` does. */
+export function morePermissive(mode: PermissionMode, ceiling: PermissionMode): boolean {
+  return PERMISSIVENESS_RANK[mode] < PERMISSIVENESS_RANK[ceiling]
+}
+
+/**
  * Which postures each tool can actually be launched in.
  *
  * - claude and codex carry all five (claude `--permission-mode`, codex's

@@ -24,7 +24,7 @@
 
 import fs from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
-import { ACP, ACPD, AcpProjection } from './acp-protocol'
+import { ACP, ACPD, AcpProjection, asRecord, asString, sessionModeId, sessionStateModeId } from './acp-protocol'
 import { serverLog } from '#log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 
@@ -460,3 +460,46 @@ function promptText(params: unknown): string | undefined {
   return text === '' ? undefined : text
 }
 
+
+/**
+ * The session mode the record last shows the conversation in: the handshake
+ * reply's, then every successful `session/set_mode` and every mode update the
+ * adapter sent since — last one wins.
+ *
+ * What a reattach seeds its posture from, beside the worktree's row
+ * (`AcpConversation.recoverPosture`). The record is written from inside the
+ * workspace like everything else there, which is why it is only ever allowed
+ * to LOWER the posture the row gives.
+ */
+export async function readAcpModeId(logPath: string): Promise<string | undefined> {
+  let raw: string
+  try {
+    raw = await fs.readFile(logPath, 'utf8')
+  } catch {
+    return undefined
+  }
+  let modeId: string | undefined
+  // Requests whose reply moves the mode: a `set_mode` naming it, or a
+  // handshake whose reply reports it (undefined here).
+  const asked = new Map<string, string | undefined>()
+  for (const line of raw.split('\n')) {
+    const msg = parseLine(line)
+    if (msg === undefined) continue
+    const id = lineId(msg)
+    if (msg.method === ACP.sessionNew || msg.method === ACP.sessionLoad || msg.method === ACP.sessionSetMode) {
+      if (id !== undefined) asked.set(id, asString(asRecord(msg.params)?.modeId))
+      continue
+    }
+    if (msg.method === ACP.sessionUpdate) {
+      const update = asRecord(asRecord(msg.params)?.update)
+      modeId = (update === undefined ? undefined : sessionModeId(update)) ?? modeId
+      continue
+    }
+    if (msg.method !== undefined || id === undefined || !asked.has(id)) continue
+    const set = asked.get(id)
+    asked.delete(id)
+    // An `error` means the request did nothing.
+    if (msg.error === undefined) modeId = set ?? sessionStateModeId(msg.result) ?? modeId
+  }
+  return modeId
+}

@@ -195,6 +195,20 @@ export const worktrees = snakeCase.table('worktrees', {
    */
   permissionMode: text().notNull().default('bypass'),
   /**
+   * The posture the running agent was last seen in, when that was read from
+   * inside the workspace (a pane option, a codex rollout) rather than chosen:
+   * already clamped at `permissionMode`, and null when no such move has been
+   * seen, or when the one seen came back up to it. What a restart relaunches
+   * in, and what `yaac-mama create` caps a sibling at, is this if set and
+   * `permissionMode` otherwise (`WorktreeRow.permissionMode`).
+   *
+   * A column of its own rather than a rewrite of `permissionMode`, because
+   * anything in the workspace can write where it is read from — so it may
+   * move the posture down, and back up to what a person chose, but never past
+   * it (docs/permission-modes.md).
+   */
+  observedPermissionMode: text(),
+  /**
    * The model and the agent mode (`tui` / `acp`) its first agent was launched
    * with — recorded beside `permissionMode` for the same reason, and what a
    * spare claim matches a request against: a spare whose launch matches runs

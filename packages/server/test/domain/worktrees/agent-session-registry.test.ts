@@ -16,8 +16,9 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
 // is the only place its firing (or its silence) can be asserted.
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 import { closeDb } from '#db/client'
-import { acpLogDir, claudeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
+import { acpLogDir, claudeDir, codexDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 import {
+  _resetReportedModesForTests,
   reconcileAgentSessions,
   reconcileWorktreeAgentSessions,
 } from '#domain/worktrees/agent-session-registry'
@@ -26,7 +27,8 @@ import {
   recordAgentSessions,
 } from '#db/agent-session-store'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
-import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
+import { getWorktreeRow, recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
+import { _resetCodexPosturesForTests } from '#runtime/agents/codex'
 import { sessionStartsLogSize } from '#domain/worktrees/session-starts'
 import { serverLog } from '#log'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
@@ -63,6 +65,8 @@ describe('reconcileWorktreeAgentSessions', () => {
     installFakeWorktreeDriver({ exec: podExec })
     _resetWorktreeStatusStoreForTests()
     _resetPromptCaptureForTests()
+    _resetReportedModesForTests()
+    _resetCodexPosturesForTests()
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
     // The life create would have stamped. The log is empty at this point, so
     // every sighting below belongs to it.
@@ -497,6 +501,99 @@ describe('reconcileWorktreeAgentSessions', () => {
     setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'opencode', model: 'anthropic/claude-opus-4-8' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'opencode')
     expect(await modelOf('wt-1')).toBe('anthropic/claude-opus-4-8')
+  })
+
+  /**
+   * The row follows a posture move, and only a move: a claude pane pushes its
+   * mode, a codex rollout is read — and a reading that has not changed must
+   * not undo a push that has, which is what a worktree holding both would do
+   * if every pass wrote whatever codex last said.
+   */
+  it('follows each agent\'s moves, never a reading that has not moved', async () => {
+    const posture = async (): Promise<string | undefined> =>
+      (await getWorktreeRow('demo', 'wt-1'))?.permissionMode
+    // A codex conversation beside claude's, its rollout saying bypass.
+    const rel = path.join('codex', 'sessions', 'rollout-conv-x.jsonl')
+    const rollout = path.join(codexDir('demo'), 'sessions', 'rollout-conv-x.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+    const settings = (s: Record<string, unknown>): string => `${JSON.stringify({
+      type: 'event_msg', payload: { type: 'thread_settings_applied', thread_settings: s },
+    })}\n`
+    await fs.writeFile(rollout, settings({ approval_policy: 'never', permission_profile: { type: 'disabled' } }))
+    await link('conv-a', '%0')
+    await fs.appendFile(worktreeSessionStartsPath('demo', 'wt-1'),
+      `${JSON.stringify({ id: 'conv-x', tool: 'codex', pane: '1', path: rel })}\n`)
+    const panes = (claudeMode?: string) => setLiveAgents('demo', 'wt-1', [
+      { handle: '%0', tool: 'claude', ...(claudeMode !== undefined ? { reportedMode: claudeMode } : {}) },
+      { handle: '%1', tool: 'codex' },
+    ])
+
+    // The first reading of a rollout is where it stands, not a move — a
+    // restart resumes a rollout whose newest entry is the old process's.
+    panes()
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await posture()).toBe('bypass')
+
+    // A Shift+Tab in claude, reported with the next prompt.
+    panes('plan')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await posture()).toBe('plan')
+    // codex still says bypass, as it did — that is not news.
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await posture()).toBe('plan')
+
+    // A `/permissions` pick in codex is.
+    await fs.appendFile(rollout, settings({
+      approval_policy: 'on-request',
+      approvals_reviewer: 'user',
+      permission_profile: { type: 'managed', file_system: { entries: [{ access: 'write' }] } },
+    }))
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await posture()).toBe('accept-edits')
+  })
+
+  // Nothing on an adapter's stream says who asked for a move — the adapter
+  // moves for any client of its socket, and the socket's path is the agent's
+  // own — so a reported mode is clamped at the choice: it may lower the row,
+  // never raise it.
+  it('clamps an acp conversation\'s reported mode at the chosen posture', async () => {
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'accept-edits' })
+    const live = (reportedMode: string): void => setLiveAgents('demo', 'wt-1', [
+      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', reportedMode },
+    ])
+    live('bypassPermissions')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('accept-edits')
+
+    live('plan')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('plan')
+  })
+
+  // A codex rollout's settings carry when they were written. An entry from
+  // before this pod's life is the old process's; one from inside it is news,
+  // even as the first reading — a Shift+Tab before the first prompt.
+  it('takes a codex rollout\'s first reading as news when it was written in this life', async () => {
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'accept-edits' })
+    await recordWorktreeLife('demo', 'wt-1', 0)
+    const rel = path.join('codex', 'sessions', 'rollout-conv-y.jsonl')
+    const rollout = path.join(codexDir('demo'), 'sessions', 'rollout-conv-y.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+    await fs.writeFile(rollout, `${JSON.stringify({
+      timestamp: new Date(Date.now() + 1000).toISOString(),
+      type: 'turn_context',
+      payload: {
+        approval_policy: 'on-request',
+        permission_profile: { type: 'managed', file_system: { entries: [{ access: 'read' }] } },
+      },
+    })}\n`)
+    const log = worktreeSessionStartsPath('demo', 'wt-1')
+    await fs.mkdir(path.dirname(log), { recursive: true })
+    await fs.appendFile(log, `${JSON.stringify({ id: 'conv-y', tool: 'codex', pane: '0', path: rel })}\n`)
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('plan')
   })
 
   it('keeps an ordinal stable once assigned, so a restart\'s windows do not reshuffle', async () => {

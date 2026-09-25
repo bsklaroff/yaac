@@ -53,6 +53,8 @@ export {
   agentWindowTool,
   classifyAgentObservation,
   getAgentSessionFirstMessage,
+  getAgentSessionPermissionMode,
+  resolveAgentPermissionMode,
   type AgentPaneStatus,
 } from './agent-tools'
 export {
@@ -75,7 +77,7 @@ export {
   transcriptLastActiveMs,
 } from './transcripts'
 export { ensureClaudeHooks } from './claude'
-export { ensureModelReporters } from './model-reporters'
+export { ensureAgentReporters } from './agent-reporters'
 export {
   buildUpstreamExec,
   buildWindowsExec,

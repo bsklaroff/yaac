@@ -13,10 +13,22 @@
  */
 import { AGENT_TOOLS, MAX_MODEL_LENGTH } from '@yaac/shared/types'
 import { codexDir } from '@yaac/shared/project-paths'
-import type { AgentTool } from '@yaac/shared/types'
-import { classifyClaudeTitle, getFirstUserMessage } from './claude'
-import { CODEX_MODEL_FORMAT, classifyCodexTitle, codexModelSlug, getCodexFirstUserMessage } from './codex'
-import { OPENCODE_BUSY_MARKERS, getSessionOpencodeFirstUserMessage } from './opencode'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import { acpAdapterFor, acpPermissionModeFor } from './acp-adapters'
+import { classifyClaudeTitle, claudePermissionMode, getFirstUserMessage } from './claude'
+import {
+  CODEX_MODEL_FORMAT,
+  classifyCodexTitle,
+  codexModelSlug,
+  getCodexFirstUserMessage,
+  getCodexPermissionMode,
+  type CodexPosture,
+} from './codex'
+import {
+  OPENCODE_BUSY_MARKERS,
+  getSessionOpencodeFirstUserMessage,
+  opencodePermissionMode,
+} from './opencode'
 import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
 
 /** What an agent pane is doing, as every display path reads it. */
@@ -46,7 +58,7 @@ export async function getAgentSessionFirstMessage(
 
 /**
  * The tmux pane option a tool's in-pane reporter sets to the model it is
- * running (`worktree-bin/yaac-agent-model`) — claude from its `SessionStart`
+ * running (`worktree-bin/yaac-agent-report`) — claude from its `SessionStart`
  * and `PostModelSwitch` hooks, opencode and pi from a plugin and an extension
  * of their own.
  */
@@ -70,6 +82,77 @@ export function agentModelFormat(tool: AgentTool): string {
   return tool === 'codex'
     ? CODEX_MODEL_FORMAT
     : `#{=${MAX_MODEL_LENGTH};s/[^ -~]//:${MODEL_PANE_OPTION}}`
+}
+
+/**
+ * The tmux pane option a tool's reporter sets to the permission mode it is in,
+ * in its own words: claude's mode name, from its `UserPromptSubmit` and `Stop`
+ * hooks, and opencode's agent (`build`, `plan`), from its plugin. Both go
+ * through the same script as the model (`worktree-bin/yaac-agent-report`).
+ */
+export const MODE_PANE_OPTION = '@yaac-permission-mode'
+
+/** Joins the two halves of `agentReportFormat`'s value. The mode half is
+ *  filtered to letters and dashes, so the last one is always the join. */
+const REPORT_SEPARATOR = '|'
+
+/**
+ * The tmux format a pane's report subscription watches: its model
+ * (`agentModelFormat`) and its permission mode (`MODE_PANE_OPTION`), in one
+ * value so one subscription carries both. The mode is filtered inside the
+ * format for the same reason the model is — anything in the workspace can set
+ * the option — and more tightly, since every mode name is a word.
+ */
+export function agentReportFormat(tool: AgentTool): string {
+  return `${agentModelFormat(tool)}${REPORT_SEPARATOR}#{=32;s/[^A-Za-z-]//:${MODE_PANE_OPTION}}`
+}
+
+/** The two halves of a pushed `agentReportFormat` value; either may be empty
+ *  — a pane whose tool has not reported that half yet. */
+export function splitAgentReport(value: string): { model: string; mode: string } {
+  const at = value.lastIndexOf(REPORT_SEPARATOR)
+  return at < 0
+    ? { model: value, mode: '' }
+    : { model: value.slice(0, at), mode: value.slice(at + REPORT_SEPARATOR.length).trim() }
+}
+
+/**
+ * The posture an agent's reported mode (`LiveAgent.reportedMode`) stands for,
+ * or undefined when it names none yaac has — which is left unrecorded rather
+ * than rounded to a neighbour.
+ *
+ * Under `acp` it is a session mode id, read back through the adapter's
+ * profile. Under `tui` it is what the tool's reporter published: claude's own
+ * mode name, or opencode's agent, which only means something against the
+ * posture the worktree runs under now (`current`). codex publishes none — its
+ * hooks can only tell `bypassPermissions` from everything else, so its posture
+ * is read from its rollout (`getCodexPermissionMode`) — and pi has no modes.
+ */
+export function resolveAgentPermissionMode(
+  mode: AgentMode,
+  tool: AgentTool,
+  reported: string,
+  current: PermissionMode,
+): PermissionMode | undefined {
+  if (mode === 'acp') return acpPermissionModeFor(acpAdapterFor(tool), reported)
+  if (tool === 'claude') return claudePermissionMode(reported)
+  if (tool === 'opencode') return opencodePermissionMode(reported, current)
+  return undefined
+}
+
+/**
+ * The posture a `tui` conversation's transcript says it runs under, and when
+ * that was written, for the one tool whose posture is read that way: codex, whose rollout records every
+ * settings change the moment it is made (`getCodexPermissionMode`). Every
+ * other tool answers without touching the disk — claude's and opencode's
+ * arrive on the pane instead, and pi has none.
+ */
+export async function getAgentSessionPermissionMode(
+  tool: AgentTool,
+  transcriptPath: string | undefined,
+): Promise<CodexPosture | undefined> {
+  if (tool !== 'codex' || transcriptPath === undefined) return undefined
+  return getCodexPermissionMode(transcriptPath)
 }
 
 /**

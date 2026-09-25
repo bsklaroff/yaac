@@ -29,6 +29,7 @@ export type WorktreeEvent =
   | SessionsLaunched
   | SessionsDiscovered
   | SessionsActive
+  | PermissionModeChanged
   | WorktreeStopped
 
 /**
@@ -52,9 +53,10 @@ export interface WorktreeCreated {
    *  It gets a row so a reap can still tell it from a stopped worktree once
    *  its pod is gone, but every listing filters it out until it is claimed. */
   spare?: boolean
-  /** The permission posture its agents launch in. Recorded with the row
-   *  because a restart has to relaunch them the way the user asked rather
-   *  than re-deriving today's default. */
+  /** The permission posture a person chose for its agents. Recorded with the
+   *  row because a restart has to relaunch them the way the user asked rather
+   *  than re-deriving today's default. Ignored on a `resume`, which relaunches
+   *  in whatever the row already holds. */
   permissionMode?: PermissionMode
   /** The model and agent mode its first agent launches with — what a spare
    *  claim matches a request against (see `worktrees.model`). */
@@ -204,6 +206,27 @@ export interface ActiveSession {
   tool: AgentTool
   paneId?: string
 }
+
+/**
+ * The posture a worktree's running agent is in moved — the user changed mode
+ * inside the agent, or the agent moved itself (entering plan mode, a plan-exit
+ * answer). The row follows, because both of its readers mean the posture the
+ * agent is in now: a restart relaunches in it, and `yaac-mama create` caps a
+ * sibling at it.
+ *
+ * Always an observation: whatever reported it — a pane option, a codex
+ * rollout, an ACP adapter, even an answer given in yaac's pane to an ask the
+ * workspace wrote — runs inside the workspace or can be impersonated from
+ * there. So it is recorded at most as permissively as the posture a person
+ * chose at create (`setWorktreePermissionMode`).
+ */
+export interface PermissionModeChanged {
+  type: 'permission-mode-changed'
+  projectSlug: string
+  worktreeId: string
+  permissionMode: PermissionMode
+}
+
 
 /**
  * A worktree's runtime went away — a user stop, a project teardown, or a

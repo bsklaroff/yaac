@@ -1,0 +1,1 @@
+ALTER TABLE "worktrees" ADD COLUMN "observed_permission_mode" text;

@@ -194,6 +194,12 @@ function sessionModesReply(tool: AgentTool): Record<string, unknown> {
  *  adapter that dies before its handshake. */
 const ACP_ADAPTER_DIES = 'acp-adapter-dies'
 
+/** A prompt the stand-in adapters answer by moving themselves into plan mode,
+ *  announced the way claude's adapter announces EnterPlanMode — or, spelled
+ *  `enter <id> mode`, into any mode, unasked, as anything able to reach the
+ *  adapter could have it do. */
+const ENTER_PLAN_MODE = 'enter plan mode'
+
 const fakeAcpAdapter = (tool: AgentTool): string => `#!/usr/bin/env node
 if (require('fs').existsSync(require('path').join(__dirname, '${ACP_ADAPTER_DIES}'))) process.exit(1)
 let buf = ''
@@ -217,6 +223,15 @@ process.stdin.on('data', (chunk) => {
         cwd: process.cwd(),
         ...${JSON.stringify(sessionModesReply(tool))},
       })
+    } else if (msg.method === 'session/prompt' && /enter \\w+ mode/.test(JSON.stringify(msg.params))) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId: msg.params.sessionId,
+        update: {
+          sessionUpdate: 'current_mode_update',
+          currentModeId: /enter (\\w+) mode/.exec(JSON.stringify(msg.params))[1],
+        },
+      } }) + '\\n')
+      reply(msg.id, { stopReason: 'end_turn' })
     } else {
       reply(msg.id, {})
     }
@@ -1121,6 +1136,90 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     }
   }, 120_000)
 
+  /**
+   * The permission mode a TUI agent reports, end to end: the hook claude runs
+   * with the next prompt, the pane option it sets, the server's subscription,
+   * and the row it lands on — read here through the two things the row is
+   * for, the `yaac-mama create` ceiling and (in the restart case below) what
+   * a restart relaunches in.
+   *
+   * After the mama cases, deliberately: this moves the shared subject's
+   * posture, which is the ceiling those cases read.
+   */
+  it('follows a mode the agent reports, and never past the one it was created in', async () => {
+    const settings = JSON.parse(await fs.readFile(
+      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
+    )) as { hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }
+    const command = settings.hooks?.UserPromptSubmit
+      ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? [])
+      .find((c) => c?.includes('yaac-agent-report'))
+    expect(command).toBeDefined()
+
+    // claude runs with $TMUX hidden, so the launch hands the server on as
+    // $YAAC_TMUX — read off the running agent, since a launch that forgot it
+    // fails nothing but this.
+    const pane = (await tmux(worktreeId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_id}')).trim()
+    const pid = (await tmux(worktreeId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_pid}')).trim()
+    const agentEnv = async (p: string): Promise<string | undefined> => {
+      const env = (await fs.readFile(`/proc/${p}/environ`, 'utf8').catch(() => ''))
+        .split('\0').find((e) => e.startsWith('YAAC_TMUX='))
+      if (env !== undefined) return env.slice('YAAC_TMUX='.length)
+      const kids = (await fs.readFile(`/proc/${p}/task/${p}/children`, 'utf8').catch(() => ''))
+        .trim().split(/\s+/).filter(Boolean)
+      for (const kid of kids) {
+        const found = await agentEnv(kid)
+        if (found !== undefined) return found
+      }
+      return undefined
+    }
+    const yaacTmux = await agentEnv(pid)
+    expect(yaacTmux?.split(',')[0]).toBe(sockFor(worktreeId))
+
+    const home = path.join(
+      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', worktreeId, 'containerless', 'home',
+    )
+    const binDir = path.join(home, '.local', 'bin')
+    // Runs the REGISTERED command through `sh -c`, as claude does.
+    const prompt = (permissionMode: string): Promise<string> => new Promise((resolve, reject) => {
+      const child = execFile('sh', ['-c', command ?? ''], {
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+          TMUX: '',
+          TMUX_PANE: pane,
+          YAAC_TMUX: yaacTmux ?? '',
+        },
+      }, (err, out) => (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve(out)))
+      child.stdin?.end(JSON.stringify({
+        session_id: worktreeId, hook_event_name: 'UserPromptSubmit', prompt: 'go', permission_mode: permissionMode,
+      }))
+    })
+    const ceiling = async (): Promise<string> => (await runMama('create', '--permission-mode', 'bypass', 'x')).out
+
+    // A Shift+Tab into plan mode, reported with the next prompt. The hook
+    // prints nothing: UserPromptSubmit hands its stdout to the model.
+    expect(await prompt('plan')).toBe('')
+    expect((await tmux(worktreeId, 'show-options', '-p', '-t', pane, '-v', '@yaac-permission-mode')).trim())
+      .toBe('plan')
+    await vi.waitFor(async () => {
+      expect(await ceiling()).toContain("more permissive than this worktree's own ('plan')")
+    }, { timeout: 30_000, interval: 500 })
+
+    // Anything in the workspace can set that option. Claiming bypass moves
+    // the worktree back up to what it was created in, and no further.
+    await prompt('bypassPermissions')
+    await vi.waitFor(async () => {
+      expect(await ceiling()).toContain("more permissive than this worktree's own ('accept-edits')")
+    }, { timeout: 30_000, interval: 500 })
+
+    // Left in plan for the restart case, which relaunches what the row says.
+    await prompt('plan')
+    await vi.waitFor(async () => {
+      expect(await ceiling()).toContain("more permissive than this worktree's own ('plan')")
+    }, { timeout: 30_000, interval: 500 })
+  }, 120_000)
+
   // Destroys its subject — keep last.
   it('stops the worktree by taking its tmux server down', async () => {
     // What an init command's `pnpm install` leaves in the checkout: on this
@@ -1195,6 +1294,12 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
     const windows = await tmux(worktreeId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
+    // In the posture the agent last reported, not the one it was created in:
+    // the mode-reporting case above left it in plan.
+    await vi.waitFor(async () => {
+      expect(await tmux(worktreeId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
+        .toContain('--permission-mode plan')
+    }, { timeout: 30_000, interval: 250 })
 
     expect((await fs.readFile(path.join(checkout, '.git'), 'utf8')).trim())
       .toBe(`gitdir: ${admin}`)
@@ -1371,6 +1476,89 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
 
       await runYaac(serverEnv, 'worktree', 'stop', id)
     }, 180_000)
+
+  it('records a mode the agent moves itself to, and restarts the conversation in it', async () => {
+    // The posture on the row is what the agent runs under NOW. Created in
+    // `accept-edits`, the conversation moves itself into plan mode mid-turn —
+    // as EnterPlanMode does — and a restart has to bring it back in plan mode,
+    // not in the posture it happened to be created with.
+    const id = await createWorktreeWith(
+      'claude', '--mode', 'acp', '--permission-mode', 'accept-edits', '--prompt', ENTER_PLAN_MODE,
+    )
+    const record = path.join(
+      testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, 'e2e-acp-claude.jsonl',
+    )
+    const relayed = async (): Promise<Array<{
+      id?: unknown; method?: string; params?: { modeId?: string }; result?: unknown
+    }>> => (await fs.readFile(record, 'utf8').catch(() => '')).split('\n').flatMap((line) => {
+      try {
+        return [JSON.parse(line) as { id?: unknown; method?: string; params?: { modeId?: string } }]
+      } catch {
+        return []
+      }
+    })
+    const setModes = async (): Promise<Array<string | undefined>> =>
+      (await relayed()).filter((m) => m.method === 'session/set_mode').map((m) => m.params?.modeId)
+
+    // The turn is over once its reply is on the record, and the mode update
+    // came down the same socket ahead of it.
+    await vi.waitFor(async () => {
+      const lines = await relayed()
+      const prompt = lines.find((m) => m.method === 'session/prompt')
+      expect(prompt).toBeDefined()
+      expect(lines.some((m) => m.method === undefined && m.id === prompt?.id)).toBe(true)
+    }, { timeout: 30_000, interval: 250 })
+    expect(await setModes()).toEqual(['acceptEdits'])
+
+    expect((await runYaac(serverEnv, 'worktree', 'stop', id)).exitCode).toBe(0)
+    expect((await runYaac(serverEnv, 'worktree', 'restart', id)).exitCode).toBe(0)
+    // acpd starts the new life's record afresh, so the only set_mode left is
+    // the restart's — the row's posture as the agent last reported it.
+    await vi.waitFor(async () => {
+      expect(await setModes()).toEqual(['plan'])
+    }, { timeout: 30_000, interval: 250 })
+
+    await runYaac(serverEnv, 'worktree', 'stop', id)
+  }, 180_000)
+
+  // Nothing on the adapter's stream says who asked for a move, so one up —
+  // here a stand-in moving itself to bypassPermissions unasked — is only
+  // observed, and cannot raise what a restart relaunches in past what the
+  // create chose.
+  it('does not let a mode move nobody chose raise the posture a restart relaunches in', async () => {
+    const id = await createWorktreeWith(
+      'claude', '--mode', 'acp', '--permission-mode', 'plan', '--prompt', 'enter bypassPermissions mode',
+    )
+    const record = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, 'e2e-acp-claude.jsonl')
+    const relayed = async (): Promise<Array<{
+      id?: unknown; method?: string; params?: { modeId?: string; id?: string }
+    }>> => (await fs.readFile(record, 'utf8').catch(() => '')).split('\n').flatMap((line) => {
+      try {
+        return [JSON.parse(line) as { id?: unknown; method?: string; params?: { modeId?: string; id?: string } }]
+      } catch {
+        return []
+      }
+    })
+    const life = async (): Promise<string | undefined> =>
+      (await relayed()).find((m) => m.method === '_acpd/life')?.params?.id
+    await vi.waitFor(async () => {
+      const lines = await relayed()
+      const prompt = lines.find((m) => m.method === 'session/prompt')
+      expect(prompt).toBeDefined()
+      expect(lines.some((m) => m.method === undefined && m.id === prompt?.id)).toBe(true)
+    }, { timeout: 30_000, interval: 250 })
+    const before = await life()
+
+    expect((await runYaac(serverEnv, 'worktree', 'stop', id)).exitCode).toBe(0)
+    expect((await runYaac(serverEnv, 'worktree', 'restart', id)).exitCode).toBe(0)
+    await vi.waitFor(async () => {
+      expect(await life()).not.toBe(before)
+      expect((await relayed()).filter((m) => m.method === 'session/set_mode').map((m) => m.params?.modeId))
+        .toEqual(['plan'])
+    }, { timeout: 30_000, interval: 250 })
+
+    await runYaac(serverEnv, 'worktree', 'stop', id)
+  }, 180_000)
 
   it('lets a create go once its adapter has died, rather than holding for a handshake', async () => {
     // The hold's give-up branch. An adapter that exits takes acpd and its
