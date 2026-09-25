@@ -160,10 +160,10 @@ export async function restartWorktree(
     // with nothing recorded (an older row, or a create that never got an id)
     // falls back to tui, the mode every pre-ACP worktree ran.
 
-    // A restart relaunches the agents the way the user asked for them, not
-    // the way today's default would: the row remembers the posture, and a
-    // worktree deliberately created in `plan` or `manual` must not come back
-    // acting freely. A worktree with no row to read (a substrate-only
+    // A restart relaunches the agents in the posture they were last in, not
+    // the way today's default would: the row follows the running agent, and
+    // a worktree left in `plan` or `manual` must not come back acting
+    // freely. A worktree with no row to read (a substrate-only
     // resolve) falls through to the driver's default.
     const recorded = await findWorktreeRow(worktreeId).catch(() => undefined)
 

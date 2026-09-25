@@ -2,7 +2,8 @@ import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
-  getAgentSessionPermissionMode,
+  findCodexRollouts,
+  getCodexPermissionMode,
   readAcpFirstPrompt,
   resolveAgentPermissionMode,
   sessionTranscriptPath,
@@ -19,7 +20,7 @@ import { absoluteTranscriptPath } from './agent-session-paths'
 import { captureFirstPrompt } from './prompt-capture'
 import { readSessionStarts, type SessionStartSighting } from './session-starts'
 import path from 'node:path'
-import { acpLogDir } from '@yaac/shared/project-paths'
+import { acpLogDir, codexDir, worktreeDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 import type { AgentSessionLinkRow, DiscoveredSession, WorktreeRow } from '#db'
@@ -163,6 +164,7 @@ export async function reconcileWorktreeAgentSessions(
   // sightings plus whatever create recorded for a conversation no hook ever
   // fires for.
   const links = await listWorktreeAgentSessions(projectSlug, worktreeId)
+  if (row !== undefined) await followRolloutModes(projectSlug, worktreeId, row, links)
   if (links.length === 0) {
     // Nothing recorded yet. That is ambiguous: either the agent is running
     // its one pinned session and no hook has reported it (the pin is the
@@ -244,7 +246,6 @@ export async function reconcileWorktreeAgentSessions(
     if (Object.keys(capture).length === 0) return
     await setAgentSessionCapture(projectSlug, l.tool, l.agentSessionId, capture)
   }))
-  if (row !== undefined) await followTranscriptModes(projectSlug, worktreeId, row, links)
 
   // Intersect the recorded handles with what the status watcher can see. When
   // the watcher has no live set yet (a pod whose connection hasn't attached),
@@ -271,7 +272,7 @@ export async function reconcileWorktreeAgentSessions(
  */
 const reportedModes = new Map<string, { life: number; byHandle: Map<string, string> }>()
 
-/** What each codex rollout was last read to say, per conversation. */
+/** What each codex rollout was last read to say. */
 const transcriptModes = new Map<string, PermissionMode>()
 
 /** Test helper: forget every mode seen so far. */
@@ -288,11 +289,8 @@ export function _resetReportedModesForTests(): void {
  * from the row: the row also follows the worktree's other agents, and a report
  * that has not moved is not news about any of them. A first report is a
  * change, since a pane or conversation says nothing until it has something to
- * say.
- *
- * Every move is an observation — nothing that reports one can say who asked
- * for it — so the row takes it at most as permissively as the posture a
- * person chose (`setWorktreePermissionMode`).
+ * say — which is also what carries a move made while no server was watching
+ * onto the row once one is.
  */
 async function followReportedModes(
   projectSlug: string,
@@ -320,7 +318,10 @@ async function followReportedModes(
 
 /**
  * The same for the tool whose posture is read rather than pushed: codex,
- * whose rollout records every settings change (`getAgentSessionPermissionMode`).
+ * whose rollout records every settings change (`getCodexPermissionMode`).
+ * Its rollouts are the ones its hook recorded or, where no hook runs
+ * (containerless), the ones codex wrote from this worktree's checkout during
+ * this pod life (`findCodexRollouts`).
  *
  * A reading is news when it changed since the last one — or, on the first,
  * when it was written during the current pod life. A restart resumes the same
@@ -329,23 +330,31 @@ async function followReportedModes(
  * restart just relaunched in; an entry written since is this process's own,
  * even on a first reading (a Shift+Tab before the first prompt).
  */
-async function followTranscriptModes(
+async function followRolloutModes(
   projectSlug: string,
   worktreeId: string,
   row: WorktreeRow,
   links: AgentSessionLinkRow[],
 ): Promise<void> {
-  for (const l of links) {
-    const read = await getAgentSessionPermissionMode(l.tool, absoluteTranscriptPath(l))
+  const life = row.lifeStartedAt?.getTime() ?? 0
+  const recorded = links.flatMap((l) => {
+    const rollout = l.tool === 'codex' ? absoluteTranscriptPath(l) : undefined
+    return rollout === undefined ? [] : [rollout]
+  })
+  // The search is harmless under k8s, where it can only run before the hook
+  // fires: a pod's rollouts name its `/workspace`, never a host checkout.
+  const rollouts = recorded.length > 0 || row.lifeStartedAt === undefined
+    || liveAgents(projectSlug, worktreeId)?.some((a) => a.tool === 'codex') !== true
+    ? recorded
+    : await findCodexRollouts(codexDir(projectSlug), worktreeDir(projectSlug, worktreeId), life)
+  for (const rollout of rollouts) {
+    const read = await getCodexPermissionMode(rollout)
     // Nothing read is no news — a rollout not written yet, or settings no
     // posture stands for — and must not make the next reading look like one.
     if (read === undefined) continue
-    const key = `${projectSlug}/${l.tool}/${l.agentSessionId}`
-    const previous = transcriptModes.get(key)
-    transcriptModes.set(key, read.permissionMode)
-    const news = previous === undefined
-      ? read.atMs >= (row.lifeStartedAt?.getTime() ?? 0)
-      : read.permissionMode !== previous
+    const previous = transcriptModes.get(rollout)
+    transcriptModes.set(rollout, read.permissionMode)
+    const news = previous === undefined ? read.atMs >= life : read.permissionMode !== previous
     if (!news || read.permissionMode === row.permissionMode) continue
     await applyWorktreeEvent({
       type: 'permission-mode-changed',

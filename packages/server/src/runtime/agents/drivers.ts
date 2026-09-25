@@ -74,10 +74,6 @@ export interface LiveAgent {
    * value its reporter publishes on the pane (claude's mode name, opencode's
    * agent). `resolveAgentPermissionMode` reads it as a posture. Absent until
    * the agent has said — which, for a tool with nothing to say, is always.
-   *
-   * An OBSERVATION: whatever reported it runs inside the workspace, or can be
-   * impersonated from there, so nothing here says a person asked for it — and
-   * so it may lower the worktree's posture, never raise it past a choice.
    */
   reportedMode?: string
 }

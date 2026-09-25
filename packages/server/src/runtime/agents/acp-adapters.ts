@@ -38,6 +38,9 @@ export interface AcpAdapterProfile {
    * nothing", never "send the default".
    */
   modeIds: Partial<Record<PermissionMode, string>>
+  /** Mode ids no posture launches in that the session can still move to,
+   *  read as the posture they behave as. */
+  readsAs?: Record<string, PermissionMode>
   /**
    * Where the model is chosen. `argv` and `env` settle it before the agent
    * starts; `set_config_option` settles it after the handshake, as the `model`
@@ -76,8 +79,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    *
    * The one mode id that does not read across is `manual`: ACP's id for "ask
    * me about everything" is `default`, which the adapter labels "Manual". It
-   * also offers `dontAsk` (deny anything not pre-approved), which yaac has no
-   * posture for and never selects.
+   * also offers `dontAsk` (deny anything not pre-approved), which yaac never
+   * selects and reads as `manual`: nothing unapproved runs unasked.
    */
   claude: {
     argv: (spec) => [
@@ -92,6 +95,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
       plan: 'plan',
       manual: 'default',
     },
+    readsAs: { dontAsk: 'manual' },
     modelVia: 'argv',
     forwardAsksUnderBypass: false,
   },
@@ -206,17 +210,20 @@ export function acpAdapterFor(tool: AgentTool): AcpAdapterProfile {
 }
 
 /**
- * The posture a session mode id stands for — `modeIds` read backwards, which
- * is how a mode the adapter moved to by itself becomes the conversation's
- * posture. Undefined for an id no posture maps to (claude's `dontAsk`, pi's
+ * The posture a session mode id stands for — `modeIds` read backwards, then
+ * `readsAs` — which is how a mode the adapter moved to by itself becomes the
+ * conversation's posture. Undefined for an id no posture maps to (pi's
  * thinking levels), which is left unrecorded rather than rounded to a
  * neighbour.
  */
 export function acpPermissionModeFor(
-  profile: Pick<AcpAdapterProfile, 'modeIds'>,
+  profile: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs'>,
   modeId: string,
 ): PermissionMode | undefined {
-  return (Object.keys(profile.modeIds) as PermissionMode[]).find((m) => profile.modeIds[m] === modeId)
+  const launched = (Object.keys(profile.modeIds) as PermissionMode[]).find((m) => profile.modeIds[m] === modeId)
+  return launched ?? (profile.readsAs !== undefined && Object.hasOwn(profile.readsAs, modeId)
+    ? profile.readsAs[modeId]
+    : undefined)
 }
 
 /** Test-only: the table itself, to check it against the shared adapter list

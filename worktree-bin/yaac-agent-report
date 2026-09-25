@@ -16,10 +16,9 @@
 # conversation that now owns the pane inherits it.
 #
 # The mode is the tool's own word for it (claude's `acceptEdits`, opencode's
-# `plan` agent); the server reads it as a posture. Anything in the workspace
-# can set these options, which the server knows: it filters both where it
-# subscribes, and never lets a mode read here raise the worktree above the
-# posture a person chose for it (docs/permission-modes.md).
+# `plan` agent); the server reads it as a posture and records it on the
+# worktree (docs/permission-modes.md). Anything in the workspace can set these
+# options, so the server filters both where it subscribes.
 #
 # Staged per worktree beside yaac-agent-links, and run by bare name for the
 # same reason (see that script). The pane is $TMUX_PANE; the server is $TMUX,

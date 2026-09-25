@@ -157,11 +157,10 @@ export type PermissionMode = 'bypass' | 'auto' | 'accept-edits' | 'manual' | 'pl
 
 /**
  * Postures ranked from most to least permissive — a Record, so a new
- * `PermissionMode` member cannot go unranked. Two things cap a posture by it:
- * a spawned worktree runs at most as permissively as its caller, and a mode
- * read from inside a workspace is recorded at most as permissively as the
- * posture a person chose for it. `plan` and `read-only` share the strictest
- * place, so either tool's strictest posture may be granted under the other.
+ * `PermissionMode` member cannot go unranked. A spawned worktree runs at most
+ * as permissively as its caller by it. `plan` and `read-only` share the
+ * strictest place, so either tool's strictest posture may be granted under
+ * the other.
  */
 const PERMISSIVENESS_RANK: Record<PermissionMode, number> = {
   bypass: 0, auto: 1, 'accept-edits': 2, manual: 3, plan: 4, 'read-only': 4,
