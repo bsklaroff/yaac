@@ -41,7 +41,7 @@ export {
 export { attachAcp, type AcpSocket } from './acp-bridge'
 export { parkAcpLaunchModel } from './acp-driver'
 export { acpConversation } from './acp-registry'
-export { readAcpFirstPrompt, readAcpLog, readAcpModel } from './acp-log'
+export { readAcpFirstPrompt, readAcpLog } from './acp-log'
 // A tui claude conversation as the events an acp one produces, so a stopped
 // worktree's history reads the same either way. The translation is the ACP
 // adapter's own, run as a library — see the module header.
@@ -53,7 +53,6 @@ export {
   agentWindowTool,
   classifyAgentObservation,
   getAgentSessionFirstMessage,
-  getAgentSessionModel,
   type AgentPaneStatus,
 } from './agent-tools'
 export {
@@ -67,16 +66,16 @@ export {
 } from './agent-command'
 // Where each tool keeps its transcript on disk, and the project-relative
 // form the path travels and is stored in. The per-tool readers in here are
-// the primary consumers; these four are what a mediator needs to record a
+// the primary consumers; these are what a mediator needs to record a
 // path, resolve one back, or stat it for last activity.
 export {
   resolveProjectPath,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
-  transcriptStamp,
 } from './transcripts'
 export { ensureClaudeHooks } from './claude'
+export { ensureModelReporters } from './model-reporters'
 export {
   buildUpstreamExec,
   buildWindowsExec,

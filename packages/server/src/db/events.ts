@@ -135,8 +135,8 @@ export interface LaunchedSession {
   paneId?: string
   /** The user's opening message, when they supplied one. */
   firstPrompt?: string
-  /** The model it was launched with — a display value until the agent's own
-   *  record says what it is answering as (see `agent_sessions.model`). */
+  /** The model it was launched with — a display value until the agent itself
+   *  reports what it is answering as (see `agent_sessions.model`). */
   model?: string
 }
 
@@ -176,6 +176,9 @@ export interface DiscoveredSession {
    *  wrote one outside the project directory. */
   transcriptPath?: string
   lastActiveMs?: number
+  /** The model it is running, as the agent last reported it. Overwrites —
+   *  a `/model` is a new answer — but absent leaves the row alone. */
+  model?: string
   /** When the sweep first saw it, used as its birth if it is new. */
   firstSeenMs?: number
 }

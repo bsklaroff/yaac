@@ -11,12 +11,13 @@
  * Splitting them across folders is how a rename silently stops a pane from
  * ever being classified.
  */
-import { AGENT_TOOLS } from '@yaac/shared/types'
+import { AGENT_TOOLS, MAX_MODEL_LENGTH } from '@yaac/shared/types'
+import { codexDir } from '@yaac/shared/project-paths'
 import type { AgentTool } from '@yaac/shared/types'
-import { classifyClaudeTitle, getClaudeModel, getFirstUserMessage } from './claude'
-import { classifyCodexTitle, getCodexFirstUserMessage, getCodexModel } from './codex'
+import { classifyClaudeTitle, getFirstUserMessage } from './claude'
+import { CODEX_MODEL_FORMAT, classifyCodexTitle, codexModelSlug, getCodexFirstUserMessage } from './codex'
 import { OPENCODE_BUSY_MARKERS, getSessionOpencodeFirstUserMessage } from './opencode'
-import { PI_BUSY_MARKERS, getPiFirstUserMessage, getPiModel } from './pi'
+import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
 
 /** What an agent pane is doing, as every display path reads it. */
 export type AgentPaneStatus = 'running' | 'waiting'
@@ -44,30 +45,47 @@ export async function getAgentSessionFirstMessage(
 }
 
 /**
- * The model one conversation last answered as, in the tool's own vocabulary —
- * a display value, and the only source that stays true when a user switches
- * model mid-conversation. Each tool records it somewhere different, and each
- * reader takes the LAST occurrence rather than the first.
- *
- * The TUI reader, and only that. An ACP conversation's model is read from
- * acpd's record instead (`readAcpModel`), which is the one source that answers
- * for every tool: under ACP three of the four leave no transcript this side of
- * the pod can find, and the id an adapter mints is not the one that names the
- * file anyway.
- *
- * opencode is the exception it always is, and here it is a permanent one:
- * its history lives in a container-side sqlite DB, and unlike a first message
- * there is no HTTP probe for this — an opencode conversation simply has no
- * model to show.
+ * The tmux pane option a tool's in-pane reporter sets to the model it is
+ * running (`worktree-bin/yaac-agent-model`) — claude from its `SessionStart`
+ * and `PostModelSwitch` hooks, opencode and pi from a plugin and an extension
+ * of their own.
  */
-export async function getAgentSessionModel(
+export const MODEL_PANE_OPTION = '@yaac-model'
+
+/**
+ * The tmux format a pane's model subscription watches. Every tool but codex
+ * reports through `MODEL_PANE_OPTION`; codex can run nothing on a model
+ * change, but rewrites its title, so its format cuts the model out of that.
+ * Either way the value moves the moment the switch lands, and tmux pushes it.
+ *
+ * The option is filtered to printable ASCII and bounded INSIDE the format.
+ * tmux escapes a pane title but expands a user option verbatim into the
+ * `%subscription-changed` line, and anything in the workspace can set one —
+ * so an unfiltered value could carry a newline and forge control-mode lines
+ * (`%exit`, another pane's status, a `%begin` that desyncs replies). Filtering
+ * where the value is written would not help: the agent can run `tmux
+ * set-option` itself. (Not `[[:cntrl:]]`: its `:` ends the modifier list.)
+ */
+export function agentModelFormat(tool: AgentTool): string {
+  return tool === 'codex'
+    ? CODEX_MODEL_FORMAT
+    : `#{=${MAX_MODEL_LENGTH};s/[^ -~]//:${MODEL_PANE_OPTION}}`
+}
+
+/**
+ * The model id a pushed model-format value names, in the tool's own spelling
+ * (`claude-opus-5-5[1m]`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`), or
+ * undefined for an empty push — a pane whose tool has not reported yet.
+ * Only codex needs a lookup: its title shows the catalog's display name.
+ */
+export async function resolveAgentModel(
   tool: AgentTool,
-  transcriptPath: string | undefined,
+  projectSlug: string,
+  observed: string,
 ): Promise<string | undefined> {
-  if (tool === 'opencode' || transcriptPath === undefined) return undefined
-  if (tool === 'codex') return getCodexModel(transcriptPath)
-  if (tool === 'pi') return getPiModel(transcriptPath)
-  return getClaudeModel(transcriptPath)
+  const value = observed.trim()
+  if (value === '') return undefined
+  return tool === 'codex' ? codexModelSlug(codexDir(projectSlug), value) : value
 }
 
 /**

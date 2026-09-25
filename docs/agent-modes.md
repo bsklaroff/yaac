@@ -274,21 +274,20 @@ pane set. An `acp` conversation is authored: `session/new` hands the server the
 id directly. No hook, no worktree-starts log, no join.
 
 The row's display fields come from the record too, and for the same reason the
-transcript does: it is the one source that answers for every tool. A TUI
-conversation's model is read from the transcript its tool writes, but under ACP
+transcript does: it is the one source that answers for every tool. Under ACP
 three of the four leave nothing this side of the pod can find — codex names its
 rollouts by a thread id yaac never sees, opencode's history is a
 container-side database, and pi's log is named for an id its adapter minted
 rather than the one yaac asked for. So an ACP row records no transcript path at
-all: its opening message, its model and its last-active time are all read from
-the record, which is on disk whether or not anything is attached and outlives
-the pod.
+all: its opening message and its last-active time are read from the record,
+which is on disk whether or not anything is attached and outlives the pod.
 
-The model is read from the handshake reply and from every change since — both
-shapes, because adapters disagree about which they use (a `models` block, a
-`configOptions` entry with `id: model`, or both), and from the *request* of a
-change rather than its reply, because `session/set_model` answers with an empty
-object. A request whose reply carried an error changed nothing and is ignored.
+The model is not read at all: the adapter says it. The handshake's reply names
+the model the session opened with — in either shape, because adapters disagree
+about which they use (a `models` block, a `configOptions` entry with
+`id: model`, or both) — and every change since arrives as the adapter's
+`config_option_update`, the moment it lands. The conversation publishes it on
+the live agent set, which is what the row is written from.
 
 The row is still written by the reconciler's conversation sweep, and the
 handshake that mints the id moves nothing the informers watch — so the id

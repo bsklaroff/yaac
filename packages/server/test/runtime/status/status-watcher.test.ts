@@ -89,7 +89,8 @@ function makeWatcher(tool: WatchedWorktree['tool'], deps: {
 }
 
 /**
- * Drive a watcher through banner + pane enumeration + status-format subscribe.
+ * Drive a watcher through banner + pane enumeration + the status- and
+ * model-format subscribes.
  * The watcher lists the yaac session's panes and subscribes each agent window
  * it finds, so the reply here is a `list-panes` table, not a single pane id.
  */
@@ -101,7 +102,9 @@ async function connectWatcher(
   child.feedBanner()
   await vi.waitFor(() => expect(child.commandCount).toBe(1)) // list-panes
   child.feedReply(`${paneId} ${tool}`)
-  await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B
+  await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B status
+  child.feedReply('')
+  await vi.waitFor(() => expect(child.commandCount).toBe(3)) // refresh-client -B model
   child.feedReply('')
   await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
 }
@@ -152,7 +155,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
 
     // A command through the channel rides the same control-mode stream.
     const reply = send!('list-windows -t yaac')
-    await vi.waitFor(() => expect(child.commandCount).toBe(3))
+    await vi.waitFor(() => expect(child.commandCount).toBe(4))
     expect(child.writes.join('')).toContain('list-windows -t yaac')
     child.feedReply('0|@0|claude')
     await expect(reply).resolves.toBe('0|@0|claude')
@@ -208,6 +211,8 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     second.feedReply('%7 claude')
     await vi.waitFor(() => expect(second.commandCount).toBe(2))
     second.feedReply('')
+    await vi.waitFor(() => expect(second.commandCount).toBe(3))
+    second.feedReply('')
     await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
   })
 
@@ -241,7 +246,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     watcher.start()
     const child = children[0]
     await connectWatcher(child)
-    await vi.waitFor(() => expect(child.commandCount).toBe(3)) // heartbeat sent
+    await vi.waitFor(() => expect(child.commandCount).toBe(4)) // heartbeat sent
     child.feedReply('ok')
     await new Promise((r) => setTimeout(r, 30))
     expect(children.length).toBe(1)
@@ -326,7 +331,7 @@ describe('WorktreeStatusWatcher (pane tools)', () => {
     await connectWatcher(child, '%2', 'opencode')
     child.feed('%output %2 leftover redraw bytes\n')
     await new Promise((r) => setTimeout(r, 25))
-    expect(child.commandCount).toBe(2) // no capture-pane issued
+    expect(child.commandCount).toBe(3) // no capture-pane issued
   })
 })
 

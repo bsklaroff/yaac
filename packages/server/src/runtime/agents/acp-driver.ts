@@ -172,6 +172,7 @@ interface Attached {
   conversation?: AcpConversation
   child: StreamChild
   agentSessionId?: string
+  model?: string
 }
 
 class AcpConnection implements AgentConnection {
@@ -415,6 +416,10 @@ class AcpConnection implements AgentConnection {
         // ACP mode's replacement for the in-pod hook's session-starts log.
         this.publishAgents()
       },
+      onModel: (model) => {
+        entry.model = model
+        this.publishAgents()
+      },
       onBusy: (busy) => {
         // Asked of the conversation rather than derived from `busy`, because a
         // turn parked on a permission ask is busy and waiting at once, and only
@@ -483,6 +488,7 @@ class AcpConnection implements AgentConnection {
       handle: e.handle,
       tool: e.tool,
       ...(e.agentSessionId !== undefined ? { agentSessionId: e.agentSessionId } : {}),
+      ...(e.model !== undefined ? { model: e.model } : {}),
     }))
     this.sink({ kind: 'live-agents', agents })
     // Each conversation's status is pushed on every turn boundary, but a

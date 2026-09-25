@@ -47,7 +47,6 @@ export const ACP = {
   sessionCancel: 'session/cancel',
   sessionUpdate: 'session/update',
   sessionSetMode: 'session/set_mode',
-  sessionSetModel: 'session/set_model',
   sessionSetConfigOption: 'session/set_config_option',
   requestPermission: 'session/request_permission',
 } as const
@@ -550,4 +549,26 @@ export function acpModeOffered(
   if (session?.modes?.availableModes?.some((m) => m.id === modeId) === true) return true
   const mode = session?.configOptions?.find((o) => asString(o.id) === 'mode')
   return mode?.options?.some((o) => asString(o.value) === modeId) === true
+}
+
+/**
+ * The model a session says it is running, from any message that carries the
+ * session's state: the `session/new` and `session/load` replies, a
+ * `session/set_config_option` reply, and a `config_option_update`.
+ *
+ * Both shapes are read because adapters differ over which they use — a
+ * `models.currentModelId` block, a `configOptions` entry whose `id` is
+ * `model`, or both.
+ */
+export function sessionModel(state: unknown): string | undefined {
+  const r = asRecord(state)
+  if (r === undefined) return undefined
+  const current = asString(asRecord(r.models)?.currentModelId)
+  if (current !== undefined) return current
+  const options = Array.isArray(r.configOptions) ? r.configOptions : []
+  for (const entry of options) {
+    const o = asRecord(entry)
+    if (asString(o?.id) === 'model') return asString(o?.currentValue)
+  }
+  return undefined
 }

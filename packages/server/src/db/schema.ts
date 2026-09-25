@@ -291,16 +291,15 @@ export const agentSessions = snakeCase.table('agent_sessions', {
    *  last-activity, and unknowable once the pod is gone for opencode. */
   lastActiveAt: timestamp({ withTimezone: true }),
   /**
-   * The model the transcript last shows an answer from, verbatim in the
-   * tool's own vocabulary (`claude-opus-5`, `gpt-5.6-sol`,
-   * `anthropic/claude-opus-4-8`) — a display value, not one anything
-   * relaunches with.
+   * The model the agent last reported running, verbatim in the tool's own
+   * vocabulary (`claude-opus-5`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`)
+   * — a display value, not one anything relaunches with.
    *
-   * Overwritten as observed rather than filled once, because a conversation's
+   * Overwritten as reported rather than filled once, because a conversation's
    * model is not a fact about its birth: `/model` mid-session changes it, and
-   * the row is meant to say what the agent is answering as *now*. Null until
-   * the agent first replies, and permanently null for opencode, whose history
-   * lives in a container-side sqlite DB that leaves nothing to read.
+   * the row is meant to say what the agent is running *now*. Seeded from the
+   * launch; null only for a conversation launched without a model that has
+   * not reported one (see docs/worktree-storage.md for when each tool does).
    */
   model: text(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.tool, t.agentSessionId] })])

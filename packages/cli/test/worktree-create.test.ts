@@ -1029,7 +1029,7 @@ describe('createWorktree', () => {
       .find((c) => c.includes('respawn-window'))
     expect(respawn).toBeDefined()
     expect(respawn).toContain('-t yaac:codex')
-    expect(respawn).toContain('codex --yolo')
+    expect(respawn).toMatch(/'codex .* --yolo'/)
   })
 
   it('threads a model override into the claude agent respawn command', async () => {
@@ -1178,13 +1178,16 @@ describe('createWorktree', () => {
 })
 
 describe('buildAgentCmd', () => {
+  // codex carries its title items, which are how its model reaches yaac.
+  const CODEX = 'codex -c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"model\\"]"'
+
   it('returns the codex respawn command unchanged', () => {
     const fresh = buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'bypass' })
-    expect(fresh).toBe('codex --yolo')
+    expect(fresh).toBe(`${CODEX} --yolo`)
     const resume = buildAgentCmd({
       tool: 'codex', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
-    expect(resume).toBe('codex --yolo resume sid-abc')
+    expect(resume).toBe(`${CODEX} --yolo resume sid-abc`)
   })
 
   // The `env -u TMUX` prefix is load-bearing — it is what keeps claude
@@ -1194,13 +1197,13 @@ describe('buildAgentCmd', () => {
   it('returns the claude respawn command unchanged, $TMUX hidden', () => {
     const fresh = buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'bypass' })
     expect(fresh).toBe(
-      'env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sid-abc',
+      'env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sid-abc',
     )
     const resume = buildAgentCmd({
       tool: 'claude', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
     expect(resume).toBe(
-      'env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sid-abc',
+      'env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sid-abc',
     )
   })
 
@@ -1209,9 +1212,9 @@ describe('buildAgentCmd', () => {
   // of acting.
   it('asks for approval in each tool\'s own spelling under manual', () => {
     expect(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'manual' }))
-      .toBe('codex --ask-for-approval untrusted')
+      .toBe(`${CODEX} --ask-for-approval untrusted`)
     expect(buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'manual' }))
-      .toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
+      .toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
   })
 
   it('launches opencode over a private server of its own, with its posture in the env', () => {
@@ -1271,7 +1274,7 @@ describe('retoolSpare', () => {
     expect(cmds.some((c) => c.includes('rename-window -t yaac:claude codex'))).toBe(true)
     const respawn = cmds.find((c) => c.includes('respawn-window'))
     expect(respawn).toContain('-t yaac:codex')
-    expect(respawn).toContain('codex --yolo')
+    expect(respawn).toMatch(/'codex .* --yolo'/)
     // The rename keeps its retries, so it has to survive having already
     // run: the fallback passes when the window is already renamed.
     const rename = cmds.find((c) => c.includes('rename-window'))!

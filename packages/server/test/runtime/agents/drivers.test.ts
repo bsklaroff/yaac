@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { setDataDir } from '@yaac/shared/paths'
-import { acpLogDir } from '@yaac/shared/project-paths'
+import { acpLogDir, codexDir } from '@yaac/shared/project-paths'
 import { agentDriver, type AgentObservation, type DrivenWorktree } from '#runtime/agents/drivers'
 // A bound, imported rather than duplicated: a test that hard-codes the budget
 // passes against a driver that changed it.
@@ -314,8 +314,15 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 100 0\n%end 1 100 0\n%session-changed $0 yaac\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
     stream.feed('%begin 1 101 1\n%7 claude\n%end 1 101 1\n')
-    await vi.waitFor(() => expect(stream.writes.join('')).toContain('refresh-client -B'))
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'status-7:%7:#{pane_title}'"))
     stream.feed('%begin 1 102 1\n%end 1 102 1\n')
+    // A second subscription per pane follows its model: the option claude's
+    // hooks set the moment `/model` lands — filtered to printable ASCII and
+    // bounded by tmux itself, since anything in the workspace can set it and
+    // tmux would otherwise pass a newline straight into this stream.
+    await vi.waitFor(() => expect(stream.writes.join(''))
+      .toContain("refresh-client -B 'model-7:%7:#{=128;s/[^ -~]//:@yaac-model}'"))
+    stream.feed('%begin 1 103 1\n%end 1 103 1\n')
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     // The conversation's handle is its pane id; which conversation sits on it
@@ -328,6 +335,70 @@ describe('agentDriver', () => {
     expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'running' })
     stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
     expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'waiting' })
+
+    // Nothing reported yet is not a model; a report, and then a switch, each
+    // republish the live set with it.
+    const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
+    const before = agentSets().length
+    stream.feed('%subscription-changed model-7 $0 @0 0 %7 : \n')
+    stream.feed('%subscription-changed model-7 $0 @0 0 %7 : claude-opus-5-5[1m]\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-opus-5-5[1m]' }],
+    }))
+    stream.feed('%subscription-changed model-7 $0 @0 0 %7 : claude-sonnet-5\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-sonnet-5' }],
+    }))
+    expect(agentSets().length).toBe(before + 2)
+  })
+
+  it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
+    // codex can run nothing on a model switch, but it retitles the pane: the
+    // format cuts the model's display name out of the title, and codex's own
+    // cached catalog maps it back to the slug the rest of yaac speaks.
+    const stream = new FakeStream()
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('tui').connect({ ...session, tool: 'codex' }, (o) => seen.push(o), {
+      dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
+    }))
+    stream.feed('%begin 1 100 0\n%end 1 100 0\n')
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
+    stream.feed('%begin 1 101 1\n%2 codex\n%end 1 101 1\n')
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'status-2:"))
+    stream.feed('%begin 1 102 1\n%end 1 102 1\n')
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'model-2:%2:#{?#{m/r: [|] ,"))
+    stream.feed('%begin 1 103 1\n%end 1 103 1\n')
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
+
+    // No cache — api-key auth and a failed fetch never write one — but the
+    // title still shows a display name from codex's bundled catalog, so the
+    // catalogs' own spelling rule stands in.
+    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : GPT-6-Astra\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'gpt-6-astra' }],
+    }))
+
+    // With one, the cache is asked first — for a name the rule would get wrong.
+    await fs.mkdir(codexDir('demo'), { recursive: true })
+    await fs.writeFile(path.join(codexDir('demo'), 'models_cache.json'), JSON.stringify({
+      models: [
+        { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol' },
+        { slug: 'odd-slug', display_name: 'Odd Name' },
+      ],
+    }))
+    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : GPT-5.6-Sol\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'gpt-5.6-sol' }],
+    }))
+    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : Odd Name\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'odd-slug' }],
+    }))
+    // A model the catalog does not list is titled by its slug already.
+    stream.feed('%subscription-changed model-2 $0 @0 0 %2 : my-made-up-model\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'my-made-up-model' }],
+    }))
   })
 
   it('reports a dropped tui stream as down, and retracts the command channel', async () => {
@@ -376,14 +447,19 @@ describe('agentDriver', () => {
 
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
     const created = stream.sent().find((m) => m.method === 'session/new')!
-    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'acp-1' } })}\n`)
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: created.id,
+      result: { sessionId: 'acp-1', configOptions: [{ id: 'model', currentValue: 'claude-opus-5' }] },
+    })}\n`)
 
     // The conversation id the agent minted is published — this is what the
-    // registry records, replacing the TUI mode's hook and its log entirely.
+    // registry records, replacing the TUI mode's hook and its log entirely —
+    // and so is the model the reply said the session opened with.
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1' }],
+      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'claude-opus-5' }],
     }))
 
     const events = collect(acpConversation('demo', 'wt-1', 'acp-1')!)
@@ -400,6 +476,16 @@ describe('agentDriver', () => {
     const update = (u: unknown): string =>
       `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-1', update: u } })}\n`
     stream.feed(update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'on it' } }))
+    // A switch mid-conversation (a `/model` typed into the chat) is pushed the
+    // moment the adapter reports it, with no answer from the new model needed.
+    stream.feed(update({
+      sessionUpdate: 'config_option_update',
+      configOptions: [{ id: 'mode', currentValue: 'default' }, { id: 'model', currentValue: 'claude-fable-5' }],
+    }))
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents',
+      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'claude-fable-5' }],
+    }))
 
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)
     await vi.waitFor(() => expect(seen).toContainEqual({ kind: 'status', handle: 'claude', status: 'waiting' }))
@@ -411,7 +497,8 @@ describe('agentDriver', () => {
   it('resumes a recorded acp conversation with session/load instead of a new one', async () => {
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: () => stream,
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-old' }]),
       log: () => {},
@@ -424,9 +511,17 @@ describe('agentDriver', () => {
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { agentCapabilities: { loadSession: true } } })}\n`)
 
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/load')).toBe(true))
-    expect(stream.sent().find((m) => m.method === 'session/load')!.params)
-      .toMatchObject({ sessionId: 'acp-old', cwd: '/workspace' })
+    const load = stream.sent().find((m) => m.method === 'session/load')!
+    expect(load.params).toMatchObject({ sessionId: 'acp-old', cwd: '/workspace' })
     expect(stream.sent().some((m) => m.method === 'session/new')).toBe(false)
+
+    // The reply names the model the session holds — here in the `models`
+    // shape — and that is published with the conversation.
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: load.id, result: { models: { currentModelId: 'claude-fable-5' } } })}\n`)
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents',
+      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-old', model: 'claude-fable-5' }],
+    }))
   })
 
   it('skips the handshake when reattaching to an agent that is already running', async () => {

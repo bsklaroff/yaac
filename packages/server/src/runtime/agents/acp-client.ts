@@ -48,9 +48,11 @@ import {
   ACPD,
   ACP_PROTOCOL_VERSION,
   acpModeOffered,
+  asRecord,
   chooseAllowOption,
   clientCapabilities,
   permissionReply,
+  sessionModel,
   toStopReason,
   type AcpInitializeResult,
   type AcpNewSessionResult,
@@ -137,6 +139,13 @@ export interface AcpConversationDeps {
    * is running, this says the turn is not going anywhere until a human answers.
    */
   onPermissionPending?: (pending: boolean) => void
+  /**
+   * The model the session is running changed — or was first learned, from the
+   * handshake's reply. Fires on the switch itself (the adapter's
+   * `config_option_update`), not on the next answer, and only when the value
+   * actually moves.
+   */
+  onModel?: (model: string) => void
   onDown: (reason: string) => void
   log?: (msg: string) => void
 }
@@ -226,9 +235,12 @@ export class AcpConversation {
   private readonly notices = new Map<'mode' | 'model', AcpEventInit>()
   private sessionModes: AcpSessionModes | undefined
   /** The same facts in the other shape adapters use — opencode v2 sends only
-   *  this one. Held beside `sessionModes` rather than folded into it because
-   *  it also carries the model, which `readAcpModel` reads from the record. */
+   *  this one. */
   private sessionConfig: AcpConfigOption[] | undefined
+  /** The model the session last said it is running; see `onModel`. Unknown
+   *  on a reattach until the adapter next reports it — that skips the
+   *  handshake, and with it the reply that names the model. */
+  private currentModel: string | undefined
 
   constructor(private readonly deps: AcpConversationDeps) {
     this.log = deps.log ?? serverLog
@@ -388,14 +400,19 @@ export class AcpConversation {
         this.emit({ type: 'error', message: `the agent process exited (code ${code ?? '?'})` })
         return
       }
-      case ACP.sessionUpdate:
-        // Deliberately ignored. Conversation content reaches a pane by one
-        // path only — acpd's record — because the record and this socket carry
-        // the same notifications and ACP gives notifications no identity, so
-        // joining the two at an unknown point would either duplicate the
-        // overlap or drop it. What is left here is the RPC half: our requests
-        // and their replies, and the agent's own questions.
+      case ACP.sessionUpdate: {
+        // Content is deliberately ignored. It reaches a pane by one path only —
+        // acpd's record — because the record and this socket carry the same
+        // notifications and ACP gives notifications no identity, so joining the
+        // two at an unknown point would either duplicate the overlap or drop
+        // it. What is left here is the RPC half: our requests and their
+        // replies, the agent's own questions — and the session's state, which
+        // is not content and has no pane to reach. A model switch (a `/model`
+        // typed into the chat) arrives as the adapter's `config_option_update`.
+        const update = asRecord(asRecord(params)?.update)
+        if (update?.sessionUpdate === 'config_option_update') this.setModel(sessionModel(update))
         return
+      }
       default:
         return
     }
@@ -459,6 +476,12 @@ export class AcpConversation {
   private permissionMode(): PermissionMode | undefined {
     if (this.deps.permissionMode === undefined) return 'bypass'
     return this.deps.permissionMode()
+  }
+
+  private setModel(model: string | undefined): void {
+    if (model === undefined || model === this.currentModel) return
+    this.currentModel = model
+    this.deps.onModel?.(model)
   }
 
   /** The mode the session says it is in, in whichever shape its adapter
@@ -620,6 +643,7 @@ export class AcpConversation {
         })
         this.sessionModes = loaded.modes
         this.sessionConfig = loaded.configOptions
+        this.setModel(sessionModel(loaded))
       } else {
         if (this.sessionId !== undefined) {
           this.log('[server] acp: adapter cannot load sessions — starting a fresh conversation')
@@ -635,6 +659,7 @@ export class AcpConversation {
         this.sessionModes = created.modes
         this.sessionConfig = created.configOptions
         this.deps.onSessionId(created.sessionId)
+        this.setModel(sessionModel(created))
         await this.applyLaunchModel()
       }
       await this.applyPermissionMode()
@@ -777,8 +802,11 @@ export class AcpConversation {
     // As the `model` config option, the one route both adapters that take a
     // model this way answer (see `AcpAdapterProfile.modelVia`).
     try {
-      await this.peer.request(ACP.sessionSetConfigOption,
+      const reply = await this.peer.request(ACP.sessionSetConfigOption,
         { sessionId: this.sessionId, configId: 'model', value: model })
+      // The reply holds what the adapter resolved the request to — claude's
+      // turns `opus` into the id it runs — and sends no update for it.
+      this.setModel(sessionModel(reply) ?? model)
       this.notices.delete('model')
       this.log(`[server] acp: session model set to ${model}`)
     } catch (err) {

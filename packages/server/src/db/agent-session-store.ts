@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { agentSessions, worktreeAgentSessions } from './schema'
-import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
@@ -33,8 +33,8 @@ export interface AgentSessionRow {
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date
-  /** The model it last answered as — see the `model` column. Absent until
-   *  the agent has replied once, and always for opencode. */
+  /** The model it is running — see the `model` column. Absent until the
+   *  launch or the agent has named one. */
   model?: string
 }
 
@@ -62,8 +62,8 @@ export interface DiscoveredAgentSession {
   transcriptPath?: string
   firstPrompt?: string
   lastActiveMs?: number
-  /** The model the transcript showed at this sighting. Absent means "not
-   *  read", never "none" — it leaves a recorded value alone. */
+  /** The model the agent last reported. Absent means "not reported", never
+   *  "none" — it leaves a recorded value alone. */
   model?: string
   /** First observation time, used as the conversation's birth when it is
    *  new to the DB (the link record's birthtime). */
@@ -120,9 +120,9 @@ export async function recordAgentSessions(
         ...(d.lastActiveMs !== undefined ? { lastActiveAt: new Date(d.lastActiveMs) } : {}),
         // Overwritten, not coalesced: `/model` mid-conversation is exactly
         // what this column is here to follow. An absent value still leaves
-        // the stored one alone — the sweep omits it when it read nothing,
-        // which must not read as "the model went away".
-        ...(d.model !== undefined ? { model: d.model } : {}),
+        // the stored one alone — nothing reported must not read as "the
+        // model went away".
+        ...(d.model !== undefined ? { model: d.model.slice(0, MAX_MODEL_LENGTH) } : {}),
         ...(d.firstPrompt !== undefined
           ? {
             // A conversation's opening message never changes, and re-reading a
@@ -141,7 +141,7 @@ export async function recordAgentSessions(
         transcriptPath: stored,
         firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
         lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
-        model: d.model ?? null,
+        model: d.model?.slice(0, MAX_MODEL_LENGTH) ?? null,
       }
       const target = [
         agentSessions.projectSlug,
@@ -438,7 +438,7 @@ export async function setAgentSessionCapture(
     ...(capture.transcriptPath !== undefined
       ? { transcriptPath: capture.transcriptPath }
       : {}),
-    ...(capture.model !== undefined ? { model: capture.model } : {}),
+    ...(capture.model !== undefined ? { model: capture.model.slice(0, MAX_MODEL_LENGTH) } : {}),
   }
   if (Object.keys(values).length === 0) return
   try {

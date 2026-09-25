@@ -64,6 +64,7 @@ import {
   buildWindowsExec,
   buildWorktreeLinkExec,
   ensureClaudeHooks,
+  ensureModelReporters,
   validateInitWindows,
   verifyAgentWindowAlive,
   type InitWindow,
@@ -1224,11 +1225,18 @@ export async function createWorktree(
       mediatedEgress ? ['/workspace', '/repo'] : await withResolved([wtDir, repo]),
     )
     await seedClaudeSettings(path.join(claude, 'settings.json'))
-    // Register the agent-session discovery hook (the script is staged from
-    // worktree-bin onto the workspace's PATH below; this only points claude at
-    // it). Best-effort: without it the session still runs, with only the
+    // Register the agent-session discovery and model hooks (the scripts are
+    // staged from worktree-bin onto the workspace's PATH below; this only
+    // points claude at them). Best-effort: without it the session still runs, with only the
     // `--session-id`-pinned conversation known to yaac.
     await ensureClaudeHooks(path.join(claude, 'settings.json')).catch(() => {})
+    // pi and opencode report their model from code loaded into the tool, which
+    // lives in their homes the same way. Best-effort for the same reason: a
+    // missed write costs the model label, not the session.
+    await ensureModelReporters({
+      piAgentDir: path.join(pi, 'agent'),
+      opencodeConfigDir: opencodeConfig,
+    }).catch(() => {})
 
     // Codex runs the same script through a managed SessionStart hook baked
     // into the image (/etc/codex, trusted by policy), so nothing is seeded
