@@ -7,18 +7,48 @@ How much a worktree's agent may do before it stops to ask. One enum,
 |---|---|---|---|---|
 | `bypass` | `--permission-mode bypassPermissions` | `--yolo` | `permissions`: `*` allow | — |
 | `auto` | `--permission-mode auto` | `--approve-for-me` | — | — |
-| `accept-edits` | `--permission-mode acceptEdits` | *(its default preset)* | `permissions`: `shell` ask | — |
-| `plan` | `--permission-mode plan` | `--sandbox read-only` | `default_agent: plan` + the `manual` rules | — |
-| `manual` | `--permission-mode manual` | `--ask-for-approval untrusted` | `permissions`: `*` ask, reads allow | — |
+| `accept-edits` | `--permission-mode acceptEdits` | *(its default preset)* | the `manual` rules + `edit` allow | — |
+| `manual` | `--permission-mode manual` | — | `permissions`: `*` ask, reads allow | — |
+| `plan` | `--permission-mode plan` | — | `default_agent: plan` + the `manual` rules | — |
+| `read-only` | — | `--sandbox read-only` | — | — |
 
-`buildAgentCmd` owns that table. Three things about it are worth knowing.
+Rows run most permissive first, which is the order the create form's
+dropdown and the CLI's choices list them in (`PERMISSION_MODES`). `plan` and
+`read-only` share the strictest place: each is its tools' strictest posture,
+so either may be granted under the other (see "A spawned worktree's
+posture").
+
+`buildAgentCmd` owns that table, written against the pinned CLIs
+(`AGENT_CLIS` in `@yaac/shared/types`, which the image and a host install
+both use). Three things about it are worth knowing.
 
 **codex splits the posture across two axes** — an approval policy and a
 sandbox — so each mode picks the pair that adds up to it. `accept-edits`
 carries no flag because it *is* codex's own default preset
 (`workspace-write` + `on-request`), whose sandbox has network off; that is
 what makes codex ask to escalate for anything reaching the network, rather
-than yaac having to arrange it.
+than yaac having to arrange it. Its strictest posture is `read-only`, its
+"Read Only" preset: reads and sandboxed commands run unasked, and every edit
+or network reach asks. (Both depend on a sandbox that does not start in a k8s
+pod; see below.) It has no `manual` — its approval policy is only
+`on-request` or `never`, so nothing asks before every action — and no `plan`:
+codex's plan mode is a collaboration mode that instructs the model not to
+mutate anything, over whatever sandbox is in force, and no flag launches into
+it. A posture the sandbox enforces is the one worth naming.
+
+**Under k8s, codex's sandboxed postures cannot run commands.** Everything
+but `bypass` puts codex's shell behind its Linux sandbox (bubblewrap) with
+network off, and worktree pods run under gVisor, where bubblewrap cannot
+configure the new network namespace (`bwrap: loopback: Failed
+RTM_NEWADDR`). So every shell command fails to start — a read such as `ls`
+included — and codex does not ask to run it outside the sandbox; it reports
+the failure and carries on without it. Checked in a yaac k8s worktree pod
+(codex 0.156.1) for `read-only` and `accept-edits`; `auto` shares that
+sandbox. The restraint fails *closed*: nothing escapes the sandbox, and with
+network allowed bubblewrap starts and confines writes to the writable roots.
+But a codex worktree on k8s that is to run commands needs `bypass`, where the
+pod and its egress proxy are the containment. Under containerless the sandbox runs on the host kernel, and the
+postures mean what the table says.
 
 **opencode's posture is config, not flags** — its TUI has no posture, model
 or agent flag at all, and refuses an unknown one outright (usage, exit), so
@@ -39,9 +69,17 @@ after; last match wins. `manual` is therefore wildcard-first — `*` ask, then
 reads back to allow, then the base policy's `.env` asks restated behind that
 wildcard — so what the base policy allows without yaac naming it (websearch,
 subagents, skills, Code Mode, every MCP tool a project's own config adds) is
-covered. `plan` selects opencode's own plan agent by `default_agent` for its
-`edit: deny`, and carries the same rules, because that is *all* the agent's
-rules say: nothing about `shell`, so on its own it runs commands unprompted.
+covered. `accept-edits` is those rules with `edit` let back through — the
+action opencode's edit, write and patch tools all assert — which is what
+claude's `acceptEdits` does: edits in the tree land
+unasked, while commands, fetches, subagents, Code Mode and MCP tools still ask,
+and an edit outside the tree asks as `external_directory`. (claude also lets
+through a few filesystem commands, `mkdir` or `mv`; opencode is not given a
+`shell` rule for them, because how it matches a chained command against one is
+unverified and a match on `rm x; curl …` would fail open.) `plan` selects
+opencode's own plan agent by `default_agent` for its `edit: deny`, and carries
+the `manual` rules, because that is *all* the agent's rules say: nothing about
+`shell`, so on its own it runs commands unprompted.
 
 Two things about that document are load-bearing, because **getting either
 wrong fails open rather than loudly**. An action opencode does not know
@@ -66,7 +104,15 @@ gap means shipping a pi extension that denies or prompts on its blocking
 `tool_call` event, not a change to the table above.
 
 `SUPPORTED_PERMISSION_MODES` is the machine-readable version, and both the
-refusal and the webapp's disabled tool rows read from it.
+refusal and the webapp's disabled tool rows read from it. A row holding a
+posture its tool lacks (written by another build) launches — on a restart
+as much as a create — in the most permissive one the tool has that is no
+looser, else its strictest (`launchablePermissionMode`): codex `plan` or
+`manual` as `read-only`, claude's and opencode's `read-only` as `plan`,
+opencode `auto` as `accept-edits`, and pi, which has nothing but `bypass`, as
+that. Never the driver default, which in a container is `bypass`. A
+remembered choice the tool no longer offers (see "Resolution") lands the same
+way.
 
 ## Under `acp`, the answer is the adapter's
 
@@ -79,16 +125,18 @@ and `ACP_SUPPORTED_PERMISSION_MODES` is the other one:
 | `bypass` | `bypassPermissions` | `agent-full-access` | the TUI's own config | — |
 | `auto` | `auto` | `agent` | — | — |
 | `accept-edits` | `acceptEdits` | `read-only` | the TUI's own config | — |
-| `plan` | `plan` | — | its config, **plus** the `plan` agent over `session/set_mode` | — |
 | `manual` | `default` | — | the TUI's own config | — |
+| `plan` | `plan` | — | its config, **plus** the `plan` agent over `session/set_mode` | — |
+| `read-only` | — | — | — | — |
 
 Three things follow from it.
 
-**codex loses two postures over ACP.** codex-acp collapses codex's approval ×
-sandbox grid into three modes, and neither `plan` nor `manual` is among them.
-A create asking for one is refused rather than nudged to a neighbour — the same
-rule the TUI column follows, and the reason the refusal says "under acp": codex
-plainly has plan mode, its adapter does not.
+**codex loses `read-only` over ACP.** codex-acp collapses codex's approval ×
+sandbox grid into three modes, and none is a read-only sandbox — the one it
+calls `read-only` is codex's default preset, which is `accept-edits`. A create
+asking for `read-only` under acp is refused rather than nudged to a neighbour —
+the same rule the TUI column follows, and the reason the refusal says "under
+acp": codex plainly has the sandbox, its adapter does not offer it.
 
 **opencode's postures do not travel as modes at all.** Every posture is the
 same `OPENCODE_CONFIG_CONTENT` document the TUI is launched with, built by the
@@ -156,7 +204,11 @@ neighbour: the caller asked for a restraint, and quietly launching with a
 weaker one is the failure mode worth being loud about. The remembered value
 gets the opposite treatment — it may have been recorded under the other agent
 mode, or before a tool update dropped it — so a posture the agent no longer
-offers falls through to its default.
+offers becomes the nearest one it does that is no looser, and when there is
+none, its strictest (`launchablePermissionMode`) — never the default, which
+in a container is `bypass`. A remembered codex `read-only` under acp, whose
+adapter has nothing that strict, runs `accept-edits`: the most restraint the
+tool can give. A restart's posture lands the same way.
 
 ### A spawned worktree's posture
 
@@ -164,7 +216,7 @@ offers falls through to its default.
 starts from the **caller's** posture, which is read from the caller's row
 and never taken from the request, and it treats that posture as a ceiling. A
 sibling may run at most as permissively as its parent, in the order `bypass >
-auto > accept-edits > manual > plan`. Otherwise an agent that the user left in
+auto > accept-edits > manual > plan = read-only`. Otherwise an agent that the user left in
 `plan` could get its work done unrestrained by asking a sibling to do it.
 The project's remembered posture is skipped here too: a spawned sibling runs
 with nobody attached, so a `plan` inherited from someone's last webapp create
@@ -350,13 +402,15 @@ them announces a change to anything outside the process as it happens:
   unrecorded; so is the TUI's auto-accept toggle, which writes a file every
   worktree of the project shares.
 - **codex** — its hooks carry `permission_mode` only as `bypassPermissions` or
-  `default`, two answers for five postures. Its rollout says more, and at
+  `default`, two answers for four postures. Its rollout says more, and at
   once: a `thread_settings_applied` event is written the moment `/permissions`
   or Shift+Tab changes anything, and a `turn_context` at every turn, both
-  naming the approval policy, its reviewer, the permission profile and the
-  collaboration mode. The registry reads the newest from each recorded
-  rollout and maps it back through the launch table, codex's own plan mode
-  reading as `plan`. It is read on the reconcile pass rather than pushed. A
+  naming the approval policy, its reviewer and the permission profile. The
+  registry reads the newest from each recorded rollout and maps it back
+  through the launch table; a combination the table never launches reads as
+  the nearest posture no looser. The collaboration mode those entries also
+  name is not read — codex's plan mode restrains the model by instruction
+  only, over whatever sandbox is in force. It is read on the reconcile pass rather than pushed. A
   reading is news when it changed since the last, or — on the first — when
   its entry was written during the current pod life: a restart resumes a
   rollout whose newest entry is the old process's until codex writes its

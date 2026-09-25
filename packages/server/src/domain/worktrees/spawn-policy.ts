@@ -7,9 +7,9 @@ import {
   AGENT_TOOLS,
   MODEL_RE,
   PERMISSION_MODES,
-  PERMISSIVENESS,
   isRankedPermissionMode,
   morePermissive,
+  nearestPermissionMode,
   toolSupportsPermissionMode,
   type AgentMode,
   type AgentTool,
@@ -58,6 +58,10 @@ export const SPAWN_MAX_PROMPT_CHARS = 10_000
  */
 export const SPAWN_MAX_IN_FLIGHT_PER_WORKTREE = 8
 
+/** The ranking, as a refusal spells it: `bypass > … > plan = read-only`. */
+const HIERARCHY = PERMISSION_MODES.map((m, i) =>
+  i === 0 ? m : `${morePermissive(PERMISSION_MODES[i - 1], m) ? '>' : '='} ${m}`).join(' ')
+
 /** callerWorkspaceId → number of spawn-initiated creates still provisioning. */
 const inFlightByCaller = new Map<string, number>()
 
@@ -104,7 +108,7 @@ export async function decideSpawn(
   }
   if (request.permissionMode !== undefined
     && !(PERMISSION_MODES as readonly string[]).includes(request.permissionMode)) {
-    return fail(`invalid permission mode '${request.permissionMode}' (expected one of: ${PERMISSIVENESS.join(', ')})`)
+    return fail(`invalid permission mode '${request.permissionMode}' (expected one of: ${PERMISSION_MODES.join(', ')})`)
   }
   if (request.branch !== undefined && request.branch.trim() === '') {
     return fail('branch must not be empty')
@@ -200,15 +204,14 @@ function spawnPermissionMode(
         ok: false,
         error: `permission mode '${requested}' is more permissive than this worktree's own `
           + `('${ceiling}'); a spawned worktree may be granted at most that `
-          + `(${PERMISSIVENESS.join(' > ')})`,
+          + `(${HIERARCHY})`,
       }
     }
     return toolSupportsPermissionMode(tool, requested, mode)
       ? { ok: true, permissionMode: requested }
       : { ok: false, error: `${tool} has no '${requested}' permission mode${where}` }
   }
-  const inherited = PERMISSIVENESS.filter((m) => !morePermissive(m, ceiling))
-    .find((m) => toolSupportsPermissionMode(tool, m, mode))
+  const inherited = nearestPermissionMode(tool, ceiling, mode)
   return inherited !== undefined
     ? { ok: true, permissionMode: inherited }
     : {

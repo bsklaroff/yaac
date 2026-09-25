@@ -3,6 +3,7 @@ import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
   ACP_ADAPTERS,
+  AGENT_CLIS,
   AGENT_TOOLS,
   defaultPermissionMode,
   normalizeTool,
@@ -11,6 +12,7 @@ import {
   SUPPORTED_PERMISSION_MODES,
   supportedPermissionModes,
   toolSupportsPermissionMode,
+  type PermissionMode,
 } from '#types'
 
 describe('normalizeTool', () => {
@@ -45,28 +47,43 @@ describe('normalizeTool', () => {
   })
 })
 
+describe('PERMISSION_MODES', () => {
+  // Every list of postures — the create form's dropdown, the CLI's choices —
+  // reads as the hierarchy, most permissive first.
+  it('runs most permissive first, and so does every tool\'s list', () => {
+    expect(PERMISSION_MODES).toEqual(['bypass', 'auto', 'accept-edits', 'manual', 'plan', 'read-only'])
+    for (const tool of AGENT_TOOLS) {
+      for (const agentMode of ['tui', 'acp'] as const) {
+        const modes = supportedPermissionModes(tool, agentMode)
+        expect(modes, `${tool} ${agentMode}`).toEqual(PERMISSION_MODES.filter((m) => modes.includes(m)))
+      }
+    }
+  })
+})
+
 describe('toolSupportsPermissionMode', () => {
   it('answers for the TUI by default, so every caller that predates modes is unchanged', () => {
-    expect(toolSupportsPermissionMode('codex', 'plan')).toBe(true)
+    expect(toolSupportsPermissionMode('codex', 'read-only')).toBe(true)
     expect(toolSupportsPermissionMode('opencode', 'auto')).toBe(false)
     expect(toolSupportsPermissionMode('pi', 'bypass')).toBe(true)
     expect(toolSupportsPermissionMode('pi', 'manual')).toBe(false)
   })
 
   it('answers for the ADAPTER under acp, which offers fewer postures', () => {
-    // The one that surprises: codex has plan mode, codex-acp does not — it
-    // collapses codex's approval × sandbox grid into three modes. Refusing is
-    // the point; a create that quietly ran `plan` as something weaker would be
-    // handing back an unrestrained worktree.
-    expect(toolSupportsPermissionMode('codex', 'plan', 'tui')).toBe(true)
-    expect(toolSupportsPermissionMode('codex', 'plan', 'acp')).toBe(false)
+    // The one that surprises: codex has a read-only sandbox, codex-acp does
+    // not — it collapses codex's approval × sandbox grid into three modes, the
+    // one it calls `read-only` being codex's default preset. Refusing is the
+    // point; a create that quietly ran `read-only` as something weaker would
+    // be handing back an unrestrained worktree.
+    expect(toolSupportsPermissionMode('codex', 'read-only', 'tui')).toBe(true)
+    expect(toolSupportsPermissionMode('codex', 'read-only', 'acp')).toBe(false)
     expect(toolSupportsPermissionMode('codex', 'manual', 'acp')).toBe(false)
     expect(toolSupportsPermissionMode('codex', 'auto', 'acp')).toBe(true)
     // opencode keeps all four: `plan` is one of its own agents, and the rest
     // ride the same permission config its TUI reads.
     expect(supportedPermissionModes('opencode', 'acp')).toEqual(SUPPORTED_PERMISSION_MODES.opencode)
-    // claude's adapter names a mode for all five.
-    expect(supportedPermissionModes('claude', 'acp')).toEqual(PERMISSION_MODES)
+    // claude's adapter names a mode for all five of its postures.
+    expect(supportedPermissionModes('claude', 'acp')).toEqual(SUPPORTED_PERMISSION_MODES.claude)
   })
 
   it('never offers a posture over acp that the tool itself does not have', () => {
@@ -119,9 +136,29 @@ describe('resolveToolCreateDefaults', () => {
   // Recorded under the terminal, asked for in chat: codex's adapter has no
   // plan mode, so the remembered posture falls through rather than being
   // refused — it was a preference, not a demand.
-  it('drops a remembered posture the agent mode does not offer', () => {
-    expect(resolve({ tool: 'codex', agentMode: 'acp', remembered: { permissionMode: 'plan' } }).permissionMode)
-      .toBe('bypass')
+  // With nothing that strict, the agent mode's strictest — never the
+  // driver default, which in a container is bypass.
+  it('lands a remembered posture the agent mode has nothing as strict as on its strictest', () => {
+    expect(resolve({ tool: 'codex', agentMode: 'acp', remembered: { permissionMode: 'read-only' } }).permissionMode)
+      .toBe('accept-edits')
+    expect(resolve({ tool: 'pi', remembered: { permissionMode: 'plan' } }).permissionMode).toBe('bypass')
+  })
+
+  // A posture this build does not rank — one a newer build added, read back
+  // with a bare cast — compares with nothing, so it is the strictest there is.
+  it('lands a remembered posture this build does not rank on the strictest', () => {
+    const unranked = 'dontAsk' as PermissionMode
+    expect(resolve({ tool: 'codex', remembered: { permissionMode: unranked } }).permissionMode).toBe('read-only')
+    expect(resolve({ tool: 'claude', remembered: { permissionMode: unranked } }).permissionMode).toBe('plan')
+  })
+
+  // One it still has something as strict as becomes that, never the default:
+  // a restraint someone chose does not quietly loosen.
+  it('lands a remembered posture the tool lacks on its nearest one no looser', () => {
+    expect(resolve({ tool: 'codex', remembered: { permissionMode: 'plan' } }).permissionMode).toBe('read-only')
+    expect(resolve({ tool: 'codex', remembered: { permissionMode: 'manual' } }).permissionMode).toBe('read-only')
+    expect(resolve({ tool: 'claude', remembered: { permissionMode: 'read-only' } }).permissionMode).toBe('plan')
+    expect(resolve({ tool: 'opencode', remembered: { permissionMode: 'auto' } }).permissionMode).toBe('accept-edits')
   })
 
   // A `provider/model` id names the vendor its key authenticates against; one
@@ -133,6 +170,26 @@ describe('resolveToolCreateDefaults', () => {
     expect(resolve({ tool: 'opencode', provider: 'anthropic', remembered }).model).toBe('fallback')
     // claude and codex ids carry no provider, and a typed one stands.
     expect(resolve({ remembered: { model: 'claude-next' } }).model).toBe('claude-next')
+  })
+})
+
+describe('AGENT_CLIS', () => {
+  it('names the version the worktree image installs', () => {
+    // yaac launches each posture as the CLI's own flags and reads the CLI's own
+    // reports back as one, so the image must run the release those were
+    // checked against — the same one a host install asks npm for.
+    const dockerfile = fs.readFileSync(
+      path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
+      'utf8',
+    )
+    for (const tool of AGENT_TOOLS) {
+      const { package: pkg, version } = AGENT_CLIS[tool]
+      // claude goes through its own installer, which takes the version.
+      const installed = tool === 'claude'
+        ? /install\.sh \| bash -s (\S+)/.exec(dockerfile)?.[1]
+        : new RegExp(`${pkg.replace(/[/@.]/g, '\\$&')}@(\\S+)`).exec(dockerfile)?.[1]
+      expect(installed, `${tool}: ${pkg} is not pinned in Dockerfile.tools`).toBe(version)
+    }
   })
 })
 

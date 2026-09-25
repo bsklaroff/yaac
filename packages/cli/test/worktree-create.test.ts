@@ -1211,8 +1211,10 @@ describe('buildAgentCmd', () => {
   // `manual` has to actually produce one: the agent asks in its pane instead
   // of acting.
   it('asks for approval in each tool\'s own spelling under manual', () => {
+    // codex has no posture that asks before everything any more, so a row
+    // holding `manual` launches its read-only sandbox, the next one stricter.
     expect(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'manual' }))
-      .toBe(`${CODEX} --ask-for-approval untrusted`)
+      .toBe(`${CODEX} --sandbox read-only`)
     expect(buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'manual' }))
       .toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
   })

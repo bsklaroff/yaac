@@ -113,11 +113,12 @@ describe('readClaudeTranscriptAsAcp', () => {
     expect(calls[1].status).toBe('completed')
     expect(JSON.stringify(calls[1].content)).toContain('export const router = 1')
 
-    // TodoWrite is a plan to a reader, not a tool row.
+    // TodoWrite is a plan to a reader, not a tool row — the step under way
+    // named by its `activeForm`, as claude's own TUI shows it.
     const plan = events.find((e) => e.type === 'plan')
     expect(plan?.type === 'plan' && plan.entries.map((p) => [p.content, p.status])).toEqual([
       ['read the router', 'completed'],
-      ['add the route', 'in_progress'],
+      ['Adding', 'in_progress'],
     ])
   })
 

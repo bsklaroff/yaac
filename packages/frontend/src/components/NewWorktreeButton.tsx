@@ -26,8 +26,10 @@ const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
     + ' and blocks the dangerous ones. Claude gates this by subscription plan.',
   'accept-edits': 'The agent edits files in the worktree without asking, and still'
     + ' asks before running commands or reaching outside it.',
-  plan: 'The agent explores and plans read-only; it cannot edit until you approve a plan.',
   manual: 'The agent asks before every action.',
+  plan: 'The agent explores and plans read-only; it cannot edit until you approve a plan.',
+  'read-only': 'The agent reads and explores freely inside a read-only sandbox, and asks before'
+    + ' every edit and anything that reaches the network.',
 }
 
 const MODE_COPY: Record<AgentMode, string> = { tui: 'Terminal', acp: 'Chat' }

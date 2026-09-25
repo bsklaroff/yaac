@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as cliResolveModule from '#cli-resolve'
 
-// Both lookups hit the real machine (post-install verification, npm/brew
+// Both lookups hit the real machine (post-install verification, npm
 // discovery) — mocked so these tests pass regardless of what's installed
 // locally.
 const cliResolve = vi.hoisted(() => ({
@@ -25,6 +25,7 @@ import {
   startToolInstall,
 } from '#tool-install'
 import { INSTALL_STUB } from '@yaac/test-utils/fixtures'
+import { AGENT_CLIS } from '@yaac/shared/types'
 
 async function waitForStatus(id: string, status: string): Promise<void> {
   await vi.waitFor(() => {
@@ -74,12 +75,13 @@ describe('tool install sessions', () => {
     expect(getToolInstall(started.id).error).toContain('still cannot be found')
   })
 
-  it('codex without npm or Homebrew errors with manual instructions', async () => {
+  // The manual command is the pinned one, the same a host install runs.
+  it('codex without npm errors with the pinned manual install', async () => {
     delete process.env.YAAC_E2E_CODEX_INSTALL_CLI
     const started = startToolInstall('codex')
 
     await waitForStatus(started.id, 'error')
-    expect(getToolInstall(started.id).error).toContain('npm install -g @openai/codex')
+    expect(getToolInstall(started.id).error).toContain(`npm install -g @openai/codex@${AGENT_CLIS.codex.version}`)
   })
 
   it('unknown ids 404; cancel forgets the session and is idempotent', () => {

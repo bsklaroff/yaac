@@ -1579,21 +1579,22 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
   }, 120_000)
 
   it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
-    // codex has plan mode; codex-acp does not — it collapses codex's approval
-    // × sandbox grid into three. Refusing is the point: quietly launching the
+    // codex has a read-only sandbox; codex-acp does not — it collapses codex's
+    // approval × sandbox grid into three, the one it calls `read-only` being
+    // codex's default preset. Refusing is the point: quietly launching the
     // nearest neighbour would hand back a worktree with a weaker restraint
     // than the one that was asked for.
     const before = (await listWorktrees()).length
     const { exitCode, stderr, stdout } = await runYaac(
       serverEnv, 'worktree', 'create', SLUG,
-      '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'plan',
+      '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'read-only',
     )
     expect(exitCode).not.toBe(0)
-    expect(`${stdout}${stderr}`).toMatch(/plan.*permission mode under acp/)
+    expect(`${stdout}${stderr}`).toMatch(/read-only.*permission mode under acp/)
     expect((await listWorktrees()).length).toBe(before)
     // The same posture through the same tool's TUI is fine, which is what
     // makes this the adapter's limit rather than codex's.
-    expect(toolSupportsPermissionMode('codex', 'plan', 'tui')).toBe(true)
+    expect(toolSupportsPermissionMode('codex', 'read-only', 'tui')).toBe(true)
   }, 60_000)
 })
 

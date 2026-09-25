@@ -233,10 +233,11 @@ wrote the file. Only a *resume* needs the converge step.
 
 ## Verify against the pinned binaries before building
 
-claude and codex are unpinned in the image (`Dockerfile.tools`), so each point
-below also needs a test that fails if a new release changes it:
+Every agent CLI is pinned (`AGENT_CLIS`, which `Dockerfile.tools` and host
+installs share), so each point below is checked against the pin and needs a
+test that fails if a pin bump changes it:
 
-1. claude (TUI 2.1.280 and the ACP SDK's 2.1.220), k8s: a new conversation
+1. claude (TUI 2.1.282 and the ACP SDK's 2.1.280), k8s: a new conversation
    writes into the overlay, `--resume <sid>` finds a moved transcript, and
    memory reads and writes `projects/-repo/memory` through the inner mount.
 2. claude, containerless: it writes into and resumes from a `projects/`

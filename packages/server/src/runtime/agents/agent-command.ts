@@ -6,7 +6,7 @@ import {
   type PiProvider,
 } from '@yaac/shared/tool-providers'
 import {
-  toolSupportsPermissionMode,
+  launchablePermissionMode,
   type AgentTool,
   type InitCommandSpec,
   type PermissionMode,
@@ -103,14 +103,15 @@ export interface AgentCmdSpec {
  *
  * Create refuses a posture its tool doesn't have, so this only fires on a row
  * written by a different build — where refusing would strand a worktree that
- * cannot be restarted. Each fallback is the nearest posture the tool really
- * has: opencode has no reviewer model, so `auto` lands on `accept-edits`; pi
- * has no permission system at all, so every posture is `bypass` in practice
- * and saying so beats launching flags that do nothing.
+ * cannot be restarted. The fallback is the most permissive posture the tool
+ * has that is no looser than the row's (`launchablePermissionMode`): opencode has
+ * no reviewer model, so `auto` lands on `accept-edits`; codex's strictest is
+ * `read-only`, where claude's and opencode's is `plan`, so each lands on the
+ * other's. pi has nothing that strict — no permission system at all — so it
+ * is `bypass`, and saying so beats launching flags that do nothing.
  */
 function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
-  if (toolSupportsPermissionMode(tool, mode)) return mode
-  return tool === 'opencode' ? 'accept-edits' : 'bypass'
+  return launchablePermissionMode(tool, mode)
 }
 
 /**
@@ -151,7 +152,7 @@ interface OpencodeConfig {
  */
 export const OPENCODE_ACTIONS: readonly string[] = [
   '*', 'edit', 'glob', 'grep', 'question', 'read', 'shell', 'skill', 'subagent',
-  'webfetch', 'websearch', 'write', 'execute', 'external_directory',
+  'webfetch', 'websearch', 'execute', 'external_directory',
 ]
 
 const rule = (action: string, effect: OpencodeRule['effect']): OpencodeRule =>
@@ -171,9 +172,19 @@ const OPENCODE_ASK_TO_ACT: OpencodeRule[] = [
   { action: 'read', resource: '*.env.*', effect: 'ask' },
 ]
 
-// The base policy's own asks stay; running commands is added to them, which
-// is the whole distinction from bypass.
-const OPENCODE_ACCEPT_EDITS: OpencodeConfig = { permissions: [rule('shell', 'ask')] }
+// Ask-to-act with editing let through, which is what claude's `acceptEdits`
+// does: `edit` is the action opencode's edit, write and patch tools all
+// assert, so edits in the tree land unasked, and everything else
+// that acts — commands, fetches, subagents, Code Mode, MCP tools — still asks.
+// An edit outside the tree asks too: that is the `external_directory` action,
+// whose last match stays the wildcard's ask. claude also lets through a few
+// filesystem commands (`mkdir`, `mv`, `rm`, …); a `shell` rule matching
+// command text is not stated, since how the pinned opencode matches a chained
+// command is unverified, and a pattern that matched `rm x; curl …` would fail
+// open.
+const OPENCODE_ACCEPT_EDITS: OpencodeConfig = {
+  permissions: [...OPENCODE_ASK_TO_ACT, rule('edit', 'allow')],
+}
 
 const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
   bypass: { permissions: [rule('*', 'allow')] },
@@ -188,6 +199,8 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
   // read-only, as it is for claude and codex.
   plan: { default_agent: 'plan', permissions: OPENCODE_ASK_TO_ACT },
   manual: { permissions: OPENCODE_ASK_TO_ACT },
+  // Never reached either — `postureFor` lands it on `plan`.
+  'read-only': { default_agent: 'plan', permissions: OPENCODE_ASK_TO_ACT },
 }
 
 /**
@@ -204,7 +217,7 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  */
 export function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
   const config = {
-    ...OPENCODE_POSTURE[mode],
+    ...OPENCODE_POSTURE[postureFor('opencode', mode)],
     ...(model === undefined ? {} : { model }),
     // The model reporter (see `ensureAgentReporters`). `$HOME` is left for the
     // launch shell to expand, which the double quotes allow.
@@ -224,14 +237,17 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     //    on-request), hence no flags. Its sandbox has network off, which is
     //    what makes it *ask* to escalate for anything reaching the network.
     //  - auto keeps that sandbox and hands the approvals to a reviewer model.
-    //  - plan is the read-only sandbox; codex has no plan feature of its own.
-    //  - manual asks for everything but known-safe reads.
+    //  - read-only is the read-only sandbox (its "Read Only" preset: approval
+    //    to edit or reach the network).
+    //  - plan and manual are not codex postures, and `postureFor` lands both
+    //    on read-only; stated anyway, so the table cannot fall open.
     const posture = {
       bypass: '--yolo',
       auto: '--approve-for-me',
       'accept-edits': '',
+      manual: '--sandbox read-only',
       plan: '--sandbox read-only',
-      manual: '--ask-for-approval untrusted',
+      'read-only': '--sandbox read-only',
     }[mode]
     // --model goes after the resume subcommand: codex defines -m/--model on
     // both the root TUI command and `codex resume`, so trailing placement
@@ -330,8 +346,10 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     bypass: 'bypassPermissions',
     auto: 'auto',
     'accept-edits': 'acceptEdits',
-    plan: 'plan',
     manual: 'manual',
+    plan: 'plan',
+    // Never reached — `postureFor` lands it on `plan`.
+    'read-only': 'plan',
   }[mode]
   // `env -u TMUX` is what keeps the pane title readable, and it is the whole
   // reason claude's status still works — see `SPINNER_PREFIX` in claude.ts.

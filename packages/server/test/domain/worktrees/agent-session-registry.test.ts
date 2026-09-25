@@ -593,7 +593,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
-    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('plan')
+    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')
   })
 
   it('keeps an ordinal stable once assigned, so a restart\'s windows do not reshuffle', async () => {

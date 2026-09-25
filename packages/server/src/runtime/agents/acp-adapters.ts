@@ -110,9 +110,10 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * open one; a worktree authenticates from the credentials it was launched
    * with or not at all.
    *
-   * Its three modes are codex's approval × sandbox grid, collapsed: nothing
-   * there is `plan` or `manual`, which is why neither is a posture codex can
-   * be created with under acp.
+   * Its three modes are codex's approval × sandbox grid, collapsed, and none
+   * is a read-only sandbox — the one it calls `read-only` is codex's default
+   * preset, yaac's `accept-edits` — which is why yaac's `read-only` is not a
+   * posture codex can be created with under acp.
    *
    * Its own default is `agent` — NOT the codex CLI's `read-only` preset — so
    * this is the one adapter where failing to set a mode lands somewhere weaker
