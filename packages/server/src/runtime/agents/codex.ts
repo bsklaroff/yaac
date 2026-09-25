@@ -59,17 +59,37 @@ export async function getCodexFirstUserMessage(jsonlPath: string): Promise<strin
 
 /**
  * The items codex builds its terminal title from — its default pair, plus the
- * model. With them the idle title reads `workspace | GPT-5.6-Sol`, a turn in
- * flight `⠙ workspace | GPT-5.6-Sol`, and a `/model` rewrites the last segment
- * the moment it is confirmed, before any turn (verified against codex-cli
+ * conversation and the model. With them the idle title reads
+ * `workspace | 01a0d8bb-6d78-7cb3-a16e-7e254... | GPT-5.6-Sol`, a turn in
+ * flight `⠙ workspace | …`, and a `/model` rewrites the last segment the
+ * moment it is confirmed, before any turn (verified against codex-cli
  * 0.156.1). That is the only push codex offers: no hook fires on a model
  * change, and the rollout does not exist until the first turn.
  *
  * `activity` stays first, which is what keeps `classifyCodexTitle`'s
  * leading-spinner test true; `project-name` stays ahead of the model, which is
- * what gives `CODEX_MODEL_FORMAT` a separator to find.
+ * what gives `CODEX_MODEL_FORMAT` a separator to find, and `thread-id` sits
+ * between them for `codexThreadPrefix`.
  */
-export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
+export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'thread-id', 'model'] as const
+
+/** The title's `thread-id` segment: the id cut short, and while a turn runs a
+ *  spinner frame after it. */
+const THREAD_SEGMENT = /^([0-9a-f]{8}-[0-9a-f-]+?)(?:\.\.\.)?(?: [\u2800-\u28FF])?$/
+
+/**
+ * The start of the conversation id a codex pane's title names, or undefined
+ * before codex has begun one (the title then has no segment between the
+ * project and the model). codex cuts the id to its first 29 characters and
+ * `...` whatever the pane's width, and trails the segment with a spinner
+ * frame while a turn runs (verified against codex-cli 0.156.1) — so it is a
+ * prefix, to be matched against the ids the rollouts carry. It follows `/new`
+ * and `/resume` the moment they land.
+ */
+export function codexThreadPrefix(title: string): string | undefined {
+  const parts = title.split(' | ')
+  return parts.length < 3 ? undefined : THREAD_SEGMENT.exec(parts[parts.length - 2])?.[1]
+}
 
 /**
  * A tmux format resolving to the model segment of the title — everything after
@@ -230,12 +250,10 @@ const rolloutMetas = new Map<string, { sessionId: string; cwd: string } | null>(
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-/** A conversation `findCodexRollouts` found, with when its rollout was last
- *  written. */
+/** A conversation `findCodexRollouts` found. */
 interface CodexRollout {
   rollout: string
   sessionId: string
-  mtimeMs: number
 }
 
 /**
@@ -259,7 +277,7 @@ interface CodexRollout {
  */
 export async function findCodexRollouts(codexHome: string, checkout: string, sinceMs: number): Promise<CodexRollout[]> {
   const cwds = new Set([checkout, await fs.realpath(checkout).catch(() => checkout)])
-  const found: CodexRollout[] = []
+  const found: Array<CodexRollout & { mtimeMs: number }> = []
   for (let t = sinceMs - DAY_MS; t < Date.now() + DAY_MS; t += DAY_MS) {
     const day = new Date(t)
     const dir = path.join(
@@ -297,7 +315,7 @@ export async function findCodexRollouts(codexHome: string, checkout: string, sin
       if (mtimeMs >= sinceMs) found.push({ rollout, sessionId: meta.sessionId, mtimeMs })
     }
   }
-  return found.sort((a, b) => a.mtimeMs - b.mtimeMs)
+  return found.sort((a, b) => a.mtimeMs - b.mtimeMs).map(({ rollout, sessionId }) => ({ rollout, sessionId }))
 }
 
 /** Test helper: forget what each rollout last answered. */

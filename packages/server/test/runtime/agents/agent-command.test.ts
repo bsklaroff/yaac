@@ -46,7 +46,7 @@ describe('buildAgentCmd', () => {
     // The title items are how a `/model` reaches yaac: codex rewrites its
     // title's last segment the moment one lands. Double-quoted with escaped
     // inner quotes, so the TOML array survives the single-quoted wrapper.
-    const TITLE = '-c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"model\\"]"'
+    const TITLE = '-c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"thread-id\\",\\"model\\"]"'
 
     it('omits prompt arguments', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', permissionMode: 'bypass' })

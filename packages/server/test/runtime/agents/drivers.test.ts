@@ -375,7 +375,7 @@ describe('agentDriver', () => {
     expect(agentSets().length).toBe(before + 3)
   })
 
-  it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
+  it("follows a codex pane's model and conversation through its title", async () => {
     // codex can run nothing on a model switch, but it retitles the pane: the
     // format cuts the model's display name out of the title, and codex's own
     // cached catalog maps it back to the slug the rest of yaac speaks.
@@ -422,6 +422,25 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'my-made-up-model' }],
     }))
+
+    // The title also names the conversation, cut short as codex 0.156.1 cuts
+    // it — what joins the pane to its conversation where no hook says. A turn
+    // trails it with a spinner; a title naming none yet leaves the last one
+    // standing; a `/new` moves it.
+    const title = (value: string): void => stream.feed(`%subscription-changed status-2 $0 @0 0 %2 : ${value}\n`)
+    const named = (): Array<string | undefined> => [...new Set(seen.flatMap((o) =>
+      o.kind === 'live-agents' ? o.agents.map((a) => a.sessionIdPrefix) : []))]
+    title('workspace | my-made-up-model')
+    title('workspace | 01a0d8bb-6d78-7cb3-a16e-7e254... | my-made-up-model')
+    title('⠙ workspace | 01a0d8bb-6d78-7cb3-a16e-7e254... ⠙ | my-made-up-model')
+    expect(seen.at(-1)).toEqual({ kind: 'status', handle: '%2', status: 'running' })
+    title('workspace | my-made-up-model')
+    title('workspace | 01a0d8bb-e717-7eb3-8acf-62542... | my-made-up-model')
+    expect(named()).toEqual([undefined, '01a0d8bb-6d78-7cb3-a16e-7e254', '01a0d8bb-e717-7eb3-8acf-62542'])
+    expect(seen.at(-1)).toEqual({
+      kind: 'live-agents',
+      agents: [{ handle: '%2', tool: 'codex', sessionIdPrefix: '01a0d8bb-e717-7eb3-8acf-62542', model: 'my-made-up-model' }],
+    })
   })
 
   it('reports a dropped tui stream as down, and retracts the command channel', async () => {

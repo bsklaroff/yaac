@@ -141,8 +141,9 @@ async function installFakeAgents(binDir: string): Promise<void> {
 const CODEX_RUNS = 'codex-runs'
 
 /**
- * The stand-in codex TUI, as codex-cli 0.156.1 treats the disk yaac reads
- * where no hook runs. A fresh launch mints its own conversation id and files a
+ * The stand-in codex TUI, as codex-cli 0.156.1 treats the disk and the pane
+ * title yaac reads where no hook runs. A fresh launch mints its own
+ * conversation id, names it in the title (cut short, as codex does), and files a
  * rollout under `$CODEX_HOME/sessions/<local day>` at its first prompt, opened
  * by a `session_meta` naming the id, its cwd and `source: "cli"`, then that
  * prompt — and is moved to full access at once, as a `/permissions` pick
@@ -168,6 +169,8 @@ const settings = (bypass) => JSON.stringify({
   },
 }) + '\\n'
 const sessions = path.join(process.env.CODEX_HOME, 'sessions')
+// The title names the conversation cut short, between the project and the model.
+const title = (id) => process.stdout.write('\\x1b]2;workspace | ' + id.slice(0, 29) + '... | e2e-model\\x07')
 const resume = args.indexOf('resume')
 if (resume >= 0) {
   const id = args[resume + 1]
@@ -179,7 +182,10 @@ if (resume >= 0) {
     process.exit(1)
   }
   fs.appendFileSync(rollout, settings(args.includes('--yolo')))
+  title(id)
 } else {
+  const id = require('crypto').randomUUID()
+  title(id)
   let typed = ''
   process.stdin.setEncoding('utf8')
   process.stdin.on('data', function first(chunk) {
@@ -188,7 +194,6 @@ if (resume >= 0) {
     if (nl < 0) return
     process.stdin.off('data', first)
     const now = new Date()
-    const id = 'e2e-codex-' + now.getTime()
     const pad = (n) => String(n).padStart(2, '0')
     const dir = path.join(sessions, String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()))
     fs.mkdirSync(dir, { recursive: true })
@@ -1761,11 +1766,10 @@ describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
       const created = id
       const codexSession = async () => (await listWorktrees() as Array<ListedWorktree & {
         agentSessions: Array<{ agentSessionId: string; active: boolean; prompt?: string }>
-      }>).find((w) => w.worktreeId === created)?.agentSessions.find((s) => s.agentSessionId.startsWith('e2e-codex-'))
+      }>).find((w) => w.worktreeId === created)?.agentSessions.find((s) => s.agentSessionId !== created)
       const startCommand = async (): Promise<string> =>
         tmux(created, 'display', '-p', '-t', 'yaac:codex', '#{pane_start_command}')
       const restart = async (): Promise<void> => {
-        expect((await runYaac(serverEnv, 'worktree', 'stop', created)).exitCode).toBe(0)
         const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'worktree', 'restart', created)
         expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
       }
@@ -1775,20 +1779,31 @@ describe.skipIf(!CAN_RUN)('a codex conversation no hook reports', () => {
       await restart()
       expect(await startCommand()).not.toContain('resume')
 
-      await tmux(created, 'send-keys', '-t', 'yaac:codex', 'e2e codex prompt', 'Enter')
+      // Prompted once this life's live set has settled, then restarted the
+      // moment the turn has opened its rollout. The status push that stamps
+      // the waiting spell also carries the title's conversation id, and the
+      // pass that publishing it kicks lands within a debounce; after that,
+      // nothing about a turn changes the live set, so no pass records the
+      // conversation before the restart. The restart's own sweep has to.
       await vi.waitFor(async () => {
-        expect(await codexSession()).toMatchObject({ active: true, prompt: 'e2e codex prompt' })
+        expect((await listWorktrees() as Array<ListedWorktree & { waitingSinceMs?: number }>)
+          .find((w) => w.worktreeId === created)?.waitingSinceMs).toBeDefined()
       }, { timeout: 30_000, interval: 250 })
-      // The pass that marked it active followed its rollout first, so the row
-      // already holds the full access the conversation moved to.
-      const conversation = (await codexSession())?.agentSessionId ?? ''
+      await new Promise((r) => setTimeout(r, 1_000))
+      await tmux(created, 'send-keys', '-t', 'yaac:codex', 'e2e codex prompt', 'Enter')
+      const sessions = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', 'sessions')
+      const rollouts = async (): Promise<string[]> =>
+        (await fs.readdir(sessions, { recursive: true }).catch(() => [])).filter((f) => f.endsWith('.jsonl'))
+      await vi.waitFor(async () => { expect(await rollouts()).toHaveLength(1) }, { timeout: 30_000, interval: 50 })
+      const conversation = /-([0-9a-f-]{36})\.jsonl$/.exec((await rollouts())[0] ?? '')?.[1] ?? ''
 
+      // Resumed by codex's own id, in the full access the conversation moved
+      // to — and running it: codex refuses an id it has no rollout for, and
+      // the window would close with it, leaving no pane to be active on.
       await restart()
       expect(await startCommand()).toContain(`--yolo resume ${conversation}`)
-      // And running it: codex refuses an id it has no rollout for, and the
-      // window would close with it, leaving no live pane to be active on.
       await vi.waitFor(async () => {
-        expect(await codexSession()).toMatchObject({ agentSessionId: conversation, active: true })
+        expect(await codexSession()).toMatchObject({ agentSessionId: conversation, active: true, prompt: 'e2e codex prompt' })
       }, { timeout: 30_000, interval: 250 })
     } finally {
       await fs.rm(marker, { force: true })

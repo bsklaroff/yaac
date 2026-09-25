@@ -41,6 +41,7 @@ import {
   agentStatusFormat,
   agentWindowTool,
   classifyAgentObservation,
+  titleSessionIdPrefix,
   resolveAgentModel,
   splitAgentReport,
 } from './agent-tools'
@@ -121,6 +122,8 @@ class TuiConnection implements AgentConnection {
   private readonly modelPushes = new Map<string, string>()
   /** Each pane's reported permission mode, as its tool last put it. */
   private readonly modes = new Map<string, string>()
+  /** The start of each pane's conversation id, where its title names one. */
+  private readonly sessionPrefixes = new Map<string, string>()
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
   private done = false
@@ -246,6 +249,7 @@ class TuiConnection implements AgentConnection {
       this.models.delete(paneId)
       this.modelPushes.delete(paneId)
       this.modes.delete(paneId)
+      this.sessionPrefixes.delete(paneId)
     }
     this.publishAgents()
   }
@@ -255,9 +259,11 @@ class TuiConnection implements AgentConnection {
     const agents: LiveAgent[] = [...this.subscribed].map(([handle, tool]) => {
       const model = this.models.get(handle)
       const reportedMode = this.modes.get(handle)
+      const sessionIdPrefix = this.sessionPrefixes.get(handle)
       return {
         handle,
         tool,
+        ...(sessionIdPrefix !== undefined ? { sessionIdPrefix } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(reportedMode !== undefined ? { reportedMode } : {}),
       }
@@ -322,6 +328,13 @@ class TuiConnection implements AgentConnection {
         handle: n.paneId,
         status: classifyAgentObservation(tool, n.value),
       })
+      // The same title can name the pane's conversation. A title that names
+      // none (codex before its thread starts) leaves the last one standing.
+      const prefix = titleSessionIdPrefix(tool, n.value)
+      if (prefix !== undefined && this.sessionPrefixes.get(n.paneId) !== prefix) {
+        this.sessionPrefixes.set(n.paneId, prefix)
+        this.publishAgents()
+      }
     }
     // %output — never subscribed to (every connection attaches no-output).
   }

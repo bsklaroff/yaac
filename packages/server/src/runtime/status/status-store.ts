@@ -275,15 +275,16 @@ export function setLiveAgents(slug: string, worktreeId: string, agents: LiveAgen
   const changed = previous === undefined
     || previous.length !== agents.length
     || agents.some((a) => !previous.some((p) =>
-      p.handle === a.handle && p.agentSessionId === a.agentSessionId && p.model === a.model
+      p.handle === a.handle && p.agentSessionId === a.agentSessionId
+      && p.sessionIdPrefix === a.sessionIdPrefix && p.model === a.model
       && p.reportedMode === a.reportedMode))
   e.liveAgents = agents
   for (const handle of [...e.agents.keys()]) if (!next.has(handle)) e.agents.delete(handle)
   e.updatedAtMs = Date.now()
-  // A membership, id, model or mode change is what the agent-session registry joins
-  // against, so it gets its own notification: the reconcile pass it kicks is
-  // how a just-handshaken ACP conversation becomes a row without waiting for
-  // the resync.
+  // A membership, id (or a title's id prefix), model or mode change is what
+  // the agent-session registry joins against, so it gets its own
+  // notification: the reconcile pass it kicks is how a just-handshaken ACP
+  // conversation becomes a row without waiting for the resync.
   if (changed) liveAgentsListener?.()
   if (changed || readWorktreeStatus(slug, worktreeId) !== before) notifyChanged()
 }

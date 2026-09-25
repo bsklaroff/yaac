@@ -1,5 +1,6 @@
 import { worktreeDriver } from '#drivers/driver'
 import { teardownForRestart } from './cleanup'
+import { reconcileBeforeTeardown } from './agent-session-registry'
 import { createWorktree } from './create'
 import {
   ensureProvisioning,
@@ -142,6 +143,9 @@ export async function restartWorktree(
 
   try {
     if (jobName) onProgress(`Stopping session job ${jobName}...`)
+    // The conversations to resume are read from the rows below, so they must
+    // hold what the agents last did before the teardown freezes them.
+    if (jobName) await reconcileBeforeTeardown(worktreeId)
     // Always, not just when there was a Job: a terminating mark left by an
     // earlier teardown would render the fresh worktree as "stopping…".
     await teardownForRestart({ jobName, projectSlug, workspaceId: worktreeId })

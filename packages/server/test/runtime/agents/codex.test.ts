@@ -291,7 +291,7 @@ describe('findCodexRollouts', () => {
    *  conversation writes — last modified at `mtime`. */
   const rollout = async (
     name: string, cwd: string, mtime: Date, at = mtime, source = 'cli',
-  ): Promise<{ rollout: string; sessionId: string; mtimeMs: number }> => {
+  ): Promise<{ rollout: string; sessionId: string }> => {
     const file = path.join(dayDir(at), `rollout-${name}.jsonl`)
     await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.writeFile(file, `${JSON.stringify({
@@ -300,7 +300,7 @@ describe('findCodexRollouts', () => {
       payload: { id: `id-${name}`, session_id: `id-${name}`, cwd, source, base_instructions: { text: 'x'.repeat(20_000) } },
     })}\n${JSON.stringify({ type: 'turn_context', payload: {} })}\n`)
     await fs.utimes(file, mtime, mtime)
-    return { rollout: file, sessionId: `id-${name}`, mtimeMs: (await fs.stat(file)).mtimeMs }
+    return { rollout: file, sessionId: `id-${name}` }
   }
 
   // A containerless worktree's rollouts share the project's codex home with
@@ -342,7 +342,7 @@ describe('findCodexRollouts', () => {
     await expect(findCodexRollouts(home(), checkout, now.getTime() - 1000)).resolves.toEqual([])
     await fs.writeFile(file, `${meta}\n`)
     await expect(findCodexRollouts(home(), checkout, now.getTime() - 1000)).resolves
-      .toEqual([{ rollout: file, sessionId: 'conv-a', mtimeMs: (await fs.stat(file)).mtimeMs }])
+      .toEqual([{ rollout: file, sessionId: 'conv-a' }])
   })
 
   it('finds nothing in a codex home with no sessions', async () => {

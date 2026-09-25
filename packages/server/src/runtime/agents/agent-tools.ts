@@ -20,6 +20,7 @@ import {
   CODEX_MODEL_FORMAT,
   classifyCodexTitle,
   codexModelSlug,
+  codexThreadPrefix,
   getCodexFirstUserMessage,
 } from './codex'
 import {
@@ -193,6 +194,15 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Age
   if (tool === 'codex') return classifyCodexTitle(observed)
   if (tool === 'opencode' || tool === 'pi') return observed.trim() === 'running' ? 'running' : 'waiting'
   return classifyClaudeTitle(observed)
+}
+
+/**
+ * The start of the conversation id a pushed status value names, for the tool
+ * whose pane title carries one — codex's (`codexThreadPrefix`) — else
+ * undefined. It is what joins a pane to its conversation where no hook says.
+ */
+export function titleSessionIdPrefix(tool: AgentTool, observed: string): string | undefined {
+  return tool === 'codex' ? codexThreadPrefix(observed) : undefined
 }
 
 /**

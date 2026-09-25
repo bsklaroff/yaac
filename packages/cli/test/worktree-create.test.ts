@@ -1179,7 +1179,7 @@ describe('createWorktree', () => {
 
 describe('buildAgentCmd', () => {
   // codex carries its title items, which are how its model reaches yaac.
-  const CODEX = 'codex -c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"model\\"]"'
+  const CODEX = 'codex -c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"thread-id\\",\\"model\\"]"'
 
   it('returns the codex respawn command unchanged', () => {
     const fresh = buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'bypass' })

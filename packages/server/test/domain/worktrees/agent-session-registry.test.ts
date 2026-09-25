@@ -621,53 +621,72 @@ describe('reconcileWorktreeAgentSessions', () => {
   const linkOf = async (id: string) =>
     (await listWorktreeAgentSessions('demo', 'wt-1')).find((l) => l.agentSessionId === id)
 
+  /** codex's own conversation ids, and the start of each its title shows. */
+  const X = '01a0d8bb-6d78-7cb3-a16e-7e254694852f'
+  const Y = '01a0d8bb-e717-7eb3-8acf-625427a51cc0'
+  const Z = '01a0d8bf-02a7-7c32-965a-997dd2ebc67d'
+  const shown = (id: string): string => id.slice(0, 29)
+
   /**
    * Under containerless no hook records a codex conversation, so the registry
    * finds its rollout in the project's codex home by the checkout it names, and
-   * records it as the hook would have: codex's own id, the rollout, the pane.
-   * Only this worktree's TUI conversations count, and only once they exist.
+   * records it as the hook would have: codex's own id, the rollout, and the
+   * pane whose title names it. Only this worktree's TUI conversations count,
+   * and only once they exist.
    */
-  it('records a codex conversation no hook reported, on the pane writing it', async () => {
+  it('records each codex conversation no hook reported on the pane that names it', async () => {
     const fake = installFakeWorktreeDriver({ exec: podExec })
     fake.override({ kind: 'containerless' })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'read-only' })
     await recordWorktreeLife('demo', 'wt-1', 0)
     // What create records: codex mints its own id, so the pin is no conversation.
     await recordAgentSessions('demo', 'wt-1', [{ tool: 'codex', agentSessionId: 'wt-1', firstPrompt: 'fix it' }])
-    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex', model: 'gpt-5.6-sol' }])
-    const soon = new Date(Date.now() + 1000)
+    const panes = (second: string): void => setLiveAgents('demo', 'wt-1', [
+      { handle: '%0', tool: 'codex', sessionIdPrefix: shown(X), model: 'gpt-5.6-sol' },
+      { handle: '%1', tool: 'codex', sessionIdPrefix: shown(second) },
+    ])
+    panes(Y)
+    const at = (s: number): Date => new Date(Date.now() + s * 1000)
     // Another worktree's conversation, and a `codex exec` an agent ran here.
-    await codexRollout('other', soon, [codexSettings(soon, true)], { cwd: worktreeDir('demo', 'wt-2') })
-    await codexRollout('exec', soon, [codexSettings(soon, true)], { source: 'exec' })
+    await codexRollout('other', at(1), [codexSettings(at(1), true)], { cwd: worktreeDir('demo', 'wt-2') })
+    await codexRollout('exec', at(1), [codexSettings(at(1), true)], { source: 'exec' })
 
     // Not prompted yet, so no rollout: nothing to record, or to resume.
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
     expect(await states()).toEqual([['wt-1', false]])
 
-    const first = await codexRollout('conv-x', soon, [codexPrompt('fix the flaky test'), codexSettings(soon, true)])
+    const first = await codexRollout(X, at(1), [codexPrompt('fix the flaky test'), codexSettings(at(1), true)])
+    await codexRollout(Y, at(2), [codexPrompt('now the docs'), codexSettings(at(2), true)])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
-    expect(await linkOf('conv-x')).toMatchObject({
+    expect(await linkOf(X)).toMatchObject({
       transcriptPath: path.relative(projectDir('demo'), first),
       paneId: '%0',
       active: true,
       firstPrompt: 'fix the flaky test',
       model: 'gpt-5.6-sol',
     })
-    expect(await states()).toEqual([['wt-1', false], ['conv-x', true]])
+    expect(await linkOf(Y)).toMatchObject({ paneId: '%1', active: true, firstPrompt: 'now the docs' })
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('bypass')
 
-    // A `/new`: the pane now writes another rollout, and the first stays history.
-    const later = new Date(Date.now() + 2000)
-    await codexRollout('conv-z', later, [codexPrompt('now the docs'), codexSettings(later, false)])
+    // A `/new` in the second pane: its title names Z before Z has a rollout.
+    // Y leaves the pane though it was written after X, which stays on its own.
+    panes(Z)
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
-    expect(await states()).toEqual([['wt-1', false], ['conv-x', false], ['conv-z', true]])
+    expect(await states()).toEqual([['wt-1', false], [X, true], [Y, false]])
+
+    // Z's first turn.
+    await codexRollout(Z, at(3), [codexPrompt('and the tests'), codexSettings(at(3), false)])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
+    expect(await states()).toEqual([['wt-1', false], [X, true], [Y, false], [Z, true]])
+    expect(await linkOf(Z)).toMatchObject({ paneId: '%1' })
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')
   })
 
   // A restart resumes a conversation into the rollout it began, filed under the
   // day it began — here three days back, outside any window the search lists.
-  // The recorded rollout is what keeps it on its pane, so a later restart
-  // still resumes it, and what its posture is still followed by.
+  // The pane's title naming it is what keeps it active, so a later restart
+  // still resumes it, and its recorded rollout is what its posture is still
+  // followed by.
   it('keeps resuming and following a codex conversation restarted days after it began', async () => {
     const fake = installFakeWorktreeDriver({ exec: podExec })
     fake.override({ kind: 'containerless' })
@@ -677,35 +696,35 @@ describe('reconcileWorktreeAgentSessions', () => {
     let rollout: string
     try {
       await recordWorktreeLife('demo', 'wt-1', 0)
-      setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+      setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex', sessionIdPrefix: shown(X) }])
       const written = new Date(began.getTime() + 1000)
-      rollout = await codexRollout('conv-x', written, [codexPrompt('fix it'), codexSettings(written, false)])
+      rollout = await codexRollout(X, written, [codexPrompt('fix it'), codexSettings(written, false)])
       await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
-      expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: 'conv-x' }])
+      expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: X }])
     } finally {
       vi.useRealTimers()
     }
 
     // The restart, as create runs it: a new life, then the conversation it
-    // resumes (`codex resume conv-x`), which codex marks by recording the
+    // resumes (`codex resume <id>`), which codex marks by recording the
     // settings it resumed under.
     await recordWorktreeLife('demo', 'wt-1', 0)
     await applyWorktreeEvent({
       type: 'sessions-launched', projectSlug: 'demo', worktreeId: 'wt-1',
-      sessions: [{ tool: 'codex', agentSessionId: 'conv-x', mode: 'tui' }],
+      sessions: [{ tool: 'codex', agentSessionId: X, mode: 'tui' }],
     })
     _resetWorktreeStatusStoreForTests()
-    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex', sessionIdPrefix: shown(X) }])
     await fs.appendFile(rollout, `${JSON.stringify(codexSettings(new Date(), false))}\n`)
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
-    expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: 'conv-x', paneId: '%0' }])
+    expect(await listActiveAgentSessions('demo', 'wt-1')).toMatchObject([{ agentSessionId: X, paneId: '%0' }])
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')
 
     // A `/permissions` pick in the resumed conversation.
     await fs.appendFile(rollout, `${JSON.stringify(codexSettings(new Date(Date.now() + 1000), true))}\n`)
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('bypass')
-    expect(await states()).toEqual([['conv-x', true]])
+    expect(await states()).toEqual([[X, true]])
   })
 
   // A codex rollout's settings carry when they were written. An entry from
@@ -728,7 +747,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     const log = worktreeSessionStartsPath('demo', 'wt-1')
     await fs.mkdir(path.dirname(log), { recursive: true })
     await fs.appendFile(log, `${JSON.stringify({ id: 'conv-y', tool: 'codex', pane: '0', path: rel })}\n`)
-    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex', sessionIdPrefix: shown(X) }])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')

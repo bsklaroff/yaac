@@ -277,6 +277,11 @@ describe('onLiveAgentsChanged', () => {
     expect(listener).toHaveBeenCalledTimes(2)
     setLiveAgents('demo', 's1', [])
     expect(listener).toHaveBeenCalledTimes(3)
+    // A codex pane's title naming its conversation, then another after a
+    // `/new` — how the registry moves that pane off the one it left.
+    setLiveAgents('demo', 's1', [{ handle: '%0', tool: 'codex', sessionIdPrefix: '01a0d8bb-6d78' }])
+    setLiveAgents('demo', 's1', [{ handle: '%0', tool: 'codex', sessionIdPrefix: '01a0d8bb-e717' }])
+    expect(listener).toHaveBeenCalledTimes(5)
   })
 
   // A driver republishes the same set on every sweep, and every turn boundary

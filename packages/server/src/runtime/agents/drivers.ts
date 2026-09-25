@@ -62,6 +62,13 @@ export interface LiveAgent {
    */
   agentSessionId?: string
   /**
+   * The start of that id, where a `tui` pane's title shows it — codex's, cut
+   * short (`codexThreadPrefix`). It is how the registry joins a codex pane to
+   * its conversation where no hook names the pane (containerless). Absent
+   * until the title has named one.
+   */
+  sessionIdPrefix?: string
+  /**
    * The model it is running, as the agent itself last reported it — pushed
    * the moment it switches, never polled. `acp` hears it from the adapter
    * (the handshake's reply, then each `config_option_update`); `tui` from a

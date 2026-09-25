@@ -610,13 +610,18 @@ codex anew, because codex refuses to resume an id it has no rollout for.
 `codex resume` appends to the rollout the conversation began and records the
 settings it resumed under the moment it starts (verified against codex-cli
 0.156.1). So a conversation resumed days after it began, filed under a day
-the search no longer lists, is still found through its recorded rollout.
+the search no longer lists, stays on the pane its title names (below) and is
+still followed through its recorded rollout.
 
-No hook names the pane a conversation runs on, so it is inferred: each codex
-pane writes one rollout at a time, so the live codex panes run the most
-recently written conversations, one each. With the one codex window yaac
-launches that is exact, short of a codex run by hand in a scratch window
-writing more recently than it.
+No hook names the pane a conversation runs on, so yaac launches codex with
+its conversation id in the terminal title (the `thread-id` item, between the
+project and the model). codex cuts it to its first 29 characters, whatever
+the pane's width, and moves it the moment a `/new` or `/resume` lands. The
+status watcher already receives each codex pane's title, and hands on that
+prefix (`LiveAgent.sessionIdPrefix`). A conversation is on the pane whose
+title its id starts with, which is exact however many codex panes a worktree
+has. A conversation whose pane now names another, such as one a `/new` left
+behind, is recorded without a pane and so goes inactive.
 
 ## Host requirements
 

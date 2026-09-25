@@ -146,7 +146,8 @@ The hook fires on `startup`, `resume`, `clear` and `compact` — exactly the
 events that change which conversation a pane is in — and it is the only witness
 of a user-started one, because it alone sees `TMUX_PANE` beside the tool's
 session id. `/clear` and a hand-typed `claude --resume` are invisible from
-outside the pod.
+outside the pod. codex under containerless, where its hook cannot run, is found
+by its rollouts and its pane title instead (docs/containerless-driver.md).
 
 **The pod appends and the server folds**, and that asymmetry is the whole
 design. The log is append-only and never renamed, which is what makes mounting
@@ -184,7 +185,11 @@ transcript, but its pane belongs to a pod that is gone — so the fold keeps the
 conversation and drops the handle.
 
 `active` is frozen at teardown and never recomputed while a worktree is stopped.
-That freeze is the whole contract: a restart brings back exactly the worktrees
+A stop or restart first runs the sweep once more while its agents are still
+live (`reconcileBeforeTeardown`): a sweep runs on a change to the live set or
+on the resync, and neither follows what an agent writes, so without it the
+freeze would miss a conversation begun within a resync of the stop. That freeze
+is the whole contract: a restart brings back exactly the conversations
 that were live when the worktree stopped, each in its own tmux window, in the
 order they were first opened (`agentWindowName` — the first keeps the bare tool
 name so every existing `yaac:<tool>` target still resolves).

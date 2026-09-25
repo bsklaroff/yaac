@@ -93,6 +93,26 @@ export async function reconcileAgentSessions(snapshot?: RuntimeSnapshot): Promis
 }
 
 /**
+ * One last pass over a worktree about to be torn down, while its agents are
+ * still live. A pass runs on a change to the live set or on the resync, and
+ * neither follows what an agent writes: a codex turn opening a rollout, a
+ * hook's sighting of a `/clear`. A teardown freezes the active set the rows
+ * hold at that moment, so without this a conversation begun within a resync
+ * of a stop is not the one a restart resumes — and a codex one found by its
+ * rollout, which then predates the next life, is never found again.
+ * Best-effort: a stop must not fail on it.
+ */
+export async function reconcileBeforeTeardown(worktreeId: string): Promise<void> {
+  try {
+    const live = await worktreeDriver().find(worktreeId)
+    if (live === undefined || live.prewarmed) return
+    await reconcileWorktreeAgentSessions(live.projectSlug, live.workspaceId, live.tool, live.mode, live.jobName)
+  } catch (err) {
+    serverLog(`[agent-sessions] ${worktreeId}: sweep before teardown failed: ${String(err)}`)
+  }
+}
+
+/**
  * One worktree's reconcile. Split out so the create path can run it as soon
  * as a session's first agent lands, rather than waiting a tick.
  */
@@ -373,21 +393,19 @@ async function followRolloutModes(
  *
  * They are the TUI rollouts codex wrote from this checkout during the current
  * life (`findCodexRollouts`), which covers a `/new` and a codex started by
- * hand, together with the ones already recorded that were written since: a
- * restart resumes a conversation into the rollout it began, however many
- * days ago, and codex appends to it the moment it resumes (verified against
- * codex-cli 0.156.1). Each is reported with its own session id and rollout,
- * which is what a restart resumes and what the posture is followed by. A
- * conversation that never took a turn has no rollout, and is not recorded:
- * `codex resume` refuses an id with none.
+ * hand, each reported with its own session id and rollout — what a restart
+ * resumes and what the posture is followed by. A conversation that never took
+ * a turn has no rollout, and is not recorded: `codex resume` refuses an id
+ * with none.
  *
- * Nothing names the pane a conversation runs on, so it is inferred. Each codex
- * pane writes one rollout at a time, so the conversations on the live codex
- * panes are the most recently written ones, one per pane; the rest are
- * reported with no pane, which is what marks one `/new` left behind inactive.
- * With the one codex pane yaac launches that is exact, short of a codex run
- * by hand in a scratch window writing more recently than it. With no live set
- * yet nothing is reported, since a report without a pane clears one.
+ * The pane is the one whose title names the conversation (`sessionIdPrefix`,
+ * codex's `thread-id`), which is exact however many codex panes there are.
+ * That also carries a conversation found in an earlier life: a restart
+ * resumes it into the rollout it began, however many days back, and the
+ * recorded one takes the pane its title names. A recorded conversation still
+ * holding a pane that now names another is reported without it, which is
+ * what marks one a `/new` left behind inactive. With no live set yet nothing
+ * is reported, since a report without a pane clears one.
  */
 async function discoverCodexSessions(
   projectSlug: string,
@@ -396,30 +414,29 @@ async function discoverCodexSessions(
 ): Promise<void> {
   const observed = liveAgents(projectSlug, worktreeId)
   if (observed === undefined || row.lifeStartedAt === undefined) return
-  const life = row.lifeStartedAt.getTime()
-  const byRollout = new Map<string, { sessionId: string; mtimeMs: number }>()
+  const paneOf = (sessionId: string): string | undefined => observed.find((a) =>
+    a.tool === 'codex' && a.sessionIdPrefix !== undefined && sessionId.startsWith(a.sessionIdPrefix))?.handle
+  // Keyed by conversation, holding the rollout only where it is newly found:
+  // a recorded conversation keeps the transcript it has.
+  const conversations = new Map<string, string | undefined>()
   for (const l of await listWorktreeAgentSessions(projectSlug, worktreeId)) {
-    const rollout = l.tool === 'codex' ? absoluteTranscriptPath(l) : undefined
-    const mtimeMs = rollout === undefined ? undefined : await transcriptLastActiveMs(rollout)
-    if (rollout === undefined || mtimeMs === undefined || mtimeMs < life) continue
-    byRollout.set(rollout, { sessionId: l.agentSessionId, mtimeMs })
+    if (l.tool === 'codex' && (l.paneId !== undefined || paneOf(l.agentSessionId) !== undefined)) {
+      conversations.set(l.agentSessionId, undefined)
+    }
   }
-  for (const { rollout, ...found } of await findCodexRollouts(
-    codexDir(projectSlug), worktreeDir(projectSlug, worktreeId), life,
-  )) byRollout.set(rollout, found)
-  if (byRollout.size === 0) return
-  const panes = observed.filter((a) => a.tool === 'codex').map((a) => a.handle)
-  const sessions = [...byRollout]
-    .sort(([, a], [, b]) => b.mtimeMs - a.mtimeMs)
-    .map(([rollout, { sessionId }], i) => toReported(projectSlug, {
+  for (const { rollout, sessionId } of await findCodexRollouts(
+    codexDir(projectSlug), worktreeDir(projectSlug, worktreeId), row.lifeStartedAt.getTime(),
+  )) conversations.set(sessionId, rollout)
+  if (conversations.size === 0) return
+  const sessions = [...conversations].map(([sessionId, rollout]) => {
+    const paneId = paneOf(sessionId)
+    return toReported(projectSlug, {
       tool: 'codex',
       agentSessionId: sessionId,
-      transcriptPath: rollout,
-      ...(i < panes.length ? { paneId: panes[i] } : {}),
-    }))
-    // Oldest first, the order the hook's log would have named them in, which
-    // is the order new ones take their ordinals.
-    .reverse()
+      ...(rollout !== undefined ? { transcriptPath: rollout } : {}),
+      ...(paneId !== undefined ? { paneId } : {}),
+    })
+  })
   await applyWorktreeEvent({ type: 'sessions-discovered', projectSlug, worktreeId, sessions })
 }
 
