@@ -16,7 +16,7 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
 // is the only place its firing (or its silence) can be asserted.
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 import { closeDb } from '#db/client'
-import { acpLogDir, claudeDir, codexDir, worktreeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
+import { acpLogDir, claudeDir, codexDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 import {
   _resetReportedModesForTests,
   reconcileAgentSessions,
@@ -582,40 +582,6 @@ describe('reconcileWorktreeAgentSessions', () => {
     setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude', reportedMode: 'plan' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
     expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('plan')
-  })
-
-  // Under containerless no hook records a codex rollout, so the registry finds
-  // it in the project's codex home by the checkout codex recorded — and reads
-  // it the same way.
-  it('follows a codex rollout no hook recorded, found by its checkout', async () => {
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'read-only' })
-    await recordWorktreeLife('demo', 'wt-1', 0)
-    const now = new Date()
-    const day = path.join(
-      codexDir('demo'), 'sessions', String(now.getFullYear()),
-      String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0'),
-    )
-    await fs.mkdir(day, { recursive: true })
-    const rollout = (id: string, cwd: string): Promise<void> => fs.writeFile(path.join(day, `rollout-${id}.jsonl`), [
-      { type: 'session_meta', payload: { id, cwd } },
-      {
-        timestamp: new Date(Date.now() + 1000).toISOString(),
-        type: 'event_msg',
-        payload: {
-          type: 'thread_settings_applied',
-          thread_settings: { approval_policy: 'never', permission_profile: { type: 'disabled' } },
-        },
-      },
-    ].map((e) => JSON.stringify(e)).join('\n') + '\n')
-    // Another worktree's conversation in the same home says nothing about this one.
-    await rollout('other', worktreeDir('demo', 'wt-2'))
-    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'codex' }])
-    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
-    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('read-only')
-
-    await rollout('mine', worktreeDir('demo', 'wt-1'))
-    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex')
-    expect((await getWorktreeRow('demo', 'wt-1'))?.permissionMode).toBe('bypass')
   })
 
   // A codex rollout's settings carry when they were written. An entry from

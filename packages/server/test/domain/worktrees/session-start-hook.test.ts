@@ -67,11 +67,12 @@ describe('the SessionStart hook', () => {
     payload: Record<string, unknown>,
     env: Record<string, string> = {},
     toolHome: string = home,
+    argv: string[] = ['claude'],
   ): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const child = execFile(
         'sh',
-        [hookScript(), toolHome, 'claude'],
+        [hookScript(), toolHome, ...argv],
         // TMUX_PANE is deliberately NOT inherited: these tests run inside a
         // yaac session, which sets it, and a test asserting "no pane" would
         // otherwise pass or fail on where it was run.
@@ -173,6 +174,38 @@ describe('the SessionStart hook', () => {
 
     expect((await readSessionStarts(slug, wt)).sightings[0]?.transcriptPath)
       .toBe(path.join('claude', 'projects', 'conv-s.jsonl'))
+  })
+
+  it('drops a codex session with no rollout, and records the one that has it', async () => {
+    // codex 0.156.1 fires SessionStart twice on a conversation's first turn,
+    // on the same pane: for the conversation (naming its rollout), then for
+    // the throwaway session it generates the title in (`transcript_path`
+    // null, an id `codex resume` refuses). Recorded, the second would take the
+    // pane from the first, and a restart would resume it and die.
+    const codexHome = path.join(tmpDir, 'home', '.codex')
+    await runHook(
+      { session_id: 'thread-1', transcript_path: `${codexHome}/sessions/2026/09/25/rollout-thread-1.jsonl` },
+      { TMUX_PANE: '%4' }, codexHome, ['codex'],
+    )
+    await runHook({ session_id: 'title-gen', transcript_path: null }, { TMUX_PANE: '%4' }, codexHome, ['codex'])
+
+    expect((await readSessionStarts(slug, wt)).sightings).toEqual([{
+      atByte: 0,
+      agentSessionId: 'thread-1',
+      tool: 'codex',
+      transcriptPath: path.join('codex', 'sessions', '2026', '09', '25', 'rollout-thread-1.jsonl'),
+      handle: '%4',
+    }])
+  })
+
+  it('records a conversation the launch names, on its pane, reading no payload', async () => {
+    // A codex resume fires no SessionStart until the next turn, so its launch
+    // command reports the conversation itself; the stored rollout stands.
+    await runHook({}, { TMUX_PANE: '%2' }, path.join(tmpDir, 'home', '.codex'), ['codex', 'thread-1'])
+
+    expect((await readSessionStarts(slug, wt)).sightings).toEqual([{
+      atByte: 0, agentSessionId: 'thread-1', tool: 'codex', handle: '%2',
+    }])
   })
 
   it('exits 0 and writes nothing when it has no home to work from', async () => {

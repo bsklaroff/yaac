@@ -2,7 +2,6 @@ import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
-  findCodexRollouts,
   getCodexPermissionMode,
   readAcpFirstPrompt,
   resolveAgentPermissionMode,
@@ -20,7 +19,7 @@ import { absoluteTranscriptPath } from './agent-session-paths'
 import { captureFirstPrompt } from './prompt-capture'
 import { readSessionStarts, type SessionStartSighting } from './session-starts'
 import path from 'node:path'
-import { acpLogDir, codexDir, worktreeDir } from '@yaac/shared/project-paths'
+import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 import type { AgentSessionLinkRow, DiscoveredSession, WorktreeRow } from '#db'
@@ -89,6 +88,24 @@ export async function reconcileAgentSessions(snapshot?: RuntimeSnapshot): Promis
       // best-effort — next tick retries
     }
   }))
+}
+
+/**
+ * One last pass over a worktree about to be torn down, while its agents are
+ * still live. A pass runs on a change to the live set or on the resync, and a
+ * hook's sighting is neither: a codex conversation's first turn, a claude
+ * `/clear`. A teardown freezes the active set the rows hold at that moment,
+ * so without this a conversation begun within a resync of a stop is not the
+ * one a restart resumes. Best-effort: a stop must not fail on it.
+ */
+export async function reconcileBeforeTeardown(worktreeId: string): Promise<void> {
+  try {
+    const live = await worktreeDriver().find(worktreeId)
+    if (live === undefined || live.prewarmed) return
+    await reconcileWorktreeAgentSessions(live.projectSlug, live.workspaceId, live.tool, live.mode, live.jobName)
+  } catch (err) {
+    serverLog(`[agent-sessions] ${worktreeId}: sweep before teardown failed: ${String(err)}`)
+  }
 }
 
 /**
@@ -319,9 +336,7 @@ async function followReportedModes(
 /**
  * The same for the tool whose posture is read rather than pushed: codex,
  * whose rollout records every settings change (`getCodexPermissionMode`).
- * Its rollouts are the ones its hook recorded or, where no hook runs
- * (containerless), the ones codex wrote from this worktree's checkout during
- * this pod life (`findCodexRollouts`).
+ * Its rollouts are the ones its hook recorded.
  *
  * A reading is news when it changed since the last one — or, on the first,
  * when it was written during the current pod life. A restart resumes the same
@@ -337,16 +352,10 @@ async function followRolloutModes(
   links: AgentSessionLinkRow[],
 ): Promise<void> {
   const life = row.lifeStartedAt?.getTime() ?? 0
-  const recorded = links.flatMap((l) => {
+  const rollouts = links.flatMap((l) => {
     const rollout = l.tool === 'codex' ? absoluteTranscriptPath(l) : undefined
     return rollout === undefined ? [] : [rollout]
   })
-  // The search is harmless under k8s, where it can only run before the hook
-  // fires: a pod's rollouts name its `/workspace`, never a host checkout.
-  const rollouts = recorded.length > 0 || row.lifeStartedAt === undefined
-    || liveAgents(projectSlug, worktreeId)?.some((a) => a.tool === 'codex') !== true
-    ? recorded
-    : await findCodexRollouts(codexDir(projectSlug), worktreeDir(projectSlug, worktreeId), life)
   for (const rollout of rollouts) {
     const read = await getCodexPermissionMode(rollout)
     // Nothing read is no news — a rollout not written yet, or settings no

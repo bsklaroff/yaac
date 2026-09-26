@@ -293,9 +293,25 @@ checkout).
 ## How a conversation honors one
 
 A `tui` agent gets its posture as a launch flag, and its own UI does the
-asking. An `acp` conversation has no UI of its own, so yaac supplies both
-halves — and the split is worth stating, because each half alone would be a
-posture in name only:
+asking.
+
+codex launches trusting the repository root, with hook trust bypassed
+(`codexLaunchConfig`, `--dangerously-bypass-hook-trust`), so it opens no
+startup screen: no "Trust this folder?" and no "Hooks need review", either of
+which would swallow a `--prompt` pasted into it. That is a choice with a
+known cost. A trusted folder loads the repository's own `.codex/`:
+- its `config.toml`, so its `sandbox_mode` and `approval_policy` win over a
+  posture that sets no flag;
+- its exec-policy rules, where an `allow` rule runs a command outside the
+  sandbox;
+- its MCP servers and hooks, which run at launch without asking.
+
+So a repository can loosen the posture yaac launched codex in and run code
+as it starts, and yaac accepts that.
+
+An `acp` conversation has no UI of its own, so yaac supplies both halves — and
+the split is worth stating, because each half alone would be a posture in name
+only:
 
 - **The adapter is told**, over `session/set_mode`, once the handshake has a
   session to set it on. That is what decides which questions get asked at
@@ -421,9 +437,8 @@ them announces a change to anything outside the process as it happens:
   the last, or — on the first — when its entry was written during the current
   pod life: a restart resumes a rollout whose newest entry is the old
   process's until codex writes its first turn, and that is where the worktree
-  stands, not a move. The rollouts read are the ones codex's hook recorded,
-  or under containerless, where no hook runs, the ones found by the checkout
-  they name (docs/containerless-driver.md).
+  stands, not a move. The rollouts read are the ones codex's hook recorded
+  (docs/worktree-storage.md).
 - **pi** has no permission system to move.
 
 claude and opencode reach the server by push: the reporter's option rides the

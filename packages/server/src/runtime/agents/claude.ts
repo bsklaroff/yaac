@@ -128,9 +128,9 @@ export function claudePermissionMode(reported: string): PermissionMode | undefin
  * worktree and put on the workspace's PATH by whichever driver is running it
  * (a read-only File mount at `/usr/local/bin` under k8s, a symlink in the
  * workspace's bin dir under containerless). It is shared with codex, which
- * runs it as a managed hook; claude has no managed-hook tier, so it is
- * registered from the user-writable `~/.claude/settings.json` — the same file
- * `seedClaudeSettings` already owns.
+ * is launched with it (`codexLaunchConfig`); claude is registered from the
+ * user-writable `~/.claude/settings.json` — the same file `seedClaudeSettings`
+ * already owns.
  *
  * The command names the script by BARE NAME and the home through `$HOME`,
  * because no absolute form of either is right under both drivers: the staged

@@ -72,6 +72,33 @@ export async function getCodexFirstUserMessage(jsonlPath: string): Promise<strin
 export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 
 /**
+ * The SessionStart hook codex is launched with: the `yaac-agent-links` claude
+ * registers in its settings.json, which records each conversation codex
+ * starts, on the pane it runs in, in the worktree's session-starts log.
+ */
+const CODEX_SESSION_HOOK = 'yaac-agent-links "$CODEX_HOME" codex'
+
+/**
+ * The `-c` settings that give codex its session hook and trust `trustedRoot`,
+ * the repository root codex keys folder trust on — the same on every
+ * substrate, since nothing here needs an image to carry it.
+ *
+ * With the launch's `--dangerously-bypass-hook-trust` (`buildAgentCmd`),
+ * codex opens no startup screen at all: no "Trust this folder?" and no "Hooks
+ * need review", either of which would swallow the prompt pasted into it. That
+ * is a choice with a known cost: a trusted folder loads the repository's own
+ * `.codex/` config, rules, MCP servers and hooks, so a repository can loosen
+ * the posture yaac launched in and run code at startup, and yaac accepts that
+ * (docs/permission-modes.md).
+ */
+export function codexLaunchConfig(trustedRoot?: string): string[] {
+  return [
+    `hooks.SessionStart=[{matcher="*",hooks=[{type="command",command=${JSON.stringify(CODEX_SESSION_HOOK)},timeout=10}]}]`,
+    ...(trustedRoot !== undefined ? [`projects={${JSON.stringify(trustedRoot)}={trust_level="trusted"}}`] : []),
+  ]
+}
+
+/**
  * A tmux format resolving to the model segment of the title — everything after
  * the last ` | ` — or empty before codex has set one (the pane then shows tmux's
  * default, the hostname, which has no separator). Resolved inside tmux, so the
@@ -223,65 +250,7 @@ function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
   return sandbox === 'read-only' ? 'read-only' : 'accept-edits'
 }
 
-/** Each rollout's recorded cwd, which its first line fixes for good. */
-const rolloutCwds = new Map<string, string | null>()
-
-const DAY_MS = 24 * 60 * 60 * 1000
-
-/**
- * The rollouts codex wrote under `codexHome` for conversations run in
- * `checkout`, modified since `sinceMs`, oldest first — how a conversation is
- * found where no hook recorded its rollout (containerless; see
- * docs/containerless-driver.md).
- *
- * codex files a rollout under `sessions/YYYY/MM/DD` by the local day it began
- * and opens it with a `session_meta` line naming the directory it runs in.
- * That is the process's cwd as the kernel resolved it, symlinks and all, or
- * a `-C` argument as given (verified against codex-cli 0.156.1), so both
- * spellings of the checkout match. Only the day dirs from the day before
- * `sinceMs` on are listed. A conversation begun earlier than that and still
- * written to is one a person resumed by hand (`/resume`), and is missed: a
- * yaac restart cannot continue one here, having no codex session id to pass
- * (`codex resume <worktree id>` finds no rollout).
- */
-export async function findCodexRollouts(codexHome: string, checkout: string, sinceMs: number): Promise<string[]> {
-  const cwds = new Set([checkout, await fs.realpath(checkout).catch(() => checkout)])
-  const found: Array<{ rollout: string; mtimeMs: number }> = []
-  for (let t = sinceMs - DAY_MS; t < Date.now() + DAY_MS; t += DAY_MS) {
-    const day = new Date(t)
-    const dir = path.join(
-      codexHome,
-      'sessions',
-      String(day.getFullYear()),
-      String(day.getMonth() + 1).padStart(2, '0'),
-      String(day.getDate()).padStart(2, '0'),
-    )
-    const names = await fs.readdir(dir).catch(() => [])
-    for (const name of names) {
-      if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) continue
-      const rollout = path.join(dir, name)
-      let cwd = rolloutCwds.get(rollout)
-      if (cwd === undefined) {
-        // Only the first line is read; a line still being written is no
-        // answer yet, and is read again next time.
-        cwd = await scanJsonlForward(rollout, (entry) => {
-          const meta = entry as { type?: unknown; payload?: { cwd?: unknown } }
-          return meta.type === 'session_meta' && typeof meta.payload?.cwd === 'string' ? meta.payload.cwd : null
-        })
-        if (cwd !== undefined) rolloutCwds.set(rollout, cwd)
-      }
-      // Stat'ed only once known to be this checkout's, so a settled pass costs
-      // a stat per rollout of its own rather than per rollout of the project.
-      if (typeof cwd !== 'string' || !cwds.has(cwd)) continue
-      const mtimeMs = await fs.stat(rollout).then((st) => st.mtimeMs, () => 0)
-      if (mtimeMs >= sinceMs) found.push({ rollout, mtimeMs })
-    }
-  }
-  return found.sort((a, b) => a.mtimeMs - b.mtimeMs).map((f) => f.rollout)
-}
-
 /** Test helper: forget what each rollout last answered. */
 export function _resetCodexPosturesForTests(): void {
   rolloutPostures.clear()
-  rolloutCwds.clear()
 }

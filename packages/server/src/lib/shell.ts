@@ -33,6 +33,19 @@ export function shellEscape(str: string): string {
 }
 
 /**
+ * `str` as one double-quoted word that the shell expands nothing in: for a
+ * launch-command argument whose `$VAR` is the program's to expand, not the
+ * launch shell's. Double-quoted, and a single quote refused, for the reasons
+ * `envJsonAssignment` gives.
+ */
+export function doubleQuoted(str: string): string {
+  if (str.includes("'")) {
+    throw new Error('value contains a single quote, which cannot survive the launch wrapper')
+  }
+  return `"${str.replace(/[\\"$`]/g, '\\$&')}"`
+}
+
+/**
  * A `NAME="<json>"` assignment to prefix a launch command with, for the
  * several tools whose configuration arrives as a JSON environment variable
  * (`OPENCODE_PERMISSION`, `CODEX_CONFIG`, `OPENCODE_CONFIG_CONTENT`).
