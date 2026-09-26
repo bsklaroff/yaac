@@ -89,16 +89,44 @@ const CAN_RUN_PORTS = CAN_RUN
   && await execFileAsync('sh', ['-c', 'command -v lsof']).then(() => true, () => false)
 
 /**
+ * The stand-in codex: codex-cli 0.156.1 as yaac sees it. The first turn — the
+ * prompt pasted in — reports the conversation through the SessionStart hook,
+ * naming its rollout, and then reports the throwaway session codex generates
+ * the title in, on the same pane with no rollout. A resume reports nothing
+ * until its next turn. Each launch's arguments are logged under the project's
+ * codex home, per worktree, which is what the restart case reads. Launched
+ * with `--model sick` it cannot run at all.
+ *
+ * It calls the hook script itself rather than reading it out of the `-c`
+ * settings it is launched with; that those reach a real codex trusted is the
+ * launch command's unit test.
+ */
+const FAKE_CODEX = [
+  '#!/bin/sh',
+  'case " $* " in *" --model sick "*) echo "codex: cannot execute" >&2; exit 127 ;; esac',
+  'printf \'%s\\n\' "$*" >> "$CODEX_HOME/launches-${PWD##*/}"',
+  // The alternate screen is the readiness signal the prompt paste waits for.
+  "printf '\\033[?1049h'",
+  'case " $* " in *" resume "*) exec sleep infinity ;; esac',
+  'read -r _ || exec sleep infinity',
+  'mkdir -p "$CODEX_HOME/sessions"',
+  'rollout="$CODEX_HOME/sessions/rollout-thread-$$.jsonl"',
+  ': > "$rollout"',
+  'printf \'{"session_id":"thread-%s","transcript_path":"%s"}\' $$ "$rollout" | yaac-agent-links "$CODEX_HOME" codex',
+  'printf \'{"session_id":"title-%s","transcript_path":null}\' $$ | yaac-agent-links "$CODEX_HOME" codex',
+  'exec sleep infinity',
+  '',
+].join('\n')
+
+/**
  * A stand-in agent on PATH: it holds its tmux window open the way a real
  * TUI does. Without one the respawned window would exit instantly, tmux
  * would close it, and with no windows left the session — and the worktree —
  * would end before any assertion ran.
  *
- * `codex` is the deliberate exception: it stands in for an agent that is
- * installed but cannot run (a broken or half-installed binary), which is
- * exactly the launch failure a PATH check cannot predict. Nothing else in
- * this file creates a codex TUI worktree, so one tool can be the sick one —
- * and its ACP adapter is a different binary, so acp mode is unaffected.
+ * `codex` does more (`FAKE_CODEX`), and launched with `--model sick` it is
+ * the agent that is installed but cannot run (a broken or half-installed
+ * binary), which is exactly the launch failure a PATH check cannot predict.
  *
  * The adapters are stood in for too, one per binary `--mode acp` can run
  * (`fakeAcpAdapter`). They are separate programs from the CLIs of the same
@@ -118,7 +146,7 @@ async function installFakeAgents(binDir: string): Promise<void> {
   for (const tool of ['claude', 'pi']) {
     await write(tool, '#!/bin/sh\nexec sleep infinity\n')
   }
-  await write('codex', '#!/bin/sh\necho "codex: cannot execute" >&2\nexit 127\n')
+  await write('codex', FAKE_CODEX)
 
   for (const tool of AGENT_TOOLS) {
     const { binary } = ACP_ADAPTERS[tool]
@@ -256,6 +284,7 @@ interface ListedWorktree {
   worktreeId: string
   status: string
   forwardedPorts: Array<{ containerPort: number; hostPort: number }>
+  agentSessions: AgentSessionEntry[]
 }
 
 /** The worktrees the server currently reports, newest first. */
@@ -1304,6 +1333,61 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       .resolves.toBeDefined()
     await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
   }, 180_000)
+  // A codex conversation is known by its hook alone, so this is the path
+  // where one goes missing: its title session firing the same hook on the
+  // same pane, a resume firing none until the next turn, and a worktree
+  // never prompted having no conversation at all.
+  it('keeps resuming a codex conversation across restarts, and starts one never prompted anew', async () => {
+    const launches = async (id: string): Promise<string[]> => (await fs.readFile(
+      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `launches-${id}`), 'utf8',
+    ).catch(() => '')).split('\n').filter(Boolean)
+    const codexSessions = async (id: string) => (await listWorktrees())
+      .find((w) => w.worktreeId === id)?.agentSessions.filter((s) => s.tool === 'codex' && s.active) ?? []
+    const restart = async (id: string): Promise<void> => {
+      const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'worktree', 'restart', id)
+      expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
+    }
+
+    const prompted = await createWorktreeWith('codex', '--prompt', 'hello')
+    // The first turn has reported the conversation once the hook has written
+    // it. Restarted straight away — inside the resync, which a hook's
+    // sighting does not trigger — so it is the restart's own sweep that has
+    // to fold it.
+    const log = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'meta', `${prompted}.session-starts.jsonl`)
+    let thread = ''
+    await vi.waitFor(async () => {
+      thread = /"id":"(thread-\d+)"/.exec(await fs.readFile(log, 'utf8').catch(() => ''))?.[1] ?? ''
+      expect(thread).not.toBe('')
+    }, { timeout: 30_000, interval: 250 })
+
+    // Twice with no turn between. The first restart's resume reports nothing
+    // itself, so the conversation has to be on its new pane — live, which is
+    // what gives it a status — for the second restart to bring it back. Its
+    // title session, reported after it on the same pane, must not be.
+    for (const n of [2, 3]) {
+      await restart(prompted)
+      await vi.waitFor(async () => {
+        expect((await launches(prompted))).toHaveLength(n)
+        expect((await launches(prompted)).at(-1)).toMatch(new RegExp(` resume ${thread}$`))
+        const active = await codexSessions(prompted)
+        expect(active.map((s) => s.agentSessionId)).toEqual([thread])
+        expect(active[0]?.status).toBeDefined()
+      }, { timeout: 30_000, interval: 250 })
+    }
+
+    // codex mints its own ids, so a worktree never prompted has nothing to
+    // resume; `resume <worktree id>` would find nothing and kill the window.
+    const unprompted = await createWorktreeWith('codex')
+    await restart(unprompted)
+    await vi.waitFor(async () => {
+      expect(await launches(unprompted)).toHaveLength(2)
+    }, { timeout: 30_000, interval: 250 })
+    expect((await launches(unprompted)).at(-1)).not.toContain('resume')
+    expect(await tmux(unprompted, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')).toContain('codex')
+
+    await runYaac(serverEnv, 'worktree', 'stop', prompted)
+    await runYaac(serverEnv, 'worktree', 'stop', unprompted)
+  }, 180_000)
 })
 
 /**
@@ -1691,12 +1775,12 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
     const watch = collectSnapshots(server.lock.port, server.lock.secret)
     await watch.opened
     try {
-      // The fake codex exits 127, so tmux closes the window the instant it
-      // is respawned — and `respawn-window` still reports success, which is
+      // The fake codex, told `sick`, exits 127, so tmux closes the window the
+      // instant it is respawned — and `respawn-window` still reports success, which is
       // the whole defect: before this the create said it worked and the
       // worktree was gone seconds later with nothing said.
       const { exitCode } = await runYaac(
-        serverEnv, 'worktree', 'create', SLUG, '--tool', 'codex',
+        serverEnv, 'worktree', 'create', SLUG, '--tool', 'codex', '--model', 'sick',
       )
       // The create itself does NOT fail, and that is deliberate: the probe
       // is not awaited, so its settle delay never lands on a create's wall

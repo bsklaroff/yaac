@@ -47,6 +47,11 @@ describe('session-starts', () => {
         // parse it. Dropped here, where the input is already untrusted.
         JSON.stringify({ id: 'evil', tool: 'claude', path: '/etc/passwd' }),
         JSON.stringify({ id: 'evil2', tool: 'claude', path: '../../../etc/passwd' }),
+        // The id is interpolated into a restart's launch command
+        // (`--resume <id>`, `codex resume <id>`), so one that could say
+        // anything to a shell is dropped too.
+        JSON.stringify({ id: 'x; touch /tmp/pwned', tool: 'codex' }),
+        JSON.stringify({ id: '$(id)', tool: 'claude' }),
       ].join('\n') + '\n')
 
       const { sightings: seen } = await readSessionStarts(slug, wt)

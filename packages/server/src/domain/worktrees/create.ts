@@ -490,9 +490,13 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   // conversation the agent never opened.
   //
   // Only a *resume* passes `--resume`: a restart with nothing recorded falls
-  // back to the worktree-id pin, which is the pre-hook worktree's path.
+  // back to the worktree-id pin, which is the pre-hook worktree's path —
+  // except for codex, which mints its own ids and was never launched with the
+  // pin: `codex resume <worktree id>` finds no conversation and kills the
+  // window, so a codex worktree with none recorded (never prompted) starts
+  // anew.
   const resumesConversation = (options.resumeAgentSessions ?? []).length > 0
-    || options.resume === true
+    || (options.resume === true && tool !== 'codex')
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => ({
     tool: a.tool,
@@ -1240,10 +1244,8 @@ export async function createWorktree(
       opencodeConfigDir: opencodeConfig,
     }).catch(() => {})
 
-    // Codex runs the same script through a managed SessionStart hook baked
-    // into the image (/etc/codex, trusted by policy), so nothing is seeded
-    // into the mounted codex dir — and so codex discovery is a k8s-only
-    // feature, there being no image to carry it under containerless.
+    // Codex runs the same script, from `-c` settings its launch command
+    // carries (`codexLaunchConfig`), so nothing is seeded into its dir.
 
     // Pre-create cacheVolumes host dirs so they're server-owned rather than
     // root-owned via DirectoryOrCreate — the in-container yaac user carries

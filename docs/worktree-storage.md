@@ -148,6 +148,20 @@ of a user-started one, because it alone sees `TMUX_PANE` beside the tool's
 session id. `/clear` and a hand-typed `claude --resume` are invisible from
 outside the pod.
 
+claude registers the hook in its settings.json. codex is launched with it, as
+a `-c` setting, and with `--dangerously-bypass-hook-trust` so it runs without
+a trust prompt (`codexLaunchConfig`), the same way on both substrates. Two codex
+behaviors shape what the script records (both verified against codex-cli
+0.156.1):
+- codex fires `SessionStart` again, on the same pane, for the throwaway session
+  it generates a conversation's title in. That session has no rollout and an
+  id `codex resume` refuses, so a codex firing without a rollout is dropped;
+  recorded, it would take the pane from the real conversation.
+- A resumed conversation fires nothing until its next turn. So a codex launch
+  that resumes one first runs the script with the conversation's id, recording
+  it on the new pane. Otherwise it would read inactive, and a second restart
+  before any prompt would not bring it back.
+
 **The pod appends and the server folds**, and that asymmetry is the whole
 design. The log is append-only and never renamed, which is what makes mounting
 it as a subPath-to-file of the global claim safe — kubelet bind-mounts the

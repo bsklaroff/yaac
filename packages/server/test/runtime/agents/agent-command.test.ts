@@ -43,29 +43,55 @@ beforeEach(() => { installFakeWorktreeDriver({ exec: podExec }) })
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
-    // The title items are how a `/model` reaches yaac: codex rewrites its
-    // title's last segment the moment one lands. Double-quoted with escaped
-    // inner quotes, so the TOML array survives the single-quoted wrapper.
-    const TITLE = '-c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"model\\"]"'
+    // The line without its `-c` settings, which the argv case below pins —
+    // these cases are about the rest of it.
+    const bare = (cmd: string): string => cmd.replace(/ -c "(?:[^"\\]|\\.)*"/g, '')
 
     it('omits prompt arguments', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', permissionMode: 'bypass' })
-      expect(cmd).toBe(`codex ${TITLE} --yolo`)
+      expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo')
     })
 
-    it('inserts the resume subcommand when resuming', () => {
+    it('records the conversation it resumes on its pane, then resumes it', () => {
+      // codex fires no SessionStart for a resume until its next turn, so the
+      // launch reports the conversation itself.
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toBe(`codex ${TITLE} --yolo resume sess-1`)
+      expect(bare(cmd)).toBe(
+        'yaac-agent-links "$CODEX_HOME" codex sess-1; codex --dangerously-bypass-hook-trust --yolo resume sess-1',
+      )
+    })
+
+    it('hands codex its session hook, trusts the repository, and bypasses hook trust', () => {
+      // What codex receives, after the launch shell has had its turn: the
+      // command is run with `codex` swapped for a printer of its argv.
+      const cmd = buildAgentCmd({
+        tool: 'codex', worktreeId: 'sess-1', permissionMode: 'accept-edits', trustedRoot: '/data/my repo',
+      })
+      const argv = execFileSync('sh', ['-c', cmd.replace(/^codex /, `printf '%s\\n' `)], {
+        env: { ...process.env, CODEX_HOME: '/must/not/expand' },
+      }).toString().trimEnd().split('\n')
+      expect(argv).toEqual([
+        // The title items are how a `/model` reaches yaac: codex rewrites its
+        // title's last segment the moment one lands.
+        '-c', 'tui.terminal_title=["activity","project-name","model"]',
+        '-c', 'hooks.SessionStart=[{matcher="*",hooks=[{type="command",'
+          + 'command="yaac-agent-links \\"$CODEX_HOME\\" codex",timeout=10}]}]',
+        // The root codex keys folder trust on, and the bypass that runs every
+        // hook untrusted: between them codex opens no startup screen, which
+        // would swallow the prompt pasted into it.
+        '-c', 'projects={"/data/my repo"={trust_level="trusted"}}',
+        '--dangerously-bypass-hook-trust',
+      ])
     })
 
     it('inserts --model when a model override is given', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: false, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
-      expect(cmd).toBe(`codex ${TITLE} --yolo --model gpt-5.2-codex`)
+      expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo --model gpt-5.2-codex')
     })
 
     it('places --model after the resume subcommand (codex resume parses it)', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'abc', resume: true, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
-      expect(cmd).toBe(`codex ${TITLE} --yolo resume abc --model gpt-5.2-codex`)
+      expect(cmd).toMatch(/ --yolo resume abc --model gpt-5\.2-codex$/)
     })
   })
 

@@ -28,17 +28,32 @@
 # Fires on startup/resume/clear/compact, so /clear and `claude --resume` are
 # what add sessions and repoint a pane. Always exits 0: a broken write must
 # never take the agent down with it.
+#
+# $3, when given, is a conversation the launch itself is resuming, and no
+# payload is read: codex fires no SessionStart for a resumed conversation
+# until its next turn, so its launch command records it on the pane first.
 HOME_DIR="$1"
 HOME_NAME="$2"
-INPUT=$(cat)
 [ -n "$HOME_DIR" ] || exit 0
 [ -n "$HOME_NAME" ] || exit 0
 [ -n "${HOME:-}" ] || exit 0
-TRANSCRIPT=$(echo "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-SID=$(echo "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-# codex names its rollout files after the session; if a tool ever omits
-# session_id from the payload the transcript basename still identifies it.
-[ -n "$SID" ] || SID=$(basename "${TRANSCRIPT:-}" .jsonl)
+if [ -n "${3:-}" ]; then
+  SID="$3"
+  TRANSCRIPT=''
+else
+  INPUT=$(cat)
+  TRANSCRIPT=$(echo "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  SID=$(echo "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  # codex also fires SessionStart, on the same pane, for the throwaway
+  # session it generates a conversation's title in: one with no rollout, whose
+  # id `codex resume` refuses (codex-cli 0.156.1). Its own conversations
+  # always name their rollout, so a codex sighting without one is dropped —
+  # recorded, it would take the pane from the real conversation.
+  [ "$HOME_NAME" != codex ] || [ -n "$TRANSCRIPT" ] || exit 0
+  # codex names its rollout files after the session; if a tool ever omits
+  # session_id from the payload the transcript basename still identifies it.
+  [ -n "$SID" ] || SID=$(basename "${TRANSCRIPT:-}" .jsonl)
+fi
 [ -n "$SID" ] || exit 0
 # The home may be reached through a symlink — under containerless the tool
 # home in the workspace's private HOME is a link to the project's shared one —

@@ -5,7 +5,6 @@ import os from 'node:os'
 import {
   _resetCodexPosturesForTests,
   classifyCodexTitle,
-  findCodexRollouts,
   getCodexFirstUserMessage,
   getCodexPermissionMode,
 } from '#runtime/agents/codex'
@@ -268,78 +267,5 @@ describe('getCodexPermissionMode', () => {
 
   it('reads nothing from a rollout that is not there', async () => {
     await expect(getCodexPermissionMode(path.join(dir, 'missing.jsonl'))).resolves.toBeUndefined()
-  })
-})
-
-describe('findCodexRollouts', () => {
-  let dir: string
-  beforeEach(async () => {
-    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-rollouts-')))
-    _resetCodexPosturesForTests()
-  })
-  afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true })
-  })
-
-  const home = (): string => path.join(dir, 'codex')
-  const dayDir = (at: Date): string => path.join(
-    home(), 'sessions', String(at.getFullYear()),
-    String(at.getMonth() + 1).padStart(2, '0'), String(at.getDate()).padStart(2, '0'),
-  )
-  /** A rollout as codex 0.156.1 opens one: `session_meta` first, naming its
-   *  cwd, then whatever the conversation writes — last modified at `mtime`. */
-  const rollout = async (name: string, cwd: string, mtime: Date, at = mtime): Promise<string> => {
-    const file = path.join(dayDir(at), `rollout-${name}.jsonl`)
-    await fs.mkdir(path.dirname(file), { recursive: true })
-    await fs.writeFile(file, `${JSON.stringify({
-      timestamp: at.toISOString(),
-      type: 'session_meta',
-      payload: { id: name, cwd, base_instructions: { text: 'x'.repeat(20_000) } },
-    })}\n${JSON.stringify({ type: 'turn_context', payload: {} })}\n`)
-    await fs.utimes(file, mtime, mtime)
-    return file
-  }
-
-  // A containerless worktree's rollouts share the project's codex home with
-  // every other worktree's, and with its own previous lives'. What picks them
-  // out is the checkout codex recorded, under either spelling: the resolved
-  // path an inherited cwd gives, or a symlink passed as given.
-  it("finds this life's rollouts written from the checkout, oldest first", async () => {
-    const real = path.join(dir, 'worktrees', 'wt-1')
-    await fs.mkdir(real, { recursive: true })
-    const link = path.join(dir, 'link')
-    await fs.symlink(real, link)
-    const life = new Date(Date.now() - 60_000)
-    const later = new Date(Date.now() - 10_000)
-    const yesterday = new Date(life.getTime() - 24 * 60 * 60 * 1000)
-
-    const resolved = await rollout('a', real, later)
-    const spelled = await rollout('b', link, new Date(Date.now() - 30_000))
-    // Begun the day before this life and still being written to.
-    const overnight = await rollout('c', real, new Date(Date.now() - 20_000), yesterday)
-    await rollout('other-worktree', path.join(dir, 'worktrees', 'wt-2'), later)
-    await rollout('last-life', real, new Date(life.getTime() - 60_000))
-
-    await expect(findCodexRollouts(home(), link, life.getTime()))
-      .resolves.toEqual([spelled, overnight, resolved])
-  })
-
-  // codex writes the first line in more than one go; half of it is no answer
-  // yet rather than a rollout that belongs elsewhere.
-  it('reads a first line still being written again later', async () => {
-    const checkout = path.join(dir, 'wt-1')
-    await fs.mkdir(checkout)
-    const now = new Date()
-    const file = path.join(dayDir(now), 'rollout-a.jsonl')
-    await fs.mkdir(path.dirname(file), { recursive: true })
-    const meta = JSON.stringify({ type: 'session_meta', payload: { cwd: checkout } })
-    await fs.writeFile(file, meta.slice(0, 20))
-    await expect(findCodexRollouts(home(), checkout, now.getTime() - 1000)).resolves.toEqual([])
-    await fs.writeFile(file, `${meta}\n`)
-    await expect(findCodexRollouts(home(), checkout, now.getTime() - 1000)).resolves.toEqual([file])
-  })
-
-  it('finds nothing in a codex home with no sessions', async () => {
-    await expect(findCodexRollouts(home(), dir, Date.now() - 1000)).resolves.toEqual([])
   })
 })

@@ -1178,16 +1178,20 @@ describe('createWorktree', () => {
 })
 
 describe('buildAgentCmd', () => {
-  // codex carries its title items, which are how its model reaches yaac.
-  const CODEX = 'codex -c "tui.terminal_title=[\\"activity\\",\\"project-name\\",\\"model\\"]"'
+  // codex's line without its `-c` settings (its title items, session hook
+  // and folder trust), which the server's agent-command test pins exactly.
+  const bare = (cmd: string): string => cmd.replace(/ -c "(?:[^"\\]|\\.)*"/g, '')
 
   it('returns the codex respawn command unchanged', () => {
     const fresh = buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'bypass' })
-    expect(fresh).toBe(`${CODEX} --yolo`)
+    expect(bare(fresh)).toBe('codex --dangerously-bypass-hook-trust --yolo')
     const resume = buildAgentCmd({
       tool: 'codex', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
-    expect(resume).toBe(`${CODEX} --yolo resume sid-abc`)
+    // A resume records its conversation on the pane before codex starts.
+    expect(bare(resume)).toBe(
+      'yaac-agent-links "$CODEX_HOME" codex sid-abc; codex --dangerously-bypass-hook-trust --yolo resume sid-abc',
+    )
   })
 
   // The `env -u TMUX` prefix is load-bearing — it is what keeps claude
@@ -1213,8 +1217,8 @@ describe('buildAgentCmd', () => {
   it('asks for approval in each tool\'s own spelling under manual', () => {
     // codex has no posture that asks before everything any more, so a row
     // holding `manual` launches its read-only sandbox, the next one stricter.
-    expect(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'manual' }))
-      .toBe(`${CODEX} --sandbox read-only`)
+    expect(bare(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'manual' })))
+      .toBe('codex --dangerously-bypass-hook-trust --sandbox read-only')
     expect(buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'manual' }))
       .toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
   })

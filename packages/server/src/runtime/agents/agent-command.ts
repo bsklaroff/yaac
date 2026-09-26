@@ -12,8 +12,8 @@ import {
   type PermissionMode,
   type YaacConfig,
 } from '@yaac/shared/types'
-import { envJsonAssignment, shellEscape } from '#lib/shell'
-import { CODEX_TITLE_ITEMS } from './codex'
+import { doubleQuoted, envJsonAssignment, shellEscape } from '#lib/shell'
+import { CODEX_TITLE_ITEMS, codexLaunchConfig } from './codex'
 import { OPENCODE_REPORT_PLUGIN } from './agent-reporters'
 
 /**
@@ -95,6 +95,10 @@ export interface AgentCmdSpec {
    * and the worktree's row is what remembers the answer across a restart.
    */
   permissionMode: PermissionMode
+  /** codex only — the repository root to launch it trusting
+   *  (`codexLaunchConfig`): the parent of `WorkspacePaths.repoGitDir`. The
+   *  tui driver always passes it. */
+  trustedRoot?: string
 }
 
 /**
@@ -254,12 +258,23 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // binds it to whichever command runs.
     //
     // The title items are how a `/model` reaches yaac (see
-    // `CODEX_TITLE_ITEMS`): a TOML array, double-quoted with escaped inner
-    // quotes for the same reason `envJsonAssignment` is.
-    const title = JSON.stringify(CODEX_TITLE_ITEMS).replace(/"/g, '\\"')
+    // `CODEX_TITLE_ITEMS`); the rest is its session hook and the folder
+    // trust that, with the hook-trust bypass, keeps codex from opening any
+    // startup screen (`codexLaunchConfig`). Each is TOML, double-quoted for
+    // the same reason `envJsonAssignment` is.
+    const config = [
+      `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
+      ...codexLaunchConfig(spec.trustedRoot),
+    ]
+    // A resume records its own conversation on the pane before codex starts:
+    // codex fires no SessionStart for a resumed conversation until its next
+    // turn, and without a sighting this life the conversation reads inactive,
+    // so a second restart before any prompt would not bring it back.
     return [
+      resume ? `yaac-agent-links "$CODEX_HOME" codex ${worktreeId};` : '',
       'codex',
-      `-c "tui.terminal_title=${title}"`,
+      ...config.map((c) => `-c ${doubleQuoted(c)}`),
+      '--dangerously-bypass-hook-trust',
       posture,
       resume ? `resume ${worktreeId}` : '',
       model ? `--model ${model}` : '',

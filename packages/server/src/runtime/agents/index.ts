@@ -78,7 +78,7 @@ export {
 export { ensureClaudeHooks } from './claude'
 // codex is the one tool whose posture is read off its disk rather than pushed
 // on its pane, so a caller following it has to know it is codex anyway.
-export { findCodexRollouts, getCodexPermissionMode } from './codex'
+export { getCodexPermissionMode } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 export {
   buildUpstreamExec,

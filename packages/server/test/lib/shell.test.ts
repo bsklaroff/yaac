@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { shellEscape, shellQuote } from '#lib/shell'
+import { doubleQuoted, shellEscape, shellQuote } from '#lib/shell'
 
 const execFileAsync = promisify(execFile)
 
@@ -41,5 +41,17 @@ describe('shellEscape', () => {
 
   it('handles empty string', () => {
     expect(shellEscape('')).toBe('')
+  })
+})
+
+describe('doubleQuoted', () => {
+  it('reaches a real sh -c as written, expanding nothing', async () => {
+    const tricky = 'a "b" $HOME `id` \\c {d,e}'
+    const { stdout } = await execFileAsync('sh', ['-c', `printf '%s' ${doubleQuoted(tricky)}`])
+    expect(stdout).toBe(tricky)
+  })
+
+  it('refuses a single quote, which would end the launch wrapper', () => {
+    expect(() => doubleQuoted("it's")).toThrow(/single quote/)
   })
 })

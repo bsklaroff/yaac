@@ -46,7 +46,12 @@ import type { AgentTool } from '@yaac/shared/types'
  * later.
  */
 const sessionStartSchema = z.object({
-  id: z.string().min(1),
+  /**
+   * The tool's conversation id — a UUID for every tool that reports one. It
+   * is interpolated into a restart's launch command (`--resume <id>`), so it
+   * is held to a charset no shell reads anything into.
+   */
+  id: z.string().regex(/^[A-Za-z0-9._-]+$/),
   tool: z.enum(AGENT_TOOLS),
   /** tmux pane id with the leading `%` stripped, absent outside tmux. */
   pane: z.string().optional(),
