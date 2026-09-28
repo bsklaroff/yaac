@@ -12,9 +12,9 @@ import { toErrorBody } from '#http'
  * The provisioning-registry row lifecycle (webapp, snapshot-driven) is
  * `runProvisioned`'s job — this layer only mirrors the same progress and
  * outcome onto the NDJSON stream (CLI), keeping both in sync. Registering the
- * `worktreeId` row is the caller's job (create only registers after its prewarm
- * fast path misses; restart only when the webapp supplied the row's project) —
- * all registry calls are no-ops while no row exists.
+ * `worktreeId` row is the caller's job (restart registers up front only when
+ * the webapp supplied the row's project) — all registry calls are no-ops while
+ * no row exists.
  */
 export function streamProvisioned(
   c: Context,

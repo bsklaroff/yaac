@@ -164,14 +164,24 @@ export const worktreeApp = new Hono()
           ...(body.mode !== undefined ? { mode: body.mode } : {}),
         })
 
+        // Register before the long await so the row shows up instantly and
+        // survives a browser reload (the stream keeps running server-side).
+        registerProvisioning({
+          worktreeId,
+          projectSlug: body.project,
+          tool,
+          kind: 'create',
+          ...(groupId !== undefined ? { groupId } : {}),
+          ...modelLabel(tool, setup.model),
+        })
+
         // Fast path: claim a prewarmed spare. Spares are warmed as this
         // project's untouched create, so the usual claim hands the running
         // agent over as-is; one warmed with a different agent, model or
         // posture has its agent respawned, and one in the other mode is
         // passed over (see `tryClaimPrewarmed`). A claim returns the spare's
-        // own id and registers no provisioning row — the unhidden worktree
-        // lists in the very next snapshot.
-        const claimed = await tryClaimPrewarmed(body.project, setup, onProgress, body.branch)
+        // own id, which lists in place of this row once the create resolves.
+        const claimed = await tryClaimPrewarmed(body.project, worktreeId, setup, onProgress, body.branch)
         if (claimed) {
           // A claimed spare already has its row, so its group is filed here
           // rather than by the create below.
@@ -203,16 +213,6 @@ export const worktreeApp = new Hono()
         if (body.installMissingTool === true) opts.installMissingTool = true
         opts.permissionMode = setup.permissionMode
         if (groupId !== undefined) opts.groupId = groupId
-        // Register before the long await so the row shows up instantly and
-        // survives a browser reload (the stream keeps running server-side).
-        registerProvisioning({
-          worktreeId,
-          projectSlug: body.project,
-          tool,
-          kind: 'create',
-          ...(groupId !== undefined ? { groupId } : {}),
-          ...modelLabel(tool, setup.model),
-        })
         return await createWorktree(body.project, opts)
       })
     },

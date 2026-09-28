@@ -32,12 +32,13 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   // would make the webapp swap the placeholder for terminals that can't
   // attach yet. Suppressing the worktree until the create/restart route drops
   // the entry (on resolve) swaps row → ready worktree in one snapshot, and
-  // keeps an id from ever appearing in both lists.
+  // keeps an id from ever appearing in both lists. A spare a create claimed
+  // is hidden under that create's row the same way.
   const provisioning = listProvisioning()
-  const provisioningIds = new Set(provisioning.map((p) => p.worktreeId))
+  const hidden = new Set(provisioning.flatMap((p) => [p.worktreeId, p.claimedId]))
   return {
     driver: worktreeDriver().kind,
-    worktrees: active.worktrees.filter((w) => !provisioningIds.has(w.worktreeId)),
+    worktrees: active.worktrees.filter((w) => !hidden.has(w.worktreeId)),
     worktreeGroups,
     stale: active.stale,
     // `worktreeCount` is what ProjectSummary still calls it on the wire.

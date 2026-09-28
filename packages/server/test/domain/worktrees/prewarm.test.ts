@@ -50,6 +50,9 @@ import {
   inFlight,
   clearPrewarmStateForTests,
 } from '#domain/worktrees/prewarm'
+import {
+  clearAllProvisioningForTests, listProvisioning, registerProvisioning,
+} from '#domain/worktrees/provisioning'
 import { cleanupWorktree, deleteWorktreeState } from '#domain/worktrees/cleanup'
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { rebranchSpare, retoolSpare } from '#domain/worktrees/spare-pool'
@@ -126,6 +129,9 @@ describe('tryClaimPrewarmed', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
+    clearAllProvisioningForTests()
+    // The create's own row, which a claim names its spare on.
+    registerProvisioning({ worktreeId: 'req', projectSlug: 'p', tool: 'claude', kind: 'create' })
     // The claim reports what it recorded rather than writing rows, so a stub
     // link stands in for the server: no DB is opened, and what a claim tells
     // it is asserted directly.
@@ -164,9 +170,12 @@ describe('tryClaimPrewarmed', () => {
 
   it('claims a ready spare, re-applies identity, and returns its id', async () => {
     mockList.mockResolvedValue([spare()])
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', mode: 'tui', forwardedPorts: [] })
     expect(mockClaimSpare).toHaveBeenCalledWith('spare1', 'claude')
+    // The create's row names the spare, which lists in its place once the
+    // create resolves — and not before.
+    expect(listProvisioning()).toMatchObject([{ worktreeId: 'req', claimedId: 'spare1' }])
     // One exec carries both identity settings.
     expect(mockExec).toHaveBeenCalledTimes(1)
     expect(mockExec.mock.calls[0][1]).toBe(
@@ -177,7 +186,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('reports the worktree and its first conversation, warmed-from branch and all', async () => {
     mockList.mockResolvedValue([spare()])
-    await tryClaimPrewarmed('p', setup('claude'), emit)
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
 
     // The spare's own id is the worktree's first conversation — that is
     // where its tool is read from — and no re-branch means no second
@@ -198,7 +207,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('reports the branch a re-branched claim ended on, not the one it was warmed from', async () => {
     mockList.mockResolvedValue([spare()])
-    await tryClaimPrewarmed('p', setup('claude'), emit, 'dev')
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
 
     expect(appliedEvents.filter((e) => e.type === 'base-branch-resolved')).toEqual([
       {
@@ -217,7 +226,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
     mockRetool.mockRejectedValue(new Error('retool blew up'))
 
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     await flush()
 
     expect(mockDeleteState).toHaveBeenCalledWith('p', 'spare1')
@@ -243,7 +252,7 @@ describe('tryClaimPrewarmed', () => {
     mockRetool.mockRejectedValue(new Error('retool blew up'))
     mockCleanup.mockResolvedValue(false)
 
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     await flush()
     expect(mockDeleteState).not.toHaveBeenCalled()
     expect(appliedEvents.some((e) => e.type === 'worktree-create-failed')).toBe(false)
@@ -257,7 +266,7 @@ describe('tryClaimPrewarmed', () => {
     mockRetool.mockRejectedValue(new Error('retool blew up'))
     mockDeleteState.mockResolvedValue(false)
 
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     await flush()
     expect(mockDeleteState).toHaveBeenCalledWith('p', 'spare1')
     expect(appliedEvents.some((e) => e.type === 'worktree-create-failed')).toBe(false)
@@ -265,13 +274,13 @@ describe('tryClaimPrewarmed', () => {
 
   it('returns undefined when there is no spare', async () => {
     mockList.mockResolvedValue([])
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(mockClaimSpare).not.toHaveBeenCalled()
   })
 
   it('retools a spare booted with a different tool, then commits for the claimed tool', async () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
 
     expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', mode: 'tui', forwardedPorts: [] })
     expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude'))
@@ -282,7 +291,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('does not retool when the spare already matches', async () => {
     mockList.mockResolvedValue([spare()])
-    await tryClaimPrewarmed('p', setup('claude'), emit)
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(mockRetool).not.toHaveBeenCalled()
   })
 
@@ -291,16 +300,24 @@ describe('tryClaimPrewarmed', () => {
       spare({ jobName: 'yaac-p-codex', workspaceId: 'sc', tool: 'codex', declaredTool: 'codex', createdAtMs: 9_000 }),
       spare({ createdAtMs: 1_000 }),
     ])
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRetool).not.toHaveBeenCalled()
   })
 
   it('reaps the tainted spare and falls back to cold create when the retool fails', async () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
-    mockRetool.mockRejectedValue(new Error('respawn failed'))
+    let claimedDuringRetool: string | undefined
+    mockRetool.mockImplementation(() => {
+      claimedDuringRetool = listProvisioning()[0].claimedId
+      return Promise.reject(new Error('respawn failed'))
+    })
 
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    // The row named the spare while the claim held it, and lets go of it for
+    // the cold create that follows under the row's own id.
+    expect(claimedDuringRetool).toBe('spare1')
+    expect(listProvisioning()[0].claimedId).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledWith({
       jobName: 'yaac-p-spare', projectSlug: 'p', worktreeId: 'spare1',
     })
@@ -312,14 +329,14 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
     mockClaimSpare.mockRejectedValue(new Error('pod gone'))
 
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
   })
 
   it('releases and skips a spare whose tmux is dead', async () => {
     mockList.mockResolvedValue([spare()])
     mockTmuxAlive.mockResolvedValue(false)
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(mockClaimSpare).not.toHaveBeenCalled()
     expect(claiming.size).toBe(0)
   })
@@ -328,7 +345,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
     mockAwaitTransport.mockRejectedValue(new Error('agent transport not reachable after 10000ms'))
 
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(mockAwaitTransport).toHaveBeenCalledWith('yaac-p-spare', { timeoutMs: 10_000 })
     // Nothing ran inside the spare, so it is untainted: no retool, no
     // commit, and no reap — the claim just degrades to a cold create, and
@@ -346,7 +363,7 @@ describe('tryClaimPrewarmed', () => {
   it('falls through (undefined) and clears the reservation if the commit fails', async () => {
     mockList.mockResolvedValue([spare()])
     mockClaimSpare.mockRejectedValue(new Error('pod gone'))
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(claiming.size).toBe(0)
   })
 
@@ -356,7 +373,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockExec.mockRejectedValue(new Error('transport dial: timeout'))
 
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockCleanup).not.toHaveBeenCalled()
   })
@@ -370,7 +387,7 @@ describe('tryClaimPrewarmed', () => {
     mockGitIdentity.mockResolvedValue({ name: 'New Name', email: 'new@example.com' })
     mockList.mockResolvedValue([spare()])
 
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
 
     expect(result?.worktreeId).toBe('spare1')
     expect(mockExec.mock.calls[0][1]).toBe(
@@ -385,7 +402,7 @@ describe('tryClaimPrewarmed', () => {
     mockGitIdentity.mockResolvedValue(null)
     mockList.mockResolvedValue([spare()])
 
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockExec).not.toHaveBeenCalled()
   })
@@ -393,8 +410,8 @@ describe('tryClaimPrewarmed', () => {
   it('lets only one of two concurrent claims win the single spare', async () => {
     mockList.mockResolvedValue([spare()])
     const [a, b] = await Promise.all([
-      tryClaimPrewarmed('p', setup('claude'), emit),
-      tryClaimPrewarmed('p', setup('claude'), emit),
+      tryClaimPrewarmed('p', 'req', setup('claude'), emit),
+      tryClaimPrewarmed('p', 'req', setup('claude'), emit),
     ])
     const claimed = [a, b].filter(Boolean)
     expect(claimed).toHaveLength(1)
@@ -404,13 +421,13 @@ describe('tryClaimPrewarmed', () => {
 
   it('returns undefined (cold create) if the workspace listing throws', async () => {
     mockList.mockRejectedValue(new Error('cluster down'))
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(inFlight.size).toBe(0)
   })
 
   it('re-branches a spare when the requested branch differs, then commits the claim', async () => {
     mockList.mockResolvedValue([spare()])
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
 
     expect(result?.worktreeId).toBe('spare1')
     expect(mockFetchOrigin).toHaveBeenCalledTimes(1)
@@ -427,7 +444,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('skips re-branch prep entirely when the spare already matches the request', async () => {
     mockList.mockResolvedValue([spare()])
-    await tryClaimPrewarmed('p', setup('claude'), emit, 'main')
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'main')
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockFetchOrigin).not.toHaveBeenCalled()
   })
@@ -436,14 +453,14 @@ describe('tryClaimPrewarmed', () => {
     // Spare warmed from main; the project default is now develop.
     mockList.mockResolvedValue([spare()])
     mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'develop', 'cafebabe1234', setup('claude'))
   })
 
   it('hands the agent respawn to the retool when tool and branch both differ', async () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
     expect(result?.tool).toBe('claude')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', null)
     expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude'))
@@ -451,7 +468,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('a model override retools a spare whose tool already matches (agent must respawn with --model)', async () => {
     mockList.mockResolvedValue([spare()])
-    const result = await tryClaimPrewarmed('p', setup('claude', { model: 'claude-opus-4-8' }), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-4-8' }), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRetool).toHaveBeenCalledWith(
       expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude', { model: 'claude-opus-4-8' }),
@@ -464,7 +481,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('a model override on a re-branched claim skips the rebranch respawn (retool respawns with --model)', async () => {
     mockList.mockResolvedValue([spare()])
-    const result = await tryClaimPrewarmed('p', setup('claude', { model: 'claude-opus-4-8' }), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-4-8' }), emit, 'dev')
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', null)
     expect(mockRetool).toHaveBeenCalledWith(
@@ -476,7 +493,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockRemoteBranchExists.mockResolvedValue(false)
 
-    await expect(tryClaimPrewarmed('p', setup('claude'), emit, 'nope'))
+    await expect(tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'nope'))
       .rejects.toMatchObject({ code: 'VALIDATION' })
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockCleanup).not.toHaveBeenCalled() // pre-mutation: not tainted
@@ -495,7 +512,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockRebranch.mockRejectedValue(new Error('reset failed'))
 
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit, 'dev')).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledWith({
       jobName: 'yaac-p-spare', projectSlug: 'p', worktreeId: 'spare1',
     })
@@ -507,7 +524,7 @@ describe('tryClaimPrewarmed', () => {
     // create with the tainted spare reaped, not propagate.
     mockList.mockResolvedValue([spare()])
     mockRebranch.mockRejectedValue(new ServerError('VALIDATION', 'weird in-pod failure'))
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit, 'dev')).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
   })
 
@@ -517,7 +534,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
     mockWorktreeUpstream.mockResolvedValue('develop')
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', setup('claude'))
   })
@@ -527,7 +544,7 @@ describe('tryClaimPrewarmed', () => {
     // branch, so a bare create wants the repo default again.
     mockList.mockResolvedValue([spare()])
     mockWorktreeUpstream.mockResolvedValue('develop')
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'main', 'cafebabe1234', setup('claude'))
   })
@@ -540,7 +557,7 @@ describe('tryClaimPrewarmed', () => {
     launched({ model: 'claude-opus-5-5', permissionMode: 'plan' })
     const want = setup('claude', { model: 'claude-opus-5-5', permissionMode: 'plan' })
 
-    expect((await tryClaimPrewarmed('p', want, emit))?.worktreeId).toBe('spare1')
+    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.worktreeId).toBe('spare1')
     expect(mockRetool).not.toHaveBeenCalled()
     // What the worktree runs is recorded — posture, mode and model — and the
     // conversation is named from its launch before the agent has answered.
@@ -557,7 +574,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     const want = setup('claude', { permissionMode: 'plan' })
 
-    expect((await tryClaimPrewarmed('p', want, emit))?.worktreeId).toBe('spare1')
+    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.worktreeId).toBe('spare1')
     expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), want)
   })
 
@@ -570,7 +587,7 @@ describe('tryClaimPrewarmed', () => {
       permissionMode: 'bypass', mode: 'tui', ...(id === 'spare1' ? { model: 'claude-opus-5-5' } : {}),
     } as WorktreeRow))
 
-    const result = await tryClaimPrewarmed('p', setup('claude', { model: 'claude-opus-5-5' }), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-5-5' }), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRetool).not.toHaveBeenCalled()
   })
@@ -579,10 +596,10 @@ describe('tryClaimPrewarmed', () => {
   // pod spec is fixed at warm time — so no respawn can convert one.
   it('passes over a spare warmed in the other agent mode', async () => {
     mockList.mockResolvedValue([spare()])
-    expect(await tryClaimPrewarmed('p', setup('claude', { mode: 'acp' }), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude', { mode: 'acp' }), emit)).toBeUndefined()
     // A row older than the mode column names none, and is passed over too.
     launched({ mode: undefined })
-    expect(await tryClaimPrewarmed('p', setup('claude'), emit)).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(mockClaimSpare).not.toHaveBeenCalled()
   })
 
@@ -593,7 +610,7 @@ describe('tryClaimPrewarmed', () => {
     launched({ mode: 'acp', model: 'claude-opus-5-5' })
     vi.mocked(listActiveAgentSessions).mockResolvedValue([{ agentSessionId: 'minted' }] as never)
 
-    const result = await tryClaimPrewarmed('p', setup('claude', { mode: 'acp', model: 'claude-opus-5-5' }), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { mode: 'acp', model: 'claude-opus-5-5' }), emit)
     expect(result).toMatchObject({ worktreeId: 'spare1', mode: 'acp' })
     expect(mockRetool).not.toHaveBeenCalled()
     expect(appliedEvents.some((e) => e.type === 'sessions-launched')).toBe(false)
@@ -616,7 +633,7 @@ describe('tryClaimPrewarmed', () => {
     })
 
     const want = setup('pi', { mode: 'acp', model: 'openrouter/moonshotai/kimi-k2.6' })
-    expect((await tryClaimPrewarmed('p', want, emit))?.worktreeId).toBe('spare1')
+    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.worktreeId).toBe('spare1')
     expect(mockRetool).not.toHaveBeenCalled()
     expect(mockClaimSpare).toHaveBeenCalledTimes(1)
   })
@@ -624,7 +641,7 @@ describe('tryClaimPrewarmed', () => {
   it('treats a spare with no recorded upstream as warmed from the default branch', async () => {
     mockList.mockResolvedValue([spare()])
     mockWorktreeUpstream.mockResolvedValue(null)
-    const result = await tryClaimPrewarmed('p', setup('claude'), emit)
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockFetchOrigin).not.toHaveBeenCalled()

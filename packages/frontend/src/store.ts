@@ -498,7 +498,13 @@ export function unreadWaitingBySlug(
  *      project is gone), and
  *   2. the open worktree vanished (a CLI delete, the stale reaper), which
  *      includes it being torn down with no row left to inherit from.
- * Both take the topmost row: there is no neighbour to walk to.
+ * Both take the topmost row: there is no neighbour to walk to — except a
+ * create that claimed a prewarmed spare, whose row resolves into the spare's
+ * own id (`claims`): that one follows it there, waiting for it to list. And
+ * a selection whose provision is still in flight (`inFlight`) waits rather
+ * than moving: a snapshot can miss its row and its worktree both — builds
+ * coalesce, and read the two at different moments — and the create's own
+ * result may yet name where it went.
  *
  * Null on a first paint with nothing persisted (nobody has chosen a worktree
  * yet, and the sidebar is right there) and on a deselect. A provisioning row
@@ -514,13 +520,20 @@ export function resolveVacantSelection(args: {
    *  order, not snapshot order, and terminating rows already dropped: a dying
    *  container is not somewhere to be. */
   rowIds: string[]
+  claims: Record<string, string>
+  inFlight: string[]
 }): string | null {
-  const { previousProjectSlug, activeProjectSlug, selectedWorktreeId, rowIds } = args
+  const { previousProjectSlug, activeProjectSlug, selectedWorktreeId, rowIds, claims, inFlight } = args
   if (!activeProjectSlug) return null
   if (selectedWorktreeId && rowIds.includes(selectedWorktreeId)) return null
   const vanished = selectedWorktreeId !== null
   const switchedProject = previousProjectSlug !== null && previousProjectSlug !== activeProjectSlug
   if (!vanished && !switchedProject) return null
+  if (vanished && !switchedProject) {
+    const claimed = claims[selectedWorktreeId]
+    if (claimed !== undefined) return rowIds.includes(claimed) ? claimed : null
+    if (inFlight.includes(selectedWorktreeId)) return null
+  }
   return rowIds[0] ?? null
 }
 
@@ -657,6 +670,18 @@ interface UiState {
    * the message.
    */
   provisionRetries: Record<string, () => void>
+  /** Create id → the prewarmed spare it claimed, learned from whichever
+   *  says so first: the snapshot's row (`claimedId`) or the create's own
+   *  result. What lets a selection on the creating row follow it into the
+   *  worktree that replaces it (`resolveVacantSelection`). */
+  claims: Record<string, string>
+  recordClaim: (worktreeId: string, claimedId: string) => void
+  /** Drop a claim once it has been followed, or once it no longer holds
+   *  (the create failed, or fell back to listing under its own id). */
+  forgetClaim: (worktreeId: string) => void
+  /** Provisions this tab started whose request hasn't settled yet. */
+  inFlightProvisions: string[]
+  setProvisionInFlight: (worktreeId: string, inFlight: boolean) => void
   /** Worktrees whose delete was confirmed — rendered as "stopping…"
    *  optimistically (bridging the gap before the snapshot carries the
    *  server's own `stopping` flag) until the snapshot drops them. */
@@ -864,6 +889,25 @@ export const useUiStore = create<UiState>((set) => ({
     s.optimisticProvisioning.some((e) => e.worktreeId === worktreeId)
       ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.worktreeId !== worktreeId) }
       : s
+  )),
+  claims: {},
+  forgetClaim: (worktreeId) => set((s) => {
+    if (!(worktreeId in s.claims)) return s
+    const { [worktreeId]: _, ...claims } = s.claims
+    return { claims }
+  }),
+  inFlightProvisions: [],
+  setProvisionInFlight: (worktreeId, inFlight) => set((s) => (
+    s.inFlightProvisions.includes(worktreeId) === inFlight
+      ? s
+      : {
+          inFlightProvisions: inFlight
+            ? [...s.inFlightProvisions, worktreeId]
+            : s.inFlightProvisions.filter((id) => id !== worktreeId),
+        }
+  )),
+  recordClaim: (worktreeId, claimedId) => set((s) => (
+    s.claims[worktreeId] === claimedId ? s : { claims: { ...s.claims, [worktreeId]: claimedId } }
   )),
   provisionRetries: {},
   setProvisionRetry: (worktreeId, retry) => set((s) => {

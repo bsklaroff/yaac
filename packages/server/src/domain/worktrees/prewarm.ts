@@ -30,6 +30,7 @@ import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#db'
 import { resolveGitIdentity } from './git-identity'
+import { claimProvisioning } from './provisioning'
 import { rebranchSpare, retoolSpare } from './spare-pool'
 import { claimSpareWorktree, getWorktreeRow, restoreSpareWorktree } from '#db'
 import { awaitConversationRow, type CreateSetup, type WorktreeCreateResult } from './create'
@@ -201,6 +202,9 @@ export function resolveRebranchTarget(params: {
  */
 export async function tryClaimPrewarmed(
   projectSlug: string,
+  /** The create's own provisioning row, which the claimed spare lists
+   *  under until the create resolves. */
+  requestId: string,
   /** The fully resolved create: which agent, launched how. */
   setup: CreateSetup,
   emit: (message: string) => void,
@@ -297,6 +301,9 @@ export async function tryClaimPrewarmed(
     // which is what makes the catch below a fallback rather than a loss.
     const claimedId = chosen.workspaceId
     recordedRow = true
+    // Hidden under the create's row before the flip below lists it, so the
+    // sidebar never shows the spare beside the row still creating it.
+    claimProvisioning(requestId, claimedId)
     await claimSpareWorktree(
       projectSlug,
       claimedId,
@@ -487,6 +494,8 @@ export async function tryClaimPrewarmed(
         // Best-effort; the row has nothing running behind it either way.
       }
     }
+    // The cold create that follows lists under the create's own id.
+    if (recordedRow) claimProvisioning(requestId, undefined)
     if (propagate) throw err
     return undefined
   } finally {
