@@ -38,7 +38,6 @@ import { getWorktreeTerminals, createShellTerminal, killWorktreeTerminal } from 
 import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import {
   addColumn,
-  addTab,
   computeColumns,
   dropTargetAt,
   focusPaneTarget,
@@ -394,11 +393,10 @@ export function WorktreeView({
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
   }
 
-  /** Create a scratch-shell window and open its pane — as a tab of the column
-   *  at `onto.groupIdx`, or as a new column. The server returns the new window
-   *  id up front, so the pane opens without waiting for the next terminals
-   *  poll. */
-  const openShell = (onto?: { groupIdx: number }): void => {
+  /** Create a scratch-shell window and open its pane as a new column. The
+   *  server returns the new window id up front, so the pane opens without
+   *  waiting for the next terminals poll. */
+  const openShell = (): void => {
     if (!sid) return
     void createShellTerminal(sid)
       .then((entry) => {
@@ -408,12 +406,7 @@ export function WorktreeView({
         )
         const state = useUiStore.getState()
         const cur = sid in state.layouts ? state.layouts[sid] : singleColumn('agent')
-        let next = onto && cur ? addTab(cur, onto.groupIdx, entry.target) : addColumn(cur, entry.target)
-        // The column may have gone away between the click and the shell
-        // resolving (out-of-range addTab is a no-op) — fall back to a column
-        // so the shell always appears.
-        if (!paneTargets(next).includes(entry.target)) next = addColumn(cur, entry.target)
-        state.setWorktreeLayout(sid, next)
+        state.setWorktreeLayout(sid, addColumn(cur, entry.target))
         state.focusTerminal(sid, entry.target)
       })
       .catch((e: unknown) => console.error('new shell failed', e))
@@ -765,7 +758,6 @@ export function WorktreeView({
           <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">
             {creatingHere.kind === 'restart' ? 'Restarting worktree' : 'New worktree'}
           </span>
-          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creatingHere.tool]}</span>
         </header>
       ) : worktree ? (
         <header className={headerClass}>
@@ -779,23 +771,23 @@ export function WorktreeView({
             <button
               onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
               title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-              aria-label={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
-                hover:bg-surface-2 hover:text-text"
+              className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+                text-text-dim transition hover:bg-surface-2 hover:text-text"
             >
               {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
+              <span className="max-lg:sr-only">{tiled ? 'Tab view' : 'Tile view'}</span>
             </button>
           )}
           {!isMobile && (
             <>
               <button
-                onClick={() => openShell()}
+                onClick={openShell}
                 title="New shell"
-                aria-label="New shell"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
-                  hover:bg-surface-2 hover:text-text"
+                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+                  text-text-dim transition hover:bg-surface-2 hover:text-text"
               >
-                <AddIcon size={14} />
+                <AddIcon size={13} />
+                <span className="max-lg:sr-only">New Shell</span>
               </button>
               <button
                 onClick={() => openChanges(worktree.worktreeId)}
@@ -854,19 +846,16 @@ export function WorktreeView({
           {worktree.blockedHosts.length > 0 && (
             <BlockedHostsBadge hosts={worktree.blockedHosts} worktreeId={worktree.worktreeId} iconSize={12} className="hover:bg-[#d65858]/25" />
           )}
-          {isMobile ? (
+          {isMobile && (
             <PaneOverflowMenu
               tool={worktree.tool}
               chipPorts={chipPorts}
               previewPorts={embedPreview ? previewPorts : []}
-              onNewShell={() => openShell()}
+              onNewShell={openShell}
               onOpenChanges={() => openChanges(worktree.worktreeId)}
               onOpenFiles={() => openFiles(worktree.worktreeId)}
               onOpenPreview={(p) => openPreview(worktree.worktreeId, p)}
             />
-          ) : (
-            /* Tool name sits at the far right, past any chits that appear. */
-            <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[worktree.tool]}</span>
           )}
         </header>
       ) : (
@@ -908,15 +897,6 @@ export function WorktreeView({
                 onSelect: () => focusTerminal(worktree.worktreeId, t),
                 draggable: true,
               }))}
-              <button
-                onClick={() => openShell({ groupIdx: gi })}
-                title="New shell"
-                aria-label="New shell tab"
-                className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text"
-              >
-                <AddIcon size={12} />
-              </button>
             </div>
           </section>
         ))}
@@ -939,15 +919,6 @@ export function WorktreeView({
                 onSelect: () => focusTerminal(worktree.worktreeId, t),
                 draggable: false,
               }))}
-              <button
-                onClick={() => openShell()}
-                title="New shell"
-                aria-label="New shell tab"
-                className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text"
-              >
-                <AddIcon size={12} />
-              </button>
             </div>
           </section>
         )}
