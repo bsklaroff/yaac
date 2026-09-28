@@ -3,6 +3,8 @@
  * title summarizing their first user message, written to the same session
  * row as a user rename — a rename simply overwrites it, and only sessions
  * with no title at all are eligible, so a user's title is never clobbered.
+ * Eligibility is checked again by the write itself: a rename that lands
+ * while the model is still running wins.
  *
  * Each tick fires one detached task per eligible session — the tick body
  * never blocks on a model download or inference (those serialize inside
@@ -45,7 +47,7 @@ async function generateOne(slug: string, worktreeId: string, prompt: string): Pr
   try {
     const title = await summarizeTitle(prompt)
     if (title === undefined) return
-    await setWorktreeTitle(slug, worktreeId, title)
+    await setWorktreeTitle(slug, worktreeId, title, { ifUntitled: true })
   } catch (err) {
     serverLog(`[titles] ${slug}/${worktreeId}: ${String(err)}`)
   }

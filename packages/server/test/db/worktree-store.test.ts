@@ -154,6 +154,18 @@ describe('session store', () => {
       expect((await getProjectWorktreeRows('proj')).get('sid-1')?.title).toBeUndefined()
     })
 
+    it('with ifUntitled, writes only a row that has no title yet', async () => {
+      await create('sid-1')
+      await create('sid-2')
+      await setWorktreeTitle('proj', 'sid-1', 'user rename')
+      await setWorktreeTitle('proj', 'sid-1', 'generated', { ifUntitled: true })
+      await setWorktreeTitle('proj', 'sid-2', 'generated', { ifUntitled: true })
+
+      const rows = await getProjectWorktreeRows('proj')
+      expect(rows.get('sid-1')?.title).toBe('user rename')
+      expect(rows.get('sid-2')?.title).toBe('generated')
+    })
+
     // The rename is a snapshot input, so the writer pushes it — which is
     // what lets both the route and the title generator above it stay
     // ignorant of the push channel entirely.
