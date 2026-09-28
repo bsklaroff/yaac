@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
+import { agentBinDirs } from '@yaac/shared/tool-install'
 import { serverLog } from '#log'
 import { realizeGitAuth } from './git-auth'
 import { runHost, onPath } from './host'
@@ -44,12 +45,28 @@ const ENV_DENY_PREFIXES = ['YAAC_']
 const ENV_DENY_KEYS = TOOL_HOME_VARS
 
 /**
+ * The server's environment without its own wiring — what any process it
+ * starts as the user inherits: a workspace's, and the npm that installs the
+ * agents (`ensureAgentBinary`).
+ */
+export function userEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  // eslint-disable-next-line no-process-env -- a host-run agent needs the user's PATH to find git, node and the rest of their toolchain; there is no image that installed them
+  for (const [key, value] of Object.entries(process.env)) {
+    if (ENV_DENY_PREFIXES.some((p) => key.startsWith(p))) continue
+    if (value !== undefined) env[key] = value
+  }
+  return env
+}
+
+/**
  * The environment a workspace's processes get: the server's own, stripped
  * of its wiring, plus what the caller decided, plus the private HOME.
  *
  * Inheriting the host environment at all is a real decision, not an
  * oversight — a host-run agent needs the user's PATH to find `git`, `node`
- * and the agent CLI itself, and there is no image to have installed them.
+ * and the rest of the user's toolchain, and there is no image to have
+ * installed them.
  * What is inherited is therefore chosen twice: broadly here, then narrowed
  * by the two deny lists above.
  */
@@ -58,13 +75,8 @@ function workspaceEnvironment(
   home: string,
   paths: { workspaceDir: string },
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {}
-  // eslint-disable-next-line no-process-env -- a host-run agent needs the user's PATH to find git, node and the agent CLI; there is no image that installed them
-  for (const [key, value] of Object.entries(process.env)) {
-    if (ENV_DENY_PREFIXES.some((p) => key.startsWith(p))) continue
-    if (ENV_DENY_KEYS.has(key)) continue
-    if (value !== undefined) env[key] = value
-  }
+  const env = userEnvironment()
+  for (const key of ENV_DENY_KEYS) delete env[key]
   for (const entry of spec.env) {
     const eq = entry.indexOf('=')
     if (eq <= 0) continue
@@ -348,8 +360,11 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   // The helper scripts staged above are only useful if the workspace can
   // find them — the pod gets that from `/usr/local/bin` already being on
-  // PATH, and here it has to be said.
-  env.PATH = `${workspaceBinDir(home)}${path.delimiter}${env.PATH ?? ''}`
+  // PATH, and here it has to be said. The pinned agents come next, ahead of
+  // the host's own: an agent CLI the user installed is at whatever version
+  // they last updated it to, and yaac's launch flags are written against the
+  // pin (see `AGENT_PACKAGES`).
+  env.PATH = [workspaceBinDir(home), ...agentBinDirs(), env.PATH ?? ''].join(path.delimiter)
 
   // Git identity, trust and authentication, in the workspace's OWN home —
   // the pod driver writes the same settings from its postStart hook, into a

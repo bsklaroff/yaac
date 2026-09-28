@@ -18,7 +18,6 @@
  */
 import { notifyWorktreeListChanged } from '#notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import { MissingToolError, ServerError, type ErrorCode } from '@yaac/shared/errors'
 import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 export type ProvisioningKind = 'create' | 'restart'
@@ -30,11 +29,6 @@ interface ProvisioningEntry {
   kind: ProvisioningKind
   message: string
   error?: string
-  errorCode?: ErrorCode
-  /** Whether the tool the failure names is one yaac can install (see
-   *  `MissingToolError`) — what a client needs to decide whether offering
-   *  that is honest. */
-  installable?: boolean
   /** Group this worktree is filed under — what the create asked for, or what
    *  the restarting worktree's row already says — so the row renders in its
    *  sidebar section while it provisions instead of at the top of the list.
@@ -131,26 +125,15 @@ export function claimProvisioning(worktreeId: string, claimedId: string | undefi
 }
 
 /** Mark a tracked entry as failed; kept (no TTL) until dismissed. No-op if
- *  absent. The code travels with the message so a client can offer the
- *  recovery the failure actually has, and survives a reload because the row
- *  does. `installable` is the second half of that for a missing tool: the
- *  code says one is missing, and this says whether yaac is the one that can
- *  fetch it (see `MissingToolError`).
+ *  absent.
  *
  *  A failure lets go of any spare the create claimed: the row lingers until
  *  dismissed, and must not keep hiding a worktree behind it. */
-export function failProvisioning(
-  worktreeId: string,
-  error: string,
-  code?: ErrorCode,
-  installable?: boolean,
-): void {
+export function failProvisioning(worktreeId: string, error: string): void {
   const e = entries.get(worktreeId)
   if (!e) return
   e.error = error
   delete e.claimedId
-  if (code !== undefined) e.errorCode = code
-  if (installable !== undefined) e.installable = installable
   notifyWorktreeListChanged()
 }
 
@@ -259,12 +242,7 @@ export async function runProvisioned<T>(
     notifyWorktreeListChanged()
     return result
   } catch (err) {
-    failProvisioning(
-      worktreeId,
-      err instanceof Error ? err.message : String(err),
-      err instanceof ServerError ? err.code : undefined,
-      err instanceof MissingToolError ? err.installable : undefined,
-    )
+    failProvisioning(worktreeId, err instanceof Error ? err.message : String(err))
     throw err
   } finally {
     // Clear before releasing, and only if this run is still the current one:
@@ -286,8 +264,6 @@ export function listProvisioning(): ProvisioningWorktreeEntry[] {
       kind: e.kind,
       message: e.message,
       ...(e.error !== undefined ? { error: e.error } : {}),
-      ...(e.errorCode !== undefined ? { errorCode: e.errorCode } : {}),
-      ...(e.installable !== undefined ? { installable: e.installable } : {}),
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),

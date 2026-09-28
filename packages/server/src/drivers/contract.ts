@@ -932,8 +932,8 @@ export interface WorktreeDriver {
   claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
 
   /**
-   * This runtime can actually run that agent, in that mode — rejects with
-   * the reason when it cannot.
+   * This runtime can actually run that agent, in that mode — installing
+   * what it supplies itself, and rejecting with the reason when it cannot.
    *
    * Asked before anything is recorded or provisioned, because the failure
    * it prevents is silent: an adapter a runtime cannot exec produces a
@@ -943,19 +943,14 @@ export interface WorktreeDriver {
    * A verb rather than something derived from the driver kind, because the
    * answer is not a property of the substrate alone: an image either ships
    * an adapter or does not, and that is settled at build time, but a host
-   * has whatever the user installed. Only the runtime can answer it, and
-   * only at the moment it is asked.
-   *
-   * `installMissing` asks the runtime to make the answer yes rather than
-   * report it — the caller carrying a user who opted into that. Advisory,
-   * like `onProgress`: a runtime with nothing to install (an image either
-   * has the tool or is the wrong image) ignores both, and no caller may
-   * read a resolved promise as "something was installed".
+   * has whatever the user installed and whatever the runtime has installed
+   * on it so far. Only the runtime can answer it, and only at the moment it
+   * is asked. `onProgress` narrates an install; a runtime with nothing to
+   * install ignores it.
    */
   assertCanLaunch(opts: {
     tool: AgentTool
     mode: AgentMode
-    installMissing?: boolean
     onProgress?: (message: string) => void
   }): Promise<void>
 

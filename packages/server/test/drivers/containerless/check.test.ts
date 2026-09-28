@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const mockOnPath = vi.hoisted(() => vi.fn())
 import type * as hostModule from '#drivers/containerless/host'
@@ -11,8 +14,9 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
 }))
 import { assertHostCanLaunch, runHostCheck } from '#drivers/containerless/check'
 import { WorkspaceExecError } from '#drivers/contract'
-import { MissingToolError, ServerError } from '@yaac/shared/errors'
-import { AGENT_INSTALL } from '@yaac/shared/tool-install'
+import type { ServerError } from '@yaac/shared/errors'
+import { setDataDir } from '@yaac/shared/paths'
+import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 
 const byName = (results: Awaited<ReturnType<typeof runHostCheck>>, name: string) =>
   results.find((r) => r.name === name)
@@ -22,12 +26,58 @@ const byName = (results: Awaited<ReturnType<typeof runHostCheck>>, name: string)
  *  than restated so the reset cannot drift from the list under test. */
 import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 
+let dataDir: string
+
 beforeEach(() => {
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-cl-check-'))
+  setDataDir(dataDir)
   mockOnPath.mockReset()
   mockRunHost.mockReset()
   mockOnPath.mockResolvedValue(true)
   mockRunHost.mockResolvedValue({ stdout: 'tmux 3.4\n', stderr: '' })
 })
+
+afterEach(() => {
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+/** Where yaac's own install of `binary` lives. */
+const managedBin = (binary: string): string =>
+  path.join(agentPackagePrefix(AGENT_PACKAGES[binary]), 'bin', binary)
+
+/** Binaries yaac installed on an earlier create. */
+function preinstalled(...binaries: string[]): void {
+  for (const binary of binaries) {
+    fs.mkdirSync(path.dirname(managedBin(binary)), { recursive: true })
+    fs.writeFileSync(managedBin(binary), '#!/bin/sh\n', { mode: 0o755 })
+  }
+}
+
+/**
+ * npm, as `runHost` meets it: `npm install --global --prefix <dir> … <spec>`
+ * lands every binary of the package named by `spec` in `<dir>/bin`. The
+ * specs it was asked for are returned, in order.
+ */
+function fakeNpm(): string[] {
+  const specs: string[] = []
+  mockRunHost.mockImplementation(async (argv: string[]) => {
+    if (argv[0] !== 'npm') return { stdout: 'tmux 3.4\n', stderr: '' }
+    const spec = argv[argv.length - 1]
+    specs.push(spec)
+    await new Promise((r) => setTimeout(r, 10))
+    const prefix = argv[argv.indexOf('--prefix') + 1]
+    fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true })
+    for (const [binary, pkg] of Object.entries(AGENT_PACKAGES)) {
+      if (`${pkg.package}@${pkg.version}` !== spec) continue
+      fs.writeFileSync(path.join(prefix, 'bin', binary), '#!/bin/sh\n', { mode: 0o755 })
+    }
+    return { stdout: 'added 1 package', stderr: '' }
+  })
+  return specs
+}
+
+const specOf = (binary: string): string =>
+  `${AGENT_PACKAGES[binary].package}@${AGENT_PACKAGES[binary].version}`
 
 describe('runHostCheck', () => {
   it('passes a host that has everything a worktree needs', async () => {
@@ -65,16 +115,15 @@ describe('runHostCheck', () => {
     }
   })
 
-  it('warns about a node that acp needs and the server itself did not come from', async () => {
+  it('fails on a missing node, which installs and runs the agents', async () => {
     // The case this exists for: a yaac whose server runs a bundled
-    // interpreter whose dir never lands on PATH. Everything else works, so
-    // without a row here the check passes clean and every acp create then
-    // refuses — the same position socat is in, and it warns.
+    // interpreter whose dir never lands on PATH. Every create then refuses.
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'node'))
-    const results = await runHostCheck()
-    expect(byName(results, 'node')?.status).toBe('warn')
-    expect(byName(results, 'node')?.fix).toMatch(/--mode acp/)
-    expect(results.some((r) => r.status === 'fail')).toBe(false)
+    const node = byName(await runHostCheck(), 'node')
+    expect(node?.status).toBe('fail')
+    // The node a distro's apt installs is too old for the pinned agents and
+    // comes without npm, so "install node" alone would not fix the host.
+    expect(node?.fix).toMatch(/node 22 or newer, with npm/)
   })
 
   it('warns about curl, which only the in-session helper needs', async () => {
@@ -87,31 +136,19 @@ describe('runHostCheck', () => {
     expect(results.some((r) => r.status === 'fail')).toBe(false)
   })
 
-  it('warns when no agent CLI is installed, since there is no image to supply one', async () => {
-    mockOnPath.mockImplementation((bin: string) =>
-      Promise.resolve(['tmux', 'git', 'node', 'lsof', 'socat', 'curl'].includes(bin)))
-    const agents = byName(await runHostCheck(), 'agent CLIs')
-    expect(agents?.status).toBe('warn')
-    expect(agents?.detail).toContain('none found')
-  })
+  it('lists the agents yaac has installed, and asks only for the npm that installs the rest', async () => {
+    preinstalled('codex')
+    const row = byName(await runHostCheck(), 'agent tools')
+    expect(row?.status).toBe('pass')
+    expect(row?.detail).toContain(`codex ${AGENT_PACKAGES.codex.version}`)
+    expect(row?.detail).not.toContain('claude')
+    expect(row?.detail).toMatch(/first time a worktree needs it/)
 
-  it('reports the ACP adapters per tool, since having one says nothing about the rest', async () => {
-    // A host with claude's adapter and no codex-acp can create a chat worktree
-    // with claude and not with codex, so one list of binaries would answer a
-    // question nobody asked. Named per tool, and the fix names what to install
-    // for the ones that are missing.
-    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin === 'claude-agent-acp'))
-    const adapters = byName(await runHostCheck(), 'ACP adapters')
-    expect(adapters?.status).toBe('pass')
-    expect(adapters?.detail).toContain('claude: claude-agent-acp')
-    expect(adapters?.detail).not.toContain('codex')
-    expect(adapters?.fix).toMatch(/codex-acp/)
-    expect(adapters?.fix).toMatch(/pi-acp/)
-
-    mockOnPath.mockImplementation(() => Promise.resolve(false))
-    const none = byName(await runHostCheck(), 'ACP adapters')
-    expect(none?.status).toBe('warn')
-    expect(none?.detail).toContain('none found')
+    // Without npm, a create naming anything not yet installed is refused.
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'npm'))
+    const noNpm = byName(await runHostCheck(), 'agent tools')
+    expect(noNpm?.status).toBe('warn')
+    expect(noNpm?.fix).toMatch(/install node/i)
   })
 
   it('reports a host whose own environment re-points a tool home', async () => {
@@ -168,22 +205,9 @@ describe('runHostCheck', () => {
  * anything is provisioned instead of after.
  */
 describe('assertHostCanLaunch', () => {
-  /** What every launch needs whatever it runs, so a case below names only
-   *  the binary it is actually about. */
-  const BASE = ['tmux', 'git', 'node']
-
-  const present = (...bins: string[]) =>
-    mockOnPath.mockImplementation((bin: string) =>
-      Promise.resolve(BASE.includes(bin) || bins.includes(bin)))
-
-  /** The inverse, for the cases about a base binary itself. */
+  /** The inverse of what the host has, for the system tools it supplies. */
   const missing = (...bins: string[]) =>
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(!bins.includes(bin)))
-
-  it('passes a tui launch whose tool is on PATH', async () => {
-    present('codex')
-    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' })).resolves.toBeUndefined()
-  })
 
   it('refuses any launch on a host with no tmux, before a thing is provisioned', async () => {
     // Otherwise this surfaces from inside launchWorkspace as a bare spawn
@@ -191,60 +215,114 @@ describe('assertHostCanLaunch', () => {
     // under a create that already reported progress.
     missing('tmux')
     const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
-      .catch((e: unknown) => e) as MissingToolError
+      .catch((e: unknown) => e) as ServerError
     expect(err.code).toBe('MISSING_TOOL')
     expect(err.message).toMatch(/"tmux" is not on this host's PATH/)
     expect(err.message).toContain('brew install tmux')
-    // No npm package carries tmux, so the button a client would draw off
-    // `installable` is one whose retry installs nothing and re-fails.
-    expect(err.installable).toBe(false)
-    expect(err.message).not.toContain('--install-missing')
     // And nothing to fall back to: this substrate IS tmux over a checkout,
     // so an invented alternative would only mislead.
     expect(err.message).not.toMatch(/, or /)
+    expect(mockRunHost).not.toHaveBeenCalled()
   })
 
   it('refuses a launch on a host with no git, which makes the checkout', async () => {
     missing('git')
     const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
-      .catch((e: unknown) => e) as MissingToolError
+      .catch((e: unknown) => e) as ServerError
     expect(err.code).toBe('MISSING_TOOL')
     expect(err.message).toMatch(/"git" is not on this host's PATH/)
     expect(err.message).toContain('brew install git')
   })
 
   it('reports the most fundamental gap first, so a host is fixed bottom-up', async () => {
-    // A bare machine is missing all of these; being told about the ACP
-    // adapter while there is no tmux to run it in helps nobody.
-    missing('tmux', 'git', 'claude-agent-acp', 'socat')
+    // A bare machine is missing all of these; being told about socat while
+    // there is no tmux to run anything in helps nobody.
+    missing('tmux', 'git', 'socat')
     await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' }))
       .rejects.toThrow(/"tmux" is not on this host's PATH/)
   })
 
-  it('refuses a tui launch whose tool is missing, with the command that fixes it', async () => {
-    present()
-    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' }).catch((e: unknown) => e)
-    // A code, not just prose: the webapp offers to run the install off it.
-    expect(err).toBeInstanceOf(ServerError)
-    expect((err as ServerError).code).toBe('MISSING_TOOL')
-    // An error that says only what is wrong is barely better than the spawn
-    // failure it replaces.
-    expect((err as ServerError).message).toContain(AGENT_INSTALL.codex)
-    expect((err as ServerError).message).toContain('--install-missing')
-    // And says so in a form a client can act on — this is the case where an
-    // Install-and-retry button really can fix it.
-    expect((err as MissingToolError).installable).toBe(true)
+  it('installs the pinned tool on first use, and never the host\'s own', async () => {
+    // Every binary resolves on this host's PATH, codex included: a codex the
+    // user installed is at whatever version they last updated it to, which
+    // is how a launch meets an update screen or a dropped policy.
+    const specs = fakeNpm()
+    const progress: string[] = []
+    await assertHostCanLaunch({ tool: 'codex', mode: 'tui', onProgress: (m) => progress.push(m) })
+    expect(specs).toEqual([specOf('codex')])
+    expect(fs.statSync(managedBin('codex')).mode & 0o111).not.toBe(0)
+    // A first create waits on a download, and says so.
+    expect(progress.join('\n')).toContain(specOf('codex'))
+    // Into its own prefix, and from there on the prefix is the answer.
+    const npm = mockRunHost.mock.calls.find(([argv]) => (argv as string[])[0] === 'npm')?.[0] as string[]
+    expect(npm[npm.indexOf('--prefix') + 1]).toMatch(/\.partial-/)
+    await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
+    expect(specs).toHaveLength(1)
+    // Nothing of the staging dir is left beside the install.
+    expect(fs.readdirSync(path.dirname(agentPackagePrefix(AGENT_PACKAGES.codex))))
+      .toEqual([path.basename(agentPackagePrefix(AGENT_PACKAGES.codex))])
   })
 
-  it('asks for the ADAPTER under acp, not the tool it adapts', async () => {
-    // claude-agent-acp bundles its own SDK; acpd never shells out to
-    // `claude`, so a host with the adapter and no CLI runs acp fine.
-    present('claude-agent-acp', 'socat')
-    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' })).resolves.toBeUndefined()
+  it('installs under the constraints third-party install code should run with', async () => {
+    fakeNpm()
+    process.env.YAAC_SECRETS = 'must-not-reach-npm'
+    try {
+      await assertHostCanLaunch({ tool: 'pi', mode: 'tui' })
+      await assertHostCanLaunch({ tool: 'claude', mode: 'tui' })
+    } finally {
+      delete process.env.YAAC_SECRETS
+    }
+    const npm = mockRunHost.mock.calls.filter(([argv]) => (argv as string[])[0] === 'npm')
+    const [pi, claude] = npm.map(([argv]) => argv as string[])
+    // npm only warns about a node older than a package's `engines`, and the
+    // install it then finishes would read as installed for good.
+    expect(pi).toContain('--engine-strict')
+    // Lifecycle scripts only where one puts the binary in place.
+    expect(pi).toContain('--ignore-scripts')
+    expect(claude).not.toContain('--ignore-scripts')
+    // The server's own wiring stays with the server, as it does for a
+    // workspace.
+    for (const [, opts] of npm) {
+      const env = (opts as { env: NodeJS.ProcessEnv }).env
+      expect(env.PATH).toBe(process.env.PATH)
+      expect(Object.keys(env).filter((k) => k.startsWith('YAAC_'))).toEqual([])
+    }
+  })
 
-    present('claude', 'socat')
-    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' }))
-      .rejects.toThrow(/claude-agent-acp.*not on this host's PATH/)
+  it('clears staging an abandoned install left, and only that', async () => {
+    // A server stopped mid-install leaves npm to finish into a staging dir
+    // nothing will rename. One younger than the install timeout may be an
+    // install still running, here or in a second server on this data dir.
+    const dir = path.dirname(agentPackagePrefix(AGENT_PACKAGES.codex))
+    const stale = path.join(dir, 'claude-code@1.0.0.partial-dead')
+    const live = path.join(dir, 'pi-acp@1.0.0.partial-busy')
+    fs.mkdirSync(path.join(stale, 'lib'), { recursive: true })
+    fs.mkdirSync(live, { recursive: true })
+    const old = new Date(Date.now() - 11 * 60_000)
+    fs.utimesSync(stale, old, old)
+    fakeNpm()
+    await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
+    expect(fs.existsSync(stale)).toBe(false)
+    expect(fs.existsSync(live)).toBe(true)
+  })
+
+  it('installs the ADAPTER under acp, and the tool too only when the adapter drives one', async () => {
+    const specs = fakeNpm()
+    // claude-agent-acp bundles its own SDK; acpd never shells out to `claude`.
+    await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
+    expect(specs).toEqual([specOf('claude-agent-acp')])
+
+    // codex-acp spawns `codex app-server`, so a host with the adapter and no
+    // CLI fails at the first prompt rather than at the launch — later, and
+    // with nothing to point at.
+    specs.length = 0
+    await assertHostCanLaunch({ tool: 'codex', mode: 'acp' })
+    expect(specs).toEqual([specOf('codex-acp'), specOf('codex')])
+
+    // opencode IS its own adapter, so it is one install under one name.
+    specs.length = 0
+    await assertHostCanLaunch({ tool: 'opencode', mode: 'acp' })
+    expect(specs).toEqual([specOf('opencode')])
   })
 
   it('asks for socat under acp, whose absence hangs a pane instead of failing', async () => {
@@ -252,163 +330,91 @@ describe('assertHostCanLaunch', () => {
     // the chat transport dials acpd's socket by spawning socat on this host,
     // so without it there is no handshake, no conversation and no pane —
     // which reads as a wedged agent rather than a missing tool.
-    present('claude-agent-acp')
+    missing('socat')
     const err = await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
       .catch((e: unknown) => e) as ServerError
     expect(err.code).toBe('MISSING_TOOL')
     expect(err.message).toMatch(/"socat" is not on this host's PATH/)
-    // No npm package carries socat, so the recovery is the system one and an
-    // `--install-missing` offer yaac could not honour is left unsaid.
     expect(err.message).toContain('apt install socat')
     expect(err.message).toContain('--mode tui')
-    expect(err.message).not.toContain('--install-missing')
-    // The same fact in a form a client can branch on: the webapp offers its
-    // Install-and-retry button off this, not off the code, because a retry
-    // that installs nothing re-fails with this identical error.
-    expect(err).toBeInstanceOf(MissingToolError)
-    expect((err as MissingToolError).installable).toBe(false)
-
-    // And an install run cannot paper over it either.
-    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp', installMissing: true }))
-      .rejects.toThrow(/"socat" is not on this host's PATH/)
+    // Refused before the adapter's download, not after.
     expect(mockRunHost).not.toHaveBeenCalled()
   })
 
-  it('asks for node under acp, because acpd IS the window command', async () => {
-    // `node <acpdEntry>` is what the acp window runs, so this is yaac's own
-    // interpreter and not the tool's. A server started by a bundled node
-    // that never landed on PATH (the desktop app stages one) launches a
-    // window that execs nothing and closes.
+  it('asks for node whatever the mode, because the agents install and run under it', async () => {
+    // npm installs every agent under it, codex and pi are node scripts, and
+    // `node <acpdEntry>` is what an acp window runs. A server started by a
+    // bundled node that never landed on PATH (the desktop app stages one)
+    // launches a window that execs nothing and closes.
     missing('node')
-    const err = await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
-      .catch((e: unknown) => e) as MissingToolError
-    expect(err.code).toBe('MISSING_TOOL')
-    expect(err.message).toMatch(/"node" is not on this host's PATH/)
-    expect(err.message).toContain('brew install node')
-    expect(err.message).toContain('--mode tui')
-  })
-
-  it('asks for node before the adapter npm would install with it', async () => {
-    // The ordering with teeth: under --install-missing, asking for the
-    // adapter first would run its `npm install -g` on a host that has no
-    // node — and so no npm — instead of refusing with the thing to fix.
-    missing('node', 'claude-agent-acp')
-    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp', installMissing: true }))
-      .rejects.toThrow(/"node" is not on this host's PATH/)
+    for (const mode of ['tui', 'acp'] as const) {
+      const err = await assertHostCanLaunch({ tool: 'codex', mode })
+        .catch((e: unknown) => e) as ServerError
+      expect(err.code).toBe('MISSING_TOOL')
+      expect(err.message).toMatch(/"node" is not on this host's PATH/)
+      expect(err.message).toContain('node 22 or newer, with npm')
+    }
     expect(mockRunHost).not.toHaveBeenCalled()
   })
 
-  it('asks nothing about node for tui, whose interpreter is the tool\'s business', async () => {
-    // A tool that ships a native binary needs no node at all, and one that
-    // does not carries its own shim — either way that is not yaac's call to
-    // make, where acpd's interpreter is.
-    missing('node')
+  it('asks nothing about socat for tui, which dials no socket', async () => {
+    preinstalled('codex')
+    missing('socat')
     await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' })).resolves.toBeUndefined()
-  })
-
-  it('leaves socat alone for tui, which never dials a socket', async () => {
-    present('claude')
-    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'tui' })).resolves.toBeUndefined()
-  })
-
-  it('asks for the tool as well when its adapter only drives one', async () => {
-    // codex-acp spawns `codex app-server` and pi-acp spawns `pi --mode rpc`,
-    // so a host with the adapter and no CLI fails at the first prompt rather
-    // than at the launch — later, and with nothing to point at. claude's
-    // adapter bundles its own SDK and is asked for alone (above); opencode IS
-    // its own adapter, so asking twice would be one probe under two names.
-    present('node', 'codex-acp', 'socat')
-    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'acp' }))
-      .rejects.toThrow(/codex.*not on this host's PATH/)
-
-    present('node', 'codex-acp', 'codex', 'socat')
-    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'acp' })).resolves.toBeUndefined()
-
-    present('node', 'opencode', 'socat')
-    await expect(assertHostCanLaunch({ tool: 'opencode', mode: 'acp' })).resolves.toBeUndefined()
-  })
-
-  it('installs a missing tool when asked to, then proves it landed', async () => {
-    // `npm -g` reports success into prefixes this server's PATH never
-    // searches, so the re-probe is what separates a real install from a
-    // worktree that will die exactly as it would have.
-    let installed = false
-    mockOnPath.mockImplementation((bin: string) =>
-      Promise.resolve(BASE.includes(bin) || (bin === 'codex' && installed)))
-    mockRunHost.mockImplementation((argv: string[]) => {
-      expect(argv).toEqual(['sh', '-c', AGENT_INSTALL.codex])
-      installed = true
-      return Promise.resolve({ stdout: 'added 1 package', stderr: '' })
-    })
-    const progress: string[] = []
-    await expect(assertHostCanLaunch({
-      tool: 'codex', mode: 'tui', installMissing: true, onProgress: (m) => progress.push(m),
-    })).resolves.toBeUndefined()
-    expect(mockRunHost).toHaveBeenCalledTimes(1)
-    expect(progress.join('\n')).toContain(AGENT_INSTALL.codex)
-  })
-
-  it('installs nothing when the tool is already there', async () => {
-    present('codex')
-    await assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true })
     expect(mockRunHost).not.toHaveBeenCalled()
   })
 
-  it('reports the installer\'s own words when the install fails', async () => {
-    present()
-    mockRunHost.mockRejectedValue(
-      new WorkspaceExecError('command exited 243', 243, '', 'npm ERR! EACCES /usr/lib/node_modules'),
-    )
-    // Where "needs a writable prefix" actually lives — without it the user
-    // gets a second silent failure instead of a fixable one.
-    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }))
-      .rejects.toThrow(/installing codex failed.*EACCES/s)
+  it('refuses an install on a host with no npm, naming what provides it', async () => {
+    missing('npm')
+    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
+      .catch((e: unknown) => e) as ServerError
+    expect(err.code).toBe('MISSING_TOOL')
+    expect(err.message).toContain(specOf('codex'))
+    expect(err.message).toContain('node 22 or newer, with npm')
   })
 
-  it('keeps npm\'s code line, which a tail-only window would scroll off', async () => {
-    present()
-    // Shaped like a real npm failure: the machine-readable code is printed
-    // near the TOP, and the sentence a person needs is at the bottom, with
-    // more than a window's worth of path noise in between.
+  it('reports the installer\'s own words when the install fails, and leaves nothing behind', async () => {
+    // Shaped like a real npm failure on a node older than the package's
+    // `engines`: the machine-readable code is printed near the TOP, and the
+    // sentence a person needs is at the bottom, with more than a window's
+    // worth of noise in between.
     const npmError = [
-      'npm error code EACCES',
-      'npm error syscall mkdir',
-      "npm error path '/ro-prefix/lib'",
+      'npm error code EBADENGINE',
+      'npm error engine Unsupported engine',
       ...Array.from({ length: 12 }, (_, i) => `npm error   detail line ${String(i)}`),
-      'npm error The operation was rejected by your operating system.',
-      'npm error It is likely you do not have the permissions to access this file.',
+      'npm error notsup Required: {"node":">=22.0.0"}',
     ].join('\n')
-    mockRunHost.mockRejectedValue(new WorkspaceExecError('command exited 243', 243, '', npmError))
-    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true })
-      .catch((e: unknown) => e) as Error
-    expect(err.message).toContain('npm error code EACCES')
-    expect(err.message).toContain('do not have the permissions')
+    mockRunHost.mockImplementation((argv: string[]) => {
+      if (argv[0] !== 'npm') return Promise.resolve({ stdout: '', stderr: '' })
+      fs.mkdirSync(path.join(argv[argv.indexOf('--prefix') + 1], 'lib'), { recursive: true })
+      return Promise.reject(new WorkspaceExecError('command exited 1', 1, '', npmError))
+    })
+    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
+      .catch((e: unknown) => e) as ServerError
+    expect(err.code).toBe('MISSING_TOOL')
+    expect(err.message).toContain(`installing ${specOf('codex')} failed`)
+    expect(err.message).toContain('Required: {"node":">=22.0.0"}')
     // Lifted, not duplicated — the tail drops the code line it hoisted.
-    expect(err.message.match(/npm error code EACCES/g)).toHaveLength(1)
+    expect(err.message.match(/npm error code EBADENGINE/g)).toHaveLength(1)
+    // A half-written install must not pass for one on the next create.
+    expect(fs.readdirSync(path.dirname(agentPackagePrefix(AGENT_PACKAGES.codex)))).toEqual([])
   })
 
-  it('refuses when the install reports success but the binary still is not on PATH', async () => {
-    present()
-    mockRunHost.mockResolvedValue({ stdout: 'added 1 package', stderr: '' })
-    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }))
-      .rejects.toThrow(/still not on this server's PATH/)
+  it('refuses an install that reports success but leaves no binary', async () => {
+    mockRunHost.mockResolvedValue({ stdout: 'added 0 packages', stderr: '' })
+    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' }))
+      .rejects.toThrow(/left no "codex" binary behind/)
+    expect(fs.existsSync(managedBin('codex'))).toBe(false)
   })
 
   it('runs one install for concurrent creates wanting the same tool', async () => {
-    // Two `npm -g` runs into one prefix race each other's writes, and the
-    // second has nothing to add.
-    let installed = false
-    mockOnPath.mockImplementation((bin: string) =>
-      Promise.resolve(BASE.includes(bin) || (bin === 'codex' && installed)))
-    mockRunHost.mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 10))
-      installed = true
-      return { stdout: '', stderr: '' }
-    })
+    // Two npm runs into one prefix race each other's writes, and the second
+    // has nothing to add.
+    const specs = fakeNpm()
     await Promise.all([
-      assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }),
-      assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }),
+      assertHostCanLaunch({ tool: 'codex', mode: 'tui' }),
+      assertHostCanLaunch({ tool: 'codex', mode: 'tui' }),
     ])
-    expect(mockRunHost).toHaveBeenCalledTimes(1)
+    expect(specs).toEqual([specOf('codex')])
   })
 })

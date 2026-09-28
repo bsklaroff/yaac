@@ -588,30 +588,16 @@ startup rather than letting a create fail with a spawn error:
   latest`, which 3.0 lacks) and **git**:
   required. The launch spawns both directly, so a create refuses up front
   rather than dying inside `launchWorkspace` with the workspace half made.
-- **node**: required for `--mode acp`, where the window's command is `node`
-  running yaac's own acpd. Unlike an agent CLI's interpreter, that one is
-  yaac's to account for — a server started by a node that never landed on
-  `PATH` (a bundled one, as the desktop app stages) would open a window that
-  execs nothing. Warned about rather than failed, like socat below: the
-  server plainly runs without it, and only acp creates refuse.
+- **node** 22 or newer, **with npm**: required. npm installs every agent
+  (see "Agent binaries" below) under it, codex and pi are node scripts, and
+  under `--mode acp` the window's command is `node` running yaac's own acpd.
+  22 because the pinned agents declare it; a Debian or Ubuntu `apt install
+  nodejs` is older and comes without npm. A server started by a node that
+  never landed on `PATH` (a bundled one, as the desktop app stages) is the
+  usual way to be missing it.
 - **socat**: required for `--mode acp` — the chat transport dials acpd's
   socket by spawning one — and unused by `--mode tui`. `yaac host check` warns
   rather than fails for that reason; a create in acp mode refuses.
-- **an ACP adapter** for `--mode acp` — `claude-agent-acp`, `codex-acp`,
-  `pi-acp`, or (for opencode) the `opencode` CLI itself, whose adapter is a
-  subcommand. They ship in the image under the pod driver and have to be
-  installed here, and `yaac host check` reports them per tool: having one says
-  nothing about the rest. Two of them are front ends rather than
-  implementations — codex-acp drives `codex app-server`, pi-acp drives
-  `pi --mode rpc` — so those creates ask for the tool's CLI as well.
-- **an agent CLI** on `PATH` (claude, codex, opencode, pi) — there is no
-  image to have installed one. What yaac installs (`--install-missing`, the
-  webapp's install button) is the version the image pins (`AGENT_CLIS`), but
-  a CLI the host already has is used at whatever version it is: the preflight
-  checks only that one is on `PATH`. yaac's postures are written against the
-  pinned release, so on another one a posture can mean something else — codex
-  0.156 dropping the `untrusted` policy is the case that made the pin. Keeping
-  a host's CLIs at the pin is the host's to do.
 - **lsof**: port detection; without it worktrees run fine and report no ports.
 - **curl**: how `yaac-mama` reaches this server from inside a worktree;
   nothing else uses it.
@@ -622,46 +608,65 @@ Nothing gates on the tools the agents themselves reach for — `ripgrep` and
 formula installs the useful ones anyway, since a mode with no image is the
 one place a missing utility is the user's problem.
 
+### Agent binaries
+
+Every agent CLI and ACP adapter a worktree runs is yaac's own install of the
+version the image pins (`AGENT_CLIS`, `ACP_ADAPTERS`; the table of packages is
+`AGENT_PACKAGES` in `@yaac/shared/tool-install`), never the one the host
+happens to have. yaac speaks each CLI's own vocabulary in both directions —
+postures go out as its flags, its reports come back as postures — and a
+release off the pin fails quietly: a codex behind the latest release opens an
+"Update available" screen that swallows the prompt, and one ahead of it
+dropped the `untrusted` policy yaac used to launch. So the launch puts
+`<data>/node-local/agent-tools/<package>@<version>/bin` for every pinned
+package ahead of the host's own `PATH`, and a CLI the user installed is
+shadowed inside worktrees and untouched outside them.
+
+Each package is installed the first time a create needs it, with `npm install
+--global --prefix` into a staging directory renamed into place only once the
+binary is there — the prefix's existence is what a later create reads as
+"installed", so an npm killed halfway must leave nothing that passes for one.
+For the same reason the install is `--engine-strict`: npm otherwise only warns
+about a node older than a package's `engines` and finishes an install the
+agent cannot run under. A staging directory older than the install timeout
+is swept before the next install, since a server stopped mid-install leaves
+npm to finish into one nothing will rename. npm runs as third-party code
+does in a workspace — with the server's `YAAC_*` wiring stripped from its
+environment, and with lifecycle scripts only for the two packages whose
+postinstall puts their native binary in place (claude, opencode).
+A prefix is named by its version and never changes, so a pin bump installs
+beside the old one and a worktree launched against it keeps running what it
+started with. Nothing removes a superseded prefix.
+
 ### Missing tools
 
-The tool a create names has to be on the PATH this server was started from,
-because that is the PATH its tmux server will resolve the launch command
-against. Two checks say so instead of letting it fail silently — a launch
-command that execs nothing exits 127, tmux closes the window, and the
-worktree ends seconds after a create that already reported success:
+A launch command that execs nothing exits 127, tmux closes the window, and
+the worktree ends seconds after a create that already reported success. Two
+checks say so instead:
 
 - Before anything is provisioned, the create asks the driver
-  (`assertCanLaunch`) whether this host has the binaries the launch will run:
-  `tmux` and `git` whatever it runs, then the tool itself for `--mode tui`,
-  or for `--mode acp` the tool's ACP adapter — which bundles its own SDK and
-  never shells out to the CLI — under `node`, plus the `socat` that mode's
-  transport dials with. A miss refuses the create with `MISSING_TOOL` and the
-  command that installs it. They are asked in dependency order, so a bare
-  machine is told about tmux rather than about an adapter it has nowhere to
-  run. socat is in that list even though its absence does not kill the
-  worktree: the pane simply never attaches, which reads as an agent that
-  hangs rather than a tool that is missing, and there is no npm command for
-  yaac to offer to run.
+  (`assertCanLaunch`) whether this host can run the launch: `tmux` and `git`
+  whatever it runs, and for `--mode acp` the `node` acpd runs under and the
+  `socat` that mode's transport dials with. A miss refuses the create with
+  `MISSING_TOOL` and how to install it. They are asked in dependency order,
+  so a bare machine is told about tmux rather than about something it has
+  nowhere to run. socat is in that list even though its absence does not
+  kill the worktree: the pane simply never attaches, which reads as an agent
+  that hangs rather than a tool that is missing. Then it installs whatever
+  pinned binary the launch runs and yaac does not have yet — the tool for
+  `--mode tui`, and for `--mode acp` its adapter (plus the CLI, for an
+  adapter that drives one) — narrated on the create's progress stream.
 - After the launch, a probe checks the agent windows actually survived,
-  catching what a PATH check cannot: a binary that is present but broken. It
+  catching what a preflight cannot: a binary that is present but broken. It
   is deliberately not awaited — its settle delay would land on every create
   — so its verdict arrives as a failed provisioning row a moment later.
-
-`--install-missing` (or the webapp's **Install and retry**, offered on a
-`MISSING_TOOL` failure that reports itself `installable` — the code alone
-would put the button on socat too, where the retry installs nothing and
-re-fails identically) has yaac run the install itself, from the fixed table
-in `@yaac/shared/tool-install`, narrated on the create's progress stream. It
-re-probes afterwards and refuses if the binary still does not resolve: `npm
--g` reports success into prefixes this server's PATH may never search, and
-an unverified install would hand back a worktree that dies exactly as it
-would have. The same table backs `yaac host check`'s advice.
 
 ## Testing
 
 `pnpm vitest run --project e2e-containerless` drives the real CLI against a
 real containerless server. It needs no cluster, builds no images, and runs in
-parallel — a fake agent on `PATH` stands in for a real one, since what is
+parallel — a fake agent, staged where yaac installs the pinned one, stands
+in for a real one, since what is
 under test is the launch, the exec transport and the recovery rather than
 any agent's behavior. The driver's unit tests mock at `host.ts`, which is its
 entire process boundary.

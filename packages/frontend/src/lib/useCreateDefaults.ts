@@ -95,7 +95,7 @@ export function useCreateWorktree(): (
   return useCallback((projectSlug, tool, setup, branch) => {
     const { model, modelName, permissionMode, mode } = setup
     provision(projectSlug, tool, 'create', randomUUID(),
-      (sid, onProgress, retryOpts) =>
+      (sid, onProgress) =>
         createWorktree(projectSlug, tool, onProgress, sid, {
           ...(branch !== undefined ? { branch } : {}),
           // Empty only when the credential's provider lists no models at
@@ -103,7 +103,6 @@ export function useCreateWorktree(): (
           ...(model !== '' ? { model } : {}),
           permissionMode,
           mode,
-          ...(retryOpts?.installMissingTool === true ? { installMissingTool: true } : {}),
         }),
       undefined,
       model !== '' ? { model, ...(modelName !== undefined ? { modelName } : {}) } : undefined)

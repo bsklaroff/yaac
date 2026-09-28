@@ -3,7 +3,6 @@ import { spawn } from 'node:child_process'
 import { resolveCommandPath, resolveToolCliPath } from '#cli-resolve'
 import { createCliSessionRegistry, outputTail, type CliSession } from '#cli-session'
 import { testEnv } from '@yaac/shared/env'
-import { AGENT_INSTALL } from '@yaac/shared/tool-install'
 import { AGENT_CLIS, type ToolInstallView } from '@yaac/shared/types'
 
 /**
@@ -15,10 +14,10 @@ import { AGENT_CLIS, type ToolInstallView } from '@yaac/shared/types'
  *    `~/.local/bin`), told the version to install.
  *  - codex: `npm install -g @openai/codex@<version>`.
  *
- * Both at the version in `AGENT_CLIS`: on a containerless server this is the
- * CLI every worktree runs, and yaac's postures are written against that
- * release. No Homebrew fallback for codex — a formula installs whatever is
- * current and cannot be pinned.
+ * Both at the version in `AGENT_CLIS`, the release worktrees run (a
+ * containerless worktree runs yaac's own install of it, not this one). No
+ * Homebrew fallback for codex — a formula installs whatever is current and
+ * cannot be pinned.
  *
  * Session lifecycle mirrors tool-login's via the shared cli-session
  * registry: one per tool, polled by the webapp, lingering after finishing so
@@ -71,7 +70,8 @@ export function startToolInstall(tool: 'claude' | 'codex', id?: string): ToolIns
 
   const argv = installArgv(tool)
   if (!argv) {
-    registry.finish(s, 'error', `npm was not found — install Codex manually: ${AGENT_INSTALL.codex}`)
+    const { package: pkg, version } = AGENT_CLIS.codex
+    registry.finish(s, 'error', `npm was not found — install Codex manually: npm install -g ${pkg}@${version}`)
     return getToolInstall(s.view.id)
   }
   const child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] })
