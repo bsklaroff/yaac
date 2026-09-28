@@ -38,7 +38,7 @@ export {
   type DrivenWorktree,
   type LiveAgent,
 } from './drivers'
-export { attachAcp, type AcpSocket } from './acp-bridge'
+export { attachAcp } from './acp-bridge'
 export { parkAcpLaunchModel } from './acp-driver'
 export { acpConversation } from './acp-registry'
 export { readAcpFirstPrompt, readAcpLog } from './acp-log'
@@ -85,5 +85,4 @@ export {
   buildWindowsExec,
   buildWorktreeLinkExec,
   validateInitWindows,
-  type AgentWindowSpec,
 } from './setup-commands'

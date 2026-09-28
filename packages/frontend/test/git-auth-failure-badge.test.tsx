@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {

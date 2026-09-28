@@ -13,7 +13,7 @@ import {
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
   useUiStore,
-} from '#store'
+} from '#lib/store'
 import type {
   GitAuthFailure,
   ProvisioningWorktreeEntry,

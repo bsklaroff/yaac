@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
+import { resolveEphemeralModulesPaths, resolveProjectConfig, retryImageBuild } from '#domain/projects'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir, projectConfigDir } from '@yaac/shared/project-paths'
 import type { YaacConfig } from '@yaac/shared/types'
 
@@ -285,5 +286,30 @@ describe('resolveEphemeralModulesPaths', () => {
   it('returns a fresh array each call (not a shared reference)', () => {
     resolveEphemeralModulesPaths({}).push('mutated')
     expect(resolveEphemeralModulesPaths({})).toEqual(['node_modules'])
+  })
+})
+
+describe('retryImageBuild', () => {
+  type RetryVerb = (id: string, cfg: (slug: string) => Promise<YaacConfig | undefined>) => boolean
+
+  // The runtime cannot read config itself — a rebuild that defaulted it
+  // would silently drop a nested project's nestable layer. "No config" reads
+  // as all-defaults: null from the store, undefined to the contract.
+  it('hands the runtime a reader for each owning project’s config', async () => {
+    const mockRetry = vi.fn<RetryVerb>().mockReturnValue(true)
+    installFakeWorktreeDriver({ retryImageBuild: mockRetry })
+    await storeConfig(JSON.stringify({ nestedContainers: true }))
+
+    expect(retryImageBuild('b1')).toBe(true)
+
+    const reader = mockRetry.mock.calls[0][1]
+    await expect(reader(slug)).resolves.toEqual({ nestedContainers: true })
+    await expect(reader('unconfigured')).resolves.toBeUndefined()
+  })
+
+  it('reports that there was nothing to retry', () => {
+    installFakeWorktreeDriver({ retryImageBuild: () => false })
+
+    expect(retryImageBuild('gone')).toBe(false)
   })
 })

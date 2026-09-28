@@ -11,7 +11,7 @@ import { restartWorktree } from '#lib/createWorktree'
 import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { useIsMobile } from '#lib/viewport'
-import { isUnseenDeath, useUiStore } from '#store'
+import { isUnseenDeath, useUiStore } from '#lib/store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
 

@@ -26,7 +26,7 @@ import {
   MIN_SIDEBAR_WIDTH,
   loadSidebarWidth,
   useUiStore,
-} from '#store'
+} from '#lib/store'
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {

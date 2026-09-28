@@ -16,7 +16,7 @@ const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { ProjectSettings } from '#components/settings/ProjectSettings'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 afterEach(cleanup)
 

@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useUiStore, type MobileScreen } from '#store'
+import { useUiStore, type MobileScreen } from '#lib/store'
 
 /**
  * What the mobile shell stamps on a history entry. It shares the entry with

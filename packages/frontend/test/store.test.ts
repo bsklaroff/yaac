@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingBySlug, useUiStore,
-} from '#store'
+} from '#lib/store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 const initial = useUiStore.getState()

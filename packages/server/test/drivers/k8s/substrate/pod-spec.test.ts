@@ -7,14 +7,13 @@ import { promisify } from 'node:util'
 import {
   CA_CONFIGMAP_NAME,
   NESTED_GRAPHROOT_PATH,
-  SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
   buildPodJobManifest,
   hostUidSecurityContext,
   sentryTmpfsAnnotations,
 } from '#drivers/k8s/substrate'
-// Internals, for fixtures and bounds only: the in-container cert dir, the
-// sentry tmpfs caps, and the params the builder takes.
+// Internals, for fixtures and bounds only: the in-container cert and
+// ssh-agent dirs, the sentry tmpfs caps, and the params the builder takes.
 import {
   CA_MOUNT_DIR,
   MODULES_REQUEST_BYTES,
@@ -22,6 +21,7 @@ import {
   MODULES_TMPFS_BYTES,
   NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_TMPFS_BYTES,
+  SSH_AGENT_MOUNT,
   type PodJobParams,
 } from '#drivers/k8s/substrate/pod-spec'
 

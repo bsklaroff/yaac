@@ -49,11 +49,11 @@ import {
   k8sNamespace,
   setActiveClusterCache,
   worktreeIdLabels,
-  type DeltaSource,
 } from '#drivers/k8s/substrate'
 // Internals, for setup only: the client reset hook, the informer surface the
 // fake implements, and the job-name label the raw pod fixtures carry.
 import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
+import type { DeltaSource } from '#drivers/k8s/substrate/cluster-cache'
 import type { InformerLike } from '#drivers/k8s/substrate/informer-cache'
 import { JOB_NAME_LABEL } from '#drivers/k8s/substrate/pods'
 

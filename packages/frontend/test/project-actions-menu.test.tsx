@@ -8,7 +8,7 @@ vi.mock('#lib/projectApi', () => ({
 
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { removeProject } from '#lib/projectApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {

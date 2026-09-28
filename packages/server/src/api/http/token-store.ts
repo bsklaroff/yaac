@@ -4,9 +4,6 @@ import { timingSafeStrEqual } from './web-auth'
 import { maskToken } from '@yaac/shared/mask'
 import type { TokenEntry, TokenKind } from '#db'
 
-export { loadTokens, saveTokens } from '#db'
-export type { TokenEntry, TokenKind } from '#db'
-
 /**
  * All client credentials the server hands out, in one store. Three kinds:
  *

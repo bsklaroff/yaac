@@ -41,7 +41,7 @@ import { getStoppedWorktrees } from '#lib/stoppedApi'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { useIsMobile } from '#lib/viewport'
-import { isUnreadWaiting, useUiStore } from '#store'
+import { isUnreadWaiting, useUiStore } from '#lib/store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 // A group name is stored under this cap, and the routes refuse a longer one
 // — so the fields that mint names stop there rather than taking a name the

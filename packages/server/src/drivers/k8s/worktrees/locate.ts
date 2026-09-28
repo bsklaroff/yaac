@@ -6,7 +6,7 @@ import {
   listWorktreePods,
   type PodInfo,
 } from '#drivers/k8s/substrate'
-import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import { runtimeHandleFromPod } from './handle'
 import { ServerError } from '@yaac/shared/errors'
 import type { RuntimeHandle, TeardownTarget } from '#drivers/contract'
 

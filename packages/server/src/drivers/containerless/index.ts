@@ -6,8 +6,6 @@ import {
 } from './exec'
 import { dialCtrlStream, dialPtyStream, reviveStatusStream } from './dial'
 import { awaitReady, launchWorkspace, prepareSubstrate } from './launch'
-export { liveWorkspaceCount } from './lifecycle'
-
 import {
   releaseContainerlessDriver,
   startContainerlessDriver,

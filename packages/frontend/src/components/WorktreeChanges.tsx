@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type K
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Popover } from '@base-ui/react/popover'
-import { paneViewKey, useUiStore } from '#store'
+import { paneViewKey, useUiStore } from '#lib/store'
 import { CHANGES_TARGET, getWorktreeChanges } from '#lib/changesApi'
 import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
 import { BranchPicker } from '#components/BranchPicker'

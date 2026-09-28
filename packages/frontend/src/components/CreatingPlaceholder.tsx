@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 import { LoadingIcon } from '#lib/icons'
 import { agentLabel } from '#lib/agentLabel'
 import { dismissProvisioning } from '#lib/createWorktree'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 /** Shown in the main pane while a selected worktree provisions, in place of the

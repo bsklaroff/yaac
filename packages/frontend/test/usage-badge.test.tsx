@@ -18,7 +18,7 @@ import {
   usageTone,
   UsageBadge,
 } from '#components/UsageBadge'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import type { ServerSnapshot, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.

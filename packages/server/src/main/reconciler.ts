@@ -1,6 +1,6 @@
 import { worktreeDriver } from '#drivers/driver'
-import type { RuntimeSnapshot } from '#drivers/contract'
-import { defaultReconcileSteps, type PassContext, type ReconcileStep, type ReconcileTrigger } from '#domain/reconcile'
+import type { PassContext, ReconcileStep, ReconcileTrigger, RuntimeSnapshot } from '#drivers/contract'
+import { defaultReconcileSteps } from '#domain/reconcile'
 import { listProjectRows } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { isWorktreeTerminating } from '#runtime/status'
@@ -161,6 +161,3 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     signal.removeEventListener('abort', onAbort)
   }
 }
-
-export { defaultReconcileSteps } from '#domain/reconcile'
-export type { PassContext, ReconcileStep, ReconcileTrigger } from '#domain/reconcile'

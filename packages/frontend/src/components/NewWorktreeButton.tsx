@@ -8,7 +8,7 @@ import { Typeahead } from '#components/ui/Typeahead'
 import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type ProjectBranches } from '#lib/projectApi'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useCreateDefaults, useCreateWorktree } from '#lib/useCreateDefaults'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import { useSnapshot } from '#lib/useSnapshot'
 import {
   AGENT_TOOLS,

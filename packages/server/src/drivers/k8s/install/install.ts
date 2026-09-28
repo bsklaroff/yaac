@@ -26,15 +26,15 @@ import {
 import { registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { buildBuiltinImages } from './builtin-images'
-import { ClusterInstallError, MAX_KIND_NODES, resolveNodeCount } from './arg-guards'
+import { ClusterInstallError, resolveNodeCount } from './arg-guards'
 import {
   assessCniAdoption,
   assessVethSource,
   gatherCniFacts,
   probeWorkloadVeths,
 } from './cni-adopt'
+import { formatCheckResult } from '@yaac/shared/checks'
 import {
-  formatCheckResult,
   NODE_KUBELET_FLAGS_ENV,
   NODE_KUBELET_HOUSEKEEPING_INTERVAL,
   NODE_PIDS_LIMIT,
@@ -165,11 +165,6 @@ export async function ensureCalicoManifest(deps: ClusterInstallDeps): Promise<st
   await deps.writeTextFile(cache, raw)
   return raw
 }
-
-// Both live in arg-guards.ts (which costs nothing to import) so the CLI can
-// reject a bad flag without loading this module. Re-exported here because
-// this is where consumers of `runClusterInstall` expect to find them.
-export { ClusterInstallError, MAX_KIND_NODES }
 
 export interface ClusterInstallOptions {
   /**

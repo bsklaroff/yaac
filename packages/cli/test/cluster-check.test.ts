@@ -2,17 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 
 vi.mock('@yaac/server/drivers/k8s/install/check', () => ({
   runClusterCheck: vi.fn(),
-  formatCheckResult: vi.fn(
-    (r: { name: string; status: string }) => `[${r.status}] ${r.name}`,
-  ),
 } satisfies Partial<typeof clusterCheckModule>))
 
 import { clusterCheck } from '#commands/cluster-check'
-import { formatCheckResult, runClusterCheck } from '@yaac/server/drivers/k8s/install/check'
+import { runClusterCheck } from '@yaac/server/drivers/k8s/install/check'
 import type * as clusterCheckModule from '@yaac/server/drivers/k8s/install/check'
 
 const mockRun = vi.mocked(runClusterCheck)
-const mockFormat = vi.mocked(formatCheckResult)
 
 describe('clusterCheck (CLI)', () => {
   let logSpy: MockInstance<typeof console.log>
@@ -20,7 +16,6 @@ describe('clusterCheck (CLI)', () => {
 
   beforeEach(() => {
     mockRun.mockReset()
-    mockFormat.mockClear()
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     process.exitCode = undefined
@@ -43,10 +38,9 @@ describe('clusterCheck (CLI)', () => {
 
     await clusterCheck()
 
-    expect(mockFormat).toHaveBeenCalledTimes(2)
     const logged = logSpy.mock.calls.map((c) => c[0] as unknown)
-    expect(logged).toContain('[pass] kubectl')
-    expect(logged).toContain('[pass] cluster')
+    expect(logged).toContain('✓ kubectl: installed')
+    expect(logged).toContain('✓ cluster: reachable')
     expect(logged).toContain('\nCluster is ready for yaac worktrees.')
     expect(errSpy).not.toHaveBeenCalled()
     expect(process.exitCode).toBeUndefined()
@@ -64,7 +58,7 @@ describe('clusterCheck (CLI)', () => {
     await clusterCheck()
 
     const logged = logSpy.mock.calls.map((c) => c[0] as unknown)
-    expect(logged).toContain('[fail] registry')
+    expect(logged).toContain('✗ registry: down\n    fix: start it')
     expect(errSpy).toHaveBeenCalledWith(
       '\nCluster is not ready for yaac worktrees. Fix the failures above and re-run.',
     )

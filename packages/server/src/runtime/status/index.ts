@@ -27,19 +27,14 @@
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/status/.
 
-export { classifyWorkspaces, watcherDisplayLiveness } from './classify'
-export {
-  observeWorkspaces,
-  type RuntimeReport,
-  type WorktreeRuntimeReport,
-} from './observe'
+export { classifyWorkspaces } from './classify'
+export { observeWorkspaces, type WorktreeRuntimeReport } from './observe'
 export { worktreeControlStreamSend, type ControlStreamSend } from './control-stream-registry'
 export {
   forgetLiveness,
   isTmuxSessionAlive,
   probeAgentPaneState,
   probeTmuxLiveness,
-  type AgentPaneState,
   type ProbeTarget,
   type TmuxLiveness,
 } from './liveness'
@@ -48,13 +43,11 @@ export {
   liveAgents,
   onLiveAgentsChanged,
   onStreamHealthLost,
-  readAgentStatus,
   readWorktreeStatus,
   readWorktreeWaitingSince,
 } from './status-store'
 export {
   StatusWatcherManager,
-  type StatusWatcherDeps,
   type WatchedWorktree,
 } from './status-watcher'
 export {

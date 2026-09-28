@@ -618,8 +618,11 @@ for (const f of allSourceFiles()) {
       ? existingSource(path.resolve(path.dirname(f), spec))
       : resolveSpec(f, spec)
     if (!target) continue
-    // Which sealed folder does this import land in, barrel or not?
-    const iface = [...byDir].find(([dir]) => target.startsWith(dir + path.sep))?.[1]
+    // Which sealed folder does this import land in, barrel or not? The
+    // deepest one: drivers/k8s/substrate is sealed inside drivers/k8s.
+    const iface = [...byDir]
+      .filter(([dir]) => target.startsWith(dir + path.sep))
+      .sort(([a], [b]) => b.length - a.length)[0]?.[1]
     if (!iface || f.startsWith(iface.dir + path.sep)) continue
     const consumer = fileModule.get(f)
     for (const n of names) {

@@ -25,12 +25,11 @@
 export {
   ClusterDeleteError,
   ClusterInstallError,
-  MAX_KIND_NODES,
   clusterArgError,
   type ClusterInstallArgs,
 } from './arg-guards'
 export { buildBuiltinImages } from './builtin-images'
-export { formatCheckResult, runClusterCheck } from './check'
+export { runClusterCheck } from './check'
 export { runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
 export { runClusterInstall } from './install'

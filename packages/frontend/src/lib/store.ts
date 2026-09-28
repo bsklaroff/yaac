@@ -432,10 +432,6 @@ export function paneViewKey(worktreeId: string, pane: string): string {
   return `${worktreeId}|${pane}`
 }
 
-/** A terminal pane identity — a /pty/attach target:
- *  'agent', 'shell:<name>', or 'window:@<id>'. */
-export type TerminalTab = string
-
 /**
  * Whether a worktree is waiting and its current waiting spell hasn't been
  * viewed. A read mark stores the spell's waitingSinceMs, so a mark from an

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import { runtimeHandleFromPod } from '#drivers/k8s/worktrees'
 import type { PodInfo, PodTerminalState } from '#drivers/k8s/substrate/pods'
 
 const NOW = 1_800_000_000_000

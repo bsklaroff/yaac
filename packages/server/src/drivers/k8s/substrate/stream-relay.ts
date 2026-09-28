@@ -2,6 +2,7 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { env } from '@yaac/shared/env'
+import type { StreamChild } from '#drivers/contract'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { k8sNamespace, kubectlGetJson } from './kubectl'
 import { worktreeIdFromJobName } from './pods'
@@ -359,19 +360,11 @@ export async function podExec(
 // ── Stream adapters (sync facades over the async dial) ─────────────────────
 
 /**
- * Child-process-shaped surface over a `ctrl` stream — what the status
- * watcher's `spawnAttach` seam expects (structurally AttachChild). The
- * facade exists synchronously; writes made before the dial completes are
- * buffered, and a dial failure surfaces as an 'error' event.
+ * Child-process-shaped surface over a `ctrl` stream — the contract's
+ * `StreamChild`. The facade exists synchronously; writes made before the
+ * dial completes are buffered, and a dial failure surfaces as an 'error'
+ * event.
  */
-export interface StreamChild {
-  stdin: { write(data: string): void } | null
-  stdout: { on(event: 'data', cb: (chunk: Buffer | string) => void): void } | null
-  stderr: { on(event: 'data', cb: (chunk: Buffer | string) => void): void } | null
-  on(event: 'exit' | 'error', cb: (...args: unknown[]) => void): void
-  kill(signal?: NodeJS.Signals): boolean
-}
-
 export function dialCtrlStream(worktreeId: string, argv: string[]): StreamChild {
   const emitter = new EventEmitter()
   const dataCbs: Array<(chunk: Buffer | string) => void> = []

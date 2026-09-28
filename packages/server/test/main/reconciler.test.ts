@@ -43,13 +43,9 @@ vi.mock('#domain/titles/title-generation', async (importOriginal) => ({
   reconcileGeneratedTitles: vi.fn(),
 }))
 
-import {
-  defaultReconcileSteps,
-  startReconciler,
-  type PassContext,
-  type ReconcileStep,
-  type ReconcileTrigger,
-} from '#main/reconciler'
+import { startReconciler } from '#main/reconciler'
+import { defaultReconcileSteps } from '#domain/reconcile'
+import type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/contract'
 import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
 import { reconcileMamaRequests } from '#domain/worktrees/mama-reconcile'
 import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'

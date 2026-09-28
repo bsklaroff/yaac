@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { loadSoundEnabled, persistSoundEnabled, useUiStore } from '#store'
+import { loadSoundEnabled, persistSoundEnabled, useUiStore } from '#lib/store'
 
 // Minimal localStorage stand-in for the node test environment.
 function stubLocalStorage(): Map<string, string> {

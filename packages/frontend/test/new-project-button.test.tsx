@@ -16,7 +16,7 @@ vi.mock('#lib/projectApi', () => ({
 import { NewProjectButton } from '#components/NewProjectButton'
 import { addProject } from '#lib/projectApi'
 import { addHttpsCredential, generateSshKey, getAuthList } from '#lib/settingsApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 const TOKEN: GitCredentialSummary = {
   id: 'c-token', name: 'repo-token', kind: 'https', preview: '***abcd', projects: ['alpha'],

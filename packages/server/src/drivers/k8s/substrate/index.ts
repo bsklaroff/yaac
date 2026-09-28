@@ -19,12 +19,11 @@
 // cache and the pod-readiness watch, which is where they are covered.
 
 export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
-export type { DeltaSource, WorkspaceDeltaSource } from './cluster-cache'
+export type { WorkspaceDeltaSource } from './cluster-cache'
 export { containerExec } from './exec'
 export {
   GVISOR_INSTALLER_READY_FILE,
   GVISOR_NODE_LABEL,
-  GVISOR_NODE_VERSION_LABEL,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   buildRuntimeClassManifests,
@@ -52,23 +51,20 @@ export {
 } from './mount-sources'
 export { k8sWorkspacePaths } from './workspace-paths'
 export { invalidatePortForward, resolvePortForward } from './port-forward'
-export type { ForwardAddr, PortForwardSpec } from './port-forward'
 export {
   CA_BUNDLE_KEY,
-  CA_CERT_PATH,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
   NESTED_ENGINE_CAPS,
   NESTED_GRAPHROOT_PATH,
   NESTED_GRAPHROOT_VOLUME,
-  SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
   PRE_STOP_GRACE_SECONDS,
   buildPodJobManifest,
   sentryTmpfsAnnotations,
   hostUidSecurityContext,
 } from './pod-spec'
-export type { HostPathType, MountSource, PodMount } from './pod-spec'
+export type { PodMount } from './pod-spec'
 export {
   PRIORITY_CLASS_BUILDER,
   PRIORITY_CLASS_INFRA,
@@ -80,7 +76,6 @@ export { PRIVILEGED_PSS_LABELS } from './pss'
 export {
   GLOBAL_CLAIM_NAME,
   LABEL_INSTALL_NAMESPACE,
-  NODE_LOCAL_NODE_ROOT,
   POD_GLOBAL_ROOT,
   POD_NODE_LOCAL_ROOT,
   POD_SERVER_LOCAL_ROOT,
@@ -163,9 +158,7 @@ export {
   podExec,
   podStreamToken,
   waitForStreamd,
-  type StreamChild,
 } from './stream-relay'
 export { formatTaint, untoleratedTaints } from './taints'
 export type { NodeTaint, PodToleration } from './taints'
 export { createTickSnapshot } from './tick-snapshot'
-export type { TickSnapshot } from './tick-snapshot'

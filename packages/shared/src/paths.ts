@@ -249,10 +249,6 @@ export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
  */
 export const CONTAINER_ACP_DIR = '/tmp/yaac-acp'
 
-export function containerAcpSock(handle: string): string {
-  return `${CONTAINER_ACP_DIR}/${handle}.sock`
-}
-
 /**
  * In-pod path of the worktree's session-starts log — the host side is
  * `worktreeSessionStartsPath`. The `SessionStart` hook appends one JSON line
@@ -288,10 +284,6 @@ export const CONTAINER_OPENCODE_CHECKPOINT = '/home/yaac/.yaac/opencode-checkpoi
  * conversation, including for a worktree whose pod is long gone.
  */
 export const CONTAINER_ACP_LOG_DIR = '/home/yaac/.yaac-acp'
-
-export function containerAcpLog(name: string): string {
-  return `${CONTAINER_ACP_LOG_DIR}/${name}.jsonl`
-}
 
 /**
  * GLOBAL: per-project config (yaac-config.json, the project Dockerfile and

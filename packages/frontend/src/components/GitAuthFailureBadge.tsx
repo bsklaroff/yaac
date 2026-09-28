@@ -2,7 +2,7 @@ import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Popover } from '@base-ui/react/popover'
 import { WarningIcon } from '#lib/icons'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import type { GitAuthFailure } from '@yaac/shared/types'
 
 /**

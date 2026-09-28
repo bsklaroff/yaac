@@ -11,7 +11,7 @@ import { deleteGitCredential, renameGitCredential, replaceGitCredential } from '
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshot } from '#lib/useSnapshot'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import type { GitCredentialSummary, ProjectSummary } from '@yaac/shared/types'
 
 /**

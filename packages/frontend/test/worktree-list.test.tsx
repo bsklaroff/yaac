@@ -35,7 +35,7 @@ import {
   setWorktreeGroup,
   setWorktreeGroupPinned,
 } from '#lib/groupApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {

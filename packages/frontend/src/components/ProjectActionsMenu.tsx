@@ -4,7 +4,7 @@ import { Menu } from '@base-ui/react/menu'
 import { DeleteIcon } from '#lib/icons'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { removeProject } from '#lib/projectApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs outline-none'
 

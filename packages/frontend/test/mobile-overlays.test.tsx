@@ -32,7 +32,7 @@ import { getImageBuildLog } from '#lib/imageBuildsApi'
 import { getProjectBranches } from '#lib/projectApi'
 import { getProjectSkills, getSkillBody } from '#lib/skillsApi'
 import { getStoppedWorktrees, markDeathSeen } from '#lib/stoppedApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {

@@ -13,6 +13,5 @@
 export {
   builtinSkillMounts, builtinSkillsDir, reconcileSharedSkillRoots, sharedSkillRoots, stageBuiltinSkills,
 } from './builtin'
-export type { SkillDelivery } from './builtin'
 export { refreshClaudeBundledSkills } from './claude-bundled'
 export { getProjectSkills, getSkillDetail } from './discover'

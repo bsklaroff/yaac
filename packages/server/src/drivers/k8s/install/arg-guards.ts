@@ -32,7 +32,7 @@ export class ClusterDeleteError extends Error {}
  * shakes out scheduling assumptions, and anything past this is a way to
  * wedge a laptop rather than a supported topology.
  */
-export const MAX_KIND_NODES = 5
+const MAX_KIND_NODES = 5
 
 /** The flags these guards read — a structural subset of ClusterInstallOptions. */
 export interface ClusterInstallArgs {

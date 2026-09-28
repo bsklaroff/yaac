@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { loadMobileScreen, persistMobileScreen, useUiStore } from '#store'
+import { loadMobileScreen, persistMobileScreen, useUiStore } from '#lib/store'
 
 const initial = useUiStore.getState()
 

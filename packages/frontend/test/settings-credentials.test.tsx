@@ -37,7 +37,7 @@ import {
   cancelToolLogin, clearToolAuth, deleteGitCredential, generateSshKey, getAuthList, renameGitCredential,
   replaceGitCredential, sendToolLoginInput, setToolApiKey, startToolInstall, startToolLogin,
 } from '#lib/settingsApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {

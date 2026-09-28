@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   DEFAULT_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE, MIN_EDITOR_FONT_SIZE, loadEditorFontSize, useUiStore,
-} from '#store'
+} from '#lib/store'
 
 // Minimal localStorage stand-in for the node test environment.
 function stubLocalStorage(): Map<string, string> {

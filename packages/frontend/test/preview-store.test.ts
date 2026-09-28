@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { injectPreviewLeaf, injectPaneLeaf } from '#store'
+import { injectPreviewLeaf, injectPaneLeaf } from '#lib/store'
 import { addColumn, paneTargets, singleColumn } from '#lib/layout'
 import { PREVIEW_TARGET, isPreviewTarget } from '#lib/preview'
 import { CHANGES_TARGET } from '#lib/changesApi'
