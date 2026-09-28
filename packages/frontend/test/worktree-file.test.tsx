@@ -12,7 +12,7 @@ vi.mock('#components/ui/CodeEditor', () => ({
 
 import { AUTOSAVE_MS, POLL_MS, RETRY_MS, WorktreeFile } from '#components/WorktreeFile'
 import { discardFileSavers, fileKey, fileSaver, flushFileSavers } from '#lib/files'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 /**
  * The server, at `fetch`: one file whose version is a counter. A test can

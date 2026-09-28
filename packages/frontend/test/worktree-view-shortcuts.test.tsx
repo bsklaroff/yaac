@@ -22,7 +22,7 @@ vi.mock('#lib/files', async (importOriginal) => ({
 
 import { WorktreeView } from '#components/WorktreeView'
 import { DEFAULT_BINDINGS } from '#lib/shortcuts'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {

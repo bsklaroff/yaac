@@ -60,9 +60,6 @@ import { PACKAGE_ROOT, globalRoot, serverLocalRoot } from '@yaac/shared/paths'
 // consumers can name the shape without importing the check suite.
 import type { CheckResult } from '@yaac/shared/types'
 
-/** Render one result as the CLI line `yaac cluster check` prints. */
-export { formatCheckResult } from '@yaac/shared/checks'
-
 /** Probe image used for the end-to-end registry-pull + hostPath check. */
 const PROBE_SOURCE_IMAGE = 'docker.io/library/busybox:1.36'
 const PROBE_LOCAL_TAG = 'yaac-cluster-probe:busybox-1.36'

@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 const initial = useUiStore.getState()
 beforeEach(() => { useUiStore.setState(initial, true) })

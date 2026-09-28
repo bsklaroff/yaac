@@ -12,8 +12,7 @@
  * `attempted` set covers in-flight dedup, failure memory, and
  * don't-regenerate after a user deliberately clears a generated title.
  */
-import { listActiveWorktrees } from '#domain/worktrees'
-import { setWorktreeTitle } from '#db'
+import { firstAgentSessionsFor, listWorktreeRows, setWorktreeTitle } from '#db'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -22,22 +21,19 @@ import { env } from '@yaac/shared/env'
  *  task's first await so a concurrent tick can't double-fire. */
 const attempted = new Set<string>()
 
-/** Sweep active sessions once, firing detached title-generation tasks. */
+/** Sweep live worktrees once, firing detached title-generation tasks. The
+ *  candidates are the rows alone — a title and a founding prompt are both
+ *  recorded state, so there is nothing to ask the runtime. */
 export async function reconcileGeneratedTitles(): Promise<void> {
   if (!env.autoTitles) return
 
-  let worktrees
-  try {
-    worktrees = (await listActiveWorktrees()).worktrees
-  } catch {
-    return
-  }
-
-  for (const worktree of worktrees) {
-    const { projectSlug, worktreeId, title, prompt } = worktree
-    const key = `${projectSlug}:${worktreeId}`
-    if (attempted.has(key)) continue
-    if (title !== undefined || prompt === undefined || !shouldGenerateTitle(prompt)) continue
+  const untitled = (await listWorktreeRows())
+    .filter((r) => r.stoppedAt === undefined && r.title === undefined)
+  const firsts = await firstAgentSessionsFor(untitled)
+  for (const { projectSlug, worktreeId } of untitled) {
+    const key = `${projectSlug}/${worktreeId}`
+    const prompt = firsts.get(key)?.firstPrompt
+    if (attempted.has(key) || prompt === undefined || !shouldGenerateTitle(prompt)) continue
     attempted.add(key)
     void generateOne(projectSlug, worktreeId, prompt)
   }

@@ -396,7 +396,12 @@ export async function getAgentSessionsFor(
   const rows = await db.select(selectLinked())
     .from(worktreeAgentSessions)
     .innerJoin(agentSessions, linkJoin())
-    .where(inArray(worktreeAgentSessions.projectSlug, [...new Set(worktreeIds.map((w) => w.projectSlug))]))
+    // Narrowed by both columns in SQL so the read scales with the ids asked
+    // about, not the projects' whole history; `wanted` is the exact pair filter.
+    .where(and(
+      inArray(worktreeAgentSessions.projectSlug, [...new Set(worktreeIds.map((w) => w.projectSlug))]),
+      inArray(worktreeAgentSessions.worktreeId, [...new Set(worktreeIds.map((w) => w.worktreeId))]),
+    ))
     .orderBy(asc(worktreeAgentSessions.ordinal))
   const wanted = new Set(worktreeIds.map((w) => `${w.projectSlug}/${w.worktreeId}`))
   const byWorktree = new Map<string, AgentSessionLinkRow[]>()

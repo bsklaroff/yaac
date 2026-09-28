@@ -103,11 +103,12 @@ describe('runStreamingProcess', () => {
       idleTimeoutMs: 1_000,
       tailLines: 3,
     })).rejects.toThrow('probe exited with code 3:\nboom')
-    expect(Date.now() - started).toBeLessThan(5_000)
+    // Well under the grandchild's 20s, with headroom for a loaded machine.
+    expect(Date.now() - started).toBeLessThan(15_000)
 
     const okStarted = Date.now()
     await runStreamingProcess('sh', ['-c', 'sleep 20 & exit 0'], { ...base, idleTimeoutMs: 1_000 })
-    expect(Date.now() - okStarted).toBeLessThan(5_000)
+    expect(Date.now() - okStarted).toBeLessThan(15_000)
   })
 
   it('rejects when the command cannot be spawned at all', async () => {

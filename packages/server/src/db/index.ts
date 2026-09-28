@@ -43,6 +43,7 @@
 export {
   deleteProjectAgentSessions,
   firstAgentSession,
+  firstAgentSessionsFor,
   getAgentSessionsFor,
   getProjectAgentSessions,
   listActiveAgentSessions,
@@ -50,17 +51,10 @@ export {
   recordedConversationHandles,
   setAgentSessionCapture,
   type AgentSessionLinkRow,
-  type DiscoveredAgentSession,
 } from './agent-session-store'
 export { applyWorktreeEvent } from './apply-worktree-event'
-export {
-  MAX_PROMPT_LENGTH,
-  type ActiveSession,
-  type DiscoveredSession,
-  type LaunchedSession,
-  type WorktreeEvent,
-} from './events'
-export { desiredWorktrees, type DesiredWorktree, type DesiredWorktrees } from './desired-worktrees'
+export type { DiscoveredSession, WorktreeEvent } from './events'
+export { desiredWorktrees } from './desired-worktrees'
 export {
   createWorktreeGroup,
   deleteProjectWorktreeGroups,
@@ -69,7 +63,6 @@ export {
   renameWorktreeGroup,
   setWorktreeGroup,
   setWorktreeGroupPinned,
-  type WorktreeGroupRow,
 } from './group-store'
 export { closeDb, openDb } from './client'
 export { loadTokens, saveTokens, type TokenEntry, type TokenKind } from './token-store'
@@ -89,7 +82,6 @@ export {
   listGitCredentials,
   renameGitCredential,
   replaceGitCredential,
-  type GitCredentialKind,
   type GitCredentialRow,
 } from './git-credential-store'
 export {
@@ -97,7 +89,6 @@ export {
   deleteProjectEnvVars,
   listProjectEnvVars,
   upsertProjectEnvVar,
-  type ProjectEnvVarInput,
   type ProjectEnvVarRow,
 } from './project-env-store'
 export {
@@ -125,6 +116,5 @@ export {
   findWorktreeByMamaToken,
   setWorktreeMamaTokenHash,
   setWorktreeTitle,
-  type PriorStop,
   type WorktreeRow,
 } from './worktree-store'

@@ -9,9 +9,7 @@ import type { WorktreeDeathCause } from '@yaac/shared/types'
  *
  * Above `drivers/k8s`, a workspace is a `RuntimeHandle` and nothing else;
  * this is the only place that knows one is really a pod carrying label
- * strings, a phase and kubelet's terminal state. It sits outside the sealed
- * folders because both the observation folder and the pass snapshot need
- * it, and putting it in either would make the other import across a seal.
+ * strings, a phase and kubelet's terminal state.
  */
 export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
   return {

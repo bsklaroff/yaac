@@ -10,7 +10,7 @@ import { MasterDetail } from '#components/ui/MasterDetail'
 import { getProjectSkills, getSkillBody } from '#lib/skillsApi'
 import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
 import { useIsMobile } from '#lib/viewport'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import { AGENT_TOOLS, type AgentTool, type SkillSource, type SkillSummary } from '@yaac/shared/types'
 
 const SOURCE_LABEL: Record<SkillSource, string> = {

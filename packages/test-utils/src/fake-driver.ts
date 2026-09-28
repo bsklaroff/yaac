@@ -93,20 +93,6 @@ export function snapshotFixture(
   }
 }
 
-/**
- * Wrap a driver-internal pass view (the k8s `TickSnapshot`) in the neutral
- * snapshot the reconcile steps are handed, so a runtime test can keep
- * building the substrate view it actually asserts on. Mirrors what the real
- * `createRuntimeSnapshot` produces: the same object carries both halves.
- */
-export function passViewFixture<T>(
-  tick: T,
-  workspaces: RuntimeHandle[] = [],
-  strayUnits: StrayUnit[] = [],
-): RuntimeSnapshot & { tick: T } {
-  return { tick, ...snapshotFixture(workspaces, strayUnits) }
-}
-
 // Importing this module arms the teardown: whatever a test installed is
 // forgotten after it, so one test's stubbing can never answer another's
 // call. Registered here rather than left to each file because a forgotten

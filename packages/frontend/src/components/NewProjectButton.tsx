@@ -5,7 +5,7 @@ import { GitCredentialPicker, remoteKind, remoteSlug, TrustedHostKey } from '#co
 import { AddIcon } from '#lib/icons'
 import { addProject } from '#lib/projectApi'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 /**
  * Rail "+": add a project by cloning a git repo, with the git credential it

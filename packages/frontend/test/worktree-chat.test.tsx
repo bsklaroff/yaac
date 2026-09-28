@@ -44,7 +44,7 @@ const stream = {
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
 
 import { WorktreeChat } from '#components/WorktreeChat'
-import { chatDraftKey, flushChatDrafts, useUiStore } from '#store'
+import { chatDraftKey, flushChatDrafts, useUiStore } from '#lib/store'
 
 const user = (seq: number, text: string): AcpEvent =>
   ({ type: 'user', seq, content: [{ type: 'text', text }] })

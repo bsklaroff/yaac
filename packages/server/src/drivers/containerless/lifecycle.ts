@@ -200,25 +200,6 @@ async function confirmDown(
   notifyWorktreeListChanged()
 }
 
-/**
- * How many workspaces this substrate is still running, answered WITHOUT
- * attaching — from the markers on disk and a probe of each socket.
- *
- * For the composition root, which has to ask before it registers a
- * different driver: a tmux server is invisible to every other substrate,
- * and once a k8s pass has reaped the row and removed the state dir the
- * marker lived in, nothing can ever find it again. The agents keep running
- * as the user, holding their checkouts, unmanageable.
- */
-export async function liveWorkspaceCount(): Promise<number> {
-  const markers = await readMarkers().catch(() => [])
-  let live = 0
-  for (const marker of markers) {
-    if (await socketAnswers(marker)) live++
-  }
-  return live
-}
-
 /** Bring the watch set in line with the workspaces we believe are running. */
 function syncWatches(sinks: DriverSinks): void {
   const running = new Set<string>()

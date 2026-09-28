@@ -10,8 +10,8 @@ import {
   runtimeMediatesEgress,
   syncToolCredentialsThrottled,
 } from '#domain/auth'
-import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
-import { closeDb, listProjectRows, openDb } from '#db'
+import { createTokenStore, isCredentialOptional } from '#http'
+import { closeDb, listProjectRows, loadTokens, openDb, saveTokens } from '#db'
 import { clearGitScratch, startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'

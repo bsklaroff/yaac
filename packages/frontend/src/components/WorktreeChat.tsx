@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 
 import { useAcpStream } from '#lib/acp'
 import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
 import { LoadingIcon } from '#lib/icons'
-import { chatDraftKey, useUiStore } from '#store'
+import { chatDraftKey, useUiStore } from '#lib/store'
 import type { AcpContent } from '@yaac/shared/acp'
 
 /**

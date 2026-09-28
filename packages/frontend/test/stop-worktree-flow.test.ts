@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { stopWorktreeOptimistic, successorRow } from '#lib/stopWorktreeFlow'
 import { stopWorktree } from '#lib/createWorktree'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import type { WorktreeListEntry } from '@yaac/shared/types'
 
 vi.mock('#lib/createWorktree', () => ({

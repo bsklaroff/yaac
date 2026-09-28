@@ -103,8 +103,8 @@ for once and rendered, is not: the image-build feed and the ssh-identity
 push are api calling the contract directly, because a mediator that only
 forwarded the call would hide the seam rather than mediate it. The line is
 invisible to lint on purpose. A wrapper whose body is `return
-worktreeDriver().x(...)` is worse than the call it hides, and the one
-verb in `#domain/images` is there because it cannot be one: a retry has to
+worktreeDriver().x(...)` is worse than the call it hides, and the image-build
+retry in `#domain/projects` is there because it cannot be one: a retry has to
 hand the runtime a config reader, and the runtime may not read config.
 
 That shape is what decides where a disk read goes, and the answer is never
@@ -147,11 +147,11 @@ speak alone.
   seeding and the in-pod hook's session-starts log), `projects/` (a project
   whole — which exist, from rows, and what each one holds on disk: the
   clone's branches, the two config layers, git credentials, dockerfiles and
-  build files), `git/` (domain's process boundary onto git, the way
-  kubectl is the driver's; see docs/server-git.md), `images/` (one verb: a build retry, which
-  hands the runtime the project-config reader it may not fetch),
-  `titles/`, `auth/`, `skills/`, and `reconcile.ts` — the ordered step list
-  one pass runs.
+  build files, plus the image-build retry, which hands the runtime the
+  project-config reader it may not fetch), `git/` (domain's process
+  boundary onto git, the way kubectl is the driver's; see
+  docs/server-git.md), `titles/`, `auth/`, `skills/`, and `reconcile.ts` —
+  the ordered step list one pass runs.
 
   Config and credentials sit here rather than a layer down because writing
   them is policy: a persisted allowed-host or port forward is inherited by
@@ -191,21 +191,22 @@ speak alone.
   `WorkspaceSubstrate` receipt — and the pass scheduling types),
   `driver.ts` (the registered instance, behind `setWorktreeDriver` /
   `worktreeDriver`), and `k8s/` — the first driver, whose barrel IS its
-  assembly (`createK8sDriver`) over nine sealed folders: `cluster`,
+  assembly (`createK8sDriver`) over eight sealed folders: `cluster`,
   `egress`, `forwarders`, `images`, `image-engine`, `worktrees` (launch,
-  locate, claim, teardown, the pod-side changes diff, image salvage),
-  `view` (the one mapper turning a pod into a `RuntimeHandle`, plus the
-  pass snapshot), and the two host-side primitives the rest are built on —
+  locate, claim, teardown, the pod-side changes diff, image salvage, the
+  one mapper turning a pod into a `RuntimeHandle`, and the pass snapshot
+  built on it), and the two host-side primitives the rest are built on —
   `substrate` (client, informers, exec, pod specs, the per-pass
   `TickSnapshot`, the datapath's names and ports) and `container` (podman,
-  the local registry, the streaming child-process runner). Nothing loose
-  sits beside them.
+  the local registry, the streaming child-process runner). Beside them sit
+  only the assembly's own loose modules: `lifecycle.ts` (the driver's attach and
+  detach) and `steps.ts` (the runtime's reconcile steps).
 
   The assembly can be the barrel — above the folders that import the
   contract — precisely because the contract is its own bucket below them:
   the graph runs assembly → folders → contract → nothing.
 
-  One folder is outside that graph entirely: `install`, which is what
+  A ninth folder is outside that graph entirely: `install`, which is what
   `yaac cluster install|check|delete` do. It administers the substrate —
   creates the cluster and its CNI, re-applies the node state a restart
   drops, produces every image yaac ships, converges the in-cluster layers

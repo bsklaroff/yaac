@@ -16,7 +16,7 @@ vi.mock('#lib/useProvisionWorktree', () => ({ useProvisionWorktree: () => provis
 
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
 import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {

@@ -3,7 +3,7 @@ import { Dialog } from '@base-ui/react/dialog'
 import { CodeEditor } from '#components/ui/CodeEditor'
 import type { HighlightLanguage } from '#lib/highlight'
 import { CollapseIcon, ExpandIcon } from '#lib/icons'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e)

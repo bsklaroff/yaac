@@ -104,9 +104,7 @@ export const NODE_CONTAINERD_DIR = '/etc/containerd'
  *  its disk across a restart therefore re-runs the install for free. */
 export const NODE_GVISOR_CACHE_DIR = '/var/lib/yaac/gvisor'
 
-/** Node paths runsc/shim/config land at (containerd finds the shim on PATH). */
-export const NODE_RUNSC_PATH = `${NODE_BIN_DIR}/runsc`
-export const NODE_RUNSC_SHIM_PATH = `${NODE_BIN_DIR}/containerd-shim-runsc-v1`
+/** Node paths the runsc configs land at. */
 export const NODE_RUNSC_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc.toml`
 export const NODE_RUNSC_NESTED_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc-nested.toml`
 export const NODE_CONTAINERD_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/config.toml`

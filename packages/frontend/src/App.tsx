@@ -10,7 +10,7 @@ import { useCreateDefaults, useCreateWorktree } from './lib/useCreateDefaults'
 import {
   mergeProvisioning, persistSelection, resolveVacantSelection,
   unreadWaitingBySlug, useUiStore,
-} from './store'
+} from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { WorktreeView } from './components/WorktreeView'

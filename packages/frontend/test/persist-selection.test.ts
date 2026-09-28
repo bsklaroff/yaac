@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { loadSelection, persistSelection } from '#store'
+import { loadSelection, persistSelection } from '#lib/store'
 
 beforeEach(() => {
   localStorage.clear()

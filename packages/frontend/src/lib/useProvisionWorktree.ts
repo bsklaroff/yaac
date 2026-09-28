@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 

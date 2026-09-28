@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|git|images|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|install|substrate|view|worktrees))|http)/.',
+  regex: '^#(domain/(auth|git|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|install|substrate|worktrees))|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 
@@ -635,7 +635,7 @@ export default tseslint.config(
     files: ['packages/frontend/src/**/*.{ts,tsx}'],
     ignores: [
       'packages/frontend/src/App.tsx',
-      'packages/frontend/src/store.ts',
+      'packages/frontend/src/lib/store.ts',
       'packages/frontend/src/lib/stopWorktreeFlow.ts',
     ],
     rules: {

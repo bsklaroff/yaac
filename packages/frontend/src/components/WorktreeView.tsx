@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointe
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import { WorktreeTerminal } from '#components/WorktreeTerminal'
 import { WorktreePreview } from '#components/WorktreePreview'
 import { WorktreeChanges } from '#components/WorktreeChanges'

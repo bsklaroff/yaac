@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { ServerBadge, serverLabel } from '#components/ServerBadge'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 const inject = (bridge: unknown): void => {
   ;(window as unknown as { yaacServer?: unknown }).yaacServer = bridge

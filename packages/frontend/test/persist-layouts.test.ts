@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { loadPersistedLayouts, persistLayouts } from '#store'
+import { loadPersistedLayouts, persistLayouts } from '#lib/store'
 import { addColumn, singleColumn } from '#lib/layout'
 
 // Minimal localStorage stand-in for the node test environment.

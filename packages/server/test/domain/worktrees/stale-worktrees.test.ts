@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
-import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import { runtimeHandleFromPod } from '#drivers/k8s/worktrees'
 import type { RuntimeHandle, StrayUnit } from '#drivers/contract'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import type { TmuxLiveness } from '#runtime/status/liveness'

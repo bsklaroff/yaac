@@ -10,12 +10,6 @@ import { adoptRefreshedToolCredentials, syncToolCredentialsThrottled } from '#do
 import { worktreeDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
 
-// The scheduling vocabulary is the contract's, because a runtime declares
-// steps in it too (docs/layered-server.md). Re-exported here so the
-// reconciler engine and the steps keep importing it from the layer that
-// owns the pass.
-export type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/contract'
-
 /**
  * One flat list, in the order a pass runs it.
  *

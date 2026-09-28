@@ -2,6 +2,7 @@ import {
   claimSpareWorkspace,
   countProjectWorkspaces,
   countWorkspaces,
+  createRuntimeSnapshot,
   deregisterWorkspace,
   destroyProjectSubstrate,
   destroyWorkspace,
@@ -43,7 +44,6 @@ import {
   getUnforwardedPorts,
   getWorktreePorts,
 } from '#drivers/k8s/forwarders'
-import { createRuntimeSnapshot } from '#drivers/k8s/view'
 import {
   RelayExecError,
   bootStreamd,

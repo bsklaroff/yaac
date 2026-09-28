@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { classifyWorkspaces } from '#runtime/status/classify'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import type { ProbeTarget, TmuxLiveness } from '#runtime/status/liveness'
-import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import { runtimeHandleFromPod } from '#drivers/k8s/worktrees'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /** Grace window passed explicitly — production callers use testEnv.startingGraceMs. */

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
+import { worktreeDriver } from '#drivers/driver'
 
 const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'npmCache', 'referenceBranch'])
 
@@ -265,4 +266,23 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
 
 export async function resolveProjectConfig(projectSlug: string): Promise<YaacConfig | null> {
   return loadProjectConfig(projectConfigDir(projectSlug))
+}
+
+/**
+ * Forget a finished image build and run it again now. `false` when the id
+ * is unknown or its build is still running — there was nothing to retry.
+ *
+ * The one image-build verb that is a mediator's: the reads and the
+ * dismissal are display values api asks the runtime for directly, but a
+ * rebuild has to know what each owning project's config asks for, and the
+ * runtime may not read config at all. The store says "no config" with
+ * `null`, the contract with `undefined`; both mean all defaults. A
+ * defaulted config would not fail loudly — it would rebuild a nested
+ * project without its nestable layer and report success.
+ */
+export function retryImageBuild(id: string): boolean {
+  return worktreeDriver().retryImageBuild(
+    id,
+    (slug) => resolveProjectConfig(slug).then((cfg) => cfg ?? undefined),
+  )
 }

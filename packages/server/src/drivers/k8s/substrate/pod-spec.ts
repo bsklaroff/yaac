@@ -16,10 +16,6 @@ export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
 export const CA_BUNDLE_KEY = 'ca-bundle.pem'
 /** Directory inside worktree pods where the CA ConfigMap is mounted. */
 export const CA_MOUNT_DIR = '/etc/yaac/certs'
-/** Full in-container path of the proxy CA cert. */
-export const CA_CERT_PATH = `${CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
-/** Full in-container path of the combined trust bundle (roots + proxy CA). */
-export const CA_BUNDLE_PATH = `${CA_MOUNT_DIR}/${CA_BUNDLE_KEY}`
 
 /**
  * Directory inside worktree pods holding the forwarded ssh-agent socket, and

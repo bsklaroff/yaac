@@ -21,7 +21,7 @@ import {
 import { createOutputBatcher } from '@yaac/shared/batcher'
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import {
   DISCONNECT_NOTICE_DELAY_MS,
   INITIAL_RECONNECT_DELAY_MS,

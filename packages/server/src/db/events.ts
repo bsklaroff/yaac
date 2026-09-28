@@ -232,5 +232,3 @@ export interface WorktreeStopped {
   worktreeId: string
   cause?: WorktreeDeathCause
 }
-
-export { MAX_PROMPT_LENGTH } from '@yaac/shared/types'

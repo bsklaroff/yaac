@@ -33,7 +33,6 @@ export {
   stringHash,
   toolsContentHash,
   type ImageLayer,
-  type TrustedLayers,
 } from './image-builder'
 export {
   attachImageBuildProject,

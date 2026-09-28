@@ -21,7 +21,7 @@ vi.mock('#lib/settingsApi', () => ({
 
 import { SettingsButton } from '#components/SettingsButton'
 import { setShortcutOverride, resetShortcuts } from '#lib/settingsApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import { DEFAULT_BINDINGS, mergeBindings } from '#lib/shortcuts'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.

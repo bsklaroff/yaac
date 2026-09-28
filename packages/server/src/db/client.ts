@@ -140,24 +140,6 @@ export function getDb(): Promise<Db> {
   return cached.promise
 }
 
-/**
- * Test-only: put the database back to freshly-migrated — no rows — while
- * leaving the data dir's *files* alone. What a
- * test means by "the user upgraded into a new database": deleting
- * `<dataDir>/db` says that only to the on-disk handle, and says nothing at
- * all to the shared in-memory one, so tests ask for the state instead of
- * the mechanism and get it in either mode.
- */
-export async function _freshDbForTests(): Promise<void> {
-  if (testEnv.sharedTestDb) {
-    cached = null
-    await wipeSharedDb(await (sharedDb ??= openSharedDb()))
-    return
-  }
-  await closeDb()
-  await fs.rm(dbDir(), { recursive: true, force: true })
-}
-
 /** Close the handle so PGlite checkpoints cleanly (dev-watch restarts, test
  *  teardown before temp-dir removal). Idempotent. */
 export async function closeDb(): Promise<void> {

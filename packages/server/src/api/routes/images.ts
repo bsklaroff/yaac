@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
 import { worktreeDriver } from '#drivers/driver'
-import { retryImageBuild } from '#domain/images'
+import { retryImageBuild } from '#domain/projects'
 import { requireDriverFeature } from '#http'
 
 /**
@@ -13,7 +13,7 @@ import { requireDriverFeature } from '#http'
  * The reads and the dismiss ask the runtime directly, because it is the
  * thing that holds them: a mediator forwarding the call would hide it
  * rather than mediate it. Retry is the exception, and goes through
- * `#domain/images` — it has to hand the runtime something the runtime may
+ * `#domain/projects` — it has to hand the runtime something the runtime may
  * not fetch for itself, a reader for each owning project's config.
  *
  * Every route here refuses outright on a runtime that builds no images.

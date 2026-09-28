@@ -42,7 +42,6 @@ export {
   buildWorktreeEgressNpManifest,
 } from './policy-manifests'
 export {
-  clusterPodCidrs,
   nodeIpBlocks,
   podCidrSources,
   resetClusterCidrCache,

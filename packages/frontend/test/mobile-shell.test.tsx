@@ -4,7 +4,7 @@ import { render, renderHook, screen, act, cleanup, fireEvent } from '@testing-li
 import { MobileScreenLayer } from '#components/mobile/MobileScreenLayer'
 import { MobileHeader } from '#components/mobile/MobileHeader'
 import { goBackScreen, resetMobileHistory, useMobileHistory } from '#lib/mobileHistory'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 const initial = useUiStore.getState()
 

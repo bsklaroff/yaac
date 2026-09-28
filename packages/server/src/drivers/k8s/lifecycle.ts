@@ -21,7 +21,7 @@ import {
   ProxyEventStream,
   proxyClient,
 } from '#drivers/k8s/egress'
-import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import { runtimeHandleFromPod } from '#drivers/k8s/worktrees'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import {

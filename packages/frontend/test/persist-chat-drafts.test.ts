@@ -5,7 +5,7 @@ import {
   loadChatDrafts,
   persistChatDrafts,
   useUiStore,
-} from '#store'
+} from '#lib/store'
 
 /**
  * Half-typed ACP messages outlive their pane, which is torn down every time it

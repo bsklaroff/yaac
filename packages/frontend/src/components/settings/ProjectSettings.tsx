@@ -11,7 +11,7 @@ import {
 } from '#lib/projectApi'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 /**
  * Settings section for the per-machine, per-project overlay files: the

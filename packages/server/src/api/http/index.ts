@@ -16,10 +16,10 @@
 // covered through them.
 
 export { denyBrowserCors, requestLogger } from './auth'
-export { requireDriverFeature, type DriverFeature } from './driver-features'
+export { requireDriverFeature } from './driver-features'
 export { toErrorBody } from './errors'
 export { registerStaticRoutes } from './static'
-export { createTokenStore, loadTokens, saveTokens, type TokenStore } from './token-store'
+export { createTokenStore, type TokenStore } from './token-store'
 export {
   cookieOrBearerAuth,
   fetchSiteCheck,

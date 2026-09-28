@@ -52,7 +52,7 @@ vi.mock('#drivers/k8s/egress', () => ({
   },
   proxyClient: { disconnect: vi.fn(() => { order.push('proxy.disconnect') }) },
 }))
-vi.mock('#drivers/k8s/view', () => ({
+vi.mock('#drivers/k8s/worktrees', () => ({
   runtimeHandleFromPod: (p: { worktreeId: string }) => ({ workspaceId: p.worktreeId }),
 }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))

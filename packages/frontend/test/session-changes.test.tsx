@@ -17,7 +17,7 @@ vi.mock('#lib/projectApi', () => ({
 import { getWorktreeChanges } from '#lib/changesApi'
 import { getProjectBranches } from '#lib/projectApi'
 import { WorktreeChanges } from '#components/WorktreeChanges'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import { findChord } from '#lib/shortcuts'
 
 const mock = vi.mocked(getWorktreeChanges)

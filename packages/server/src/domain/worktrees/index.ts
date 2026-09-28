@@ -41,7 +41,6 @@ export {
   getWorktreeChanges,
   getWorktreeDetail,
   getWorktreePrompt,
-  type WorktreeDetail,
 } from './detail'
 export { allowWorktreeHost } from './allow-host'
 export {
@@ -55,7 +54,7 @@ export {
 } from './files'
 export { listWorktreeGroups, resolveGroup } from './groups'
 export { dismissWorktreePort, forwardWorktreePort } from './forward-port'
-export { ensureProjectExists, listActiveWorktrees } from './list'
+export { listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'
 export { removeProject } from './project-teardown'
 export { tryClaimPrewarmed } from './prewarm'
@@ -77,6 +76,6 @@ export { rebranchSpare, retoolSpare } from './spare-pool'
 export { runMamaCommand, type MamaCaller } from './mama'
 export { reconcileMamaRequests } from './mama-reconcile'
 export { reconcileStaleWorktrees } from './stale-worktrees'
-export { stopWorktree, type StoppedWorktreeInfo } from './stop'
+export { stopWorktree } from './stop'
 export { listStoppedWorktrees } from './stopped-list'
 export { getAgentSessionTranscript } from './transcript'

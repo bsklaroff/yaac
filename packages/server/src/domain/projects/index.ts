@@ -17,19 +17,18 @@
 // packages/server/test/domain/projects/.
 
 export { addProject, registerStagedProject } from './add'
-export { getProjectBranches, type ProjectBranches } from './branches'
+export { getProjectBranches } from './branches'
 export {
   deleteBuildFile,
   listBuildFiles,
   readBuildFile,
   renameBuildFile,
   writeBuildFile,
-  type BuildFileContent,
-  type BuildFileEntry,
 } from './build-files'
 export {
   resolveEphemeralModulesPaths,
   resolveProjectConfig,
+  retryImageBuild,
 } from './config'
 export {
   listProjectEnv,
@@ -37,7 +36,6 @@ export {
   removeProjectEnvVar,
   resolveProjectEnv,
   setProjectEnvVar,
-  type ResolvedProjectEnv,
 } from './env'
 export {
   addHttpsCredential,

@@ -4,7 +4,7 @@ import { Popover } from '@base-ui/react/popover'
 import { PinIcon, UsageIcon, TOOL_LABEL } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
 import { requestUsageRefresh } from '#lib/usageApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import type { AgentTool, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
 
 /** One tool's queryable usage, flattened for rendering. */

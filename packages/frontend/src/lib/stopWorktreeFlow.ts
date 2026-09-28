@@ -1,5 +1,5 @@
 import { stopWorktree } from '#lib/createWorktree'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { WorktreeListEntry } from '@yaac/shared/types'
 

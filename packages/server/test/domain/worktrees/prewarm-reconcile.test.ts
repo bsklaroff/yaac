@@ -28,7 +28,7 @@ import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
 // up a mid-claim / mid-spawn cluster and asserted on afterwards.
 import { claiming, inFlight, clearPrewarmStateForTests } from '#domain/worktrees/prewarm'
 import { LABEL_PREWARMED, type PodInfo } from '#drivers/k8s/substrate/pods'
-import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import { runtimeHandleFromPod } from '#drivers/k8s/worktrees'
 import type { RuntimeHandle } from '#drivers/contract'
 import {
   installFakeWorktreeDriver,

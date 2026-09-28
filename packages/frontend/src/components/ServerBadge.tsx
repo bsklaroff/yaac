@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { ServerIcon } from '#lib/icons'
 import { serverBridge } from '#lib/desktopServer'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 /** The chit's text: host[:port] of the origin, since the scheme is noise at
  *  this size. Anything unparseable is shown verbatim rather than hidden. */

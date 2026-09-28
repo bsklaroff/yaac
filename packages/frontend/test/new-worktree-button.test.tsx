@@ -31,7 +31,7 @@ import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { createWorktree } from '#lib/createWorktree'
 import { getProjectBranches, setProjectReferenceBranch } from '#lib/projectApi'
 import { getAuthList } from '#lib/settingsApi'
-import { useUiStore } from '#store'
+import { useUiStore } from '#lib/store'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
