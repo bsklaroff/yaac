@@ -8,11 +8,11 @@
  * evaluate arbitrary JS against the live DOM — the same handle the committed
  * test-playwright-scripts/*.js use, generalized into a reusable CLI.
  *
- * It talks to whatever `yaac server` is already running: it reads the port and
- * lock secret from $YAAC_DATA_DIR/.server.lock (falling back to ~/.yaac), mints
- * a one-time token over the loopback API, and points the browser at the server
- * origin (default http://127.0.0.1:<port>) which exchanges the token for the
- * HttpOnly cookie and drops the ?token= from the URL.
+ * It talks to whatever server this install's clients are registered with: it
+ * runs `yaac open --no-browser`, which resolves `server.json` (either
+ * substrate) and prints the origin plus a one-time token when the server needs
+ * one; the server exchanges that token for the HttpOnly cookie and drops the
+ * ?token= from the URL. Set YAAC_DATA_DIR to drive a different install.
  *
  * Playwright is resolved from the global npm root (with a bare require
  * fallback); Chromium binaries live under /opt/playwright-browsers.
@@ -26,7 +26,6 @@
  *   --goto <path>       route to load after auth (default "/")
  *   --click <selector>  click this element after load (e.g. an aria-label match)
  *   --wait <selector>   extra selector to wait for before acting
- *   --url <origin>      server origin (default http://127.0.0.1:<lock.port>)
  *   --settle <ms>       pause after load for pushed /events to populate (default 3000)
  *   --full              full-page screenshot (shot only)
  *
@@ -35,12 +34,11 @@
  * capture an interior view in one browser session.
  *
  * Run: node .claude/skills/run-yaac/driver.mjs shot
- * Needs a running server (`yaac server start`, or the `pnpm watch` dev loop).
+ * Needs a running server (`yaac server start` or `yaac cluster install`).
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
@@ -60,17 +58,6 @@ function requirePlaywright() {
   }
 }
 
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running? try: yaac server start`)
-}
-
 function parseArgs(argv) {
   const positional = []
   const flags = {}
@@ -83,21 +70,12 @@ function parseArgs(argv) {
   return { positional, flags }
 }
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status} ${await res.text()}`)
-  return (await res.json()).token
-}
-
 const { positional, flags } = parseArgs(process.argv.slice(2))
 const cmd = positional[0] ?? 'open'
-const lock = readServerLock()
-const origin = flags.url ?? `http://127.0.0.1:${lock.port}`
-const gotoPath = flags.goto ?? '/'
+const opened = new URL(execSync('yaac open --no-browser', { encoding: 'utf8' }).trim().split('\n').pop())
+const target = new URL(flags.goto ?? '/', opened.origin)
+const token = opened.searchParams.get('token')
+if (token) target.searchParams.set('token', token)
 const settleMs = flags.settle !== undefined ? Number(flags.settle) : 3000
 
 const { chromium } = requirePlaywright()
@@ -108,9 +86,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
-  const token = await mintToken(lock)
-  const sep = gotoPath.includes('?') ? '&' : '?'
-  await page.goto(`${origin}${gotoPath}${sep}token=${token}`)
+  await page.goto(target.href)
   // The server strips ?token= after setting the cookie.
   await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
   // The seeded env has a single project -> auto-selected; wait for the sidebar.
