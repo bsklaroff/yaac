@@ -15,7 +15,12 @@ import { execFileAsync } from '#drivers/k8s/container'
  *
  * Scoped to repos yaac builds or stages (YAAC_IMAGE_REPO): digest-pinned
  * upstream mirrors (registry, podman/stable, envoy) are
- * single-tag and must never be touched.
+ * single-tag and must never be touched. The e2e suite's `yaac-test-*`
+ * images are out of scope too: an install never builds them, and a test
+ * run's global setup may be mid-build or mid-push on them — from another
+ * checkout or test rig sharing this engine — when an install sweeps. The
+ * suite retires its own with the same pass (`retireStaleGenerations`),
+ * at a moment it knows no run is using them (`@yaac/test-utils/test-images`).
  *
  * Sweeping at install time rather than on a server tick is what keeps it
  * honest about generations still in use: the registry, not this store, is
@@ -35,10 +40,11 @@ export const HOST_GENERATIONS_KEPT = 2
 export const HOST_PRUNE_UNTIL = '24h'
 
 /**
- * Repos yaac builds (`yaac-base`, `yaac-tools`, `yaac-user-<slug>`,
- * `yaac-test-*`, …) or stages for a registry push (`localhost:<port>/…`).
+ * Repos yaac builds (`yaac-base`, `yaac-tools`, `yaac-user-<slug>`, …) or
+ * stages for a registry push (`localhost:<port>/…`) — minus the e2e
+ * suite's `yaac-test-*`, which the header explains.
  */
-const YAAC_IMAGE_REPO = /^(localhost(:\d+)?\/)?yaac-/
+const YAAC_IMAGE_REPO = /^(localhost(:\d+)?\/)?yaac-(?!test-)/
 
 export interface ImageLsRow {
   repo: string
@@ -60,17 +66,22 @@ export function parseImageLsRows(stdout: string): ImageLsRow[] {
 
 /**
  * The tags to retire: rows arrive newest-first (`--sort created`), so
- * everything past the per-repo budget in a yaac-built repo is a stale
- * generation. Non-yaac repos are never candidates.
+ * everything past the per-repo budget in a matching repo is a stale
+ * generation. Other repos are never candidates, and neither is a tag in
+ * `protect` (bare `repo:tag` or `localhost/`-qualified) — it is neither
+ * retired nor counted against the budget.
  */
 export function selectStaleGenerationTags(
   rows: ImageLsRow[],
-  keep = HOST_GENERATIONS_KEPT,
+  repoPattern: RegExp,
+  keep: number,
+  protect: ReadonlySet<string> = new Set(),
 ): string[] {
   const seen = new Map<string, number>()
   const stale: string[] = []
   for (const { repo, ref } of rows) {
-    if (!YAAC_IMAGE_REPO.test(repo)) continue
+    if (!repoPattern.test(repo)) continue
+    if (protect.has(ref) || protect.has(ref.replace(/^localhost\//, ''))) continue
     const n = (seen.get(repo) ?? 0) + 1
     seen.set(repo, n)
     if (n > keep) stale.push(ref)
@@ -79,19 +90,22 @@ export function selectStaleGenerationTags(
 }
 
 /**
- * One GC pass over the host engine: retire stale generation tags (no
- * `-f` — a tag whose image is in use by a container, or mid-build as a
- * FROM, fails its rmi and is retried next sweep), then prune dangling
- * images past the age floor. Returns what was done for the log line.
+ * Untag every generation past the newest `keep` in each repo matching
+ * `repoPattern`, sparing the tags in `protect`. No `-f` — a tag whose
+ * image is in use by a container, or mid-build as a FROM, fails its rmi
+ * and is retried next sweep. Returns the tags actually retired.
  */
-export async function gcHostImages(): Promise<{ retired: string[]; pruned: number }> {
+export async function retireStaleGenerations(
+  repoPattern: RegExp,
+  protect: ReadonlySet<string> = new Set(),
+  keep = HOST_GENERATIONS_KEPT,
+): Promise<string[]> {
   const { stdout } = await execFileAsync('podman', [
     'image', 'ls', '--sort', 'created',
     '--format', '{{.Repository}}|{{.Repository}}:{{.Tag}}',
   ])
-  const stale = selectStaleGenerationTags(parseImageLsRows(stdout))
   const retired: string[] = []
-  for (const ref of stale) {
+  for (const ref of selectStaleGenerationTags(parseImageLsRows(stdout), repoPattern, keep, protect)) {
     try {
       await execFileAsync('podman', ['rmi', ref])
       retired.push(ref)
@@ -99,6 +113,16 @@ export async function gcHostImages(): Promise<{ retired: string[]; pruned: numbe
       // in use or raced by a concurrent rmi — leave it for the next sweep
     }
   }
+  return retired
+}
+
+/**
+ * One GC pass over the host engine: retire stale generation tags of the
+ * yaac-built repos, then prune dangling images past the age floor. Returns
+ * what was done for the log line.
+ */
+export async function gcHostImages(): Promise<{ retired: string[]; pruned: number }> {
+  const retired = await retireStaleGenerations(YAAC_IMAGE_REPO)
   const { stdout: pruneOut } = await execFileAsync('podman', [
     'image', 'prune', '-f', '--filter', `until=${HOST_PRUNE_UNTIL}`,
   ])

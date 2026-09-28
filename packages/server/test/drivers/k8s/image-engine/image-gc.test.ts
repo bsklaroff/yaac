@@ -14,13 +14,17 @@ import { HOST_PRUNE_UNTIL } from '#drivers/k8s/image-engine/image-gc'
 
 // Newest-first, as `podman image ls --sort created` emits. Four yaac-base
 // generations (2 stale at the default budget), one in-budget registry-staged
-// yaac ref, three non-yaac tags, plus a dangling and a blank row.
+// yaac ref, three e2e-suite generations and three non-yaac tags, plus a
+// dangling and a blank row.
 const LS_OUTPUT = [
   'localhost/yaac-base|localhost/yaac-base:new1',
   'localhost/yaac-base|localhost/yaac-base:new2',
   'localhost/yaac-base|localhost/yaac-base:old1',
   'localhost/yaac-base|localhost/yaac-base:old2',
   'localhost:5001/yaac-user-demo|localhost:5001/yaac-user-demo:a',
+  'localhost/yaac-test-server|localhost/yaac-test-server:t1',
+  'localhost/yaac-test-server|localhost/yaac-test-server:t2',
+  'localhost/yaac-test-server|localhost/yaac-test-server:t3',
   'docker.io/library/ubuntu|docker.io/library/ubuntu:26.04',
   'docker.io/library/ubuntu|docker.io/library/ubuntu:24.04',
   'docker.io/library/ubuntu|docker.io/library/ubuntu:22.04',
@@ -70,12 +74,14 @@ describe('gcHostImages', () => {
     expect(pruned).toBe(2)
   })
 
-  it('keeps the newest generations per yaac repo and never touches non-yaac repos', async () => {
+  it('keeps the newest generations per yaac repo and never touches non-yaac or e2e repos', async () => {
     servingLs()
     await gcHostImages()
     // yaac-base has 4 generations → the 2 oldest go. The registry-staged
     // yaac ref is in scope but within budget; ubuntu has 3 tags and is not
-    // a yaac-built repo, so neither is a candidate.
+    // a yaac-built repo, and yaac-test-server is over budget but belongs to
+    // the e2e suite, whose global setup may be using it on another rig — so
+    // none of those is a candidate.
     expect(rmiRefs()).toEqual(['localhost/yaac-base:old1', 'localhost/yaac-base:old2'])
   })
 

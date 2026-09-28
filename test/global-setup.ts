@@ -12,7 +12,9 @@ import {
 import { pushImageToRegistry, registryReachable } from '@yaac/server/drivers/k8s/container/registry'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { TEST_CLI_DIR } from '@yaac/test-utils/cli-bundle'
-import { buildTestServerImage } from '@yaac/test-utils/deployed-server'
+import { buildTestServerImage, testServerImageTag } from '@yaac/test-utils/deployed-server'
+import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
+import { gcTestImages } from '@yaac/test-utils/test-images'
 
 const execFileAsync = promisify(execFile)
 
@@ -63,43 +65,26 @@ async function fileExists(p: string): Promise<boolean> {
 }
 
 /**
- * Prune every podman container built from a `yaac-test-*` image. Sessions
- * run as kubernetes Jobs now, so this only catches leftovers in the build
- * engine's store: stray containers from interrupted older runs and any
- * helper containers a test spun up under podman.
+ * Remove every podman container this rig's suites left on the host engine.
+ * Worktrees run as kubernetes Jobs, so the only such containers are helpers
+ * a test ran under podman directly (nested-containers' mock upstream
+ * registry) — leaked when a run is interrupted before its afterAll.
  *
- * Why an image-prefix filter rather than a label filter: orphan containers
- * whose conmons have died (`conmon exited prematurely — internal libpod
- * error`) accumulate across runs, drag down the shared podman service,
- * and eventually trigger the socket cascade. A label filter misses any
- * container whose create-time label we haven't explicitly set; the
- * image prefix catches every test artifact unambiguously.
- *
- * Safe by construction: production images use the `yaac-` prefix
- * without `-test-` (e.g. yaac-base, yaac-proxy, yaac-user-<slug>), so
- * a running real server's artifacts are never matched, and the
- * `yaac-registry` container (registry:2 image) is untouched. See
- * `src/drivers/k8s/image-engine/image-builder.ts` — the test suite opts into
- * `imagePrefix: 'yaac-test'` to get this namespace separation.
+ * Selected by the owner label (`testContainerOwnerLabel`), never by image
+ * or name prefix: test rigs share one host engine, and a prefix sweep at
+ * one rig's setup or teardown would remove a container the other rig's run
+ * is using right then.
  */
 async function pruneTestContainers(): Promise<void> {
   let stdout: string
   try {
     const result = await execFileAsync('podman', [
-      'ps', '-a', '--format', '{{.Names}}\t{{.Image}}',
+      'ps', '-a', '--filter', `label=${testContainerOwnerLabel()}`, '--format', '{{.Names}}',
     ])
     stdout = result.stdout
   } catch { return /* podman not ready — main setup will probe again */ }
 
-  const names = stdout
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => line.split('\t'))
-    .filter(([, image]) => image?.includes('yaac-test-'))
-    .map(([name]) => name)
-    .filter((name): name is string => !!name)
-
-  if (names.length === 0) return
+  const names = stdout.split('\n').map((line) => line.trim()).filter(Boolean)
   // Remove one at a time: a bulk `podman rm` aborts on the first bad
   // entry, and podman's container store sometimes holds orphan refs to
   // deleted storage layers ("container not known") that fail rm even
@@ -237,6 +222,20 @@ export async function setup(): Promise<void> {
     await buildTestServerImage()
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
+  }
+
+  // Reclaim superseded test-image generations. Last, so this run's own
+  // images have already been pushed, and they are passed as a keep set
+  // since on an older checkout they are not the newest built. Skipped
+  // where several test rigs share this engine: there the host runs
+  // `pnpm gc:test-images` while every rig is idle (see gcTestImages).
+  if (process.env.YAAC_TEST_SHARED_ENGINE !== '1') {
+    const ownTags = [base.tag, tools.tag, nestable.tag, proxyTag, netdTag, await testServerImageTag()]
+    const retired = await gcTestImages(ownTags).catch((err: unknown) => {
+      console.log(`[global-setup] could not sweep stale test images: ${String(err)}`)
+      return []
+    })
+    if (retired.length > 0) console.log(`[global-setup] retired ${retired.length} stale test image tag(s)`)
   }
 }
 
