@@ -123,8 +123,11 @@ plan.
     behind a CSI driver, which is exactly what the spike measured) and any
     RWO block class for server state. Install patches each bound PV to
     `reclaimPolicy: Retain` after binding, so a claim or namespace delete
-    can never take the data with it on either backend. `actimeo=1` and
-    `fsGroup` go on the claim/PV as the spike found.
+    can never take the data with it on either backend. The spike's two
+    findings are applied by install to volumes it owns rather than
+    demanded of the operator's classes: `actimeo=1` goes into the bound
+    RWX volume's `mountOptions`, and a one-shot binder pod makes each
+    volume root the install uid's (step 6b).
 - **Nodes are disposable.** Nothing a worktree needs in order to resume
   may live only on the node it last ran on, and no pod is ever pinned to a
   node. The NODE-LOCAL tier therefore holds exactly two kinds of thing:
@@ -174,19 +177,18 @@ plan.
 - **The tailnet is the only way onto a cloud server.** kind keeps the
   `extraPortMapping` → `127.0.0.1`, fronted by a hostNetwork forwarder so
   the ingress wall sees a node source on every host platform. byo publishes
-  the server through the Tailscale Kubernetes operator — the `--tailnet`
-  fronting, a Service with `loadBalancerClass: tailscale` — which gives a
-  tailnet-only hostname on the same trust boundary docs/remote-hosting.md
-  already draws, and nothing else: no public LoadBalancer, no public
-  Ingress, no cert-manager, no DNS, and no option to add them. The operator
-  is a prerequisite the cluster owner installs (one helm command, printed
-  by the refusal); `--byo` implies `--tailnet`. One decision is still open
-  for step 6: the L4 Service is WireGuard-encrypted but terminates no TLS,
-  so the origin is `http://` and the session cookie is not `Secure`. The
-  operator's `ingressClassName: tailscale` Ingress (still tailnet-only) does
-  terminate TLS; switching to it is a different fronting body behind the
-  same seam (`install/server-fronting.ts`), and the one to take if the
-  `Secure` cookie is required.
+  the server through the Tailscale Kubernetes operator's
+  `ingressClassName: tailscale` Ingress, which gives a tailnet-only
+  hostname on the same trust boundary docs/remote-hosting.md already draws
+  and terminates TLS for it — an `https://` origin, a `Secure` session
+  cookie, a secure context for the webapp — and nothing else: no public
+  LoadBalancer, no public Ingress, no cert-manager, no DNS, and no option
+  to add them. The operator is a prerequisite the cluster owner installs
+  (one helm command, printed by the refusal); `--byo` implies the tailnet
+  fronting. It is one fronting on both backends: `--tailnet` selects it on
+  kind too, where it **replaces** the loopback origin rather than adding a
+  second one, so an install has exactly one origin and every client —
+  this machine's CLI included — reaches it the same way.
 - **Node tuning moves into the gVisor installer DaemonSet.** The sysctls
   and `DefaultTasksMax` are real-node concerns as much as kind-node ones;
   the installer already runs privileged with `nsenter` on every node and
@@ -200,8 +202,8 @@ plan.
   running uid in `/etc/passwd`, the uid out of every tag. `runAsUser` is
   therefore a runtime value install sets per backend: the host's uid on
   kind, where the virtiofs ceiling on macOS is real, and a fixed `1000` on
-  byo, where NFS passes uids through raw and `fsGroup` on the claims does
-  the rest. One image set per content hash is also what makes published
+  byo, where NFS passes uids through raw and the binder's chown of each
+  volume root does the rest. One image set per content hash is also what makes published
   per-architecture images possible, and with them the lifting of the
   architecture restriction on `--byo`.
 - **The gVisor node install is the portability ceiling, accepted.**
@@ -223,7 +225,7 @@ plan.
 
 Each step lands and pays off on kind before the next starts; the e2e suite
 on kind (single and `--nodes 3`) is the gate for every one of them, and the
-byo-on-kind tier described under step 6 joins that gate as soon as it
+kind-byo tier described under step 6 joins that gate as soon as it
 exists.
 
 ### 1. Storage: claims on kind — shipped
@@ -252,40 +254,499 @@ installed on the test rig.
 
 ### 6. `--byo`: the cloud install end to end
 
-- `--adopt-cni` is renamed `--byo` outright — no alias, no deprecation
-  window; it has no installs to be compatible with. `--byo` adds to what
-  adoption does today: the node-OS/containerd probe (config include path,
-  restart mechanism — k3s embeds containerd), the StorageClass probe
-  (`--rwx-storage-class`, `--rwo-storage-class`, refused when absent or
-  when the RWX class is not NFS-family), the architecture probe, the
-  `runAsUser` decision, the claims and the Retain patch, and the server
-  with the tailnet fronting `--tailnet` already selects (its operator probe
-  included) — folding `--tailnet` in as implied, and deleting the flag if a
-  tailnet-fronted kind install has no users of its own by then.
-  Every new argument gets its e2e-cli coverage.
-- **Whether `--byo` touches a node container it can reach.** The kind-only
-  node fixups (the container's pids ceiling, the kubelet housekeeping flag)
-  are applied wherever the nodes are podman containers on this host, which
-  a byo-on-kind rehearsal still needs for the pids ceiling. `--byo` decides
-  here whether that detection stays the switch or the mode refuses to exec
-  a node it did not create.
-- **The architecture probe refuses a mismatch, loudly.** The built-in
-  images are built on the deploying machine for its own architecture and
-  nothing cross-builds them, so `--byo` reads every node's architecture
-  off the cluster and refuses to install — naming both architectures in
-  the error — when the pool is mixed or any node differs from the machine
-  running the CLI. The refusal happens before any manifest is applied or
-  any image is built, so a refused install leaves the cluster untouched.
-  `cluster check` repeats the probe, so a pool that later gains a foreign
-  node is reported rather than silently failing to pull. An e2e-cli case
-  covers the refusal against a faked node list.
-- **byo-on-kind**: a kind cluster with Calico installed by hand, an
-  in-cluster NFS server behind csi-driver-nfs for the RWX class, and
-  `local-path` for RWO, installed with `--byo`. This is the tier that runs
-  in CI and in a dev worktree with the outer host's podman; it exercises
-  every byo code path but the provider-specific node OS. Add it as a
-  vitest project beside the k8s tiers.
-- Gate: the full e2e suite green on byo-on-kind.
+Today a foreign cluster gets the in-cluster layers (`--adopt-cni`) and no
+server, and the tailnet fronting exists without the storage, uid and
+architecture a foreign cluster needs. Step 6 closes that gap in five
+pieces that land separately, in this order. 6a, 6b and 6d change nothing a
+kind install does; 6c stands up kind-byo, the local stand-in for a cloud
+cluster that gates everything after it.
+
+What a finished `yaac cluster install --byo --rwx-storage-class <c>` does:
+
+1. **Gates, before anything is applied or built** — right after the
+   binary shopping list, ahead of the podman machine bootstrap:
+   architecture, node OS and containerd, CNI (today's adoption gate), the
+   Tailscale operator and its IngressClass, the storage classes, the
+   install's identity and its kube context. A refusal leaves the cluster
+   and the host untouched.
+2. **The in-cluster layers**, exactly as every mode applies them.
+3. **The claims**, provisioned from the named classes, owned by the
+   install uid, pinned `Retain`, labelled so a later install finds them.
+4. **The server** at uid 1000, fronted by the operator's TLS Ingress at an
+   `https://` origin, registered in `server.json` with a minted token.
+5. **`cluster check`**, with the storage gates fail-level.
+
+#### 6a. Take the host's disk out of install and check
+
+Three things still assume the install's bytes sit on the machine running
+the CLI. Each is replaced by a path that works on both backends, so this
+lands on kind with no behavior change, and afterwards the only host-disk
+dependency left in install and check is the kind static PV pair itself.
+
+- **The end-to-end probe and the multi-node `volume-nodes` sweep** write a
+  nonce into `globalRoot()` on the host, read the pod's write back from it,
+  and `measureRoundTrip` polls the host for the beacon. The host's half
+  moves into a *peer pod*: runc, at the install uid, mounting `yaac-global`
+  whole. It writes the nonce, waits for the probe's beacon, writes the
+  second nonce, times the ack and prints the round trip; the check reads
+  both pods' logs. On a multi-node cluster the peer carries anti-affinity
+  against the probe, so the number is cross-node — the coherence number an
+  NFS class is judged by. On kind the peer's bytes are still the host's,
+  so kind's verdict does not change. `measureRoundTrip` and the host-side
+  nonce files are deleted.
+- **`yaac server logs`** reads `<dataDir>/server-local/server.log` off the
+  host. It routes through `runDeployedServerVerb` for every k8s install:
+  `kubectl exec deployment/yaac-server -- tail [-n N] [-F]
+  "$YAAC_SERVER_LOCAL_ROOT/server.log"`. One path for both backends, and
+  the existing `server logs` e2e-cli cases (`-f` and `-n` included) cover
+  it against the deployed server.
+- **The uid is an install decision, not a `getuid()`.**
+  `hostUidSecurityContext()` reads the calling process's uid. That is
+  right inside the server pod (which runs as whatever install stamped) and
+  right on a kind host, and wrong for a byo install run from a laptop,
+  where 501 means nothing to an NFS server. Install decides the uid — the
+  host's on kind, because of the virtiofs ceiling; a fixed `1000` on byo,
+  where NFS passes uids through raw and a constant keeps ownership stable
+  no matter which machine re-installs — and stamps it on the server
+  Deployment. Everything in the cluster keeps deriving from the server
+  pod's own `getuid()`, as today. The host-side callers that are not
+  install — `cluster check`'s probe pods and the e2e harness — read it
+  back off the live Deployment's `runAsUser` (the Deployment is the record,
+  as the Service is for fronting), falling back to `getuid()` only when
+  there is no Deployment. The helper is renamed for what it now is
+  (`installSecurityContext(uid)`); the `supplementalGroups: [0]` half is
+  unchanged.
+
+#### 6b. Claims provisioned from a StorageClass
+
+`ensureStorageClaims` takes a storage shape — `static` (the two host paths)
+on kind, `classes` (`rwx`, `rwo`) on byo. The class path:
+
+1. **Re-adopts a Released volume of this install before provisioning.**
+   `Retain` only protects data a later install can find again: a namespace
+   delete leaves both PVs `Released`, and a fresh claim would otherwise
+   provision two empty volumes beside them. So it looks first for a PV
+   carrying this install's hash and the claim's name; if one is Released
+   it clears the stale `claimRef` uid and pre-binds the new claim to it by
+   `volumeName` — the recovery the static path already performs on its
+   own volumes.
+2. **Applies both claims** naming their class, RWX for `yaac-global`, RWO
+   for `yaac-server-local`.
+3. **Binds them with a short-lived binder pod** (`yaac-storage-bind`: runc,
+   root, mounting both claims). A `WaitForFirstConsumer` class — the
+   common case for block storage, and local-path's — binds nothing until a
+   pod schedules, so install cannot wait on `Bound` alone; the binder is
+   that consumer, for every class. It also makes each volume root the
+   install uid's (`chown uid:gid`, `chmod 2775`), once, when it is not
+   already: csi-driver-nfs provisions its subdirectory `0755 root:root`, a
+   fresh block volume is root-owned, and every other path under the root
+   is created by the server at the install uid. This replaces `fsGroup`,
+   which is the kubelet doing the same chown as root on every mount
+   (recursively, unless `OnRootMismatch`), would have to go on every pod
+   that mounts the claim, and is defeated by root squash exactly as the
+   binder is — the binder does it once and fails loudly. A chown the
+   export refuses is a refusal naming the fix: an export that does not
+   squash root, or the class's `mountPermissions`.
+4. **Patches each PV after the binder exits**: `Retain`; on the RWX volume,
+   `mountOptions` with `actimeo=1` and `hard` merged in — the spike's
+   coherence finding, applied to the volume yaac owns rather than demanded
+   of a class the operator owns; and the install's labels (namespace,
+   data-dir hash, claim name), which are what the re-adoption above and the
+   e2e sweep find it by. The binder's own mount predates the option and is
+   gone before any real pod mounts the volume.
+5. Leaves the registries and the npm cache binding through the default
+   class, unchanged. A byo cluster without a default class is refused at
+   the gate rather than discovered as a Pending registry claim.
+
+`cluster check`'s `storage` gate learns the class-backed shape: both
+claims Bound, both volumes `Retain` and labelled, the RWX volume's
+`mountOptions` carrying `actimeo` ≤ 1, and the RWX class still NFS-family
+(a class can be edited under an install). The `egress` gate gains one
+probe: a worktree-labelled pod cannot open a connection to the RWX
+volume's NFS server, where the volume names one (csi-driver-nfs's
+`server` attribute). An NFS server speaking AUTH_SYS trusts whatever uid
+a client claims, so a sandbox that could reach it could read and write
+every project as anyone; the session policy is what stops that, and this
+proves it holds on the cluster at hand. `storage-semantics` becomes
+fail-level on every backend, not only byo — after confirming kind's current
+result is green, since it has been warn-level since step 1. A kind-specific
+failure is fixed, or waived by name; it never becomes a backend branch.
+
+Unit tests (`test/drivers/k8s/install/storage.test.ts`) drive
+`ensureStorageClaims` through both shapes against staged kubectl reads:
+Released re-adoption, a `WaitForFirstConsumer` class, an already-bound
+claim, a refused chown.
+
+#### 6c. kind-byo: the cloud install, run locally on Linux
+
+kind-byo is a second kind cluster set up to look like a cloud one, plus a
+real `yaac cluster install --byo` into it. It is how the whole byo install
+is run end to end on one Linux machine, by hand or by the e2e tier, and it
+stays as close to the cloud target as a single host allows:
+
+- yaac creates nothing in the cluster except what `--byo` applies;
+- RWX storage is an NFS server behind the CSI driver the self-managed pool
+  uses in step 7, and RWO storage is a provisioned class;
+- the server is published on the tailnet only, and runs at uid 1000;
+- the node-local tier is the node container's own disk, so deleting the
+  cluster costs what a drained cloud node costs: cold caches.
+
+It differs from a cloud install in one deliberate way: **its volumes are
+backed by its own data dir**, in the layout a kind install uses —
+`<dataDir>/global` and `<dataDir>/server-local` — so its bytes can be read,
+backed up and removed the same way. It is a separate install with a data
+dir of its own; it shares no directory with any other install, and nothing
+of another install's data dir is visible to its nodes.
+
+**Why a second cluster, not a second namespace in the existing one.** Two
+installs already share a cluster in every e2e run, so this is a choice, and
+two things decide it. Isolation: its mounts are `hard`, so a wedged ganesha
+blocks every mount operation on those nodes — including the kubelet tearing
+pods down — and in a shared cluster that would stall the kind install used
+every day. Fidelity: the existing cluster carries everything the kind
+install set up (the containerd patch, the node-container fixups, the port
+mapping, the `$HOME` mount), so a `--byo` install landing there could not
+show that it works without them, which is exactly what a cloud cluster
+lacks. A kubeconfig and kube context of its own, with the recorded context
+(6e), keep the two installs' commands off each other's cluster.
+
+It is a repo tool, not a CLI mode: `pnpm kind-byo up|down|env`, in
+`packages/test-utils`, with its manifests in `test/kind-byo/`. `up` stands
+up the stand-in cloud, then runs the published CLI's `yaac cluster install
+--byo` against it, as an operator would. Nothing in the CLI knows kind-byo
+exists, which is what makes it a test of the cloud path rather than a third
+backend. `env` prints the `KUBECONFIG` and `YAAC_DATA_DIR` (default
+`~/.yaac-byo`) to export, because kind-byo is a separate install beside any
+normal one, and the recorded kube context (6e) refuses cluster commands run
+from the wrong shell. `up` is idempotent, like install. Until 6e lands it
+installs with `--adopt-cni` — the layers and no server — which is already
+all the e2e tier needs, since every test file deploys its own server. From
+6e on it is `--byo`, and kind-byo is usable by hand.
+
+| Piece | What | Why this one |
+|---|---|---|
+| Cluster | kind `yaac-byo`: one control-plane + two workers, `disableDefaultCNI`, none of yaac's kind-config patches, its own kubeconfig, never merged into the default one | two worktree-eligible nodes, so every NFS number is cross-node; yaac's containerd patch left out, so the installer's own `config_path` handling is what runs |
+| Node mounts | one kind extraMount on every node: kind-byo's data dir, at its own absolute path | the backing store for both classes below, and — since the `e2e-byo` scratch base lives inside it — for the scratch mount the e2e harness adds to test servers; nothing else of the host is visible to the nodes |
+| CNI | the pinned Calico manifest, applied by the script | the adoption gate's happy path, on a CNI yaac did not install |
+| RWX | nfs-ganesha (a Deployment on the control-plane node) behind csi-driver-nfs, class `kind-byo-nfs` | the self-managed target's shape: an NFS server you run, provisioned by `nfs.csi.k8s.io` |
+| RWO, default | local-path-provisioner, class `kind-byo-local`, marked default, `WaitForFirstConsumer` | a default block class of the kind a provider ships — node-pinned, like a zonal disk — and the reason the binder exists |
+| Fronting | the Tailscale operator, its OAuth client from the environment | `--byo` implies the tailnet, and this is where that runs |
+| Node fixups | the script sets its node containers' pids ceiling itself | `--byo` never execs a node (6e); the script made these containers, so their podman settings are its |
+
+**The same layout as a kind install.** Ganesha exports the data dir, and
+the RWX class names `subDir: global` — a fixed string rather than the usual
+per-claim template, because the class belongs to this one install and has
+one claim. The RWO class points local-path at the data dir with the
+path pattern `server-local`. So `yaac-global` is provisioned at exactly
+`<dataDir>/global` and `yaac-server-local` at exactly
+`<dataDir>/server-local`, while still going through the provisioners, the
+binder and the Retain patch. The classes are written as naively as an
+operator would write them — `reclaimPolicy: Delete`, `mountOptions:
+[nfsvers=4.1, hard]` and no `actimeo`, no `mountPermissions` — so every one
+of 6b's steps is load-bearing here, and `cluster check` fails if any of them
+regresses. The data dir holds no `node-local/`.
+
+**Why nfs-ganesha rather than the kernel nfsd the spike used.** The spike
+exported from kernel nfsd inside the kind node container: `apt-get install`
+into the node, `modprobe nfsd` on the host kernel, and an export that is
+host-kernel state shared with everything else on the machine. Ganesha is a
+userspace server in an ordinary pod. kind-byo becomes manifests plus one
+image; it needs no server-side kernel module and leaves no host state
+behind; it restarts like any Deployment, which is how a real NFS server's
+restart gets rehearsed; and it runs wherever a privileged pod runs,
+including a dev worktree driving the outer host's podman. The NFS *client*
+still comes from the host kernel (`nfs`/`nfsv4`, loaded by the
+csi-driver-nfs node plugin's mount), as it does on every backend.
+
+The ganesha specifics, each to confirm against the pinned build:
+
+- **Image**: `yaac-kind-byo-ganesha:<contextHash>` from
+  `test/kind-byo/ganesha/` (a digest-pinned Debian base with pinned
+  `nfs-ganesha` and `nfs-ganesha-vfs`). The script builds it and sideloads
+  it with `podman save` + `kind load image-archive` — the Calico sideload
+  path — because it has to be serving before `cluster install` creates the
+  registry.
+- **Export**: one, NFSv4 only (`Protocols = 4`, minor versions 1–2, no
+  NLM, RQUOTA or rpcbind), over kind-byo's data dir: `FSAL = VFS`, `SecType
+  = sys`, `Squash = No_Root_Squash` — uids must pass through raw, and the binder's chown is
+  root's — with `Filesystem_Id` set explicitly rather than left to
+  ganesha's detection through the bind mounts. `Graceless = true`, so a
+  restarted server does not stall every client through a 90s grace period.
+- **Only nodes may mount**: the export's `Clients` is the node addresses,
+  and a NetworkPolicy admits nothing but nodes to 2049. An AUTH_SYS server
+  that does not squash root trusts whatever uid a client claims, so any pod
+  that could reach it could act as any uid on every project. The session
+  egress policy already denies worktree pods that dial; this is the second
+  lock, and 6b's check proves the first on every cluster.
+- **Server-side caching off**: `Attr_Expiration_Time = 0` on the exports and
+  `MDCACHE { Dir_Chunk = 0 }`. The data dir is written from the host behind
+  ganesha's back — by the e2e suite's seeding, and by you, a backup tool or
+  an editor on a hand-run install — and its metadata cache would otherwise
+  serve stale attributes and listings for up to a minute. Client-side
+  staleness is what `actimeo=1` bounds and what kind-byo should measure;
+  server-side staleness would be an artifact of running both ends on one
+  host.
+- **Backing store**: the extraMount, reached through a hostPath on the
+  control-plane node. It must be a real filesystem: FSAL_VFS needs file
+  handles that outlive the kernel's inode cache (`open_by_handle_at`),
+  which ext4, xfs and btrfs provide, the node container's overlay root does
+  not, and a macOS virtiofs share cannot — its FUSE server never offers
+  export support, so a handle goes stale as soon as the VM evicts the
+  inode. **kind-byo is Linux-only**; a macOS host runs the kind tiers.
+- **Pod**: privileged (the handle syscalls need `CAP_DAC_READ_SEARCH`),
+  runc, `Recreate`, in its own `kind-byo-nfs` namespace, behind a ClusterIP
+  Service on 2049. The node plugin mounts through that Service's name — it
+  is hostNetwork with `ClusterFirstWithHostNet` — and a kernel mount from
+  the host netns meets no pod NetworkPolicy and no netd redirect.
+
+csi-driver-nfs and local-path-provisioner are pinned the way Calico is: a
+version constant, a committed sha256 of the release manifests, a
+checksum-verified client-local cache.
+
+**The install uid is 1000, the host's may not be.** Files under a
+kind-byo data dir are owned by uid 1000, as they would be on a cloud NFS
+server. On a host whose user is 1000 that is invisible; on one whose user is
+not, they are readable but not writable from the host — the honest
+consequence of running the cloud's uid decision locally.
+
+**The `e2e-byo` project** runs the `e2e` project's files (`test/e2e`,
+`test/e2e-cli`) against kind-byo, with `KUBECONFIG` pointed at it and
+`YAAC_TEST_BACKEND=byo`. Its global setup refuses, naming `pnpm kind-byo
+up`, when kind-byo is absent or its ganesha tag is stale — and when the host
+uid is not 1000, since the suite seeds tier files from the host and pods
+must be able to write them. The project's ambient data dir is kind-byo's,
+so its scratch base is `<kind-byo data dir>/e2e-tmp`: every test file's
+data dir sits inside the one export, and the kind tiers' scratch under
+`~/.yaac/e2e-tmp` is never visible to it. The test files share the cluster
+with the hand-run install, in namespaces of their own, exactly as the kind tiers
+share the ordinary cluster with the real one. What changes in the harness
+is storage, and only storage:
+
+- `ensureTestStorageClaims` gives each file **its own pair of classes**,
+  built the way kind-byo's are: the NFS class with `subDir: <the file's
+  data dir, relative to kind-byo's data dir>/global`, the
+  local-path class pointed at the file's data dir with the pattern
+  `server-local`. Then it runs 6b's class path — the code an install runs —
+  instead of rendering static PVs, when the file's data dir is created and
+  before any test writes to it.
+- So each file's claims land at exactly `testEnv.dataDir/global` and
+  `testEnv.dataDir/server-local`. A dozen files read and write those from
+  the host — seeding credentials, editing project config, asserting on
+  transcripts — and every one keeps working unchanged, with no links, while
+  every byte a pod sees goes through NFS or the RWO class.
+- The classes are cluster-scoped, so they carry the install-namespace label
+  and are swept with the file's PVs. The bytes stay in the file's data dir
+  (`Retain`) and go with it.
+- A case asserting a kind-only fact is skipped on byo through one helper,
+  and the skip names the fact. The target is none outside `cluster-cli`'s
+  kind-specific cases.
+
+Gate for 6c: the whole `e2e-byo` project green, and `cluster check` green
+on kind-byo with `storage-semantics` fail-level.
+
+#### 6d. The tailnet fronting terminates TLS
+
+This settles the decision left open under "The tailnet is the only way onto
+a cloud server": the fronting is the operator's `ingressClassName:
+tailscale` Ingress, not the L4 Service. An `http://` origin is not a secure
+context, and the webapp already degrades there without a word — the
+clipboard writes in the terminal, the preview and the SSH-key picker are
+optional-chained to no-ops — on top of the session cookie not being
+`Secure`. The Ingress keeps the tailnet-only boundary and matches what
+docs/remote-hosting.md already prescribes for a host server (`tailscale
+serve` + `YAAC_TRUST_PROXY`).
+
+- **The body**: the kind fronting's ClusterIP Service, plus an Ingress
+  `yaac-server` of class `tailscale` whose default backend is that Service,
+  with `tls: [{ hosts: [yaac] }]`. The origin is `https://` plus the
+  hostname the operator publishes into the Ingress status. `remoteHosting`
+  admits that name with `trustProxy: true`, which is safe here for the
+  reason it is safe behind `tailscale serve`: the proxy sets
+  `X-Forwarded-Proto` itself and drops what the client sent. If the pinned
+  operator turns out not to, `trustProxy` stays false and the cookie stays
+  non-`Secure` — the failure is the safe one.
+- **The ingress peer** keeps selecting the operator's proxy pods by
+  parent-resource name and namespace. The Ingress is named `yaac-server`
+  so the existing selector holds.
+- **The record** moves from the Service's `loadBalancerClass` to the
+  Ingress: `installedFronting` asks whether a `tailscale`-class
+  `yaac-server` Ingress exists, and anything else is the kind fronting by
+  the same general rule as today.
+- **The publish probe's timeout becomes the fronting's**: the first HTTPS
+  request to a new name is what makes the operator's proxy fetch its
+  certificate. The unreachable diagnosis leads with the tailnet's HTTPS
+  certificates setting (which nothing in the cluster can read), then
+  MagicDNS, then the ACLs.
+- The L4 `LoadBalancer` body, `allocateLoadBalancerNodePorts` and the
+  `loadBalancerClass` constant are deleted, with no compat shim: `--tailnet`
+  has only ever been a rehearsal flag, so no install is fronted by that
+  Service. (If one turns out to exist, its `server start` would read it as
+  kind; that is the case for a docs/legacy-compat-shims.md entry.)
+
+- **The device name stays `yaac`.** A kind `--tailnet` install and a cloud
+  install on one tailnet both ask for it; the second is expected to get the
+  operator's suffixed name, which install already reads back from the
+  Ingress status rather than assuming (verify against the pinned operator;
+  if it refuses the name instead, the name becomes per-install).
+
+`--tailnet` is how this fronting is selected on kind, and it stays
+exclusive there, as it is today: under it the kind forwarder is not
+deployed, the port mapping has no listener behind it, and `server.json`
+records the tailnet origin, so this machine's CLI goes over the tailnet
+like every other client. The Ingress lands on kind first — the step-4
+tailnet gate, a second device reaching a `--tailnet` kind install through
+`yaac remote set`, now over `https://` — before `--byo` depends on it.
+
+#### 6e. `--byo`
+
+**Flags.** `--adopt-cni` becomes `--byo` outright. `--byo` takes
+`--rwx-storage-class <name>` (required) and `--rwo-storage-class <name>`
+(default: the cluster's default class). `--byo` implies the tailnet
+fronting, since a cloud cluster has no loopback to publish at; `--tailnet`
+stays as kind's way of selecting the same fronting (6d), and alongside
+`--byo` it is accepted and changes nothing. `arg-guards` rejects, before
+the k8s client is imported: `--nodes` with `--byo`, either class flag
+without `--byo`, `--byo` without `--rwx-storage-class`.
+
+**The gates**, in this order. Each reads through `deps.run` (kubectl), so a
+unit test stages it and an e2e-cli case can shim it:
+
+| Gate | Reads | Refuses |
+|---|---|---|
+| Architecture | every node's `status.nodeInfo.architecture`, against `process.arch` (x64 → amd64) | a mixed pool, or any node that differs from this machine — naming both architectures |
+| Node OS and containerd | `osImage`, `containerRuntimeVersion`, the Fargate and Autopilot compute labels | a runtime that is not containerd; an immutable OS (Bottlerocket, Container-Optimized OS, Talos, Flatcar); Fargate and Autopilot; k3s and RKE2 by name, until step 7 adds them |
+| CNI | today's adoption gate | as today |
+| Operator | the operator Deployment (as `verifyTailnetOperator` reads it) and the `tailscale` IngressClass | either one absent — with "could not ask" kept distinct from absent |
+| Storage | both classes, and the default class | a class that does not exist; an RWX class that is not NFS-family (`nfs.csi.k8s.io`, `efs.csi.aws.com`, `file.csi.azure.com` with `protocol: nfs`); no default class for the registries |
+| Identity | the live `yaac-server` Deployment's `YAAC_DATA_DIR`, and what this data dir's `server.json` records | a Deployment made from a different data dir — installing would re-hash every label and claim name, so the fix is `YAAC_DATA_DIR=<that path>`; a data dir already recorded as a different install (the containerless driver, or another kube context) — one data dir, one install. Keyed on the record, not on whether tier folders exist on this machine: kind-byo's classes provision them there by design |
+| Kube context | the context recorded in `server.json` (below) | a different current context |
+| Environment | `YAAC_USE_TOR` | set — it names a listener on this machine, which a cloud pod cannot reach |
+
+`cluster check` repeats the architecture and node-OS gates on every run,
+so a pool that later gains a foreign node is reported instead of failing
+to pull without explanation.
+
+**The node-OS gate is a flavor table with one row.** What the installer
+DaemonSet needs from a node is where containerd's config lives, how to
+restart containerd, and that containerd reads per-registry `hosts.toml`
+from `/etc/containerd/certs.d`, the directory both registries' hosts
+writers mount. kind guarantees the last through its config patch; a stock
+node may not set `config_path` at all. So the installer script learns to
+ensure it: if the node's config sets `config_path`, it must be that
+directory, and anything else fails the node's readiness with the reason;
+if the config has no registry table, the script appends one,
+marker-guarded like the runsc block; if it has one without `config_path`
+(the deprecated `mirrors`, which containerd rejects alongside
+`config_path`), it fails readiness rather than write a config containerd
+will not start with. Stock containerd is the only row step 6 ships,
+because it is the only one kind-byo can run. k3s — embedded containerd,
+`config.toml.tmpl`, `systemctl restart k3s|k3s-agent`, its own `certs.d`
+— is step 7's first addition, made where it can be run.
+
+**What `--byo` applies**: the layers; the claims through 6b's class path at
+uid 1000; the server behind the tailnet Ingress; `server.json` with a
+minted token. **What it never does**: exec into a node container — the kind
+node fixups key on the recorded install being the kind cluster, not on
+podman happening to hold containers named like it, which today would apply
+them to the wrong cluster on a host running both; run
+`migrateDataDirLayout`, since the host data dir is not the install's bytes;
+or create host directories for the tiers.
+
+**The kube context is recorded.** Every cluster call uses the kubeconfig's
+current context, and anyone with a cloud install very likely has other
+contexts too. Install records the context it installed into in
+`server.json`, on both backends, and each host-side verb that touches the
+cluster — `cluster install|check|delete`, `server start|stop|restart|logs`
+— refuses when the current context differs, naming `kubectl config
+use-context <recorded>`. A refusal rather than pinning: nothing has to
+thread `--context` through the substrate, and the check is one comparison
+at the CLI's existing chokepoint. A `server.json` without the field
+predates it and goes unchecked until the next install records it — a
+read-time tolerance, so it gets its docs/legacy-compat-shims.md entry.
+
+**`yaac cluster delete` refuses on byo**: the cluster is not yaac's to
+delete. It prints the uninstall — delete the install namespace, delete the
+install-labelled cluster-scoped objects — and says that the two `Retain`
+volumes survive it, and how to remove them deliberately.
+
+**Coverage.** Every gate is unit-tested against staged reads, extending
+`install.test.ts` in place. In e2e-cli, `cluster-cli.test.ts` gets one case
+per argument, each stopping before any mutation; where a refusal needs a
+cluster that says something specific, a PATH-shimmed `kubectl` answers
+canned node, class and Deployment reads:
+
+| Argument | Cases |
+|---|---|
+| `--byo` | refuses a pool of the other architecture (faked node list), naming both; refuses without the operator; rejected with `--nodes` |
+| `--rwx-storage-class` | refuses an absent class; refuses a non-NFS class; rejected without `--byo`; `--byo` without it rejected |
+| `--rwo-storage-class` | refuses an absent class; rejected without `--byo` |
+
+The happy path runs on kind-byo, which now installs with `--byo`. One rich
+file, `test/e2e-cli/byo-install-suite.test.ts` (in `e2e-byo` only), drives
+the installed server through its published `https://` origin: `yaac remote
+set` and `yaac auth token create`, a worktree create, a terminal WS, `yaac
+forward` through the tunnel, the web-session cookie carrying `Secure`,
+`server stop|start|restart|logs`, `cluster check` green, `cluster delete`'s
+refusal, and a re-install converging in place. Last, because it destroys
+its subject: a namespace delete, then a re-install that re-adopts the
+Released volumes and finds its projects. That file needs a tailnet — the
+environment `pnpm kind-byo up` runs in carries an ephemeral, tagged
+operator OAuth client, and without one `up` stops at the operator gate and
+says so. The rest of
+`e2e-byo` does not: its files deploy their own servers with no fronting.
+
+#### 6f. Docs, in the same change as each piece
+
+- docs/cluster-setup.md: "Adopting a CNI yaac did not install" becomes
+  "Bring your own cluster" — the gates, the classes, what `--byo` never
+  does, delete's refusal. "Runtimes and uids" gives the per-backend uid.
+- docs/server-in-cluster.md: "Storage is two claims" gains the byo column
+  (class-provisioned, binder-owned, Retain-patched, re-adopted);
+  "Reachability" replaces the L4 tailnet body with the Ingress; "The uid
+  everything runs as" says install decides and the Deployment records;
+  "Lifecycle" says `server logs` reads through the pod; "The e2e tiers run
+  against this" adds the `e2e-byo` project and its per-file classes.
+- docs/cluster-setup.md also gets "Running byo locally: kind-byo" — what
+  `pnpm kind-byo` stands up and why each piece, why ganesha, why the
+  volumes land in the data dir, why Linux only, and the uid-1000
+  ownership.
+- docs/remote-hosting.md: the k8s server setup becomes `yaac cluster
+  install --tailnet` — install states the allowed host and the proxy
+  trust itself, so the `tailscale serve` + exports + re-install recipe
+  stays for containerless only. A byo install is remote-hosted from the
+  start. Both publish at the Ingress's origin, and on kind that origin
+  replaces `127.0.0.1`.
+- This plan: step 6 is deleted when 6e lands, and steps 1, 2 and 4 lose
+  their pointers to it.
+
+**Gate for step 6**: the full e2e suite green on kind (single-node and
+`--nodes 3`) and on `e2e-byo`, and `byo-install-suite` green on kind-byo.
+
+**Retire these first.** Each is an hour against the pinned version, and
+each has a fallback that changes the design above rather than the goal:
+
+- A PV's `mountOptions` can be patched after binding, and csi-driver-nfs
+  (and the EFS and Azure Files drivers) honor it at the next mount.
+  Fallback: the storage gate refuses an RWX class without `actimeo` ≤ 1,
+  and the operator sets it on the class.
+- Ganesha's FSAL_VFS works over kind-byo's bind-mounted data dir on ext4,
+  xfs and btrfs, with `Filesystem_Id` pinned, and its caching knobs behave
+  as stated. Fallback for the caching: the harness seeds the tiers through
+  a pod instead of from the host, at the cost of a helper per host write
+  in the suite.
+- csi-driver-nfs accepts a fixed `subDir`, and local-path-provisioner
+  takes a per-class node path and path pattern (its `storageClassConfigs`
+  and `pathPattern`). Fallback: kind-byo binds each claim to a static
+  volume of the class's name at the same path — still `Retain`-patched and
+  binder-owned, but no longer dynamically provisioned, which is the one
+  step it would then stop rehearsing.
+- The operator's Ingress proxy sets `X-Forwarded-Proto` and strips
+  client-supplied forwarding headers, and stamps the parent-resource
+  labels the ingress peer selects on.
+- Whether kind's node image already sets `config_path` without yaac's
+  kind-config patch. If it does, kind-byo exercises the installer's
+  "already set" branch, and the "absent" branch is covered only by the
+  installer script's unit test.
 
 ### 7. Real targets
 
@@ -365,13 +826,15 @@ be reachable only through the checkpoint.
   buildkitd-in-cluster as a podman replacement). kind is the local backend;
   its fixups are down to the kind-only pair and its host podman stays for
   the provider.
-- **A host NFS export for the local install.** The local data dir stays on
-  disk behind static hostPath PVs; NFS is cloud-only.
+- **A host NFS export for the local install.** The kind install's data dir
+  stays on disk behind static hostPath PVs. The only NFS on one machine is
+  kind-byo's in-cluster ganesha, and that is a stand-in for a cloud
+  cluster, not a mode of the kind install.
 - **`yaac cluster attach` as a separate verb**; it is `--byo` on install.
 - **In-cluster builds of the built-in images**, and a public Ingress or
   LoadBalancer in front of the server; the tailnet is the only fronting.
 - **Multi-node kind as the acceptance gate for cloud.** It remains a
-  supported topology and an e2e configuration, but byo-on-kind is what
+  supported topology and an e2e configuration, but kind-byo is what
   stands in for a cloud cluster.
 - **DOCR / a provider registry**; the in-cluster registry carries over.
 - **CephFS / JuiceFS fallbacks**, kept only as the note that the spike's
