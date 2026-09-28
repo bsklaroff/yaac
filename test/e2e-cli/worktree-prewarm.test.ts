@@ -13,7 +13,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential } from '@yaac/test-utils/api'
+import { assignTestGitCredential, registerTestProject } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -85,20 +85,18 @@ describe('yaac prewarmed sessions', () => {
     await testEnv.cleanup()
   })
 
+  const FAKE_REMOTE = 'https://github.com/test-org/repo-demo.git'
+
   /** Stage a yaac project + fake tool creds on disk (same shape as
-   *  `project add`); its git credential is assigned once the server is up. */
+   *  `project add`); it is recorded, and given its git credential, once the
+   *  server is up. */
   async function stageProject(): Promise<void> {
     const projectDir = path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo')
     const repoDir = path.join(projectDir, 'repo')
     await fs.mkdir(path.join(projectDir, 'claude'), { recursive: true })
 
     await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir, null)
-    const fakeRemote = 'https://github.com/test-org/repo-demo.git'
-    await git(repoDir, ['remote', 'set-url', 'origin', fakeRemote])
-    await fs.writeFile(
-      path.join(projectDir, 'project.json'),
-      JSON.stringify({ slug: 'repo-demo', remoteUrl: fakeRemote, addedAt: new Date().toISOString() }) + '\n',
-    )
+    await git(repoDir, ['remote', 'set-url', 'origin', FAKE_REMOTE])
 
     const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
@@ -149,6 +147,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await registerTestProject(server, 'repo-demo', FAKE_REMOTE)
     await assignTestGitCredential(server, 'repo-demo', 'fake-ghp-token')
 
     // 1. First (cold) create — the project now has an open session.

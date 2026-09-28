@@ -31,7 +31,6 @@ vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 import { reapNodeLocal } from '#drivers/k8s/images'
 import {
-  LEGACY_PNPM_STORE_IDLE_MS,
   NODE_LOCAL_SWEEP_INTERVAL_MS,
   _resetNodeLocalSweepForTests,
   buildNodeLocalSweepScript,
@@ -83,11 +82,9 @@ describe('reapNodeLocal', () => {
       expect(pod.spec.volumes[0].hostPath?.path).toBe('/var/lib/yaac/node/ddh16')
       expect(pod.spec.containers[0].volumeMounts).toEqual([{ name: 'node', mountPath: '/node' }])
       const argv = pod.spec.containers[0].command.slice(4)
-      expect(argv).toHaveLength(3)
+      expect(argv).toHaveLength(2)
       expect(Number(argv[0])).toBeGreaterThan(0)
-      // The retired store's cutoff is a day further back than the entries'.
-      expect(Number(argv[0]) - Number(argv[1])).toBeGreaterThanOrEqual(LEGACY_PNPM_STORE_IDLE_MS / 1000 - 60)
-      expect(argv[2]).toBe('demo=a,b')
+      expect(argv[1]).toBe('demo=a,b')
     }
     await expect(execFileAsync('sh', ['-n', '-c', pods[0].spec.containers[0].command[2]])).resolves.toBeTruthy()
   })
@@ -142,82 +139,30 @@ describe('reapNodeLocal', () => {
       return dir
     }
 
-    /**
-     * Run the script with `root` standing in for the pod's /node mount. The
-     * store cutoff defaults to the epoch, which nothing is older than.
-     */
-    async function run(keep: string[], cutoffEpoch: number, storeCutoffEpoch = 0): Promise<string> {
+    /** Run the script with `root` standing in for the pod's /node mount. */
+    async function run(keep: string[], cutoffEpoch: number): Promise<string> {
       const script = buildNodeLocalSweepScript().replaceAll('/node/', `${root}/`)
-      const { stdout } = await execFileAsync(
-        'sh', ['-c', script, '--', String(cutoffEpoch), String(storeCutoffEpoch), ...keep],
-      )
+      const { stdout } = await execFileAsync('sh', ['-c', script, '--', String(cutoffEpoch), ...keep])
       return stdout
     }
 
-    /** A pnpm store whose every entry was last written at `when`. */
-    async function seedStore(rel: string, when: Date): Promise<string> {
-      const store = path.join(root, rel)
-      const files = path.join(store, 'v11', 'files')
-      await fs.mkdir(files, { recursive: true })
-      await fs.writeFile(path.join(store, 'v11', 'index.db'), 'x')
-      for (const p of [path.join(store, 'v11', 'index.db'), files, path.join(store, 'v11'), store]) {
-        await fs.utimes(p, when, when)
-      }
-      return store
-    }
-
     it('spares the live ids per slug, removes the rest, and honours the cutoff', async () => {
-      const liveModules = await seed('projects/demo/.cached-packages/modules/live')
-      const deadModules = await seed('projects/demo/.cached-packages/modules/dead')
       const liveCopy = await seed('projects/demo/opencode-data/live')
       const stoppedCopy = await seed('projects/demo/opencode-data/stopped')
       const otherSlugSameId = await seed('projects/other/opencode-data/live')
       const fresh = await seed('projects/demo/opencode-data/staging', new Date())
-      const store = await seed('projects/demo/.cached-packages/pnpm-store/v3')
 
       const out = await run(['demo=live,x'], Math.floor((Date.now() - 10_000) / 1000))
 
-      for (const kept of [liveModules, liveCopy, fresh, store]) {
+      for (const kept of [liveCopy, fresh]) {
         await expect(fs.access(kept)).resolves.toBeUndefined()
       }
-      for (const gone of [deadModules, stoppedCopy, otherSlugSameId]) {
+      for (const gone of [stoppedCopy, otherSlugSameId]) {
         await expect(fs.access(gone)).rejects.toThrow()
       }
-      expect(out).toContain('removed demo/.cached-packages/modules/dead')
       expect(out).toContain('removed demo/opencode-data/stopped')
       expect(out).toContain('removed other/opencode-data/live')
-      expect(out.trim().endsWith('node-local-sweep removed 3')).toBe(true)
-    })
-
-    // Pods launched before the per-pod stores still point pnpm at the shared
-    // one, so it goes only once nothing has written it since the cutoff.
-    it('removes the retired shared pnpm store once it has gone idle, and not before', async () => {
-      const idle = await seedStore('projects/demo/.cached-packages/pnpm-store', STALE)
-      const inUse = await seedStore('projects/other/.cached-packages/pnpm-store', STALE)
-      // An old pod's install touches the index database under an old dir.
-      await fs.utimes(path.join(inUse, 'v11', 'index.db'), new Date(), new Date())
-
-      const cutoff = Math.floor((Date.now() - 10_000) / 1000)
-      const out = await run([], cutoff, Math.floor((Date.now() - 600_000) / 1000))
-
-      await expect(fs.access(idle)).rejects.toThrow()
-      await expect(fs.access(inUse)).resolves.toBeUndefined()
-      expect(out).toContain('removed demo/.cached-packages/pnpm-store')
-      expect(out.trim().endsWith('node-local-sweep removed 1')).toBe(true)
-    })
-
-    // A store the sweep cannot read is one it cannot call idle.
-    // Root reads through any mode bits, so there is nothing to withhold.
-    it.skipIf(process.getuid?.() === 0)('keeps a retired store it cannot read all the way down', async () => {
-      const store = await seedStore('projects/demo/.cached-packages/pnpm-store', STALE)
-      await fs.chmod(path.join(store, 'v11', 'files'), 0o000)
-      try {
-        const out = await run([], Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000) + 60)
-        await expect(fs.access(store)).resolves.toBeUndefined()
-        expect(out.trim()).toBe('node-local-sweep removed 0')
-      } finally {
-        await fs.chmod(path.join(store, 'v11', 'files'), 0o755)
-      }
+      expect(out.trim().endsWith('node-local-sweep removed 2')).toBe(true)
     })
 
     it('never walks through a symlink a pod planted, at any level', async () => {
@@ -226,22 +171,16 @@ describe('reapNodeLocal', () => {
       const victim = await seed('victim/precious')
       await fs.mkdir(path.join(root, 'projects'), { recursive: true })
       await fs.symlink(path.join(root, 'victim'), path.join(root, 'projects/evil'))
-      await fs.mkdir(path.join(root, 'projects/demo/.cached-packages'), { recursive: true })
-      await fs.symlink(path.join(root, 'victim'), path.join(root, 'projects/demo/.cached-packages/modules'))
       await fs.mkdir(path.join(root, 'projects/demo/opencode-data'), { recursive: true })
       await fs.symlink(path.join(root, 'victim'), path.join(root, 'projects/demo/opencode-data/linked'))
       await fs.symlink('../../..', path.join(root, 'projects/demo/opencode-data/relative'))
-      // The retired store, behind a link at either of its two levels.
-      await seedStore('victim/pnpm-store', STALE)
-      await fs.symlink(path.join(root, 'victim/pnpm-store'), path.join(root, 'projects/demo/.cached-packages/pnpm-store'))
       await fs.mkdir(path.join(root, 'projects/other'), { recursive: true })
-      await fs.symlink(path.join(root, 'victim'), path.join(root, 'projects/other/.cached-packages'))
+      await fs.symlink(path.join(root, 'victim'), path.join(root, 'projects/other/opencode-data'))
 
       const future = Math.floor(Date.now() / 1000) + 60
-      const out = await run([], future, future)
+      const out = await run([], future)
 
       await expect(fs.access(victim)).resolves.toBeUndefined()
-      await expect(fs.access(path.join(root, 'victim/pnpm-store/v11/index.db'))).resolves.toBeUndefined()
       await expect(fs.access(path.join(root, 'projects'))).resolves.toBeUndefined()
       expect(out.trim()).toBe('node-local-sweep removed 0')
     })

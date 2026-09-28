@@ -19,7 +19,6 @@ import {
   repoDir,
   acpLogDir,
   claudeDir,
-  claudeJsonFile,
   codexDir,
   opencodeCheckpointDir,
   opencodeConfigDir,
@@ -81,7 +80,6 @@ import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
-  adoptLegacyClaudeJson,
   prepareModuleDirs,
   seedClaudeJson,
   seedClaudeSettings,
@@ -1137,9 +1135,6 @@ export async function createWorktree(
     // mount of its own any more: it is a file in a directory already mounted,
     // rather than a lone `File` mount beside it.
     const claudeJson = path.join(claude, '.claude.json')
-    // An install that predates that move keeps its state where the old
-    // home-relative file was (docs/legacy-compat-shims.md).
-    await adoptLegacyClaudeJson(claudeJsonFile(projectSlug), claudeJson)
     const codex = codexDir(projectSlug)
     const opencodeData = opencodeDataDir(projectSlug, worktreeId)
     const opencodeCheckpoint = opencodeCheckpointDir(projectSlug, worktreeId)

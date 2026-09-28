@@ -41,10 +41,23 @@ export function makeServerApiClient(server: SpawnedServer) {
 }
 
 /**
+ * Record a project whose checkout the test has staged in the data dir
+ * (`<projects>/<slug>/repo`) — the server's `project add` minus the clone,
+ * which a test server has no network for.
+ */
+export async function registerTestProject(
+  server: SpawnedServer,
+  slug: string,
+  remoteUrl: string,
+): Promise<void> {
+  const res = await makeServerApiClient(server).project.register.$post({ json: { slug, remoteUrl } })
+  if (!res.ok) throw new Error(`registering project ${slug} failed: ${await res.text()}`)
+}
+
+/**
  * Give a project a git credential the way the webapp's Settings does: store
- * an HTTPS token under a name, then assign it. The project may be one staged
- * on disk — the server adopts it on the first read. Throws on any non-2xx,
- * since a fixture that silently lacks a credential fails far from here.
+ * an HTTPS token under a name, then assign it. Throws on any non-2xx, since
+ * a fixture that silently lacks a credential fails far from here.
  */
 export async function assignTestGitCredential(
   server: SpawnedServer,

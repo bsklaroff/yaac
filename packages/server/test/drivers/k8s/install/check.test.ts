@@ -351,10 +351,6 @@ async function happyResponses(
       stderr: '',
     }
   }
-  if (file === 'podman' && args[0] === 'exec' && args[2] === 'findmnt') {
-    // The node binds the install's node-local path (the kind extraMount).
-    return { stdout: `${args[4]} /dev/sda1 ext4 rw\n`, stderr: '' }
-  }
   if (file === 'podman' && args[0] === 'exec') {
     return { stdout: 'hk=ok\n', stderr: '' }
   }
@@ -467,11 +463,7 @@ describe('runClusterCheck', () => {
     resetClusterCidrCache()
     clusterNodes = [nodeItem('yaac-control-plane')]
     gvisorTolerations = []
-    // Default: the pod states exactly what this host is configured with.
-    serverDeployEnv = [
-      { name: 'YAAC_SERVER_GIT_NAME', value: 'A B' },
-      { name: 'YAAC_SERVER_GIT_EMAIL', value: 'a@b.co' },
-    ]
+    serverDeployEnv = []
     mockGitUserConfig.mockResolvedValue({ name: 'A B', email: 'a@b.co' })
     podPhases = {}
     nodeMarkerFails = new Set()
@@ -509,7 +501,6 @@ describe('runClusterCheck', () => {
       ['storage', 'pass'],
       ['priority-classes', 'pass'],
       ['node-fixups', 'pass'],
-      ['node-local-mount', 'pass'],
       ['gvisor', 'pass'],
       ['node-tuning', 'pass'],
       ['probe', 'pass'],
@@ -1661,23 +1652,6 @@ describe('runClusterCheck', () => {
     const semantics = byName(results, 'storage-semantics')!
     expect(semantics.status).toBe('warn')
     expect(semantics.detail).toContain('no summary')
-  })
-
-  it('warns on node-local-mount when a kind node does not bind the node-local path', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file, args, opts) => {
-      if (file === 'podman' && args[0] === 'exec' && args[2] === 'findmnt') {
-        throw Object.assign(new Error('exit 1'), { code: 1 })
-      }
-      return happyRun()(file, args, opts)
-    })
-    stage({ run })
-    const { ok, results } = await runClusterCheck()
-    expect(ok).toBe(true)
-    const mount = byName(results, 'node-local-mount')!
-    expect(mount.status).toBe('warn')
-    expect(mount.detail).toMatch(/does not bind .*node-local at \/var\/lib\/yaac\/node\//)
-    expect(mount.fix).toMatch(/yaac cluster delete/)
   })
 
   it('warns (without failing) when the nested sentry mount fails', async () => {

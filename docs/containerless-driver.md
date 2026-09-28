@@ -108,10 +108,6 @@ source directory that does not exist yet (the project's pnpm store on its
 first worktree) is created by the driver as it links it, where the pod
 driver's init container would have.
 
-A data dir written before the tiers were folders is moved into this
-layout once, at `yaac server start`, before the lock is read or anything
-else touches it — `migrateDataDirLayout` in docs/legacy-compat-shims.md.
-
 ## Mounts become symlinks
 
 The driver contract already anticipates this — "a host-process driver reads

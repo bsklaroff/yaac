@@ -4,11 +4,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { claudeDir, piDir, setDataDir } from '@yaac/shared/project-paths'
 
-// The reclaim path reports what it could not take back, which is the only
-// notice a stranded skill ever gets — so the channel is stubbed and asserted.
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
-
-import { serverLog } from '#log'
 import {
   builtinSkillsDir, builtinSkillMounts, reconcileSharedSkillRoots, sharedSkillRoots, stageBuiltinSkills,
 } from '#domain/skills'
@@ -29,7 +24,6 @@ async function writeSkill(dir: string, name: string, body = 'body'): Promise<voi
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-builtin-test-'))
   setDataDir(tmp)
-  vi.mocked(serverLog).mockClear()
 })
 
 afterEach(async () => {
@@ -319,34 +313,6 @@ describe('reconcileSharedSkillRoots', () => {
     expect(await fs.readlink(path.join(root, 'welcome'))).toBe(path.join(src, 'welcome'))
     expect((await fs.lstat(path.join(root, 'yaac-spawn'))).isDirectory()).toBe(true)
     expect((await fs.lstat(path.join(root, 'mine-to-be'))).isDirectory()).toBe(true)
-  })
-
-  it('names the skill it had to strand when a mountpoint will not come back', async () => {
-    // The root-owned case: a kubelet-created mountpoint under a skills root
-    // this server cannot write. Nothing else would ever mention it, and the
-    // symptom — one builtin quietly absent — points nowhere near the cause.
-    const root = path.join(claudeDir(SLUG), 'skills')
-    await fs.mkdir(root, { recursive: true })
-    const blocked = path.join(root, 'welcome')
-    await fs.mkdir(blocked)
-
-    const realRmdir = fs.rmdir.bind(fs)
-    const spy = vi.spyOn(fs, 'rmdir').mockImplementation(async (p) => {
-      if (p === blocked) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
-      return realRmdir(p)
-    })
-    const src = await install(['welcome'])
-    try {
-      await expect(reconcileSharedSkillRoots(src, SLUG, 'link')).resolves.toEqual(['welcome'])
-    } finally {
-      spy.mockRestore()
-    }
-
-    // Left as it was, said out loud, and no other root held hostage by it.
-    expect((await fs.lstat(blocked)).isDirectory()).toBe(true)
-    expect(vi.mocked(serverLog).mock.calls.flat().join('\n')).toContain('welcome')
-    expect(await fs.readlink(path.join(piDir(SLUG), 'agent', 'skills', 'welcome')))
-      .toBe(path.join(src, 'welcome'))
   })
 })
 

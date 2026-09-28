@@ -34,7 +34,6 @@
 //    none of this feature's machinery, so it lives in `#drivers/k8s/container`
 //    beside the container runtime. Only the registry WORKLOAD is here.
 
-export { sweepLegacyVclusterState } from './legacy-vcluster-sweep'
 export {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
@@ -73,7 +72,6 @@ export {
   syncProxyCredentials,
   vapAvailable,
 } from './proxy-apply'
-export { sweepLegacyProxySecretsFile } from './legacy-proxy-seed'
 export { BUILDER_LOCAL_TAG, BUILDER_UPSTREAM_IMAGE, ensureBuilderImage } from './builder-image'
 export { ensureProxyImage, resolveProxyImageTag } from './proxy-image'
 export {

@@ -16,7 +16,7 @@
 // name here widens the interface and obliges a unit test in
 // packages/server/test/domain/projects/.
 
-export { addProject } from './add'
+export { addProject, registerStagedProject } from './add'
 export { getProjectBranches, type ProjectBranches } from './branches'
 export {
   deleteBuildFile,
@@ -40,10 +40,6 @@ export {
   type ResolvedProjectEnv,
 } from './env'
 export {
-  importLegacyProjectConfig,
-  legacySecretImportPending,
-} from './legacy-config-import'
-export {
   addHttpsCredential,
   assignProjectCredential,
   generateSshCredential,
@@ -57,7 +53,6 @@ export {
   runtimeGitCredentials,
   sshKeyMaterial,
 } from './credentials'
-export { importLegacyGitCredentials } from './legacy-git-credentials'
 export {
   assertProjectExists,
   getProjectDetail,

@@ -16,7 +16,6 @@ import { isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
 import {
   TAILSCALE_OPERATOR_NAMESPACE,
-  dataDirHash,
   ensurePriorityClasses,
   execFileAsync,
   isKubectlAbsentError,
@@ -405,10 +404,7 @@ export async function runClusterInstall(
     // tuning needs no such branch: the installer DaemonSet carries it.
     const nodes = await kindNodes(deps, cluster)
     if (nodes.length > 0) {
-      for (const node of nodes) {
-        await applyKindNodeFixups(deps, node)
-        await noteNodeLocalMount(deps, node)
-      }
+      for (const node of nodes) await applyKindNodeFixups(deps, node)
     } else {
       deps.log(
         `note: no kind cluster "${cluster}" on this host, so the kind node fixups `
@@ -446,7 +442,6 @@ export async function runClusterInstall(
     for (const node of await kindNodes(deps, cluster)) {
       await startStoppedKindNode(deps, node)
       await applyKindNodeFixups(deps, node)
-      await noteNodeLocalMount(deps, node)
     }
     await waitForApiServer(deps, cluster)
   }
@@ -1072,33 +1067,6 @@ async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Prom
     + ' && systemctl restart kubelet; fi',
   ])
   await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
-}
-
-/**
- * LEGACY COMPAT (docs/legacy-compat-shims.md): a tripwire for a kind
- * cluster created before the node-local extraMount existed. kind writes
- * mounts at create time, so such a cluster cannot be converged; its
- * node-local tier lives on the node container's own disk, which works but
- * is lost with the node (every podman-machine restart on macOS). Said once
- * per install run, beside the fixups; `yaac cluster check` says it too.
- * Self-skips on a node that is not a podman container, as the fixups do.
- */
-async function noteNodeLocalMount(deps: ClusterInstallDeps, node: string): Promise<void> {
-  const nodePath = nodeLocalNodePath()
-  try {
-    await deps.run('podman', ['exec', node, 'findmnt', '-n', nodePath])
-  } catch (err) {
-    // `findmnt` exits 1 for "not a mount point"; anything else (no such
-    // container, no findmnt) is a node this cannot ask, which is not a
-    // finding.
-    if ((err as { code?: number }).code !== 1) return
-    deps.log(
-      `note: ${node} does not bind ${nodeLocalRoot()} at ${nodePath} — this cluster `
-      + 'predates the node-local extraMount, so per-node caches (pnpm stores, image '
-      + 'stores) live on node disk until `yaac cluster delete` + `yaac cluster '
-      + `install\` recreates it. Worktrees work either way (install ${dataDirHash()}).`,
-    )
-  }
 }
 
 /**

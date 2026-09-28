@@ -20,7 +20,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential } from '@yaac/test-utils/api'
+import { assignTestGitCredential, registerTestProject } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -265,11 +265,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${slug}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
-    await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
-      slug,
-      remoteUrl: fakeRemote,
-      addedAt: new Date().toISOString(),
-    }) + '\n')
+    await registerTestProject(server!, slug, fakeRemote)
     // The git token the proxy swaps in for the project's placeholder.
     await assignTestGitCredential(server!, slug, 'fake-ghp-token')
 
@@ -491,11 +487,12 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       }
 
       // Pre-seed claude-code's onboarding state so the first-run wizard is
-      // skipped. These mount as /home/yaac/.claude.json and
-      // /home/yaac/.claude/settings.json in the session pod. `/repo` (not
-      // `/workspace`) is the key claude uses because the session worktree's
-      // .git file points at /repo/.git.
-      await fs.writeFile(path.join(projectPath, 'claude.json'), JSON.stringify({
+      // skipped. The claude home mounts as /home/yaac/.claude in the session
+      // pod, and names it CLAUDE_CONFIG_DIR, so its global config is
+      // `.claude.json` inside it. `/repo` (not `/workspace`) is the key
+      // claude uses because the session worktree's .git file points at
+      // /repo/.git.
+      await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
         hasCompletedOnboarding: true,
         lastOnboardingVersion: AGENT_CLIS.claude.version,
         customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
@@ -1494,15 +1491,16 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         expect(exitCode).toBe(0)
       }
 
-      // What an older install left on the node — a shared store nothing has
-      // written for two days, and a dead worktree's modules dir — is
-      // retired by the real sweep: a root pod pinned to the node, over its
-      // hostPath tree. Spares every worktree still live in this file.
-      const legacy = `${nodeLocalNodePath()}/projects/kitchen/.cached-packages`
+      // What a stopped worktree's crashed pod left on the node — an opencode
+      // working copy nothing has written for two days — is collected by the
+      // real sweep: a root pod pinned to the node, over its hostPath tree.
+      // A copy written just now is a create staging into it, and stays.
+      // Spares every worktree still live in this file.
+      const opencodeData = `${nodeLocalNodePath()}/projects/kitchen/opencode-data`
       await execFileAsync('podman', ['exec', node, 'sh', '-c',
-        `mkdir -p ${legacy}/pnpm-store/v11/files/00 ${legacy}/modules/dead-worktree/root`
-        + ` && touch ${legacy}/pnpm-store/v11/index.db`
-        + ` && find ${legacy} -exec touch -d '2 days ago' {} +`])
+        `mkdir -p ${opencodeData}/dead-worktree ${opencodeData}/staging-worktree`
+        + ` && touch ${opencodeData}/dead-worktree/opencode.db ${opencodeData}/staging-worktree/opencode.db`
+        + ` && find ${opencodeData}/dead-worktree -exec touch -d '2 days ago' {} +`])
       const running = new Map<string, Set<string>>()
       for (const p of await listWorktreePods()) {
         const ids = running.get(p.projectSlug) ?? new Set<string>()
@@ -1512,8 +1510,8 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await reapNodeLocal(running)
       const onNode = (p: string): Promise<boolean> =>
         execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)
-      expect(await onNode(`${legacy}/pnpm-store`)).toBe(false)
-      expect(await onNode(`${legacy}/modules/dead-worktree`)).toBe(false)
+      expect(await onNode(`${opencodeData}/dead-worktree`)).toBe(false)
+      expect(await onNode(`${opencodeData}/staging-worktree`)).toBe(true)
     }, 360_000)
   })
 
@@ -1891,12 +1889,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       }
       expect(emptied).toBe(true)
 
-      // A pre-split checkpoint is a data dir opencode wrote directly, so it
-      // commonly holds a WAL with the newest transactions beside the db.
-      // Shape one: a title change committed into the WAL alone (the writer
-      // exits without closing, so nothing folds it into the db file). The
-      // restart has to see it — a restore that skipped the WAL would lose
-      // every upgraded worktree's newest messages, silently.
+      // A checkpoint can hold a WAL beside its db (one opencode wrote
+      // directly, rather than the backup API). Shape one: a title change
+      // committed into the WAL alone (the writer exits without closing, so
+      // nothing folds it into the db file). The restart has to see it — a
+      // restore that skipped the WAL would lose the newest messages.
       await execFileAsync('python3', ['-c', [
         'import os, sqlite3, sys',
         'c = sqlite3.connect(sys.argv[1], isolation_level=None)',
@@ -1966,7 +1963,8 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // Pre-seed claude's onboarding state (same as the kitchen-sink
       // session) so the TUI lands directly on its chat prompt — a
       // headless create has no user to click through wizards.
-      await fs.writeFile(path.join(projectPath, 'claude.json'), JSON.stringify({
+      await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
+      await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
         hasCompletedOnboarding: true,
         lastOnboardingVersion: AGENT_CLIS.claude.version,
         customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
@@ -1975,7 +1973,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
           '/workspace': { hasTrustDialogAccepted: true },
         },
       }) + '\n')
-      await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
       await fs.writeFile(path.join(projectPath, 'claude', 'settings.json'), JSON.stringify({
         skipDangerousModePermissionPrompt: true,
       }) + '\n')

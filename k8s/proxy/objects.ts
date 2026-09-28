@@ -11,7 +11,7 @@
  * inputs, this process writes the outputs, and nothing is ever read back
  * from the process that wrote it (docs/worktree-egress.md).
  *
- * Pure and unit-tested, like tools-report.ts: a decoder that goes wrong
+ * Pure and unit-tested: a decoder that goes wrong
  * fails SILENTLY — the credential simply does not arrive, or a registration
  * is dropped and the worktree fails closed — so the shapes are pinned here
  * rather than inside the listener that cannot be imported.

@@ -94,13 +94,6 @@ export function credentialsDir(): string {
   return serverLocalPath('.credentials')
 }
 
-/** SERVER-LOCAL — see {@link credentialsDir}. The pattern-matched https
- *  tokens an older install kept; read only by the legacy importer
- *  (docs/legacy-compat-shims.md). */
-export function githubCredentialsPath(): string {
-  return path.join(credentialsDir(), 'github.json')
-}
-
 /** SERVER-LOCAL — see {@link credentialsDir}. */
 export function claudeCredentialsPath(): string {
   return path.join(credentialsDir(), 'claude.json')
@@ -176,18 +169,6 @@ export function repoDir(slug: string): string {
  */
 export function claudeDir(slug: string): string {
   return globalProjectPath(slug, 'claude')
-}
-
-/**
- * GLOBAL, and legacy only: where claude's global config lived before
- * worktrees named `CLAUDE_CONFIG_DIR`, when it resolved beside the home dir
- * rather than inside the claude home and needed a `File` mount of its own.
- * Nothing mounts or writes it now; its one caller is the adoption that
- * carries a pre-move install's state forward, and it goes with that
- * (`adoptLegacyClaudeJson`, docs/legacy-compat-shims.md).
- */
-export function claudeJsonFile(slug: string): string {
-  return globalProjectPath(slug, 'claude.json')
 }
 
 /**
@@ -282,11 +263,7 @@ export function opencodeConfigDir(slug: string): string {
  * (sst/opencode#5241) and makes `opencode --continue` deterministic, since
  * each database only ever holds its own worktree.
  *
- * The spelling is frozen: it is the pre-split node-local location inside
- * the projects tree, so the layout migration's `projects/` row carries
- * every older worktree's history into place with nothing to convert
- * (docs/legacy-compat-shims.md, `migrateDataDirLayout`). Renaming it is a
- * migration of that history.
+ * Renaming it is a migration of every stopped opencode worktree's history.
  */
 export function opencodeCheckpointDir(slug: string, worktreeId: string): string {
   return globalProjectPath(slug, 'opencode-data', worktreeId)

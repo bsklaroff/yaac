@@ -281,13 +281,7 @@ truth, and whatever the node still held is discarded, never merged — with
 one exception: a surviving working copy whose database or WAL is newer than
 the checkpoint's is checkpointed first, so an unclean stop on a node that
 came back costs nothing. Where the node did not come back, the loss is
-bounded by the timer: at most five minutes of conversation. The plain-copy
-format is what makes a pre-split `opencode-data/<id>` directory a valid
-checkpoint with nothing to convert (docs/legacy-compat-shims.md); such a
-directory is one opencode wrote directly, so its `-wal` holds the newest
-transactions and is restored along with the database. The checkpoint script
-deletes those sidecars once a backup made through the live connection
-supersedes them.
+bounded by the timer: at most five minutes of conversation.
 
 Two things make the hook run at all. The detached teardown's
 `kubectl delete job` is a waited foreground cascade, because the session dir

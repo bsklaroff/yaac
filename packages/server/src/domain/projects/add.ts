@@ -59,8 +59,7 @@ export async function addProject(remoteUrl: string, gitCredentialId: string): Pr
   // The record is the authority on what exists, so a duplicate is refused
   // from it rather than from a directory the server may not share. The
   // directory check stays as a second guard: a clone into an occupied dir
-  // would fail confusingly, and an adopted-but-unrecorded dir is exactly
-  // what the adoption shim is for.
+  // would fail confusingly.
   if (await getProjectRow(slug)) {
     throw new ServerError('CONFLICT', `Project "${slug}" already exists`)
   }
@@ -91,27 +90,58 @@ export async function addProject(remoteUrl: string, gitCredentialId: string): Pr
     throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
   }
 
-  await fs.mkdir(claudeDir(slug), { recursive: true })
-
-  const claudeCreds = await loadClaudeCredentialsFile()
-  if (claudeCreds?.kind === 'oauth') {
-    await writeProjectClaudePlaceholder(slug, claudeCreds.claudeAiOauth)
-  }
-
-  const codexCreds = await loadCodexCredentialsFile()
-  if (codexCreds?.kind === 'oauth') {
-    await writeProjectCodexPlaceholder(slug, codexCreds.codexOauth)
-  }
-
   const meta: ProjectMeta = {
     slug,
     remoteUrl,
     addedAt: new Date().toISOString(),
   }
-  // Both: the row is what the server answers from, and `project.json` is
-  // what the adoption shim reads on a data dir an older yaac wrote.
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta, null, 2) + '\n')
-  await recordProject(meta, { id: gitCredentialId, knownHostsEntry })
+  try {
+    await fs.mkdir(claudeDir(slug), { recursive: true })
+
+    const claudeCreds = await loadClaudeCredentialsFile()
+    if (claudeCreds?.kind === 'oauth') {
+      await writeProjectClaudePlaceholder(slug, claudeCreds.claudeAiOauth)
+    }
+
+    const codexCreds = await loadCodexCredentialsFile()
+    if (codexCreds?.kind === 'oauth') {
+      await writeProjectCodexPlaceholder(slug, codexCreds.codexOauth)
+    }
+
+    await recordProject(meta, { id: gitCredentialId, knownHostsEntry })
+  } catch (err) {
+    // A directory with no row is one nothing can list, remove or re-add
+    // over, so a failed add leaves nothing behind.
+    await fs.rm(dir, { recursive: true, force: true })
+    throw err
+  }
 
   return { project: meta, knownHostsEntry }
+}
+
+/**
+ * Record a project whose checkout is already staged in the data dir, without
+ * cloning anything — how a test suite stands a project up from a local repo
+ * against a server that has no network to clone over. Refuses a slug that
+ * would leave the projects dir, a remote `project add` would refuse, one
+ * with no staged checkout, and one already recorded.
+ */
+export async function registerStagedProject(slug: string, remoteUrl: string): Promise<ProjectMeta> {
+  if (path.basename(slug) !== slug || slug.startsWith('.')) {
+    throw new ServerError('VALIDATION', `invalid project slug "${slug}"`)
+  }
+  // The recorded remote picks the transport every later fetch may use, so
+  // it holds to the same shapes `addProject` accepts.
+  validateGitRemoteUrl(remoteUrl)
+  try {
+    await fs.access(repoDir(slug))
+  } catch {
+    throw new ServerError('NOT_FOUND', `no checkout is staged for project "${slug}"`)
+  }
+  if (await getProjectRow(slug)) {
+    throw new ServerError('CONFLICT', `Project "${slug}" already exists`)
+  }
+  const meta: ProjectMeta = { slug, remoteUrl, addedAt: new Date().toISOString() }
+  await recordProject(meta)
+  return meta
 }

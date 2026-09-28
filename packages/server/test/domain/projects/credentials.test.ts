@@ -289,4 +289,12 @@ describe('parseGitRemote', () => {
     expect(() => parseGitRemote('git@github.com:.git')).toThrow(/Cannot parse repo path/)
     expect(() => parseGitRemote('not-a-url')).toThrow(/Unrecognized git remote URL/)
   })
+
+  it('rejects a remote-helper URL, which git would run rather than dial', () => {
+    // `ext::<cmd>` is shaped like `host:path` with a path of `:<cmd>`; git
+    // reads it as the ext helper and runs the command.
+    for (const url of ['ext::sh -c touch% /tmp/x', 'fd::17', 'git@ext::sh']) {
+      expect(() => parseGitRemote(url)).toThrow(/Unrecognized git remote URL/)
+    }
+  })
 })

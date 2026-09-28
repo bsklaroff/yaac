@@ -3,7 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import {
-  adoptLegacyClaudeJson,
   seedClaudeJson,
   seedClaudeSettings,
 } from '#domain/worktrees/seed'
@@ -92,41 +91,6 @@ describe('seedClaudeJson', () => {
     await seedClaudeJson(file, ['/workspace', '/repo'])
     const j = await read()
     expect(j.hasCompletedOnboarding).toBe(true)
-  })
-})
-
-describe('adoptLegacyClaudeJson', () => {
-  it('carries a pre-move config to where claude reads it now', async () => {
-    // The old file is all an install that predates the config-dir naming has:
-    // claude's own oauthAccount and migration bookkeeping, plus trust roots
-    // the seed does not name. Losing it looks like a brand-new worktree.
-    const legacy = path.join(dir, 'claude.json')
-    await fs.writeFile(legacy, JSON.stringify({
-      oauthAccount: { uuid: 'x' },
-      projects: { '/some/other/checkout': { hasTrustDialogAccepted: true } },
-    }))
-    await adoptLegacyClaudeJson(legacy, file)
-    const j = await read()
-    expect(j.oauthAccount).toEqual({ uuid: 'x' })
-    expect(j.projects).toMatchObject({
-      '/some/other/checkout': { hasTrustDialogAccepted: true },
-    })
-  })
-
-  it('never walks a newer config backwards', async () => {
-    // Runs on every create, so the destination has to win the moment it
-    // exists — otherwise each create would overwrite what claude has written
-    // since with whatever the pre-move file froze.
-    const legacy = path.join(dir, 'claude.json')
-    await fs.writeFile(legacy, JSON.stringify({ oauthAccount: { uuid: 'stale' } }))
-    await fs.writeFile(file, JSON.stringify({ oauthAccount: { uuid: 'current' } }))
-    await adoptLegacyClaudeJson(legacy, file)
-    expect((await read()).oauthAccount).toEqual({ uuid: 'current' })
-  })
-
-  it('is a no-op on a fresh install, which is every install eventually', async () => {
-    await adoptLegacyClaudeJson(path.join(dir, 'claude.json'), file)
-    await expect(fs.access(file)).rejects.toThrow()
   })
 })
 

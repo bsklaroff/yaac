@@ -6,53 +6,6 @@ import { projectConfigDir } from '@yaac/shared/project-paths'
 
 const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'npmCache', 'referenceBranch'])
 
-/**
- * Keys yaac used to honor, mapped to what to tell the author now. A
- * retired key is not an unknown key: the generic "unknown field" warning
- * reads like a typo, and would leave someone whose worktrees silently
- * stopped getting a feature with nothing to search for.
- */
-const ENV_SETTINGS_HINT =
-  'Set it under Settings → Project Config → Environment (or `yaac config edit` no '
-  + 'longer carries it), where the value is stored with the server instead of '
-  + "being read from the server host's own environment."
-
-const RETIRED_KEYS: Record<string, (obj: Record<string, unknown>) => string> = {
-  // The three env keys named variables whose VALUES the server read out of
-  // its own process environment. That only ever worked for someone with a
-  // shell on the server's machine, and not even then under `k8s`, where the
-  // server is a pod holding only what its Deployment states. The startup
-  // importer moves what it can find into rows; this says where the rest
-  // went, for a config someone edits afterwards.
-  env: () => 'yaac-config.json: "env" is no longer supported — a project\'s '
-    + `environment variables are stored with the project now. ${ENV_SETTINGS_HINT}`,
-  envPassthrough: () => 'yaac-config.json: "envPassthrough" is no longer supported — '
-    + "a worktree's environment no longer comes from the server host's shell. "
-    + `${ENV_SETTINGS_HINT}`,
-  envSecretProxy: () => 'yaac-config.json: "envSecretProxy" is no longer supported — '
-    + 'proxied secrets are stored with the project, encrypted, and their injection '
-    + `rules with them. ${ENV_SETTINGS_HINT}`,
-  // No replacement, deliberately: the key named a path on the server's
-  // filesystem, which a client on another machine can neither browse nor
-  // create. `cacheVolumes` covers the case it was mostly used for.
-  bindMounts: () => 'yaac-config.json: "bindMounts" is no longer supported — a host '
-    + 'path is not something a client of a remote server can name. Use '
-    + '"cacheVolumes" for a directory that should persist across worktrees, or '
-    + 'bake the contents into the project image (Settings → Docker).',
-  virtualCluster: (obj) => {
-    const head = 'yaac-config.json: "virtualCluster" is no longer supported — '
-      + 'per-worktree virtual clusters were removed. '
-    // Only claim the implication where it actually fired. Saying it for
-    // `virtualCluster: false`, or where an explicit `nestedContainers`
-    // already won, would describe the one thing the parser did NOT do.
-    return obj.virtualCluster === true && obj.nestedContainers === undefined
-      ? head + 'It still implies "nestedContainers": true, as it always did; '
-        + 'set that explicitly and delete this key.'
-      : head + 'Delete the key — "nestedContainers" is what gives a worktree '
-        + 'its own container engine.'
-  },
-}
-
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
 export const DEFAULT_EPHEMERAL_MODULES_PATHS: readonly string[] = ['node_modules']
@@ -186,12 +139,7 @@ export function parseProjectConfig(raw: string): YaacConfig {
   const obj = parsed as Record<string, unknown>
 
   for (const key of Object.keys(obj)) {
-    const retired = RETIRED_KEYS[key]
-    if (retired !== undefined) {
-      console.warn(retired(obj))
-    } else if (!KNOWN_KEYS.has(key)) {
-      console.warn(`yaac-config.json: unknown field "${key}"`)
-    }
+    if (!KNOWN_KEYS.has(key)) console.warn(`yaac-config.json: unknown field "${key}"`)
   }
 
   const config: YaacConfig = {}
@@ -273,17 +221,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
       throw new Error('yaac-config.json: npmCache must be a boolean')
     }
     config.npmCache = obj.npmCache
-  }
-
-  // The retired `virtualCluster` always implied `nestedContainers`, and the
-  // in-pod engine it implied still exists. Honoring the implication is what
-  // keeps an unedited config from silently losing its engine — a loss that
-  // would surface much later, as `docker: not found` inside the worktree,
-  // far from the config that caused it (docs/legacy-compat-shims.md). An
-  // explicit `nestedContainers: false` still wins: it is the newer key and
-  // the author said it outright.
-  if (obj.virtualCluster === true && obj.nestedContainers === undefined) {
-    config.nestedContainers = true
   }
 
   if (obj.ephemeralModulesPaths !== undefined) {

@@ -15,7 +15,7 @@ import {
   writeServerConfig,
 } from '#server-config'
 import { recordedDriver } from '#install-driver'
-import { clientLocalPath, clientLocalRoot, setDataDir } from '#paths'
+import { clientLocalRoot, setDataDir } from '#paths'
 
 describe('server config store', () => {
   let dir: string
@@ -77,40 +77,6 @@ describe('server config store', () => {
     ])
   })
 
-  it('reads both older locations of remote.json, and migrates them on write', async () => {
-    // The file was `remote.json` before a server on this machine could be
-    // named by it, and lived in the data dir itself before the client-local
-    // tier existed. Losing either silently would leave every client unable
-    // to reach a running server with no hint why — docs/legacy-compat-shims.md.
-    // The data dir ROOT, spelled out: that is where a pre-client-local
-    // install wrote it, and no tier helper names the root any more.
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path.join(dir, 'remote.json'), JSON.stringify({
-      url: 'https://oldest.ts.net', token: 'tok', enabled: true,
-    }))
-    expect((await readServerConfig())?.url).toBe('https://oldest.ts.net')
-
-    // The nearer legacy path outranks the data-dir one.
-    await fs.mkdir(clientLocalRoot(), { recursive: true })
-    await fs.writeFile(clientLocalPath('remote.json'), JSON.stringify({
-      url: 'https://old.ts.net', token: 'tok', enabled: true,
-    }))
-    expect((await readServerConfig())?.url).toBe('https://old.ts.net')
-
-    // The first write moves it, and takes both stale bearer tokens with it —
-    // a live credential left behind would outlive `clearServerConfig`.
-    await writeServerConfig({ url: 'https://new.ts.net', token: 't2', enabled: true, saved: [] })
-    expect((await readServerConfig())?.url).toBe('https://new.ts.net')
-    await expect(fs.access(path.join(dir, 'remote.json'))).rejects.toThrow()
-    await expect(fs.access(clientLocalPath('remote.json'))).rejects.toThrow()
-
-    // And the new location wins outright while both exist.
-    await fs.writeFile(clientLocalPath('remote.json'), JSON.stringify({
-      url: 'https://stale.ts.net', token: 'x', enabled: true,
-    }))
-    expect((await readServerConfig())?.url).toBe('https://new.ts.net')
-  })
-
   it('keeps the install driver when the servers are forgotten', async () => {
     // `driver` shares this file, and losing it would stop a k8s install
     // refusing a host `yaac server start` — two writers on one data dir.
@@ -167,35 +133,6 @@ describe('recordedDriver', () => {
       driver: 'containerless',
     })
     expect(await recordedDriver()).toBe('containerless')
-  })
-
-  it('is folded into any config written without one, so the file retires itself', async () => {
-    // Every writer, not just the two registrars: `yaac remote set` on an
-    // install that predates the field must not leave a `server.json` that
-    // outranks the standalone file while saying nothing about the install.
-    await fs.mkdir(clientLocalRoot(), { recursive: true })
-    await fs.writeFile(clientLocalPath('driver'), 'k8s\n')
-    await writeServerConfig(withServerSelected(null, 'https://elsewhere.ts.net', 't'))
-    expect(await readServerConfig()).toMatchObject({ driver: 'k8s' })
-    expect(await recordedDriver()).toBe('k8s')
-  })
-
-  it('falls back to the standalone file at both its old paths', async () => {
-    // An install that has not re-registered since the record moved into
-    // server.json — docs/legacy-compat-shims.md.
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path.join(dir, 'driver'), 'k8s\n')
-    expect(await recordedDriver()).toBe('k8s')
-
-    await fs.mkdir(clientLocalRoot(), { recursive: true })
-    await fs.writeFile(clientLocalPath('driver'), 'containerless\n')
-    expect(await recordedDriver()).toBe('containerless')
-
-    // The field outranks both once it exists.
-    await writeServerConfig({
-      url: 'http://127.0.0.1:8787', token: 't', enabled: true, saved: [], driver: 'k8s',
-    })
-    expect(await recordedDriver()).toBe('k8s')
   })
 })
 
@@ -414,10 +351,11 @@ describe('mintLocalClientToken', () => {
     try {
       const token = await mintLocalClientToken(origin, () => Promise.resolve({
         pid: 1, port: 8787, secret: 'from-the-pod', startedAt: 1, buildId: 'b',
+        instance: 'i', host: 'yaac-server-abc', heartbeatAt: 1,
       }))
       expect(token).toBe('durable')
       expect(seen.every((s) => s.auth === 'Bearer from-the-pod')).toBe(true)
-      expect(seen.filter((s) => s.method === 'DELETE')).toHaveLength(2)
+      expect(seen.filter((s) => s.method === 'DELETE')).toHaveLength(1)
       // No lock to read is no mint — an empty token, which a
       // credential-optional install is fine with.
       expect(await mintLocalClientToken(origin, () => Promise.resolve(null))).toBe('')

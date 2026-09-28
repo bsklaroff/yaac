@@ -74,9 +74,9 @@ TMUX="tmux -S /tmp/yaac-tmux/server"
 # a working copy whose database (or its WAL) is NEWER than the checkpoint's
 # is checkpointed first; the copy of an earlier life on another node is
 # older, and loses. The checkpoint's own sidecars (`-wal`, `-shm`,
-# `-journal`) are restored with it: a pre-split data dir is one opencode
-# wrote directly, and its WAL holds the newest transactions. A pod that
-# runs no opencode has an empty checkpoint and this costs it two `rm`s.
+# `-journal`) are restored with it; the next checkpoint folds them in and
+# removes them. A pod that runs no opencode has an empty checkpoint and
+# this costs it two `rm`s.
 # Keep the paths in sync with CONTAINER_OPENCODE_DATA /
 # CONTAINER_OPENCODE_CHECKPOINT (packages/shared/src/paths.ts) and with
 # yaac-opencode-checkpoint.

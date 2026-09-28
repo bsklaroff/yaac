@@ -16,7 +16,8 @@ import {
   type KubectlExecOptions,
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
-import type { ProjectMeta } from '@yaac/shared/types'
+import type { SpawnedServer } from '#cli'
+import { registerTestProject } from '#api'
 import { PROXY_APP_NAME, PROXY_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
@@ -293,31 +294,25 @@ export async function requireCluster(): Promise<void> {
 }
 
 /**
- * Add a local test repo as a yaac project, bypassing URL validation and
+ * Add a local test repo as a yaac project on `server`: clone it into the
+ * data dir, then have the server record it, bypassing URL validation and
  * token resolution (which only apply to real GitHub URLs).
  *
  * `remoteUrl` is what the project row records — the remote every create
- * parses and resolves a credential for. It defaults to the local path the
- * clone came from; a suite that needs a create to get past that parse
- * names a URL-shaped remote here, which nothing dials under
- * YAAC_E2E_SKIP_FETCH.
+ * parses and resolves a credential for. It must be a shape `project add`
+ * accepts, and defaults to a GitHub-shaped one named for the slug, which
+ * nothing dials under YAAC_E2E_SKIP_FETCH.
  */
 export async function addTestProject(
+  server: SpawnedServer,
   localRepoPath: string,
   opts: { remoteUrl?: string } = {},
 ): Promise<void> {
   const slug = path.basename(localRepoPath)
-  const dir = projectDir(slug)
-  await fs.mkdir(dir, { recursive: true })
+  await fs.mkdir(projectDir(slug), { recursive: true })
   await cloneRepo(localRepoPath, repoDir(slug), null)
   await fs.mkdir(claudeDir(slug), { recursive: true })
-
-  const meta: ProjectMeta = {
-    slug,
-    remoteUrl: opts.remoteUrl ?? localRepoPath,
-    addedAt: new Date().toISOString(),
-  }
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta, null, 2) + '\n')
+  await registerTestProject(server, slug, opts.remoteUrl ?? `https://github.com/test-org/${slug}.git`)
 }
 
 /**

@@ -21,26 +21,22 @@ export interface ServerLock {
    * `pid` used to mean for compare-and-delete: pids are per-namespace, so
    * once a server can be a pod, two servers of the same install genuinely
    * can both be pid 1.
-   *
-   * Optional because a lock written before the lease existed has none —
-   * see docs/legacy-compat-shims.md.
    */
-  instance?: string
+  instance: string
   /**
    * `os.hostname()` of the writer: the machine for a host process, the pod
    * name for the in-cluster server. Not decoration — it is what says
    * whether the pid and the loopback `/health` probe below MEAN anything to
-   * this reader. Absent = written before the lease, and read as this host
-   * (which is what it was).
+   * this reader.
    */
-  host?: string
+  host: string
   /**
    * Last renewal of the lease, ms epoch. The running server rewrites it
    * every {@link LEASE_HEARTBEAT_MS}; a reader that cannot use pid liveness
    * treats the lock as held while this is younger than
    * {@link LEASE_STALE_MS}.
    */
-  heartbeatAt?: number
+  heartbeatAt: number
 }
 
 export const SERVER_LOCK_FILENAME = '.server.lock'
@@ -66,9 +62,9 @@ export function isServerLock(value: unknown): value is ServerLock {
     && typeof v.secret === 'string'
     && typeof v.startedAt === 'number'
     && typeof v.buildId === 'string'
-    && (v.instance === undefined || typeof v.instance === 'string')
-    && (v.host === undefined || typeof v.host === 'string')
-    && (v.heartbeatAt === undefined || typeof v.heartbeatAt === 'number')
+    && typeof v.instance === 'string'
+    && typeof v.host === 'string'
+    && typeof v.heartbeatAt === 'number'
   )
 }
 
@@ -80,12 +76,11 @@ export function isServerLock(value: unknown): value is ServerLock {
  * process on the wrong interface.
  */
 export function isSameHostLock(lock: ServerLock): boolean {
-  return lock.host === undefined || lock.host === os.hostname()
+  return lock.host === os.hostname()
 }
 
 /** Whether the lease is still being renewed — the cross-host liveness signal. */
 export function isLeaseFresh(lock: ServerLock): boolean {
-  if (lock.heartbeatAt === undefined) return false
   return Date.now() - lock.heartbeatAt < LEASE_STALE_MS
 }
 

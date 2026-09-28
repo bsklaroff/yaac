@@ -45,7 +45,7 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
  * that might be unreachable (docs/layered-server.md).
  *
  * `addedAt` is text, not a timestamp, because it is handed to clients
- * verbatim as the ISO string `project.json` has always carried; parsing and
+ * verbatim as an ISO string; parsing and
  * re-serializing it would change the shape of a value nothing computes on.
  */
 export const projects = snakeCase.table('projects', {
@@ -411,17 +411,3 @@ export const gitCredentials = snakeCase.table('git_credentials', {
   publicKey: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.name)])
-
-/**
- * LEGACY (docs/legacy-compat-shims.md): the per-pattern SSH keys an older
- * server generated. Read only by the importer that turns them into
- * `git_credentials` rows, which empties it; dropped when that importer goes.
- */
-export const legacyGitSshKeys = snakeCase.table('git_ssh_keys', {
-  id: uuid().primaryKey().defaultRandom(),
-  pattern: text().notNull(),
-  sealedPrivateKey: text().notNull(),
-  publicKey: text().notNull(),
-  knownHostsEntry: text().notNull(),
-  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex().on(t.pattern)])

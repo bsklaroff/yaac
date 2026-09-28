@@ -15,40 +15,6 @@ interface ClaudeJsonState {
 }
 
 /**
- * Move a pre-existing `<project>/claude.json` to the path claude reads now.
- *
- * LEGACY COMPAT (docs/legacy-compat-shims.md). Worktrees used to run with no
- * `CLAUDE_CONFIG_DIR`, which put claude's global config beside the home dir
- * rather than inside it, so yaac kept it as a sibling of the claude home and
- * mounted it at `~/.claude.json`. Naming the config dir moved the file into
- * the home, and the old one is where an install that predates the change
- * still keeps its state — claude's `oauthAccount`, its own migration
- * bookkeeping, the approved-API-key list, the accepted trust roots.
- *
- * Only when the new path has nothing: the destination is authoritative the
- * moment it exists, so a re-run can never walk a newer file backwards. The
- * old file is left where it is rather than unlinked, so a downgrade still
- * finds it; nothing reads it after this, and it is small.
- */
-export async function adoptLegacyClaudeJson(
-  legacyPath: string,
-  currentPath: string,
-): Promise<void> {
-  try {
-    await fs.access(currentPath)
-    return
-  } catch {
-    // Nothing there yet — the old file, if any, is still the state of record.
-  }
-  try {
-    await fs.copyFile(legacyPath, currentPath)
-  } catch {
-    // No legacy file (the common case, and every fresh install): the seed
-    // below writes the new one from scratch.
-  }
-}
-
-/**
  * Ensure claude's global config exists and seed
  * claude-code's onboarding state so its first-run wizard (theme picker, then
  * the login screen) is skipped. Merges into any existing state so

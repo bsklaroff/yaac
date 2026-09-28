@@ -41,7 +41,6 @@ import path from 'node:path'
 import {
   PACKAGE_ROOT, claudeDir, codexDir, opencodeConfigDir, piDir,
 } from '@yaac/shared/project-paths'
-import { serverLog } from '#log'
 import type { WorkspaceMount } from '#drivers/contract'
 
 /** The dir name this feature ships from, under the package root. It is also
@@ -227,31 +226,14 @@ async function linkSkill(src: string, dest: string): Promise<void> {
  * install it is a mountpoint a pod run created and this substrate cannot mount
  * over. Leaving it is what makes a builtin silently missing after a switch
  * from k8s, so it is reclaimed rather than deferred to.
- *
- * A pod run of this version leaves a SERVER-owned one (see the `mountpoint`
- * delivery), which is removable. Older ones the kubelet made are root-owned;
- * whether those go depends on the root's own permissions, so the failure is
- * reported with the path rather than passed over — nothing else will mention
- * it, and the symptom (one missing skill) points nowhere near the cause.
  */
 async function reclaimSpentMountpoint(dest: string): Promise<boolean> {
   try {
     await fs.rmdir(dest)
     return true
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') return true // already gone: a concurrent create's
-    // Theirs, and left alone in silence: a skill dir (ENOTEMPTY, or EEXIST
-    // where the platform prefers it) or a file (ENOTDIR).
-    if (code === 'ENOTEMPTY' || code === 'EEXIST' || code === 'ENOTDIR') return false
-    // Anything else is a permission problem (EACCES, or EPERM on a sticky
-    // parent) — the root-owned case, which must not pass in silence.
-    serverLog(
-      `[server] skills: cannot reclaim ${dest} left by a previous driver `
-      + `(${String(code)}); yaac's "${path.basename(dest)}" skill will be missing `
-      + 'from this project until it is removed',
-    )
-    return false
+    // Already gone (a concurrent create's) is free; anything else is theirs.
+    return (err as NodeJS.ErrnoException).code === 'ENOENT'
   }
 }
 

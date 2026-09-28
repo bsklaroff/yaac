@@ -1,10 +1,5 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
-// The data dir ROOT, for the two pre-client-local fallbacks alone: those
-// files were written when the root was the only directory, and no tier
-// helper names it any more (docs/legacy-compat-shims.md).
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { clientLocalPath, ensureClientLocalRoot, getDataDir } from '#paths'
+import { clientLocalPath, ensureClientLocalRoot } from '#paths'
 import { readLock } from '#lock'
 import type { ServerLock } from '#server-lock-file'
 import type { DriverKind } from '#types'
@@ -55,31 +50,14 @@ export function serverConfigPath(): string {
 }
 
 /**
- * What this file was called when every server it could name was a REMOTE
- * one, and where it lived when every tier was one directory — see
- * docs/legacy-compat-shims.md.
- */
-function legacyConfigPaths(): string[] {
-  return [clientLocalPath('remote.json'), path.join(getDataDir(), 'remote.json')]
-}
-
-/**
  * Absent, unparseable, or wrong-shaped file → null (no server configured).
  * The selected server is always folded into `saved` (files written before
  * `saved` existed lack it), so callers can treat `saved` as the complete
  * known-servers list.
  */
 export async function readServerConfig(): Promise<ServerConfig | null> {
-  for (const p of [serverConfigPath(), ...legacyConfigPaths()]) {
-    const cfg = await readServerConfigAt(p)
-    if (cfg) return cfg
-  }
-  return null
-}
-
-async function readServerConfigAt(filePath: string): Promise<ServerConfig | null> {
   try {
-    const raw = await fs.readFile(filePath, 'utf8')
+    const raw = await fs.readFile(serverConfigPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const cfg = parsed as Record<string, unknown>
@@ -113,50 +91,13 @@ async function readServerConfigAt(filePath: string): Promise<ServerConfig | null
   }
 }
 
-/**
- * Where the install's driver was recorded before it became a field of
- * `server.json`, at both paths that file has had — see
- * docs/legacy-compat-shims.md. Exported for `recordedDriver`, which reads
- * the same two places.
- */
-export async function readLegacyDriverRecord(): Promise<DriverKind | undefined> {
-  for (const p of [clientLocalPath('driver'), path.join(getDataDir(), 'driver')]) {
-    try {
-      const raw = (await fs.readFile(p, 'utf8')).trim()
-      if (raw === 'k8s' || raw === 'containerless') return raw
-    } catch {
-      // absent or unreadable — try the next
-    }
-  }
-  return undefined
-}
-
-/**
- * Persist atomically (tmp + rename) at 0600 — the token is a bearer.
- *
- * A config with no `driver` picks one up from the standalone file if there
- * is one, so that EVERY writer makes the file self-describing — not just
- * the two that register a server. Without this, a `yaac remote set` on an
- * install that predates the field would write a `server.json` that
- * outranks the legacy file while saying nothing about the install, and the
- * driver record would live on only as long as that file stayed on disk.
- */
+/** Persist atomically (tmp + rename) at 0600 — the token is a bearer. */
 export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
   await ensureClientLocalRoot()
-  if (cfg.driver === undefined) {
-    const legacy = await readLegacyDriverRecord()
-    if (legacy) cfg = { ...cfg, driver: legacy }
-  }
   const p = serverConfigPath()
   const tmp = `${p}.${process.pid}.tmp`
   await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 })
   await fs.rename(tmp, p)
-  // Only once the new one is durable. Leaving one would strand a live
-  // bearer token on disk, and a later `clearServerConfig` that missed it
-  // would read as "no server" while the file still sat there.
-  for (const legacy of legacyConfigPaths()) {
-    await fs.rm(legacy, { force: true })
-  }
 }
 
 /**
@@ -169,9 +110,6 @@ export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
  */
 export async function clearServerConfig(): Promise<void> {
   const driver = (await readServerConfig())?.driver
-  for (const legacy of legacyConfigPaths()) {
-    await fs.rm(legacy, { force: true })
-  }
   if (driver === undefined) {
     await fs.rm(serverConfigPath(), { force: true })
     return
@@ -271,13 +209,6 @@ export async function probeServer(origin: string, token: string): Promise<{ buil
 
 /** Name of the durable token a machine keeps for its own install's server. */
 export const LOCAL_CLIENT_TOKEN_NAME = 'local-client'
-
-/**
- * The name this token had when only `yaac cluster install` minted one —
- * revoked alongside the current name so an install that predates the
- * rename doesn't keep an orphan credential (docs/legacy-compat-shims.md).
- */
-const LEGACY_TOKEN_NAME = 'cluster-install'
 
 const MINT_TIMEOUT_MS = 10_000
 
@@ -403,13 +334,11 @@ export async function mintLocalClientToken(
   if (!lock) return ''
   const auth = { authorization: `Bearer ${lock.secret}` }
   try {
-    for (const name of [LOCAL_CLIENT_TOKEN_NAME, LEGACY_TOKEN_NAME]) {
-      await fetch(`${origin}/tokens/${name}`, {
-        method: 'DELETE',
-        headers: auth,
-        signal: AbortSignal.timeout(MINT_TIMEOUT_MS),
-      })
-    }
+    await fetch(`${origin}/tokens/${LOCAL_CLIENT_TOKEN_NAME}`, {
+      method: 'DELETE',
+      headers: auth,
+      signal: AbortSignal.timeout(MINT_TIMEOUT_MS),
+    })
     const res = await fetch(`${origin}/tokens`, {
       method: 'POST',
       headers: { ...auth, 'content-type': 'application/json' },

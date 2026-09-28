@@ -243,10 +243,7 @@ older one. There are two reasons:
    stores, opencode working copies — lives there, so on kind it is host
    disk and survives a cluster delete rather than dying with the node
    container. Both ride every node, so they hold wherever a worktree is
-   scheduled. The second is per install (the hash), and kind writes mounts
-   only at create time: a cluster made before it existed keeps its
-   node-local tier on node disk, which `yaac cluster install` and `yaac
-   cluster check` both say (`node-local-mount`).
+   scheduled. The second is per install (the hash).
 3. **The kind node fixups** — the two settings a node *container* has and
    a real node does not, applied through podman: a raised pids-limit on the
    node container (podman's default 2048 is what subagent fan-out would
@@ -638,8 +635,7 @@ gates sit beside it: `storage-semantics` runs the POSIX probe in
 `k8s/probes/fsprobe.py` (ownership, O_EXCL, atomic rename, hardlinks,
 locks, fsync, mmap, append, xattrs) against the claim from a sandboxed pod,
 naming any that fail — the same probes a cloud install's storage class is
-judged by; and `node-local-mount` says when a kind node does not bind
-`<dataDir>/node-local` at the install's node path. `npm-cache` has a
+judged by. `npm-cache` has a
 worktree-labelled pod fetch a package through the npm cache's Service: a
 warn when the install has no cache or no ready cache pod (new worktrees
 then install from npmjs), a fail when a ready one does not serve, since

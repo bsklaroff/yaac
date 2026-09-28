@@ -67,6 +67,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // ── projects ──────────────────────────────────────────────────────────
   { method: 'GET', path: '/project/list', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/project/add', body: { url: 'not a url' }, k8s: 400, containerless: 400 },
+  { method: 'POST', path: '/project/register', body: {}, k8s: 400, containerless: 400 },
   { method: 'GET', path: '/project/:slug', request: '/project/nope', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/project/:slug/exists', request: '/project/nope/exists', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/project/:slug', request: '/project/nope', k8s: MISSING, containerless: MISSING },

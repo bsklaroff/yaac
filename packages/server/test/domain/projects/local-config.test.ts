@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectConfigDir, getProjectsDir } from '@yaac/shared/project-paths'
 import { addAllowedHostToProjectConfig, addPortForwardToProjectConfig, readProjectConfigRaw, removeProjectConfig, setProjectReferenceBranch, writeProjectConfig } from '#domain/projects'
+import { recordProject } from '#db'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 
 const slug = 'demo'
@@ -18,7 +19,7 @@ beforeEach(async () => {
     remoteUrl: 'https://example.com/foo',
     addedAt: '2026-01-01T00:00:00.000Z',
   }
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
+  await recordProject(meta)
 })
 
 afterEach(async () => {

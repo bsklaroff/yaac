@@ -68,7 +68,7 @@ import {
   syncProxyCredentials,
   vapAvailable,
 } from '#drivers/k8s/cluster'
-import { globalPath, globalRoot } from '@yaac/shared/project-paths'
+import { globalRoot } from '@yaac/shared/project-paths'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import {
   DNS_STUB_PORT,
@@ -98,7 +98,6 @@ import { buildImage, registerImageBuild } from '#drivers/k8s/image-engine'
 import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
-import path from 'node:path'
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
@@ -340,75 +339,6 @@ describe('ensureProxyResources', () => {
       { apiGroups: [''], resources: ['secrets'], resourceNames: ['yaac-proxy-refreshed', 'yaac-proxy-ca'], verbs: ['update', 'patch'] },
       { apiGroups: [''], resources: ['configmaps'], resourceNames: ['yaac-proxy-state'], verbs: ['update', 'patch'] },
     ])
-  })
-
-  it('carries an older proxy’s CA, registrations and records into the objects, once', async () => {
-    // The old proxy's hostPath, off the data dir the server mounts
-    // (docs/legacy-compat-shims.md). Bare refs in a persisted registration
-    // predate project scoping; the seed scopes them on the way in.
-    const dir = globalPath('run', 'proxy-data')
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path.join(dir, 'ca.key'), 'OLD-KEY')
-    await fs.writeFile(path.join(dir, 'ca.pem'), 'OLD-CERT')
-    await fs.writeFile(path.join(dir, 'worktrees.json'), JSON.stringify({
-      w1: {
-        rules: [{ hostPattern: 'h', pathPattern: '/*', injections: [
-          { action: 'set_header', name: 'a', secretRef: 'BARE' },
-          { action: 'set_header', name: 'b', secretRef: 'other/SCOPED' },
-        ] }],
-        allowedHosts: ['h'], tool: 'claude', projectSlug: 'demo',
-      },
-      broken: { rules: 'nope' },
-    }))
-    await fs.writeFile(path.join(dir, 'blocked-hosts.json'), JSON.stringify({ w1: ['evil'] }))
-    stageClusterReads()
-    await ensureProxyResources('img')
-
-    // The empty pre-create first, then the seed's write of the old CA —
-    // carrying the labels the pre-create stamped, since an apply without
-    // them would delete them through the three-way merge and the server's
-    // informers select on exactly those.
-    const ca = applied().filter((m) => m.metadata.name === 'yaac-proxy-ca').at(-1)
-    expect(ca?.kind).toBe('Secret')
-    expect(ca?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'ca' })
-    expect(b64d(ca!.data!['ca.pem'])).toBe('OLD-CERT')
-    expect(b64d(ca!.data!['ca.key'])).toBe('OLD-KEY')
-    const reg = byName('yaac-proxy-reg-w1')
-    expect(reg?.metadata.labels).toMatchObject({ 'yaac.worktree-id': 'w1', 'yaac.project': 'demo' })
-    expect(JSON.parse(reg!.data!['registration.json'])).toMatchObject({
-      rules: [{ injections: [
-        { secretRef: 'demo/BARE' }, { secretRef: 'other/SCOPED' },
-      ] }],
-    })
-    expect(byName('yaac-proxy-reg-broken')).toBeUndefined()
-    const state = applied().filter((m) => m.metadata.name === 'yaac-proxy-state').at(-1)
-    expect(state?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'state' })
-    expect(JSON.parse(state!.data!['blocked-hosts.json'])).toEqual({ w1: ['evil'] })
-    expect(JSON.parse(state!.data!['git-auth-failures.json'])).toEqual({})
-    // The CA is the seed's done-marker, so it is written last: a failure
-    // before it seeds everything again next time rather than leaving a
-    // live worktree out.
-    const names = applied().map((m) => m.metadata.name)
-    expect(names.lastIndexOf('yaac-proxy-ca')).toBeGreaterThan(names.indexOf('yaac-proxy-reg-w1'))
-    expect(names.lastIndexOf('yaac-proxy-ca')).toBeGreaterThan(names.lastIndexOf('yaac-proxy-state'))
-    expect(vi.mocked(serverLog)).toHaveBeenCalledWith(expect.stringContaining('seeded the proxy'))
-    // The directory is left in place; the seed runs on an empty CA alone.
-    await expect(fs.stat(path.join(dir, 'ca.pem'))).resolves.toBeDefined()
-
-    vi.mocked(serverLog).mockClear()
-    mockApply.mockClear()
-    mockGetJson.mockImplementation((args: string[]) => {
-      if (args[1] === 'secret' && args[2] === 'yaac-proxy-ca') return Promise.resolve({ data: { 'ca.pem': 'x' } })
-      if (args[1] === 'secret' || args[1] === 'configmap') return Promise.resolve({})
-      if (args[1] === 'nodes') {
-        return Promise.resolve({ items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }] })
-      }
-      if (args[1] === 'endpoints') return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
-      return Promise.resolve(null)
-    })
-    await ensureProxyResources('img')
-    expect(byName('yaac-proxy-reg-w1')).toBeUndefined()
-    expect(vi.mocked(serverLog)).not.toHaveBeenCalledWith(expect.stringContaining('seeded'))
   })
 
   it('runs one proxy replica on runc under Recreate, wired to its ports and auth secret', async () => {

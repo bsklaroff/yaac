@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectDir } from '@yaac/shared/project-paths'
 import { closeDb, recordProject, upsertProjectEnvVar } from '#db'
@@ -27,10 +26,6 @@ const RULE = { hosts: ['api.example.com'], header: 'x-api-key' }
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   await fs.mkdir(projectDir('demo'), { recursive: true })
-  await fs.writeFile(
-    path.join(projectDir('demo'), 'project.json'),
-    JSON.stringify({ slug: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: 'now' }),
-  )
   await recordProject({ slug: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: 'now' })
 })
 

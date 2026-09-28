@@ -38,7 +38,6 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-  nodeLocalNodePath,
   runPodToCompletion,
   runtimeClassSpec,
   hostUidSecurityContext,
@@ -56,7 +55,7 @@ import {
   registryHost,
   registryReachable,
 } from '#drivers/k8s/container'
-import { PACKAGE_ROOT, globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
+import { PACKAGE_ROOT, globalRoot, serverLocalRoot } from '@yaac/shared/paths'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so
 // consumers can name the shape without importing the check suite.
 import type { CheckResult } from '@yaac/shared/types'
@@ -135,9 +134,6 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      place on every node it runs on, read back through its pods — so it
  *      works on a node yaac has no shell on, and a node that restarted
  *      reads as tuned again once the installer's first pass lands
- *   6e. node-local-mount (warn-only, kind nodes only): each node binds
- *      `<dataDir>/node-local` at the install's node path — a cluster
- *      created before that extraMount keeps its caches on node disk
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
  *      from its cluster ref (on the default gvisor tier) that mounts the
  *      `yaac-global` claim, reads a nonce the check wrote at the global
@@ -278,7 +274,7 @@ export async function runClusterCheck(
   // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
   // prerequisites already failed)
   const PROBE_GATES = [
-    'node-fixups', 'node-local-mount', 'gvisor', 'node-tuning', 'probe', 'egress', 'npm-cache',
+    'node-fixups', 'gvisor', 'node-tuning', 'probe', 'egress', 'npm-cache',
     'datapath', 'veth-source',
     ...MULTI_NODE_GATES,
     'nested-mount', 'storage-semantics', 'vap', 'runtime-stamp',
@@ -293,7 +289,6 @@ export async function runClusterCheck(
     return { ok: false, results }
   }
   add(await runNodeFixupsCheck())
-  add(await runNodeLocalMountCheck())
   add(await runGvisorRuntimeCheck())
   // After the gvisor gate, which is what proves the installer DaemonSet
   // exists at all; warn-only, so it gates nothing below.
@@ -570,61 +565,6 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
       name: 'node-fixups', status: 'warn',
       detail: `could not verify node fixups (${truncate(err)})`,
       fix: NODE_FIXUPS_FIX,
-    }
-  }
-}
-
-/**
- * LEGACY COMPAT (docs/legacy-compat-shims.md): warn-level tripwire for a
- * kind cluster created before the node-local extraMount existed. kind
- * writes mounts at create time, so the node binds `<dataDir>/node-local`
- * at the install's node path or it never will; without the bind the
- * node-local tier lives on the node container's own disk — correct, but
- * lost with the node (every podman-machine restart on macOS). Kind-specific
- * like the fixups (node name == podman container name), and self-skips
- * the same way on a node that is not a podman container.
- */
-async function runNodeLocalMountCheck(): Promise<CheckResult> {
-  const nodePath = nodeLocalNodePath()
-  try {
-    const { stdout } = await execFileAsync('kubectl', [
-      'get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}',
-    ])
-    const nodes = stdout.trim().split(/\s+/).filter(Boolean)
-    const unbound: string[] = []
-    for (const node of nodes) {
-      try {
-        await execFileAsync('podman', ['exec', node, 'findmnt', '-n', nodePath])
-      } catch (err) {
-        // `findmnt` exits 1 for "not a mount point"; anything else is a
-        // node this cannot ask (not a podman container, no findmnt).
-        if ((err as { code?: number }).code !== 1) {
-          return {
-            name: 'node-local-mount', status: 'skip',
-            detail: `node "${node}" is not a podman container — the kind extraMount is not applicable`,
-          }
-        }
-        unbound.push(node)
-      }
-    }
-    if (unbound.length > 0) {
-      return {
-        name: 'node-local-mount', status: 'warn',
-        detail: `${nodeList(unbound)} does not bind ${nodeLocalRoot()} at ${nodePath}`,
-        fix: 'This cluster predates the node-local extraMount, which kind can only '
-          + 'write at create time. Per-node caches (pnpm stores, image stores, '
-          + 'opencode working copies) live on node disk until `yaac cluster delete` '
-          + 'and `yaac cluster install` recreate it; worktrees work either way.',
-      }
-    }
-    return {
-      name: 'node-local-mount', status: 'pass',
-      detail: `${nodeLocalRoot()} bound at ${nodePath} on ${String(nodes.length)} node(s)`,
-    }
-  } catch (err) {
-    return {
-      name: 'node-local-mount', status: 'warn',
-      detail: `could not verify the node-local mount (${truncate(err)})`,
     }
   }
 }

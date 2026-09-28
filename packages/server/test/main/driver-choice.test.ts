@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { clientLocalPath, ensureClientLocalRoot, getDataDir, setDataDir } from '@yaac/shared/paths'
+import { clientLocalPath, setDataDir } from '@yaac/shared/paths'
 import { writeServerConfig } from '@yaac/shared/server-config'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 
@@ -31,12 +31,6 @@ async function record(kind: 'k8s' | 'containerless'): Promise<void> {
   await writeServerConfig({
     url: 'http://127.0.0.1:8787', token: 't', enabled: true, saved: [], driver: kind,
   })
-}
-
-/** Seed it the way an install that predates the move into server.json did. */
-async function recordLegacyFile(kind: string): Promise<void> {
-  await ensureClientLocalRoot()
-  await fs.writeFile(clientLocalPath('driver'), `${kind}\n`)
 }
 
 describe('resolveDriverKind', () => {
@@ -78,16 +72,6 @@ describe('assertHostServerAllowed', () => {
 
   it('refuses a host start on a k8s install, naming the converge command', async () => {
     await record('k8s')
-    await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
-  })
-
-  it('still refuses one recorded in the standalone file, at both its paths', async () => {
-    // Upgrading must not quietly re-enable the second writer this guard
-    // exists to stop — see docs/legacy-compat-shims.md.
-    await fs.writeFile(path.join(getDataDir(), 'driver'), 'k8s\n')
-    await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
-    await fs.rm(path.join(getDataDir(), 'driver'))
-    await recordLegacyFile('k8s')
     await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
   })
 

@@ -26,7 +26,6 @@
 
 export {
   ProxyClient,
-  configureLegacySecretSweep,
   drainPendingMamaRequests,
   proxyClient,
   type ProxyClientConfig,

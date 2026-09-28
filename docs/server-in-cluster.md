@@ -55,9 +55,8 @@ because a client reaches either server the same way
 Two things it refuses rather than doing. It will not deploy while a **host**
 server still holds the data dir: the documented upgrade is `npm update` then
 install, ordinarily run on a live install, and deploying into that is two
-writers on one database. The check is on the host because that is where it
-still works — inside the pod a pre-lease lock reads as same-host and is
-judged by a pid in the wrong namespace (docs/legacy-compat-shims.md). And it
+writers on one database, with the published-origin probe answered by the
+very server being replaced. And it
 does not deploy the server under `--adopt-cni` at all; the bring-your-own
 install mode is what will (docs/plans/cloud-k8s.md, docs/cluster-setup.md).
 
@@ -271,9 +270,6 @@ as before; a reader that does not asks whether the lease is younger than
 writing a database another server now owns — on hostPath storage there is
 no attach exclusivity, so the lease IS the single-writer guard PGlite gets.
 
-Locks written before the lease parse and behave as they always did; see
-docs/legacy-compat-shims.md.
-
 ## The uid everything runs as
 
 Under gVisor there is no user namespace, so a hostPath file is presented at
@@ -446,10 +442,7 @@ container, as root, because hostPath ignores `fsGroup` and kubelet has
 already created each one root-owned before the init container runs.
 
 `yaac cluster install` applies the pair after stopping the server that is
-there and moving the data dir into the tier layout, in that order: the
-old pod holds PGlite open by path, and renaming `db/` under a running
-server is a stranded database. An older data dir is moved once, by a
-rename per row (docs/legacy-compat-shims.md, `migrateDataDirLayout`).
+there.
 
 The proxy mounts nothing at all: what it needs it is handed as objects
 (docs/worktree-egress.md "What the proxy is told, and how"), so

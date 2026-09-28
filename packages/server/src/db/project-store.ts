@@ -1,10 +1,7 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
-import { getProjectsDir } from '@yaac/shared/project-paths'
 import {
   normalizeTool,
   type AgentMode,
@@ -62,10 +59,9 @@ export async function setProjectGitCredential(
 }
 
 /**
- * A project as this table holds it: its `project.json` identity plus the
- * create form's memory only the rows carry. Separate from `ProjectMeta`
- * because that type is also the shape of `project.json` on disk, and the
- * memory is not something the file has ever had.
+ * A project as this table holds it: its identity plus the create form's
+ * memory. Separate from `ProjectMeta` because that is the shape the wire
+ * carries for a project, and the memory is the server's own.
  */
 export interface ProjectRow extends ProjectMeta {
   lastTool?: AgentTool
@@ -104,7 +100,6 @@ function toProjectRow(
 }
 
 export async function getProjectRow(slug: string): Promise<ProjectRow | undefined> {
-  await adoptProjectDirs()
   const db = await getDb()
   const rows = await db.select().from(projects).where(eq(projects.slug, slug))
   if (rows[0] === undefined) return undefined
@@ -114,7 +109,6 @@ export async function getProjectRow(slug: string): Promise<ProjectRow | undefine
 }
 
 export async function listProjectRows(): Promise<ProjectRow[]> {
-  await adoptProjectDirs()
   const db = await getDb()
   const [rows, defaults] = await Promise.all([
     db.select().from(projects),
@@ -171,55 +165,4 @@ export async function deleteProjectRow(slug: string): Promise<void> {
     await tx.delete(projects).where(eq(projects.slug, slug))
   })
   notifyWorktreeListChanged()
-}
-
-/**
- * Turn a `project.json` with no row into a row on sight — the last code that
- * enumerates the projects directory, and the reason an existing install does
- * not lose its projects the first time it runs a yaac that reads rows.
- *
- * Deliberately NOT one-shot. A durable "already migrated" flag would make a
- * directory that appears *after* the first read invisible forever, and there
- * is no window in which that cannot happen — a second yaac writing into the
- * same data dir, a restored backup, a manual copy. Re-adoption cannot
- * resurrect a removed project either, because removal takes the directory
- * with it.
- *
- * It dies when the substrate stops sharing the server's filesystem, at which
- * point every project arrived through `recordProject`.
- */
-async function adoptProjectDirs(): Promise<void> {
-  let entries: string[]
-  try {
-    entries = await fs.readdir(getProjectsDir())
-  } catch {
-    return // no projects directory: nothing to adopt
-  }
-  const db = await getDb()
-  const known = new Set((await db.select({ slug: projects.slug }).from(projects))
-    .map((r) => r.slug))
-  for (const entry of entries) {
-    if (known.has(entry)) continue
-    let meta: ProjectMeta
-    try {
-      meta = JSON.parse(
-        await fs.readFile(path.join(getProjectsDir(), entry, 'project.json'), 'utf8'),
-      ) as ProjectMeta
-    } catch {
-      continue // not a project directory, or malformed — skip it
-    }
-    if (typeof meta.slug !== 'string' || typeof meta.remoteUrl !== 'string') continue
-    // The directory name IS the slug — every path yaac builds for a project
-    // comes from `projectDir(slug)`. A file claiming a different one does not
-    // describe this directory, and adopting it would both point a row at
-    // bytes that are elsewhere and, because the dedupe key above is the
-    // directory name, re-record it on every read — overwriting the real row's
-    // remote on each pass.
-    if (meta.slug !== entry) continue
-    await recordProject({
-      slug: meta.slug,
-      remoteUrl: meta.remoteUrl,
-      addedAt: meta.addedAt ?? new Date().toISOString(),
-    })
-  }
 }

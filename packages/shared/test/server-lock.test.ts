@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
-import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
   acquireLock,
@@ -24,6 +23,9 @@ import {
   parseServerLock,
   type ServerLock,
 } from '#server-lock-file'
+
+/** A lease written on this host, for locks that are not about the lease. */
+const LEASE = { instance: 'i', host: os.hostname(), heartbeatAt: Date.now() }
 
 describe('server lock', () => {
   let tmpDir: string
@@ -52,7 +54,7 @@ describe('server lock', () => {
     })
 
     it('returns the parsed lock when valid', async () => {
-      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
       await fs.writeFile(serverLockPath(), JSON.stringify(lock))
       expect(await readLock()).toEqual(lock)
     })
@@ -60,7 +62,7 @@ describe('server lock', () => {
 
   describe('writeLock', () => {
     it('writes the lock with mode 0600', async () => {
-      const lock: ServerLock = { pid: 1, port: 2, secret: 'shh', startedAt: 3, buildId: 'b' }
+      const lock: ServerLock = { pid: 1, port: 2, secret: 'shh', startedAt: 3, buildId: 'b', ...LEASE }
       await writeLock(lock)
       const stat = await fs.stat(serverLockPath())
       // Bottom 9 bits of mode are the rwxrwxrwx triplet.
@@ -69,48 +71,15 @@ describe('server lock', () => {
     })
 
     it('overwrites an existing lock atomically', async () => {
-      await writeLock({ pid: 1, port: 2, secret: 'a', startedAt: 3, buildId: 'b1' })
-      await writeLock({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2' })
-      expect(await readLock()).toEqual({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2' })
-    })
-  })
-
-  // LEGACY COMPAT (docs/legacy-compat-shims.md): a server from before the
-  // storage-tier split wrote its lock at the data dir root. `yaac server
-  // start` has to see one still running there, or it spawns a second
-  // writer onto the same database; `stop` has to be able to stop it.
-  describe('the pre-split lock at the data dir root', () => {
-    const legacy = (): string => path.join(tmpDir, '.server.lock')
-    const old: ServerLock = { pid: 7, port: 8, secret: 's', startedAt: 1, buildId: 'b' }
-
-    it('is read only when the current path has no lock', async () => {
-      await fs.writeFile(legacy(), JSON.stringify(old))
-      expect(await readLock()).toEqual(old)
-      const current = { ...old, pid: 9 }
-      await writeLock(current)
-      expect(await readLock()).toEqual(current)
-    })
-
-    it('is what removeLock unlinks when it is the lock that was found', async () => {
-      await fs.writeFile(legacy(), JSON.stringify(old))
-      await removeLock()
-      await expect(fs.access(legacy())).rejects.toThrow()
-      expect(await readLock()).toBeNull()
-    })
-
-    it('is left alone by a removal of the current lock', async () => {
-      await fs.writeFile(legacy(), JSON.stringify(old))
-      await writeLock({ ...old, pid: 9 })
-      await removeLock({ pid: 9 })
-      await expect(fs.access(serverLockPath())).rejects.toThrow()
-      // Still there — and readLock falls back to it again.
-      expect(await readLock()).toEqual(old)
+      await writeLock({ pid: 1, port: 2, secret: 'a', startedAt: 3, buildId: 'b1', ...LEASE })
+      await writeLock({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2', ...LEASE })
+      expect(await readLock()).toEqual({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2', ...LEASE })
     })
   })
 
   describe('removeLock', () => {
     it('unlinks the lock', async () => {
-      await writeLock({ pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' })
+      await writeLock({ pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE })
       await removeLock()
       expect(await readLock()).toBeNull()
     })
@@ -120,41 +89,29 @@ describe('server lock', () => {
     })
 
     it('unlinks when the expected holder matches', async () => {
-      const lock: ServerLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+      const lock: ServerLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
       await writeLock(lock)
-      await removeLock({ pid: 42 })
+      await removeLock(LEASE.instance)
       expect(await readLock()).toBeNull()
     })
 
     it('leaves the lock alone when the expected holder does not match', async () => {
-      const lock: ServerLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+      // Two servers of one install can genuinely both be pid 1 (each pod's
+      // pid namespace hands out the same low numbers), so the holder is the
+      // instance: a successor's lock survives its predecessor's late cleanup.
+      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
       await writeLock(lock)
-      await removeLock({ pid: 999 })
+      await removeLock('predecessor')
       expect(await readLock()).toEqual(lock)
     })
 
     it('is a no-op with an expected holder when the lock is missing', async () => {
-      await expect(removeLock({ pid: 42 })).resolves.toBeUndefined()
-    })
-
-    it('identifies the holder by instance, not pid, once both carry one', async () => {
-      // Two servers of one install can genuinely both be pid 1 (each pod's
-      // pid namespace hands out the same low numbers), so a successor's
-      // lock must survive its predecessor's late cleanup.
-      const successor: ServerLock = {
-        pid: 1, port: 2, secret: 's', startedAt: 9, buildId: 'b',
-        instance: 'successor', host: 'pod-b', heartbeatAt: Date.now(),
-      }
-      await writeLock(successor)
-      await removeLock({ pid: 1, instance: 'predecessor' })
-      expect(await readLock()).toEqual(successor)
-      await removeLock({ pid: 1, instance: 'successor' })
-      expect(await readLock()).toBeNull()
+      await expect(removeLock(LEASE.instance)).resolves.toBeUndefined()
     })
   })
 
   describe('isServerLock', () => {
-    const full: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+    const full: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
 
     it('accepts a complete lock', () => {
       expect(isServerLock(full)).toBe(true)
@@ -174,7 +131,7 @@ describe('server lock', () => {
 
   describe('parseServerLock', () => {
     it('parses a valid lock', () => {
-      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
       expect(parseServerLock(JSON.stringify(lock))).toEqual(lock)
     })
 
@@ -186,13 +143,13 @@ describe('server lock', () => {
 
   describe('isLockLive', () => {
     it('returns false for a dead pid', async () => {
-      const lock: ServerLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      const lock: ServerLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockLive(lock)).toBe(false)
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
       // Use the test runner pid (definitely alive) with an unbound port.
-      const lock: ServerLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      const lock: ServerLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockLive(lock)).toBe(false)
     })
 
@@ -209,7 +166,7 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        const lock: ServerLock = { pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b' }
+        const lock: ServerLock = { pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
         expect(await isLockLive(lock)).toBe(true)
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -228,34 +185,23 @@ describe('server lock', () => {
       expect(await isLockLive(fresh)).toBe(true)
       expect(await isLockLive({ ...fresh, heartbeatAt: Date.now() - LEASE_STALE_MS - 1 }))
         .toBe(false)
-      // A foreign lock with no lease at all is takeable rather than
-      // permanently held — there is nothing that could ever refresh it.
-      expect(await isLockLive({ ...fresh, heartbeatAt: undefined })).toBe(false)
     })
   })
 
   describe('isSameHostLock', () => {
-    it('reads a lock with no host as this host — which is what it was', () => {
-      // Locks written before the lease carry none, and they were always
-      // this machine's (see docs/legacy-compat-shims.md).
-      expect(isSameHostLock({ pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b' }))
-        .toBe(true)
-      expect(isSameHostLock({
-        pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', host: os.hostname(),
-      })).toBe(true)
-      expect(isSameHostLock({
-        pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', host: 'some-pod',
-      })).toBe(false)
+    it('is this host only when the lock names it', () => {
+      const lock: ServerLock = { pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+      expect(isSameHostLock(lock)).toBe(true)
+      expect(isSameHostLock({ ...lock, host: 'some-pod' })).toBe(false)
     })
   })
 
   describe('isLeaseFresh', () => {
     it('is the cross-host liveness signal, bounded by four missed renewals', () => {
-      const base: ServerLock = { pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      const base: ServerLock = { pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
       expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() })).toBe(true)
       expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() - LEASE_STALE_MS + 500 })).toBe(true)
       expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() - LEASE_STALE_MS - 1 })).toBe(false)
-      expect(isLeaseFresh(base)).toBe(false)
       expect(LEASE_STALE_MS / LEASE_HEARTBEAT_MS).toBe(4)
     })
   })
@@ -280,8 +226,8 @@ describe('server lock', () => {
         heartbeatAt: Date.now() - 10_000,
       }
       await writeLock(lock)
-      expect(await renewLease(lease.instance!)).toBe(true)
-      expect((await readLock())!.heartbeatAt).toBeGreaterThan(lock.heartbeatAt!)
+      expect(await renewLease(lease.instance)).toBe(true)
+      expect((await readLock())!.heartbeatAt).toBeGreaterThan(lock.heartbeatAt)
     })
 
     it('reports the loss rather than resurrecting us as the owner', async () => {
@@ -321,19 +267,19 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        await run({ pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b' })
+        await run({ pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b', ...LEASE })
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
     }
 
     it('returns false for a dead pid without probing', async () => {
-      const lock: ServerLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      const lock: ServerLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockReady(lock)).toBe(false)
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
-      const lock: ServerLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      const lock: ServerLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockReady(lock)).toBe(false)
     })
 
@@ -365,6 +311,7 @@ describe('server lock', () => {
       secret: 's',
       startedAt: Date.now(),
       buildId: 'b',
+      ...newLeaseFields(),
       ...overrides,
     })
 

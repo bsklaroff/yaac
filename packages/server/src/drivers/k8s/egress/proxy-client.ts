@@ -7,7 +7,6 @@ import {
   ensureProxyResources,
   resetProxyClusterIpCache,
   resolveProxyImageTag,
-  sweepLegacyProxySecretsFile,
 } from '#drivers/k8s/cluster'
 import {
   PROXY_APP_NAME,
@@ -102,14 +101,6 @@ export class ProxyClient {
    * the first ensureRunning() still performs the real check.
    */
   private deployVerifiedCurrent = false
-  /**
-   * The deployed proxy answers only the pre-envelope spawn queue — set by a
-   * 404 from `/cmd/pending` and cleared the moment it answers again, so
-   * results always go back on the queue they were drained from. Ordinary
-   * between a server upgrade and the worktree launch that rolls the proxy
-   * (docs/legacy-compat-shims.md).
-   */
-  private legacySpawnQueue = false
   private authSecret: string | null = null
   // In-flight ensureRunning() promise used as a mutex so concurrent
   // callers (e.g. two parallel worktree creates) don't race into two
@@ -189,15 +180,6 @@ export class ProxyClient {
     const res = await tunnelFetch(`${await this.controlBase()}/cmd/pending`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
-    // A proxy predating the command envelope serves only the spawn queue.
-    // The server is upgraded before the proxy is (it rolls on the next
-    // worktree launch), so this is the ordinary state of an install between
-    // the two (docs/legacy-compat-shims.md).
-    if (res.status === 404) {
-      this.legacySpawnQueue = true
-      return this.fetchLegacyPendingSpawns()
-    }
-    this.legacySpawnQueue = false
     if (!res.ok) {
       const text = await res.text()
       throw new Error(`Failed to fetch pending yaac-mama requests: ${res.status} ${text}`)
@@ -208,63 +190,18 @@ export class ProxyClient {
   /** Complete drained requests — the proxy answers the waiting pods. */
   async postMamaResults(results: MamaResultWire[]): Promise<void> {
     if (results.length === 0) return
-    // Answered on the queue they were drained from: the two are never mixed,
-    // since a drain sets this and the post follows it in the same pass.
-    const legacy = this.legacySpawnQueue
-    const path = legacy ? '/spawn/results' : '/cmd/results'
-    const body = legacy
-      ? results.map((r) => ({
-        requestId: r.requestId,
-        ok: r.ok,
-        // The legacy queue answers a spawn with the new worktree's id, which
-        // is exactly what `create` renders as its output.
-        worktreeId: r.output,
-        error: r.error,
-      }))
-      : results
-    const res = await tunnelFetch(`${await this.controlBase()}${path}`, {
+    const res = await tunnelFetch(`${await this.controlBase()}/cmd/results`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.requireAuthSecret()}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(results),
     })
     if (!res.ok) {
       const text = await res.text()
       throw new Error(`Failed to post yaac-mama results: ${res.status} ${text}`)
     }
-  }
-
-  /**
-   * Drain a pre-envelope proxy's spawn queue, read as the one command it
-   * could express (docs/legacy-compat-shims.md).
-   */
-  private async fetchLegacyPendingSpawns(): Promise<PendingMamaRequest[]> {
-    const res = await tunnelFetch(`${await this.controlBase()}/spawn/pending`, {
-      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Failed to fetch pending spawns: ${res.status} ${text}`)
-    }
-    const legacy = await res.json() as Array<{
-      requestId: string
-      worktreeId: string
-      prompt?: string
-      tool?: string
-      model?: string
-    }>
-    return legacy.map((s) => ({
-      requestId: s.requestId,
-      worktreeId: s.worktreeId,
-      command: 'create',
-      args: {
-        ...(s.tool !== undefined ? { tool: s.tool } : {}),
-        ...(s.model !== undefined ? { model: s.model } : {}),
-      },
-      body: s.prompt ?? '',
-    }))
   }
 
   /**
@@ -348,15 +285,6 @@ export class ProxyClient {
     // own-bundle tools point CURL_CA_BUNDLE & friends at. Cheap no-op when
     // both stored values already match.
     await ensureCaConfigMap()
-
-    // The rollout just completed, so the old proxy — the last reader of
-    // the file an older one resolved secret values from — is gone. The
-    // other condition, that nothing still needs to be read OUT of it, is
-    // the composition root's to answer (docs/legacy-compat-shims.md); an
-    // entrypoint that composed no answer sweeps nothing.
-    if (legacySecretImportPending && !await legacySecretImportPending()) {
-      await sweepLegacyProxySecretsFile()
-    }
   }
 
   /**
@@ -455,17 +383,6 @@ export class ProxyClient {
     // ClusterIP, so the per-process cache must not vouch for the old one.
     resetProxyClusterIpCache()
   }
-}
-
-/**
- * Whether the legacy env import still has work to do — handed down by the
- * composition root, because a config too broken to parse is skipped by the
- * importer and only the layer that owns the overlays can say so.
- */
-let legacySecretImportPending: (() => Promise<boolean>) | undefined
-
-export function configureLegacySecretSweep(pending: () => Promise<boolean>): void {
-  legacySecretImportPending = pending
 }
 
 async function readExistingProxyAuthSecret(): Promise<string | null> {

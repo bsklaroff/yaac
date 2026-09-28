@@ -5,6 +5,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDataDir, getProjectsDir, projectConfigDir } from '@yaac/shared/project-paths'
 import { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from '#domain/projects'
 import { PROJECT_DOCKERFILE, USER_DOCKERFILE } from '#lib/build-dirs'
+import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 const LAYERED = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
@@ -28,7 +29,7 @@ beforeEach(async () => {
     remoteUrl: 'https://example.com/foo',
     addedAt: '2026-01-01T00:00:00.000Z',
   }
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
+  await recordProject(meta)
 })
 
 afterEach(async () => { await cleanupTempDir(tmpDir) })
