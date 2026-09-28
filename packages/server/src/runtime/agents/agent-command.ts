@@ -95,10 +95,9 @@ export interface AgentCmdSpec {
    * and the worktree's row is what remembers the answer across a restart.
    */
   permissionMode: PermissionMode
-  /** codex only — the repository root to launch it trusting
-   *  (`codexLaunchConfig`): the parent of `WorkspacePaths.repoGitDir`. The
-   *  tui driver always passes it. */
-  trustedRoot?: string
+  /** codex only — the workspace to run it in and the repository to launch
+   *  it trusting (`codexLaunchConfig`). The tui driver always passes it. */
+  paths?: Pick<WorkspacePaths, 'workspaceDir' | 'repoGitDir'>
 }
 
 /**
@@ -264,15 +263,23 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // the same reason `envJsonAssignment` is.
     const config = [
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
-      ...codexLaunchConfig(spec.trustedRoot),
+      ...codexLaunchConfig(spec.paths?.repoGitDir),
     ]
     // A resume records its own conversation on the pane before codex starts:
     // codex fires no SessionStart for a resumed conversation until its next
     // turn, and without a sighting this life the conversation reads inactive,
     // so a second restart before any prompt would not bring it back.
+    //
+    // `-C` names the workspace outright rather than leaving codex to take the
+    // pane's cwd: a resume whose cwd differs from the one the conversation
+    // recorded stops on a "session or current directory?" screen, which an
+    // explicit `-C` skips — and the workspace is the answer either way, even
+    // on a restart under the other substrate, where the recorded one does not
+    // exist.
     return [
       resume ? `yaac-agent-links "$CODEX_HOME" codex ${worktreeId};` : '',
       'codex',
+      spec.paths ? `-C ${spec.paths.workspaceDir}` : '',
       ...config.map((c) => `-c ${doubleQuoted(c)}`),
       '--dangerously-bypass-hook-trust',
       posture,

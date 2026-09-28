@@ -22,7 +22,7 @@ import * as worktreeCreate from '@yaac/server/domain/worktrees/create'
 import { resolveRestartTarget, restartWorktree } from '@yaac/server/domain/worktrees/restart'
 import { recordWorktreeCreated } from '@yaac/server/db/worktree-store'
 import { createWorktreeGroup } from '@yaac/server/db/group-store'
-import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
+import { recordAgentSessions, setActiveAgentSessions } from '@yaac/server/db/agent-session-store'
 import { closeDb } from '@yaac/server/db/client'
 import { worktreeRestart } from '#commands/worktree-restart'
 import { clearAllProvisioningForTests } from '@yaac/server/domain/worktrees/provisioning'
@@ -246,6 +246,28 @@ describe('restartWorktree', () => {
     }))
   })
 
+  it('hands create every active conversation in window order, codex\'s pin included', async () => {
+    // Dropping the pin here would shift conv-2 into the `yaac:codex` primary
+    // window; create is what knows never to `codex resume` it.
+    listSpy.mockResolvedValueOnce([])
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'cafe1234' })
+    const sessions = [
+      { tool: 'codex' as const, agentSessionId: 'cafe1234' },
+      { tool: 'claude' as const, agentSessionId: 'conv-2' },
+    ]
+    await recordAgentSessions('demo', 'cafe1234', sessions)
+    await setActiveAgentSessions('demo', 'cafe1234', sessions)
+
+    await restartWorktree('cafe1234')
+
+    expect(createSpy).toHaveBeenCalledWith('demo', expect.objectContaining({
+      tool: 'codex',
+      resumeAgentSessions: [
+        expect.objectContaining({ tool: 'codex', agentSessionId: 'cafe1234' }),
+        expect.objectContaining({ tool: 'claude', agentSessionId: 'conv-2' }),
+      ],
+    }))
+  })
 })
 
 describe('worktreeRestart (CLI shim)', () => {

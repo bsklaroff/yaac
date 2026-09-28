@@ -61,16 +61,22 @@ describe('buildAgentCmd', () => {
       )
     })
 
-    it('hands codex its session hook, trusts the repository, and bypasses hook trust', () => {
+    it('runs codex in the workspace, hands it its session hook, trusts the repository, and bypasses hook trust', () => {
       // What codex receives, after the launch shell has had its turn: the
       // command is run with `codex` swapped for a printer of its argv.
       const cmd = buildAgentCmd({
-        tool: 'codex', worktreeId: 'sess-1', permissionMode: 'accept-edits', trustedRoot: '/data/my repo',
+        tool: 'codex',
+        worktreeId: 'sess-1',
+        permissionMode: 'accept-edits',
+        paths: { workspaceDir: '/data/wt', repoGitDir: '/data/repo/.git' },
       })
       const argv = execFileSync('sh', ['-c', cmd.replace(/^codex /, `printf '%s\\n' `)], {
         env: { ...process.env, CODEX_HOME: '/must/not/expand' },
       }).toString().trimEnd().split('\n')
       expect(argv).toEqual([
+        // Named outright, so a resume never stops to ask whether to run in
+        // the conversation's recorded directory or the pane's.
+        '-C', '/data/wt',
         // The title items are how a `/model` reaches yaac: codex rewrites its
         // title's last segment the moment one lands.
         '-c', 'tui.terminal_title=["activity","project-name","model"]',
@@ -79,7 +85,7 @@ describe('buildAgentCmd', () => {
         // The root codex keys folder trust on, and the bypass that runs every
         // hook untrusted: between them codex opens no startup screen, which
         // would swallow the prompt pasted into it.
-        '-c', 'projects={"/data/my repo"={trust_level="trusted"}}',
+        '-c', 'projects={"/data/repo"={trust_level="trusted"}}',
         '--dangerously-bypass-hook-trust',
       ])
     })

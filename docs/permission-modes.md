@@ -295,10 +295,11 @@ checkout).
 A `tui` agent gets its posture as a launch flag, and its own UI does the
 asking.
 
-codex launches trusting the repository root, with hook trust bypassed
-(`codexLaunchConfig`, `--dangerously-bypass-hook-trust`), so it opens no
-startup screen: no "Trust this folder?" and no "Hooks need review", either of
-which would swallow a `--prompt` pasted into it. That is a choice with a
+codex launches in the workspace (`-C`), trusting the repository root, with
+hook trust bypassed (`codexLaunchConfig`, `--dangerously-bypass-hook-trust`),
+so it opens no startup screen: no "Trust this folder?", no "Hooks need
+review", and on a resume no "session or current directory?", any of which
+would swallow a `--prompt` pasted into it. That is a choice with a
 known cost. A trusted folder loads the repository's own `.codex/`:
 - its `config.toml`, so its `sandbox_mode` and `approval_policy` win over a
   posture that sets no flag;
