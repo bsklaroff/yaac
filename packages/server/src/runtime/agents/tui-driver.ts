@@ -32,7 +32,6 @@
  * session-starts log to answer, and the registry joins the two.
  */
 
-import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
 import { serverLog } from '#log'
@@ -396,7 +395,7 @@ export const tuiDriver: AgentDriver = {
       worktreeId: spec.agentSessionId,
       resume: spec.resume,
       permissionMode: spec.permissionMode,
-      trustedRoot: path.dirname(spec.paths.repoGitDir),
+      paths: spec.paths,
       ...(spec.piProvider !== undefined ? { piProvider: spec.piProvider } : {}),
       ...(spec.model !== undefined ? { model: spec.model } : {}),
     })

@@ -489,21 +489,18 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   // the worktree row — the two must not diverge, or the DB would name a
   // conversation the agent never opened.
   //
-  // Only a *resume* passes `--resume`: a restart with nothing recorded falls
-  // back to the worktree-id pin, which is the pre-hook worktree's path —
-  // except for codex, which mints its own ids and was never launched with the
-  // pin: `codex resume <worktree id>` finds no conversation and kills the
-  // window, so a codex worktree with none recorded (never prompted) starts
-  // anew.
-  const resumesConversation = (options.resumeAgentSessions ?? []).length > 0
-    || (options.resume === true && tool !== 'codex')
+  // Only a *resume* passes `--resume`, and never for codex's worktree-id pin:
+  // codex mints its own ids and never runs under the pin, so
+  // `codex resume <worktree id>` finds no conversation and kills the window.
+  // A codex conversation still on the pin (never prompted, or not yet seen by
+  // a reconcile) starts anew instead.
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => ({
     tool: a.tool,
     cmd: driver.launchCmd({
       tool: a.tool,
       agentSessionId: a.agentSessionId,
-      resume: resumesConversation,
+      resume: options.resume === true && (a.tool !== 'codex' || a.agentSessionId !== worktreeId),
       // The window a conversation lands in — the primary keeps the tool's own
       // name, extras get `<tool>-2`, … . Under acp it doubles as the acpd
       // socket's name, which is why the driver needs it and the TUI one

@@ -1032,6 +1032,30 @@ describe('createWorktree', () => {
     expect(respawn).toMatch(/'codex .* --yolo'/)
   })
 
+  it('resumes every restored conversation in the workspace, codex\'s worktree-id pin anew', async () => {
+    await createWorktree('demo', {
+      tool: 'codex',
+      worktreeId: 'abcd1234',
+      resume: true,
+      resumeAgentSessions: [
+        { agentSessionId: 'abcd1234', tool: 'codex' },
+        { agentSessionId: 'conv-2', tool: 'claude' },
+      ],
+    })
+
+    const windowsCmd = mockPodExec.mock.calls
+      .map((args) => args[1])
+      .find((c) => c.includes('respawn-window'))
+    // codex never runs under the pin, so `codex resume abcd1234` would find
+    // nothing and kill the window. `-C` is what keeps a real resume from
+    // asking which directory to run in.
+    expect(windowsCmd).toMatch(/respawn-window -k -t yaac:codex 'codex -C \/workspace [^']* --yolo'/)
+    expect(windowsCmd).not.toContain('resume abcd1234')
+    // A new window starts in the exec's cwd unless told otherwise, and claude
+    // looks a conversation up under the directory it runs in.
+    expect(windowsCmd).toMatch(/new-window -d -t yaac -n claude-2 -c \/workspace '[^']* --resume conv-2'/)
+  })
+
   it('threads a model override into the claude agent respawn command', async () => {
     await createWorktree('demo', { tool: 'claude', worktreeId: 'abcd1234', model: 'claude-opus-4-8' })
 

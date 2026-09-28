@@ -70,6 +70,17 @@ describe('buildWindowsExec', () => {
       `${TMUX} respawn-window -k -t yaac:codex 'codex --yolo'`,
     )
   })
+
+  it('opens every agent past the first in its own window, in the workspace', () => {
+    const cmd = buildWindowsExec([], 'claude', [
+      { tool: 'claude', cmd: 'claude --resume a' },
+      { tool: 'codex', cmd: 'codex resume b' },
+    ], PATHS)
+    expect(cmd).toBe(
+      `${TMUX} respawn-window -k -t yaac:claude 'claude --resume a'`
+      + ` && ${TMUX} new-window -d -t yaac -n codex-2 -c ${PATHS.workspaceDir} 'codex resume b'`,
+    )
+  })
 })
 
 // The pod-side half of session setup lives in the yaac-worktree-init script

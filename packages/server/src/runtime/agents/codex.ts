@@ -79,9 +79,9 @@ export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 const CODEX_SESSION_HOOK = 'yaac-agent-links "$CODEX_HOME" codex'
 
 /**
- * The `-c` settings that give codex its session hook and trust `trustedRoot`,
- * the repository root codex keys folder trust on — the same on every
- * substrate, since nothing here needs an image to carry it.
+ * The `-c` settings that give codex its session hook and trust the repository
+ * root codex keys folder trust on (the parent of `repoGitDir`) — the same on
+ * every substrate, since nothing here needs an image to carry it.
  *
  * With the launch's `--dangerously-bypass-hook-trust` (`buildAgentCmd`),
  * codex opens no startup screen at all: no "Trust this folder?" and no "Hooks
@@ -91,10 +91,12 @@ const CODEX_SESSION_HOOK = 'yaac-agent-links "$CODEX_HOME" codex'
  * the posture yaac launched in and run code at startup, and yaac accepts that
  * (docs/permission-modes.md).
  */
-export function codexLaunchConfig(trustedRoot?: string): string[] {
+export function codexLaunchConfig(repoGitDir?: string): string[] {
   return [
     `hooks.SessionStart=[{matcher="*",hooks=[{type="command",command=${JSON.stringify(CODEX_SESSION_HOOK)},timeout=10}]}]`,
-    ...(trustedRoot !== undefined ? [`projects={${JSON.stringify(trustedRoot)}={trust_level="trusted"}}`] : []),
+    ...(repoGitDir !== undefined
+      ? [`projects={${JSON.stringify(path.dirname(repoGitDir))}={trust_level="trusted"}}`]
+      : []),
   ]
 }
 

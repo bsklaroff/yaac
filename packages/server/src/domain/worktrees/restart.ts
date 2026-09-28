@@ -142,10 +142,12 @@ export async function restartWorktree(
   }
 
   try {
-    if (jobName) onProgress(`Stopping session job ${jobName}...`)
-    // The conversations to resume are read from the rows below, so they must
-    // hold what the agents last did before the teardown freezes them.
-    if (jobName) await reconcileBeforeTeardown(worktreeId)
+    if (jobName) {
+      onProgress(`Stopping session job ${jobName}...`)
+      // The conversations to resume are read from the rows below, so they
+      // must hold what the agents last did before the teardown freezes them.
+      await reconcileBeforeTeardown(worktreeId)
+    }
     // Always, not just when there was a Job: a terminating mark left by an
     // earlier teardown would render the fresh worktree as "stopping…".
     await teardownForRestart({ jobName, projectSlug, workspaceId: worktreeId })
@@ -153,15 +155,8 @@ export async function restartWorktree(
     // Each conversation resumes under its OWN tool: a worktree can hold a
     // codex conversation next to claude ones, and launching the wrong binary
     // against an id it does not know kills the pane.
-    //
-    // Not codex's worktree-id pin: create records it active with the launch,
-    // but codex mints its own ids and never runs under it, so a restart before
-    // any reconcile has seen the panes would `codex resume` an id codex does
-    // not have, and the window would die.
-    const active = (await listActiveAgentSessions(projectSlug, worktreeId).catch(() => []))
-      .filter((l) => l.tool !== 'codex' || l.agentSessionId !== worktreeId)
-    const resume = active.map((l) => ({ agentSessionId: l.agentSessionId, tool: l.tool }))
-    if (resume.length > 1) onProgress(`Restoring ${resume.length} agent sessions...`)
+    const active = await listActiveAgentSessions(projectSlug, worktreeId).catch(() => [])
+    if (active.length > 1) onProgress(`Restoring ${active.length} agent sessions...`)
 
     // A worktree comes back the way it went down. Mode is per-conversation in
     // the schema but per-pod at launch (the driver is chosen once, from the pod
@@ -185,7 +180,7 @@ export async function restartWorktree(
       worktreeId,
       tool,
       mode: active[0]?.mode ?? 'tui',
-      resumeAgentSessions: resume,
+      resumeAgentSessions: active,
       ...(recorded !== undefined ? { permissionMode: recorded.permissionMode } : {}),
       onProgress,
     })

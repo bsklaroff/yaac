@@ -126,8 +126,15 @@ export function buildWindowsExec(
   cmds.push(`${TMUX} respawn-window -k -t yaac:${tool} '${primary?.cmd ?? ''}'`)
   extra.forEach((spec, i) => {
     // -d so the extra agents don't steal the active window from the primary,
-    // which is what the user attaches to.
-    cmds.push(`${TMUX} new-window -d -t yaac -n ${agentWindowName(spec.tool, i + 1)} '${spec.cmd}'`)
+    // which is what the user attaches to. -c because a new window otherwise
+    // starts in the cwd of the client that asked for it — this exec's, `/` in
+    // a pod — where the primary inherits the session's: an agent resumed
+    // from the wrong directory looks its conversation up under the wrong
+    // project.
+    cmds.push(
+      `${TMUX} new-window -d -t yaac -n ${agentWindowName(spec.tool, i + 1)} `
+      + `-c ${paths.workspaceDir} '${spec.cmd}'`,
+    )
   })
   return cmds.join(' && ')
 }
