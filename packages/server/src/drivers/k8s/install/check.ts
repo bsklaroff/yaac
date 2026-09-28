@@ -70,7 +70,8 @@ const PROBE_LOCAL_TAG = 'yaac-cluster-probe:busybox-1.36'
 const PROBE_POD_NAME = 'yaac-cluster-check'
 
 const KIND_SETUP_FIX = [
-  'Create a kind cluster wired for yaac by running:',
+  'Create a kind cluster wired for yaac — or restart one a host reboot',
+  'left stopped — by running:',
   '  yaac cluster install',
   'It provisions the podman machine (macOS), the kind cluster (home and',
   'node-local extraMounts), Calico, the kind node fixups, every built-in',

@@ -835,6 +835,63 @@ describe('runClusterInstall', () => {
     expect(deps.check).toHaveBeenCalledOnce()
   })
 
+  it('starts a node a host reboot left stopped, and waits for its API server', async () => {
+    vi.useFakeTimers()
+    try {
+      // kind nodes carry no restart policy, so after a reboot the node is
+      // listed but Exited, and its apiserver answers only once it is back.
+      let readyzAsked = 0
+      const deps = makeDeps({
+        run: vi.fn((file: string, args: string[]) => {
+          if (file === 'podman' && args[0] === 'inspect') {
+            return Promise.resolve({ stdout: 'false\n', stderr: '' })
+          }
+          if (file === 'kubectl' && args.includes('/readyz') && ++readyzAsked < 3) {
+            return Promise.reject(new Error('connection refused'))
+          }
+          return happyRun(file, args)
+        }) as RunMock,
+      })
+      const ok = runClusterInstall({}, deps)
+      await vi.advanceTimersByTimeAsync(10_000)
+      await expect(ok).resolves.toBe(true)
+
+      const calls = deps.run.mock.calls.map(([f, a]) => `${f} ${a.join(' ')}`)
+      const started = calls.indexOf('podman start yaac-control-plane')
+      expect(started).toBeGreaterThanOrEqual(0)
+      // Started before anything execs into it, and polled until it answers.
+      expect(calls.findIndex((c) => c.startsWith('podman exec'))).toBeGreaterThan(started)
+      expect(readyzAsked).toBe(3)
+      expect(logged(deps)).toMatch(/Starting the stopped kind node yaac-control-plane/)
+
+      // A running node is left alone.
+      const running = makeDeps()
+      await runClusterInstall({}, running)
+      expect(running.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'start')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refuses when the API server never comes back', async () => {
+    vi.useFakeTimers()
+    try {
+      const deps = makeDeps({
+        run: vi.fn((file: string, args: string[]) => (
+          file === 'kubectl' && args.includes('/readyz')
+            ? Promise.reject(new Error('connection refused'))
+            : happyRun(file, args)
+        )) as RunMock,
+      })
+      const refused = expect(runClusterInstall({}, deps)).rejects.toThrow(ClusterInstallError)
+      await vi.advanceTimersByTimeAsync(300_000)
+      await refused
+      expect(deps.ensurePriorityClasses).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('notes that --nodes cannot change an existing cluster, and converges anyway', async () => {
     // A node count is fixed when the cluster is created, and re-running the
     // command with the flags you first typed has to stay ordinary — so this

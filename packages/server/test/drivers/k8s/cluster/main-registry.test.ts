@@ -379,10 +379,26 @@ describe('ensureMainRegistry', () => {
     await expect(ensureMainRegistry()).rejects.toThrow(/did not complete \(phase Failed\)/)
   })
 
-  it('fails when the registry never becomes reachable from the server', async () => {
-    mockReachable.mockResolvedValue(false)
-    await expect(ensureMainRegistry()).rejects.toThrow(/did not become reachable/)
-  }, 30_000)
+  it('waits out a restarted node\'s datapath, and fails when the registry never answers', async () => {
+    vi.useFakeTimers()
+    try {
+      // Right after a node restart the rollout reads done from its stale
+      // status while the pod's sandbox still waits on calico-node: the
+      // dial answers only tens of seconds later.
+      const answersAt = Date.now() + 45_000
+      mockReachable.mockImplementation(() => Promise.resolve(Date.now() >= answersAt))
+      const recovered = ensureMainRegistry()
+      await vi.advanceTimersByTimeAsync(46_000)
+      await expect(recovered).resolves.toBeUndefined()
+
+      mockReachable.mockResolvedValue(false)
+      const never = expect(ensureMainRegistry()).rejects.toThrow(/did not become reachable/)
+      await vi.advanceTimersByTimeAsync(300_000)
+      await never
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('mainRegistryExec', () => {

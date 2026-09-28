@@ -444,6 +444,10 @@ const ROLLOUT_TIMEOUT_MS = 300_000
  *  the one host setting that makes it hang for the whole timeout. */
 const ROLLOUT_STALL_MS = 60_000
 
+/** How long a rolled-out registry may take to answer a dial from here —
+ *  bounded by a restarted node's pod datapath coming back. */
+const REACHABLE_TIMEOUT_MS = 90_000
+
 async function waitForRegistryRollout(timeoutMs: number): Promise<void> {
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${REGISTRY_SERVICE_NAME}`, '-n', REGISTRY_NAMESPACE,
@@ -597,11 +601,16 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
 
   // A rolled-out Deployment is not the same as a reachable one from HERE:
   // the port-forward is this process's only route to it, and a stale child
-  // from a previous incarnation would still be cached.
+  // from a previous incarnation would still be cached. Nor is it a fresh
+  // one: right after a node restart the rollout status is the one recorded
+  // before it, so the pod can read Available for the tens of seconds its
+  // sandbox waits on calico-node — which is why this waits on the dial
+  // itself, for as long as a node takes to come back.
   invalidateRegistryEndpoint()
-  for (let i = 0; i < 20; i++) {
+  const deadline = Date.now() + REACHABLE_TIMEOUT_MS
+  while (Date.now() < deadline) {
     if (await registryReachable()) return
-    await new Promise((r) => setTimeout(r, 250))
+    await new Promise((r) => setTimeout(r, 1_000))
   }
   throw new Error(`In-cluster registry ${registryHost()} did not become reachable from the server`)
 }

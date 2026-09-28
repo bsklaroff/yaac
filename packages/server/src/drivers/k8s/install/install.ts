@@ -444,9 +444,11 @@ export async function runClusterInstall(
     // address may have moved under it.
     resetClusterCidrCache()
     for (const node of await kindNodes(deps, cluster)) {
+      await startStoppedKindNode(deps, node)
       await applyKindNodeFixups(deps, node)
       await noteNodeLocalMount(deps, node)
     }
+    await waitForApiServer(deps, cluster)
   }
   // Once there is a cluster to ask, and before any layer lands on it: an
   // operator that is not there costs the diagnosis and nothing else.
@@ -761,6 +763,47 @@ async function kindNodes(deps: ClusterInstallDeps, cluster: string): Promise<str
     return stdout.trim().split('\n').map((l) => l.trim()).filter(Boolean)
   } catch {
     return []
+  }
+}
+
+/**
+ * Start a kind node container that is not running. kind creates its nodes
+ * with no restart policy, so a host reboot leaves every node Exited — and
+ * `kind get nodes` still lists them, which sends install down the converge
+ * path, whose first step execs into the node.
+ */
+async function startStoppedKindNode(deps: ClusterInstallDeps, node: string): Promise<void> {
+  const { stdout } = await deps.run('podman', ['inspect', '--format', '{{.State.Running}}', node])
+  if (stdout.trim() !== 'false') return
+  deps.log(`Starting the stopped kind node ${node}...`)
+  await deps.run('podman', ['start', node])
+}
+
+const API_SERVER_TIMEOUT_MS = 120_000
+
+/**
+ * Wait until the cluster's API server answers /readyz. Free on a running
+ * cluster; after a node start (or one the user just ran) the apiserver
+ * static pod takes several seconds to come up, and every layer below it
+ * is an apply against it.
+ */
+async function waitForApiServer(deps: ClusterInstallDeps, cluster: string): Promise<void> {
+  const context = `kind-${cluster}`
+  const deadline = Date.now() + API_SERVER_TIMEOUT_MS
+  for (;;) {
+    try {
+      await deps.run('kubectl', ['--context', context, 'get', '--raw', '/readyz'], { timeout: 10_000 })
+      return
+    } catch (err) {
+      if (Date.now() >= deadline) {
+        throw new ClusterInstallError(
+          `The API server of kind cluster "${cluster}" did not become ready `
+          + `(${err instanceof Error ? err.message : String(err)}). `
+          + `Inspect with \`podman logs ${cluster}-control-plane\`.`,
+        )
+      }
+    }
+    await new Promise((r) => setTimeout(r, 2_000))
   }
 }
 

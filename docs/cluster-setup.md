@@ -547,6 +547,14 @@ any node that appears. The DaemonSet itself is re-applied by install too,
 which is how an existing cluster picks up a runsc version bump on a yaac
 upgrade.
 
+A host reboot leaves the kind node containers themselves stopped — kind
+creates them with no restart policy — which `yaac cluster check` reports
+as an unreachable API server. `yaac cluster install` is the recovery: it
+starts every stopped node before the fixups, waits for the API server to
+answer, and then converges as usual. Until calico-node is back the pods'
+recorded status is the one from before the reboot, so the registry step
+waits on an actual dial rather than on its rollout reading done.
+
 ## What a worktree reserves
 
 Each worktree container requests **250m cpu, 1Gi memory, 2Gi
