@@ -18,7 +18,6 @@ The server-backed webapp and its plumbing.
   CORS guards (DNS-rebind safe); sessions persist across server restarts
 - ✅ Events WebSocket (live state snapshot, no polling)
 - ✅ PTY bridge + embedded xterm.js terminal (attach to a session's tmux)
-- ✅ `yaac open` — one command: starts the server, opens the browser authed
 - ✅ Design system: Base UI primitives + design tokens (ported from
   code-design) + centralized icons, all centralized
 - ✅ Projects rail + project-scoped session sidebar

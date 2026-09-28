@@ -144,7 +144,7 @@ type ServeFetch = Parameters<typeof serve>[0]['fetch']
  * Bind the server's HTTP server on `env.bindAddr` (loopback unless the
  * deployment says otherwise), preferring `startPort` and auto-incrementing
  * past any in-use port to the next free one. The actual bound port is
- * returned (and recorded in the lock file), so `yaac open` and the
+ * returned (and recorded in the lock file), so clients and the
  * dev-server proxy follow the server wherever it lands. `startPort` 0 asks
  * the OS for an ephemeral port.
  */
@@ -599,7 +599,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   serverLog(`[server] ${torPrefix}listening on ${env.bindAddr}:${port} lock=${serverLockPath()}`)
   // Start banner for the webapp. A loopback-only / nested server needs no
   // credential, so print a bare URL; otherwise carry a one-time exchange
-  // token (single-use, time-bounded; `yaac open` mints fresh ones).
+  // token (single-use, time-bounded; the desktop app mints fresh ones).
   const openQuery = isCredentialOptional() ? '' : `?token=${tokens.mintExchangeToken().token}`
   serverLog(`[server] open http://127.0.0.1:${port}/${openQuery}`)
 

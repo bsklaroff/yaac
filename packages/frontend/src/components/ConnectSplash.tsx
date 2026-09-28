@@ -4,9 +4,9 @@ import { Field } from '@base-ui/react/field'
 import { postWebSession } from '#lib/webSession'
 
 /**
- * First-open / expired-worktree screen. `yaac open` prints a one-time
- * URL (so does the server start banner — `yaac server logs`); the user
- * can open it directly or paste a token here. One-time and durable
+ * First-open / expired-worktree screen. The desktop app lands with a
+ * one-time `?token=` URL and never sees this; a browser pastes a token
+ * here. One-time and durable
  * tokens (`yaac auth token create`) both work — the exchange is the
  * same. Built on Base UI's Form + Field — the server "invalid token"
  * result surfaces through the Form `errors` prop into `Field.Error`.
@@ -25,7 +25,7 @@ export function ConnectSplash({ onAuthed }: { onAuthed: () => void }): JSX.Eleme
     try {
       const ok = await postWebSession(token)
       if (ok) onAuthed()
-      else setErrors({ token: 'Invalid or expired token. Run `yaac open` for a fresh URL.' })
+      else setErrors({ token: 'Invalid or expired token.' })
     } catch {
       setErrors({ token: 'Could not reach the server.' })
     } finally {
@@ -38,9 +38,7 @@ export function ConnectSplash({ onAuthed }: { onAuthed: () => void }): JSX.Eleme
       <div className="w-full max-w-md px-8">
         <h1 className="text-2xl font-semibold tracking-tight text-text">Connect to yaac</h1>
         <p className="mt-3 text-sm text-text-dim">
-          Open the URL printed by <code className="text-text">yaac open</code>, or paste a
-          token (one-time, or from <code className="text-text">yaac auth token create</code>)
-          below.
+          Paste a token from <code className="text-text">yaac auth token create</code> below.
         </p>
         <Form
           errors={errors}

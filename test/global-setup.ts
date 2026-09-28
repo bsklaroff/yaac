@@ -36,7 +36,7 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 async function buildCliBundle(): Promise<void> {
   // build:assets copies packages/frontend/dist rather than building it, so a
   // tree that has never built the SPA needs that first. Only the frontend is
-  // conditional — it is the one slow step, and nothing but `yaac open` reads it.
+  // conditional — it is the one slow step, and no suite reads it.
   if (!await fileExists(path.join(REPO_ROOT, 'packages', 'frontend', 'dist', 'index.html'))) {
     await execFileAsync('pnpm', ['build:frontend'], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
   }

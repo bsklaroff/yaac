@@ -1,24 +1,28 @@
 /*
- * End-to-end check of the frontend's Hono RPC client (packages/frontend/src/lib/
- * rpc.ts + the migrated lib/*Api modules) against the real running stack.
+ * End-to-end check of the frontend's typed Hono API client
+ * (packages/frontend/src/lib/api.ts + the lib/*Api modules) against the real
+ * running stack.
  *
  * Drives the running yaac server's webapp in real Chromium and exercises the
- * migrated request paths through the actual compiled `hc<AppType>` client:
- *   - initial load        → GET /cluster/check, /auth/list, /auth/web-session
- *   - open Settings       → GET /shortcuts/get, /config/..., /project/...
- *   - New session → Claude→ POST /session/create (NDJSON stream, unchanged)
- *   - Rename session      → POST /session/:id/title   (rpc write)
- *   - Delete session      → POST /session/delete       (rpc write)
+ * request paths through the actual compiled client:
+ *   - initial load         → POST /auth/web-session, GET /auth/list, /shortcuts/get
+ *   - open Settings        → its batch of GETs
+ *   - New worktree → Create→ POST /worktree/create (NDJSON stream)
+ *   - Rename worktree      → POST /worktree/:id/title
+ *   - Stop worktree        → POST /worktree/stop
  * Every same-origin API response is captured (method, path, status); the run
  * asserts the app authenticated via cookie, rendered its main view, produced no
- * page errors, and that each exercised rpc endpoint answered 2xx.
+ * page errors, and that each exercised endpoint answered 2xx.
  *
- * Run: node test-playwright-scripts/rpc-client-e2e-test.js
- * Needs a running server (`yaac open` / `yaac server start`) with a project
- * configured; reads the port/secret from $YAAC_DATA_DIR/.server.lock (or
- * ~/.yaac). Any session it creates is deleted at the end (UI, then API
- * fallback). (playwright is resolved from the global npm root; browsers live
- * under /opt/playwright-browsers)
+ * Run: PROJECT=<slug> node test-playwright-scripts/rpc-client-e2e-test.js
+ * Needs a running server (`yaac server start`) whose project can create a
+ * worktree — a git credential it can fetch with, a server git identity, and a
+ * claude credential (`yaac auth fake claude-oauth` is enough: the agent never
+ * has to answer); reads the port/secret from
+ * $YAAC_DATA_DIR/server-local/.server.lock (or ~/.yaac). The worktree it
+ * creates is stopped at the end (UI, then API fallback). (playwright is
+ * resolved from the global npm root; browsers live under
+ * /opt/playwright-browsers)
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -39,8 +43,8 @@ function requirePlaywright() {
 
 function readServerLock() {
   const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
+    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, 'server-local', '.server.lock'),
+    path.join(os.homedir(), '.yaac', 'server-local', '.server.lock'),
   ].filter(Boolean)
   for (const p of candidates) {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
@@ -59,15 +63,20 @@ const isAsset = (p) =>
 
 async function main() {
   const { chromium } = requirePlaywright()
+  const project = process.env.PROJECT || 'yaac'
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
 
   // Fresh one-time exchange token → authed URL (?token=…); the SPA exchanges
   // it for the session cookie on load.
-  const openOut = execSync('yaac open --no-browser', { encoding: 'utf8' }).trim()
-  const authedUrl = openOut.split('\n').map((l) => l.trim()).find((l) => l.startsWith('http'))
-  if (!authedUrl) throw new Error(`could not parse authed URL from: ${openOut}`)
+  const res = await fetch(`${base}/tokens`, {
+    method: 'POST',
+    headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'one-time' }),
+  })
+  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status} ${await res.text()}`)
+  const authedUrl = `${base}/?project=${project}&token=${(await res.json()).token}`
 
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, bypassCSP: true })
@@ -83,76 +92,76 @@ async function main() {
     if (isAsset(p) || p === '/events') return
     api.push({ method: res.request().method(), path: p, status: res.status() })
   })
+  // The webapp pre-generates the worktree id and sends it in the create body.
+  let createdWorktreeId = null
+  page.on('request', (req) => {
+    if (req.method() !== 'POST' || new URL(req.url()).pathname !== '/worktree/create') return
+    try { createdWorktreeId = JSON.parse(req.postData() ?? '{}').worktreeId ?? null } catch { /* asserted below */ }
+  })
   const hit = (method, pathRe) => api.filter((c) => c.method === method && pathRe.test(c.path))
   const ok2xx = (calls) => calls.length > 0 && calls.every((c) => c.status >= 200 && c.status < 300)
 
-  let createdSessionId = null
   try {
     // ---- load + cookie auth (postWebSession) ----------------------------
     await page.goto(authedUrl)
-    await page.waitForSelector('[title="New session"]', { timeout: 20_000 })
-    check('app rendered main view (cookie auth + initial rpc loads)', true)
+    await page.waitForSelector('[title="New worktree"]', { timeout: 20_000 })
+    check('app rendered main view (cookie auth + initial loads)', true)
 
-    // ---- Settings: a batch of rpc GETs ----------------------------------
+    // ---- Settings: a batch of GETs --------------------------------------
+    const beforeSettings = api.length
     await page.click('[title="Settings"]')
     await page.waitForTimeout(2000)
-    await page.screenshot({ path: '/tmp/claude-501/-workspace/1ac8ca0a-06c6-41ec-9446-44180cde595c/scratchpad/rpc-e2e-settings.png' }).catch(() => {})
+    const settingsCalls = api.slice(beforeSettings).filter((c) => c.method === 'GET')
+    check('Settings loaded its data', ok2xx(settingsCalls),
+      settingsCalls.map((c) => `${c.path} ${c.status}`).join(', '))
     await page.keyboard.press('Escape')
     await page.waitForTimeout(300)
 
-    // ---- create a session (New session → Claude) ------------------------
-    await page.click('[title="New session"]')
-    await page.getByRole('menuitem', { name: 'Claude', exact: true }).click()
-    console.log('session create clicked; waiting for the terminal to mount…')
-    await page.waitForFunction(() => (window.__xterms?.size ?? window.__xterms?.length ?? 0) > 0, null, { timeout: 300_000 })
+    // ---- create a worktree (New worktree → Create) ----------------------
+    await page.getByTitle('New worktree').first().click()
+    const create = page.getByRole('button', { name: 'Create', exact: true })
+    await create.waitFor({ state: 'visible', timeout: 15_000 })
+    await page.waitForFunction(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => x.textContent === 'Create')
+      return b !== undefined && !b.disabled
+    }, null, { timeout: 15_000 })
+    await create.click()
+    console.log('worktree create clicked; waiting for the terminal to mount…')
+    await page.waitForFunction(() => (window.__xterms?.size ?? 0) > 0, null, { timeout: 300_000 })
     await page.waitForTimeout(1500)
-    createdSessionId = await page.evaluate(() => {
-      try { return JSON.parse(localStorage.getItem('yaac.selection.v1') ?? '{}').sessionId ?? null } catch { return null }
-    })
-    check('session created and opened', !!createdSessionId, `id=${createdSessionId}`)
+    check('worktree created and opened', !!createdWorktreeId, `id=${createdWorktreeId}`)
 
-    // ---- rename (rpc POST /session/:id/title) ---------------------------
-    const newTitle = `rpc-e2e-${Date.now()}`
+    // ---- rename (POST /worktree/:id/title) ------------------------------
     let renamed = false
     try {
-      // The session-header actions menu (SessionActionsMenu) is a base-ui menu
-      // trigger with no title; open the candidate that reveals a Rename item.
-      const triggers = page.locator('button[aria-haspopup="menu"]:not([title])')
-      const n = await triggers.count()
-      for (let i = 0; i < n; i++) {
-        await triggers.nth(i).click()
-        const item = page.getByRole('menuitem', { name: 'Rename', exact: true })
-        if (await item.isVisible().catch(() => false)) {
-          await item.click()
-          await page.getByRole('textbox').fill(newTitle)
-          await page.getByRole('button', { name: 'Rename', exact: true }).click()
-          renamed = true
-          break
-        }
-        await page.keyboard.press('Escape')
-      }
+      // The worktree header's rename, not the sidebar row's hover twin.
+      await page.locator('[aria-label="Rename worktree"]:not(aside *)').click()
+      const field = page.getByLabel('Worktree title')
+      await field.fill(`rpc-e2e-${Date.now()}`)
+      await field.press('Enter')
+      renamed = true
     } catch (e) { console.log(`  [rename] ${e.message}`) }
     await page.waitForTimeout(1000)
     check('rename drove a title write', renamed)
 
-    // ---- delete (rpc POST /session/delete) ------------------------------
-    let deleted = false
+    // ---- stop (POST /worktree/stop) -------------------------------------
+    let stopped = false
     try {
-      const row = page.locator(`[title="Delete session"]`).first()
-      await row.click({ force: true })
-      await page.getByRole('button', { name: 'Delete', exact: true }).click()
-      deleted = true
-    } catch (e) { console.log(`  [delete] ${e.message}`) }
-    await page.waitForTimeout(1500)
-    check('delete drove a session-delete write', deleted)
+      await page.locator('[aria-label="Stop worktree"]').first().click({ force: true })
+      await page.locator('text=Stop worktree?').waitFor({ state: 'visible', timeout: 5000 })
+      await page.getByRole('button', { name: 'Stop', exact: true }).click()
+      stopped = true
+    } catch (e) { console.log(`  [stop] ${e.message}`) }
+    await page.waitForTimeout(3000)
+    check('stop drove a worktree-stop write', stopped)
 
-    // ---- assert the rpc endpoints answered 2xx --------------------------
-    check('GET /cluster/check → 2xx', ok2xx(hit('GET', /^\/cluster\/check$/)))
+    // ---- assert the endpoints answered 2xx ------------------------------
+    check('POST /auth/web-session → 2xx', ok2xx(hit('POST', /^\/auth\/web-session$/)))
     check('GET /auth/list → 2xx', ok2xx(hit('GET', /^\/auth\/list$/)))
     check('GET /shortcuts/get → 2xx', ok2xx(hit('GET', /^\/shortcuts\/get$/)))
-    check('POST /session/create → 2xx', ok2xx(hit('POST', /^\/session\/create$/)))
-    if (renamed) check('POST /session/:id/title → 2xx', ok2xx(hit('POST', /^\/session\/[^/]+\/title$/)))
-    if (deleted) check('POST /session/delete → 2xx', ok2xx(hit('POST', /^\/session\/delete$/)))
+    check('POST /worktree/create → 2xx', ok2xx(hit('POST', /^\/worktree\/create$/)))
+    if (renamed) check('POST /worktree/:id/title → 2xx', ok2xx(hit('POST', /^\/worktree\/[^/]+\/title$/)))
+    if (stopped) check('POST /worktree/stop → 2xx', ok2xx(hit('POST', /^\/worktree\/stop$/)))
     check('no page errors', pageErrors.length === 0, pageErrors.join(' | '))
     check('no API 4xx/5xx (except benign 404 skew probes)',
       api.every((c) => c.status < 400 || c.status === 404),
@@ -162,12 +171,12 @@ async function main() {
     for (const c of api) console.log(`  ${c.method.padEnd(6)} ${String(c.status).padEnd(4)} ${c.path}`)
   } finally {
     await browser.close()
-    // Cleanup fallback: if the UI delete didn't land, remove via the API.
-    if (createdSessionId) {
-      await fetch(`${base}/session/delete`, {
+    // Cleanup fallback: if the UI stop didn't land, stop it via the API.
+    if (createdWorktreeId) {
+      await fetch(`${base}/worktree/stop`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId: createdSessionId }),
+        body: JSON.stringify({ worktreeId: createdWorktreeId }),
       }).catch(() => {})
     }
   }

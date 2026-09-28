@@ -6,15 +6,17 @@
  * pane. A per-agent selector (Claude/Codex/OpenCode) re-scans that tool's dirs.
  *
  * Drives the running yaac server's webapp in real Chromium. Self-contained: it
- * seeds a personal + project Claude skill and one Codex skill into the project's
- * on-disk skill dirs (under $YAAC_DATA_DIR/projects/<slug>/…), runs the checks,
+ * seeds a personal Claude skill and a Codex skill into the project's on-disk
+ * skill dirs (under $YAAC_DATA_DIR/global/projects/<slug>/…), runs the checks,
  * then removes them again — so it is safe to re-run and leaves no residue.
+ * The project (repo) tier is not seeded: it is read from origin/<branch>, so
+ * a working-tree file would never be listed.
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/skills-viewer-test.js
  * (set SCREENSHOT_DIR to also capture a screenshot of the open overlay)
  * Needs a running server (`yaac server start`) with a project configured;
- * authenticates the browser via `yaac open --no-browser` (a one-time ?token=
- * URL the SPA exchanges for its session cookie).
+ * authenticates the browser by minting a one-time ?token= URL over POST /tokens
+ * (lock secret as bearer), which the SPA exchanges for its session cookie.
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
  */
@@ -37,8 +39,8 @@ function requirePlaywright() {
 
 function readServerLock() {
   const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
+    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, 'server-local', '.server.lock'),
+    path.join(os.homedir(), '.yaac', 'server-local', '.server.lock'),
   ].filter(Boolean)
   for (const p of candidates) {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
@@ -56,17 +58,15 @@ function check(name, cond, detail = '') {
 /** Base dir for a project's on-disk config/repo (mirrors @yaac/shared paths). */
 function projectBase(slug) {
   const dataDir = process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac')
-  return path.join(dataDir, 'projects', slug)
+  return path.join(dataDir, 'global', 'projects', slug)
 }
 
-/** Seed a personal + project Claude skill and a Codex skill; return their dirs. */
+/** Seed a personal Claude skill and a Codex skill; return their dirs. */
 function seedSkills(slug) {
   const base = projectBase(slug)
   const fixtures = [
     [path.join(base, 'claude', 'skills', 'hello-personal'),
       '---\nname: hello-personal\ndescription: A live-test personal skill\nallowed-tools: [Read, Grep]\n---\n# Hello\nThis is the personal skill body.\n'],
-    [path.join(base, 'repo', '.claude', 'skills', 'hello-project'),
-      '---\ndescription: A live-test project skill\ndisable-model-invocation: true\n---\nProject skill body here.\n'],
     [path.join(base, 'codex', 'skills', 'hello-codex'),
       '---\nname: hello-codex\ndescription: A live-test codex skill\n---\nCodex body.\n'],
   ]
@@ -80,14 +80,20 @@ function seedSkills(slug) {
 async function main() {
   const { chromium } = requirePlaywright()
   const project = process.env.PROJECT || 'yaac'
-  readServerLock() // fail fast with a clear message if no server is running
+  const lock = readServerLock()
+  const base = `http://127.0.0.1:${lock.port}`
+  const auth = { authorization: `Bearer ${lock.secret}` }
   const seededDirs = seedSkills(project)
 
   // Fresh one-time exchange token → authed URL (?token=…); the SPA exchanges
   // it for the session cookie on load.
-  const openOut = execSync('yaac open --no-browser', { encoding: 'utf8' }).trim()
-  const authedUrl = openOut.split('\n').map((l) => l.trim()).find((l) => l.startsWith('http'))
-  if (!authedUrl) throw new Error(`could not parse authed URL from: ${openOut}`)
+  const res = await fetch(`${base}/tokens`, {
+    method: 'POST',
+    headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'one-time' }),
+  })
+  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status} ${await res.text()}`)
+  const authedUrl = `${base}/?token=${(await res.json()).token}`
 
   const browser = await chromium.launch()
   const viewport = { width: 1400, height: 900 }
@@ -106,12 +112,10 @@ async function main() {
     await dialog.waitFor({ state: 'visible' })
     await page.waitForTimeout(400) // open transition
 
-    // Claude tier: the two seeded skills should be listed.
+    // Claude tier: the seeded personal skill should be listed.
     const personal = dialog.getByRole('button', { name: /\/hello-personal/ })
-    const project_ = dialog.getByRole('button', { name: /\/hello-project/ })
     await personal.waitFor({ state: 'visible', timeout: 10000 })
     check('claude: personal skill listed', await personal.count() >= 1)
-    check('claude: project skill listed', await project_.count() >= 1)
 
     // Clicking a skill loads its full SKILL.md body into the detail pane.
     await personal.first().click()
@@ -132,7 +136,7 @@ async function main() {
     check('codex: selector re-scans and lists the codex skill', await codex.count() >= 1)
     // The claude-only skill should no longer be present under Codex.
     check('codex: claude skill no longer listed',
-      await dialog.getByRole('button', { name: /\/hello-project/ }).count() === 0)
+      await dialog.getByRole('button', { name: /\/hello-personal/ }).count() === 0)
 
     if (process.env.SCREENSHOT_DIR) {
       await page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR, 'skills-viewer-codex.png') })

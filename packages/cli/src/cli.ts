@@ -274,15 +274,6 @@ server
     await serverLogs(options)
   })
 
-program
-  .command('open')
-  .description('Open the webapp in your browser (against the selected server)')
-  .option('--no-browser', 'Print the authenticated URL instead of launching a browser')
-  .action(async (options: { browser?: boolean }) => {
-    const { openWebapp } = await import('@yaac/server/main/webapp')
-    await openWebapp({ noBrowser: options.browser === false })
-  })
-
 const cluster = program
   .command('cluster')
   .description('Manage the kubernetes cluster yaac runs worktrees on')

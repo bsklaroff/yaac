@@ -29,7 +29,7 @@ describe('browser auth web-session exchange (full HTTP exchange)', () => {
     vi.unstubAllEnvs()
   })
 
-  /** Mint a one-time exchange token the way `yaac open` does. */
+  /** Mint a one-time exchange token the way the desktop app does. */
   async function mintOneTime(): Promise<string> {
     const res = await fetch(`${server.baseUrl}/tokens`, {
       method: 'POST',

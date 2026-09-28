@@ -237,7 +237,7 @@ export function originHeaderCheck(): MiddlewareHandler {
  *
  * Allowed: an absent header (non-browser clients, older browsers — `Origin`
  * and Host still guard those), `same-origin` (the SPA's own fetches/WS), and
- * `none` (a user-initiated load: typed URL, bookmark, `yaac open`). A
+ * `none` (a user-initiated load: typed URL, bookmark, a pasted banner URL). A
  * cross-site *top-level document* navigation (GET + `Sec-Fetch-Mode: navigate`
  * + `Sec-Fetch-Dest: document`) is allowed so the webapp stays linkable — but
  * an embedded navigation (`Sec-Fetch-Dest: iframe`/`embed`/…) is not, so a

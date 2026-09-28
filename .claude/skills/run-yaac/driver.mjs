@@ -4,15 +4,16 @@
  *
  * Drives the yaac web app (the React SPA the `yaac` server serves) in a real
  * headless Chromium via Playwright, doing the one-time-token -> session-cookie
- * auth handshake `yaac open` does for you. Use it to screenshot the app or to
+ * auth handshake the desktop app does. Use it to screenshot the app or to
  * evaluate arbitrary JS against the live DOM — the same handle the committed
  * test-playwright-scripts/*.js use, generalized into a reusable CLI.
  *
  * It talks to whatever server this install's clients are registered with: it
- * runs `yaac open --no-browser`, which resolves `server.json` (either
- * substrate) and prints the origin plus a one-time token when the server needs
- * one; the server exchanges that token for the HttpOnly cookie and drops the
- * ?token= from the URL. Set YAAC_DATA_DIR to drive a different install.
+ * reads the selected origin and durable token from `server.json`
+ * (`<data dir>-client/`, either substrate), mints a one-time token over
+ * POST /tokens, and loads the origin with it; the server exchanges that token
+ * for the HttpOnly cookie and drops the ?token= from the URL. Set
+ * YAAC_DATA_DIR to drive a different install.
  *
  * Playwright is resolved from the global npm root (with a bare require
  * fallback); Chromium binaries live under /opt/playwright-browsers.
@@ -39,6 +40,7 @@
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
+import os from 'node:os'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
@@ -70,12 +72,35 @@ function parseArgs(argv) {
   return { positional, flags }
 }
 
+/** The server this install's clients dial: `server.json`'s selected entry. */
+function readSelectedServer() {
+  const dataDir = process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac')
+  const file = `${dataDir}-client/server.json`
+  let cfg
+  try {
+    cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    throw new Error(`no ${file} — is a server registered? try: yaac server start`)
+  }
+  if (!cfg.enabled) throw new Error(`no server selected in ${file} — try: yaac remote on`)
+  return cfg
+}
+
+async function mintToken({ url, token }) {
+  const res = await fetch(`${url}/tokens`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'one-time' }),
+  })
+  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status} ${await res.text()}`)
+  return (await res.json()).token
+}
+
 const { positional, flags } = parseArgs(process.argv.slice(2))
 const cmd = positional[0] ?? 'open'
-const opened = new URL(execSync('yaac open --no-browser', { encoding: 'utf8' }).trim().split('\n').pop())
-const target = new URL(flags.goto ?? '/', opened.origin)
-const token = opened.searchParams.get('token')
-if (token) target.searchParams.set('token', token)
+const server = readSelectedServer()
+const target = new URL(flags.goto ?? '/', server.url)
+target.searchParams.set('token', await mintToken(server))
 const settleMs = flags.settle !== undefined ? Number(flags.settle) : 3000
 
 const { chromium } = requirePlaywright()

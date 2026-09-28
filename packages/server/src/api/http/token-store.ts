@@ -13,7 +13,7 @@ export type { TokenEntry, TokenKind } from '#db'
  * - `durable` — what a remote CLI (or the auth daemon) presents as its
  *   bearer instead of the per-boot lock secret. Named per device so a
  *   single client can be revoked without touching the others.
- * - `one-time` — minted by `yaac open` (and the start banner), carried in
+ * - `one-time` — minted by the desktop app (and the start banner), carried in
  *   the webapp URL. Exchange-only: never a valid bearer, consumed on its
  *   first successful exchange, expired after EXCHANGE_TTL_MS.
  * - `web` — a browser worktree, minted by the exchange and carried in the
@@ -69,9 +69,9 @@ export const EXCHANGE_TTL_MS = 24 * 60 * 60 * 1000
 /**
  * Web worktrees are minted on every exchange and never explicitly ended,
  * so cap them (oldest evicted first) to keep the persisted file bounded
- * across many `yaac open` invocations. Same bound for pending one-time
+ * across many webapp opens. Same bound for pending one-time
  * tokens — expiry prunes those anyway; the cap just stops a tight
- * `yaac open` loop from bloating the file within the TTL window.
+ * mint loop from bloating the file within the TTL window.
  */
 export const MAX_WEB_SESSIONS = 64
 export const MAX_EXCHANGE_TOKENS = 64

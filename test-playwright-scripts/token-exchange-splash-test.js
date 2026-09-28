@@ -1,7 +1,7 @@
 /*
  * Verifies the webapp's token→cookie auth flow after the bootstrap-code
  * machinery was replaced by token-store exchange tokens:
- *  1. Opening `/?token=<one-time token>` (as printed by `yaac open`)
+ *  1. Opening `/?token=<one-time token>` (as printed by the start banner)
  *     silently exchanges the token for the yaac_session cookie, strips
  *     the param from the address bar, and lands in the workspace.
  *  2. A reload with no token stays authed via the cookie alone.

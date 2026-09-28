@@ -345,14 +345,6 @@ describe('validation errors (no state created)', () => {
   })
 })
 
-describe('yaac open (real CLI + real server)', () => {
-  it('open --no-browser prints an authenticated webapp URL with a one-time token', async () => {
-    const { stdout, exitCode } = await runYaac(testEnv.env, 'open', '--no-browser')
-    expect(exitCode).toBe(0)
-    expect(stdout).toMatch(/http:\/\/127\.0\.0\.1:\d+\/\?token=[a-f0-9]{64}/)
-  })
-})
-
 /**
  * From here on, tests seed projects into the SHARED data dir. Every slug
  * is unique across the file (a slug can only be added once), and none of

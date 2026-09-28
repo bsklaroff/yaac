@@ -3,9 +3,8 @@
 An Electron shell around the yaac webapp. There is no bundled frontend and no
 renderer code: the main process resolves the selected server
 (`~/.yaac-client/server.json`), ensures the machine-local auth-daemon (login
-broker) best-effort like `yaac open` does, mints a one-time exchange token
-(POST /tokens — the same endpoint `yaac open` uses, via the shared typed
-client), and loads `<server-origin>/?token=…` into the window. From then on the
+broker) best-effort, mints a one-time exchange token (POST /tokens, via the
+shared typed client), and loads `<server-origin>/?token=…` into the window. From then on the
 window is a plain browser on the server origin, so the SPA, cookie auth, and
 WebSockets behave exactly like the webapp, and version skew is impossible (the
 SPA comes from the server it talks to).
@@ -85,7 +84,7 @@ hot-reloads — main-process (`src/*.ts`) changes still need a restart.
 ### How the boot flow authenticates (both modes)
 
 `src/flow.ts` always resolves the real server target and mints a one-time
-exchange token against it (`POST /tokens`, the same call `yaac open` makes);
+exchange token against it (`POST /tokens`);
 `YAAC_DESKTOP_RENDERER_URL` never changes *which* server is minted against,
 only the origin the window then loads. The window opens `<base>/?token=…`, and
 the SPA (`App.tsx`) trades that token for an HttpOnly session cookie at
@@ -144,7 +143,7 @@ notices there is no cluster and offers setup, streaming
 
 | | server on this machine | server elsewhere |
 |---|---|---|
-| webapp | `yaac server start` + `yaac open` | `yaac remote set <url> --token <t>` + `yaac open` |
+| webapp | `yaac server start` → open the origin `yaac remote status` shows | `yaac remote set <url> --token <t>` → open that origin, paste a token from `yaac auth token create` |
 | desktop | `yaac server start` → `pnpm desktop:dev` lands authed on the loopback origin with no interaction | `yaac remote set …` → should land on `https://…`; break the token to see the picker |
 
 Also check from the desktop app: a terminal attaches (PTY WebSocket) and
