@@ -23,6 +23,7 @@ import {
 } from '@yaac/server/drivers/containerless/paths'
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
+import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { ACP_ADAPTERS, AGENT_TOOLS, toolSupportsPermissionMode } from '@yaac/shared/types'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
@@ -43,7 +44,7 @@ const execFileAsync = promisify(execFile)
  * share the same one. The tests that destroy their subject run LAST.
  *
  * The host needs `tmux` and `git`; agent CLIs it does not, because the suite
- * puts a fake one on PATH. That is deliberate rather than a shortcut: what
+ * stages fake ones where yaac installs the pinned ones. That is deliberate rather than a shortcut: what
  * is under test is the launch, the exec transport, the port scan and the
  * recovery, none of which care what the agent process is — and a real agent
  * would need credentials and a network.
@@ -118,9 +119,15 @@ const FAKE_CODEX = [
   '',
 ].join('\n')
 
+/** Where the server finds yaac's own install of `binary`. */
+const managedBin = (binary: string): string =>
+  path.join(agentPackagePrefix(AGENT_PACKAGES[binary]), 'bin', binary)
+
 /**
- * A stand-in agent on PATH: it holds its tmux window open the way a real
- * TUI does. Without one the respawned window would exit instantly, tmux
+ * A stand-in agent, staged where yaac installs the pinned one — so the
+ * create's preflight finds it installed and fetches nothing, and the launch
+ * runs it off the PATH it gives every workspace. It holds its tmux window
+ * open the way a real TUI does. Without one the respawned window would exit instantly, tmux
  * would close it, and with no windows left the session — and the worktree —
  * would end before any assertion ran.
  *
@@ -135,10 +142,12 @@ const FAKE_CODEX = [
  * be both: an adapter when called that way and a TUI that holds its window
  * otherwise.
  */
-async function installFakeAgents(binDir: string): Promise<void> {
-  await fs.mkdir(binDir, { recursive: true })
-  const write = async (name: string, body: string): Promise<string> => {
-    const file = path.join(binDir, name)
+async function installFakeAgents(): Promise<void> {
+  // `dir` is the binary whose install the file goes in, for a helper that
+  // rides beside it.
+  const write = async (name: string, body: string, dir = name): Promise<string> => {
+    const file = path.join(path.dirname(managedBin(dir)), name)
+    await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.writeFile(file, body)
     await fs.chmod(file, 0o755)
     return file
@@ -155,7 +164,7 @@ async function installFakeAgents(binDir: string): Promise<void> {
   }
   // opencode wears both hats. `exec`ing the adapter keeps acpd's child the
   // process that speaks the protocol, so a wrapper cannot swallow its stdio.
-  await write('opencode-acp-impl', fakeAcpAdapter('opencode'))
+  await write('opencode-acp-impl', fakeAcpAdapter('opencode'), 'opencode')
   await write(
     'opencode',
     '#!/bin/sh\n'
@@ -386,11 +395,9 @@ async function workspaceEnvVar(id: string, name: string): Promise<string> {
 beforeAll(async () => {
   if (!CAN_RUN) return
   testEnv = await createYaacTestEnv()
-  const binDir = path.join(testEnv.scratchDir, 'bin')
-  await installFakeAgents(binDir)
+  await installFakeAgents()
   serverEnv = {
     ...testEnv.env,
-    PATH: `${binDir}:${process.env.PATH ?? ''}`,
     // The CLI's create attaches an interactive PTY on success, which hangs
     // without a TTY. Every e2e suite that drives a create sets this.
     YAAC_E2E_NO_ATTACH: '1',
@@ -1648,7 +1655,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     // The hold's give-up branch. An adapter that exits takes acpd and its
     // window with it, so the create must notice that and return, not sit out
     // the whole conversation budget behind "Connecting to…".
-    const marker = path.join(testEnv.scratchDir, 'bin', ACP_ADAPTER_DIES)
+    const marker = path.join(path.dirname(managedBin('claude-agent-acp')), ACP_ADAPTER_DIES)
     await fs.writeFile(marker, '')
     try {
       const started = Date.now()
@@ -1799,7 +1806,7 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
         expect(row?.error).toMatch(/exited right after launch/)
         // Containerless, so the row also names what to check — the failure
         // is nearly always a tool this host cannot actually run.
-        expect(row?.error).toMatch(/npm install -g @openai\/codex/)
+        expect(row?.error).toContain(`@openai/codex@${AGENT_PACKAGES.codex.version}`)
       }, { timeout: 30_000, interval: 250 })
     } finally {
       watch.ws.close()

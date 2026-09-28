@@ -79,13 +79,16 @@ export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 const CODEX_SESSION_HOOK = 'yaac-agent-links "$CODEX_HOME" codex'
 
 /**
- * The `-c` settings that give codex its session hook and trust the repository
- * root codex keys folder trust on (the parent of `repoGitDir`) — the same on
- * every substrate, since nothing here needs an image to carry it.
+ * The `-c` settings that give codex its session hook, trust the repository
+ * root codex keys folder trust on (the parent of `repoGitDir`), and skip its
+ * startup update check — the same on every substrate, since nothing here
+ * needs an image to carry it.
  *
  * With the launch's `--dangerously-bypass-hook-trust` (`buildAgentCmd`),
- * codex opens no startup screen at all: no "Trust this folder?" and no "Hooks
- * need review", either of which would swallow the prompt pasted into it. That
+ * codex opens no startup screen at all: no "Trust this folder?", no "Hooks
+ * need review", and no "Update available" (which a host codex behind the
+ * latest release otherwise opens), any of which would swallow the prompt
+ * pasted into it. That
  * is a choice with a known cost: a trusted folder loads the repository's own
  * `.codex/` config, rules, MCP servers and hooks, so a repository can loosen
  * the posture yaac launched in and run code at startup, and yaac accepts that
@@ -93,6 +96,7 @@ const CODEX_SESSION_HOOK = 'yaac-agent-links "$CODEX_HOME" codex'
  */
 export function codexLaunchConfig(repoGitDir?: string): string[] {
   return [
+    'check_for_update_on_startup=false',
     `hooks.SessionStart=[{matcher="*",hooks=[{type="command",command=${JSON.stringify(CODEX_SESSION_HOOK)},timeout=10}]}]`,
     ...(repoGitDir !== undefined
       ? [`projects={${JSON.stringify(path.dirname(repoGitDir))}={trust_level="trusted"}}`]

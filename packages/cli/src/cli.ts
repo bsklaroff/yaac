@@ -322,7 +322,7 @@ const host = program
 
 host
   .command('check')
-  .description('Verify this machine can run containerless worktrees (tmux, git, agent CLIs)')
+  .description('Verify this machine can run containerless worktrees (tmux, git, and the npm that installs its pinned agents)')
   .action(async () => {
     const { hostCheck } = await import('#commands/host-check')
     await hostCheck()
@@ -396,7 +396,6 @@ worktree
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI').choices([...AGENT_MODES]))
   .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, manual asks for everything, plan explores and asks to act on a plan, read-only (codex\'s strictest, in place of plan) asks before any edit. Defaults to this project\'s last choice for the tool, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
   .option('-g, --group <group>', 'File the worktree under this sidebar group (by name; created if it does not exist)')
-  .option('--install-missing', 'Install the agent\'s CLI (and, with --mode acp, its ACP adapter) if the server\'s host hasn\'t got it, instead of refusing the create (containerless servers only; a server that runs agents in containers gets its tools from the image)')
   .action(async (project: string, options: Parameters<typeof worktreeCreate>[1]) => {
     await worktreeCreate(project, options)
   })

@@ -37,10 +37,6 @@ export interface CreateWorktreeOptions {
   model?: string
   mode?: AgentMode
   permissionMode?: PermissionMode
-  /** Retry-only: let the server install the agent's CLI when its host hasn't
-   *  got it. Set by the Install-and-retry path, never by a first attempt —
-   *  yaac does not install anything the user did not ask it to. */
-  installMissingTool?: boolean
 }
 
 export async function createWorktree(
@@ -58,7 +54,6 @@ export async function createWorktree(
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
     ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
-    ...(opts.installMissingTool === true ? { installMissingTool: true } : {}),
   }
   return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
 }

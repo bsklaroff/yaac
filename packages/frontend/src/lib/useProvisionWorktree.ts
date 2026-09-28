@@ -1,20 +1,12 @@
 import { useCallback } from 'react'
 import { useUiStore } from '#store'
-import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
-/**
- * A streaming provision op (create or restart) for a known id.
- *
- * `retryOpts` is what a retry adds to the original call — the op closes over
- * everything else (project, branch, mode, posture), which is why re-running
- * one is only possible through the closure that started it.
- */
+/** A streaming provision op (create or restart) for a known id. */
 type ProvisionOp = (
   worktreeId: string,
   onProgress: (message: string) => void,
-  retryOpts?: { installMissingTool?: boolean },
 ) => Promise<{ worktreeId: string }>
 
 /**
@@ -44,24 +36,14 @@ export function useProvisionWorktree(): (
   const addOptimisticProvisioning = useUiStore((s) => s.addOptimisticProvisioning)
   const updateOptimisticProvisioning = useUiStore((s) => s.updateOptimisticProvisioning)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
-  const setProvisionRetry = useUiStore((s) => s.setProvisionRetry)
   const recordClaim = useUiStore((s) => s.recordClaim)
   const setProvisionInFlight = useUiStore((s) => s.setProvisionInFlight)
   const openWorktree = useUiStore((s) => s.openWorktree)
 
-  return useCallback(function provision(projectSlug, tool, kind, worktreeId, op, groupId, named) {
+  return useCallback((projectSlug, tool, kind, worktreeId, op, groupId, named) => {
     const filed = { ...(groupId !== undefined ? { groupId } : {}), ...named }
     addOptimisticProvisioning({ worktreeId, projectSlug, tool, kind, ...filed, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
     openWorktree(projectSlug, worktreeId) // auto-open the locally-initiated provision
-    // How to run this exact provision again, for a failure that has a
-    // recovery (a tool this host can install). Same id, so the row the user
-    // is watching flips back to streaming rather than a second one
-    // appearing — the server registry treats a re-register on one id as the
-    // retry it is.
-    setProvisionRetry(worktreeId, () => {
-      provision(projectSlug, tool, kind, worktreeId,
-        (id, onProgress) => op(id, onProgress, { installMissingTool: true }), groupId, named)
-    })
     setProvisionInFlight(worktreeId, true)
     void op(worktreeId, (message) => updateOptimisticProvisioning(worktreeId, { message }))
       .then((res) => {
@@ -74,19 +56,15 @@ export function useProvisionWorktree(): (
           recordClaim(worktreeId, res.worktreeId)
           removeOptimisticProvisioning(worktreeId)
         }
-        setProvisionRetry(worktreeId, null)
       })
       .catch((e: unknown) => {
-        updateOptimisticProvisioning(worktreeId, {
-          error: e instanceof Error ? e.message : 'failed',
-          ...(e instanceof ServerError ? { errorCode: e.code } : {}),
-        })
+        updateOptimisticProvisioning(worktreeId, { error: e instanceof Error ? e.message : 'failed' })
       })
       // After the claim is recorded, so a selection waiting on this
       // provision is never let go before it knows where to follow.
       .finally(() => setProvisionInFlight(worktreeId, false))
   }, [
     addOptimisticProvisioning, updateOptimisticProvisioning, removeOptimisticProvisioning,
-    setProvisionRetry, recordClaim, setProvisionInFlight, openWorktree,
+    recordClaim, setProvisionInFlight, openWorktree,
   ])
 }

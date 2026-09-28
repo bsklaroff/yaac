@@ -1,73 +1,68 @@
 /**
- * How to install each agent CLI and ACP adapter on a host.
+ * The agent binaries a host runs its worktrees with, each from yaac's own
+ * install of the package that ships it.
  *
  * Only a runtime with no image to supply the tools needs this — the
- * containerless driver, whose preflight refuses a create naming a tool this
- * host does not have and whose `--install-missing` path runs the command
- * itself. It lives in shared rather than beside that driver because
- * `yaac host check`'s advice reads from the same table, and two hand-kept
- * copies of an install command drift the moment one package is renamed.
+ * containerless driver, which installs a package the first time a create
+ * needs one of its binaries and puts every package's bin dir ahead of the
+ * host's own PATH. It lives in shared rather than beside that driver because
+ * the e2e tier stages its stand-in agents at exactly these paths.
  *
- * Pinned to `AGENT_CLIS`, the same versions the image installs: yaac's
- * postures are written against each CLI's flags and read back from what it
- * reports, so a host running another release is a host where a posture can
- * silently mean something else. That covers what yaac installs; a CLI the
- * host already has is used as it is (docs/containerless-driver.md).
- *
- * npm over each vendor's curl-installer, also deliberately: npm's global bin
- * is on the PATH the server itself was started from (node is how yaac runs),
- * while an installer that drops a binary in `~/.local/bin` can "succeed"
- * into a directory the server's environment never searches — which reads,
- * to every check here, as an install that did nothing.
+ * Pinned to `AGENT_CLIS` and `ACP_ADAPTERS`, the same versions the image
+ * installs: yaac's postures are written against each CLI's flags and read
+ * back from what it reports, so a host running another release is a host
+ * where a posture can silently mean something else. That is why a CLI the
+ * host already has is never used: a codex behind the latest release opens an
+ * update screen, one ahead of it can have dropped a policy yaac launches, and
+ * either reads as yaac being broken.
  */
-import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS, type AgentTool } from '#types'
+import path from 'node:path'
+import { nodeLocalPath } from '#project-paths'
+import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS } from '#types'
 
-export const AGENT_INSTALL = Object.fromEntries(AGENT_TOOLS.map((tool) => {
-  const { package: pkg, version } = AGENT_CLIS[tool]
-  // --ignore-scripts for pi matches how the image installs it: its
-  // postinstall fetches a platform binary yaac does not need.
-  return [tool, `npm install -g ${tool === 'pi' ? '--ignore-scripts ' : ''}${pkg}@${version}`]
-})) as Record<AgentTool, string>
+export interface AgentPackage {
+  package: string
+  version: string
+  /**
+   * Whether npm runs the package's lifecycle scripts — opt-in, so a pin bump
+   * that adds one is a deliberate change rather than third-party code picked
+   * up silently. Only claude and opencode need theirs: each postinstall puts
+   * the native binary in place, and without it the CLI refuses to start.
+   * codex's binary arrives as an exact-pinned optionalDependency, which is
+   * installed either way; pi's postinstall fetches a platform binary yaac does
+   * not need; the adapters have none.
+   */
+  runScripts: boolean
+}
 
 /**
- * Keyed by the adapter's BINARY name — what `--mode acp` execs and what a PATH
- * probe looks for — not by the tool it adapts, and derived from `ACP_ADAPTERS`
- * so the version a host installs is the version yaac's description of that
- * adapter was verified against: what yaac reads off an adapter is its
- * advertised session modes, and an adapter that stops advertising one runs in
- * its default rather than failing.
- *
- * opencode is absent because its adapter IS its CLI (`opencode acp`), so
- * `AGENT_INSTALL` already answers for it.
- * `installCommandFor` checks the tools first, which is what makes that fall
- * through correctly.
- *
- * `--ignore-scripts` because neither package has a lifecycle script to run and
- * a future one would be fetching a platform binary the image already has. It
- * does NOT keep codex-acp's dependency on `@openai/codex` from landing a
- * second copy of the codex binary: that arrives as an optionalDependency,
- * which the flag does not skip. Harmless — codex-acp execs `CODEX_PATH ??
- * "codex"`, i.e. the one already on PATH.
+ * Keyed by the BINARY a launch execs — an agent CLI, or an ACP adapter that
+ * is a separate program. opencode's adapter is its CLI (`opencode acp`), so
+ * it has one entry.
  */
-export const ACP_ADAPTER_INSTALL: Record<string, string> = Object.fromEntries(
-  AGENT_TOOLS
+export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
+  ...AGENT_TOOLS.map((tool): [string, AgentPackage] =>
+    [tool, { ...AGENT_CLIS[tool], runScripts: tool === 'claude' || tool === 'opencode' }]),
+  ...AGENT_TOOLS
     .filter((tool) => ACP_ADAPTERS[tool].binary !== tool)
-    .map((tool) => {
+    .map((tool): [string, AgentPackage] => {
       const { binary, package: pkg, verified } = ACP_ADAPTERS[tool]
-      return [binary, `npm install -g --ignore-scripts ${pkg}@${verified}`]
+      return [binary, { package: pkg, version: verified, runScripts: false }]
     }),
-)
+])
 
 /**
- * The install command for an agent binary or ACP adapter binary, or
- * undefined for a name no table covers (a future adapter, say) — callers
- * degrade to naming the binary without advice rather than guessing.
- *
- * `Object.hasOwn` rather than a bare lookup: a plain object answers for its
- * prototype too, so `'toString'` would otherwise come back "defined" and
- * hand a caller a Function where a command string belongs.
+ * NODE-LOCAL: the npm prefix one pinned package is installed under — its
+ * binaries land in `<prefix>/bin`. Named by package and version, so a
+ * prefix never changes once it exists: a version bump installs beside it,
+ * and a worktree launched against the old one keeps running what it
+ * started with.
  */
-export function installCommandFor(binary: string): string | undefined {
-  if ((AGENT_TOOLS as readonly string[]).includes(binary)) return AGENT_INSTALL[binary as AgentTool]
-  return Object.hasOwn(ACP_ADAPTER_INSTALL, binary) ? ACP_ADAPTER_INSTALL[binary] : undefined
+export function agentPackagePrefix({ package: pkg, version }: AgentPackage): string {
+  return nodeLocalPath('agent-tools', `${pkg.replace('/', '+')}@${version}`)
+}
+
+/** Every pinned package's bin dir — what a workspace's PATH leads with. */
+export function agentBinDirs(): string[] {
+  return Object.values(AGENT_PACKAGES).map((p) => path.join(agentPackagePrefix(p), 'bin'))
 }

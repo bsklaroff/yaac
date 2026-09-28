@@ -77,34 +77,6 @@ describe('failProvisioning', () => {
     failProvisioning('missing', 'x')
     expect(listProvisioning()).toEqual([])
   })
-
-  it('carries the failure code to the snapshot, so a client can offer its recovery', () => {
-    register('a')
-    failProvisioning('a', 'codex is not installed', 'MISSING_TOOL')
-    expect(listProvisioning()[0]).toMatchObject({ error: 'codex is not installed', errorCode: 'MISSING_TOOL' })
-  })
-
-  it('leaves the code off a failure that has none', () => {
-    register('a')
-    failProvisioning('a', 'something went wrong')
-    expect(listProvisioning()[0]).not.toHaveProperty('errorCode')
-  })
-
-  it('says whether the missing tool is one yaac can fetch, not just that one is missing', () => {
-    // The code is what a client branches on to offer a recovery; this is
-    // what stops it offering one that cannot work. socat comes from a system
-    // package manager, so an install-and-retry would re-run the create and
-    // fail with the identical error.
-    register('a')
-    failProvisioning('a', '"socat" is not on this host\'s PATH', 'MISSING_TOOL', false)
-    expect(listProvisioning()[0]).toMatchObject({
-      errorCode: 'MISSING_TOOL', installable: false,
-    })
-
-    register('b')
-    failProvisioning('b', '"codex" is not on this host\'s PATH', 'MISSING_TOOL', true)
-    expect(listProvisioning().find((e) => e.worktreeId === 'b')?.installable).toBe(true)
-  })
 })
 
 describe('reportAgentLaunchFailure', () => {
@@ -204,13 +176,13 @@ describe('runProvisioned', () => {
     expect(listProvisioning()).toEqual([])
   })
 
-  it('marks the row failed via the error taxonomy and rethrows', async () => {
+  it('marks the row failed and rethrows', async () => {
     register('a')
     await expect(
       runProvisioned('a', () => Promise.reject(new ServerError('NOT_FOUND', 'missing'))),
     ).rejects.toThrow('missing')
     expect(listProvisioning()[0]).toMatchObject({
-      worktreeId: 'a', error: 'missing', errorCode: 'NOT_FOUND',
+      worktreeId: 'a', error: 'missing',
     })
   })
 

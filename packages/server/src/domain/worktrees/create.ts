@@ -97,6 +97,7 @@ import {
 } from './worktree-bin'
 import { ServerError } from '@yaac/shared/errors'
 import {
+  AGENT_CLIS,
   defaultPermissionMode,
   launchablePermissionMode,
   resolveToolCreateDefaults,
@@ -114,7 +115,6 @@ import {
   piProviderInfo,
   type PiProvider,
 } from '@yaac/shared/tool-providers'
-import { AGENT_INSTALL } from '@yaac/shared/tool-install'
 
 /** How long a fresh acp create holds for its conversation's row. */
 const ACP_CONVERSATION_WAIT_MS = 60_000
@@ -175,14 +175,6 @@ export interface WorktreeCreateOptions {
    * route against the tools that have an adapter.
    */
   mode?: AgentMode
-  /**
-   * Install the agent's CLI (or ACP adapter) if this runtime hasn't got it,
-   * instead of refusing the create — the user having opted into yaac running
-   * an install command on their machine. Only a runtime with something to
-   * install honors it; under k8s the tool comes from the image and this is
-   * ignored (see `WorktreeDriver.assertCanLaunch`).
-   */
-  installMissingTool?: boolean
   /**
    * Reference branch for the fresh worktree (a branch on `origin`, no
    * `origin/` prefix). Overrides the project's `referenceBranch` config
@@ -548,7 +540,8 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
         tool,
         kind: options.resume === true ? 'restart' : 'create',
         error: runtime.kind === 'containerless'
-          ? `${message}. Check that "${tool}" runs on this host (${AGENT_INSTALL[tool]}).`
+          ? `${message}. Check that "${tool}" runs on this host `
+            + `(yaac runs its own install of ${AGENT_CLIS[tool].package}@${AGENT_CLIS[tool].version}).`
           : message,
       })
     })
@@ -908,15 +901,13 @@ export async function createWorktree(
 
   const mode: AgentMode = options.mode ?? 'tui'
   // And whether THIS runtime can run it: an image either ships the tool and
-  // its adapter or does not, but a host has whatever the user installed, and
+  // its adapter or does not, a host installs the pinned one on first use, and
   // a launch command that execs nothing ends the worktree seconds after a
-  // create that already reported success. With `installMissingTool` the
-  // runtime installs what is missing instead of refusing, narrating it
-  // through the create's own progress stream.
+  // create that already reported success. An install is narrated through the
+  // create's own progress stream.
   await runtime.assertCanLaunch({
     tool,
     mode,
-    installMissing: options.installMissingTool === true,
     onProgress: (message) => { emit(message, options) },
   })
 

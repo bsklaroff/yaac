@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import { setDataDir } from '@yaac/shared/paths'
 import { worktreeDir } from '@yaac/shared/project-paths'
+import { agentBinDirs } from '@yaac/shared/tool-install'
 import { substrateFixture } from '@yaac/test-utils/fake-driver'
 import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
@@ -151,7 +152,7 @@ describe('launchWorkspace', () => {
     await expect(launchWorkspace(spec({ mounts }))).resolves.toBeDefined()
   })
 
-  it('puts the staged helper scripts somewhere the workspace will find them', async () => {
+  it('puts the staged helper scripts and the pinned agents where the workspace will find them', async () => {
     // A pod gets these from `/usr/local/bin` already being on PATH; there is
     // no writable system bin here, so they go in the workspace's own.
     const staged = path.join(dataDir, 'staged-yaac-mama')
@@ -165,7 +166,12 @@ describe('launchWorkspace', () => {
     expect(await fsp.realpath(path.join(binDir, 'yaac-mama'))).toBe(await fsp.realpath(staged))
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
-    expect(env.env.PATH?.startsWith(binDir)).toBe(true)
+    // Then yaac's pinned agents, ahead of the host's own: a codex the user
+    // installed is at whatever version they last updated it to.
+    const [first, ...rest] = env.env.PATH?.split(path.delimiter) ?? []
+    expect(first).toBe(binDir)
+    expect(rest.slice(0, agentBinDirs().length)).toEqual(agentBinDirs())
+    expect(rest.slice(agentBinDirs().length).join(path.delimiter)).toBe(process.env.PATH)
   })
 
   it('translates an env value naming a mounted path to that mount\'s source', async () => {

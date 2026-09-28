@@ -107,11 +107,6 @@ export const worktreeApp = new Hono()
       // in the image; createWorktree rejects the combination before it
       // provisions anything.
       mode: z.enum(['tui', 'acp']).optional(),
-      // Let the runtime install the agent's CLI rather than refusing a
-      // create naming one it hasn't got — the caller carrying a user who
-      // said yes to that (the `MISSING_TOOL` retry, `--install-missing`).
-      // Only a runtime with no image to supply tools acts on it.
-      installMissingTool: z.boolean().optional(),
       // Reference branch for the fresh worktree (no `origin/` prefix).
       // Omitted → the project's referenceBranch config default, else the
       // remote default branch.
@@ -196,7 +191,6 @@ export const worktreeApp = new Hono()
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
         if (setup.model !== undefined) opts.model = setup.model
         opts.mode = setup.mode
-        if (body.installMissingTool === true) opts.installMissingTool = true
         opts.permissionMode = setup.permissionMode
         if (groupId !== undefined) opts.groupId = groupId
         return await createWorktree(body.project, opts)

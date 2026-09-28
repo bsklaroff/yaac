@@ -61,7 +61,7 @@ describe('buildAgentCmd', () => {
       )
     })
 
-    it('runs codex in the workspace, hands it its session hook, trusts the repository, and bypasses hook trust', () => {
+    it('runs codex in the workspace, hands it its session hook, trusts the repository, and opens no startup screen', () => {
       // What codex receives, after the launch shell has had its turn: the
       // command is run with `codex` swapped for a printer of its argv.
       const cmd = buildAgentCmd({
@@ -80,11 +80,14 @@ describe('buildAgentCmd', () => {
         // The title items are how a `/model` reaches yaac: codex rewrites its
         // title's last segment the moment one lands.
         '-c', 'tui.terminal_title=["activity","project-name","model"]',
+        // A host codex behind the latest release would otherwise open an
+        // "Update available" screen.
+        '-c', 'check_for_update_on_startup=false',
         '-c', 'hooks.SessionStart=[{matcher="*",hooks=[{type="command",'
           + 'command="yaac-agent-links \\"$CODEX_HOME\\" codex",timeout=10}]}]',
         // The root codex keys folder trust on, and the bypass that runs every
-        // hook untrusted: between them codex opens no startup screen, which
-        // would swallow the prompt pasted into it.
+        // hook untrusted: with the update check off, codex opens no startup
+        // screen, which would swallow the prompt pasted into it.
         '-c', 'projects={"/data/repo"={trust_level="trusted"}}',
         '--dangerously-bypass-hook-trust',
       ])

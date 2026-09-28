@@ -75,7 +75,7 @@ describe('tool install sessions', () => {
     expect(getToolInstall(started.id).error).toContain('still cannot be found')
   })
 
-  // The manual command is the pinned one, the same a host install runs.
+  // The manual command is the pinned one.
   it('codex without npm errors with the pinned manual install', async () => {
     delete process.env.YAAC_E2E_CODEX_INSTALL_CLI
     const started = startToolInstall('codex')
