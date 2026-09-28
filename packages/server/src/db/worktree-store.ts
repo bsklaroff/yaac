@@ -218,7 +218,7 @@ export async function deleteSpareWorktreeRow(
  * failed before it touched the pod.
  *
  * Without this the row would have to be deleted, and a spare pod whose row is
- * gone is unreapable: `listSpareWorktreeIds` is what the sweep collects a
+ * gone is unreapable: `listProjectWorktreeIds` is what the sweep collects a
  * dead spare's checkout on, so a rowless one would keep its checkout forever.
  * Re-flagging hands the pod back to the ordinary spare lifecycle instead —
  * a later claim can take it, and if none does the sweep collects it.
@@ -579,7 +579,7 @@ export async function setWorktreePermissionMode(
  * Unclaimed spares are excluded, and that exclusion is load-bearing: the
  * reaper tears down anything in this set whose pod it cannot find, and a
  * warm spare's pod is deliberately not a worktree pod. Their own sweep
- * (`listSpareWorktreeIds`) collects them.
+ * (`listProjectWorktreeIds`) collects them.
  */
 export async function listLiveWorktreeRows(): Promise<Array<{
   projectSlug: string
@@ -619,19 +619,24 @@ export async function listLiveWorktreeRows(): Promise<Array<{
 }
 
 /**
- * The unclaimed spares of a project — what the startup sweep collects a
- * dead spare's checkout on the strength of.
+ * Every worktree id of a project, each mapped to whether it is an unclaimed
+ * spare — what the orphan sweep collects a dead spare's checkout on the
+ * strength of, and what it tells a surviving log from a stray by.
  *
  * The question a spare's row exists to answer: once its pod is gone, a
  * reaped spare and a stopped worktree look identical on disk, and deleting
  * the wrong one takes a user's uncommitted work with it.
+ *
+ * One id-only read for the whole project, not a lookup per candidate: the
+ * sweep runs every resync, and PGlite answers on the event loop, so a query
+ * per stopped worktree stalls every terminal the server is relaying.
  */
-export async function listSpareWorktreeIds(projectSlug: string): Promise<Set<string>> {
+export async function listProjectWorktreeIds(projectSlug: string): Promise<Map<string, boolean>> {
   const db = await getDb()
-  const rows = await db.select({ worktreeId: worktrees.worktreeId })
+  const rows = await db.select({ worktreeId: worktrees.worktreeId, spare: worktrees.spare })
     .from(worktrees)
-    .where(and(eq(worktrees.projectSlug, projectSlug), eq(worktrees.spare, true)))
-  return new Set(rows.map((r) => r.worktreeId))
+    .where(eq(worktrees.projectSlug, projectSlug))
+  return new Map(rows.map((r) => [r.worktreeId, r.spare]))
 }
 
 /**

@@ -173,9 +173,14 @@ env COLORTERM=truecolor $TMUX -u new-session -d -s yaac -n "$YAAC_TOOL" -x 500 -
 #    tmux forwards RGB escapes to the attached terminal instead of
 #    quantizing to the 256-color palette (what made delta's diff
 #    backgrounds unreadable).
+#  - escape-time 10: tmux holds a lone ESC this long to see whether it
+#    starts a key sequence. The 500ms default delays every Esc press (how an
+#    agent turn is interrupted); a sequence arrives in one write, so 10ms
+#    still reassembles one a slow link splits.
 #  - bind-key k: C-b k kills the whole tmux server (session then reaped as
 #    a zombie) — guard the one-keystroke session killer with a confirm.
 $TMUX \
+  set-option -s escape-time 10 \; \
   set-option -g history-limit 200000 \; \
   set-option -g mouse on \; \
   set-option -g focus-events on \; \

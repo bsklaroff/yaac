@@ -125,7 +125,9 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // mid-create comes straight from the provisioning registry, which is
     // same-process and populated synchronously before a create stages
     // anything, so the sweep can never see a fresher directory than the
-    // registry entry that shields it. Self-gating: once per server life.
+    // registry entry that shields it. Runs every pass (triggers: [] means
+    // resync only): the global walk is a readdir and one id read per
+    // project, and the runtime throttles its node-local half.
     { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
     ...credentialSync,
     // Model-generated titles for untitled worktrees, after the
