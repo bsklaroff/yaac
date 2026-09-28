@@ -4,7 +4,12 @@ import os from 'node:os'
 import path from 'node:path'
 
 vi.mock('#domain/worktrees/list', () => ({ listActiveWorktrees: vi.fn() }))
-vi.mock('#db/worktree-store', () => ({ setWorktreeTitle: vi.fn() }))
+// The real store stays, so a race can be asserted on the row itself; only the
+// title writer is stubbed, for the call assertions.
+vi.mock('#db/worktree-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof storeModule>()),
+  setWorktreeTitle: vi.fn(),
+}))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
@@ -22,7 +27,9 @@ import { _resetTitleSummarizerForTests } from '#domain/titles/title-summarizer'
 import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { listActiveWorktrees } from '#domain/worktrees/list'
-import { setWorktreeTitle } from '#db/worktree-store'
+import { getProjectWorktreeRows, recordWorktreeCreated, setWorktreeTitle } from '#db/worktree-store'
+import type * as storeModule from '#db/worktree-store'
+import { closeDb } from '#db/client'
 import { execFileAsync } from '#lib/shell'
 import type * as shellModule from '#lib/shell'
 import { serverLog } from '#log'
@@ -155,6 +162,7 @@ describe('reconcileGeneratedTitles', () => {
     vi.useRealTimers()
     Object.defineProperty(process, 'platform', platformDesc)
     Object.defineProperty(process, 'arch', archDesc)
+    await closeDb()
     await cleanupTempDir(dataDir)
     await fs.rm(homeDir, { recursive: true, force: true })
   })
@@ -192,7 +200,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(call.opts?.env?.LD_LIBRARY_PATH).toBe(path.dirname(bin))
     expect(call.opts?.env?.DYLD_LIBRARY_PATH).toBe(path.dirname(bin))
 
-    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE)
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE, { ifUntitled: true })
   })
 
   it('reuses a cached runtime and model instead of downloading', async () => {
@@ -204,7 +212,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(downloads()).toEqual([])
     expect(inferences()).toHaveLength(1)
     expect(inferences()[0].file).toBe(bin)
-    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE)
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE, { ifUntitled: true })
   })
 
   it('fetches the macOS asset on darwin/x64', async () => {
@@ -221,7 +229,7 @@ describe('reconcileGeneratedTitles', () => {
     listOf(session({ prompt: 'the parser has a bug with nested arrays, please fix it and add a regression test' }))
     await reconcileGeneratedTitles()
     await flush()
-    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', 'Fix the parser bug')
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', 'Fix the parser bug', { ifUntitled: true })
   })
 
   it('caps a runaway title at the shared title length limit', async () => {
@@ -230,7 +238,7 @@ describe('reconcileGeneratedTitles', () => {
     listOf(session({ prompt: 'w'.repeat(300) }))
     await reconcileGeneratedTitles()
     await flush()
-    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', 'w'.repeat(MAX_TITLE_LENGTH))
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', 'w'.repeat(MAX_TITLE_LENGTH), { ifUntitled: true })
   })
 
   it('truncates a huge first message to a bounded payload', async () => {
@@ -274,8 +282,8 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
 
-    expect(mockSetTitle).toHaveBeenCalledWith('p', 'gha', 'github action workflow set up')
-    expect(mockSetTitle).toHaveBeenCalledWith('q', 'link', 'Fix it now')
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 'gha', 'github action workflow set up', { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith('q', 'link', 'Fix it now', { ifUntitled: true })
   })
 
   it('serializes inference across worktrees and sets the runtime up once', async () => {
@@ -347,7 +355,25 @@ describe('reconcileGeneratedTitles', () => {
 
     release(TITLE)
     await flush()
-    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE)
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE, { ifUntitled: true })
+  })
+
+  it('keeps a rename that lands while the model is still running', async () => {
+    const real = await vi.importActual<typeof storeModule>('#db/worktree-store')
+    mockSetTitle.mockImplementation(real.setWorktreeTitle)
+    await seedCache()
+    await recordWorktreeCreated({ projectSlug: 'p', worktreeId: 's1' })
+    let release!: (title: string) => void
+    reply = () => new Promise<string>((r) => { release = r })
+    listOf(session())
+
+    await reconcileGeneratedTitles()
+    await flush()
+    await real.setWorktreeTitle('p', 's1', 'my rename')
+    release(TITLE)
+    await flush()
+
+    expect((await getProjectWorktreeRows('p')).get('s1')?.title).toBe('my rename')
   })
 
   it('vendors the OpenMP runtime into the cache when the host lacks it', async () => {
@@ -367,7 +393,7 @@ describe('reconcileGeneratedTitles', () => {
 
     // Re-checked after the repair, then used for real: the session is titled.
     expect(smokeChecks()).toHaveLength(2)
-    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE)
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE, { ifUntitled: true })
   })
 
   it('reports one actionable error when the runtime cannot run and cannot be repaired', async () => {

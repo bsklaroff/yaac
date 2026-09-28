@@ -413,7 +413,6 @@ export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
   }
 }
 
-/** Set (or, with a blank title, clear) a worktree's display title. */
 /**
  * Record the bearer this worktree's `yaac-mama` will present, as a SHA-256
  * of the token itself.
@@ -454,16 +453,26 @@ export async function findWorktreeByMamaToken(
   return rows[0]
 }
 
+/**
+ * Set (or, with a blank title, clear) a worktree's display title.
+ *
+ * `ifUntitled` makes the write conditional on the row still having no title,
+ * checked in the same statement — what the title generator uses so a rename
+ * landing while its model runs is never overwritten.
+ */
 export async function setWorktreeTitle(
   projectSlug: string,
   worktreeId: string,
   title: string,
+  { ifUntitled = false }: { ifUntitled?: boolean } = {},
 ): Promise<void> {
   const normalized = normalizeTitle(title)
   const db = await getDb()
   await db.update(worktrees)
     .set({ title: normalized === '' ? null : normalized })
-    .where(key(projectSlug, worktreeId))
+    .where(ifUntitled
+      ? and(key(projectSlug, worktreeId), isNull(worktrees.title))
+      : key(projectSlug, worktreeId))
   notifyWorktreeListChanged()
 }
 
