@@ -36,6 +36,7 @@ import {
   requireCluster,
   execInJob,
   cleanupWorktreeJobs,
+  testContainerOwnerLabel,
 } from '@yaac/test-utils/setup'
 import {
   startMockLLM,
@@ -80,8 +81,8 @@ interface MockUpstreamRegistry {
  */
 async function startMockUpstreamRegistry(): Promise<MockUpstreamRegistry> {
   // The image the local registry already runs — normally present; pull as
-  // a fallback. The yaac-test- tag keeps leaked containers visible to the
-  // global-setup test-container sweep.
+  // a fallback. The owner label is what the global setup's leaked-container
+  // sweep selects on.
   try {
     await execFileAsync('podman', ['image', 'inspect', 'docker.io/library/registry:2'])
   } catch {
@@ -92,7 +93,7 @@ async function startMockUpstreamRegistry(): Promise<MockUpstreamRegistry> {
   const name = `yaac-test-mock-upstream-${crypto.randomBytes(4).toString('hex')}`
   await execFileAsync('podman', [
     'run', '-d', '--name', name,
-    '--label', 'yaac.test=true',
+    '--label', testContainerOwnerLabel(),
     '--network', 'kind',
     '-p', '127.0.0.1::5000',
     'yaac-test-upstream-registry:2',

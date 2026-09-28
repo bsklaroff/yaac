@@ -297,7 +297,12 @@ reattach to, and the next prewarm sweep re-derives what is missing.
 - Existence checks go to `registryHasTag()` for every layer: the registry
   is what a pod pulls from, and on an in-cluster server the host store is
   not even reachable. The install machine's own store is a build cache
-  only, swept by `gcHostImages` at the end of each install.
+  only, swept by `gcHostImages` at the end of each install — all but the
+  e2e suite's `yaac-test-*` repos, which a concurrent test run on the same
+  engine may be building or pushing. The suite reclaims those itself: its
+  global setup ends with `gcTestImages()`, or, where several test rigs
+  share one engine (`YAAC_TEST_SHARED_ENGINE=1`), the host runs
+  `pnpm gc:test-images` while every rig is idle.
 - Untrusted-layer builds require a healthy cluster: a chain reaching
   `Dockerfile.yaac`/`Dockerfile.user` errors with a pointer to `yaac cluster
   check` when there isn't one.

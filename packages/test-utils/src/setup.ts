@@ -21,7 +21,7 @@ import { registerTestProject } from '#api'
 import { PROXY_APP_NAME, PROXY_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
-import { e2eMkdtemp, removeScratchTree } from '#tmp'
+import { e2eMkdtemp, removeScratchTree, testTmpBase } from '#tmp'
 import { git } from '#git'
 
 const execFileAsync = promisify(execFile)
@@ -31,6 +31,23 @@ const execFileAsync = promisify(execFile)
  * Keeps test images separate from images used by the running application.
  */
 export const TEST_IMAGE_PREFIX = 'yaac-test'
+
+/**
+ * `key=value` label on every podman container a suite starts on the host
+ * engine, naming the checkout-independent thing that owns it: this rig's
+ * scratch base (`testTmpBase()`, under its ambient data dir). Two test rigs
+ * share one host engine, so the global setup's leaked-container sweep
+ * selects on this rather than on an image or name prefix — which would
+ * reach into the other rig's run and kill its containers mid-test.
+ *
+ * Precondition: every rig on an engine has its own data dir
+ * (`YAAC_DATA_DIR`), which a rig needs anyway for its own server and
+ * scratch. Two rigs left on the default `~/.yaac` would share this label
+ * and sweep each other's containers again.
+ */
+export function testContainerOwnerLabel(): string {
+  return `yaac.test.owner=${testTmpBase()}`
+}
 
 /**
  * Unique suffix per test FILE: vitest isolates each file in its own forked
