@@ -14,9 +14,18 @@ brew install bsklaroff/yaac/yaac
 yaac cluster install   # cluster + CNI + registry + every image yaac ships
 ```
 
+Upgrading an install from before yaac used core `kind` and the
+`virglrenderer-krun` rename takes two one-time steps first (why:
+[homebrew/README.md](homebrew/README.md#migrating-an-existing-install)):
+
+```sh
+brew uninstall --ignore-dependencies yaac-kind && brew install kind && brew link kind
+brew uninstall --ignore-dependencies virglrenderer && brew upgrade yaac-libkrun
+```
+
 The formula pulls in the whole toolchain: `node`, `kubectl`,
-`podman` (>= 6.0), a pinned `kind` build (`yaac-kind` — see the
-[version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)),
+`podman` (>= 6.0), `kind` (>= v0.33.0 — see the
+[version note](docs/cluster-setup.md#kind-and-kubernetes-versions)),
 and a patched `krunkit`+`libkrun` pair (`yaac-krunkit`/`yaac-libkrun` —
 stock krunkit's virtiofs reports every file as owned by whichever process
 asks, which breaks hostPath writes from gVisor worktree pods; see the
@@ -42,7 +51,7 @@ Install the toolchain the formula would otherwise pull in:
 brew trust bsklaroff/yaac
 brew trust libkrun/krun
 brew tap libkrun/krun
-brew install node pnpm kubernetes-cli podman bsklaroff/yaac/yaac-kind bsklaroff/yaac/yaac-krunkit
+brew install node pnpm kubernetes-cli podman kind bsklaroff/yaac/yaac-krunkit
 # For the containerless driver (worktrees as host processes, no image):
 brew install tmux socat fd ripgrep
 ```
@@ -68,7 +77,7 @@ export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"   # or just open a new shell
 nvm install 22.22.2 && nvm alias default 22.22.2
 npm install -g pnpm
 
-curl -fsSLo kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-$(dpkg --print-architecture)"
+curl -fsSLo kind "https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-$(dpkg --print-architecture)"
 sudo install -m 755 kind /usr/local/bin/kind && rm kind
 curl -fsSLo kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl"
 sudo install -m 755 kubectl /usr/local/bin/kubectl && rm kubectl
@@ -87,9 +96,9 @@ frontend's Vite build relies on to load its `.ts` config. With the apt build,
 `Unknown file extension ".ts"`. nvm installs the official Node binaries, which
 enable type-stripping by default (Node >= 22.18), so the build works.
 
-The apt-shipped podman 5.x works fine on Linux and pairs with stock kind
-v0.32.0; only podman 6.x needs the pinned kind build (see the
-[version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)).
+The apt-shipped podman 5.x works fine on Linux. kind must be v0.33.0 or
+newer whichever podman you run (see the
+[version note](docs/cluster-setup.md#kind-and-kubernetes-versions)).
 yaac drives the **rootful** podman engine on Linux — kind's node needs the
 host netfilter and routing access that rootless podman doesn't delegate, or the
 calico-node DaemonSet hangs (see

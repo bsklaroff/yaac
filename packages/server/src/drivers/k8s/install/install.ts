@@ -382,12 +382,12 @@ export async function runClusterInstall(
   const cluster = env.kindCluster
   // Adopt mode creates no cluster, so kind is not part of its shopping
   // list — the target may be any cluster the kubeconfig points at.
-  const versions = await requireBinaries(deps, { requireKind: !opts.adoptCni })
+  const kindVersion = await requireBinaries(deps, { requireKind: !opts.adoptCni })
 
   if (deps.platform === 'darwin') await ensurePodmanMachineSetup(deps)
   else await ensureRootfulPodmanReachable(deps)
 
-  if (!opts.adoptCni) await preflightKindProvider(deps, versions)
+  if (!opts.adoptCni) await preflightKindProvider(deps, kindVersion)
 
   if (opts.adoptCni) {
     // The gates run FIRST, before anything is applied: an adoption that
@@ -609,14 +609,10 @@ export function renderKindConfig(
   return `${published}${worker.repeat(opts.nodes - 1)}`
 }
 
-interface BinaryVersions {
-  podman: string
-  kind: string
-}
-
 /**
  * All the setup-time binaries up front, reported together so a fresh
  * machine gets one complete shopping list instead of failing serially.
+ * Returns `kind version`'s output.
  *
  * `requireKind` is false in adopt mode: nothing is created there, and the
  * adopted cluster need not be a kind one at all. podman stays required
@@ -625,12 +621,11 @@ interface BinaryVersions {
 async function requireBinaries(
   deps: ClusterInstallDeps,
   opts: { requireKind: boolean } = { requireKind: true },
-): Promise<BinaryVersions> {
+): Promise<string> {
   const missing: string[] = []
-  let podman = ''
   let kind = ''
   try {
-    podman = (await deps.run('podman', ['--version'])).stdout.trim()
+    await deps.run('podman', ['--version'])
   } catch {
     missing.push('podman — yaac builds session images with it and hosts the kind node on it.\n'
       + '  Install: brew install podman (macOS) / sudo apt install podman (Debian/Ubuntu)')
@@ -640,8 +635,8 @@ async function requireBinaries(
   } catch {
     if (opts.requireKind) {
       missing.push('kind — creates the local kubernetes cluster.\n'
-        + '  Install: brew install bsklaroff/yaac/yaac-kind\n'
-        + '  (with podman 6.x, plain kind <= v0.32.0 is broken — see kind#4201)')
+        + '  Install: brew install kind (macOS) / go install sigs.k8s.io/kind@latest\n'
+        + '  (v0.33.0 or newer)')
     }
   }
   try {
@@ -653,53 +648,27 @@ async function requireBinaries(
   if (missing.length > 0) {
     throw new ClusterInstallError(`Missing required tools:\n\n${missing.join('\n')}`)
   }
-  return { podman, kind }
+  return kind
 }
 
 /**
- * The known kind/podman version skew: podman 6.0 changed the container
- * label format from a map to a slice, which breaks how kind <= v0.32.0
- * enumerates its node containers (`kind get clusters` exits 125 —
- * kind#4201, fixed by the unreleased kind#4203). Returns the fix message
- * when the pair is provably broken, null when it is fine or unknowable
- * (any v0.33 pre-release may or may not include the fix — the pinned
- * yaac-kind build itself reports `v0.33.0-alpha+<sha>` — so those are
- * left to the functional preflight).
+ * kind must be v0.33.0 or newer, for two reasons: k8s/kind-config.yaml pins
+ * a node image published for that release (kind only guarantees an image
+ * works with the release that built it), and podman 6.0's container label
+ * format breaks how kind <= v0.32.0 enumerates its node containers (`kind
+ * get clusters` exits 125 — kind#4201). Returns the fix message for an
+ * older kind, null otherwise (unparseable output is left to the functional
+ * preflight).
  */
-export function diagnoseKindPodmanSkew(podmanVersionOut: string, kindVersionOut: string): string | null {
-  const podmanMajor = podmanMajorVersion(podmanVersionOut)
-  const kindMatch = /v(\d+)\.(\d+)\.(\d+)(\S*)/.exec(kindVersionOut)
-  if (!Number.isInteger(podmanMajor) || podmanMajor < 6 || !kindMatch) return null
-
-  const [, majRaw, minRaw, , rest] = kindMatch
-  const major = Number(majRaw)
-  const minor = Number(minRaw)
-  // Builds from kind main after the v0.32.0 tag report `v0.33.0-alpha`
-  // (optionally with `.N+<commit>` stamped in); the version alone cannot
-  // say whether they carry the fix, so leave them to the functional probe.
-  if (rest.includes('+') || (minor === 33 && rest.startsWith('-alpha'))) return null
-  const broken = major === 0 && minor <= 32
-  if (!broken) return null
-
+function diagnoseOldKind(kindVersionOut: string): string | null {
+  const match = /v(\d+)\.(\d+)\.\d+/.exec(kindVersionOut)
+  if (!match || Number(match[1]) !== 0 || Number(match[2]) > 32) return null
   return (
-    `podman ${podmanMajor}.x cannot drive this kind build (${kindVersionOut.split('\n')[0]}): `
-    + 'podman 6.0 changed the container label format, which breaks cluster '
-    + 'enumeration in kind <= v0.32.0 (kind#4201; fixed by kind#4203, '
-    + 'unreleased). Install the pinned build:\n'
-    + '  brew install bsklaroff/yaac/yaac-kind\n'
-    + 'or build kind from main:\n'
-    + '  go install sigs.k8s.io/kind@main\n'
-    + '(note `@latest` resolves to the broken v0.32.0 tag)'
+    `kind v0.33.0 or newer is required (found ${kindVersionOut.split('\n')[0]}): `
+    + 'the pinned node image is built for it, and podman 6.x breaks cluster '
+    + 'enumeration in older releases (kind#4201). Upgrade:\n'
+    + '  brew upgrade kind (macOS) / go install sigs.k8s.io/kind@latest'
   )
-}
-
-function podmanMajorVersion(podmanVersionOut: string): number {
-  return Number(/(\d+)\.\d+/.exec(podmanVersionOut)?.[1] ?? Number.NaN)
-}
-
-/** True when the versions leave the kind#4201 skew possible but unprovable. */
-function kindPodmanSkewPossible(podmanVersionOut: string, kindVersionOut: string): boolean {
-  return podmanMajorVersion(podmanVersionOut) >= 6 && /v0\.33\.\d+-alpha/.test(kindVersionOut)
 }
 
 /**
@@ -731,13 +700,13 @@ async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<v
 
 /**
  * Functional preflight for the kind/podman pair: `kind get clusters` is
- * exactly the call the skew breaks (exit 125), and on a healthy pair it is
- * a harmless read. Diagnose the known skew explicitly instead of letting
- * cluster creation die with a bare exit code.
+ * exactly the call the kind#4201 skew breaks (exit 125), and on a healthy
+ * pair it is a harmless read. Diagnose an old kind explicitly instead of
+ * letting cluster creation die with a bare exit code.
  */
-async function preflightKindProvider(deps: ClusterInstallDeps, versions: BinaryVersions): Promise<void> {
-  const skew = diagnoseKindPodmanSkew(versions.podman, versions.kind)
-  if (skew) throw new ClusterInstallError(skew)
+async function preflightKindProvider(deps: ClusterInstallDeps, kindVersion: string): Promise<void> {
+  const old = diagnoseOldKind(kindVersion)
+  if (old) throw new ClusterInstallError(old)
   try {
     await deps.run('kind', ['get', 'clusters'], { env: kindEnv() })
   } catch (err) {
@@ -745,13 +714,8 @@ async function preflightKindProvider(deps: ClusterInstallDeps, versions: BinaryV
       || (err instanceof Error ? err.message : String(err))
     throw new ClusterInstallError(
       `\`kind get clusters\` failed under the podman provider:\n  ${stderr.split('\n')[0]}\n`
-      + 'Check that podman is running (`podman info`).'
-      + (kindPodmanSkewPossible(versions.podman, versions.kind)
-        ? '\n\nIf podman itself is healthy: this kind pre-release build may '
-          + 'predate the kind#4203 fix for podman 6.x label parsing '
-          + '(kind#4201). Install the pinned build, which is stamped past '
-          + 'the fix:\n  brew install bsklaroff/yaac/yaac-kind'
-        : ''),
+      + 'Check that podman is running (`podman info`), and that kind is a '
+      + 'v0.33.0+ release rather than a pre-release build (kind#4201).',
     )
   }
 }

@@ -802,6 +802,27 @@ running — a release boundary, since nothing records a server's build.
 Remove it together with `migrateDataDirLayout`'s lock handling, which is
 the other half of the same window.
 
+## The tap's `yaac-kind` redirect and the brew migration steps
+
+`homebrew/tap_migrations.json` maps the retired `yaac-kind` formula (a kind
+build pinned past kind#4203, from before kind v0.33.0 shipped the fix) to
+core `kind`. The "Migrating an existing install" section of
+`homebrew/README.md`, and the two commands in the root README that point at
+it, tell an older tap install how to get from `yaac-kind` to core `kind` and
+from the `libkrun/krun` tap's deleted `virglrenderer` to
+`virglrenderer-krun`. Brew does neither by itself.
+
+**What it reads:** a stale `bsklaroff/yaac/yaac-kind` name, from an old
+script or doc. The prose serves a Mac that still has the `yaac-kind` keg or
+the old `virglrenderer` keg installed.
+
+**What breaks silently if it goes too early:** nothing. A stale name fails
+loudly with "No available formula", and an unmigrated install hits a
+conflict error it can search for. It just loses the recipe.
+
+**How to tell it is safe to remove:** a season after the first release
+that depends on core `kind`. The redirect and the prose go together.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

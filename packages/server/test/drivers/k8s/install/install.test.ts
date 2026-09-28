@@ -43,16 +43,15 @@ type StreamMock = ReturnType<typeof vi.fn<
 >>
 
 /**
- * deps.run responses for a healthy linux host: podman 6 paired with a
- * post-#4203 kind dev build (the skew diagnosis leaves dev builds to the
- * functional probe, which succeeds here).
+ * deps.run responses for a healthy linux host: podman 6 paired with a kind
+ * release past the kind#4201 fix.
  */
 function happyRun(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   if (file === 'podman' && args[0] === '--version') {
     return Promise.resolve({ stdout: 'podman version 6.0.0\n', stderr: '' })
   }
   if (file === 'kind' && args[0] === 'version') {
-    return Promise.resolve({ stdout: 'kind v0.33.0-alpha.100+f1ec7694f59f57 go1.24.4 linux/arm64\n', stderr: '' })
+    return Promise.resolve({ stdout: 'kind v0.33.0 go1.24.4 linux/arm64\n', stderr: '' })
   }
   if (file === 'kind' && args[0] === 'get' && args[1] === 'clusters') {
     return Promise.resolve({ stdout: '', stderr: '' })
@@ -667,10 +666,10 @@ describe('runClusterInstall', () => {
     expect(deps.runStreaming).not.toHaveBeenCalled()
   })
 
-  it('diagnoses the podman-6/kind-0.32 skew before touching anything', async () => {
+  it.each(['5.8.1', '6.0.0'])('refuses kind <= v0.32.0 under podman %s before touching anything', async (podman) => {
     const run = vi.fn((file: string, args: string[]) => {
       if (file === 'podman' && args[0] === '--version') {
-        return Promise.resolve({ stdout: 'podman version 6.0.0\n', stderr: '' })
+        return Promise.resolve({ stdout: `podman version ${podman}\n`, stderr: '' })
       }
       if (file === 'kind' && args[0] === 'version') {
         return Promise.resolve({ stdout: 'kind v0.32.0 go1.24.4 darwin/arm64\n', stderr: '' })
@@ -680,7 +679,8 @@ describe('runClusterInstall', () => {
     const deps = makeDeps({ run })
     const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
-    expect((err as Error).message).toContain('yaac-kind')
+    expect((err as Error).message).toContain('v0.33.0 or newer')
+    expect((err as Error).message).toContain('brew upgrade kind')
     expect(deps.ensureRegistry).not.toHaveBeenCalled()
   })
 
@@ -690,7 +690,7 @@ describe('runClusterInstall', () => {
         return Promise.resolve({ stdout: 'podman version 5.8.1\n', stderr: '' })
       }
       if (file === 'kind' && args[0] === 'version') {
-        return Promise.resolve({ stdout: 'kind v0.32.0 go1.24.4 linux/arm64\n', stderr: '' })
+        return Promise.resolve({ stdout: 'kind v0.33.0 go1.24.4 linux/arm64\n', stderr: '' })
       }
       if (file === 'kind' && args[0] === 'get' && args[1] === 'clusters') {
         return Promise.reject(Object.assign(new Error('exit 125'), { stderr: 'cannot connect to podman' }))
@@ -701,7 +701,6 @@ describe('runClusterInstall', () => {
     expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('kind get clusters')
     expect((err as Error).message).toContain('cannot connect to podman')
-    expect((err as Error).message).not.toContain('kind#4203')
   })
 
   it('fails with the rootful-podman fix when the rootful socket is unreachable', async () => {
@@ -710,7 +709,7 @@ describe('runClusterInstall', () => {
         return Promise.resolve({ stdout: 'podman version 6.0.0\n', stderr: '' })
       }
       if (file === 'kind' && args[0] === 'version') {
-        return Promise.resolve({ stdout: 'kind v0.33.0-alpha go1.24.4 linux/arm64\n', stderr: '' })
+        return Promise.resolve({ stdout: 'kind v0.33.0 go1.24.4 linux/arm64\n', stderr: '' })
       }
       if (file === 'podman' && args[0] === 'info') {
         return Promise.reject(Object.assign(new Error('exit 125'), { stderr: 'cannot connect' }))
@@ -720,25 +719,6 @@ describe('runClusterInstall', () => {
     const err = await runClusterInstall({}, makeDeps({ run, platform: 'linux' })).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('systemctl enable --now podman.socket')
-  })
-
-  it('adds the skew hint to a probe failure when the kind alpha may predate the fix', async () => {
-    const run = vi.fn((file: string, args: string[]) => {
-      if (file === 'podman' && args[0] === '--version') {
-        return Promise.resolve({ stdout: 'podman version 6.0.0\n', stderr: '' })
-      }
-      if (file === 'kind' && args[0] === 'version') {
-        return Promise.resolve({ stdout: 'kind v0.33.0-alpha go1.26.4 darwin/arm64\n', stderr: '' })
-      }
-      if (file === 'kind' && args[0] === 'get' && args[1] === 'clusters') {
-        return Promise.reject(Object.assign(new Error('exit 125'), { stderr: 'failed to list clusters' }))
-      }
-      return Promise.resolve({ stdout: '', stderr: '' })
-    }) as RunMock
-    const err = await runClusterInstall({}, makeDeps({ run })).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterInstallError)
-    expect((err as Error).message).toContain('kind#4203')
-    expect((err as Error).message).toContain('bsklaroff/yaac/yaac-kind')
   })
 
   it('drops the CIDR caches so a long-lived process cannot render for the old cluster', async () => {
@@ -903,31 +883,13 @@ describe('runClusterInstall', () => {
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
   })
 
-  it('refuses a podman 6 / kind <= v0.32.0 pairing, pointing at the tapped build', async () => {
-    const deps = makeDeps({
-      run: vi.fn((file: string, args: string[]) => {
-        if (file === 'kind' && args[0] === 'version') {
-          return Promise.resolve({ stdout: 'kind v0.32.0 go1.24.4 darwin/arm64\n', stderr: '' })
-        }
-        return happyRun(file, args)
-      }) as RunMock,
-    })
-    await expect(runClusterInstall({}, deps)).rejects.toThrow(/kind#4201/)
-    await expect(runClusterInstall({}, deps)).rejects.toThrow(/bsklaroff\/yaac\/yaac-kind/)
-  })
-
   it.each([
-    ['podman 5.x with a pre-fix kind', 'podman version 5.8.1\n', 'kind v0.32.0 go1.24 linux/amd64\n'],
-    ['a kind release past the fix', 'podman version 6.0.0\n', 'kind v0.33.0 go1.24 linux/amd64\n'],
-    ['a bare alpha that may carry the fix', 'podman version 6.1.0\n', 'kind v0.33.0-alpha go1.24 linux/amd64\n'],
-    ['a dev build with a commit suffix', 'podman version 6.0.0\n', 'kind v0.33.0-alpha.100+f1ec7694f59f57 go1.24 linux/arm64\n'],
-    ['unparseable version output', 'garbage\n', 'garbage\n'],
-  ])('leaves %s to the functional probe', async (_label, podmanOut, kindOut) => {
+    ['a kind release', 'kind v0.33.0 go1.24 linux/amd64\n'],
+    ['a v0.33 pre-release build', 'kind v0.33.0-alpha+f1ec7694f59f57 go1.24 linux/arm64\n'],
+    ['unparseable version output', 'garbage\n'],
+  ])('leaves %s to the functional probe', async (_label, kindOut) => {
     const deps = makeDeps({
       run: vi.fn((file: string, args: string[]) => {
-        if (file === 'podman' && args[0] === '--version') {
-          return Promise.resolve({ stdout: podmanOut, stderr: '' })
-        }
         if (file === 'kind' && args[0] === 'version') {
           return Promise.resolve({ stdout: kindOut, stderr: '' })
         }

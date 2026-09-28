@@ -21,6 +21,9 @@ class YaacLibkrun < Formula
   homepage "https://github.com/libkrun/libkrun"
   url "https://github.com/containers/libkrun/archive/refs/tags/v1.19.4.tar.gz"
   sha256 "e8775fab2b460972a67ca6cd936296bb79cdb078d852d712a283cb290dd0b284"
+  # Bumped for the libkrun/krun tap's virglrenderer -> virglrenderer-krun
+  # rename, so existing installs relink against the renamed formula.
+  revision 1
   license "Apache-2.0"
 
   keg_only "it would shadow the libkrun/krun tap's libkrun when both are installed"
@@ -35,11 +38,11 @@ class YaacLibkrun < Formula
   # references the libkrun/krun tap anymore, so on a machine that never
   # tapped it bare names fail to resolve ("No available formula") — and
   # these must be that tap's builds regardless (libkrunfw is tap-only,
-  # virglrenderer is their patched fork). Dependency resolution refuses to
+  # virglrenderer-krun is their patched fork). Dependency resolution refuses to
   # auto-tap even qualified names, hence the README's explicit
   # `brew tap libkrun/krun`.
   depends_on "libkrun/krun/libkrunfw"
-  depends_on "libkrun/krun/virglrenderer"
+  depends_on "libkrun/krun/virglrenderer-krun"
   depends_on "xz"
 
   # Force LinuxComplete semantics so the virtiofs device advertises FUSE

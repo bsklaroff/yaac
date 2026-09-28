@@ -21,7 +21,7 @@ ARG NODE_VERSION=22.22.2
 # kubectl is how the server writes to and execs into the cluster (the typed
 # client covers reads/watches). Within one minor of the kind node's server,
 # which is the whole supported skew.
-ARG KUBECTL_VERSION=v1.36.1
+ARG KUBECTL_VERSION=v1.37.0
 # Baked so auto-titles work with no runtime download: the server resolves the
 # runtime under $HOME/.cache (see domain/titles/llama-cpp.ts), and a pod's
 # $HOME does not survive a roll. Passed in by the builder from LLAMA_CPP_TAG

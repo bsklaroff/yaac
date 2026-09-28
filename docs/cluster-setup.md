@@ -192,21 +192,23 @@ port-forward`), the second as a pod that runs and never turns Ready:
   networks) — `podman network reload` across a driver change leaves
   half-migrated rules behind.
 
-## Version skew: podman 6.x needs a patched kind
+## kind and Kubernetes versions
 
-**Don't bump podman alone.** Podman 6.0 changed the container label format
-from a map to a slice, which breaks how kind <= v0.32.0 enumerates its node
-containers (`kind get clusters` fails with `exit status 125` —
-[kind#4201](https://github.com/kubernetes-sigs/kind/issues/4201)). The fix
-([kind#4203](https://github.com/kubernetes-sigs/kind/pull/4203)) is merged
-to `main` but unreleased (latest stable is v0.32.0; even v0.33.0-alpha
-predates it). The brew formula handles this by depending on `yaac-kind`, a
-build pinned past the fix. Installing by hand: stay on podman 5.x, or build
-kind from `main` (`go install sigs.k8s.io/kind@main` — note `@latest`
-resolves to the v0.32.0 tag, which lacks the fix). `yaac cluster install`
-preflights the pair and reports the skew explicitly. yaac's own podman
-calls are unaffected (they read `.ID`/`.Repository`/`.Tag`, not `.Labels`);
-only kind's provider breaks.
+yaac needs kind v0.33.0 or newer, and `yaac cluster install` refuses an
+older one. There are two reasons:
+
+- **The node image is pinned.** `k8s/kind-config.yaml` pins the node image
+  (Kubernetes 1.37.0) by digest, so a kind upgrade never silently moves new
+  clusters to another Kubernetes minor. kind only guarantees an image works
+  with the release that published it, so the pin and the kind floor move
+  together. Bump both deliberately. Existing clusters keep the version they
+  were created with.
+- **podman 6.x breaks older kind.** Podman 6.0 changed the container label
+  format from a map to a slice, which breaks how kind <= v0.32.0 enumerates
+  its node containers: `kind get clusters` fails with `exit status 125`
+  ([kind#4201](https://github.com/kubernetes-sigs/kind/issues/4201)).
+  yaac's own podman calls are unaffected, since they read
+  `.ID`/`.Repository`/`.Tag`, not `.Labels`. Only kind's provider breaks.
 
 ## What it wires up
 

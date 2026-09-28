@@ -19,18 +19,15 @@ yaac cluster install
 - **`yaac.rb`** — installs the published npm tarball (`@bsklaroff/yaac`; the
   unscoped `yaac` npm name was already taken) into `libexec` and symlinks
   `bin/yaac`. Depends on core `node`, `kubernetes-cli`,
-  `podman` (≥ 6.0, already in core), the tap's `yaac-kind`, and — on
-  macOS/arm64 — the tap's `yaac-krunkit` (which pulls `yaac-libkrun`).
+  `podman` (≥ 6.0), `kind` (≥ v0.33.0 — see "kind and Kubernetes versions"
+  in docs/cluster-setup.md), and — on macOS/arm64 — the tap's
+  `yaac-krunkit` (which pulls `yaac-libkrun`).
   It also carries what the containerless driver needs on the host, since
   that mode has no session image to supply anything: `tmux` (the worktree
   supervisor) and `socat` (the ACP chat transport), both of which a create
   refuses without, plus `fd` and `ripgrep` for the agents' own file search.
   `git`, `curl` and `lsof` are `uses_from_macos` — provided there, installed
   on Linux.
-- **`yaac-kind.rb`** — **temporary.** kind built from the pinned kind#4203
-  merge commit on `main`, because podman 6.x breaks every kind release
-  ≤ v0.32.0 (kind#4201) and v0.33.0 is unreleased. Delete this formula and
-  switch `yaac.rb` to core `kind` once homebrew-core ships kind ≥ v0.33.0.
 - **`yaac-libkrun.rb`** — **temporary.** Upstream libkrun v1.19.4 plus a
   one-line backport (main's d33afa5) forcing `LinuxComplete` virtiofs
   semantics — krunkit ≤ 1.3.x always passes `Simplified` and podman's
@@ -71,11 +68,35 @@ yaac cluster install
    curl -fsSL https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-<VERSION>.tgz | shasum -a 256
    ```
 
-3. Copy `Formula/*.rb` into the `bsklaroff/homebrew-yaac` repo, filling in
-   the `<VERSION>` and `sha256` placeholders in `yaac.rb`, and push.
+3. Mirror this directory into the `bsklaroff/homebrew-yaac` repo — deleting
+   formulas removed here, so a retired one stops being installable — then
+   fill in the `<VERSION>` and `sha256` placeholders in `yaac.rb` and push:
+
+   ```sh
+   rsync -a --delete homebrew/Formula/ <tap>/Formula/
+   cp homebrew/tap_migrations.json <tap>/
+   ```
+
+## Migrating an existing install
+
+Brew cannot carry these over by itself, so each is a one-time manual step:
+
+- **`yaac-kind` → core `kind`.** The tap's retired pinned kind build
+  conflicts with core `kind`: installing `kind` beside it leaves `kind`
+  unlinked, so uninstalling `yaac-kind` afterwards leaves no `kind` on PATH.
+  `--ignore-dependencies` is there because an installed `yaac` from before
+  this change still lists `yaac-kind` as a dependency:
+  `brew uninstall --ignore-dependencies yaac-kind && brew install kind && brew link kind`.
+  `tap_migrations.json` redirects a stale `bsklaroff/yaac/yaac-kind` name
+  to core `kind`, but it does not migrate an installed keg.
+- **`virglrenderer` → `virglrenderer-krun`.** The `libkrun/krun` tap renamed
+  its virglrenderer fork without a rename file, and the new formula
+  conflicts with a still-installed old keg, so `yaac-libkrun`'s rebuild
+  aborts until that keg is gone:
+  `brew uninstall --ignore-dependencies virglrenderer && brew upgrade yaac-libkrun`.
 
 ## Creating the tap (one-time)
 
 Create a GitHub repo named `bsklaroff/homebrew-yaac` containing a `Formula/`
-directory with these files. `brew tap bsklaroff/yaac` then resolves it
+directory with these files, plus `tap_migrations.json` at its root. `brew tap bsklaroff/yaac` then resolves it
 automatically (`brew install bsklaroff/yaac/yaac` taps implicitly).
