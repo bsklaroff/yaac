@@ -15,7 +15,9 @@ import path from 'node:path'
  * home that every worktree of the project already mounts, and the files are
  * the same bytes for all of them. Each carries its own guard — an absent
  * `yaac-agent-report` (a stripped build) is a failed report, never a failed
- * agent.
+ * agent. And each runs its reports one at a time, in order: the pane options
+ * are last-write-wins, so two reports in flight at once can land out of order
+ * and leave the pane on the older value — opencode's `build` shown as `plan`.
  *
  * Verified against the pinned binaries (pi 0.84.4, @opencode/cli 2.0.12).
  */
@@ -28,9 +30,10 @@ import path from 'node:path'
  */
 const PI_EXTENSION = `// Written by yaac: reports the model to the pane (see yaac-agent-report).
 export default function (pi) {
+  let reported = Promise.resolve()
   const report = (model) => {
     if (model === undefined) return
-    pi.exec('yaac-agent-report', [model.provider + '/' + model.id]).catch(() => {})
+    reported = reported.then(() => pi.exec('yaac-agent-report', [model.provider + '/' + model.id])).catch(() => {})
   }
   pi.on('session_start', (_event, ctx) => report(ctx.model))
   pi.on('model_select', (event) => report(event.model))
@@ -70,6 +73,7 @@ export default {
     const abort = new AbortController()
     let model = ''
     let agent = ''
+    let reported = Promise.resolve()
     void (async () => {
       for await (const event of api.event.subscribe({ signal: abort.signal })) {
         const m = MODEL_EVENTS.has(event.type) ? event.data?.model : undefined
@@ -79,7 +83,8 @@ export default {
         if (nextModel === model && nextAgent === agent) continue
         model = nextModel
         agent = nextAgent
-        execFile('yaac-agent-report', [model, agent], () => {})
+        const args = [model, agent]
+        reported = reported.then(() => new Promise((done) => execFile('yaac-agent-report', args, () => done())))
       }
     })().catch(() => {})
     return () => abort.abort()

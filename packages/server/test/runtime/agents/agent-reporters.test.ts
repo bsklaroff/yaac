@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -74,9 +74,9 @@ describe('ensureAgentReporters', () => {
       ].join('\n')], { env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` } },
       (err) => (err ? reject(new Error(err.message)) : resolve()))
     })
-    await vi.waitFor(async () => {
-      expect((await fs.readFile(calls, 'utf8').catch(() => '')).trim().split('\n'))
-        .toEqual(['opencode/big-pickle|', 'opencode/big-pickle|plan', 'opencode/big-pickle|build'])
-    })
+    // The child exits only once its last report has, and reports go out one
+    // at a time — so the file is complete, and in order, by now.
+    expect((await fs.readFile(calls, 'utf8')).trim().split('\n'))
+      .toEqual(['opencode/big-pickle|', 'opencode/big-pickle|plan', 'opencode/big-pickle|build'])
   })
 })
