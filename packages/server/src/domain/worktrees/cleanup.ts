@@ -7,8 +7,7 @@ import { inFlightWorktreeIds, listProvisioning } from './provisioning'
 import {
   applyWorktreeEvent,
   deleteSpareWorktreeRow,
-  getWorktreeRow,
-  listSpareWorktreeIds,
+  listProjectWorktreeIds,
 } from '#db'
 import {
   clearWorktreeTerminating,
@@ -405,13 +404,13 @@ async function gcOrphanSpares(
   liveWorktreeIds: Set<string>,
   sweepStartedAtMs: number,
 ): Promise<void> {
-  const spares = await listSpareWorktreeIds(slug).catch(() => undefined)
-  // A failed read must not reap: every id would look like "not a spare" to
-  // the log sweep below and like nothing at all to the spare sweep, and
-  // guessing here deletes checkouts.
-  if (spares === undefined) return
-  for (const sid of spares) {
-    if (liveWorktreeIds.has(sid)) continue
+  const rows = await listProjectWorktreeIds(slug).catch(() => undefined)
+  // A failed read must not reap: every id would look rowless to the log
+  // sweep below and like nothing at all to the spare sweep, and guessing
+  // here deletes checkouts.
+  if (rows === undefined) return
+  for (const [sid, spare] of rows) {
+    if (!spare || liveWorktreeIds.has(sid)) continue
     if (await inUseBySweep(worktreeDir(slug, sid), sid, sweepStartedAtMs)) continue
     // The row goes only once the bytes actually did: it is the flag on this
     // row that lets the sweep recognize the checkout at all, so dropping it
@@ -434,8 +433,7 @@ async function gcOrphanSpares(
   for (const name of entries) {
     if (!name.endsWith(SESSION_STARTS_SUFFIX)) continue
     const sid = name.slice(0, -SESSION_STARTS_SUFFIX.length)
-    if (liveWorktreeIds.has(sid)) continue
-    if (await getWorktreeRow(slug, sid) !== undefined) continue
+    if (liveWorktreeIds.has(sid) || rows.has(sid)) continue
     const log = worktreeSessionStartsPath(slug, sid)
     if (await inUseBySweep(log, sid, sweepStartedAtMs)) continue
     await fs.rm(log, { force: true }).catch(() => { /* next sweep */ })

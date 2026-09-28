@@ -43,9 +43,16 @@ import { isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/statu
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import { _resetWorktreeStatusStoreForTests } from '#runtime/status/status-store'
 import { serverLog } from '#log'
-import { projectConfigDir, setDataDir, worktreeDir, worktreeStateDir } from '@yaac/shared/project-paths'
+import {
+  projectConfigDir,
+  setDataDir,
+  worktreeDir,
+  worktreeSessionStartsPath,
+  worktreeStateDir,
+} from '@yaac/shared/project-paths'
 import type { WorktreeEvent } from '#db'
-import { applyWorktreeEvent } from '#db'
+import { applyWorktreeEvent, closeDb, listProjectWorktreeIds } from '#db'
+import { recordWorktreeCreated } from '#db/worktree-store'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
 import {
   handleFixture,
@@ -63,8 +70,9 @@ import {
 const mockServerLog = vi.mocked(serverLog)
 
 // Cleanup reports the stop as an event rather than writing the row itself,
-// so applyWorktreeEvent is stubbed: these tests never open a DB, and what a
-// teardown says is asserted directly.
+// so applyWorktreeEvent is stubbed and what a teardown says is asserted
+// directly. The orphan sweep's tests read real rows instead: which ids a
+// project has is the question that sweep turns on.
 const appliedEvents: WorktreeEvent[] = []
 vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
   appliedEvents.push(event)
@@ -617,6 +625,49 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
     await expect(fs.access(liveTmux)).resolves.toBeUndefined()
     await expect(fs.access(deadTmux)).rejects.toThrow()
+  })
+
+  // A stopped worktree keeps its row and its session-starts log for a
+  // restart, so the sweep must tell it from a log whose row is gone — and a
+  // dead spare (flagged row, no pod) from a stopped worktree, since only the
+  // spare's checkout is disposable. All from one read of the project's rows.
+  it('keeps the logs of worktrees with a row, and collects rowless logs and dead spares', async () => {
+    const log = async (sid: string): Promise<string> => {
+      const p = worktreeSessionStartsPath('proj-a', sid)
+      await fs.mkdir(path.dirname(p), { recursive: true })
+      await fs.writeFile(p, '{}\n')
+      await fs.utimes(p, STALE, STALE)
+      return p
+    }
+    await recordWorktreeCreated({ projectSlug: 'proj-a', worktreeId: 'stopped-1' })
+    await recordWorktreeCreated({ projectSlug: 'proj-a', worktreeId: 'spare-1', spare: true })
+    // Both checkouts stale, so only the spare flag stands between the
+    // stopped one and the spare pass — an unseeded dir would be spared as
+    // unreadable instead, and prove nothing.
+    const [spareCheckout, stoppedCheckout] = await Promise.all(['spare-1', 'stopped-1'].map(async (sid) => {
+      const dir = worktreeDir('proj-a', sid)
+      await fs.mkdir(dir, { recursive: true })
+      await fs.utimes(dir, STALE, STALE)
+      return dir
+    }))
+    const [liveLog, stoppedLog, spareLog, rowlessLog] = await Promise.all(
+      ['live-1', 'stopped-1', 'spare-1', 'gone-1'].map(log),
+    )
+    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
+
+    try {
+      await gcOrphanEphemeralModuleDirs()
+
+      for (const kept of [liveLog, stoppedLog, stoppedCheckout]) {
+        await expect(fs.access(kept)).resolves.toBeUndefined()
+      }
+      for (const gone of [rowlessLog, spareLog, spareCheckout]) {
+        await expect(fs.access(gone)).rejects.toThrow()
+      }
+      expect([...(await listProjectWorktreeIds('proj-a')).keys()]).toEqual(['stopped-1'])
+    } finally {
+      await closeDb()
+    }
   })
 
   it('is a no-op when neither projects dir exists, and asks the runtime for nothing', async () => {

@@ -418,12 +418,14 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   // Session UX options, one invocation — the same set the pod's init hook
   // applies, and for the same reasons (bells reaching the client, CSI-u
-  // extended keys for agent TUIs, RGB passthrough so diffs are readable).
+  // extended keys for agent TUIs, RGB passthrough so diffs are readable,
+  // a 10ms escape-time so Esc isn't held for tmux's 500ms default).
   // `default-shell` is the one addition: a pod has a known shell in its
   // image and a host does not.
   await runHost([
     'tmux', '-S', paths.tmuxSock,
     'set-option', '-g', 'default-shell', shell, ';',
+    'set-option', '-s', 'escape-time', '10', ';',
     'set-option', '-g', 'history-limit', '200000', ';',
     'set-option', '-g', 'mouse', 'on', ';',
     'set-option', '-g', 'focus-events', 'on', ';',

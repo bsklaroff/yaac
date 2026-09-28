@@ -119,7 +119,7 @@ export {
   findWorktreeRow,
   getProjectWorktreeRows,
   getWorktreeRow,
-  listSpareWorktreeIds,
+  listProjectWorktreeIds,
   listWorktreeRows,
   recordAllDeathsSeen,
   recordDeathSeen,
