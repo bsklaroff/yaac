@@ -11,13 +11,14 @@
  *      second tab of the Agent column (N-1 columns; Agent column has 2 tabs);
  *   3. drag that shell tab out to the right edge -> it becomes its own column
  *      again (back to N columns, one tab each).
- * A column is counted by its per-column "New shell tab" (+) button; each
+ * A column is a positioned <section> (inline left/top/width/height); each
  * column's tabs are the non-empty button labels in its header. Screenshots
  * land in /tmp/yaac-shots/dnd-*.png. Prints PASS/FAIL and leaves the session
  * untouched (it is not created or deleted here).
  *
- * Run (needs a running server + one active multi-terminal session):
- *   node test-playwright-scripts/column-tabs-dnd-test.js
+ * Run (needs a running server + one active multi-terminal session, named by
+ * its sidebar title):
+ *   node test-playwright-scripts/column-tabs-dnd-test.js "<worktree title>"
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -54,11 +55,11 @@ async function mintToken() {
   return (await r.json()).token
 }
 
-// Per-column tab labels: each tiles column is a <section> carrying a
-// "New shell tab" (+) button; its tabs are the non-empty button labels.
+// Per-column tab labels: each tiles column is a <section> positioned by an
+// inline style; its tabs are the non-empty button labels.
 const readColumns = (page) => page.evaluate(() => {
   const secs = [...document.querySelectorAll('section')]
-    .filter((s) => s.querySelector('[aria-label="New shell tab"]'))
+    .filter((s) => s.hasAttribute('style'))
   return secs.map((s) => [...s.querySelectorAll('button')]
     .map((b) => (b.textContent || '').trim())
     .filter(Boolean))
@@ -96,10 +97,12 @@ async function main() {
     const token = await mintToken()
     await page.goto(`${origin}/?token=${token}&project=yaac`)
     await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15000 })
-    // Select the (single) active session from the sidebar.
-    await page.locator('aside').getByText('New session').first().click({ timeout: 15000 })
+    // Select the session from the sidebar by its title.
+    const title = process.argv[2]
+    if (!title) throw new Error('usage: column-tabs-dnd-test.js "<worktree title>"')
+    await page.locator('aside').getByText(title, { exact: true }).first().click({ timeout: 15000 })
     // Wait for the tiles columns to render.
-    await page.locator('[aria-label="New shell tab"]').first().waitFor({ state: 'visible', timeout: 15000 })
+    await page.locator('section[style]').first().waitFor({ state: 'visible', timeout: 15000 })
     await sleep(2500)
 
     const base = await readColumns(page)
@@ -108,19 +111,22 @@ async function main() {
     // Every column holds exactly one tab, and there is more than one column.
     const baselineOk = base.length >= 3 && base.every((c) => c.length === 1)
 
-    // Pick a shell tab to move and the Agent column to drop it into.
+    // Pick a shell tab to move and the Agent column to drop it into. A fresh
+    // layout starts from the agent's column, so its tab is the first one; its
+    // label names the tool and model (e.g. "Claude · Opus 5.5").
+    const agent = base[0][0]
     const shell = base.map((c) => c[0]).find((t) => t.startsWith('shell'))
     if (!shell) throw new Error('no shell column to drag')
     const src = await tabBox(page, shell)
     // Agent column centre band -> drop as a tab.
-    const agentSecBox = await page.evaluate(() => {
+    const agentSecBox = await page.evaluate((agent) => {
       const sec = [...document.querySelectorAll('section')]
-        .find((s) => s.querySelector('[aria-label="New shell tab"]')
-          && [...s.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Agent'))
+        .find((s) => s.hasAttribute('style')
+          && [...s.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === agent))
       if (!sec) return null
       const r = sec.getBoundingClientRect()
       return { x: r.x, y: r.y, w: r.width, h: r.height }
-    })
+    }, agent)
     if (!agentSecBox) throw new Error('no Agent column found')
     await drag(page,
       { x: src.x + src.width / 2, y: src.y + src.height / 2 },
@@ -129,9 +135,8 @@ async function main() {
     const merged = await readColumns(page)
     console.log('after merge-into-Agent:', JSON.stringify(merged))
     await page.screenshot({ path: '/tmp/yaac-shots/dnd-2-tabbed.png' })
-    const agentCol = merged.find((c) => c.includes('Agent'))
-    const mergedOk = merged.length === base.length - 1
-      && agentCol && agentCol.includes('Agent') && agentCol.includes(shell)
+    const agentCol = merged.find((c) => c.includes(agent))
+    const mergedOk = merged.length === base.length - 1 && agentCol && agentCol.includes(shell)
 
     // Now drag the shell tab (living in the Agent column) back out to the far
     // right edge -> its own column again.
