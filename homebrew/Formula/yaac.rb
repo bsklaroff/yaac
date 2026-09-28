@@ -1,7 +1,7 @@
 # Source of truth for the bsklaroff/homebrew-yaac tap (see ../README.md for
 # the release/sync flow). Lives in a tap rather than homebrew-core because the
-# macOS path depends on this tap's own krunkit/libkrun pair (and yaac-kind),
-# and core formulas cannot depend on tap formulas.
+# macOS path depends on this tap's own krunkit/libkrun pair, and core
+# formulas cannot depend on tap formulas.
 class Yaac < Formula
   desc "Agent sandbox manager - parallel agent sessions on a local Kubernetes cluster"
   homepage "https://github.com/bsklaroff/yaac"
@@ -13,11 +13,10 @@ class Yaac < Formula
   depends_on "kubernetes-cli"
   depends_on "node"
   # Core podman is >= 6.0 (needed for krunkit --timesync passthrough on
-  # macOS); podman 6.x in turn requires a kind with kind#4203, which no
-  # kind release has yet - hence the tap-pinned yaac-kind. Switch to core
-  # "kind" and delete yaac-kind once core ships kind >= v0.33.0.
+  # macOS). kind must be >= v0.33.0: podman 6.x breaks older releases
+  # (kind#4201), and k8s/kind-config.yaml pins a node image built for it.
+  depends_on "kind"
   depends_on "podman"
-  depends_on "bsklaroff/yaac/yaac-kind"
 
   # The containerless driver (`yaac server start`, which is what a host
   # server is) runs worktrees as host processes, so what a session image would have

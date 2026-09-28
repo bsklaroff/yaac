@@ -192,7 +192,7 @@ is proven, so a tag push does steps 2–5.
   track; brew delivery is macOS-only anyway.
 - **The self-update / `electron-updater` model**, unless phase 3 picks it.
 - **homebrew-core cask submission.** The cask depends on the tap's own `yaac`
-  formula (which itself depends on tap formulas `yaac-kind`/`yaac-krunkit`),
+  formula (which itself depends on the tap formula `yaac-krunkit`),
   and core can't depend on taps — same reason `yaac.rb` lives in the tap.
 
 ## Sources
