@@ -1246,6 +1246,10 @@ export interface ProvisioningWorktreeEntry {
    *  that section while it provisions rather than jumping to the top of the
    *  list and back. Absent means the default list. */
   groupId?: string
+  /** The prewarmed spare a create claimed. It lists under this id, not the
+   *  row's, once the row resolves — a client following the row follows it
+   *  there. */
+  claimedId?: string
   /** 'YYYY-MM-DD HH:MM:SS' UTC, derived from when provisioning started — so
    *  the sidebar can show a relative age for a row that has no pod yet. */
   createdAt: string

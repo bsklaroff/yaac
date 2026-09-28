@@ -18,7 +18,10 @@ vi.mock('#domain/auth/plan-usage', () => ({
 import { EventHub, buildSnapshot, serializeEvent } from '#api/events'
 import type { WsLike } from '#api/events'
 import { listActiveWorktrees } from '#domain/worktrees/list'
-import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '#domain/worktrees/provisioning'
+import {
+  claimProvisioning, failProvisioning, registerProvisioning, removeProvisioning,
+  clearAllProvisioningForTests,
+} from '#domain/worktrees/provisioning'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
@@ -252,6 +255,48 @@ describe('buildSnapshot provisioning', () => {
     const snap = await buildSnapshot()
     expect(snap.worktrees).toEqual([])
     expect(snap.provisioning.map((e) => e.worktreeId)).toEqual(['prov-2'])
+  })
+
+  it('hides a claimed spare under the create row that claimed it', async () => {
+    // A claim unhides the spare's own row long before the create resolves;
+    // listing it then would put it in the sidebar beside the row still
+    // creating it.
+    vi.mocked(listActiveWorktrees).mockResolvedValueOnce({
+      worktrees: [{
+        worktreeId: 'spare-1', projectSlug: 'p', tool: 'claude',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+      }],
+      stale: [],
+      gitAuthFailures: {},
+    })
+    registerProvisioning({ worktreeId: 'req-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    claimProvisioning('req-1', 'spare-1')
+    const snap = await buildSnapshot()
+    expect(snap.worktrees).toEqual([])
+    expect(snap.provisioning).toMatchObject([{ worktreeId: 'req-1', claimedId: 'spare-1' }])
+  })
+
+  it('lists a claimed spare once the create that claimed it fails', async () => {
+    // The claim went through, then the route failed after it (filing its
+    // group, delivering its prompt): the failed row lingers until dismissed,
+    // and the running worktree it claimed must not linger hidden with it.
+    vi.mocked(listActiveWorktrees).mockResolvedValueOnce({
+      worktrees: [{
+        worktreeId: 'spare-2', projectSlug: 'p', tool: 'claude',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+      }],
+      stale: [],
+      gitAuthFailures: {},
+    })
+    registerProvisioning({ worktreeId: 'req-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    claimProvisioning('req-2', 'spare-2')
+    failProvisioning('req-2', 'prompt delivery timed out')
+    const snap = await buildSnapshot()
+    expect(snap.worktrees.map((w) => w.worktreeId)).toEqual(['spare-2'])
+    expect(snap.provisioning).toMatchObject([{ worktreeId: 'req-2', error: 'prompt delivery timed out' }])
+    expect(snap.provisioning[0].claimedId).toBeUndefined()
   })
 
   it('lists the session once its provisioning entry is removed (the hand-off)', async () => {

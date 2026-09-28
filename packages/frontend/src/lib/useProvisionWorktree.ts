@@ -23,6 +23,8 @@ type ProvisionOp = (
  * auto-open it so the creator watches progress in the main pane, and stream
  * progress/error into it until the server snapshot takes over (App prunes the
  * optimistic copy once its `provisioning[]` or `worktrees[]` includes the id).
+ * A create that claims a prewarmed spare lists under the spare's id instead;
+ * the selection follows it there (`claims` in the store).
  *
  * `groupId` is the sidebar group the row belongs in — a restart passes the
  * stopped worktree's, so the row renders in that section from the first frame
@@ -43,6 +45,8 @@ export function useProvisionWorktree(): (
   const updateOptimisticProvisioning = useUiStore((s) => s.updateOptimisticProvisioning)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const setProvisionRetry = useUiStore((s) => s.setProvisionRetry)
+  const recordClaim = useUiStore((s) => s.recordClaim)
+  const setProvisionInFlight = useUiStore((s) => s.setProvisionInFlight)
   const openWorktree = useUiStore((s) => s.openWorktree)
 
   return useCallback(function provision(projectSlug, tool, kind, worktreeId, op, groupId, named) {
@@ -58,21 +62,17 @@ export function useProvisionWorktree(): (
       provision(projectSlug, tool, kind, worktreeId,
         (id, onProgress) => op(id, onProgress, { installMissingTool: true }), groupId, named)
     })
+    setProvisionInFlight(worktreeId, true)
     void op(worktreeId, (message) => updateOptimisticProvisioning(worktreeId, { message }))
       .then((res) => {
-        // A create that claimed a prewarmed spare returns the spare's own id,
-        // not the one we generated (a running pod's id can't be re-keyed).
-        // Re-key the optimistic row to that id and follow it — DON'T just drop
-        // the row: the spare isn't in the snapshot yet, so for the gap until it
-        // lands an unprotected selection would be stolen back to an existing
-        // worktree by App's auto-select. Carrying an optimistic row keeps the
-        // pane on the new worktree until the snapshot takes over.
+        // A create that claimed a prewarmed spare returns the spare's own id
+        // (a running pod's id can't be re-keyed). The server's row usually
+        // said so already; recording it here too covers a row that resolved
+        // before any snapshot carried the claim. The selection follows it
+        // once the spare lists (resolveVacantSelection).
         if (res.worktreeId !== worktreeId) {
-          addOptimisticProvisioning({
-            worktreeId: res.worktreeId, projectSlug, tool, kind, ...filed, message: 'Claiming warm spare…', createdAt: formatUtcTimestamp(Date.now()),
-          })
+          recordClaim(worktreeId, res.worktreeId)
           removeOptimisticProvisioning(worktreeId)
-          openWorktree(projectSlug, res.worktreeId)
         }
         setProvisionRetry(worktreeId, null)
       })
@@ -82,5 +82,11 @@ export function useProvisionWorktree(): (
           ...(e instanceof ServerError ? { errorCode: e.code } : {}),
         })
       })
-  }, [addOptimisticProvisioning, updateOptimisticProvisioning, removeOptimisticProvisioning, setProvisionRetry, openWorktree])
+      // After the claim is recorded, so a selection waiting on this
+      // provision is never let go before it knows where to follow.
+      .finally(() => setProvisionInFlight(worktreeId, false))
+  }, [
+    addOptimisticProvisioning, updateOptimisticProvisioning, removeOptimisticProvisioning,
+    setProvisionRetry, recordClaim, setProvisionInFlight, openWorktree,
+  ])
 }

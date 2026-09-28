@@ -11,7 +11,10 @@
  * the user dismissing a failed one. While an entry exists, `buildSnapshot`
  * hides any same-id active worktree — a pod lists well before its tmux windows
  * are set up, and clients must keep rendering the row, not attach to a
- * half-built worktree.
+ * half-built worktree. A create that claimed a prewarmed spare hides the
+ * spare the same way, under the create's own row: the row names the spare as
+ * `claimedId`, so a client following the row knows which worktree takes its
+ * place when it resolves.
  */
 import { notifyWorktreeListChanged } from '#notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -41,6 +44,9 @@ interface ProvisioningEntry {
    *  the row names what is coming up before any agent has answered. */
   model?: string
   modelName?: string
+  /** The prewarmed spare this create claimed — a different id from the
+   *  row's, since a running pod can't be re-keyed. */
+  claimedId?: string
   startedAt: number
   /** Monotonic insertion order, the sort tiebreak. `startedAt` (a wall-clock
    *  ms read) can tie or straddle a millisecond between two back-to-back
@@ -113,12 +119,27 @@ export function updateProvisioningMessage(worktreeId: string, message: string): 
   notifyWorktreeListChanged()
 }
 
+/** Record the spare a create has claimed (hidden from the snapshot until the
+ *  row resolves), or clear it when the claim falls back to a cold create.
+ *  No-op if absent. */
+export function claimProvisioning(worktreeId: string, claimedId: string | undefined): void {
+  const e = entries.get(worktreeId)
+  if (!e) return
+  if (claimedId === undefined) delete e.claimedId
+  else e.claimedId = claimedId
+  notifyWorktreeListChanged()
+}
+
 /** Mark a tracked entry as failed; kept (no TTL) until dismissed. No-op if
  *  absent. The code travels with the message so a client can offer the
  *  recovery the failure actually has, and survives a reload because the row
  *  does. `installable` is the second half of that for a missing tool: the
  *  code says one is missing, and this says whether yaac is the one that can
- *  fetch it (see `MissingToolError`). */
+ *  fetch it (see `MissingToolError`).
+ *
+ *  A failure lets go of any spare the create claimed: the row lingers until
+ *  dismissed, and a claim that went through before the route failed (its
+ *  group filing, its prompt) is a live worktree the row must not hide. */
 export function failProvisioning(
   worktreeId: string,
   error: string,
@@ -128,6 +149,7 @@ export function failProvisioning(
   const e = entries.get(worktreeId)
   if (!e) return
   e.error = error
+  delete e.claimedId
   if (code !== undefined) e.errorCode = code
   if (installable !== undefined) e.installable = installable
   notifyWorktreeListChanged()
@@ -211,8 +233,8 @@ export function removeProvisioning(worktreeId: string): void {
  * message mirrors into the row, success drops it (plus a snapshot push so the
  * now-ready worktree lists in its place), failure marks it failed — kept until
  * dismissed — and rethrows. Registering the row is the caller's job; every
- * registry call here is a no-op while no row exists (e.g. the create route's
- * prewarm fast path). This is the single codepath behind every provisioning
+ * registry call here is a no-op while no row exists (e.g. a restart the
+ * webapp gave no project for). This is the single codepath behind every provisioning
  * surface: the HTTP create/restart streams layer NDJSON on top, and the
  * headless spawn reconciler calls it directly so its worktrees
  * provision in the sidebar exactly like a user-initiated create.
@@ -270,6 +292,7 @@ export function listProvisioning(): ProvisioningWorktreeEntry[] {
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
+      ...(e.claimedId !== undefined ? { claimedId: e.claimedId } : {}),
       createdAt: formatUtcTimestamp(e.startedAt),
     }))
 }

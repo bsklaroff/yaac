@@ -54,7 +54,7 @@ describe('useProvisionWorktree', () => {
     })
   })
 
-  it('follows the real id when a create claims a prewarmed spare (id swap)', async () => {
+  it('records the claim when a create comes back as a prewarmed spare (id swap)', async () => {
     const { result } = renderHook(() => useProvisionWorktree())
 
     act(() => {
@@ -62,18 +62,19 @@ describe('useProvisionWorktree', () => {
       result.current('proj', 'claude', 'create', 'requested-id', () => Promise.resolve({ worktreeId: 'spare-id' }))
     })
 
+    // In flight until the request settles, then let go — after the claim is
+    // recorded, so the selection always knows where to follow.
+    expect(useUiStore.getState().inFlightProvisions).toEqual(['requested-id'])
     await waitFor(() => {
-      // Optimistic row for the requested id is dropped...
-      expect(useUiStore.getState().optimisticProvisioning.find((e) => e.worktreeId === 'requested-id')).toBeUndefined()
-      // ...and the real (claimed) session is selected.
-      expect(useUiStore.getState().selectedWorktreeId).toBe('spare-id')
+      expect(useUiStore.getState().inFlightProvisions).toEqual([])
     })
-    // The optimistic row is RE-KEYED to the claimed id (not just dropped) so the
-    // auto-open survives the gap until the snapshot lists the spare — otherwise
-    // App's auto-select would steal the pane back to an existing session.
-    expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
-      { worktreeId: 'spare-id', projectSlug: 'proj', tool: 'claude', kind: 'create' },
-    ])
+    expect(useUiStore.getState().claims['requested-id']).toBe('spare-id')
+    // The requested id's row is dropped and no row stands in for the spare:
+    // the selection stays on the requested id until the spare lists, and App
+    // hands it over then (resolveVacantSelection) — a row for the spare
+    // would sit beside the server's row for the same create.
+    expect(useUiStore.getState().optimisticProvisioning).toEqual([])
+    expect(useUiStore.getState().selectedWorktreeId).toBe('requested-id')
   })
 
   it('keeps the row and selection when the result id matches (cold create)', async () => {

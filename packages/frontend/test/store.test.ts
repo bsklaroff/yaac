@@ -163,6 +163,8 @@ describe('resolveVacantSelection', () => {
     activeProjectSlug: 'p1',
     selectedWorktreeId: 'w1',
     rowIds: ['w1', 'w2'],
+    claims: {},
+    inFlight: [],
     ...over,
   })
 
@@ -178,6 +180,26 @@ describe('resolveVacantSelection', () => {
     // first row, not the snapshot's — the caller passes display order.
     expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone' }))).toBe('w1')
     expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone', rowIds: ['w2', 'w1'] }))).toBe('w2')
+  })
+
+  it('follows a create into the prewarmed spare it claimed, once the spare lists', () => {
+    const claims = { req: 'spare' }
+    // The create's row resolved but the spare hasn't listed yet: wait for it
+    // rather than handing the pane to some other row.
+    expect(resolveVacantSelection(args({ selectedWorktreeId: 'req', claims }))).toBeNull()
+    expect(resolveVacantSelection(args({
+      selectedWorktreeId: 'req', claims, rowIds: ['w1', 'spare'],
+    }))).toBe('spare')
+    // A project switch is not the create resolving: the top row, as ever.
+    expect(resolveVacantSelection(args({
+      previousProjectSlug: 'p0', selectedWorktreeId: 'req', claims,
+    }))).toBe('w1')
+  })
+
+  it('holds a vanished selection whose provision is still in flight', () => {
+    // A snapshot that caught neither the row nor its worktree: the create's
+    // result may yet say where it went, so the pane is not handed away.
+    expect(resolveVacantSelection(args({ selectedWorktreeId: 'req', inFlight: ['req'] }))).toBeNull()
   })
 
   it('takes the topmost row of a project switched into', () => {

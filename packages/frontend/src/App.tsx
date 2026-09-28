@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { readExchangeToken, postWebSession, stripTokenFromUrl } from './lib/webSession'
 import { stopWorktreeOptimistic } from './lib/stopWorktreeFlow'
@@ -122,6 +122,10 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const endDelete = useUiStore((s) => s.endDelete)
   const optimisticProvisioning = useUiStore((s) => s.optimisticProvisioning)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
+  const claims = useUiStore((s) => s.claims)
+  const inFlightProvisions = useUiStore((s) => s.inFlightProvisions)
+  const recordClaim = useUiStore((s) => s.recordClaim)
+  const forgetClaim = useUiStore((s) => s.forgetClaim)
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const autoSelectWorktree = useUiStore((s) => s.autoSelectWorktree)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
@@ -179,6 +183,18 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     ])
     for (const e of optimisticProvisioning) if (known.has(e.worktreeId)) removeOptimisticProvisioning(e.worktreeId)
   }, [worktrees, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
+
+  // A create that claimed a prewarmed spare resolves into the spare's id —
+  // remembered while the row says so, for the selection to follow, and
+  // forgotten once it no longer holds: the create failed (its row lets go of
+  // the spare), or fell back to a cold create that lists under its own id.
+  useEffect(() => {
+    for (const p of snapshot?.provisioning ?? []) {
+      if (p.error !== undefined) forgetClaim(p.worktreeId)
+      else if (p.claimedId) recordClaim(p.worktreeId, p.claimedId)
+    }
+    for (const w of worktrees) forgetClaim(w.worktreeId)
+  }, [snapshot, worktrees, recordClaim, forgetClaim])
 
   const scoped = worktrees.filter((s) => s.projectSlug === activeProjectSlug)
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
@@ -274,9 +290,11 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   //
   // Goes through autoSelectWorktree, not selectWorktree: this is the app
   // choosing, so on mobile it must fill the pane *behind* the worktree list
-  // rather than navigating the user onto it.
+  // rather than navigating the user onto it. A layout effect, so a pane
+  // handed to a successor (a create resolving into the spare it claimed)
+  // never paints empty in between.
   const lastProjectSlug = useRef(activeProjectSlug)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previousProjectSlug = lastProjectSlug.current
     lastProjectSlug.current = activeProjectSlug
     const pick = resolveVacantSelection({
@@ -284,9 +302,14 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       activeProjectSlug,
       selectedWorktreeId,
       rowIds,
+      claims,
+      inFlight: inFlightProvisions,
     })
-    if (pick) autoSelectWorktree(pick)
-  }, [activeProjectSlug, rowIds, selectedWorktreeId, autoSelectWorktree])
+    if (!pick) return
+    // A followed claim has done its one job.
+    if (selectedWorktreeId !== null && claims[selectedWorktreeId] === pick) forgetClaim(selectedWorktreeId)
+    autoSelectWorktree(pick)
+  }, [activeProjectSlug, rowIds, selectedWorktreeId, claims, inFlightProvisions, forgetClaim, autoSelectWorktree])
   // Viewing a waiting worktree marks its current spell read — the pane shows
   // it, so it no longer needs attention. Covers both selecting a waiting
   // worktree and the open worktree flipping running → waiting under the
