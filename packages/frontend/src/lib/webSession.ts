@@ -1,5 +1,5 @@
 /**
- * Browser session mint. `yaac open` (and the server's start banner)
+ * Browser session mint. The desktop app (and the server's start banner)
  * builds a `?token=<one-time token>` URL; the SPA exchanges that token
  * for an HttpOnly session cookie, then scrubs it out of the address bar.
  * The splash's paste box goes through the same exchange — a durable

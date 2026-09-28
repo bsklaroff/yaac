@@ -12,7 +12,7 @@ import type { TokenStore } from '#http'
  *
  * POST mints either a named durable token (a client registering, e.g.
  * `yaac auth token create`) or an auto-named one-time exchange token
- * (`yaac open` bootstrapping a browser) — one endpoint for every way a
+ * (the desktop app bootstrapping a window) — one endpoint for every way a
  * client enrolls. The create response is the only place the full token
  * ever leaves the server; list returns masked summaries.
  */

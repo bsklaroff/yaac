@@ -9,7 +9,6 @@ import {
   denyBrowserCors,
   fetchSiteCheck,
   hostHeaderCheck,
-  isCredentialOptional,
   originHeaderCheck,
   registerStaticRoutes,
   requestLogger,
@@ -90,8 +89,8 @@ export function buildApp(deps: ServerAppDeps) {
   ))
 
   // Browser worktree mint. POST is public (allowlisted in
-  // cookieOrBearerAuth): exchanges a token — one-time from `yaac open`,
-  // or a pasted durable token — for an HttpOnly session cookie. Never
+  // cookieOrBearerAuth): exchanges a token — one-time from the start
+  // banner or the desktop app, or a pasted durable token — for an HttpOnly session cookie. Never
   // log the token value — only ok/fail.
   app.post('/auth/web-session', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
@@ -135,14 +134,10 @@ export function buildApp(deps: ServerAppDeps) {
   }
 
   return app
-    // `authRequired` lets `yaac open` skip the one-time token when this
-    // deployment doesn't need a credential (loopback-only / nested). Public,
-    // so a client can read it before it has any credential.
     .get('/health', (c) => c.json({
       ok: true,
       buildId: deps.buildId,
       ready: isReady(),
-      authRequired: !isCredentialOptional(),
       // Which substrate this server runs, or null before the composition
       // root has registered one. Here as well as on the snapshot because a
       // caller may need it before it holds a credential: `yaac cluster …`

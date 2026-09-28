@@ -284,29 +284,5 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
       expect(raw.driver).toBe('containerless')
       await resetSelection()
     })
-
-    it('yaac open --no-browser prints the remote-derived URL', async () => {
-      await resetSelection()
-      const token = await mintToken('opener')
-      expect((await runYaac(testEnv.env, 'remote', 'set', origin(), '--token', token)).exitCode).toBe(0)
-
-      const open = await runYaac(testEnv.env, 'open', '--no-browser')
-      expect(open.exitCode, open.stderr).toBe(0)
-      expect(open.stdout.trim()).toMatch(
-        new RegExp(`^${origin().replace(/[.:/]/g, '\\$&')}/\\?token=[0-9a-f]+$`),
-      )
-    })
-
-    it('`yaac open` starts nothing when no server is selected', async () => {
-      // It used to auto-start one. Now `yaac server start` is the only
-      // starter, so this reports and exits rather than spawning a process
-      // beside whatever the install actually runs.
-      await resetSelection()
-      await fs.rm(configPath(), { force: true })
-      const open = await runYaac(testEnv.env, 'open', '--no-browser')
-      expect(open.exitCode).toBe(1)
-      expect(open.stderr).toMatch(/No yaac server selected/)
-      await resetSelection()
-    })
   })
 })

@@ -1,7 +1,6 @@
 /**
- * Mint a one-time exchange token — the same POST /tokens call `yaac open`
- * makes. Runs on the shared typed client, so target resolution
- * (`server.json`), the bearer header, and BAD_BEARER re-resolve/retry all
+ * Mint a one-time exchange token over POST /tokens. Runs on the shared
+ * typed client, so target resolution (`server.json`), the bearer header, and BAD_BEARER re-resolve/retry all
  * come from @yaac/shared/server-api — minus the build-skew warning
  * (`warnOnBuildSkew: false`): the shell is a pure client with no build
  * identity of its own.

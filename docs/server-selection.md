@@ -108,8 +108,8 @@ All three commands are named because which one applies is a property of the
 install, and this message is exactly what prints when nothing on disk says
 which kind of install it is.
 
-Nothing recovers from this by starting a server. `yaac open` reports and exits;
-the desktop shell shows its picker. `yaac server start` is the only starter,
+Nothing recovers from this by starting a server. A CLI command reports and
+exits; the desktop shell shows its picker. `yaac server start` is the only starter,
 which is what keeps a client from spawning a host process beside a Deployment.
 
 ## Build skew is a warning

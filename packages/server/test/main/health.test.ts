@@ -1,20 +1,15 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { buildApp } from '#main/server'
 
 describe('GET /health', () => {
-  afterEach(() => vi.unstubAllEnvs())
-
-  it('reports ok, the buildId, and authRequired', async () => {
-    // A loopback test server is credential-optional by default; force the gate
-    // on to see authRequired: true.
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+  it('reports ok, the buildId, and the driver', async () => {
     installFakeWorktreeDriver()
     const app = buildApp({ secret: 'shh', buildId: 'bid-1' })
     const res = await app.request('/health')
     expect(res.status).toBe(200)
     expect(await res.json())
-      .toEqual({ ok: true, buildId: 'bid-1', ready: true, authRequired: true, driver: 'k8s' })
+      .toEqual({ ok: true, buildId: 'bid-1', ready: true, driver: 'k8s' })
   })
 
   it('reports a null driver rather than failing when none is registered', async () => {
@@ -25,12 +20,6 @@ describe('GET /health', () => {
     const res = await app.request('/health')
     expect(res.status).toBe(200)
     expect((await res.json() as { driver: string | null }).driver).toBeNull()
-  })
-
-  it('reports authRequired: false for a credential-optional (loopback) server', async () => {
-    const app = buildApp({ secret: 'shh', buildId: 'b' })
-    const res = await app.request('/health')
-    expect((await res.json() as { authRequired: boolean }).authRequired).toBe(false)
   })
 
   it('defaults ready to true when no isReady is injected (in-process tests)', async () => {

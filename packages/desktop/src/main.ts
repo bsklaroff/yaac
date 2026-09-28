@@ -10,7 +10,7 @@
  * rather than an error dialog over nothing. While in the tray it follows
  * the `/events` stream as a bearer client to surface waiting worktrees
  * (dock badge, tray status, notifications). Each window
- * open also ensures the auth-daemon best-effort, like `yaac open` — and
+ * open also ensures the auth-daemon best-effort — and
  * like the server, Quit leaves it running (machine-scoped, shared with the
  * CLI; never ours to stop).
  */

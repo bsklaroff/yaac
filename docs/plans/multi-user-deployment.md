@@ -172,8 +172,7 @@ before any tenancy:
   `/tokens` routes, and `yaac auth token create|list|revoke`.
 - The one-time exchange token, the `?token=` bootstrap, the session cookie
   and web sessions. A browser on the tailnet is identified on every
-  request; a local browser is covered by the loopback guards. `yaac open`
-  just opens the URL.
+  request; a local browser is covered by the loopback guards.
 - The lock-secret bearer and the mint in `registerServer`
   (docs/server-selection.md): the lock secret exists so a client can
   authenticate *as the server* to mint itself a durable token. With no
@@ -617,7 +616,7 @@ class — *install-global* writes any user can make today:
   unscoped global logout (names are enumerable via `GET /tokens`, which
   lists every user's devices and browser sessions); the
   `MAX_WEB_SESSIONS`/`MAX_EXCHANGE_TOKENS` FIFO caps are global, so one user
-  spamming `yaac open` evicts others' live sessions. The identity section
+  spamming token mints evicts others' live sessions. The identity section
   resolves this by deletion rather than scoping: the routes, the store and
   the caps go, and the middleware **returns the principal** the tailnet or
   the loopback resolved — that signature (`web-auth.ts`) is the first thing

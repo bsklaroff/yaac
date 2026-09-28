@@ -113,7 +113,6 @@ pod (docs/port-forward-tunnel.md).
 ```sh
 yaac remote set https://srv.<tailnet>.ts.net --token <token-from-step-4>
 yaac worktree list                   # talks to the server
-yaac open                            # prints/opens an authed webapp URL
 ```
 
 `yaac remote off` deselects it without forgetting the token, and `yaac
@@ -124,9 +123,11 @@ on this very machine, which is in the same list and selected the same way
 revoke laptop` on the server) fails with instructions to re-run `yaac remote
 set`.
 
-On the phone: run `yaac open` on the laptop and open the printed
-`https://…/?token=<token>` URL there (the token is single-use; mint a
-fresh one any time with another `yaac open`).
+On the phone: open the server's origin and paste a token minted for it
+(`yaac auth token create phone`) into the connect screen. Unlike a one-time
+exchange token, this one stays a valid API bearer after the exchange, so
+revoke it (`yaac auth token revoke phone`) once the phone no longer needs
+it.
 
 ## What works remotely
 

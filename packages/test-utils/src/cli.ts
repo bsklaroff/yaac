@@ -177,7 +177,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   }
 
   const cleanup = async (): Promise<void> => {
-    // Reap any auth server a test (or `yaac open`/`auth update`) spawned
+    // Reap any auth server a test (or `auth update`) spawned
     // against this data dir — it reconnects forever and would leak.
     try {
       const raw = await fs.readFile(path.join(dataDir, '.auth-daemon.lock'), 'utf8')

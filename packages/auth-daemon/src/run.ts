@@ -53,7 +53,7 @@ export async function runAuthDaemon(): Promise<void> {
   // The other thing this machine knows that the server cannot: who the user
   // is, per their git config. Seeded here because the auth server is what
   // runs on a laptop even when the CLI is not being used — the desktop app
-  // and `yaac open` both start it — so a webapp-only user still gets an
+  // starts it — so a webapp-only user still gets an
   // identity without typing one. Never overwrites (see the helper), and
   // never fatal: a server that already has one, or a machine with no git
   // config, are both ordinary.

@@ -22,8 +22,7 @@ describe('buildApp', () => {
   it('GET /health returns buildId + ok without auth', async () => {
     const app = buildApp({ secret: 'shh', buildId: 'abc123' })
     // /health is the auth-exempt probe; hit it with a bare request
-    // (no bearer) to prove the exemption still holds. A loopback server is
-    // credential-optional by default, so it reports authRequired: false.
+    // (no bearer) to prove the exemption still holds.
     const res = await app.request('/health')
     expect(res.status).toBe(200)
     // `driver` echoes whichever runtime the project's setup registered as
@@ -36,7 +35,6 @@ describe('buildApp', () => {
       ok: true,
       buildId: 'abc123',
       ready: true,
-      authRequired: false,
       driver: worktreeDriver().kind,
     })
   })

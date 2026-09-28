@@ -89,8 +89,8 @@ curl -s <that origin>/health          # {"ok":true,"buildId":…,"ready":true,"d
 
 ## Drive the web app
 
-`driver.mjs` gets a tokenized URL from `yaac open --no-browser` (so it
-follows `YAAC_DATA_DIR`) and drives it in headless Chromium:
+`driver.mjs` mints a one-time token against the server `server.json`
+selects (so it follows `YAAC_DATA_DIR`) and drives it in headless Chromium:
 
 ```bash
 node .claude/skills/run-yaac/driver.mjs shot                  # -> /tmp/yaac-shots/app.png

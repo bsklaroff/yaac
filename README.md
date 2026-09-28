@@ -132,20 +132,17 @@ yaac cluster install
 
 ## Web app
 
-yaac ships a local web app — a GUI over the same server the CLI drives.
-Launch it with:
+yaac ships a local web app — a GUI over the same server the CLI drives:
+a live worktree sidebar, the project list, and an embedded terminal
+(xterm.js) attached to each session's tmux. Open it through the desktop app
+(below), or in a browser at the selected server's origin (the `url` line of
+`yaac remote status`).
 
-```sh
-yaac open
-```
-
-This opens your browser straight into the authenticated app: a live worktree sidebar, the project list, and an embedded
-terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
-prints the URL instead of launching a browser.
-
-It's local-first — the server binds `127.0.0.1` only, and the browser
-authenticates with an `HttpOnly` cookie obtained from a one-time token
-that `yaac open` mints and exchanges for you (no manual pasting). The CLI
+It's local-first — the server binds `127.0.0.1` only, where it needs no
+credential. A server published beyond loopback shows a connect screen
+instead: paste a token from `yaac auth token create <name>` there and the
+browser trades it for an `HttpOnly` session cookie. That token is durable —
+it stays a valid API bearer until `yaac auth token revoke <name>`. The CLI
 and web app drive the same on-disk state, so you can mix them freely.
 
 ### Remote access over Tailscale
@@ -222,7 +219,7 @@ personal tailnet.
 The same web app is also available as a macOS Electron shell (`@yaac/desktop`).
 It has no bundled frontend of its own: the main process resolves the target
 server (remote if enabled, else the local daemon — starting one if none is
-up), mints the same one-time token `yaac open` does, and loads the server
+up), mints a one-time exchange token, and loads the server
 origin into a native window. It lives in the tray (close hides, Quit stops
 only the shell) and badges the dock for waiting worktrees. It is not part of
 `pnpm build` and never ships in the npm artifact.

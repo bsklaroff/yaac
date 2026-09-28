@@ -19,7 +19,7 @@ export const AUTH_DAEMON_BOOT_TIMEOUT_MS = 30_000
  * browser and the vendors' localhost OAuth callbacks live.
  *
  * Lives in shared (not src/auth-daemon) because commands may only import
- * from shared: `yaac auth update` and `yaac open` call ensureAuthDaemon().
+ * from shared: `yaac auth update` calls ensureAuthDaemon().
  * The desktop shell is the second caller class: it can't use the CLI
  * self-invocation or the default target resolution (an Electron process
  * has neither a yaac argv[1] nor a build id), so both are overridable.
@@ -184,7 +184,7 @@ export interface EnsureAuthDaemonOptions extends EnsureAuthDaemonSpawnedOptions 
  * Make sure an auth server process for the currently resolved main
  * server exists on this machine, restarting one pointed at a different
  * server (the remote setting changed since it started). Does not wait
- * for the agent to connect — `yaac open` uses this fire-and-mostly-
+ * for the agent to connect — the desktop app uses this fire-and-mostly-
  * forget variant so opening the webapp never blocks on the broker.
  */
 export async function ensureAuthDaemonSpawned(

@@ -1,7 +1,7 @@
 /**
  * Boot orchestration: resolve which server this launch should land on,
  * mint a one-time exchange token, and hand back the authed URL to load —
- * `<origin>/?token=…`, the same URL `yaac open` builds. The SPA trades the
+ * `<origin>/?token=…`, the URL the start banner prints. The SPA trades the
  * token for its session cookie at POST /auth/web-session; from then on the
  * window is a plain browser on the server origin, exactly like the webapp
  * (the origin IS the context).
@@ -21,10 +21,10 @@ export interface FlowDeps {
   /** @yaac/shared resolveServerTarget: throws when no server is selected. */
   resolveTarget(): Promise<ServerTarget>
   /**
-   * Best-effort: ensure the machine-local login broker runs against `target`
-   * (the same call `yaac open` makes). Fired, never awaited or propagated —
-   * the packaged path resolves the login-shell PATH (up to 5s) and must not
-   * delay landing the window.
+   * Best-effort: ensure the machine-local login broker runs against
+   * `target`. Fired, never awaited or propagated — the packaged path
+   * resolves the login-shell PATH (up to 5s) and must not delay landing
+   * the window.
    */
   ensureAuthDaemon(target: ServerTarget): Promise<void>
   /** Mint the one-time exchange token (see #mint); throws with a descriptive message. */
@@ -96,7 +96,7 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
   return { ok: true, url: buildWebappUrl(base, token) }
 }
 
-/** Twin of `buildWebappUrl` (packages/server/src/main/webapp.ts); the token is hex, so encoding is defensive only. */
+/** The token is hex, so encoding is defensive only. */
 export function buildWebappUrl(baseUrl: string, token: string): string {
   return `${baseUrl}/?token=${encodeURIComponent(token)}`
 }
