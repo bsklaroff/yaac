@@ -154,7 +154,7 @@ plan.
   `nodeLocalRoot()` read `YAAC_GLOBAL_ROOT` / `YAAC_SERVER_LOCAL_ROOT` /
   `YAAC_NODE_LOCAL_ROOT` when set (the Deployment sets them; containerless
   never does, so the split is inert there). `dataDirHash()` — every pod
-  label, the registry claim name, the cookie name — hashes `getDataDir()`,
+  label, the registry claim name — hashes `getDataDir()`,
   which the Deployment keeps passing as the host's data dir path exactly as
   today, so no label, claim or row changes across the storage move. The
   data dir path is an identity string inside the pod and a directory only
@@ -179,9 +179,11 @@ plan.
   the ingress wall sees a node source on every host platform. byo publishes
   the server through the Tailscale Kubernetes operator's
   `ingressClassName: tailscale` Ingress, which gives a tailnet-only
-  hostname on the same trust boundary docs/remote-hosting.md already draws
-  and terminates TLS for it — an `https://` origin, a `Secure` session
-  cookie, a secure context for the webapp — and nothing else: no public
+  hostname on the same trust boundary docs/remote-hosting.md already draws,
+  stamps every request with the caller's tailnet identity (the only
+  authentication the server has once docs/plans/tailscale-only-auth.md
+  lands), and terminates TLS for it — an `https://` origin and a secure
+  context for the webapp — and nothing else: no public
   LoadBalancer, no public Ingress, no cert-manager, no DNS, and no option
   to add them. The operator is a prerequisite the cluster owner installs
   (one helm command, printed by the refusal); `--byo` implies the tailnet
@@ -261,6 +263,12 @@ pieces that land separately, in this order. 6a, 6b and 6d change nothing a
 kind install does; 6c stands up kind-byo, the local stand-in for a cloud
 cluster that gates everything after it.
 
+Step 6 interleaves with docs/plans/tailscale-only-auth.md, which deletes the
+server's tokens: 6d is that plan's prerequisite (an L4 fronting cannot carry
+an identity), and its token removal lands before 6e, so `--byo` is built
+and tested against the identity model from the start rather than minting a
+token its suite would assert and the next change would delete.
+
 What a finished `yaac cluster install --byo --rwx-storage-class <c>` does:
 
 1. **Gates, before anything is applied or built** — right after the
@@ -273,7 +281,9 @@ What a finished `yaac cluster install --byo --rwx-storage-class <c>` does:
 3. **The claims**, provisioned from the named classes, owned by the
    install uid, pinned `Retain`, labelled so a later install finds them.
 4. **The server** at uid 1000, fronted by the operator's TLS Ingress at an
-   `https://` origin, registered in `server.json` with a minted token.
+   `https://` origin, registered in `server.json` as that origin — no
+   token; the Ingress's identity headers are the credential
+   (docs/plans/tailscale-only-auth.md).
 5. **`cluster check`**, with the storage gates fail-level.
 
 #### 6a. Take the host's disk out of install and check
@@ -544,27 +554,37 @@ is storage, and only storage:
 Gate for 6c: the whole `e2e-byo` project green, and `cluster check` green
 on kind-byo with `storage-semantics` fail-level.
 
-#### 6d. The tailnet fronting terminates TLS
+#### 6d. The tailnet fronting terminates TLS and identifies the caller
 
 This settles the decision left open under "The tailnet is the only way onto
 a cloud server": the fronting is the operator's `ingressClassName:
-tailscale` Ingress, not the L4 Service. An `http://` origin is not a secure
-context, and the webapp already degrades there without a word — the
-clipboard writes in the terminal, the preview and the SSH-key picker are
-optional-chained to no-ops — on top of the session cookie not being
-`Secure`. The Ingress keeps the tailnet-only boundary and matches what
-docs/remote-hosting.md already prescribes for a host server (`tailscale
-serve` + `YAAC_TRUST_PROXY`).
+tailscale` Ingress, not the L4 Service. Two reasons, and the second is the
+binding one:
+
+- An `http://` origin is not a secure context, and the webapp degrades
+  there without a word — the clipboard writes in the terminal, the preview
+  and the SSH-key picker are optional-chained to no-ops.
+- **An L4 exposure cannot authenticate anyone once tokens are gone.**
+  docs/plans/tailscale-only-auth.md identifies a caller by the
+  `Tailscale-User-Login` header serve stamps, and treats a request that did
+  not pass through serve and names a loopback `Host` as the local owner.
+  Through the L4 Service any tailnet device reaches the pod unmediated and
+  can send any header — `Host: 127.0.0.1` included — so it would be the
+  owner. The operator's Ingress proxy is serve: it strips client-supplied
+  identity and forwarding headers and stamps its own, exactly what a host
+  `tailscale serve` does for a containerless server
+  (docs/remote-hosting.md). That makes 6d the first piece of that plan,
+  shipped while tokens still guard the server so it can be verified alone.
 
 - **The body**: the kind fronting's ClusterIP Service, plus an Ingress
   `yaac-server` of class `tailscale` whose default backend is that Service,
   with `tls: [{ hosts: [yaac] }]`. The origin is `https://` plus the
   hostname the operator publishes into the Ingress status. `remoteHosting`
-  admits that name with `trustProxy: true`, which is safe here for the
-  reason it is safe behind `tailscale serve`: the proxy sets
-  `X-Forwarded-Proto` itself and drops what the client sent. If the pinned
-  operator turns out not to, `trustProxy` stays false and the cookie stays
-  non-`Secure` — the failure is the safe one.
+  admits that name and nothing more: `YAAC_TRUST_PROXY` existed only to mark
+  the session cookie `Secure`, and it goes with the cookie. (If 6d lands
+  while tokens still exist, it sets `trustProxy: true` for that interval —
+  safe for the reason it is safe behind `tailscale serve` — and the token
+  removal deletes it.)
 - **The ingress peer** keeps selecting the operator's proxy pods by
   parent-resource name and namespace. The Ingress is named `yaac-server`
   so the existing selector holds.
@@ -577,11 +597,23 @@ serve` + `YAAC_TRUST_PROXY`).
   certificate. The unreachable diagnosis leads with the tailnet's HTTPS
   certificates setting (which nothing in the cluster can read), then
   MagicDNS, then the ACLs.
+- **The installing machine must be a user-owned tailnet device.** Under
+  this fronting there is no loopback path, so install's own publish probe
+  past `/health`, and every later CLI call from this machine, reaches the
+  server through the Ingress — and a tagged device's requests carry no user
+  and are refused (docs/plans/tailscale-only-auth.md) until its `whois`
+  follow-up admits nodes. Install says so when it registers the origin.
 - The L4 `LoadBalancer` body, `allocateLoadBalancerNodePorts` and the
   `loadBalancerClass` constant are deleted, with no compat shim: `--tailnet`
   has only ever been a rehearsal flag, so no install is fronted by that
   Service. (If one turns out to exist, its `server start` would read it as
-  kind; that is the case for a docs/legacy-compat-shims.md entry.)
+  kind; that is the case for a docs/legacy-compat-shims.md entry.) One
+  hazard outlives the deletion. A server built after the token removal and
+  left behind a surviving L4 Service would treat every tailnet device as
+  its owner, and nothing about it looks broken. The upgrade path for a
+  rehearsal `--tailnet` install is therefore a re-install, which replaces
+  the Service. The release that removes tokens says so; it is not left to
+  `server restart`.
 
 - **The device name stays `yaac`.** A kind `--tailnet` install and a cloud
   install on one tailnet both ask for it; the second is expected to get the
@@ -644,8 +676,8 @@ because it is the only one kind-byo can run. k3s — embedded containerd,
 — is step 7's first addition, made where it can be run.
 
 **What `--byo` applies**: the layers; the claims through 6b's class path at
-uid 1000; the server behind the tailnet Ingress; `server.json` with a
-minted token. **What it never does**: exec into a node container — the kind
+uid 1000; the server behind the tailnet Ingress; `server.json`
+registering its origin. **What it never does**: exec into a node container — the kind
 node fixups key on the recorded install being the kind cluster, not on
 podman happening to hold containers named like it, which today would apply
 them to the wrong cluster on a host running both; run
@@ -684,15 +716,19 @@ canned node, class and Deployment reads:
 The happy path runs on kind-byo, which now installs with `--byo`. One rich
 file, `test/e2e-cli/byo-install-suite.test.ts` (in `e2e-byo` only), drives
 the installed server through its published `https://` origin: `yaac remote
-set` and `yaac auth token create`, a worktree create, a terminal WS, `yaac
-forward` through the tunnel, the web-session cookie carrying `Secure`,
+set`, `/whoami` answering the rig's tailnet login (the Ingress's identity
+reaching the pod), a worktree create, a terminal WS carrying that identity
+on its upgrade, `yaac forward` through the tunnel,
 `server stop|start|restart|logs`, `cluster check` green, `cluster delete`'s
 refusal, and a re-install converging in place. Last, because it destroys
 its subject: a namespace delete, then a re-install that re-adopts the
 Released volumes and finds its projects. That file needs a tailnet — the
 environment `pnpm kind-byo up` runs in carries an ephemeral, tagged
 operator OAuth client, and without one `up` stops at the operator gate and
-says so. The rest of
+says so. The suite's own client, by contrast, must be a *user-owned* device:
+the operator client is tagged by design, but a tagged client's requests
+carry no user and the server refuses them until the `whois` follow-up in
+docs/plans/tailscale-only-auth.md lands. The rest of
 `e2e-byo` does not: its files deploy their own servers with no fronting.
 
 #### 6f. Docs, in the same change as each piece
@@ -711,8 +747,8 @@ says so. The rest of
   volumes land in the data dir, why Linux only, and the uid-1000
   ownership.
 - docs/remote-hosting.md: the k8s server setup becomes `yaac cluster
-  install --tailnet` — install states the allowed host and the proxy
-  trust itself, so the `tailscale serve` + exports + re-install recipe
+  install --tailnet` — install states the allowed host itself, so the
+  `tailscale serve` + export + re-install recipe
   stays for containerless only. A byo install is remote-hosted from the
   start. Both publish at the Ingress's origin, and on kind that origin
   replaces `127.0.0.1`.
@@ -740,9 +776,14 @@ each has a fallback that changes the design above rather than the goal:
   volume of the class's name at the same path — still `Retain`-patched and
   binder-owned, but no longer dynamically provisioned, which is the one
   step it would then stop rehearsing.
-- The operator's Ingress proxy sets `X-Forwarded-Proto` and strips
-  client-supplied forwarding headers, and stamps the parent-resource
-  labels the ingress peer selects on.
+- The operator's Ingress proxy stamps `Tailscale-User-Login` /
+  `Tailscale-User-Name` and `X-Forwarded-For` on every request it proxies
+  (WebSocket upgrades included), strips client-supplied copies, preserves
+  `Host`, and stamps the parent-resource labels the ingress peer selects
+  on. This is Step 0.6 of docs/plans/tailscale-only-auth.md. Fallback: a
+  `tailscale serve` sidecar in the server pod, configured by
+  `TS_SERVE_CONFIG` and holding its own auth key — it replaces the
+  operator as the fronting rather than changing the goal.
 - Whether kind's node image already sets `config_path` without yaac's
   kind-config patch. If it does, kind-byo exercises the installer's
   "already set" branch, and the "absent" branch is covered only by the
