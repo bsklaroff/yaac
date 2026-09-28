@@ -63,24 +63,22 @@ function newViewName(): string {
  * after the attach so nothing can reap the view in the created-but-not-yet-
  * attached gap.
  *
- * WINDOW SIZING — a fresh worktree used to start "scrolled down a little with
- * the right-hand columns cut off". The windows are shared across every grouped
- * view, so under tmux's default (`window-size latest`) each window follows
- * whichever *client viewing it* was most recently active — and there are often
- * several at different sizes: a tiled sibling, a fresh attach briefly
- * overlapping the one it replaces, or a laptop-sleep / network blip that
- * strands a ghost client ("attached", but its kubectl exec died) at a stale
- * size. Any of them can win, leaving the visible pane a few rows/cols off.
- * The fix pins each webapp view's window to THIS client, immune to the others:
- * `set-option -t <view> window-size manual` takes the view out of the
- * negotiation, and `resize-window` sizes it to the client's grid — a
- * per-view-manual window holds its size even while a `latest` ghost of another
- * size views it. The window resizer keeps it in step as the pane resizes
- * later. Manual is set PER VIEW (after create), never globally: container tmux
- * (3.4) segfaults if `new-session` runs while global `window-size` is
- * `manual`, so the group option must stay `latest`.
- * The native (CLI) attach keeps default `latest` sizing (its status bar and
- * live window-switching want the standard behaviour).
+ * WINDOW SIZING is tmux's own `window-size latest`: a window shared by several
+ * views takes the size of the client that most recently attached to it,
+ * resized, or typed into it. tmux (3.1+) applies that inside the resize
+ * message's own handling, before the redraw, so a pane resize moves the tty
+ * and the window together. Anything that resizes the window afterwards, such
+ * as a separate `resize-window` exec, lags the grown client, which tmux draws
+ * around the old window with overflow dots. The window is selected BEFORE the
+ * attach, so the attach itself makes this client the window's latest. A ghost
+ * client stranded by a dropped exec never resizes or types, so it regains the
+ * window only when the latest client detaches and the ghost is the most
+ * recently active viewer left (tmux hands the window to that one), and only
+ * until the next live resize or keystroke; the attach-time ghost sweep reaps
+ * it.
+ * The window's `window-size` is set explicitly rather than inherited, so
+ * neither a user's tmux config nor a pin left by an older server can freeze
+ * it at another client's size.
  */
 function attachArgs(
   target: PtyTarget,
@@ -102,7 +100,9 @@ function attachArgs(
 
   // Native (CLI) attach: keep the tmux chrome — status bar, prefix keys,
   // `C-b d` — and the group's own current window. Only destroy-unattached
-  // distinguishes it from a plain `attach-session -t yaac`.
+  // distinguishes it from a plain `attach-session -t yaac`. It switches
+  // windows live, so it sets no window's size policy: each has `latest` once
+  // a webapp view has attached to it, and tmux's default until then.
   if (target === 'native') {
     return [
       'sh', '-c',
@@ -115,89 +115,17 @@ function attachArgs(
   // Agent = the yaac worktree's lowest-index window (`^`): the agent window is
   // created first, and other windows only ever append after it. Same
   // convention as the terminals enumeration.
-  const window = target.startsWith('window:')
-    ? target.slice('window:'.length)
-    : `${viewName}:^`
-  // select-window runs inside the attached client's sequence (like the old
-  // shape) so a bare window id resolves within the view session, not the
-  // group's original. `window-size manual` on the view + `resize-window` pins
-  // the shared window to this client's grid (see the sizing note above); both
-  // must target this view specifically — global manual segfaults tmux 3.4.
+  const window = `${viewName}:${target.startsWith('window:') ? target.slice('window:'.length) : '^'}`
   return [
     'sh', '-c',
     create
     + ` \\; set-option -t ${viewName} status off`
     + ` \\; set-option -t ${viewName} prefix None`
-    + ` \\; set-option -t ${viewName} window-size manual`
-    + ` && exec ${tmux} attach-session -t ${viewName}`
     + ` \\; select-window -t '${window}'`
-    + ` \\; resize-window -t ${viewName} -x ${cols} -y ${rows}`
+    + ` \\; set-option -w -t '${window}' window-size latest`
+    + ` && exec ${tmux} attach-session -t ${viewName}`
     + ' \\; set-option destroy-unattached on',
   ]
-}
-
-/** The tmux command to resize a webapp view's window to a client grid. The
- *  view is `window-size manual` (see attachArgs), so this is what tracks live
- *  browser-pane resizes — the client SIGWINCH alone no longer moves it. */
-function resizeWindowCmd(
-  viewName: string,
-  cols: number,
-  rows: number,
-  paths: WorkspacePaths,
-): string {
-  return `${tmuxCmd(paths)} resize-window -t ${viewName} -x ${cols} -y ${rows}`
-}
-
-interface WindowResizer {
-  /** Record a new client size. Fires immediately when idle; while an exec is
-   *  in flight only the newest size is kept, fired on completion. Property
-   *  (not method) form so a detached `resizer.resize` reference is safe to
-   *  hand to bridge(). */
-  resize: (cols: number, rows: number) => void
-  /** Drop any queued resize (connection closing). */
-  dispose: () => void
-}
-
-/**
- * A "resize the view's tmux window to the client size" driver for bridge()'s
- * resizeWindow hook. Execs are serialized: fire immediately when idle; while
- * one is in flight remember only the newest size and fire it on completion.
- * A lone resize gets no added latency, a burst (a divider drag emits one
- * frame per column step) coalesces to at most one queued follow-up, and the
- * last size always wins — the property a debounce can't give, since two
- * concurrent execs can land out of order and pin the window at a stale size.
- * A failed exec (view gone, pod race) just pumps the next one: the following
- * resize, or none at all, is the right answer either way.
- */
-function makeWindowResizer(
-  jobName: string,
-  viewName: string,
-  paths: WorkspacePaths,
-): WindowResizer {
-  let inFlight = false
-  let pending: { cols: number; rows: number } | null = null
-  const pump = (): void => {
-    if (inFlight || !pending) return
-    const p = pending
-    pending = null
-    inFlight = true
-    const done = (): void => {
-      inFlight = false
-      pump()
-    }
-    worktreeDriver()
-      .exec(jobName, resizeWindowCmd(viewName, p.cols, p.rows, paths), { maxAttempts: 1 })
-      .then(done, done)
-  }
-  return {
-    resize(cols, rows): void {
-      pending = { cols, rows }
-      pump()
-    },
-    dispose(): void {
-      pending = null
-    },
-  }
 }
 
 /** Command listing every tmux session name in the pod, one per line. */
@@ -344,14 +272,7 @@ export const DETACH_GRACE_MS = 400
 function bridge(
   ptyProc: PtyLike,
   sock: SocketLike,
-  opts: {
-    detach?: () => void
-    /** Called on every resize control frame (in addition to resizing the PTY's
-     *  own tty) so the caller can resize the tmux window to match — the webapp
-     *  view is `window-size manual`, where the tty SIGWINCH alone no longer
-     *  moves the window. */
-    resizeWindow?: (cols: number, rows: number) => void
-  },
+  detach?: () => void,
 ): void {
   // Output rides a micro-batcher (see @yaac/shared/batcher): one WebSocket
   // message per burst rather than per PTY data event. The pod driver already
@@ -388,7 +309,6 @@ function bridge(
     if (!ctrl) return
     if (ctrl.type === 'resize' && ctrl.cols && ctrl.rows) {
       ptyProc.resize(ctrl.cols, ctrl.rows)
-      opts.resizeWindow?.(ctrl.cols, ctrl.rows)
     } else if (ctrl.type === 'signal' && ctrl.name) {
       ptyProc.kill(ctrl.name)
     } else if (ctrl.type === 'ping') {
@@ -404,9 +324,9 @@ function bridge(
 
   sock.onClose(() => {
     out.dispose()
-    opts.detach?.()
+    detach?.()
     setTimeout(() => {
-      opts.detach?.()
+      detach?.()
       try {
         ptyProc.kill()
       } catch {
@@ -451,8 +371,7 @@ const liveViews = new Map<string, Set<string>>()
  * the client's grid — validated here rather than by the route.
  *
  * Everything the connection owns in the pod is created and reclaimed here:
- * its per-client tmux view session, the window-resize driver that keeps that
- * view's window pinned to the client's grid, and the kill-worktree on close.
+ * its per-client tmux view session and the kill-worktree on close.
  */
 export function attachPty(
   jobName: string,
@@ -469,7 +388,7 @@ export function attachPty(
   // login shell is the image's business under one driver and the host
   // user's under the other, and only one of those is guaranteed to have zsh.
   if (target === 'shell') {
-    bridge(worktreeDriver().dialPty(jobName, ['sh', '-c', 'exec "${SHELL:-sh}" -l'], size), socket, {})
+    bridge(worktreeDriver().dialPty(jobName, ['sh', '-c', 'exec "${SHELL:-sh}" -l'], size), socket)
     return
   }
 
@@ -483,29 +402,19 @@ export function attachPty(
 
   const ptyProc = worktreeDriver()
     .dialPty(jobName, attachArgs(target, viewName, size, paths), size)
-  // Webapp views (agent / window:@) pin their tmux window to this client via
-  // `window-size manual` + resize-window (see attachArgs), so their resizes
-  // must drive resize-window; the resizer serializes those execs. 'native'
-  // keeps tmux's default `latest` sizing, which the client's own SIGWINCH
-  // already drives.
-  const resizer = target === 'native' ? null : makeWindowResizer(jobName, viewName, paths)
-  bridge(ptyProc, socket, {
-    detach: () => {
-      resizer?.dispose()
-      views.delete(viewName)
-      // Drop the registry entry only while it is still OURS. `views` is the
-      // set captured at attach time, and detach runs twice (again at the
-      // grace deadline, see bridge) — long enough for the last connection's
-      // close to have emptied the entry, a new connection to have installed
-      // a fresh set, and this stale closure to then delete that live set.
-      // The orphaned connection is invisible to the next attach's sweep,
-      // which reaps its view as a corpse; the client reconnects, wipes the
-      // registry the same way on close, and the two attaches proceed to kill
-      // each other's views on every retry — a permanent reconnect flicker in
-      // every terminal on the worktree.
-      if (views.size === 0 && liveViews.get(jobName) === views) liveViews.delete(jobName)
-      void killViewSession(jobName, viewName, paths)
-    },
-    resizeWindow: resizer?.resize,
+  bridge(ptyProc, socket, () => {
+    views.delete(viewName)
+    // Drop the registry entry only while it is still OURS. `views` is the
+    // set captured at attach time, and detach runs twice (again at the
+    // grace deadline, see bridge) — long enough for the last connection's
+    // close to have emptied the entry, a new connection to have installed
+    // a fresh set, and this stale closure to then delete that live set.
+    // The orphaned connection is invisible to the next attach's sweep,
+    // which reaps its view as a corpse; the client reconnects, wipes the
+    // registry the same way on close, and the two attaches proceed to kill
+    // each other's views on every retry — a permanent reconnect flicker in
+    // every terminal on the worktree.
+    if (views.size === 0 && liveViews.get(jobName) === views) liveViews.delete(jobName)
+    void killViewSession(jobName, viewName, paths)
   })
 }

@@ -3,15 +3,13 @@
  * split-open-agent-size-test.js
  *
  * Verifies that a session opening straight into a side-by-side split does NOT
- * leave the agent's tmux window stuck wider than its pane. The webapp view
- * pins its window under `window-size manual` + resize-window (pty-bridge
+ * leave the agent's tmux window stuck wider than its pane. The webapp view's
+ * window follows its client under `window-size latest` (pty-bridge
  * attachArgs); on a fresh session the agent pane first attaches at full width,
- * then the terminals query splits the layout and shrinks the pane. The attach's
- * own resize-window (at the pre-split width) can land AFTER the client's
- * follow-up resize frame, leaving the agent window pinned wide — its output
- * clipped on the right and its bottom prompt wrong — until the next resize
- * ("stays wrong until I act"). SessionTerminal re-sends its grid size when the
- * attach settles, which lands last and re-pins the window to the pane.
+ * then the terminals query splits the layout and shrinks the pane. The window
+ * must follow that shrink rather than stay wide — its output clipped on the
+ * right and its bottom prompt wrong — until the next resize ("stays wrong
+ * until I act").
  *
  * A regression shows up as the agent (claude) tmux window width != the client
  * xterm cols after the split settles, while a post-split shell window is the

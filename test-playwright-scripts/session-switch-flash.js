@@ -3,11 +3,10 @@
  * session-switch-flash.js
  *
  * Verifies that switching between sessions (and tabs) never flashes tmux
- * overflow dots on the right-hand side of the pane. Kept-alive terminals are
- * pinned under per-view `window-size manual` (pty-bridge attachArgs), so a
- * pane resize round-trips a resize-window exec to the pod; hidden panes
- * therefore keep a frozen rect (SessionView) so switches are pure visibility
- * flips with no resize at all. A regression shows up here as dotRows > 0 in
+ * overflow dots on the right-hand side of the pane. Each view's tmux window
+ * follows its client under `window-size latest` (pty-bridge attachArgs), and
+ * hidden panes keep a frozen rect (WorktreeView) so switches are pure
+ * visibility flips with no resize at all. A regression shows up here as dotRows > 0 in
  * the visible xterm buffer right after a switch, or as grids changing across
  * switches.
  *

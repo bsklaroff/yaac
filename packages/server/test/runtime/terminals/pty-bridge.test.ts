@@ -3,7 +3,7 @@
  *
  * Nothing under features/terminals is mocked here: the query validation, the
  * tmux attach argv, the per-client view lifecycle (register, ghost sweep,
- * window resize, kill-session) and the wire protocol all run for real, and
+ * kill-session) and the wire protocol all run for real, and
  * the fakes start at the contract boundary — the driver's `dialPty` for the
  * in-workspace PTY and its `exec` for every tmux command. The internals are covered by the
  * targets, sizes and frames these tests drive rather than by tests of their
@@ -30,15 +30,17 @@ const job = (n: number): string => `yaac-demo-${sid(n)}`
 
 /** Every webapp attach creates its per-client grouped view session detached,
  *  with the chrome-less options applied before any client is attached:
- *  `status off`, `prefix None`, and per-view `window-size manual` (which, with
- *  the resize-window in the attach sequence, pins the shared window to this
- *  client — set per view, never globally, since global manual segfaults tmux
- *  3.4). */
+ *  `status off` and `prefix None`. */
 const VIEW_CREATE = (view: string, cols: number, rows: number): string =>
   `${TMUX} new-session -d -t yaac -s ${view} -x ${cols} -y ${rows}`
   + ` \\; set-option -t ${view} status off`
   + ` \\; set-option -t ${view} prefix None`
-  + ` \\; set-option -t ${view} window-size manual`
+
+/** The view's window, selected before the attach so the attach makes this
+ *  client its `latest`, and sized by tmux from then on. */
+const VIEW_WINDOW = (window: string): string =>
+  ` \\; select-window -t '${window}'`
+  + ` \\; set-option -w -t '${window}' window-size latest`
 
 class FakePty implements StreamPty {
   written: string[] = []
@@ -144,16 +146,20 @@ describe('attachPty', () => {
       // later view, instead of failing so the client retries.
       `${TMUX} has-session -t =yaac 2>/dev/null`
       + ` && ${VIEW_CREATE(a.view, 150, 40)}`
-      + ` && exec ${TMUX} attach-session -t ${a.view}`
       // Agent = the yaac session's lowest-index window.
-      + ` \\; select-window -t '${a.view}:^'`
-      + ` \\; resize-window -t ${a.view} -x 150 -y 40`
+      + VIEW_WINDOW(`${a.view}:^`)
+      + ` && exec ${TMUX} attach-session -t ${a.view}`
       // Set only after the attach, so nothing can reap the view in the
       // created-but-not-yet-attached gap.
       + ' \\; set-option destroy-unattached on',
     )
-    // Per view, never globally — global manual segfaults container tmux 3.4.
-    expect(a.cmd).not.toContain('set-option -g window-size')
+
+    // A resize moves the tty, and tmux moves the window with it — no exec of
+    // its own, which would lag the client and flash overflow dots.
+    execCalls.length = 0
+    a.sock.emitMessage('{"type":"resize","cols":100,"rows":30}', false)
+    expect(a.pty.resized).toEqual([[100, 30]])
+    expect(execCalls).toEqual([])
 
     // Each connection gets its own view session.
     expect(attach(job(1), { target: 'agent' }).view).not.toBe(a.view)
@@ -164,8 +170,7 @@ describe('attachPty', () => {
     await flush()
     expect(bad.size).toEqual({ cols: undefined, rows: undefined })
     expect(bad.cmd).toContain(VIEW_CREATE(bad.view, 80, 24))
-    expect(bad.cmd).toContain(`select-window -t '@3'`)
-    expect(bad.cmd).toContain(`resize-window -t ${bad.view} -x 80 -y 24`)
+    expect(bad.cmd).toContain(VIEW_WINDOW(`${bad.view}:@3`))
 
     // Absurd widths are dropped per-axis; fractional rows truncate.
     const mixed = attach(job(2), { target: 'window:@3', cols: '5000', rows: '40.9' })
@@ -184,7 +189,7 @@ describe('attachPty', () => {
     }
   })
 
-  it('keeps the tmux chrome and default sizing for the CLI native attach', async () => {
+  it('keeps the tmux chrome and the group\'s own window for the CLI native attach', async () => {
     const a = attach(job(4), { target: 'native', cols: '150', rows: '40' })
     await flush()
     expect(a.cmd).toBe(
@@ -193,16 +198,6 @@ describe('attachPty', () => {
       + ` && exec ${TMUX} attach-session -t ${a.view}`
       + ' \\; set-option destroy-unattached on',
     )
-    // Native has a status bar and switches windows live, so it wants tmux's
-    // standard client-driven sizing — the webapp-only pin would fight it.
-    expect(a.cmd).not.toContain('window-size manual')
-
-    // …and a resize therefore only moves the tty; nothing drives
-    // resize-window for it.
-    execCalls.length = 0
-    a.sock.emitMessage('{"type":"resize","cols":100,"rows":30}', false)
-    expect(a.pty.resized).toEqual([[100, 30]])
-    expect(execCalls).toEqual([])
   })
 
   it('gives the shell target a raw login shell with no view session to manage', async () => {
@@ -417,60 +412,15 @@ describe('attachPty', () => {
     expect(() => a.pty.emitExit(1)).not.toThrow()
   })
 
-  it('drives the view window on resize, serializing execs so the newest size wins', async () => {
-    const a = attach(job(10), { target: 'agent' })
-    await flush()
-    execCalls.length = 0
-
-    let release!: () => void
-    const gate = new Promise<{ stdout: string; stderr: string }>((r) => {
-      release = () => r({ stdout: '', stderr: '' })
-    })
-    execImpl = () => execCalls.length === 1 ? gate : Promise.resolve({ stdout: '', stderr: '' })
-
-    const resize = (cols: number, rows: number): string => {
-      a.sock.emitMessage(`{"type":"resize","cols":${cols},"rows":${rows}}`, false)
-      return `${TMUX} resize-window -t ${a.view} -x ${cols} -y ${rows}`
-    }
-    // A lone resize gets no added latency: it fires while idle.
-    const first = resize(100, 30)
-    expect(execCalls).toEqual([first])
-    // A burst (a divider drag emits one frame per column step) coalesces to
-    // one queued follow-up, and the last size wins.
-    resize(110, 35)
-    const last = resize(120, 40)
-    expect(execCalls).toEqual([first])
-    release()
-    await flush()
-    expect(execCalls).toEqual([first, last]) // 110x35 never reached the pod
-    // The tty is resized every time regardless.
-    expect(a.pty.resized).toEqual([[100, 30], [110, 35], [120, 40]])
-  })
-
-  it('closing drops a queued resize and kills the view session', async () => {
+  it('closing kills the view session, tolerating one already gone', async () => {
     const a = attach(job(11), { target: 'agent' })
     await flush()
     execCalls.length = 0
-
-    let release!: () => void
-    const gate = new Promise<{ stdout: string; stderr: string }>((r) => {
-      release = () => r({ stdout: '', stderr: '' })
-    })
-    // The kill-session must go through even though the resize is stuck, and
     // "no such session" (closed before the attach landed) is fine.
-    execImpl = (cmd) => cmd.includes('resize-window')
-      ? gate
-      : Promise.reject(new Error('no such session'))
-
-    a.sock.emitMessage('{"type":"resize","cols":100,"rows":30}', false)
-    a.sock.emitMessage('{"type":"resize","cols":120,"rows":40}', false) // queued
+    execImpl = () => Promise.reject(new Error('no such session'))
     a.sock.emitClose()
-    release()
     await flush()
-    expect(execCalls).toEqual([
-      `${TMUX} resize-window -t ${a.view} -x 100 -y 30`,
-      `${TMUX} kill-session -t ${a.view}`,
-    ])
+    expect(execCalls).toEqual([`${TMUX} kill-session -t ${a.view}`])
   })
 
   it('re-detaches at the grace deadline, then force-kills the PTY', async () => {

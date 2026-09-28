@@ -330,18 +330,19 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     })
   }
 
-  // tmux's control mode is what the status watcher attaches with, and its
-  // `-C` behavior is only dependable from 3.0 on. A host with an ancient
-  // tmux gets a worktree whose agent status never updates.
+  // Every webapp terminal sets its window to `window-size latest`, which
+  // tmux only has from 3.1: below that the set fails and no agent or window
+  // terminal opens at all. (The status watcher's control mode needs 3.0.)
   const version = await tmuxVersion()
   if (version !== null) {
-    const major = Number(/^(\d+)/.exec(version)?.[1] ?? '0')
-    const ok = major >= 3
+    // A dev build reports `next-3.6` or `master`: newer than any floor.
+    const m = /(\d+)\.(\d+)/.exec(version)
+    const ok = !m || Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 1)
     results.push({
       name: 'tmux version',
-      status: ok ? 'pass' : 'warn',
+      status: ok ? 'pass' : 'fail',
       detail: `tmux ${version}`,
-      ...(ok ? {} : { fix: 'yaac drives tmux control mode; upgrade to tmux 3.0 or newer.' }),
+      ...(ok ? {} : { fix: 'yaac\'s terminals need tmux 3.1 or newer; upgrade tmux.' }),
     })
   }
 

@@ -947,14 +947,14 @@ export function WorktreeView({
           // In tiles mode a pane is on-screen when it's the active tab of its
           // column; its rect is that column's body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
-          // Hidden terminals never change size. With per-view `window-size
-          // manual` a pane resize round-trips resize-window to the server, and
-          // a switch that changed the pane's size flashed the stale window
-          // (overflow dots on the right) until it landed. So in tabs mode every
-          // terminal tab of the selected worktree shares the active tab's rect
-          // (the inactive ones merely invisible), and any other kept-alive pane
-          // freezes at the last rect it was shown with — switching tabs or
-          // worktrees is a pure visibility flip, no resize at all. Chat panes
+          // Hidden terminals never change size. A pane resize round-trips to
+          // the workspace before tmux redraws at the new grid, so a switch that
+          // changed the pane's size flashed the stale frame until the redraw
+          // landed. So in tabs mode every terminal tab of the selected
+          // worktree shares the active tab's rect (the inactive ones merely
+          // invisible), and any other kept-alive pane freezes at the last rect
+          // it was shown with — switching tabs or worktrees is a pure
+          // visibility flip, no resize at all. Chat panes
           // ride along (same keep-alive, no resize round trip to freeze for);
           // ephemeral panes still unmount off-screen (below).
           const tabsRect = {
