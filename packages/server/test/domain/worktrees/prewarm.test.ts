@@ -11,12 +11,10 @@ vi.mock('#db', async (importOriginal) => ({
   restoreSpareWorktree: vi.fn(),
   getWorktreeRow: vi.fn(),
   listActiveAgentSessions: vi.fn(),
+  setWorktreeGroup: vi.fn(),
   getGitIdentity: mockGitIdentity,
 }))
 
-vi.mock('#runtime/agents/agent-command', () => ({
-  shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
-}))
 vi.mock('#domain/worktrees/spare-pool', () => ({
   retoolSpare: vi.fn(),
   rebranchSpare: vi.fn(),
@@ -66,6 +64,7 @@ import {
   getWorktreeRow,
   listActiveAgentSessions,
   restoreSpareWorktree,
+  setWorktreeGroup,
   type WorktreeRow,
 } from '#db'
 import type { CreateSetup } from '#domain/worktrees/create'
@@ -153,6 +152,7 @@ describe('tryClaimPrewarmed', () => {
     })
     mockRetool.mockResolvedValue(undefined)
     mockRebranch.mockResolvedValue(undefined)
+    vi.mocked(setWorktreeGroup).mockResolvedValue(undefined)
     mockCleanup.mockResolvedValue(true)
     mockDeleteState.mockResolvedValue(true)
     // Branch defaults: spare warmed from main, config sets no default —
@@ -207,7 +207,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('reports the branch a re-branched claim ended on, not the one it was warmed from', async () => {
     mockList.mockResolvedValue([spare()])
-    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
 
     expect(appliedEvents.filter((e) => e.type === 'base-branch-resolved')).toEqual([
       {
@@ -427,7 +427,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('re-branches a spare when the requested branch differs, then commits the claim', async () => {
     mockList.mockResolvedValue([spare()])
-    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
 
     expect(result?.worktreeId).toBe('spare1')
     expect(mockFetchOrigin).toHaveBeenCalledTimes(1)
@@ -444,7 +444,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('skips re-branch prep entirely when the spare already matches the request', async () => {
     mockList.mockResolvedValue([spare()])
-    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'main')
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'main' })
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockFetchOrigin).not.toHaveBeenCalled()
   })
@@ -460,7 +460,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('hands the agent respawn to the retool when tool and branch both differ', async () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
-    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
     expect(result?.tool).toBe('claude')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', null)
     expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude'))
@@ -481,7 +481,7 @@ describe('tryClaimPrewarmed', () => {
 
   it('a model override on a re-branched claim skips the rebranch respawn (retool respawns with --model)', async () => {
     mockList.mockResolvedValue([spare()])
-    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-4-8' }), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-4-8' }), emit, { branch: 'dev' })
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', null)
     expect(mockRetool).toHaveBeenCalledWith(
@@ -493,7 +493,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockRemoteBranchExists.mockResolvedValue(false)
 
-    await expect(tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'nope'))
+    await expect(tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'nope' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockCleanup).not.toHaveBeenCalled() // pre-mutation: not tainted
@@ -512,7 +512,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockRebranch.mockRejectedValue(new Error('reset failed'))
 
-    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledWith({
       jobName: 'yaac-p-spare', projectSlug: 'p', worktreeId: 'spare1',
     })
@@ -524,7 +524,7 @@ describe('tryClaimPrewarmed', () => {
     // create with the tainted spare reaped, not propagate.
     mockList.mockResolvedValue([spare()])
     mockRebranch.mockRejectedValue(new ServerError('VALIDATION', 'weird in-pod failure'))
-    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')).toBeUndefined()
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
   })
 
@@ -534,7 +534,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
     mockWorktreeUpstream.mockResolvedValue('develop')
-    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, 'dev')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', setup('claude'))
   })
@@ -636,6 +636,41 @@ describe('tryClaimPrewarmed', () => {
     expect((await tryClaimPrewarmed('p', 'req', want, emit))?.worktreeId).toBe('spare1')
     expect(mockRetool).not.toHaveBeenCalled()
     expect(mockClaimSpare).toHaveBeenCalledTimes(1)
+  })
+
+  // The rest of the create is handed over with the agent, the way a cold
+  // create's is: the group before the worktree shows, then the prompt its
+  // agent booted without.
+  it('files the claimed worktree in its group and gives its agent the prompt', async () => {
+    mockList.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { prompt: 'fix the bug', groupId: 'g1' })
+    expect(result?.worktreeId).toBe('spare1')
+    expect(vi.mocked(setWorktreeGroup)).toHaveBeenCalledWith('p', 'spare1', 'g1')
+    // The paste script travels base64'd, and carries the prompt the same
+    // way, so the script is decoded to be read.
+    const pasted = mockExec.mock.calls.flatMap(([jobName, cmd]) => {
+      const b64 = /printf %s (\S+) \| base64 -d/.exec(cmd)?.[1]
+      return b64 !== undefined ? [{ jobName, script: Buffer.from(b64, 'base64').toString() }] : []
+    })
+    expect(pasted).toHaveLength(1)
+    expect(pasted[0].jobName).toBe('yaac-p-spare')
+    expect(pasted[0].script).toContain(Buffer.from('fix the bug').toString('base64'))
+  })
+
+  // A group deleted since the route resolved it would fail a cold create the
+  // same way, so burning the spare over it would only lose a good worktree.
+  it('hands a claimed worktree over ungrouped when filing it fails', async () => {
+    mockList.mockResolvedValue([spare()])
+    vi.mocked(setWorktreeGroup).mockRejectedValue(new ServerError('NOT_FOUND', 'No such worktree group'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { groupId: 'gone' })
+    expect(result?.worktreeId).toBe('spare1')
+    await flush()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    expect(appliedEvents.some((e) => e.type === 'worktree-create-failed')).toBe(false)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('No such worktree group'))
+    warn.mockRestore()
   })
 
   it('treats a spare with no recorded upstream as warmed from the default branch', async () => {

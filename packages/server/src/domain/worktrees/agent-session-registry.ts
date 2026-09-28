@@ -1,4 +1,5 @@
 import { worktreeDriver } from '#drivers/driver'
+import { catalogModel } from '#domain/auth'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
@@ -535,7 +536,9 @@ async function reconcileAcpAgentSessions(
         // is what lets a stopped worktree still be labelled and ordered.
         //
         // The model is the exception: the adapter pushes it, so it rides the
-        // live set rather than being read back out of the record.
+        // live set rather than being read back out of the record — recorded
+        // as the catalog's id for it, since an adapter may answer in a
+        // vocabulary of its own.
         const firstPrompt = await readAcpFirstPrompt(record)
         const lastActiveMs = await transcriptLastActiveMs(record)
         return {
@@ -545,7 +548,7 @@ async function reconcileAcpAgentSessions(
           mode: 'acp' as const,
           ...(firstPrompt !== undefined ? { firstPrompt } : {}),
           ...(lastActiveMs !== undefined ? { lastActiveMs } : {}),
-          ...(a.model !== undefined ? { model: a.model } : {}),
+          ...(a.model !== undefined ? { model: catalogModel(a.tool, a.model, a.modelName) } : {}),
         }
       }),
   )

@@ -40,7 +40,6 @@ import {
   tryClaimPrewarmed,
 } from '#domain/worktrees'
 import { modelDisplayName } from '#domain/auth'
-import { agentDriver, agentWindowName } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 import {
   createWorktreeGroup,
@@ -181,25 +180,12 @@ export const worktreeApp = new Hono()
         // posture has its agent respawned, and one in the other mode is
         // passed over (see `tryClaimPrewarmed`). A claim returns the spare's
         // own id, which lists in place of this row once the create resolves.
-        const claimed = await tryClaimPrewarmed(body.project, worktreeId, setup, onProgress, body.branch)
-        if (claimed) {
-          // A claimed spare already has its row, so its group is filed here
-          // rather than by the create below.
-          if (groupId !== undefined) {
-            await setWorktreeGroup(body.project, claimed.worktreeId, groupId)
-          }
-          // The spare's agent booted with no prompt; deliver it now, the way
-          // its mode takes one.
-          if (body.prompt !== undefined) {
-            onProgress('Sending initial prompt...')
-            await agentDriver(claimed.mode).deliverPrompt(
-              { slug: body.project, worktreeId: claimed.worktreeId, jobName: claimed.jobName, tool },
-              agentWindowName(tool, 0),
-              body.prompt,
-            )
-          }
-          return claimed
-        }
+        const claimed = await tryClaimPrewarmed(body.project, worktreeId, setup, onProgress, {
+          ...(body.branch !== undefined ? { branch: body.branch } : {}),
+          ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
+          ...(groupId !== undefined ? { groupId } : {}),
+        })
+        if (claimed) return claimed
 
         const opts: WorktreeCreateOptions = {
           worktreeId,

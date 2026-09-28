@@ -138,8 +138,7 @@ export function claimProvisioning(worktreeId: string, claimedId: string | undefi
  *  fetch it (see `MissingToolError`).
  *
  *  A failure lets go of any spare the create claimed: the row lingers until
- *  dismissed, and a claim that went through before the route failed (its
- *  group filing, its prompt) is a live worktree the row must not hide. */
+ *  dismissed, and must not keep hiding a worktree behind it. */
 export function failProvisioning(
   worktreeId: string,
   error: string,

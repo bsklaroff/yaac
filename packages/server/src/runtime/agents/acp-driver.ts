@@ -173,6 +173,7 @@ interface Attached {
   child: StreamChild
   agentSessionId?: string
   model?: string
+  modelName?: string
   modeId?: string
 }
 
@@ -418,8 +419,9 @@ class AcpConnection implements AgentConnection {
         // ACP mode's replacement for the in-pod hook's session-starts log.
         this.publishAgents()
       },
-      onModel: (model) => {
+      onModel: (model, name) => {
         entry.model = model
+        entry.modelName = name
         this.publishAgents()
       },
       onModeId: (modeId) => {
@@ -495,6 +497,7 @@ class AcpConnection implements AgentConnection {
       tool: e.tool,
       ...(e.agentSessionId !== undefined ? { agentSessionId: e.agentSessionId } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
+      ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       ...(e.modeId !== undefined ? { reportedMode: e.modeId } : {}),
     }))
     this.sink({ kind: 'live-agents', agents })
@@ -636,7 +639,7 @@ export const acpDriver: AgentDriver = {
       `--log ${acpLogPath(spec.paths, spec.agentSessionId)}`,
       `--cwd ${spec.paths.workspaceDir}`,
       '--',
-      ...adapter.argv(spec),
+      ...adapter.argv,
     ].join(' ')
   },
 

@@ -144,9 +144,10 @@ export interface AcpConversationDeps {
    * The model the session is running changed — or was first learned, from the
    * handshake's reply. Fires on the switch itself (the adapter's
    * `config_option_update`), not on the next answer, and only when the value
-   * actually moves.
+   * actually moves. `name` is what the adapter's own list calls it, when
+   * the list says (see `sessionModel`).
    */
-  onModel?: (model: string) => void
+  onModel?: (model: string, name: string | undefined) => void
   /**
    * The adapter says the session moved to another mode — the agent entered
    * plan mode, a plan-exit answer took effect, or anything else asked it to —
@@ -552,10 +553,10 @@ export class AcpConversation {
     }
   }
 
-  private setModel(model: string | undefined): void {
-    if (model === undefined || model === this.currentModel) return
-    this.currentModel = model
-    this.deps.onModel?.(model)
+  private setModel(model: { id: string; name?: string } | undefined): void {
+    if (model === undefined || model.id === this.currentModel) return
+    this.currentModel = model.id
+    this.deps.onModel?.(model.id, model.name)
   }
 
   /** The mode the session says it is in, in whichever shape its adapter
@@ -890,9 +891,9 @@ export class AcpConversation {
     try {
       const reply = await this.peer.request(ACP.sessionSetConfigOption,
         { sessionId: this.sessionId, configId: 'model', value: model })
-      // The reply holds what the adapter resolved the request to — claude's
-      // turns `opus` into the id it runs — and sends no update for it.
-      this.setModel(sessionModel(reply) ?? model)
+      // The reply holds what the adapter resolved the request to, and it
+      // sends no update for it.
+      this.setModel(sessionModel(reply) ?? { id: model })
       this.notices.delete('model')
       this.log(`[server] acp: session model set to ${model}`)
     } catch (err) {

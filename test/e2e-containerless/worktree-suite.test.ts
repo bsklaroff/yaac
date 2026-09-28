@@ -203,7 +203,11 @@ const ACP_MODES: Record<AgentTool, { current: string; available: string[] }> = {
  */
 function sessionModesReply(tool: AgentTool): Record<string, unknown> {
   const { current, available } = ACP_MODES[tool]
-  const model = { id: 'model', currentValue: 'e2e-model' }
+  // claude's adapter names its model in its picker's values, which only its
+  // own list ties to a model anyone else names.
+  const model = tool === 'claude'
+    ? { id: 'model', currentValue: 'opus[1m]', options: [{ value: 'opus[1m]', name: 'Opus 5.5' }] }
+    : { id: 'model', currentValue: 'e2e-model' }
   if (tool === 'opencode') {
     return {
       configOptions: [
@@ -1427,11 +1431,14 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     model: string | undefined
   }> = [
     {
+      // The adapter reads no flags, so the create's model rides its
+      // environment; what it reports back is its picker's alias, which the
+      // row records as the catalog id the alias's name belongs to.
       tool: 'claude',
       posture: 'accept-edits',
       modeId: 'acceptEdits',
-      launch: ['-- claude-agent-acp'],
-      model: 'e2e-model',
+      launch: [`ANTHROPIC_MODEL=${FALLBACK_MODELS.claude}`, '-- claude-agent-acp'],
+      model: 'claude-opus-5-5',
     },
     {
       // `accept-edits` rather than `auto`: codex-acp is already in `agent`, so

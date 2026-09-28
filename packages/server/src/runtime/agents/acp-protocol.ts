@@ -561,18 +561,31 @@ export function acpModeOffered(
  * Both shapes are read because adapters differ over which they use — a
  * `models.currentModelId` block, a `configOptions` entry whose `id` is
  * `model`, or both.
+ *
+ * The id comes with the name the adapter's own list gives it, when it gives
+ * one: claude's adapter answers with its picker's alias where it has one
+ * (`opus[1m]`), which only its name for it (`Opus 5.5`) ties back to a model
+ * anyone else names.
  */
-export function sessionModel(state: unknown): string | undefined {
+export function sessionModel(state: unknown): { id: string; name?: string } | undefined {
   const r = asRecord(state)
   if (r === undefined) return undefined
-  const current = asString(asRecord(r.models)?.currentModelId)
-  if (current !== undefined) return current
-  const options = Array.isArray(r.configOptions) ? r.configOptions : []
-  for (const entry of options) {
-    const o = asRecord(entry)
-    if (asString(o?.id) === 'model') return asString(o?.currentValue)
+  const models = asRecord(r.models)
+  const current = asString(models?.currentModelId)
+  if (current !== undefined) {
+    const listed = Array.isArray(models?.availableModels) ? models.availableModels : []
+    return named(current, asString(listed.map(asRecord).find((m) => asString(m?.modelId) === current)?.name))
   }
-  return undefined
+  const options = Array.isArray(r.configOptions) ? r.configOptions : []
+  const model = options.map(asRecord).find((o) => asString(o?.id) === 'model')
+  const value = asString(model?.currentValue)
+  if (value === undefined) return undefined
+  const choices = Array.isArray(model?.options) ? model.options : []
+  return named(value, asString(choices.map(asRecord).find((c) => asString(c?.value) === value)?.name))
+}
+
+function named(id: string, name: string | undefined): { id: string; name?: string } {
+  return name !== undefined ? { id, name } : { id }
 }
 
 /**

@@ -32,9 +32,9 @@ import { applyWorktreeEvent } from '#db'
 import { resolveGitIdentity } from './git-identity'
 import { claimProvisioning } from './provisioning'
 import { rebranchSpare, retoolSpare } from './spare-pool'
-import { claimSpareWorktree, getWorktreeRow, restoreSpareWorktree } from '#db'
-import { awaitConversationRow, type CreateSetup, type WorktreeCreateResult } from './create'
-import { agentWindowName, parkAcpLaunchModel } from '#runtime/agents'
+import { claimSpareWorktree, getWorktreeRow, restoreSpareWorktree, setWorktreeGroup } from '#db'
+import { handOverAgent, type CreateSetup, type WorktreeCreateResult } from './create'
+import { parkAcpLaunchModel } from '#runtime/agents'
 import { isTmuxSessionAlive } from '#runtime/status'
 import {
   fetchOrigin,
@@ -208,9 +208,12 @@ export async function tryClaimPrewarmed(
   /** The fully resolved create: which agent, launched how. */
   setup: CreateSetup,
   emit: (message: string) => void,
-  branch?: string,
+  /** What the create asked for beyond the agent: the reference branch, the
+   *  opening message, and the sidebar group to file the worktree under. */
+  request: { branch?: string; prompt?: string; groupId?: string } = {},
 ): Promise<WorktreeCreateResult | undefined> {
   const { tool } = setup
+  const { branch } = request
   const runtime = worktreeDriver()
   let reserved: string | undefined
   let chosen: RuntimeHandle | undefined
@@ -428,14 +431,35 @@ export async function tryClaimPrewarmed(
       })
     }
 
+    // Filed before the create's row stops hiding it, and — like the identity
+    // above — a correction, not a prerequisite. The one way it fails that a
+    // retry would not repeat is the group having been deleted since the route
+    // resolved it, and a cold create would fail on that too, after this claim
+    // had burned a good spare. So the worktree lands ungrouped instead.
+    if (request.groupId !== undefined) {
+      await setWorktreeGroup(projectSlug, claimedId, request.groupId).catch((err: unknown) => {
+        console.warn(
+          `Claimed session ${claimedId} not filed in group ${request.groupId ?? ''}: `
+          + (err as Error).message,
+        )
+      })
+    }
+
     emit('Using prewarmed session...')
     // An acp spare's adapter has been waiting with no client: the watcher the
     // claim just unhid it to attaches now, and the handshake mints the
-    // conversation. Held for its row exactly as a fresh acp create is, so the
-    // worktree opens on its chat pane rather than acpd's log.
-    if (setup.mode === 'acp') {
-      await awaitConversationRow(projectSlug, claimedId, chosen.jobName, agentWindowName(tool, 0))
-    }
+    // conversation. Handed over exactly as a fresh create's agent is — held
+    // for its row, so the worktree opens on its chat pane rather than acpd's
+    // log, then given the prompt its agent booted without.
+    await handOverAgent({
+      projectSlug,
+      worktreeId: claimedId,
+      jobName: chosen.jobName,
+      tool,
+      mode: setup.mode,
+      ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
+      emit,
+    })
     return { worktreeId: chosen.workspaceId, jobName: chosen.jobName, tool, mode: setup.mode, forwardedPorts: [] }
   } catch (err) {
     // A pre-mutation VALIDATION error (unknown branch) is the user's to

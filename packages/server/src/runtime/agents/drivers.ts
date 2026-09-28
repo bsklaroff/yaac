@@ -69,6 +69,11 @@ export interface LiveAgent {
    */
   model?: string
   /**
+   * What the agent itself calls that model, when it says — only `acp` does,
+   * from its adapter's model list. Rides with `model` and moves with it.
+   */
+  modelName?: string
+  /**
    * The permission mode it is in, in the agent's own words, as it last
    * reported moving there: a session mode id under `acp`, and under `tui` the
    * value its reporter publishes on the pane (claude's mode name, opencode's

@@ -565,13 +565,57 @@ function toolLabel(tool: AgentTool): string {
 }
 
 /**
+ * The last step of a create, cold or claimed: hand the agent over.
+ *
+ * A fresh acp conversation has no row until its agent mints an id
+ * (`session/new`), seconds after the window opens, and until then the webapp
+ * has no chat pane to open — only a terminal on acpd's log, which it then
+ * swaps for the conversation in a column after the init windows. So the
+ * create holds until the row exists, keeping this worktree behind its
+ * placeholder; a resumed one's rows were written at launch.
+ *
+ * Then the initial prompt, mode-agnostic: `tui` pastes it into the pane and
+ * submits, `acp` sends `session/prompt`. Neither waits for the agent to
+ * answer, and a failure is logged rather than thrown — the worktree is whole
+ * either way. Not sent to an acp conversation the hold gave up on, which would
+ * wait out a second budget for the same handshake.
+ */
+export async function handOverAgent(input: {
+  projectSlug: string
+  worktreeId: string
+  jobName: string
+  tool: AgentTool
+  mode: AgentMode
+  prompt?: string
+  emit: (message: string) => void
+}): Promise<void> {
+  const { projectSlug, worktreeId, jobName, tool, mode, prompt, emit } = input
+  const window = agentWindowName(tool, 0)
+  let conversationUp = true
+  if (mode === 'acp') {
+    emit(`Connecting to ${toolLabel(tool)}...`)
+    conversationUp = await awaitConversationRow(projectSlug, worktreeId, jobName, window)
+  }
+  if (prompt === undefined) return
+  if (!conversationUp) {
+    serverLog(`[server] create ${worktreeId}: initial prompt not delivered — no conversation`)
+    return
+  }
+  emit('Sending initial prompt...')
+  await agentDriver(mode).deliverPrompt({ slug: projectSlug, worktreeId, jobName, tool }, window, prompt)
+    .catch((err: unknown) => {
+      serverLog(`[server] create ${worktreeId}: initial prompt failed: ${String(err)}`)
+    })
+}
+
+/**
  * Poll until the worktree has a live conversation row, resolving whether one
  * landed. Gives up at the deadline or as soon as the agent's window is gone,
  * and treats a failed read as "not yet": a handshake that never lands is the
  * watcher's to retry, and the worktree is better shown with its terminal than
  * held behind a spinner.
  */
-export async function awaitConversationRow(
+async function awaitConversationRow(
   projectSlug: string,
   worktreeId: string,
   jobName: string,
@@ -1775,41 +1819,18 @@ export async function createWorktree(
     }
   }
 
-  // A fresh acp conversation has no row until its agent mints an id
-  // (`session/new`), seconds after the window opens, and until then the
-  // webapp has no chat pane to open — only a terminal on acpd's log, which it
-  // then swaps for the conversation in a column after the init windows. So
-  // the create holds until the row exists, keeping this worktree behind its
-  // provisioning placeholder; a resumed one's rows were written at launch.
-  // After the start loop, not in it: nothing the loop recovers by relaunching
-  // applies to a row that has not landed yet.
-  //
   // Not for a spare: nothing attaches to one until it is claimed (spares have
-  // no status watcher), so the claim is what holds for its row instead.
-  const agentWindow = agentWindowName(tool, 0)
-  let conversationUp = true
-  if (mode === 'acp' && options.prewarm !== true) {
-    emit(`Connecting to ${toolLabel(tool)}...`, options)
-    conversationUp = await awaitConversationRow(projectSlug, worktreeId, handle.jobName, agentWindow)
-  }
-
-  if (options.initialPrompt !== undefined) {
-    // Mode-agnostic: `tui` pastes it into the pane and submits, `acp` sends
-    // `session/prompt`. Neither waits for the agent to answer. Not sent to an
-    // acp conversation the hold gave up on — that would wait out a second
-    // budget for the same handshake.
-    if (conversationUp) {
-      emit('Sending initial prompt...', options)
-      await agentDriver(mode).deliverPrompt(
-        { slug: projectSlug, worktreeId, jobName: handle.jobName, tool },
-        agentWindow,
-        options.initialPrompt,
-      ).catch((err: unknown) => {
-        serverLog(`[server] create ${worktreeId}: initial prompt failed: ${String(err)}`)
-      })
-    } else {
-      serverLog(`[server] create ${worktreeId}: initial prompt not delivered — no conversation`)
-    }
+  // no status watcher), so the claim is what hands its agent over instead.
+  if (options.prewarm !== true) {
+    await handOverAgent({
+      projectSlug,
+      worktreeId,
+      jobName: handle.jobName,
+      tool,
+      mode,
+      ...(options.initialPrompt !== undefined ? { prompt: options.initialPrompt } : {}),
+      emit: (message) => emit(message, options),
+    })
   }
 
   return {

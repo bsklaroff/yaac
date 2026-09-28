@@ -91,3 +91,18 @@ export function modelDisplayName(tool: AgentTool, id: string): string | undefine
   const name = names[bare] ?? names[undecorated] ?? names[undecorated.replace(/-\d{8}$/, '')]
   return tool === 'claude' ? name?.replace(/^Claude /, '') : name
 }
+
+/**
+ * A model an agent reported, as the catalog's id for it, so every surface can
+ * name it the way the create form did.
+ *
+ * An id the catalog already names is kept. One it does not is matched by the
+ * name the agent gave it: claude's ACP adapter answers with its picker's
+ * alias where it has one (`opus[1m]`), and calls that one "Opus 5.5" — the
+ * catalog's name for `claude-opus-5-5`. With no name, or one the catalog
+ * lacks, the report stands as it came.
+ */
+export function catalogModel(tool: AgentTool, id: string, name: string | undefined): string {
+  if (name === undefined || modelDisplayName(tool, id) !== undefined) return id
+  return modelsForTool(tool, undefined).find((m) => m.name === name)?.id ?? id
+}

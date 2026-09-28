@@ -318,14 +318,19 @@ describe('reconcileWorktreeAgentSessions', () => {
     // the history the mode column exists to preserve. Session create stamps
     // it (it is the deterministic window name), and reconciling must not
     // blank it.
+    //
+    // claude's adapter reports its model in its picker's vocabulary; the row
+    // takes the catalog id that value's name belongs to, so it is labelled
+    // the way the create that launched it was.
     setLiveAgents('demo', 'wt-1', [
-      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1' },
+      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' },
     ])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
 
     const [link] = await listWorktreeAgentSessions('demo', 'wt-1')
     expect(link.paneId).toBe('claude')
     expect(link.active).toBe(true)
+    expect(link.model).toBe('claude-opus-5-5')
   })
 
   it('records nothing for an acp conversation whose handshake has not landed', async () => {

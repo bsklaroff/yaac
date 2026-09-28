@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultModelFor, modelDisplayName, modelsForTool } from '#domain/auth'
+import { catalogModel, defaultModelFor, modelDisplayName, modelsForTool } from '#domain/auth'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import {
   MODELS_BY_PROVIDER,
@@ -63,5 +63,20 @@ describe('modelDisplayName', () => {
     expect(modelDisplayName('claude', 'claude-next')).toBeUndefined()
     expect(modelDisplayName('opencode', 'no-provider-prefix')).toBeUndefined()
     expect(modelDisplayName('pi', 'nowhere/model')).toBeUndefined()
+  })
+})
+
+describe('catalogModel', () => {
+  it('maps an adapter-only id to the catalog id its name belongs to', () => {
+    // claude's ACP adapter answers in its picker's values, not in model ids.
+    expect(catalogModel('claude', 'opus[1m]', 'Opus 5.5')).toBe('claude-opus-5-5')
+    expect(catalogModel('claude', 'sonnet', 'Sonnet 5')).toBe('claude-sonnet-5')
+  })
+
+  it('keeps an id the catalog already names, and one no name ties to it', () => {
+    expect(catalogModel('claude', 'claude-fable-5', 'Something else')).toBe('claude-fable-5')
+    expect(catalogModel('claude', 'default', 'Default (recommended)')).toBe('default')
+    expect(catalogModel('claude', 'opus[1m]', undefined)).toBe('opus[1m]')
+    expect(catalogModel('pi', 'openrouter/moonshotai/kimi-k2.6', 'Kimi K2.6')).toBe('openrouter/moonshotai/kimi-k2.6')
   })
 })

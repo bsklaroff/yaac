@@ -5,7 +5,7 @@
  *
  * One table rather than four branches scattered through the driver and the
  * client, because these facts are not independent — a tool that cannot take a
- * model on its command line is exactly the tool that has to be sent one over
+ * model at launch is exactly the tool that has to be sent one over
  * the protocol, and the posture it can honor follows from the modes its adapter
  * advertises. Read together they are a description of an adapter; read apart
  * they are four `if (tool === …)` chains that drift.
@@ -27,7 +27,7 @@ export interface AcpAdapterProfile {
   /** What the tmux window execs, as an argv the launch command joins with
    *  spaces. Never quoted — the whole launch string is embedded in a
    *  single-quoted `respawn-window '<cmd>'`. */
-  argv(spec: AgentLaunchSpec): string[]
+  argv: string[]
   /** `NAME=value` assignments prefixed to that command. */
   env(spec: AgentLaunchSpec): string[]
   /**
@@ -42,15 +42,15 @@ export interface AcpAdapterProfile {
    *  read as the posture they behave as. */
   readsAs?: Record<string, PermissionMode>
   /**
-   * Where the model is chosen. `argv` and `env` settle it before the agent
-   * starts; `set_config_option` settles it after the handshake, as the `model`
+   * Where the model is chosen. `env` settles it before the agent starts;
+   * `set_config_option` settles it after the handshake, as the `model`
    * config option, for an adapter that otherwise reads its model from the
    * tool's own settings. Never `session/set_model`: neither pinned adapter
    * that needs this answers it (opencode removed it in v2, and pi-acp 0.0.33
    * answers "Method not found"), while both advertise `model` among their
    * `configOptions`.
    */
-  modelVia: 'argv' | 'env' | 'set_config_option'
+  modelVia: 'env' | 'set_config_option'
   /**
    * Whether a `session/request_permission` still reaches the user under the
    * `bypass` posture. True for an adapter whose asks are not permission
@@ -74,8 +74,14 @@ export function acpLaunchModel(spec: AgentLaunchSpec): string | undefined {
 
 const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   /**
-   * claude's adapter takes the model on its command line and names a mode for
-   * every posture — the case every other profile is a departure from.
+   * claude's adapter names a mode for every posture — the case every other
+   * profile is a departure from.
+   *
+   * Its model is `ANTHROPIC_MODEL`, the one launch-time input it resolves a
+   * model from: it reads no flags of its own, so a `--model` on its argv is
+   * silently dropped and the session opens on the account's default. What it
+   * then reports is its picker's alias for that model where it has one
+   * (`opus[1m]`), else the id it was given.
    *
    * The one mode id that does not read across is `manual`: ACP's id for "ask
    * me about everything" is `default`, which the adapter labels "Manual". It
@@ -83,11 +89,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * selects and reads as `manual`: nothing unapproved runs unasked.
    */
   claude: {
-    argv: (spec) => [
-      ACP_ADAPTERS.claude.binary,
-      ...(spec.model !== undefined ? ['--model', spec.model] : []),
-    ],
-    env: () => [],
+    argv: [ACP_ADAPTERS.claude.binary],
+    env: (spec) => (spec.model !== undefined ? [`ANTHROPIC_MODEL=${spec.model}`] : []),
     modeIds: {
       bypass: 'bypassPermissions',
       auto: 'auto',
@@ -96,7 +99,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
       manual: 'default',
     },
     readsAs: { dontAsk: 'manual' },
-    modelVia: 'argv',
+    modelVia: 'env',
     forwardAsksUnderBypass: false,
   },
 
@@ -125,7 +128,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * `session/set_mode` is reported in the pane rather than only logged.
    */
   codex: {
-    argv: () => [ACP_ADAPTERS.codex.binary],
+    argv: [ACP_ADAPTERS.codex.binary],
     env: (spec) => [
       'NO_BROWSER=1',
       ...(spec.model !== undefined
@@ -164,7 +167,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    *    method is part of this profile rather than one spelling for everyone.
    */
   opencode: {
-    argv: () => [ACP_ADAPTERS.opencode.binary, 'acp'],
+    argv: [ACP_ADAPTERS.opencode.binary, 'acp'],
     env: (spec) => [opencodeConfigArg(spec.permissionMode, undefined)],
     modeIds: { plan: 'plan' },
     modelVia: 'set_config_option',
@@ -191,7 +194,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * being asked to choose.
    */
   pi: {
-    argv: () => [ACP_ADAPTERS.pi.binary],
+    argv: [ACP_ADAPTERS.pi.binary],
     env: () => [],
     modeIds: {},
     modelVia: 'set_config_option',
