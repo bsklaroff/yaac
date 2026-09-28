@@ -572,11 +572,12 @@ docs/plans/isolation-groundwork.md workstream 1.
   exists.** `parsePtyTarget` yields `shell`/`native` (raw/tmux-prefixed
   shells), `agent`, or `window:<id>` (a TUI or another user's dev-server
   window), and falls back to `agent` for anything unrecognized. `bridge()`
-  unconditionally writes binary frames to stdin, honors `signal`, and wires
-  `resizeWindow` for every non-`native` target. A read-only viewer is real
+  unconditionally writes binary frames to stdin, honors `signal`, and every
+  view resizes the shared window to its client (`window-size latest`
+  follows whichever client last attached, resized or typed). A read-only viewer is real
   work (`runtime/terminals/pty-bridge.ts`): a `{readOnly}` path that drops
-  binary and `signal` frames, skips the shared-window `resizeWindow` (a
-  viewer's browser size otherwise moves the owner's pane), excludes
+  binary and `signal` frames, keeps a viewer's resize off the shared
+  window (a viewer's browser size otherwise moves the owner's pane), excludes
   `native`, and caps viewer tmux sessions per worktree. For v1, owner-only
   PTY plus the read-only transcript pane is the safe subset; a live TUI
   viewer is a §2 "observable sessions" item, not free.

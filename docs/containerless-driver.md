@@ -588,7 +588,8 @@ answer under both drivers on one line.
 `yaac host check` verifies them, and the driver logs any hard failure at
 startup rather than letting a create fail with a spawn error:
 
-- **tmux** (3.0+ — the status watcher drives control mode) and **git**:
+- **tmux** (3.1+ — every webapp terminal sets its window to `window-size
+  latest`, which 3.0 lacks) and **git**:
   required. The launch spawns both directly, so a create refuses up front
   rather than dying inside `launchWorkspace` with the workspace half made.
 - **node**: required for `--mode acp`, where the window's command is `node`

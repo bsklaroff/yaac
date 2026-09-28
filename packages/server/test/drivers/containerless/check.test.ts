@@ -57,11 +57,12 @@ describe('runHostCheck', () => {
     expect(results.some((r) => r.status === 'fail')).toBe(false)
   })
 
-  it('warns about a tmux too old to drive control mode', async () => {
-    // The status watcher attaches with `-C`; on tmux 2.x an agent's status
-    // silently never updates.
-    mockRunHost.mockResolvedValue({ stdout: 'tmux 2.8\n', stderr: '' })
-    expect(byName(await runHostCheck(), 'tmux version')?.status).toBe('warn')
+  it('fails a tmux older than 3.1, whose terminals cannot open', async () => {
+    // Every webapp terminal sets `window-size latest`, which 3.0 rejects.
+    for (const [v, status] of [['2.8', 'fail'], ['3.0a', 'fail'], ['3.1c', 'pass'], ['next-3.6', 'pass'], ['master', 'pass']]) {
+      mockRunHost.mockResolvedValue({ stdout: `tmux ${v}\n`, stderr: '' })
+      expect(byName(await runHostCheck(), 'tmux version')?.status, v).toBe(status)
+    }
   })
 
   it('warns about a node that acp needs and the server itself did not come from', async () => {
