@@ -134,7 +134,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
   CALICO_DIR: '/tmp/yaac-package/k8s/calico',
   repoDir: vi.fn((slug: string) => `/tmp/${slug}/repo`),
   claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
-  claudeJsonFile: vi.fn((slug: string) => `/tmp/${slug}/claude.json`),
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
   opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
   opencodeDataDir: vi.fn((slug: string, worktreeId: string) => `/tmp/node/${slug}/opencode-data/${worktreeId}`),

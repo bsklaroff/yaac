@@ -115,8 +115,8 @@ describe('yaac project (real CLI + real server)', () => {
     const repoBeta = path.join(testEnv.scratchDir, 'repo-beta')
     await createTestRepo(repoAlpha)
     await createTestRepo(repoBeta)
-    await addTestProject(repoAlpha)
-    await addTestProject(repoBeta)
+    await addTestProject(server, repoAlpha)
+    await addTestProject(server, repoBeta)
 
     const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
     expect(exitCode).toBe(0)
@@ -124,8 +124,8 @@ describe('yaac project (real CLI + real server)', () => {
     expect(stdout).toContain('WORKTREES')
     expect(stdout).toContain('repo-alpha')
     expect(stdout).toContain('repo-beta')
-    expect(stdout).toContain(repoAlpha)
-    expect(stdout).toContain(repoBeta)
+    expect(stdout).toContain('https://github.com/test-org/repo-alpha.git')
+    expect(stdout).toContain('https://github.com/test-org/repo-beta.git')
     // No containers were started, so both projects should show 0 sessions.
     expect(stdout).toMatch(/repo-alpha\s+\S.*\s+0/)
     expect(stdout).toMatch(/repo-beta\s+\S.*\s+0/)
@@ -186,7 +186,7 @@ describe('yaac config (real CLI + real server)', () => {
   async function seedProject(slug: string): Promise<void> {
     const repo = path.join(testEnv.scratchDir, slug)
     await createTestRepo(repo)
-    await addTestProject(repo)
+    await addTestProject(server, repo)
   }
 
   it('config edit round-trips yaac-config.json through the server (validated)', async () => {

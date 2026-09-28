@@ -4,7 +4,7 @@ import { restoreAllWorkspaceForwarders } from '#runtime/ports'
 import { findWorktreeRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { serverLog } from '#log'
-import type { DriverDeps, ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
+import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
 /**
  * Convergence: everything push-fed, and the wiring between the driver that
@@ -43,7 +43,6 @@ function fireChange(source: ReconcileTrigger): void {
  */
 export async function attachConvergence(opts: {
   onAttached: () => void
-  legacySecretImportPending?: DriverDeps['legacySecretImportPending']
 }): Promise<void> {
   // The ACP driver needs a worktree's already-recorded conversations to
   // re-address a live agent (and to `session/load` after a restart), and
@@ -95,10 +94,6 @@ export async function attachConvergence(opts: {
       }
     },
     attached: opts.onAttached,
-  }, {
-    ...(opts.legacySecretImportPending !== undefined
-      ? { legacySecretImportPending: opts.legacySecretImportPending }
-      : {}),
   })
 }
 

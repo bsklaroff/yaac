@@ -11,6 +11,7 @@ import {
   listProjects,
   readProjectConfigRaw,
   readProjectDockerfile,
+  registerStagedProject,
   removeProjectConfig,
   removeProjectEnvVar,
   resolveProjectConfigWithSource,
@@ -78,6 +79,16 @@ export const projectApp = new Hono()
       // One more project its runtime serves the credential to.
       await pushCredentialsToRuntime()
       return c.json(result)
+    },
+  )
+  // A project whose checkout is already staged in the data dir, recorded
+  // without a clone — the test suites' way to add a local repo.
+  .post(
+    '/register',
+    zv('json', z.object({ slug: z.string().min(1), remoteUrl: z.string().min(1) })),
+    async (c) => {
+      const { slug, remoteUrl } = c.req.valid('json')
+      return c.json(await registerStagedProject(slug, remoteUrl))
     },
   )
   .get('/:slug', async (c) => c.json(await getProjectDetail(c.req.param('slug'))))

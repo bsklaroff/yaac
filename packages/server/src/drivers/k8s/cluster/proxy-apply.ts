@@ -29,7 +29,6 @@ import {
   buildProxyServiceManifest,
   proxyProjectSecretsName,
 } from './proxy-manifests'
-import { seedProxyObjects } from './legacy-proxy-seed'
 import {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
@@ -139,10 +138,6 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
     const existing = await kubectlGetJson<object>(['get', kind.toLowerCase(), metadata.name, '-n', k8sNamespace()])
     if (!existing) await kubectlApply(manifest)
   }
-  // An install upgrading over a proxy that kept its CA and registrations
-  // on a hostPath: carry them into the objects before the roll
-  // (docs/legacy-compat-shims.md).
-  await seedProxyObjects()
   await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
   // The egress lockdown, applied with the proxy so it exists before any

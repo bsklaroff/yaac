@@ -26,6 +26,7 @@ import {
 import { createWorktreeGroup } from '#db/group-store'
 import { listWorktreeAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
+import { recordProject } from '#db/project-store'
 import { claudeDir, getProjectsDir } from '@yaac/shared/project-paths'
 import { listStoppedWorktrees } from '#domain/worktrees/stopped-list'
 import type { AgentTool, ProjectMeta } from '@yaac/shared/types'
@@ -40,7 +41,7 @@ async function writeProject(slug: string, meta: Partial<ProjectMeta> = {}): Prom
   }
   const dir = path.join(getProjectsDir(), slug)
   await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(full))
+  await recordProject(full)
 }
 
 /** Record a worktree, then (optionally) its stop — the two writes every

@@ -6,6 +6,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 
 import { listProjects } from '#domain/projects'
+import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 // Which projects exist is the server's own record; how many worktrees each
@@ -19,7 +20,7 @@ const counts = vi.fn()
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
   await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
+  await recordProject(meta)
 }
 
 describe('listProjects', () => {
@@ -73,14 +74,5 @@ describe('listProjects', () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     counts.mockResolvedValue({})
     expect((await listProjects())[0]?.worktreeCount).toBe(0)
-  })
-
-  it('skips entries with malformed project.json', async () => {
-    await writeProject('good', { slug: 'good', remoteUrl: 'https://example/good', addedAt: '2026-01-01T00:00:00.000Z' })
-    const badDir = path.join(getProjectsDir(), 'bad')
-    await fs.mkdir(badDir, { recursive: true })
-    await fs.writeFile(path.join(badDir, 'project.json'), 'not json')
-    const projects = await listProjects()
-    expect(projects.map((p) => p.slug)).toEqual(['good'])
   })
 })

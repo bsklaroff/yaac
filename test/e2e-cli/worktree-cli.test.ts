@@ -357,7 +357,7 @@ describe('with seeded projects', () => {
     it('worktree list <project> filters the empty state by project name', async () => {
       const repo = path.join(testEnv.scratchDir, 'proj-empty')
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
 
       const { stdout, exitCode } = await runYaac(testEnv.env, 'worktree', 'list', 'proj-empty')
       expect(exitCode).toBe(0)
@@ -367,7 +367,7 @@ describe('with seeded projects', () => {
     it('worktree list --stopped shows the empty-stopped message when nothing is recorded', async () => {
       const repo = path.join(testEnv.scratchDir, 'proj-nodel')
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
 
       const { stdout, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'list', 'proj-nodel', '--stopped',
@@ -418,7 +418,7 @@ describe('with seeded projects', () => {
       for (const slug of [DEL_SLUG, CAP_SLUG, ALL_SLUG]) {
         const repo = path.join(testEnv.scratchDir, slug)
         await createTestRepo(repo)
-        await addTestProject(repo)
+        await addTestProject(server, repo)
       }
       const firstMsg = JSON.stringify({
         type: 'user',
@@ -490,7 +490,7 @@ describe('with seeded projects', () => {
     beforeAll(async () => {
       const repo = path.join(testEnv.scratchDir, REN_SLUG)
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
       await server.stop()
       setDataDir(testEnv.dataDir)
       await recordWorktreeCreated({ projectSlug: REN_SLUG, worktreeId: renameId })
@@ -536,7 +536,7 @@ describe('with seeded projects', () => {
     beforeAll(async () => {
       const repo = path.join(testEnv.scratchDir, GRP_SLUG)
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
 
       // Same single-writer dance as the describes above: rows go in with the
       // server stopped, then a fresh server reads them.
@@ -735,7 +735,7 @@ describe('with seeded projects', () => {
     beforeAll(async () => {
       const repo = path.join(testEnv.scratchDir, AG_SLUG)
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
 
       // The DB has exactly one writer — the running server holds it, and
       // `.server.lock` is the guard (db/client.ts). Opening it from
@@ -802,7 +802,7 @@ describe('with seeded projects', () => {
     it('filters by the [project] argument and honors -n <seconds>', async () => {
       const repo = path.join(testEnv.scratchDir, 'proj-mon')
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
 
       const stdout = await runMonitorUntilFirstRender('proj-mon', '-n', '1')
       expect(stdout).toMatch(/\(every 1s/)
@@ -832,7 +832,7 @@ describe('with seeded projects', () => {
       await createTestRepo(repo)
       // A URL-shaped remote so parseGitRemote succeeds; the credential
       // lookup against an empty store is the real assertion target.
-      await addTestProject(repo, { remoteUrl: 'https://github.com/test-org/repo-demo.git' })
+      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo.git' })
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env,
@@ -849,7 +849,7 @@ describe('with seeded projects', () => {
     it('rejects an unknown --tool value via server VALIDATION', async () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo-tool')
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'create', 'repo-demo-tool', '--tool', 'mystery',
@@ -866,7 +866,7 @@ describe('with seeded projects', () => {
       // standing up a real opencode container.
       const repo = path.join(testEnv.scratchDir, 'repo-demo-opencode')
       await createTestRepo(repo)
-      await addTestProject(repo, { remoteUrl: 'https://github.com/test-org/repo-demo-opencode.git' })
+      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-opencode.git' })
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'create', 'repo-demo-opencode', '--tool', 'opencode',
@@ -882,7 +882,7 @@ describe('with seeded projects', () => {
       // proof the flag is wired through without standing up a container.
       const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
       await createTestRepo(repo)
-      await addTestProject(repo, { remoteUrl: 'https://github.com/test-org/repo-demo-model-tool.git' })
+      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-model-tool.git' })
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'create', 'repo-demo-model-tool',
@@ -895,7 +895,7 @@ describe('with seeded projects', () => {
     it('rejects a --model value with shell-unsafe characters via schema validation', async () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo-model-bad')
       await createTestRepo(repo)
-      await addTestProject(repo)
+      await addTestProject(server, repo)
 
       const { stderr, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'create', 'repo-demo-model-bad',

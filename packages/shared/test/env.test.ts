@@ -230,17 +230,6 @@ describe('env (configuration)', () => {
     })
   })
 
-  describe('legacyServerGitUser', () => {
-    it('needs both halves, since git refuses a half-identity', () => {
-      vi.stubEnv('YAAC_SERVER_GIT_NAME', 'Ada Lovelace')
-      expect(env.legacyServerGitUser).toBeNull()
-      vi.stubEnv('YAAC_SERVER_GIT_EMAIL', '  ada@example.com  ')
-      expect(env.legacyServerGitUser).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
-      vi.stubEnv('YAAC_SERVER_GIT_NAME', '   ')
-      expect(env.legacyServerGitUser).toBeNull()
-    })
-  })
-
   describe('secrets', () => {
     it('parses a versioned key set, newest first', () => {
       vi.stubEnv('YAAC_SECRETS', ' 2:newer , 1:older ')

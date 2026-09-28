@@ -20,10 +20,12 @@ import {
   addHttpsCredential,
   addProject,
   generateSshCredential,
+  registerStagedProject,
   resolveProjectCredential,
 } from '#domain/projects'
-import { closeDb } from '#db'
+import { closeDb, getProjectRow } from '#db'
 import {
+  claudeDir,
   projectDir,
   repoDir,
   projectClaudeCredentialsFile,
@@ -34,7 +36,6 @@ import {
   saveCodexOAuthBundle,
   PLACEHOLDER_ACCESS_TOKEN,
 } from '@yaac/shared/tool-auth'
-import type { ProjectMeta } from '@yaac/shared/types'
 
 const mockClone = vi.mocked(cloneRepo)
 
@@ -58,12 +59,6 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-async function readMeta(slug: string): Promise<ProjectMeta> {
-  return JSON.parse(
-    await fs.readFile(path.join(projectDir(slug), 'project.json'), 'utf8'),
-  ) as ProjectMeta
-}
-
 describe('addProject', () => {
   it('clones with the credential it is given and records the project with it', async () => {
     const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_secret' })
@@ -74,7 +69,7 @@ describe('addProject', () => {
     expect(project.slug).toBe('widgets')
     expect(project.remoteUrl).toBe('https://github.com/acme/Widgets.git')
     expect(Date.parse(project.addedAt)).not.toBeNaN()
-    expect(await readMeta('widgets')).toEqual(project)
+    expect(await getProjectRow('widgets')).toMatchObject(project)
 
     expect(mockClone).toHaveBeenCalledWith(
       'https://github.com/acme/Widgets.git',
@@ -166,7 +161,7 @@ describe('addProject', () => {
     await expect(addProject('https://github.com/other/repo.git', token))
       .rejects.toMatchObject({ code: 'CONFLICT' })
     // The first project's remote is untouched.
-    expect((await readMeta('repo')).remoteUrl).toBe('https://github.com/acme/repo.git')
+    expect((await getProjectRow('repo'))?.remoteUrl).toBe('https://github.com/acme/repo.git')
   })
 
   it('maps a rejected credential to VALIDATION and rolls the project dir back', async () => {
@@ -186,5 +181,47 @@ describe('addProject', () => {
     await expect(attempt).rejects.toMatchObject({ code: 'INTERNAL' })
     await expect(attempt).rejects.toThrow(/Failed to clone: fatal: repository not found/)
     await expect(fs.access(projectDir('repo'))).rejects.toThrow()
+  })
+
+  it('rolls the project dir back when anything after the clone fails', async () => {
+    // A file where the claude home goes: the clone succeeds, the setup
+    // after it does not. A dir left with no row could not be listed,
+    // removed or re-added over.
+    mockClone.mockImplementation(async (_url, dest) => {
+      await fs.mkdir(path.join(dest, '.git'), { recursive: true })
+      await fs.writeFile(claudeDir('repo'), 'in the way')
+    })
+
+    await expect(addProject('https://github.com/acme/repo.git', token)).rejects.toThrow()
+    await expect(fs.access(projectDir('repo'))).rejects.toThrow()
+    expect(await getProjectRow('repo')).toBeUndefined()
+  })
+})
+
+describe('registerStagedProject', () => {
+  it('records a staged checkout without cloning, and refuses what it cannot record', async () => {
+    // Nothing staged yet: there is no project to record.
+    await expect(registerStagedProject('staged', 'https://github.com/acme/staged.git'))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' })
+
+    await fs.mkdir(path.join(repoDir('staged'), '.git'), { recursive: true })
+    const meta = await registerStagedProject('staged', 'https://github.com/acme/staged.git')
+    expect(meta).toMatchObject({ slug: 'staged', remoteUrl: 'https://github.com/acme/staged.git' })
+    expect(await getProjectRow('staged')).toMatchObject({ ...meta, gitCredentialId: null })
+    expect(mockClone).not.toHaveBeenCalled()
+
+    await expect(registerStagedProject('staged', 'https://github.com/other/staged.git'))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
+    // A slug is one directory under the projects dir, never a path out of it.
+    for (const slug of ['..', '../elsewhere', '.hidden']) {
+      await expect(registerStagedProject(slug, 'https://github.com/acme/x.git')).rejects.toMatchObject({ code: 'VALIDATION' })
+    }
+    // And the remote holds to what `addProject` accepts: it picks the
+    // transport every later fetch may use.
+    await fs.mkdir(path.join(repoDir('local'), '.git'), { recursive: true })
+    for (const remote of ['/some/local/path', 'file:///srv/repo.git', 'ext::sh -c evil']) {
+      await expect(registerStagedProject('local', remote)).rejects.toMatchObject({ code: 'VALIDATION' })
+    }
+    expect(await getProjectRow('local')).toBeUndefined()
   })
 })

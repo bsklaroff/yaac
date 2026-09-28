@@ -444,9 +444,8 @@ async function gcOrphanSpares(
  * The orphan sweep: what a worktree that no longer exists left behind, on
  * both tiers. The GLOBAL half — dead spares' checkouts, session-starts
  * logs and `sessions/<id>` dirs — is walked here, on the server's own
- * filesystem. The NODE-LOCAL half — opencode working copies, and the
- * per-worktree module dirs an older install left (docs/legacy-compat-shims.md)
- * — is handed to the runtime (`reapNodeLocal`) with the
+ * filesystem. The NODE-LOCAL half — opencode working copies — is handed
+ * to the runtime (`reapNodeLocal`) with the
  * same live set, because on a cluster those bytes are on whichever node
  * the worktree ran on. Runs every pass; the global walk is a readdir per
  * project and the runtime throttles its own half.

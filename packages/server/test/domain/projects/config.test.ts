@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -45,7 +45,7 @@ describe('resolveProjectConfig', () => {
     // source. After the rename, only the per-project config dir is read.
     await fs.writeFile(
       path.join(dataDir, 'global', 'projects', slug, 'repo', 'yaac-config.json'),
-      JSON.stringify({ envPassthrough: ['FOO'] }),
+      JSON.stringify({ initCommands: ['pnpm install'] }),
     )
     expect(await resolveProjectConfig(slug)).toBeNull()
   })
@@ -70,57 +70,6 @@ describe('resolveProjectConfig', () => {
       console.warn = origWarn
     }
     expect(warns).toContain('yaac-config.json: unknown field "unknownField"')
-  })
-
-  describe('retired keys', () => {
-    // A retired key is not an unknown one: the generic "unknown field"
-    // warning reads like a typo, and would leave someone whose worktrees
-    // silently stopped getting their environment with nothing to search for.
-    const warningsFor = async (config: object): Promise<string[]> => {
-      const warns: string[] = []
-      const origWarn = console.warn
-      console.warn = (msg: string) => warns.push(msg)
-      try {
-        await roundTrip(config)
-      } finally {
-        console.warn = origWarn
-      }
-      return warns
-    }
-
-    it('names where a project environment lives now', async () => {
-      const warns = await warningsFor({
-        env: { FOO: 'bar' },
-        envPassthrough: ['TERM'],
-        envSecretProxy: { MY_KEY: { hosts: ['api.example.com'] } },
-      })
-      for (const key of ['env', 'envPassthrough', 'envSecretProxy']) {
-        expect(warns.some((w) => w.includes(`"${key}" is no longer supported`))).toBe(true)
-      }
-      expect(warns.join('\n')).toContain('Settings → Project Config → Environment')
-    })
-
-    it('names cacheVolumes as what replaced bindMounts', async () => {
-      const warns = await warningsFor({
-        bindMounts: [{ hostPath: '/data', containerPath: '/mnt/data', mode: 'ro' }],
-      })
-      expect(warns.some((w) => w.includes('"bindMounts" is no longer supported'))).toBe(true)
-      expect(warns.join('\n')).toContain('cacheVolumes')
-    })
-
-    it('drops them from the parsed config rather than carrying them through', async () => {
-      const origWarn = console.warn
-      console.warn = () => { /* the messages are asserted above */ }
-      try {
-        expect(await roundTrip({
-          env: { FOO: 'bar' },
-          bindMounts: [{ hostPath: '/data', containerPath: '/mnt/data', mode: 'ro' }],
-          initCommands: ['pnpm install'],
-        })).toEqual({ initCommands: ['pnpm install'] })
-      } finally {
-        console.warn = origWarn
-      }
-    })
   })
 
   describe('cacheVolumes', () => {
@@ -270,66 +219,6 @@ describe('resolveProjectConfig', () => {
         .rejects.toThrow('nestedContainers must be a boolean')
       await expect(roundTrip({ hideInitPane: 'yes' }))
         .rejects.toThrow('hideInitPane must be a boolean')
-    })
-
-    // A retired key is not an unknown key: the generic "unknown field"
-    // warning reads like a typo, and would leave someone whose worktrees
-    // silently stopped getting a feature with nothing to search for. The
-    // config still parses, so an unedited one keeps creating worktrees.
-    it('names virtualCluster as retired rather than warning it is unknown', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* quiet */ })
-      try {
-        expect(await roundTrip({ virtualCluster: true, nestedContainers: true }))
-          .toEqual({ nestedContainers: true })
-        const said = warn.mock.calls.map((c) => String(c[0])).join('\n')
-        expect(said).toContain('"virtualCluster" is no longer supported')
-        expect(said).not.toContain('unknown field')
-      } finally {
-        warn.mockRestore()
-      }
-    })
-
-    // The retired key always implied nestedContainers, and the in-pod
-    // engine it implied still exists. Dropping the implication would take
-    // the engine away from an unedited config, surfacing much later as
-    // `docker: not found` inside the worktree.
-    it('keeps virtualCluster implying nestedContainers, unless it says otherwise', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* quiet */ })
-      try {
-        expect(await roundTrip({ virtualCluster: true })).toEqual({ nestedContainers: true })
-        // An explicit opt-out wins — it is the newer key, said outright.
-        expect(await roundTrip({ virtualCluster: true, nestedContainers: false }))
-          .toEqual({ nestedContainers: false })
-        // And the key alone implies nothing when it is off.
-        expect(await roundTrip({ virtualCluster: false })).toEqual({})
-      } finally {
-        warn.mockRestore()
-      }
-    })
-
-    // The warning has to describe what the parser DID, which is not the same
-    // sentence in all three shapes: claiming the implication where it never
-    // fired names the one thing that did not happen.
-    it('only claims the implication in the case that actually implies', async () => {
-      const said = async (config: object): Promise<string> => {
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* quiet */ })
-        try {
-          await roundTrip(config)
-          return warn.mock.calls.map((c) => String(c[0])).join('\n')
-        } finally {
-          warn.mockRestore()
-        }
-      }
-      expect(await said({ virtualCluster: true })).toContain('It still implies')
-      // Both of these resolve to no implication, so neither may claim one.
-      expect(await said({ virtualCluster: true, nestedContainers: false }))
-        .not.toContain('It still implies')
-      expect(await said({ virtualCluster: false })).not.toContain('It still implies')
-      // Every shape still names the key as retired rather than unknown.
-      for (const c of [{ virtualCluster: true }, { virtualCluster: false }]) {
-        expect(await said(c)).toContain('no longer supported')
-        expect(await said(c)).not.toContain('unknown field')
-      }
     })
 
     it('round-trips hideInitPane', async () => {

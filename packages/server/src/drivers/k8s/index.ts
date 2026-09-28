@@ -112,7 +112,7 @@ export function createK8sDriver(): WorktreeDriver {
     // workspace is not part of the answer.
     workspacePaths: () => k8sWorkspacePaths(),
 
-    start: (sinks, deps) => startK8sDriver(sinks, deps),
+    start: (sinks) => startK8sDriver(sinks),
     stop: () => stopK8sDriver(),
     release: () => releaseK8sDriver(),
 

@@ -421,7 +421,7 @@ beforeAll(async () => {
   // and a local path is refused as a remote. A plausible GitHub URL instead
   // — nothing ever dials it (YAAC_E2E_SKIP_FETCH) — with the git credential
   // a create resolves assigned to it.
-  await addTestProject(repoPath, { remoteUrl: `https://github.com/test/${SLUG}.git` })
+  await addTestProject(server, repoPath, { remoteUrl: `https://github.com/test/${SLUG}.git` })
   await assignTestGitCredential(server, SLUG, GIT_TOKEN)
 })
 

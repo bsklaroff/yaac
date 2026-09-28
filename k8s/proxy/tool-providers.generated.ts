@@ -770,8 +770,7 @@ export const PI_PROVIDER_DEFAULT_MODELS: Record<string, string> = {
 }
 
 // ── Model catalogs: candidate --model values per provider ────────────────
-// Served to a worktree asking `yaac-mama models` (and by the proxy's legacy
-// `GET yaac.internal/tools?models=1`) so a
+// Served to a worktree asking `yaac-mama models` so a
 // worktree can discover valid `--model` values without a network fetch; also
 // available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
 // tool-calling models (claude → anthropic, codex → openai, opencode → provider),

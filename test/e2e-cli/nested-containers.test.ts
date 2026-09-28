@@ -30,7 +30,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential } from '@yaac/test-utils/api'
+import { assignTestGitCredential, registerTestProject } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -177,9 +177,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${slug}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
-    await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
-      slug, remoteUrl: fakeRemote, addedAt: new Date().toISOString(),
-    }) + '\n')
+    await registerTestProject(server!, slug, fakeRemote)
     await assignTestGitCredential(server!, slug, 'fake-ghp-token')
     const configDir = path.join(projectPath, 'config')
     await fs.mkdir(configDir, { recursive: true })

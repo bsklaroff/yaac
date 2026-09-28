@@ -7,6 +7,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectConfigDir, getProjectsDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists, projectRemoteUrl } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
+import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 // The live worktree count comes off the substrate; stubbed so the count a
@@ -30,7 +31,7 @@ afterEach(async () => {
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
   await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
+  await recordProject(meta)
 }
 
 describe('getProjectDetail', () => {

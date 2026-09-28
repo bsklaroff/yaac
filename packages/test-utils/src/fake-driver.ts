@@ -128,7 +128,7 @@ export function installFakeWorktreeDriver(
     // the kind and asserts on the mediator, with no second fake to build.
     get kind() { return current.kind },
     workspacePaths: (ref) => current.workspacePaths(ref),
-    start: (sinks, deps) => current.start(sinks, deps),
+    start: (sinks) => current.start(sinks),
     stop: () => current.stop(),
     release: () => current.release(),
     find: (id, o) => current.find(id, o),

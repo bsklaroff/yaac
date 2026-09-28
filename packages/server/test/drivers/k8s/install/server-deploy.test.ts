@@ -8,7 +8,6 @@
  * actually receive.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -328,13 +327,9 @@ describe('deployServerWorkload', () => {
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
     )
 
-    // No git identity: it is a server SETTING now, in the database the pod
-    // already mounts, rather than a snapshot install took off whichever host
-    // it happened to run on. `YAAC_GIT_*` stays absent for its own reason —
-    // that pair is the same identity travelling the other way, server into a
-    // worktree's environment.
-    expect(env.YAAC_SERVER_GIT_NAME).toBeUndefined()
-    expect(env.YAAC_SERVER_GIT_EMAIL).toBeUndefined()
+    // No git identity: it is a server SETTING, in the database the pod
+    // already mounts. `YAAC_GIT_*` is the same identity travelling the other
+    // way, server into a worktree's environment.
     expect(env.YAAC_GIT_NAME).toBeUndefined()
 
     // A pod's loopback has no reachable backend, so the bind widens and the
@@ -391,18 +386,6 @@ describe('deployServerWorkload', () => {
     // `127.0.0.1` for an unset var, so passing it through unconditionally
     // would pin a value nobody chose into every ordinary install.
     expect(names).not.toContain('YAAC_FORWARD_BIND')
-  })
-
-  it('states no git identity when the host has none', async () => {
-    // An unconfigured host is not a failed install: the CLI resolves (and
-    // prompts for) its own identity per worktree, so only webapp-created
-    // worktrees are affected — and they get the error `createWorktree`
-    // raises rather than a pod committing as somebody else.
-    await deploy({ log: vi.fn() })
-
-    const names = deployedPodSpec().containers[0].env.map((e) => e.name)
-    expect(names).not.toContain('YAAC_SERVER_GIT_NAME')
-    expect(names).not.toContain('YAAC_SERVER_GIT_EMAIL')
   })
 
   it('rewrites an IPv6-loopback Tor SOCKS URL to the host, brackets and all', async () => {
@@ -557,9 +540,9 @@ describe('deployServerWorkload', () => {
       const pending = deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
         .finally(() => { settled = true })
       const verdict = expect(pending).rejects.toThrow(/Tailscale operator did not publish/)
-      // Tick until it settles: the deploy does real disk I/O (the lock read,
-      // the layout migration) before it reaches the publish wait, and each
-      // of those needs a turn of the loop between clock advances.
+      // Tick until it settles: the deploy does real disk I/O (the lock read)
+      // before it reaches the publish wait, and that needs a turn of the
+      // loop between clock advances.
       for (let i = 0; i < 1_000 && !settled; i += 1) {
         await new Promise((r) => setImmediate(r))
         await vi.advanceTimersByTimeAsync(1_000)
@@ -600,7 +583,10 @@ describe('deployServerWorkload', () => {
     // requires a credential. One path for both: ask the pod.
     mockWithRetry.mockImplementation((args: string[]) => Promise.resolve(
       args[0] === 'exec' && args.join(' ').includes('.server.lock')
-        ? { stdout: JSON.stringify({ pid: 1, port: 8787, secret: 'podsecret', startedAt: 1, buildId: 'b' }), stderr: '' }
+        ? { stdout: JSON.stringify({
+          pid: 1, port: 8787, secret: 'podsecret', startedAt: 1, buildId: 'b',
+          instance: 'i', host: 'yaac-server-abc', heartbeatAt: 1,
+        }), stderr: '' }
         : { stdout: '', stderr: '' },
     ))
     const seen: Array<{ url: string; auth: string | undefined; method: string }> = []
@@ -622,11 +608,7 @@ describe('deployServerWorkload', () => {
     expect((await readServerConfig())?.token).toBe('minted-by-pod')
   })
 
-  it('stops the pod that is there, then moves the data dir into the tier layout, then deploys', async () => {
-    // An install upgrading from before the storage tiers were folders: the
-    // old pod holds PGlite open at `<dataDir>/db` and heartbeats its lock
-    // there. The order is the whole safety argument — the rename runs only
-    // once the pod is gone (docs/legacy-compat-shims.md).
+  it('stops the pod that is there before it deploys', async () => {
     mockGetJson.mockImplementation((args: string[]) => {
       if (args.includes('nodes')) {
         return Promise.resolve({
@@ -636,53 +618,32 @@ describe('deployServerWorkload', () => {
       if (args[1] === 'deployment') return Promise.resolve({ metadata: { name: SERVER_APP_NAME } })
       return Promise.resolve(claimRead(args))
     })
-    await fs.mkdir(path.join(tmpDir, 'projects', 'demo'), { recursive: true })
-    await fs.mkdir(path.join(tmpDir, 'db'), { recursive: true })
-    await fs.writeFile(path.join(tmpDir, 'secret.key'), 'k')
-    const log = vi.fn()
 
-    await deploy({ log })
+    await deploy({ log: vi.fn() })
 
     const calls = retried()
     const stopAt = calls.findIndex((c) => c.includes('scale') && c.includes('--replicas=0'))
     expect(stopAt).toBeGreaterThanOrEqual(0)
     // Waited on the pod's deletion, not just the scale.
     expect(calls[stopAt + 1]).toMatch(/wait pod .*--for=delete/)
-    // The Deployment was applied after the stop.
     const deployOrder = mockApply.mock.invocationCallOrder[
       (mockApply.mock.calls as Array<[Manifest]>).findIndex(([m]) => m.kind === 'Deployment')]
     expect(mockWithRetry.mock.invocationCallOrder[stopAt]).toBeLessThan(deployOrder)
-    // And the move landed in between: the log says so in order.
-    const lines = log.mock.calls.map(([m]) => String(m))
-    const stopLine = lines.findIndex((l) => /Stopping the running server pod/.test(l))
-    const moveLine = lines.findIndex((l) => /\[layout\] moved .*\/db ->/.test(l))
-    const deployLine = lines.findIndex((l) => /Deploying the yaac server/.test(l))
-    expect(stopLine).toBeGreaterThanOrEqual(0)
-    expect(stopLine).toBeLessThan(moveLine)
-    expect(moveLine).toBeLessThan(deployLine)
-    await expect(fs.access(path.join(tmpDir, 'server-local', 'db'))).resolves.toBeUndefined()
-    await expect(fs.access(path.join(tmpDir, 'server-local', 'secret.key'))).resolves.toBeUndefined()
-    await expect(fs.access(path.join(tmpDir, 'global', 'projects', 'demo'))).resolves.toBeUndefined()
   })
 
-  it('skips the stop when there is no Deployment yet, and still migrates', async () => {
-    await fs.mkdir(path.join(tmpDir, 'projects', 'demo'), { recursive: true })
+  it('skips the stop when there is no Deployment yet', async () => {
     await deploy({ log: vi.fn() })
     expect(retried().some((c) => c.includes('--replicas=0'))).toBe(false)
-    await expect(fs.access(path.join(tmpDir, 'global', 'projects', 'demo'))).resolves.toBeUndefined()
   })
 
   it('refuses to deploy beside a host server that still holds the data dir', async () => {
     // The documented upgrade is `npm update`, then install — ordinarily run
-    // on an install whose server is UP. Deploying into that is two writers
-    // on one database, and neither guard downstream catches it: a
-    // pre-lease lock reads as same-host inside the pod (no `host` field),
-    // so the pod judges it by a pid in its own namespace, calls it stale
-    // and takes it; and the published-origin probe would be answered by
-    // the very server being replaced. So it is refused here, on the host,
-    // where the lock still means what it says.
+    // on an install whose server is UP. Deploying into that is two servers
+    // on one database, and the published-origin probe would be answered by
+    // the very server being replaced. So it is refused here, on the host.
     await writeLock({
       pid: process.pid, port: 8787, secret: 's', startedAt: Date.now(), buildId: 'b',
+      instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
     })
     // /health answers, which with this process's own live pid is the whole
     // of "a host server is running".
@@ -694,22 +655,6 @@ describe('deployServerWorkload', () => {
       .rejects.toThrow(/already running.*host process[\s\S]*yaac server stop/)
     // Nothing applied: the refusal is before the first manifest, so a
     // failed install leaves the cluster exactly as it found it.
-    expect(mockApply).not.toHaveBeenCalled()
-  })
-
-  it('refuses a CURRENT host server too, not just a pre-lease one', async () => {
-    // The commoner case, and the one a "no host field" check waves
-    // through: a server on this machine that DOES write the lease fields.
-    // It fails differently — the pod crash-loops on the held lock and the
-    // rollout times out after five minutes — but it is the same two
-    // servers on one data dir, and the same one-line refusal fixes it.
-    await writeLock({
-      pid: process.pid, port: 8787, secret: 's', startedAt: Date.now(), buildId: 'b',
-      instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
-    })
-
-    await expect(deploy({ log: vi.fn() }))
-      .rejects.toThrow(/already running.*host process/)
     expect(mockApply).not.toHaveBeenCalled()
   })
 
@@ -731,6 +676,7 @@ describe('deployServerWorkload', () => {
     const DEAD_PORT = 1
     await writeLock({
       pid: process.pid, port: DEAD_PORT, secret: 's', startedAt: Date.now(), buildId: 'b',
+      instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
     })
     // Nothing answers on the lock's port, which for a same-host lock is
     // what "gone" looks like even while its pid (this test process) exists.

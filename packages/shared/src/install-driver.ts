@@ -1,4 +1,4 @@
-import { readLegacyDriverRecord, readServerConfig } from '#server-config'
+import { readServerConfig } from '#server-config'
 import type { DriverKind } from '#types'
 
 /**
@@ -20,8 +20,4 @@ import type { DriverKind } from '#types'
  */
 export async function recordedDriver(): Promise<DriverKind | undefined> {
   return (await readServerConfig())?.driver
-    // Its own file, before it moved into `server.json`. Any write of
-    // `server.json` folds it in, so this answers only until the next one —
-    // see docs/legacy-compat-shims.md.
-    ?? await readLegacyDriverRecord()
 }

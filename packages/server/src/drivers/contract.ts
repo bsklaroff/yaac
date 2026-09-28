@@ -575,27 +575,6 @@ export interface DriverSinks {
 }
 
 /**
- * What the composition root hands a driver for its run — readers it may
- * not fetch for itself.
- *
- * The counterpart of `DriverSinks`, and separate from it because the
- * direction is: sinks are where a driver REPORTS, these are what it ASKS.
- * Both exist because a driver imports nothing above its contract.
- *
- * Every entry is optional, and absent must degrade rather than fail: a
- * process that composes a driver without being the server (the api tests
- * build the app in-process) wires none of them, and must get a driver that
- * simply does less.
- */
-export interface DriverDeps {
-  /** Whether any project's config overlay still carries a retired
-   *  `envSecretProxy` key — read by the runtime that owns when the old
-   *  plaintext secrets file may finally be deleted
-   *  (docs/legacy-compat-shims.md). */
-  legacySecretImportPending?: () => Promise<boolean>
-}
-
-/**
  * The steps a runtime contributes to a pass, in two groups because that is
  * the whole of the ordering the mediators actually constrain.
  *
@@ -717,7 +696,7 @@ export interface WorktreeDriver {
    * usable substrate still serves project and auth requests, and says so
    * when a create asks for one.
    */
-  start(sinks: DriverSinks, deps: DriverDeps): Promise<void>
+  start(sinks: DriverSinks): Promise<void>
   /**
    * Stop everything push-fed, synchronously — watches, streams, and any
    * host work in flight.

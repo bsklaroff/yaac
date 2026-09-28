@@ -1,12 +1,11 @@
 import { eq } from 'drizzle-orm'
 import { getDb } from './client'
-import { gitCredentials, legacyGitSshKeys, projects } from './schema'
+import { gitCredentials, projects } from './schema'
 import { secretConfig } from './secret-key'
 import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
 import { notifyWorktreeListChanged } from '#notify'
-import { withKeyComment } from '#lib/ssh-key'
 
 /**
  * The named git credentials, sealed at rest (docs/git-credentials.md).
@@ -164,40 +163,4 @@ export async function replaceGitCredential(
   })
   notifyWorktreeListChanged()
   return row && toRow(row)
-}
-
-/**
- * LEGACY (docs/legacy-compat-shims.md, "Pattern-matched git credentials"):
- * turn every per-pattern SSH key an older server generated into a named
- * credential — the sealed seed copied as it is, named for its pattern —
- * and hand back what the importer needs to assign it. Idempotent: a row
- * whose name already exists is looked up rather than inserted again.
- */
-export async function importLegacyGitSshKeys(): Promise<Array<{
-  id: string
-  pattern: string
-  knownHostsEntry: string
-}>> {
-  const db = await getDb()
-  const legacy = await db.select().from(legacyGitSshKeys).orderBy(legacyGitSshKeys.createdAt)
-  const out: Array<{ id: string; pattern: string; knownHostsEntry: string }> = []
-  for (const k of legacy) {
-    const name = `${k.pattern} (ssh key)`
-    await db.insert(gitCredentials).values({
-      name,
-      kind: 'ssh',
-      sealedSecret: k.sealedPrivateKey,
-      publicKey: withKeyComment(k.publicKey, name),
-    }).onConflictDoNothing({ target: gitCredentials.name })
-    const [row] = await db.select({ id: gitCredentials.id }).from(gitCredentials)
-      .where(eq(gitCredentials.name, name))
-    out.push({ id: row.id, pattern: k.pattern, knownHostsEntry: k.knownHostsEntry })
-  }
-  return out
-}
-
-/** LEGACY: empty the old key table once its rows are imported and assigned. */
-export async function deleteLegacyGitSshKeys(): Promise<void> {
-  const db = await getDb()
-  await db.delete(legacyGitSshKeys)
 }

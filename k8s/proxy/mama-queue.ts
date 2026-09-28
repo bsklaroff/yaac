@@ -31,13 +31,6 @@ import crypto from 'node:crypto'
 export const MAMA_MAGIC_HOST = 'yaac.internal'
 export const MAMA_PATH = '/cmd'
 /**
- * The path `yaac-spawn` posted to before commands had names. Still served,
- * mapped to `command=create`, because a worktree created by an older yaac has
- * that script mounted read-only for its whole life
- * (docs/legacy-compat-shims.md).
- */
-export const LEGACY_SPAWN_PATH = '/spawn'
-/**
  * How long a held request waits for the server before failing with a 504.
  *
  * Sized against the server's worst case for noticing it should drain, which
@@ -96,18 +89,6 @@ export interface MamaRequest {
   body: string
   enqueuedAtMs: number
 }
-
-/**
- * How a completed request is written back to the waiting worktree.
- *
- * `json` is what `yaac-mama` speaks, and it is the same shape the
- * containerless route answers with, so one parser in the script serves both
- * substrates. `text` is the pre-envelope `/spawn` reply — a bare worktree id
- * on success, a bare message on failure — which is all the `yaac-spawn`
- * mounted in an older worktree knows how to read
- * (docs/legacy-compat-shims.md).
- */
-export type MamaReplyShape = 'json' | 'text'
 
 export interface MamaResult {
   requestId: string
@@ -187,8 +168,6 @@ export function validateMamaRequest(
 interface HeldRequest {
   req: MamaRequest
   complete: MamaCompleter
-  /** How to write this caller's reply — see `MamaReplyShape`. */
-  reply: MamaReplyShape
 }
 
 export class MamaQueue {
@@ -214,8 +193,6 @@ export class MamaQueue {
       command: string
       args: Record<string, string>
       body: string
-      /** Defaults to the envelope shape; the legacy /spawn path asks for text. */
-      reply?: MamaReplyShape
     },
     complete: MamaCompleter,
     now: number = Date.now(),
@@ -241,7 +218,6 @@ export class MamaQueue {
         enqueuedAtMs: now,
       },
       complete,
-      reply: req.reply ?? 'json',
     })
     return { ok: true, requestId }
   }
@@ -263,13 +239,10 @@ export class MamaQueue {
     if (!held) return false
     this.claimed.delete(result.requestId)
     this.pending.delete(result.requestId)
-    const text = held.reply === 'text'
     if (result.ok) {
-      const output = result.output ?? ''
-      held.complete(200, text ? output : JSON.stringify({ output }))
+      held.complete(200, JSON.stringify({ output: result.output ?? '' }))
     } else {
-      const error = result.error ?? 'command failed'
-      held.complete(422, text ? error : JSON.stringify({ error }))
+      held.complete(422, JSON.stringify({ error: result.error ?? 'command failed' }))
     }
     return true
   }
@@ -293,7 +266,7 @@ export class MamaQueue {
       for (const [id, held] of map) {
         if (now - held.req.enqueuedAtMs >= MAMA_TTL_MS) {
           map.delete(id)
-          held.complete(504, held.reply === 'text' ? timedOut : JSON.stringify({ error: timedOut }))
+          held.complete(504, JSON.stringify({ error: timedOut }))
         }
       }
     }

@@ -27,10 +27,9 @@
  * Mutates the install it runs against — stages UNASSIGNED_URL as a project
  * with no credential if absent, stores three credentials, assigns, replaces
  * and deletes one, and may add ADD_URL — so point it at a scratch server on this machine. The API
- * never adds a project without a credential; one arises only from the
- * legacy importer or a remote change. So the script stages it the way the
- * e2e fixtures do: a clone plus `project.json` in the data dir, which the
- * server adopts as a project with no credential.
+ * never adds a project without a credential through `project add`, so the
+ * script stages it the way the e2e fixtures do: a clone in the data dir,
+ * recorded through `POST /project/register`, which assigns no credential.
  *
  *   export YAAC_DATA_DIR=/tmp/yaac-pw-$$ YAAC_SERVER_PORT=8893
  *   yaac server start          # after `pnpm build`, so dist/ is current
@@ -113,15 +112,13 @@ async function mintToken() {
 const projects = async () => await api('GET', '/project/list')
 const credentials = async () => (await api('GET', '/auth/list')).gitCredentials
 
-// Setup: a project with no credential, staged on disk for the server to adopt.
+// Setup: a project with no credential, staged on disk and recorded as is.
 const unassigned = slugOf(UNASSIGNED_URL)
 if (!(await projects()).some((p) => p.slug === unassigned)) {
   const dir = path.join(dataDir, 'global', 'projects', unassigned)
   execSync(`git clone --quiet ${UNASSIGNED_URL} ${path.join(dir, 'repo')}`)
   fs.mkdirSync(path.join(dir, 'claude'), { recursive: true })
-  fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify({
-    slug: unassigned, remoteUrl: UNASSIGNED_URL, addedAt: new Date().toISOString(),
-  }) + '\n')
+  await api('POST', '/project/register', { slug: unassigned, remoteUrl: UNASSIGNED_URL })
 }
 if ((await projects()).some((p) => p.slug === slugOf(ADD_URL))) {
   throw new Error(`${slugOf(ADD_URL)} is already a project — pick another ADD_URL`)

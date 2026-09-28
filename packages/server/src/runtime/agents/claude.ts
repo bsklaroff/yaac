@@ -202,11 +202,6 @@ const CLAUDE_HOOKS: ReadonlyArray<readonly [string, string]> = [
   ['Stop', CLAUDE_REPORT_HOOK_COMMAND],
 ]
 
-/** Commands written by installs that registered the hook by its in-image path,
- *  before it became a staged worktree-bin script. Matched by prefix so any
- *  argument variant is caught. See docs/legacy-compat-shims.md. */
-const LEGACY_HOOK_PREFIX = '/etc/yaac/agent-links.sh'
-
 /** Distinguishes the temp files of concurrent writes within one process. */
 let tmpSeq = 0
 
@@ -236,10 +231,6 @@ interface ClaudeSettings {
  * is replaced rather than propagated — claude would ignore it anyway, and the
  * two keys yaac cares about are re-seeded on every session create.
  *
- * Also strips the pre-worktree-bin form of our own hook, which named the
- * script by its in-image path. That command is dead under both drivers now,
- * and left in place it errors on every session start.
- *
  * Best-effort by contract: losing the hook costs conversation discovery for
  * that session (it falls back to the one conversation pinned by
  * `--session-id`), which must never be worth failing a session create over.
@@ -253,23 +244,6 @@ export async function ensureClaudeHooks(settingsPath: string): Promise<void> {
   }
 
   const hooks = { ...settings.hooks }
-  let stripped = false
-  const sessionStart: HookMatcher[] = []
-  for (const matcher of hooks.SessionStart ?? []) {
-    if (matcher.hooks === undefined) {
-      sessionStart.push(matcher)
-      continue
-    }
-    const kept = matcher.hooks.filter((h) => !h.command?.startsWith(LEGACY_HOOK_PREFIX))
-    if (kept.length === matcher.hooks.length) {
-      sessionStart.push(matcher)
-      continue
-    }
-    stripped = true
-    // A matcher whose every hook was ours has nothing left to match on.
-    if (kept.length > 0) sessionStart.push({ ...matcher, hooks: kept })
-  }
-  hooks.SessionStart = sessionStart
   let added = false
   for (const [event, command] of CLAUDE_HOOKS) {
     const matchers = hooks[event] ?? []
@@ -277,7 +251,7 @@ export async function ensureClaudeHooks(settingsPath: string): Promise<void> {
     hooks[event] = [...matchers, { matcher: '*', hooks: [{ type: 'command', command, timeout: 10 }] }]
     added = true
   }
-  if (!added && !stripped) return
+  if (!added) return
   settings.hooks = hooks
 
   // Written through a temp file in the same directory and renamed, because

@@ -38,7 +38,6 @@ vi.mock('#drivers/k8s/cluster', () => ({
   ensureNamespace: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
-  sweepLegacyVclusterState: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('#drivers/k8s/forwarders', () => ({
   PortDetectorManager: class { sync = vi.fn(); stopAll = vi.fn() },
@@ -51,7 +50,6 @@ vi.mock('#drivers/k8s/egress', () => ({
     start = (): void => { order.push('proxy.start') }
     stop = vi.fn()
   },
-  configureLegacySecretSweep: vi.fn(),
   proxyClient: { disconnect: vi.fn(() => { order.push('proxy.disconnect') }) },
 }))
 vi.mock('#drivers/k8s/view', () => ({
@@ -62,7 +60,6 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { ensureNamespace } from '#drivers/k8s/cluster'
 import { kubectlApply } from '#drivers/k8s/substrate'
-import { configureLegacySecretSweep } from '#drivers/k8s/egress'
 import { _resetWorktreeListChangedForTests, onWorktreeListChanged } from '#notify'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
@@ -89,7 +86,7 @@ afterEach(() => {
 
 describe('startK8sDriver', () => {
   it('recovers against a usable substrate before anything watches it', async () => {
-    await startK8sDriver(sinks(), {})
+    await startK8sDriver(sinks())
 
     // The ordering IS the contract: recovery rebuilds what the last server
     // left running, so it has to see a bootstrapped cluster (after) and must
@@ -102,7 +99,7 @@ describe('startK8sDriver', () => {
   })
 
   it('re-renders the node half of the server wall from the live node list', async () => {
-    await startK8sDriver(sinks(), {})
+    await startK8sDriver(sinks())
 
     // Install applies this policy too, but the node set is the one input
     // that changes under a running install: a server pod rescheduled onto
@@ -116,7 +113,7 @@ describe('startK8sDriver', () => {
   })
 
   it('reports the workspace set as handles, never as pods', async () => {
-    await startK8sDriver(sinks(), {})
+    await startK8sDriver(sinks())
     onDeltaHandlers.forEach((fn) => fn('worktree-pods'))
 
     // The machinery above has no word for a pod, so the boundary mapper runs
@@ -125,23 +122,11 @@ describe('startK8sDriver', () => {
     expect(reported.triggers).toContain('workspaces')
   })
 
-  it('wires the legacy-sweep reader, and leaves it unwired without', async () => {
-    await startK8sDriver(sinks(), {})
-    // Unwired means the old secrets file stays: an entrypoint that composes
-    // a driver without being the server cannot say whether an overlay
-    // still has secrets to recover out of it.
-    expect(configureLegacySecretSweep).not.toHaveBeenCalled()
-
-    const legacySecretImportPending = vi.fn().mockResolvedValue(false)
-    await startK8sDriver(sinks(), { legacySecretImportPending })
-    expect(configureLegacySecretSweep).toHaveBeenCalledWith(legacySecretImportPending)
-  })
-
   it('routes the proxy’s outputs: records to the snapshot, a captured rotation to the pass', async () => {
     _resetWorktreeListChangedForTests()
     let notified = 0
     onWorktreeListChanged(() => { notified += 1 })
-    await startK8sDriver(sinks(), {})
+    await startK8sDriver(sinks())
 
     // A blocked host is a badge, never reconcile work.
     onDeltaHandlers.forEach((fn) => fn('proxy-state'))
@@ -157,7 +142,7 @@ describe('startK8sDriver', () => {
   it('attaches even when the cluster bootstrap fails', async () => {
     vi.mocked(ensureNamespace).mockRejectedValueOnce(new Error('no cluster'))
 
-    await startK8sDriver(sinks(), {})
+    await startK8sDriver(sinks())
 
     // A server with no usable cluster still serves project and auth requests
     // and says so when a create asks for one — so a failed bootstrap must not
@@ -168,7 +153,7 @@ describe('startK8sDriver', () => {
 
 describe('stopK8sDriver', () => {
   it('clears the registered cache before stopping it, so nothing reads a dead one', async () => {
-    await startK8sDriver(sinks(), {})
+    await startK8sDriver(sinks())
     order.length = 0
     stopK8sDriver()
 
@@ -182,7 +167,7 @@ describe('stopK8sDriver', () => {
 
 describe('releaseK8sDriver', () => {
   it('lets go of the host only here, never during stop', async () => {
-    await startK8sDriver(sinks(), {})
+    await startK8sDriver(sinks())
     order.length = 0
     stopK8sDriver()
     // The forwarders and the control tunnel survive the reconcile drain that

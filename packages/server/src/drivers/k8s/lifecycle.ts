@@ -11,7 +11,6 @@ import {
   ensureNamespace,
   gcOrphanProjectRegistries,
   nodeIpBlocks,
-  sweepLegacyVclusterState,
 } from '#drivers/k8s/cluster'
 import {
   PortDetectorManager,
@@ -20,7 +19,6 @@ import {
 import {
   PROXY_CHANGE_SOURCES,
   ProxyEventStream,
-  configureLegacySecretSweep,
   proxyClient,
 } from '#drivers/k8s/egress'
 import { runtimeHandleFromPod } from '#drivers/k8s/view'
@@ -34,7 +32,6 @@ import {
 } from '@yaac/shared/tool-auth'
 import {
   MEDIATOR_TRIGGERS,
-  type DriverDeps,
   type DriverSinks,
   type ReconcileTrigger,
 } from '#drivers/contract'
@@ -108,7 +105,8 @@ async function reseedPlaceholderCredentials(): Promise<void> {
   if (codex?.kind === 'oauth') await fanOutCodexPlaceholders(codex.codexOauth)
 }
 
-async function attachNow(sinks: DriverSinks): Promise<void> {
+/** See `WorktreeDriver.start`. */
+export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
   // Before anything can launch a pod that would mount them: a data dir this
   // server is adopting may have been run containerless, which leaves real
   // credentials in the files every pod mounts (see above).
@@ -207,23 +205,7 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
   void gcOrphanProjectRegistries()
     .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
 
-  // One-shot convergence for an install upgrading over the retired
-  // virtualCluster feature — a no-op on every install that never had one
-  // (docs/legacy-compat-shims.md).
-  void sweepLegacyVclusterState()
-    .catch((err) => serverLog(`[server] legacy vcluster sweep failed: ${String(err)}`))
-
   sinks.attached()
-}
-
-/** See `WorktreeDriver.start`. */
-export async function startK8sDriver(sinks: DriverSinks, deps: DriverDeps): Promise<void> {
-  // The one reader the egress path still asks for: whether the legacy env
-  // import has secrets left to recover, which gates deleting the file they
-  // are in (docs/legacy-compat-shims.md). Unwired means the file stays.
-  if (deps.legacySecretImportPending) configureLegacySecretSweep(deps.legacySecretImportPending)
-
-  await attachNow(sinks)
 }
 
 /** See `WorktreeDriver.stop`. */

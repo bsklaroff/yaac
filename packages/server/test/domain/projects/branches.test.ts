@@ -23,9 +23,7 @@ describe('getProjectBranches', () => {
     sourceRepo = path.join(tmp, 'source')
     // The row's remote is the one a refresh fetches from — a local path here.
     await fs.mkdir(projectDir(slug), { recursive: true })
-    await fs.writeFile(path.join(projectDir(slug), 'project.json'), JSON.stringify({
-      slug, remoteUrl: sourceRepo, addedAt: '2026-01-01T00:00:00.000Z',
-    }))
+    await recordProject({ slug, remoteUrl: sourceRepo, addedAt: '2026-01-01T00:00:00.000Z' })
 
     await fs.mkdir(sourceRepo, { recursive: true })
     await git(sourceRepo, ['init', '-b', 'main'])

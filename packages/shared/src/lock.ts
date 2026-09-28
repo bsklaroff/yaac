@@ -2,9 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-// The root itself, for the pre-split lock path only (see `legacyLockPath`).
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { getDataDir, serverLocalPath } from '#paths'
+import { serverLocalPath } from '#paths'
 import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock, type ServerLock } from '#server-lock-file'
 
 /** SERVER-LOCAL: the lock is 1:1 with the server process. */
@@ -12,27 +10,12 @@ export function serverLockPath(): string {
   return serverLocalPath(SERVER_LOCK_FILENAME)
 }
 
-/**
- * LEGACY COMPAT (docs/legacy-compat-shims.md). Where a server from before
- * the storage-tier split wrote its lock: the data dir root. Read as a
- * fallback so `yaac server start` sees such a server still running rather
- * than spawning a second writer onto its (now migrated) database, and
- * `yaac server stop` can stop it. Never written.
- */
-function legacyLockPath(): string {
-  return path.join(getDataDir(), SERVER_LOCK_FILENAME)
-}
-
-async function readLockAt(p: string): Promise<ServerLock | null> {
+export async function readLock(): Promise<ServerLock | null> {
   try {
-    return parseServerLock(await fs.readFile(p, 'utf8'))
+    return parseServerLock(await fs.readFile(serverLockPath(), 'utf8'))
   } catch {
     return null
   }
-}
-
-export async function readLock(): Promise<ServerLock | null> {
-  return await readLockAt(serverLockPath()) ?? await readLockAt(legacyLockPath())
 }
 
 export async function writeLock(lock: ServerLock): Promise<void> {
@@ -80,16 +63,6 @@ export async function renewLease(instance: string): Promise<boolean> {
 }
 
 /**
- * Whether two lock reads describe the same holder. Instance when both
- * carry one (the lease), else the pid+startedAt pair that identified a
- * host process before the lease existed.
- */
-function sameHolder(a: ServerLock, b: ServerLock): boolean {
-  if (a.instance !== undefined && b.instance !== undefined) return a.instance === b.instance
-  return a.pid === b.pid && a.startedAt === b.startedAt
-}
-
-/**
  * Atomically acquire the server lock. POSIX `O_EXCL` guarantees only one
  * process wins the create, even when two `yaac server run` invocations race
  * past the pre-bind fast-path check in runServer and both try to take the
@@ -104,7 +77,7 @@ function sameHolder(a: ServerLock, b: ServerLock): boolean {
  *
  * A stale lock (dead pid, or `/health` unresponsive) is reclaimed: the
  * file is unlinked only if it still matches the stale lock we observed —
- * a pid+startedAt compare-and-delete — so a fresh lock that raced into
+ * a compare-and-delete on the lease instance — so a fresh lock that raced into
  * place between our read and unlink isn't clobbered. The create is then
  * retried.
  */
@@ -137,7 +110,7 @@ export async function acquireLock(
     // unlink unconditionally in that case so we can retry.
     try {
       const cur = await readLock()
-      const stillStale = !existing || !cur || sameHolder(cur, existing)
+      const stillStale = !existing || !cur || cur.instance === existing.instance
       if (stillStale) {
         await fs.unlink(p)
       }
@@ -151,34 +124,24 @@ export async function acquireLock(
 /**
  * Remove the server lock file.
  *
- * With `expected`, only unlink when the on-disk lock still names that
+ * With `expectedInstance`, only unlink when the on-disk lock still names that
  * holder. This guards against a zombified shutdown (e.g. a previous server
  * that hung past `stopServer`'s 3s force-remove timeout) clobbering a
  * successor server's lock when it eventually unblocks. The holder is the
- * lease instance where there is one, because a pid does not identify a
- * server across pods.
+ * lease instance, because a pid does not identify a server across pods.
  *
- * Without `expected`, unlink unconditionally — appropriate for callers
+ * Without it, unlink unconditionally — appropriate for callers
  * that have already classified the lock as stale (dead pid / unresponsive
  * /health, or an expired lease) and simply need to clear the file before a
  * fresh spawn.
  */
-export async function removeLock(
-  expected?: { pid: number; instance?: string },
-): Promise<void> {
-  if (expected !== undefined) {
+export async function removeLock(expectedInstance?: string): Promise<void> {
+  if (expectedInstance !== undefined) {
     const cur = await readLock()
-    if (!cur) return
-    const ours = expected.instance !== undefined && cur.instance !== undefined
-      ? cur.instance === expected.instance
-      : cur.pid === expected.pid
-    if (!ours) return
+    if (cur?.instance !== expectedInstance) return
   }
-  // Whichever path the read found it at: the current one when it holds
-  // a lock, else the pre-split root.
-  const target = await readLockAt(serverLockPath()) ? serverLockPath() : legacyLockPath()
   try {
-    await fs.unlink(target)
+    await fs.unlink(serverLockPath())
   } catch {
     // already gone
   }

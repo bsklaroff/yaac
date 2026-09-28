@@ -10,7 +10,6 @@ import {
   type ServerLock,
 } from '@yaac/shared/server-lock-file'
 import { ensureDataDir } from '@yaac/shared/project-paths'
-import { migrateDataDirLayout } from '@yaac/shared/data-dir-layout'
 import { serverLogPath } from '@yaac/shared/paths'
 import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
@@ -28,11 +27,6 @@ import { registerServer } from '@yaac/shared/server-config'
  */
 export async function startServer(): Promise<void> {
   await preflightHostTor()
-  // Before `ensureDataDir` and the lock read, for the reasons `runServer`
-  // gives: the "already running" decision below has to read the migrated
-  // lock, and a live pre-split server refuses the move rather than being
-  // rearranged underneath (docs/legacy-compat-shims.md).
-  await migrateDataDirLayout((m) => console.error(`[yaac] ${m}`))
   await ensureDataDir()
   // Before the spawn, so a refusal reaches the operator directly: the
   // detached child dies before its log exists, and they would otherwise

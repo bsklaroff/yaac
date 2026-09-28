@@ -83,10 +83,8 @@ export {
 } from './preferences'
 export {
   deleteGitCredential,
-  deleteLegacyGitSshKeys,
   getGitCredential,
   getGitCredentialByName,
-  importLegacyGitSshKeys,
   insertGitCredential,
   listGitCredentials,
   renameGitCredential,

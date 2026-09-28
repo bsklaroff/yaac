@@ -11,7 +11,7 @@ import {
   syncToolCredentialsThrottled,
 } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
-import { closeDb, getGitIdentity, listProjectRows, openDb, setGitIdentity } from '#db'
+import { closeDb, listProjectRows, openDb } from '#db'
 import { clearGitScratch, startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
@@ -33,15 +33,9 @@ import {
 import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
-import { migrateDataDirLayout } from '@yaac/shared/data-dir-layout'
 import { startReconciler } from '#main/reconciler'
 import { setWorktreeDriver, worktreeDriver } from '#drivers/driver'
-import {
-  importLegacyGitCredentials,
-  importLegacyProjectConfig,
-  legacySecretImportPending,
-  resolveProjectEnv,
-} from '#domain/projects'
+import { resolveProjectEnv } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -185,13 +179,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // open. This is also the only place in `src/` that names a concrete
   // driver — everything else reaches one through `#drivers/driver`.
   await preflightHostTor()
-  // A host process migrates its own data dir into the three tier folders
-  // before it creates or reads anything there — before `ensureDataDir`,
-  // which would otherwise leave an empty `global/projects` for the move to
-  // find, and before the lock read, so an "already running" verdict reads
-  // the migrated lock. The pod skips it: its roots are mounts
-  // (docs/legacy-compat-shims.md).
-  if (!env.inCluster) await migrateDataDirLayout(serverLog)
   await ensureDataDir()
 
   // Placement is the driver (see `#main/driver-choice`): a pod runs k8s, a
@@ -549,7 +536,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // process exits rather than keep writing a database another server now
   // owns. Unref'd so it never holds the loop open by itself.
   const leaseTimer = setInterval(() => {
-    void renewLease(lease.instance ?? '').then((held) => {
+    void renewLease(lease.instance).then((held) => {
       if (held) return
       serverLog('[server] lost the lock lease to another server — exiting')
       process.exit(1)
@@ -572,17 +559,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   } catch (err) {
     serverLog(`[server] db init failed: ${String(err)}`)
     await new Promise<void>((resolve) => server.close(() => resolve()))
-    await removeLock({ pid: process.pid, instance: lease.instance })
+    await removeLock(lease.instance)
     process.exit(1)
   }
-  // Bring an install upgraded from an older build up to date, once, while
-  // nothing is serving yet: the env settings a project kept in its
-  // yaac-config.json, and a git identity a k8s Deployment still states in
-  // its environment. Both are one-shot migrations of state whose old home no longer works for a
-  // remote client (docs/legacy-compat-shims.md). None is fatal — an install
-  // that fails one is missing a setting, not broken.
-  await importLegacyState()
-
   // What a killed predecessor's git calls left in scratch. Under the lock and
   // before anything can run git, so no live call's dir is in there.
   await clearGitScratch()
@@ -676,7 +655,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // Pass our pid so a shutdown that dragged past stopServer's 3s
     // force-remove window (e.g. wedged reconciler) can't unlink a
     // successor server's lock.
-    await removeLock({ pid: process.pid, instance: lease.instance })
+    await removeLock(lease.instance)
     process.exit(0)
   }
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
@@ -722,10 +701,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           .catch((err: unknown) => serverLog(`[server] credential push failed: ${String(err)}`))
       }
     },
-    // What the runtime asks before deleting the old plaintext secrets file:
-    // a config too broken to parse is skipped by the import, so a start can
-    // finish with values still only written down there.
-    legacySecretImportPending,
   })
 }
 
@@ -745,42 +720,4 @@ async function convergeRuntimeCredentials(): Promise<void> {
       serverLog(`[server] secret push for project "${slug}" failed: ${String(err)}`)
     }
   }
-}
-
-/**
- * The one-shot migrations an upgraded install needs, each logged and none
- * fatal (docs/legacy-compat-shims.md).
- */
-async function importLegacyState(): Promise<void> {
-  for (const [what, run] of [
-    ['project env settings', importLegacyProjectConfig],
-    ['git credentials', importLegacyGitCredentials],
-    ['git identity', seedLegacyGitIdentity],
-  ] as const) {
-    try {
-      await run()
-    } catch (err) {
-      serverLog(`[server] legacy ${what} import failed: ${String(err)}`)
-    }
-  }
-}
-
-/**
- * Adopt the git identity an older k8s Deployment states in its environment.
- *
- * `yaac cluster install` used to snapshot the host's `git config` into
- * `YAAC_SERVER_GIT_*`, which is why changing your name needed a re-install
- * from a shell on that machine. The setting replaced it; this carries the
- * snapshot over so an install that upgrades without re-running install keeps
- * committing under the name it always did.
- */
-async function seedLegacyGitIdentity(): Promise<void> {
-  const stated = env.legacyServerGitUser
-  if (!stated) return
-  if (await getGitIdentity()) return
-  await setGitIdentity(stated)
-  serverLog(
-    `[legacy] adopted the git identity from this deployment's environment `
-    + `(${stated.name} <${stated.email}>); it is a setting now — Settings → General`,
-  )
 }

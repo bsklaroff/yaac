@@ -23,10 +23,9 @@ import type { AgentTool, DriverKind } from '#types'
  * defaults.
  *
  * Note: variables read for a different reason than yaac configuration — env
- * forwarded wholesale to a subprocess (`{ ...process.env }`), and the legacy
- * import's lookup of an arbitrary name a retired config key once carried —
- * intentionally stay at their call sites with an inline `no-process-env`
- * disable. They are not yaac config and don't belong here.
+ * forwarded wholesale to a subprocess (`{ ...process.env }`) — intentionally
+ * stay at their call sites with an inline `no-process-env` disable. They
+ * are not yaac config and don't belong here.
  */
 
 /** Set during real builds or runs (users, operators, the build, or the server). */
@@ -280,31 +279,6 @@ export const env = {
       throw new Error(`YAAC_RELAY_ADDR must be host:port, got ${raw}`)
     }
     return { host, port }
-  },
-
-  /**
-   * `YAAC_SERVER_GIT_NAME` / `YAAC_SERVER_GIT_EMAIL` — a git identity an
-   * OLDER install's server Deployment still states. `null` unless both
-   * halves are set.
-   *
-   * The identity a worktree commits under is a server SETTING now
-   * (`getGitIdentity`, a preferences row a client seeds and the webapp
-   * edits), because a value only a host shell can set is a value a remote
-   * user cannot. This accessor survives only to seed that row once on a
-   * server whose pod was deployed before the setting existed
-   * (docs/legacy-compat-shims.md); nothing else reads it, and it goes when
-   * that shim does.
-   *
-   * Distinct from `YAAC_GIT_NAME` / `YAAC_GIT_EMAIL`, which the server puts
-   * into a WORKTREE's environment for `yaac-worktree-init` to write into that
-   * checkout's git config. Same pair of values, opposite directions — one
-   * reaches the server, the other leaves it — so they cannot share a name.
-   */
-  get legacyServerGitUser(): { name: string; email: string } | null {
-    const name = process.env.YAAC_SERVER_GIT_NAME?.trim()
-    const email = process.env.YAAC_SERVER_GIT_EMAIL?.trim()
-    if (name && email) return { name, email }
-    return null
   },
 
   /**

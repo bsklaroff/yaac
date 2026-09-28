@@ -1,12 +1,7 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-// The data dir ROOT, for the pre-client-local fallback alone: the file was
-// written when the root was the only directory, and no tier helper names
-// it any more (docs/legacy-compat-shims.md).
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { clientLocalPath, ensureClientLocalRoot, getDataDir } from '#paths'
+import { clientLocalPath, ensureClientLocalRoot } from '#paths'
 import { resolveServerTarget, type ServerTarget } from '#server-api'
 
 /** Cold-boot budget shared by automatic connection and explicit startup. */
@@ -41,22 +36,9 @@ export function authDaemonLockPath(): string {
   return clientLocalPath('.auth-daemon.lock')
 }
 
-/**
- * Where this file lived when every tier was one directory — see
- * docs/legacy-compat-shims.md.
- */
-function legacyAuthDaemonLockPath(): string {
-  return path.join(getDataDir(), '.auth-daemon.lock')
-}
-
 export async function readAuthDaemonLock(): Promise<AuthDaemonLock | null> {
-  return await readAuthDaemonLockAt(authDaemonLockPath())
-    ?? await readAuthDaemonLockAt(legacyAuthDaemonLockPath())
-}
-
-async function readAuthDaemonLockAt(filePath: string): Promise<AuthDaemonLock | null> {
   try {
-    const raw = await fs.readFile(filePath, 'utf8')
+    const raw = await fs.readFile(authDaemonLockPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const lock = parsed as Record<string, unknown>
@@ -77,14 +59,10 @@ export async function writeAuthDaemonLock(lock: AuthDaemonLock): Promise<void> {
   const tmp = `${p}.${process.pid}.tmp`
   await fs.writeFile(tmp, JSON.stringify(lock), { mode: 0o600 })
   await fs.rename(tmp, p)
-  // A daemon left recorded at the old path would be found by an older
-  // client and judged live by a pid this one no longer owns.
-  await fs.rm(legacyAuthDaemonLockPath(), { force: true })
 }
 
 export async function removeAuthDaemonLock(): Promise<void> {
   await fs.rm(authDaemonLockPath(), { force: true })
-  await fs.rm(legacyAuthDaemonLockPath(), { force: true })
 }
 
 export function isPidLive(pid: number): boolean {

@@ -34,7 +34,10 @@ export interface ParsedGitRemote {
   path: string
 }
 
-const SCP_REGEX = /^(?:([\w._-]+)@)?([\w.-]+):(?!\/)(.+)$/
+// The path may not open with `/` (`scheme://`) or `:` (`helper::`): git reads
+// both as a transport rather than an ssh host, and a recorded remote picks
+// the transport every later clone and fetch runs — `ext::` runs a command.
+const SCP_REGEX = /^(?:([\w._-]+)@)?([\w.-]+):(?![/:])(.+)$/
 
 export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   if (remoteUrl.startsWith('ssh://')) {

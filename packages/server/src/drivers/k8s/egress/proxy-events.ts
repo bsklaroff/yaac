@@ -210,11 +210,7 @@ export class ProxyEventStream {
       return // not ours; ignore rather than tear the stream down
     }
     switch (type) {
-      // `spawn` is what a proxy predating the yaac-mama command envelope
-      // emits for the same edge; both mean "a worktree is waiting on an
-      // answer" (docs/legacy-compat-shims.md).
       case 'mama':
-      case 'spawn':
         this.onChange('mama-requests')
         return
       default:

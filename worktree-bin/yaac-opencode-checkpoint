@@ -15,9 +15,7 @@
 #
 # A checkpoint is the data dir copied file-for-file, except the SQLite
 # database, which is produced by sqlite's backup API (consistent under a
-# live writer) into a temp file and renamed into place. That plain-copy
-# format is what makes a pre-split `opencode-data/<id>` directory a valid
-# checkpoint with nothing to convert.
+# live writer) into a temp file and renamed into place.
 #
 # No-op unless the data dir holds a SQLite file: every other tool's pod
 # runs this too, and has nothing to save.
@@ -55,10 +53,10 @@ then
   exit 1
 fi
 mv -f "$tmp" "$CHECKPOINT/$name" || { rm -f "$tmp"; exit 1; }
-# Sidecars the checkpoint held (a pre-split data dir's) belonged to the
-# database this backup just replaced — it was made through a connection
-# that read them, so they are folded in — and beside the new file they
-# would be a stale pair a later restore must never see.
+# The checkpoint's database is always a backup-API copy, so any sidecar
+# beside it belongs to the database this one just replaced — the backup
+# was made through a connection that read it, so it is folded in. Left
+# there, a later restore would replay it over the new file.
 rm -f "$CHECKPOINT/$name-wal" "$CHECKPOINT/$name-shm" "$CHECKPOINT/$name-journal"
 
 # Everything beside the database, file for file; the working copy's WAL

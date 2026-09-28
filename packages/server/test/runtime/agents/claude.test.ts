@@ -292,56 +292,6 @@ describe('ensureClaudeHooks', () => {
       .toEqual(['mine.sh', CLAUDE_HOOK_COMMAND, CLAUDE_REPORT_HOOK_COMMAND])
   })
 
-  it('replaces the dead in-image form of our own hook, keeping the user their own', async () => {
-    // A project seeded by an older install carries the hook by its in-image
-    // path. That command resolves nowhere now — no image has the script, and a
-    // host never did — so claude errors on every session start until it goes.
-    // See docs/legacy-compat-shims.md.
-    await fs.writeFile(settingsPath, JSON.stringify({
-      hooks: {
-        SessionStart: [
-          { matcher: '*', hooks: [
-            { type: 'command', command: 'mine.sh' },
-            { type: 'command', command: '/etc/yaac/agent-links.sh /home/yaac/.claude claude' },
-          ] },
-          { matcher: '*', hooks: [
-            { type: 'command', command: '/etc/yaac/agent-links.sh /home/yaac/.codex codex' },
-          ] },
-        ],
-      },
-    }))
-
-    await ensureClaudeHooks(settingsPath)
-
-    const commands = (await read()).hooks?.SessionStart
-      ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? [])
-    // Any argument variant goes, and the matcher left holding nothing goes
-    // with it — while the user's own hook stays where they put it.
-    expect(commands).toEqual(['mine.sh', CLAUDE_HOOK_COMMAND, CLAUDE_REPORT_HOOK_COMMAND])
-  })
-
-  it('strips the legacy entry even when the current one is already registered', async () => {
-    // The order the two arrive in is not ours to choose: a project can carry
-    // both once a newer install has run against it, and the early-return that
-    // keeps this idempotent must not skip the cleanup.
-    await ensureClaudeHooks(settingsPath)
-    const settings = await read()
-    settings.hooks?.SessionStart?.unshift({
-      matcher: '*',
-      hooks: [{ type: 'command', command: '/etc/yaac/agent-links.sh /home/yaac/.claude claude' }],
-    })
-    await fs.writeFile(settingsPath, JSON.stringify(settings))
-
-    await ensureClaudeHooks(settingsPath)
-
-    expect((await read()).hooks?.SessionStart)
-      .toEqual([hook(CLAUDE_HOOK_COMMAND), hook(CLAUDE_REPORT_HOOK_COMMAND)])
-    // And having done it once, it settles: the next create rewrites nothing.
-    const migrated = await fs.readFile(settingsPath, 'utf8')
-    await ensureClaudeHooks(settingsPath)
-    expect(await fs.readFile(settingsPath, 'utf8')).toBe(migrated)
-  })
-
   it('starts fresh from a malformed settings file rather than propagating it', async () => {
     // claude ignores unparseable settings anyway, and create.ts re-seeds the
     // two keys it cares about on every session.

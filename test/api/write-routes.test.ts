@@ -163,7 +163,7 @@ async function writeProject(slug: string, remoteUrl = 'https://example.com/foo')
     remoteUrl,
     addedAt: '2026-01-01T00:00:00.000Z',
   }
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
+  await recordProject(meta)
 }
 
 describe('write routes', () => {

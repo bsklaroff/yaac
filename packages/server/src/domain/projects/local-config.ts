@@ -1,17 +1,10 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { projectConfigDir, projectDir } from '@yaac/shared/project-paths'
+import { projectConfigDir } from '@yaac/shared/project-paths'
 import { parseProjectConfig, resolveProjectConfig } from './config'
+import { assertProjectExists } from './detail'
 import { ServerError } from '@yaac/shared/errors'
 import type { YaacConfig } from '@yaac/shared/types'
-
-async function ensureProjectExists(slug: string): Promise<void> {
-  try {
-    await fs.access(path.join(projectDir(slug), 'project.json'))
-  } catch {
-    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
-  }
-}
 
 /**
  * Write (or replace) the per-project config/yaac-config.json. Validates
@@ -19,7 +12,7 @@ async function ensureProjectExists(slug: string): Promise<void> {
  * input fails at the edge.
  */
 export async function writeProjectConfig(slug: string, rawConfig: unknown): Promise<YaacConfig> {
-  await ensureProjectExists(slug)
+  await assertProjectExists(slug)
 
   let config: YaacConfig
   try {
@@ -135,7 +128,7 @@ export async function setProjectReferenceBranch(slug: string, branch: string | n
  * throw on exactly the files most in need of editing.
  */
 export async function readProjectConfigRaw(slug: string): Promise<string> {
-  await ensureProjectExists(slug)
+  await assertProjectExists(slug)
   try {
     return await fs.readFile(path.join(projectConfigDir(slug), 'yaac-config.json'), 'utf8')
   } catch {
@@ -150,6 +143,6 @@ export async function readProjectConfigRaw(slug: string): Promise<string> {
  * overlay must not touch.
  */
 export async function removeProjectConfig(slug: string): Promise<void> {
-  await ensureProjectExists(slug)
+  await assertProjectExists(slug)
   await fs.rm(path.join(projectConfigDir(slug), 'yaac-config.json'), { force: true })
 }

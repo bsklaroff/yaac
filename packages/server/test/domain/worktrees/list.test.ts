@@ -21,10 +21,8 @@ import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { closeDb } from '#db/client'
 import { recordWorktreeCreated } from '#db/worktree-store'
-import {
-  getProjectsDir,
-  projectDir,
-} from '@yaac/shared/project-paths'
+import { recordProject } from '#db/project-store'
+import { getProjectsDir } from '@yaac/shared/project-paths'
 import {
   listActiveWorktrees,
   _clearListActiveInflightForTests,
@@ -43,7 +41,7 @@ async function writeProject(slug: string, meta: Partial<ProjectMeta> = {}): Prom
   }
   const dir = path.join(getProjectsDir(), slug)
   await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(full))
+  await recordProject(full)
 }
 
 describe('listActiveWorktrees', () => {
@@ -225,12 +223,8 @@ describe('listActiveWorktrees project filter', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('accepts the project filter when project.json exists', async () => {
-    await fs.mkdir(projectDir('valid'), { recursive: true })
-    await fs.writeFile(
-      path.join(projectDir('valid'), 'project.json'),
-      JSON.stringify({ slug: 'valid', remoteUrl: 'x', addedAt: 'y' }),
-    )
+  it('accepts the project filter when the project is recorded', async () => {
+    await recordProject({ slug: 'valid', remoteUrl: 'x', addedAt: 'y' })
     const result = await listActiveWorktrees('valid')
     expect(result.worktrees).toEqual([])
   })

@@ -2,14 +2,12 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#db/client'
-import { gitCredentials, legacyGitSshKeys, projects } from '#db/schema'
+import { gitCredentials, projects } from '#db/schema'
 import {
   deleteGitCredential,
-  deleteLegacyGitSshKeys,
   getGitCredential,
   getGitCredentialByName,
   getProjectRow,
-  importLegacyGitSshKeys,
   insertGitCredential,
   listGitCredentials,
   recordProject,
@@ -46,7 +44,6 @@ beforeEach(async () => {
   const db = await getDb()
   await db.delete(projects)
   await db.delete(gitCredentials)
-  await db.delete(legacyGitSshKeys)
   forgetSecretConfig()
 })
 
@@ -141,45 +138,5 @@ describe('replaceGitCredential', () => {
     expect(await getProjectRow('p')).toMatchObject({ gitCredentialId: fresh?.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
     expect((await listGitCredentials()).map((c) => c.id)).toEqual([fresh?.id])
     expect(await replaceGitCredential(old.id, { secret: 'x' })).toBeUndefined()
-  })
-})
-
-describe('importLegacyGitSshKeys', () => {
-  it('copies each per-pattern key into a named credential, idempotently', async () => {
-    // A seed sealed the way the old store sealed it: same cipher, same key.
-    await insertGitCredential({ name: 'tmp', kind: 'ssh', secret: KEY.seed.toString('base64') })
-    const db = await getDb()
-    const [{ sealedSecret }] = await db.select().from(gitCredentials)
-    await db.delete(gitCredentials)
-    await db.insert(legacyGitSshKeys).values({
-      pattern: 'git.example.com/*',
-      sealedPrivateKey: sealedSecret,
-      publicKey: KEY.publicKey,
-      knownHostsEntry: 'git.example.com ssh-ed25519 HOST',
-    })
-
-    const first = await importLegacyGitSshKeys()
-    const again = await importLegacyGitSshKeys()
-    expect(again).toEqual(first)
-    expect(first).toEqual([{ id: expect.any(String) as string, pattern: 'git.example.com/*', knownHostsEntry: 'git.example.com ssh-ed25519 HOST' }])
-
-    const [cred] = await listGitCredentials()
-    expect(cred).toMatchObject({ name: 'git.example.com/* (ssh key)', kind: 'ssh' })
-    // The comment follows the name; the key itself is untouched.
-    expect(cred.publicKey?.split(' ').slice(0, 2)).toEqual(KEY.publicKey.split(' ').slice(0, 2))
-    expect(cred.publicKey).toMatch(/ git\.example\.com\/\* \(ssh key\)$/)
-    // The sealed seed was copied as it is, so it still opens.
-    expect(await cred.openSecret()).toBe(KEY.seed.toString('base64'))
-  })
-})
-
-describe('deleteLegacyGitSshKeys', () => {
-  it('empties the old table', async () => {
-    const db = await getDb()
-    await db.insert(legacyGitSshKeys).values({
-      pattern: 'a.example.com/*', sealedPrivateKey: 'x', publicKey: KEY.publicKey, knownHostsEntry: 'h',
-    })
-    await deleteLegacyGitSshKeys()
-    expect(await db.select().from(legacyGitSshKeys)).toEqual([])
   })
 })

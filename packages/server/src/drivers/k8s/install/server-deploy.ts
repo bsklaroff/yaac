@@ -66,7 +66,6 @@ import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getDataDir, globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
-import { migrateDataDirLayout } from '@yaac/shared/data-dir-layout'
 import {
   SERVER_LOCK_FILENAME,
   isLockLive,
@@ -224,10 +223,8 @@ export function buildServerClusterRoleManifest(): Record<string, unknown> {
       { apiGroups: ['networking.k8s.io'], resources: ['networkpolicies'], verbs: ['*'] },
       {
         // Namespaced RBAC because the server applies the proxy's own SA
-        // and Role on start; the cluster-scoped pair because the legacy
-        // vcluster sweep deletes objects an older install left behind
-        // (docs/legacy-compat-shims.md), and a denied LIST there is a
-        // sweep that silently never runs.
+        // and Role on start; the cluster-scoped pair for netd's
+        // ClusterRole and binding, which it applies beside the proxy.
         apiGroups: ['rbac.authorization.k8s.io'],
         resources: ['roles', 'rolebindings', 'clusterroles', 'clusterrolebindings'],
         verbs: ['*'],
@@ -636,19 +633,10 @@ async function readPodLock(): Promise<ServerLock | null> {
 }
 
 /**
- * Stop the server that is there, bring the data dir into the tier
- * layout, build the image, apply the workload, wait for the published
- * origin to answer, and point this machine's clients at it — the whole of
- * "the server now runs in the cluster", as one step `yaac cluster install`
- * injects and unit tests replace.
- *
- * The stop comes FIRST, before the layout migration, and that order is
- * the point: an old pod holds PGlite open by path and heartbeats its lock
- * by path, and renaming `db/` under a running server is a stranded or
- * corrupt database. `stopClusterServer` waits on the pod's deletion, so
- * once it returns the data dir is quiescent. Install rolls the server
- * anyway (`Recreate`); stopping it earlier moves the outage ahead of the
- * image build rather than adding one.
+ * Stop the server that is there, build the image, apply the workload, wait
+ * for the published origin to answer, and point this machine's clients at
+ * it — the whole of "the server now runs in the cluster", as one step
+ * `yaac cluster install` injects and unit tests replace.
  *
  * Returns the origin it published, which is what install prints.
  */
@@ -660,7 +648,6 @@ export async function deployServerWorkload(
     opts.log('Stopping the running server pod...')
     await stopClusterServer()
   }
-  await migrateDataDirLayout(opts.log)
   await ensureStorageClaims({
     globalHostPath: globalRoot(),
     serverLocalHostPath: serverLocalRoot(),
@@ -703,34 +690,17 @@ export async function deployServerWorkload(
  *
  * The documented upgrade is `npm update`, then install — run, ordinarily,
  * on an install whose server is up. Deploying into that leaves two writers
- * on one directory, and neither of the mechanisms that normally prevent
- * that catches it:
- *
- *  - A pre-lease lock (written by a server predating the in-cluster work)
- *    carries no `host`, which `isSameHostLock` reads as "this host". True
- *    for every host-side reader, and wrong inside the POD — which then
- *    judges by `pidExists` in its own pid namespace, finds the host pid
- *    absent, calls the lock stale, unlinks it and opens PGlite underneath
- *    a server that is still running.
- *  - `waitForPublishedServer` probes the loopback origin, and on a cluster
- *    predating the port mapping that is answered by the OLD HOST SERVER.
- *    Install then reports success and mints a token against it, writing a
- *    `server.json` that points every client at the process it was meant to
- *    replace — a green banner over a permanent dual-writer.
- *
- * The check belongs here because here is where it still works: install
- * runs on the host, where a legacy lock's pid and `/health` both answer
- * about the right process. One refusal, before anything is applied.
+ * on one directory, and `waitForPublishedServer` would not catch it: on a
+ * cluster predating the port mapping, the loopback origin it probes is
+ * answered by the OLD HOST SERVER. Install would then report success and
+ * mint a token against it, writing a `server.json` that points every client
+ * at the process it was meant to replace — a green banner over a permanent
+ * dual-writer. One refusal, before anything is applied.
  */
 async function refuseIfHostServerRunning(): Promise<void> {
   const lock = await readLock()
-  // `isSameHostLock`, not "has no host field": a server predating the lease
-  // writes no `host` and a current one writes this machine's, and BOTH are
-  // host processes holding this data dir. Keying on the field's absence
-  // would catch only the older of the two and wave the commoner case
-  // through — which is how this guard was first written, and what running
-  // it caught. An off-host lock is skipped because it is this install's own
-  // pod: rolling that IS what install does, sequenced by `Recreate`.
+  // An off-host lock is skipped because it is this install's own pod:
+  // rolling that IS what install does, sequenced by `Recreate`.
   if (!lock || !isSameHostLock(lock) || !await isLockLive(lock)) return
   throw new Error(
     'a yaac server is already running on this data dir as a host process '

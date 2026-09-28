@@ -63,10 +63,6 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
    * saved token when it still works.
    */
   async function resetSelection(): Promise<void> {
-    for (const legacy of ['remote.json']) {
-      await fs.rm(path.join(testEnv.dataDir, legacy), { force: true })
-      await fs.rm(path.join(`${testEnv.dataDir}-client`, legacy), { force: true })
-    }
     const res = await runYaac(testEnv.env, 'server', 'start')
     expect(res.exitCode, res.stderr).toBe(0)
   }
@@ -238,40 +234,6 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
       expect(res.exitCode).toBe(1)
       expect(res.stderr).toMatch(/token rejected/)
       expect(res.stderr).toMatch(/yaac auth token create/)
-      await resetSelection()
-    })
-
-    it('reads remote.json at both older paths, and migrates them on write', async () => {
-      // The file was `remote.json` before it could name a server on this
-      // machine, and lived INSIDE the data dir before the client-local tier
-      // existed. Dropping either silently would leave every command unable
-      // to reach a running server with no hint why — see
-      // docs/legacy-compat-shims.md.
-      for (const legacy of [
-        path.join(testEnv.dataDir, 'remote.json'),
-        path.join(`${testEnv.dataDir}-client`, 'remote.json'),
-      ]) {
-        await resetSelection()
-        const token = await mintToken(`legacy-${path.basename(path.dirname(legacy))}`)
-        await fs.rm(configPath(), { force: true })
-        await fs.writeFile(legacy, JSON.stringify({
-          url: origin(), token, enabled: true, saved: [],
-        }), { mode: 0o600 })
-
-        // Read through the real CLI, which is the whole point: a client that
-        // resolves its target has to find it at the old path.
-        const status = await runYaac(testEnv.env, 'remote', 'status')
-        expect(status.exitCode, status.stderr).toBe(0)
-        expect(status.stdout).toContain(origin())
-        expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
-
-        // The next write moves it to server.json, and takes the bearer
-        // token with it rather than stranding a live credential.
-        expect((await runYaac(testEnv.env, 'remote', 'off')).exitCode).toBe(0)
-        await expect(fs.access(configPath())).resolves.toBeUndefined()
-        await expect(fs.access(legacy)).rejects.toThrow()
-      }
-
       await resetSelection()
     })
 

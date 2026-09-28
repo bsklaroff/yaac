@@ -14,13 +14,11 @@
  * for real.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import fs from 'node:fs/promises'
 import os from 'node:os'
-import path from 'node:path'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { readLock, writeLock } from '@yaac/shared/lock'
+import { newLeaseFields, readLock, writeLock } from '@yaac/shared/lock'
 import { readServerConfig, writeServerConfig } from '@yaac/shared/server-config'
 import { LEASE_STALE_MS } from '@yaac/shared/server-lock-file'
 import { startServer, stopServer } from '#main/lifecycle'
@@ -101,11 +99,11 @@ describe('stopServer', () => {
     expect(process.exitCode).toBeUndefined()
   })
 
-  it('treats a lock naming THIS host as its own, lease or not', async () => {
+  it('treats a lock naming THIS host as its own, whatever its lease says', async () => {
     // The host path still judges by pid and /health, so a lock this
     // machine wrote is signalled rather than refused. Nothing answers on
     // the port, so it reads as stale and is cleared.
-    await podLock({ pid: process.pid, port: 1, host: os.hostname(), heartbeatAt: undefined })
+    await podLock({ pid: process.pid, port: 1, host: os.hostname(), heartbeatAt: 0 })
 
     await stopServer()
 
@@ -156,6 +154,7 @@ describe('startServer registration', () => {
         secret: 'lock-secret',
         startedAt: Date.now(),
         buildId: 'test-build',
+        ...newLeaseFields(),
       })
 
       await startServer()
@@ -189,6 +188,7 @@ describe('startServer registration', () => {
         secret: 'lock-secret',
         startedAt: Date.now(),
         buildId: 'test-build',
+        ...newLeaseFields(),
       })
 
       await startServer()
@@ -204,28 +204,6 @@ describe('startServer registration', () => {
     } finally {
       await server.close()
       vi.unstubAllEnvs()
-    }
-  })
-
-  it('brings the data dir into the tier layout before reading the lock, and refuses under a live pre-split server', async () => {
-    // LEGACY COMPAT (docs/legacy-compat-shims.md): a server from before the
-    // storage tiers were folders is still up, holding `db/` open at the
-    // root. Rearranging the data dir underneath it would strand its
-    // database, so the start refuses before it reads a lock or spawns.
-    await fs.mkdir(path.join(tmpDir, 'projects', 'demo'), { recursive: true })
-    await fs.writeFile(path.join(tmpDir, 'db'), 'pglite')
-    const live = await fakeServer()
-    try {
-      await fs.writeFile(path.join(tmpDir, '.server.lock'), JSON.stringify({
-        pid: process.pid, port: live.port, secret: 's', startedAt: Date.now(), buildId: 'b',
-      }))
-      await expect(startServer()).rejects.toThrow(/still running[\s\S]*yaac server stop/)
-      // Nothing moved, nothing spawned, nothing registered.
-      await expect(fs.access(path.join(tmpDir, 'projects', 'demo'))).resolves.toBeUndefined()
-      await expect(fs.access(path.join(tmpDir, 'global', 'projects', 'demo'))).rejects.toThrow()
-      expect(await readServerConfig()).toBeNull()
-    } finally {
-      await live.close()
     }
   })
 

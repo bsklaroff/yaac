@@ -72,7 +72,6 @@ import { createAgentKeyLoader } from './agent-keys'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, startPodWatch } from './pod-watch'
 import {
-  LEGACY_SPAWN_PATH,
   MAMA_MAGIC_HOST,
   MAMA_MAX_BODY_BYTES,
   MAMA_PATH,
@@ -85,12 +84,6 @@ import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { createSshAgentServer } from './ssh-agent-relay'
 import { timingSafeStrEqual } from './secure-compare'
 import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
-import {
-  buildToolsReport,
-  formatToolsReport,
-  type AgentTool,
-  type ToolCredsView,
-} from './tools-report'
 
 // Control-API listener: health, the change stream and the yaac-mama queue.
 // Everything else the server tells the proxy travels as objects
@@ -2079,11 +2072,6 @@ setInterval(() => { mamaQueue.expire() }, 5_000).unref()
  * the server drains the queue and posts the result (or the TTL sweep 504s
  * it). Runs BEFORE the allowlist — a worktree can always reach its own
  * server, without registration and never recorded as a blocked host.
- *
- * `POST /spawn` is the same thing from a worktree whose mounted script
- * predates named commands: it carries the prompt as the body and `tool` /
- * `model` as query params, which is exactly a `create`
- * (docs/legacy-compat-shims.md).
  */
 function handleMamaRequest(
   req: http.IncomingMessage,
@@ -2091,12 +2079,10 @@ function handleMamaRequest(
   worktreeId: string,
 ): void {
   const url = new URL(req.url ?? '/', `http://${MAMA_MAGIC_HOST}`)
-  const legacy = url.pathname === LEGACY_SPAWN_PATH
-  // The queue writes the completed reply itself (see `MamaReplyShape`); this
-  // is for everything refused before it ever gets there, in the shape that
-  // caller's script can read.
+  // The queue writes the completed reply itself; this is for everything
+  // refused before it ever gets there, in the shape the script can read.
   const respond = (status: number, body: string): void => {
-    if (legacy || status === 404 || status === 405) {
+    if (status === 404 || status === 405) {
       res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' })
       res.end(body)
       return
@@ -2104,7 +2090,7 @@ function handleMamaRequest(
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(status === 200 ? JSON.stringify({ output: body }) : JSON.stringify({ error: body }))
   }
-  if (url.pathname !== MAMA_PATH && !legacy) { respond(404, 'Not found'); return }
+  if (url.pathname !== MAMA_PATH) { respond(404, 'Not found'); return }
   if (req.method !== 'POST') { respond(405, 'Method not allowed'); return }
   const chunks: Buffer[] = []
   let received = 0
@@ -2123,22 +2109,10 @@ function handleMamaRequest(
     const raw = Buffer.concat(chunks).toString('utf8')
 
     // The envelope arrives as JSON, which is the one shape both substrates
-    // send (worktree-bin/yaac-mama). A legacy /spawn call predates it: the
-    // prompt IS the body and `tool`/`model` ride the query string, which is
-    // exactly a `create` (docs/legacy-compat-shims.md).
-    let command: string
-    let args: Record<string, string>
-    let body: string
-    if (legacy) {
-      command = 'create'
-      args = {}
-      for (const [name, value] of url.searchParams) args[name] = value
-      body = raw
-    } else {
-      const parsed = parseMamaEnvelope(raw)
-      if (!parsed) { respond(400, 'invalid request envelope'); return }
-      ;({ command, args, body } = parsed)
-    }
+    // send (worktree-bin/yaac-mama).
+    const parsed = parseMamaEnvelope(raw)
+    if (!parsed) { respond(400, 'invalid request envelope'); return }
+    const { command, args, body } = parsed
 
     const valid = validateMamaRequest(command, args, body)
     if (!valid.ok) { respond(valid.status, valid.error); return }
@@ -2147,16 +2121,12 @@ function handleMamaRequest(
     let gone = false
     res.on('close', () => { gone = true })
     const enqueued = mamaQueue.enqueue(
-      { worktreeId, command, args, body, reply: legacy ? 'text' : 'json' },
+      { worktreeId, command, args, body },
       // The queue has already shaped this reply for the caller's script, so
       // it is written through verbatim rather than through `respond`.
       (status, text) => {
         if (gone) return
-        res.writeHead(status, {
-          'Content-Type': legacy
-            ? 'text/plain; charset=utf-8'
-            : 'application/json; charset=utf-8',
-        })
+        res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
         res.end(text)
       },
     )
@@ -2166,45 +2136,6 @@ function handleMamaRequest(
     // the drain is worth waking immediately rather than at the next resync.
     emitProxyEvent('mama')
   })
-}
-
-/**
- * `GET http://yaac.internal/tools` from inside a worktree — the endpoint
- * `yaac-spawn --models` asked, kept for worktrees whose mounted script
- * predates the command envelope (docs/legacy-compat-shims.md). `yaac-mama
- * models` is answered by the SERVER instead, from its own credentials.
- * report which agent tools have host credentials, their provider/host, and —
- * with `?models=1` — their accepted model ids from the baked catalog. Answered
- * synchronously from proxy-local state (the credentials Secret's view + the
- * worktree's registered tool); no server round-trip, no network fetch. Like /spawn it runs BEFORE the
- * allowlist and is attributed by source pod IP; it exposes tool/provider/model
- * names only, never credential material.
- */
-function handleToolsRequest(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  worktreeId: string,
-): void {
-  const respond = (status: number, contentType: string, body: string): void => {
-    res.writeHead(status, { 'Content-Type': contentType })
-    res.end(body)
-  }
-  if (req.method !== 'GET') { respond(405, 'text/plain; charset=utf-8', 'Method not allowed'); return }
-  const url = new URL(req.url ?? '/', `http://${MAMA_MAGIC_HOST}`)
-  const includeModels = url.searchParams.get('models') === '1'
-  const asJson = url.searchParams.get('json') === '1'
-
-  const view = (creds: { kind: 'oauth' | 'api-key'; provider?: string } | null): ToolCredsView =>
-    creds ? { authed: true, kind: creds.kind, provider: creds.provider } : { authed: false }
-  const creds: Record<AgentTool, ToolCredsView> = {
-    claude: view(objects.credentials.claude),
-    codex: view(objects.credentials.codex),
-    opencode: view(objects.credentials.opencode),
-    pi: view(objects.credentials.pi),
-  }
-  const report = buildToolsReport({ currentTool: registrationOf(worktreeId)?.tool ?? null, creds, includeModels })
-  if (asJson) { respond(200, 'application/json; charset=utf-8', `${JSON.stringify(report, null, 2)}\n`); return }
-  respond(200, 'text/plain; charset=utf-8', formatToolsReport(report))
 }
 
 const internalHttpServer = http.createServer((req, res) => {
@@ -2225,11 +2156,6 @@ const internalHttpServer = http.createServer((req, res) => {
     return
   }
   if (target.hostname === MAMA_MAGIC_HOST) {
-    const pathname = (req.url ?? '/').split('?', 1)[0]
-    if (pathname === '/tools') {
-      handleToolsRequest(req, res, worktreeId)
-      return
-    }
     handleMamaRequest(req, res, worktreeId)
     return
   }

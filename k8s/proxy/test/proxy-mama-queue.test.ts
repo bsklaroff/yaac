@@ -160,31 +160,6 @@ describe('MamaQueue', () => {
     expect(completed()).toEqual({ status: 200, body: '{"output":"new-id"}' })
   })
 
-  it('answers a legacy caller in the bare-text shape its script can read', () => {
-    // A worktree created before the envelope has yaac-spawn mounted
-    // read-only for its whole life; it prints the body verbatim and would
-    // show JSON to the user (docs/legacy-compat-shims.md).
-    const q = new MamaQueue()
-    let completion: { status: number; body: string } | undefined
-    const res = q.enqueue(
-      { worktreeId: 's1', command: 'create', args: {}, body: 'p', reply: 'text' },
-      (status: number, body: string) => { completion = { status, body } },
-    )
-    if (!res.ok) throw new Error('enqueue rejected')
-    q.drain()
-    q.complete({ requestId: res.requestId, ok: true, output: 'new-id' })
-    expect(completion).toEqual({ status: 200, body: 'new-id' })
-
-    const fail = q.enqueue(
-      { worktreeId: 's1', command: 'create', args: {}, body: 'p', reply: 'text' },
-      (status: number, body: string) => { completion = { status, body } },
-    )
-    if (!fail.ok) throw new Error('enqueue rejected')
-    q.drain()
-    q.complete({ requestId: fail.requestId, ok: false, error: 'nope' })
-    expect(completion).toEqual({ status: 422, body: 'nope' })
-  })
-
   it('carries the command and its options through enqueue → drain', () => {
     const q = new MamaQueue()
     let completion: unknown

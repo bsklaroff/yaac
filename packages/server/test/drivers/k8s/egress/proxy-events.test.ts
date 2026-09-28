@@ -91,10 +91,10 @@ async function run(
 }
 
 describe('ProxyEventStream', () => {
-  // A queued request (under either name the proxy has used for it) dirties
-  // a pass: the drain is what answers the pod holding its response open.
+  // A queued request dirties a pass: the drain is what answers the pod
+  // holding its response open.
   it('turns a queued request into a reconcile trigger', async () => {
-    await run(responseOf(['{"type":"mama"}\n{"type":"spawn"}\n']))
+    await run(responseOf(['{"type":"mama"}\n{"type":"mama"}\n']))
     // Plus the one catch-up drain on connect.
     expect(changes).toEqual(['mama-requests', 'mama-requests', 'mama-requests'])
   })
@@ -119,7 +119,7 @@ describe('ProxyEventStream', () => {
 
   // The proxy writes whole lines but TCP does not deliver them that way.
   it('reassembles events split across chunks', async () => {
-    await run(responseOf(['{"type":"ma', 'ma"}', '\n{"type":"spa', 'wn"}\n']))
+    await run(responseOf(['{"type":"ma', 'ma"}', '\n{"type":"ma', 'ma"}\n']))
     expect(changes).toEqual(['mama-requests', 'mama-requests', 'mama-requests'])
   })
 
