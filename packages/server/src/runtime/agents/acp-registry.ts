@@ -83,7 +83,7 @@ export function _resetAcpRegistryForTests(): void {
 
 /**
  * The model a conversation was launched to run, for the adapters that can only
- * be told one over the protocol (`modelVia: 'protocol'`).
+ * be told one over the protocol (`modelVia: 'set_config_option'`).
  *
  * A launch command is authored in one place and the handshake that must carry
  * its model runs in another, seconds later and driven by a different object —

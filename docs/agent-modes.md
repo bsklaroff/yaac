@@ -30,7 +30,7 @@ the argv, the environment that carries a posture or a model, the session mode
 ids that express yaac's postures, and whether its asks are permission prompts
 at all. One
 table rather than four branches, because these facts are not independent — a
-tool that cannot take a model on its command line is exactly the one that has
+tool that cannot take a model at launch is exactly the one that has
 to be sent one over the protocol.
 
 The choice matters most on a phone. A chat pane is a message list and a
@@ -287,7 +287,13 @@ the model the session opened with — in either shape, because adapters disagree
 about which they use (a `models` block, a `configOptions` entry with
 `id: model`, or both) — and every change since arrives as the adapter's
 `config_option_update`, the moment it lands. The conversation publishes it on
-the live agent set, which is what the row is written from. A mode the adapter
+the live agent set, which is what the row is written from — as the catalog's
+id for it, matched by the name the adapter's model list gives it when the id
+itself is one only that adapter speaks (claude's answers with its picker's
+alias where it has one, `opus[1m]`, which it calls "Opus 5.5", else with the
+id it was given). So the row names the model the
+way the create form did, and the sidebar label does not change when the agent
+first reports. A mode the adapter
 moves the session to travels the same way (a `current_mode_update`, or the
 `mode` option in a `config_option_update`), and becomes the worktree's posture
 (docs/permission-modes.md, "Following the agent").
@@ -298,7 +304,10 @@ landing in the live agent set is itself a reconcile trigger (`live-agents`,
 docs/event-driven-reconcile.md). Until the row exists an ACP worktree has no
 chat pane to show, only the raw agent window, which is acpd's log rather than
 a conversation — so a fresh ACP create holds until the row lands, and the
-webapp swaps its provisioning placeholder straight for the chat pane.
+webapp swaps its provisioning placeholder straight for the chat pane. A
+claimed spare is handed over the same way: its claim holds for the row too,
+while the create's placeholder names the spare and hides it, so the
+placeholder is never listed beside it.
 
 The pod carries `yaac.mode` as a label (stamped only for `acp`) so the status
 watcher can pick a driver from an informer delta without a database read on the

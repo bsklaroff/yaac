@@ -235,6 +235,11 @@ describe('agentDriver', () => {
     expect(acp).not.toContain('resume')
     // A single-quoted respawn-window wrapper carries it, so no quotes.
     expect(acp).not.toContain("'")
+    // The adapter reads no flags, so a model reaches it through the one
+    // environment variable it resolves one from.
+    const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
+    expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 node /)
+    expect(withModel).not.toContain('--model')
   })
 
   it('offers a mode id for exactly the postures create will let through', () => {
@@ -440,6 +445,13 @@ describe('agentDriver', () => {
   })
 
   it('drives an acp conversation end to end: handshake, updates, status, prompt', async () => {
+    // claude's adapter answers in its picker's values, which only its own
+    // list names.
+    const modelChoices = [
+      { value: 'default', name: 'Default (recommended)' },
+      { value: 'opus[1m]', name: 'Opus 5.5' },
+      { value: 'sonnet', name: 'Sonnet 5' },
+    ]
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\ninit\n', stderr: '' })
     const seen: AgentObservation[] = []
@@ -473,16 +485,17 @@ describe('agentDriver', () => {
     stream.feed(`${JSON.stringify({
       jsonrpc: '2.0',
       id: created.id,
-      result: { sessionId: 'acp-1', configOptions: [{ id: 'model', currentValue: 'claude-opus-5' }] },
+      result: { sessionId: 'acp-1', configOptions: [{ id: 'model', currentValue: 'opus[1m]', options: modelChoices }] },
     })}\n`)
 
     // The conversation id the agent minted is published — this is what the
     // registry records, replacing the TUI mode's hook and its log entirely —
-    // and so is the model the reply said the session opened with.
+    // and so is the model the reply said the session opened with, in the
+    // adapter's own vocabulary and under the name its list gives it.
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'claude-opus-5' }],
+      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' }],
     }))
 
     const events = collect(acpConversation('demo', 'wt-1', 'acp-1')!)
@@ -503,11 +516,14 @@ describe('agentDriver', () => {
     // moment the adapter reports it, with no answer from the new model needed.
     stream.feed(update({
       sessionUpdate: 'config_option_update',
-      configOptions: [{ id: 'mode', currentValue: 'default' }, { id: 'model', currentValue: 'claude-fable-5' }],
+      configOptions: [
+        { id: 'mode', currentValue: 'default' },
+        { id: 'model', currentValue: 'sonnet', options: modelChoices },
+      ],
     }))
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'claude-fable-5' }],
+      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'sonnet', modelName: 'Sonnet 5' }],
     }))
 
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)

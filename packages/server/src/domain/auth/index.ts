@@ -36,7 +36,7 @@ export {
   syncToolCredentialsThrottled,
 } from './credential-sync'
 export { listAuth } from './list'
-export { defaultModelFor, modelDisplayName, modelsForTool } from './models'
+export { catalogModel, defaultModelFor, modelDisplayName, modelsForTool } from './models'
 export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'
 export {
   codexPlanUsageForSnapshot,
