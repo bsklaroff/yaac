@@ -34,6 +34,7 @@ export {
   listTreeSubdirs,
   readBlobAt,
   remoteBranchExists,
+  resolveLocalBranch,
   resolveRemoteRef,
   worktreeAheadBehind,
   worktreeUpstreamBranch,

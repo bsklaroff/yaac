@@ -32,6 +32,8 @@ vi.mock('#domain/git', () => ({
   remoteBranchExists: vi.fn(),
   // Constructed with its answer, which survives the suite's resetAllMocks.
   resolveRemoteRef: vi.fn(() => Promise.resolve('cafebabe1234')),
+  // Where the spare's own branch is: at origin's tip unless a case moves it.
+  resolveLocalBranch: vi.fn(() => Promise.resolve('cafebabe1234')),
   worktreeUpstreamBranch: vi.fn(),
 }))
 vi.mock('#domain/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
@@ -54,7 +56,14 @@ import {
 import { cleanupWorktree, deleteWorktreeState } from '#domain/worktrees/cleanup'
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { rebranchSpare, retoolSpare } from '#domain/worktrees/spare-pool'
-import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#domain/git'
+import {
+  fetchOrigin,
+  getDefaultBranch,
+  remoteBranchExists,
+  resolveLocalBranch,
+  resolveRemoteRef,
+  worktreeUpstreamBranch,
+} from '#domain/git'
 import { resolveProjectConfig } from '#domain/projects/config'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeEvent } from '#db'
@@ -445,8 +454,53 @@ describe('tryClaimPrewarmed', () => {
   it('skips re-branch prep entirely when the spare already matches the request', async () => {
     mockList.mockResolvedValue([spare()])
     await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'main' })
+    // Fetched to learn that origin has not moved, and nothing more.
+    expect(mockFetchOrigin).toHaveBeenCalledTimes(1)
     expect(mockRebranch).not.toHaveBeenCalled()
-    expect(mockFetchOrigin).not.toHaveBeenCalled()
+  })
+
+  it('brings a spare whose branch moved on origin up to its tip before the hand-over', async () => {
+    mockList.mockResolvedValue([spare()])
+    vi.mocked(resolveLocalBranch).mockResolvedValue('0ldbase')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { prompt: 'go' })
+
+    expect(result?.worktreeId).toBe('spare1')
+    // The same prep as a re-branch, onto the branch it already has — so the
+    // agent is restarted on the new checkout, before anyone has prompted it.
+    expect(mockRebranch).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: 'yaac-p-spare' }), 'main', 'cafebabe1234', setup('claude'),
+    )
+    expect(vi.mocked(resolveLocalBranch)).toHaveBeenCalledWith(expect.any(String), 'agent/spare1')
+    expect(mockRebranch.mock.invocationCallOrder[0])
+      .toBeLessThan(mockClaimSpare.mock.invocationCallOrder[0])
+    expect(emit).toHaveBeenCalledWith('Updating prewarmed session to the latest main...')
+    // Still the branch it was warmed from, so no second branch report.
+    expect(appliedEvents.some((e) => e.type === 'base-branch-resolved')).toBe(false)
+  })
+
+  it('hands a spare over as warmed when its fetch fails or outlasts the wait', async () => {
+    mockList.mockResolvedValue([spare()])
+    vi.mocked(resolveLocalBranch).mockResolvedValue('0ldbase')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    mockFetchOrigin.mockRejectedValue(new Error('remote unreachable'))
+    expect((await tryClaimPrewarmed('p', 'req', setup('claude'), emit))?.worktreeId).toBe('spare1')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('remote unreachable'))
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      mockFetchOrigin.mockReturnValue(new Promise<void>(() => { /* never lands */ }))
+      const claim = tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect((await claim)?.worktreeId).toBe('spare1')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fetch still running'))
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(mockRebranch).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 
   it('re-branches a stale spare on a bare create after the config default changed', async () => {
@@ -676,9 +730,11 @@ describe('tryClaimPrewarmed', () => {
   it('treats a spare with no recorded upstream as warmed from the default branch', async () => {
     mockList.mockResolvedValue([spare()])
     mockWorktreeUpstream.mockResolvedValue(null)
+    mockDefaultBranch.mockResolvedValue('trunk')
     const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).not.toHaveBeenCalled()
-    expect(mockFetchOrigin).not.toHaveBeenCalled()
+    // ...and it is that branch whose tip it is checked against.
+    expect(vi.mocked(resolveRemoteRef)).toHaveBeenCalledWith(expect.any(String), 'trunk')
   })
 })
