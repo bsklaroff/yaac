@@ -174,10 +174,10 @@ The registry holds two things per untrusted build:
 ### Collecting the step cache
 
 Each Dockerfile edit mints fresh cache keys and strands the old ones, so
-the cache repos need a sweep of their own (`reconcileBuildCacheGc`, every
-few hours). It retires cache tags no build has written for one
-`--cache-ttl` — already misses on the read side, so retirement costs no
-hit — and reads that age off the tag link's mtime, which a cache hit
+the cache repos need a sweep of their own (the main registry's GC,
+docs/image-gc.md, every few hours). It retires cache tags no build has
+written for one `--cache-ttl` — already misses on the read side, so
+retirement costs no hit — and reads that age off the tag link's mtime, which a cache hit
 refreshes when it re-pushes the entry: retention is last-used, not
 first-built.
 
@@ -327,7 +327,12 @@ Two consequences worth stating plainly:
   which it can.
 - An overwritten tag is consumed: a builder pod pulls its parent fresh on
   every build (no local store to shield it), and node containerd re-pulls
-  once kubelet image GC has evicted a tag.
+  a tag once the image GC (docs/image-gc.md) has dropped the node's copy.
+- The one yaac pod whose compromise is node root, the image GC's privileged
+  `hostPID` node pruner, is outside this radius only because it runs a
+  digest ref (the upstream `registry:2`), not a registry tag. Any yaac
+  infra pod that names a tag here trusts every builder that ever ran, so a
+  privileged one must never do so.
 
 Closing this needs authentication or path scoping — a push-side proxy that
 mints per-build, repo-scoped credentials is the obvious shape. Until then

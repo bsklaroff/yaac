@@ -613,14 +613,32 @@ export const REGISTRY_GENERATIONS_KEPT = 8
  * collect runs inside the read-only window, where DELETE answers 405 —
  * and that window is also what guarantees no client is mid-push while the
  * names move.
+ *
+ * The main registry runs the same pass (`#drivers/k8s/images`
+ * main-registry-gc.ts) with a smaller `keep`, because its
+ * live set is known rather than guessed: it hands in every tag a workload
+ * or a project's current chain names as `protect` (`repo:tag`, never
+ * retired, still counted against `keep`), and `skip` (shell `case`
+ * patterns) for repos that are off-limits this pass. Each retired tag is
+ * printed as `RETIRED <repo>:<tag>`, and the last line is the count.
  */
-export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): string {
+export function buildRegistryRetentionScript(opts: {
+  keep?: number
+  protect?: string[]
+  skip?: string[]
+} = {}): string {
+  const keep = opts.keep ?? REGISTRY_GENERATIONS_KEPT
+  const skip = opts.skip ?? []
   return [
     `[ -d ${GC_REPOS_PATH} ] || exit 0`,
+    // Callers pass only `repo:tag` refs of the image-name charset, so a
+    // single-quoted literal is safe.
+    `PROTECT='${(opts.protect ?? []).join('\n')}'`,
     'retired=0',
     `for tagdir in $(find ${GC_REPOS_PATH} -type d -path '*/_manifests/tags' 2>/dev/null); do`,
     `  repo=\${tagdir#${GC_REPOS_PATH}/}; repo=\${repo%/_manifests/tags}`,
     '  case "$repo" in',
+    ...(skip.length > 0 ? [`    ${skip.join('|')}) continue;;`] : []),
     '    yaac-*) ;;',
     '    *) continue;;',
     '  esac',
@@ -632,7 +650,8 @@ export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): 
     // ordering unsafe to reuse for a mutable tag, which would sort by when
     // it first appeared rather than when it last moved.
     `  for stale in $(ls -1t "$tagdir" 2>/dev/null | grep -Ex '[0-9a-f]{16}' | tail -n +${keep + 1}); do`,
-    '    rm -rf "$tagdir/$stale" && retired=$((retired+1))',
+    '    printf \'%s\\n\' "$PROTECT" | grep -qxF "$repo:$stale" && continue',
+    '    rm -rf "$tagdir/$stale" && retired=$((retired+1)) && echo "RETIRED $repo:$stale"',
     '  done',
     'done',
     'echo "retired-generations $retired"',

@@ -20,7 +20,7 @@ vi.mock('#domain/worktrees/cleanup', async (importOriginal) => ({
   gcOrphanEphemeralModuleDirs: vi.fn(),
 }))
 vi.mock('#drivers/k8s/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
-vi.mock('#drivers/k8s/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
+vi.mock('#drivers/k8s/images/main-registry-gc', () => ({ reconcileMainRegistryGc: vi.fn() }))
 vi.mock('#drivers/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
 vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),
@@ -53,7 +53,7 @@ import { reconcileImageSalvage } from '#drivers/k8s/worktrees/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
 import { gcOrphanEphemeralModuleDirs } from '#domain/worktrees/cleanup'
 import { reconcileBuilderPodGc } from '#drivers/k8s/images/builder-pod'
-import { reconcileBuildCacheGc } from '#drivers/k8s/images/build-cache-gc'
+import { reconcileMainRegistryGc } from '#drivers/k8s/images/main-registry-gc'
 import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
 import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress/proxy-registration'
@@ -67,7 +67,7 @@ const ALL_STEP_FNS = [
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
-  reconcileRegistrationGc, reconcileBuildCacheGc,
+  reconcileRegistrationGc, reconcileMainRegistryGc,
   gcOrphanEphemeralModuleDirs, adoptRefreshedToolCredentials, reconcileGeneratedTitles,
 ] as const
 

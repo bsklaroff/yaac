@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -29,6 +30,7 @@ vi.mock('#drivers/k8s/container/runtime', () => ({
 }))
 
 import {
+  buildRegistryRetentionScript,
   ensureProjectRegistry,
   gcOrphanProjectRegistries,
   projectRegistryConfDropIn,
@@ -680,24 +682,6 @@ describe('reconcileProjectRegistryGc', () => {
       .toBeLessThan(script.indexOf('garbage-collect'))
   })
 
-  it('retires only yaac content-hash generations, never a name someone could pull', async () => {
-    oneRegistry()
-    await gcPass(DUE)
-    const script = (mockApply.mock.calls.map((c) => c[0] as {
-      kind: string; metadata: { name: string }
-      spec: { containers: Array<{ command: string[] }> }
-    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
-      .spec.containers[0].command[2]
-    // Repo guard keeps a worktree's own `myapp` repo out of scope...
-    expect(script).toContain('yaac-*) ;;')
-    // ...and the tag guard is the content-hash shape, so `v1`, `latest`
-    // and the cache's `yaac-cache-…` slots can never match.
-    expect(script).toContain("grep -Ex '[0-9a-f]{16}'")
-    // Newest-first, keeping current + one rollback (the host-side policy).
-    expect(script).toContain('ls -1t')
-    expect(script).toContain(`tail -n +${REGISTRY_GENERATIONS_KEPT + 1}`)
-  })
-
   it('sends valid POSIX shell into the collect pod', async () => {
     oneRegistry()
     await gcPass(DUE)
@@ -783,5 +767,79 @@ describe('reconcileProjectRegistryGc', () => {
   it('tolerates an unreachable cluster', async () => {
     mockGetJson.mockRejectedValue(new Error('connection refused'))
     await expect(reconcileProjectRegistryGc(DUE)).resolves.toBeUndefined()
+  })
+})
+
+describe('buildRegistryRetentionScript', () => {
+  let storage: string
+  const reposDir = (): string => path.join(storage, 'docker/registry/v2/repositories')
+  const DAY_MS = 24 * 60 * 60_000
+
+  /** A tag first written `ageDays` ago — the tag dir's own mtime is its
+   *  creation time, which is what the retention orders by. */
+  async function pushTag(repoTag: string, ageDays: number): Promise<void> {
+    const [repo, tag] = repoTag.split(':')
+    const tagDir = path.join(reposDir(), repo, '_manifests/tags', tag)
+    await fs.mkdir(path.join(tagDir, 'current'), { recursive: true })
+    const when = new Date(Date.now() - ageDays * DAY_MS)
+    await fs.utimes(tagDir, when, when)
+  }
+
+  /** Run the script as the collect pod would, against the temp store. */
+  async function retain(script: string): Promise<{ stdout: string; left: string[] }> {
+    const { stdout } = await runSh('sh', ['-c', script.replaceAll('/var/lib/registry', storage)])
+    const left: string[] = []
+    for (const repo of ['yaac-tools', 'yaac-user-demo', 'myapp', 'yaac-test-base']) {
+      const tags = await fs.readdir(path.join(reposDir(), repo, '_manifests/tags')).catch(() => [])
+      left.push(...tags.map((t) => `${repo}:${t}`))
+    }
+    return { stdout, left: left.sort() }
+  }
+
+  const gen = (i: number): string => i.toString(16).padStart(16, '0')
+
+  beforeEach(async () => {
+    storage = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-registry-'))
+  })
+  afterEach(async () => {
+    await fs.rm(storage, { recursive: true, force: true })
+  })
+
+  it('keeps the newest generations of each yaac repo and never a name someone could pull', async () => {
+    for (let i = 1; i <= REGISTRY_GENERATIONS_KEPT + 2; i++) await pushTag(`yaac-tools:${gen(i)}`, 100 - i)
+    // A mutable tag, a cache slot, and a repo yaac did not build.
+    await pushTag('yaac-tools:latest', 200)
+    await pushTag('yaac-tools:yaac-cache-v1-0', 200)
+    await pushTag(`myapp:${gen(1)}`, 200)
+
+    const { stdout, left } = await retain(buildRegistryRetentionScript())
+
+    expect(left).toEqual([
+      `myapp:${gen(1)}`,
+      ...Array.from({ length: REGISTRY_GENERATIONS_KEPT }, (_, i) => `yaac-tools:${gen(i + 3)}`),
+      'yaac-tools:latest', 'yaac-tools:yaac-cache-v1-0',
+    ].sort())
+    // Oldest last, and the count the collect pod's log line reports.
+    expect(stdout.trim().split('\n')).toEqual([
+      `RETIRED yaac-tools:${gen(2)}`, `RETIRED yaac-tools:${gen(1)}`, 'retired-generations 2',
+    ])
+  })
+
+  it('spares protected tags and skipped repos', async () => {
+    for (let i = 1; i <= 3; i++) {
+      await pushTag(`yaac-user-demo:${gen(i)}`, 100 - i)
+      await pushTag(`yaac-test-base:${gen(i)}`, 100 - i)
+    }
+
+    const { left } = await retain(buildRegistryRetentionScript({
+      keep: 1,
+      protect: [`yaac-user-demo:${gen(1)}`],
+      skip: ['yaac-test-*'],
+    }))
+
+    expect(left).toEqual([
+      ...[1, 2, 3].map((i) => `yaac-test-base:${gen(i)}`),
+      `yaac-user-demo:${gen(1)}`, `yaac-user-demo:${gen(3)}`,
+    ].sort())
   })
 })

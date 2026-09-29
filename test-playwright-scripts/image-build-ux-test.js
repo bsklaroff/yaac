@@ -185,7 +185,7 @@ async function main() {
     await shot(page, 'ibux-4-history-pill.png')
   } finally {
     // Put the project back where it was; the busted layer's tag is left in
-    // the registry for the build-cache GC to age out.
+    // the registry for the main registry GC to age out.
     await restoreDockerfile(base, originalDockerfile)
     await browser.close()
   }

@@ -78,6 +78,7 @@ import {
   registryHost,
   registryReachable,
   registryRef,
+  registryTagState,
 } from '#drivers/k8s/container'
 // State-reset hook for the shared port-forward registry (module state that
 // would otherwise leak a live child between cases), not a unit under test.
@@ -242,6 +243,25 @@ describe('registryHasTag', () => {
     forwardFails = true
     invalidateRegistryEndpoint()
     await expect(registryHasTag('yaac-tools:abc')).resolves.toBe(false)
+  })
+})
+
+describe('registryTagState', () => {
+  it('reports absent only when the registry answers 404', async () => {
+    fetchMock.mockResolvedValueOnce(fetchResponse({ ok: true }))
+    await expect(registryTagState('yaac-tools:abc')).resolves.toBe('present')
+    fetchMock.mockResolvedValueOnce(fetchResponse({ ok: false, status: 404 }))
+    await expect(registryTagState('yaac-tools:abc')).resolves.toBe('absent')
+    // Anything short of a 404 is not evidence the tag is gone: a caller
+    // that deletes on absence must not read a slow or restarting registry
+    // as an empty one.
+    fetchMock.mockResolvedValueOnce(fetchResponse({ ok: false, status: 503 }))
+    await expect(registryTagState('yaac-tools:abc')).resolves.toBe('unknown')
+    fetchMock.mockRejectedValueOnce(new Error('timeout'))
+    await expect(registryTagState('yaac-tools:abc')).resolves.toBe('unknown')
+    forwardFails = true
+    invalidateRegistryEndpoint()
+    await expect(registryTagState('yaac-tools:abc')).resolves.toBe('unknown')
   })
 })
 

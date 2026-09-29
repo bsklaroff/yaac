@@ -178,15 +178,26 @@ export async function registryReachable(): Promise<boolean> {
  * silently skipping a push that never happened.
  */
 export async function registryHasTag(tag: string): Promise<boolean> {
+  return await registryTagState(tag) === 'present'
+}
+
+/**
+ * What the registry says about `repo:tag`: `present`, `absent` (a 404 —
+ * the registry answered, and it does not hold the tag), or `unknown`
+ * (no route, a timeout, any other status). For a caller that acts on
+ * ABSENCE, where `registryHasTag`'s fail-to-false polarity would read a
+ * slow registry as "retired".
+ */
+export async function registryTagState(tag: string): Promise<'present' | 'absent' | 'unknown'> {
   const idx = tag.lastIndexOf(':')
-  if (idx < 0) return false
+  if (idx < 0) return 'unknown'
   const repo = tag.slice(0, idx)
   const ref = tag.slice(idx + 1)
   let endpoint: string
   try {
     endpoint = await registryEndpoint()
   } catch {
-    return false
+    return 'unknown'
   }
   try {
     const res = await fetch(`http://${endpoint}/v2/${repo}/manifests/${ref}`, {
@@ -198,10 +209,11 @@ export async function registryHasTag(tag: string): Promise<boolean> {
       },
       signal: AbortSignal.timeout(5000),
     })
-    return res.ok
+    if (res.ok) return 'present'
+    return res.status === 404 ? 'absent' : 'unknown'
   } catch {
     invalidateRegistryEndpoint()
-    return false
+    return 'unknown'
   }
 }
 

@@ -39,6 +39,7 @@ export {
   registryHasTag,
   registryHost,
   registryReachable,
+  registryTagState,
   registryRef,
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,

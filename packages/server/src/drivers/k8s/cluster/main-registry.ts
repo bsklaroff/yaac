@@ -126,7 +126,7 @@ export function mainRegistryPvcName(): string {
  * Requested capacity. It is a request, not a cap that anything here
  * enforces: kind's local-path provisioner ignores the number entirely (the
  * volume is a directory on the node's filesystem), so on the local backend
- * the real bound is the build-cache GC. It is sized for the backends where
+ * the real bound is its GC (docs/image-gc.md). It is sized for the backends where
  * it does bind — this store holds every worktree image of the install plus
  * every trust-split step-cache layer, and running it out of space fails
  * builds rather than degrading them.
@@ -618,7 +618,7 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
 /**
  * Run one argv inside the registry container — the in-cluster replacement
  * for `podman exec yaac-registry`, used by the step-cache collect
- * (features/images/build-cache-gc.ts) to walk and prune the registry's own
+ * (`#drivers/k8s/images` main-registry-gc.ts) to walk and prune the registry's own
  * storage layout. `deploy/<name>` lets kubectl pick the Deployment's pod,
  * so nothing here tracks pod names.
  */

@@ -2,9 +2,9 @@ import { reconcileImageSalvage } from '#drivers/k8s/worktrees'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress'
 import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
 import {
-  reconcileBuildCacheGc,
   reconcileBuilderPodGc,
   reconcileImagePrewarm,
+  reconcileMainRegistryGc,
   reconcileNodeImageStores,
 } from '#drivers/k8s/images'
 import type { DriverReconcileSteps } from '#drivers/contract'
@@ -61,10 +61,13 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // teardown that never ran. Throttled internally; reads the pass's
       // own workspace set.
       { name: 'registration-gc', triggers: [], run: (ctx) => reconcileRegistrationGc(ctx) },
-      // Registry-side counterpart: retire step-cache tags no build has used
-      // in a cache-ttl and collect their blobs. Throttled internally, and it
-      // stands down while anything is pushing.
-      { name: 'build-cache-gc', triggers: [], run: () => reconcileBuildCacheGc() },
+      // The main registry's counterpart: retire step-cache tags no build has
+      // used in a cache-ttl and image generations nothing live names, collect
+      // their blobs, then drop the nodes' unpacked copies of what the
+      // registry no longer holds. Throttled internally and detached; the
+      // collect stands down while anything is pushing.
+      { name: 'main-registry-gc', triggers: [], run: async (ctx) =>
+        reconcileMainRegistryGc(await ctx.projectSlugs(), ctx.projectConfig) },
     ],
   }
 }
