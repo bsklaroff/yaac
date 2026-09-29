@@ -87,6 +87,35 @@ describe('readAcpLog', () => {
     const events = await readAcpLog(file)
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
   })
+
+  it('replays a message\'s images with its words', async () => {
+    // The user's own turn exists only as the client's `session/prompt` line,
+    // so an image the user sent is in the history only if that projection
+    // keeps it.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'acp-1.jsonl')
+    await fs.writeFile(file, line({
+      jsonrpc: '2.0',
+      id: 'abc-1',
+      method: 'session/prompt',
+      params: {
+        sessionId: 'acp-1',
+        prompt: [
+          { type: 'text', text: 'what is this?' },
+          { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+        ],
+      },
+    }) + '\n')
+
+    expect(await readAcpLog(file)).toMatchObject([{
+      type: 'user',
+      content: [
+        { type: 'text', text: 'what is this?' },
+        { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+      ],
+    }])
+  })
 })
 
 describe('tailAcpLog', () => {
@@ -294,6 +323,31 @@ describe('readAcpFirstPrompt', () => {
     ].join('\n') + '\n')
 
     expect(await readAcpFirstPrompt(file)).toBe('the founding ask')
+  })
+
+  it('labels from an opening message whose images run it past the scan', async () => {
+    // Megabytes of base64 on one line: the scan cannot parse it, but the text
+    // is written ahead of the images, so the label is still in reach.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'acp-1.jsonl')
+    await fs.writeFile(file, [
+      life('life-1'),
+      line({
+        jsonrpc: '2.0',
+        id: 'x-2',
+        method: 'session/prompt',
+        params: {
+          sessionId: 'acp-1',
+          prompt: [
+            { type: 'text', text: 'why is "this" red?' },
+            { type: 'image', mimeType: 'image/png', data: 'A'.repeat(200_000) },
+          ],
+        },
+      }),
+    ].join('\n') + '\n')
+
+    expect(await readAcpFirstPrompt(file)).toBe('why is "this" red?')
   })
 
   it('answers undefined for a record with no prompt, or none at all', async () => {

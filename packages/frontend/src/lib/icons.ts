@@ -29,6 +29,7 @@ export {
   LoaderCircle as LoadingIcon,
   ChevronRight as ChevronIcon,
   X as CloseIcon,
+  ImagePlus as AttachImageIcon,
   KeyRound as KeyIcon,
   Keyboard as KeyboardIcon,
   SlidersHorizontal as GeneralIcon,

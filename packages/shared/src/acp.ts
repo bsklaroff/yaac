@@ -26,7 +26,10 @@
  *  files rather than embedding resources for the client to resolve). */
 export type AcpContent =
   | { type: 'text'; text: string }
-  | { type: 'image'; mimeType: string; data: string }
+  | AcpImage
+
+/** An image block; `data` is base64. */
+export interface AcpImage { type: 'image'; mimeType: string; data: string }
 
 /**
  * A file edit, as the before/after texts the agent is writing.
@@ -198,7 +201,9 @@ export type AcpServerMessage =
 
 /** Pane → server. */
 export type AcpClientMessage =
-  | { type: 'prompt'; text: string }
+  /** A user message. `images` go to the agent as ACP image blocks after the
+   *  text, so a message may be images alone; `data` is base64. */
+  | { type: 'prompt'; text: string; images?: AcpImage[] }
   /** Interrupt the running turn (ACP `session/cancel`). */
   | { type: 'cancel' }
   /**

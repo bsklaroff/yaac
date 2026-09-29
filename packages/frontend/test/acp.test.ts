@@ -68,14 +68,14 @@ describe('groupEvents', () => {
     // The agent streams token by token; each chunk is its own event, and
     // rendering one bubble per chunk is the thing this prevents.
     const groups = groupEvents([agent(0, 'Hello, '), agent(1, 'world'), agent(2, '!')])
-    expect(groups).toEqual([{ kind: 'agent', seq: 0, text: 'Hello, world!' }])
+    expect(groups).toEqual([{ kind: 'agent', seq: 0, text: 'Hello, world!', images: [] }])
   })
 
   it('keeps a user turn separate from the reply it precedes', () => {
     const groups = groupEvents([user(0, 'do it'), agent(1, 'ok'), agent(2, '!')])
     expect(groups).toEqual([
-      { kind: 'user', seq: 0, text: 'do it' },
-      { kind: 'agent', seq: 1, text: 'ok!' },
+      { kind: 'user', seq: 0, text: 'do it', images: [] },
+      { kind: 'agent', seq: 1, text: 'ok!', images: [] },
     ])
   })
 
@@ -107,7 +107,7 @@ describe('groupEvents', () => {
     // A divider under every single reply is noise; a refusal or a token cap is
     // the user's business.
     expect(groupEvents([agent(0, 'done'), { type: 'turn-end', seq: 1, stopReason: 'end_turn' }]))
-      .toEqual([{ kind: 'agent', seq: 0, text: 'done' }])
+      .toEqual([{ kind: 'agent', seq: 0, text: 'done', images: [] }])
     const capped = groupEvents([{ type: 'turn-end', seq: 0, stopReason: 'max_tokens' }])
     expect(capped).toEqual([{ kind: 'turn-end', seq: 0, stopReason: 'max_tokens' }])
   })
@@ -116,21 +116,27 @@ describe('groupEvents', () => {
     expect(groupEvents([
       { type: 'commands', seq: 0, commands: [{ name: 'clear' }] },
       agent(1, 'hi'),
-    ])).toEqual([{ kind: 'agent', seq: 1, text: 'hi' }])
+    ])).toEqual([{ kind: 'agent', seq: 1, text: 'hi', images: [] }])
   })
 
   it('drops a turn start, which drives the indicator rather than the transcript', () => {
     // It carries no content, and the turn beginning is already visible as the
     // reply that follows it.
     expect(groupEvents([{ type: 'turn-start', seq: 0 }, agent(1, 'hi')]))
-      .toEqual([{ kind: 'agent', seq: 1, text: 'hi' }])
+      .toEqual([{ kind: 'agent', seq: 1, text: 'hi', images: [] }])
   })
 
-  it('renders an image chunk as a placeholder rather than dropping the message', () => {
+  it('keeps a message\'s images apart from its words, across the chunks it came in', () => {
+    const image = { type: 'image' as const, mimeType: 'image/png', data: 'AA==' }
     const groups = groupEvents([
-      { type: 'agent', seq: 0, content: [{ type: 'image', mimeType: 'image/png', data: 'AA==' }] },
+      { type: 'user', seq: 0, content: [{ type: 'text', text: 'what is this?' }, image] },
+      { type: 'agent', seq: 1, content: [image] },
+      agent(2, 'a red square'),
     ])
-    expect(groups).toEqual([{ kind: 'agent', seq: 0, text: '[image/png image]' }])
+    expect(groups).toEqual([
+      { kind: 'user', seq: 0, text: 'what is this?', images: [image] },
+      { kind: 'agent', seq: 1, text: 'a red square', images: [image] },
+    ])
   })
 
   it('keeps thoughts out of the reply they interleave with', () => {

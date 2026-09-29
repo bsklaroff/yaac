@@ -372,6 +372,67 @@ above). So the connection that takes over can settle an ask it never received,
 which is the difference between a blocked agent that resumes and one that has
 to be restarted mid-turn.
 
+## Images
+
+A user hands an agent an image by pasting it, dropping it, or, in a chat pane,
+picking it. The two modes take it differently, each in the form its agents
+already accept.
+
+**`tui`: a path.** A terminal carries no images, and an agent's own
+paste-image key reads the clipboard of the machine it runs on, which is a pod
+or a tmux server with no display. What every TUI yaac runs *does* take is a
+pasted path to an image file: it is what a terminal sends when a file is
+dropped on it. claude reads the image as the path is pasted, and codex and
+opencode attach it on the spot too; pi keeps the path as text and reads the
+file with its tool during the turn, as its own paste-image key does. So the
+terminal pane claims an image paste or drop before xterm sees it, uploads it
+(`POST /worktree/:id/attachments`), and pastes the path the server answers.
+
+The server keeps the file in `worktreeAttachmentsDir`, under the worktree's
+state dir, so it lasts for the worktree's current life and goes when it stops.
+An image a turn has already sent stays in the tool's own history across a
+restart, but a path can no longer be read after one. The path is the one the
+workspace sees (`WorkspacePaths.attachmentsDir`): a read-only mount at
+`/home/yaac/.yaac-attachments` in a pod, the host directory itself under
+containerless. Files are named by content hash, so pasting the same image
+twice writes one file, and a name never needs quoting.
+
+The keyboard paste chord off macOS, Ctrl+Shift+V, is one browsers run as
+paste-as-plain-text, and its paste event carries no image at all. For a Shift
+chord the pane therefore reads the clipboard itself (`navigator.clipboard.read`,
+which asks for permission the first time) and attaches an image it finds
+there, unless the clipboard also holds text, which the chord is already
+pasting.
+
+**`acp`: an image block.** ACP carries images in `session/prompt`, and every
+adapter yaac runs advertises `promptCapabilities.image`, so a chat message's
+images go inline after its text. The bridge checks each one the way the upload
+route checks a file, by its magic bytes, and holds the message to the same
+5 MB cap for all its images together: the model's request limit and the
+record both take them at once. A message over it is refused whole rather than
+sent without an image, and the composer says so before sending. Because acpd
+records the prompt, the images are part of the conversation's history: a
+replayed user turn shows them, and so does a stopped worktree's transcript.
+That is also why the browser shrinks them before they leave: the long edge to
+1568 px, the most a model reads, and a PNG still over 1 MB re-encoded as WebP
+(or JPEG) when that is smaller. A record keeps them for good, and every attach
+reads it.
+
+Prompts that big have three consequences for acpd and the record. acpd writes
+whole lines only, holding each direction's unfinished line until its newline,
+so a multi-megabyte prompt arriving in chunks cannot be split by something the
+agent says meanwhile. A client that goes away mid-line has already handed the
+agent that line's start, so acpd ends it with a newline, and the agent discards
+the fragment rather than gluing it onto the next client's first request. And
+the founding-ask scan, which reads only a record's first 64 KB, can still find
+the text of an opening message whose line it cannot finish parsing, because
+the text block is written ahead of the images.
+
+In either pane, a paste that also carries plain text is taken as text: office
+apps put a picture of the copied selection on the clipboard beside the text.
+Text that is only a URL does not count, since that is what Firefox's Copy
+Image puts beside the image.
+
 ## Where things live
 
 | Concern | Path |
@@ -389,3 +450,4 @@ to be restarted mid-turn.
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
 | Chat pane | `packages/frontend/src/components/WorktreeChat.tsx`, `src/lib/acp.ts` |
+| Pasted images | `packages/frontend/src/lib/attachments.ts`, `packages/server/src/domain/worktrees/attachments.ts`, `packages/shared/src/attachments.ts` |

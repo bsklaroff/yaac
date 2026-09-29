@@ -285,6 +285,13 @@ export const CONTAINER_OPENCODE_CHECKPOINT = '/home/yaac/.yaac/opencode-checkpoi
 export const CONTAINER_ACP_LOG_DIR = '/home/yaac/.yaac-acp'
 
 /**
+ * Where the images a user pastes into a terminal pane are mounted in its
+ * session, read-only — the host side is `worktreeAttachmentsDir()`, which
+ * the server writes.
+ */
+export const CONTAINER_ATTACHMENTS_DIR = '/home/yaac/.yaac-attachments'
+
+/**
  * GLOBAL: per-project config (yaac-config.json, the project Dockerfile and
  * its build context). Only the server reads it today, but it sits inside
  * the project tree and moves with it.

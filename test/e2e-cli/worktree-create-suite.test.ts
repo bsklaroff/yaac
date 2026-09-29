@@ -124,6 +124,9 @@ function makeJwt(payload: Record<string, unknown>): string {
 
 const CODEX_REAL_ACCESS_TOKEN = 'codex-real-access-token'
 
+/** Enough of a PNG to pass the server's magic-byte check. */
+const E2E_PNG = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.from('e2e pixels')])
+
 describe('yaac worktree create suite (real CLI + real server + mocked remotes)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer | null = null
@@ -2153,7 +2156,12 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       )
       await opened
       await sleep(1000)
-      ws.send(JSON.stringify({ type: 'prompt', text: 'e2e recorded prompt' }))
+      // With an image, which rides the prompt inline as an ACP image block.
+      ws.send(JSON.stringify({
+        type: 'prompt',
+        text: 'e2e recorded prompt',
+        images: [{ type: 'image', mimeType: 'image/png', data: E2E_PNG.toString('base64') }],
+      }))
 
       let recorded = ''
       for (let i = 0; i < 60 && !recorded.includes('e2e recorded prompt'); i++) {
@@ -2165,6 +2173,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       ws.close()
       expect(recorded).toContain('"method":"session/prompt"')
       expect(recorded).toContain('e2e recorded prompt')
+      expect(recorded).toContain(`{"type":"image","mimeType":"image/png","data":"${E2E_PNG.toString('base64')}"}`)
     }, 180_000)
 
     it('replays the record to a pane that attaches after the fact', async () => {
@@ -2184,9 +2193,23 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(hello).toBeDefined()
       // The user turn is reconstructed from the client's own `session/prompt`
       // line in the record — the agent only echoes user messages when
-      // replaying under `session/load`.
+      // replaying under `session/load` — images and all.
       expect(text.some((l) => l.includes('e2e recorded prompt'))).toBe(true)
+      expect(text.some((l) => l.includes(E2E_PNG.toString('base64')))).toBe(true)
     }, 120_000)
+
+    it('mounts a pasted image where the pod reads it, at the path the pane pastes', async () => {
+      const res = await fetch(`${base}/worktree/${worktreeId}/attachments`, {
+        method: 'POST',
+        headers: { ...auth, 'Content-Type': 'image/png' },
+        body: E2E_PNG,
+      })
+      expect(res.status).toBe(200)
+      const { path: pasted } = await res.json() as { path: string }
+      expect(pasted.startsWith('/home/yaac/.yaac-attachments/')).toBe(true)
+      const { stdout } = await execInJob(jobName, ['sh', '-c', `base64 -w0 ${pasted}`])
+      expect(stdout.trim()).toBe(E2E_PNG.toString('base64'))
+    }, 60_000)
 
     it('serves the conversation over /acp/attach', async () => {
       const { ws, text, opened } = openWs(

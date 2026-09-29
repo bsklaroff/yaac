@@ -1,7 +1,13 @@
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { PACKAGE_ROOT, installTmpDir } from '@yaac/shared/paths'
-import { acpLogDir, repoDir, worktreeDir, worktreeStateDir } from '@yaac/shared/project-paths'
+import {
+  acpLogDir,
+  repoDir,
+  worktreeAttachmentsDir,
+  worktreeDir,
+  worktreeStateDir,
+} from '@yaac/shared/project-paths'
 import type { WorkspacePaths } from '#drivers/contract'
 
 /**
@@ -188,6 +194,9 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
     // state dir above — that is pruned on stop, and a stopped worktree's
     // conversation stays readable.
     acpLogDir: acpLogDir(projectSlug, worktreeId),
+    // The server's own copy rather than the link the mount realizes in the
+    // private HOME: the same directory, by the name that needs no HOME.
+    attachmentsDir: worktreeAttachmentsDir(projectSlug, worktreeId),
     acpdEntry: acpdEntry(),
   }
 }

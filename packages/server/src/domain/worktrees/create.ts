@@ -26,12 +26,14 @@ import {
   piDir,
   cachedPackagesDir,
   cacheVolumeDir,
+  worktreeAttachmentsDir,
   worktreeStateDir,
   worktreeDir,
   projectDir,
 } from '@yaac/shared/project-paths'
 import {
   CONTAINER_ACP_LOG_DIR,
+  CONTAINER_ATTACHMENTS_DIR,
   CONTAINER_OPENCODE_CHECKPOINT,
   CONTAINER_OPENCODE_DATA,
   CONTAINER_SESSION_STARTS_LOG,
@@ -1213,6 +1215,10 @@ export async function createWorktree(
     // nothing renames it, which is what keeps the mount valid for the pod's
     // whole life.
     const sessionStarts = await ensureSessionStartsLog(projectSlug, worktreeId)
+    // Images pasted into a terminal pane (`saveWorktreeAttachment`): made now
+    // so the read-only mount below has a server-owned directory to bind.
+    const attachments = worktreeAttachmentsDir(projectSlug, worktreeId)
+    await fs.mkdir(attachments, { recursive: true })
 
     // SSH remotes: the worktree talks git over SSH with no private key
     // inside the container, which needs a host key to verify against. That
@@ -1333,7 +1339,7 @@ export async function createWorktree(
       toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
       claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-      cachedPackages, acpLogs, sessionStarts,
+      cachedPackages, acpLogs, sessionStarts, attachments,
     }
   })()
 
@@ -1342,7 +1348,7 @@ export async function createWorktree(
     toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
     claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-    cachedPackages, acpLogs, sessionStarts,
+    cachedPackages, acpLogs, sessionStarts, attachments,
   } = prep
 
   // Build container env. Unlike the podman create API (whose Env field
@@ -1586,6 +1592,8 @@ export async function createWorktree(
     ...(acpLogs !== undefined
       ? [{ source: { kind: 'hostPath' as const, path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR }]
       : []),
+    // GLOBAL, server-written: the agent only reads what a paste names.
+    { source: { kind: 'hostPath', path: attachments }, mountPath: CONTAINER_ATTACHMENTS_DIR, readOnly: true },
     // GLOBAL, and the one file the pod writes that the server reads back. A
     // `File` mount is safe here precisely because nothing ever renames it: a
     // rename would replace the inode the mount pins, and the pod would go on

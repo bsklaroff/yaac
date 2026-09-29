@@ -30,6 +30,7 @@ import {
   resolveWorktreeRecord,
   restartWorktree,
   runMamaCommand,
+  saveWorktreeAttachment,
   toAgentSessionEntry,
   writeWorktreeFile,
 } from '#domain/worktrees'
@@ -60,6 +61,7 @@ import { requireDriverFeature } from '#http'
 import { worktreeDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
+import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 // A group name is stored under `normalizeTitle`, which caps at this — so it
 // is also what every route may ACCEPT. A larger bound would take a name in,
 // truncate it on the way to the table, and let two distinct long names
@@ -580,6 +582,18 @@ export const worktreeApp = new Hono()
       }
       return c.json(result.saved)
     },
+  )
+  // An image pasted into a terminal pane: the raw bytes in, the path to paste
+  // in their place out.
+  .post(
+    '/:id/attachments',
+    bodyLimit({
+      maxSize: MAX_ATTACHMENT_BYTES,
+      onError: () => { throw new ServerError('TOO_LARGE', 'the image is over the 5 MB limit') },
+    }),
+    async (c) => c.json(
+      await saveWorktreeAttachment(c.req.param('id'), new Uint8Array(await c.req.arrayBuffer())),
+    ),
   )
   .delete(
     '/:id/file',

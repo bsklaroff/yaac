@@ -259,6 +259,56 @@ describe('attachAcp', () => {
     expect(transport.written.some((l) => l.includes('session/prompt'))).toBe(false)
   })
 
+  it('sends a message\'s images after its words, typed by their bytes, and refuses a non-image', async () => {
+    const png = Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').toString('base64')
+    const prompts = (): Array<{ id: string; params: unknown }> => transport.written
+      .map((l) => JSON.parse(l.trim()) as { id: string; method?: string; params: unknown })
+      .filter((m) => m.method === 'session/prompt')
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+
+    // Declared a JPEG, but the bytes say PNG — and the bytes are what the
+    // agent is told, re-encoded from what was checked rather than passed on
+    // with the junk a lenient decode skipped.
+    sock.clientSend({ type: 'prompt', text: 'what is this?', images: [{ type: 'image', mimeType: 'image/jpeg', data: `!${png}` }] })
+    await waitFor(() => prompts().length === 1)
+    expect(prompts()[0].params).toEqual({
+      sessionId: 'acp-1',
+      prompt: [
+        { type: 'text', text: 'what is this?' },
+        { type: 'image', mimeType: 'image/png', data: png },
+      ],
+    })
+
+    // Not an image: dropped whole, and the pane is told rather than left
+    // waiting for an echo that will never come.
+    sock.clientSend({ type: 'prompt', text: 'and this?', images: [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }] })
+    await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'error'))
+    expect(prompts()).toHaveLength(1)
+
+    // Nor may a message's images together pass the cap, however small each.
+    const big = Buffer.alloc(3 * 1024 * 1024)
+    Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').copy(big)
+    const errors = (): number => sock.sent.filter((m) => m.type === 'event' && m.event.type === 'error').length
+    sock.clientSend({
+      type: 'prompt',
+      text: 'two screenshots',
+      images: [1, 2].map(() => ({ type: 'image', mimeType: 'image/png', data: big.toString('base64') })),
+    })
+    await waitFor(() => errors() === 2)
+    expect(prompts()).toHaveLength(1)
+
+    // A message may be an image alone.
+    transport.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompts()[0].id, result: { stopReason: 'end_turn' } })}\n`)
+    sock.clientSend({ type: 'prompt', text: ' ', images: [{ type: 'image', mimeType: 'image/png', data: png }] })
+    await waitFor(() => prompts().length === 2)
+    expect(prompts()[1].params).toEqual({
+      sessionId: 'acp-1',
+      prompt: [{ type: 'image', mimeType: 'image/png', data: png }],
+    })
+  })
+
   it('cancels the running turn without tearing the pane down', async () => {
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', sock)

@@ -87,3 +87,24 @@ No test here can fail. The suite runs against a database and disk it just
 created — the state in which every one of these is already a no-op — so green
 says nothing about any of them, and prose entries have no executable form at
 all. That is the reason this is a list rather than a check.
+
+## The attachments-dir gate on pasted images
+
+`saveWorktreeAttachment` refuses an upload, with "restart this worktree to
+paste images into it", when the worktree's `worktreeAttachmentsDir` does not
+exist. Every launch makes that directory beside the read-only mount that
+shows it to the workspace, so on anything launched by a current server the
+check never fires.
+
+**What it reads:** a worktree (or warm spare) whose pod or tmux server was
+launched before the attachments mount existed — it has no
+`/home/yaac/.yaac-attachments` mount and no directory.
+
+**What breaks silently if it goes too early:** the upload succeeds and the
+pane pastes `/home/yaac/.yaac-attachments/<hash>.png`, a path that does not
+exist in that pod; the agent reports "no such file" with nothing pointing at a
+restart as the fix.
+
+**How to tell it is safe to remove:** once no worktree launched before the
+mount can still be running — every such worktree has been stopped or
+restarted. Removing it then leaves the upload's behavior unchanged.

@@ -1,9 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useAcpStream } from '#lib/acp'
 import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
-import { LoadingIcon } from '#lib/icons'
+import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
+import { AttachImageIcon, CloseIcon, LoadingIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
-import type { AcpContent } from '@yaac/shared/acp'
+import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
+import type { AcpContent, AcpImage } from '@yaac/shared/acp'
 
 /**
  * The chat pane: an ACP conversation, rendered as messages instead of
@@ -33,6 +35,12 @@ import type { AcpContent } from '@yaac/shared/acp'
  *  so it compares against a draft rather than against a rendering of one. */
 function promptText(content: AcpContent[]): string {
   return content.filter((c) => c.type === 'text').map((c) => c.text).join('')
+}
+
+/** What identifies a sent message's echo: its text and how many images rode
+ *  with it, since a message may be images alone. */
+function echoKey(text: string, images: number): string {
+  return `${text}\u0000${String(images)}`
 }
 
 export function WorktreeChat({
@@ -65,6 +73,17 @@ export function WorktreeChat({
    * what the user typed is still there to send again.
    */
   const [awaitingEcho, setAwaitingEcho] = useState<string | null>(null)
+  /**
+   * Images attached to the draft (docs/agent-modes.md, "Images"), sent inline
+   * with it. Unlike the text they are not kept in the store: base64 images are
+   * too big for what it persists, so a reload drops them.
+   */
+  const [images, setImages] = useState<AcpImage[]>([])
+  /** The attached images as of this render, for an attach finishing later. */
+  const imagesRef = useRef(images)
+  imagesRef.current = images
+  const [imageError, setImageError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   /** What this pane mounted with — the draft, and the message a previous mount
    *  had handed to the socket without seeing its echo — plus whether the two
    *  have been reconciled against the replayed history yet (see below). */
@@ -176,9 +195,11 @@ export function WorktreeChat({
   // the text stays put; the echo is what clears it.
   useEffect(() => {
     if (awaitingEcho === null) return
-    const echoed = events.some((e) => e.type === 'user' && promptText(e.content) === awaitingEcho)
+    const echoed = events.some((e) => e.type === 'user'
+      && echoKey(promptText(e.content), e.content.filter((c) => c.type === 'image').length) === awaitingEcho)
     if (echoed) {
       setDraft('')
+      setImages([])
       setAwaitingEcho(null)
       setChatSent(worktreeId, agentSessionId, undefined)
     }
@@ -203,14 +224,35 @@ export function WorktreeChat({
     const text = draft.trim()
     // `busy` matters as much as `connected`: Enter would otherwise bypass the
     // gate the Send button enforces and put a second prompt turn in flight.
-    if (text === '' || !connected || busy || awaitingEcho !== null) return
-    if (send({ type: 'prompt', text })) {
-      setAwaitingEcho(text)
+    if ((text === '' && images.length === 0) || !connected || busy || awaitingEcho !== null) return
+    if (send({ type: 'prompt', text, ...(images.length > 0 ? { images } : {}) })) {
+      setAwaitingEcho(echoKey(text, images.length))
       // Recorded where it outlives this pane: if the pane is torn down before
       // the echo, its successor needs to know this exact text was in flight.
       setChatSent(worktreeId, agentSessionId, text)
       pinnedRef.current = true
     }
+  }
+
+  /** Attach pasted, dropped or picked images to the draft, shrunk to what the
+   *  model reads. */
+  const attach = (files: File[]): void => {
+    setImageError(null)
+    void Promise.all(files.map(async (f) => toAcpImage(await prepareImage(f))))
+      .then((added) => {
+        // The server holds a message to this total too; saying so here is
+        // what tells the user before they send, rather than after.
+        const next = [...imagesRef.current, ...added]
+        if (next.reduce((n, image) => n + imageBytes(image), 0) > MAX_ATTACHMENT_BYTES) {
+          setImageError('a message\'s images may total 5 MB')
+          return
+        }
+        // Ahead of the render, so an attach finishing before it builds on
+        // this one instead of the same stale base.
+        imagesRef.current = next
+        setImages(next)
+      })
+      .catch((err: unknown) => setImageError(err instanceof Error ? err.message : String(err)))
   }
 
   /** Answer a permission ask. Reports whether it left, so a card whose click
@@ -226,7 +268,18 @@ export function WorktreeChat({
   const awaitingPermission = groups.some((g) => g.kind === 'permission' && g.decided === undefined)
 
   return (
-    <div className="flex h-full w-full flex-col bg-bg">
+    <div
+      className="flex h-full w-full flex-col bg-bg"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault()
+      }}
+      onDrop={(e) => {
+        const files = imageFiles(e.dataTransfer)
+        if (files.length === 0 || awaitingEcho !== null) return
+        e.preventDefault()
+        attach(files)
+      }}
+    >
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -256,12 +309,55 @@ export function WorktreeChat({
             Disconnected — the agent keeps working; this pane reattaches automatically.
           </div>
         )}
+        {imageError !== null && (
+          <div className="mb-1.5 text-xs text-[#f85149]">Image not attached: {imageError}</div>
+        )}
+        {images.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {images.map((image, i) => (
+              <DraftImage
+                key={i}
+                image={image}
+                {...(awaitingEcho === null
+                  ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
+                  : {})}
+              />
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
+          <button
+            type="button"
+            aria-label="Attach image"
+            title="Attach image"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={awaitingEcho !== null}
+            className="rounded-md border border-hairline p-1.5 text-text-dim hover:text-text disabled:opacity-40"
+          >
+            <AttachImageIcon size={14} />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              attach([...(e.target.files ?? [])])
+              e.target.value = ''
+            }}
+          />
           <textarea
             ref={inputRef}
             rows={1}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onPaste={(e) => {
+              const files = imageFiles(e.clipboardData)
+              if (files.length === 0 || awaitingEcho !== null) return
+              e.preventDefault()
+              attach(files)
+            }}
             onKeyDown={(e) => {
               // Enter sends, shift-enter newlines — the convention every agent
               // TUI in the sibling panes already uses.
@@ -290,7 +386,7 @@ export function WorktreeChat({
             <button
               type="button"
               onClick={submit}
-              disabled={draft.trim() === '' || !connected || awaitingEcho !== null}
+              disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
               className="rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-dim hover:text-text disabled:opacity-40"
             >
               Send
@@ -298,6 +394,26 @@ export function WorktreeChat({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/** An image attached to the draft, removable until the message is sent. */
+function DraftImage({ image, onRemove }: { image: AcpImage; onRemove?: () => void }): JSX.Element {
+  return (
+    <div className="relative">
+      <img src={useImageSrc(image)} alt="" className="h-14 rounded border border-hairline" />
+      {onRemove && (
+        <button
+          type="button"
+          aria-label="Remove image"
+          onClick={onRemove}
+          className="absolute -top-1.5 -right-1.5 rounded-full border border-hairline bg-surface-2
+            p-0.5 text-text-dim hover:text-text"
+        >
+          <CloseIcon size={10} />
+        </button>
+      )}
     </div>
   )
 }

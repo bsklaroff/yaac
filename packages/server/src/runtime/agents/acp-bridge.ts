@@ -28,7 +28,8 @@ import { tailAcpLog } from './acp-log'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import path from 'node:path'
 import { serverLog } from '#log'
-import type { AcpClientMessage, AcpEvent, AcpServerMessage } from '@yaac/shared/acp'
+import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
+import type { AcpClientMessage, AcpEvent, AcpImage, AcpServerMessage } from '@yaac/shared/acp'
 
 /** The minimal socket this bridge needs — structurally the same object the
  *  PTY bridge takes, without coupling the two features. */
@@ -42,6 +43,34 @@ export interface AcpSocket {
 function toText(data: Buffer | ArrayBuffer | Buffer[]): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
   return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
+}
+
+/**
+ * A prompt's images, checked the way the terminal's upload route checks a
+ * file: by what the bytes are, not by the type the pane declared, and against
+ * the same cap — for the message as a whole, since the model's request limit
+ * and the record both take all of them at once. A string names the first
+ * refusal — the message is then dropped whole rather than sent without the
+ * image the user meant to send.
+ *
+ * What goes on is the base64 of the bytes checked, not the pane's string:
+ * decoding skips characters that are not base64, so the two can differ.
+ */
+function promptImages(raw: unknown): AcpImage[] | string {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) return 'malformed images'
+  const images: AcpImage[] = []
+  let total = 0
+  for (const entry of raw as Array<Partial<AcpImage> | null>) {
+    if (typeof entry?.data !== 'string') return 'malformed image'
+    const bytes = Buffer.from(entry.data, 'base64')
+    total += bytes.byteLength
+    if (total > MAX_ATTACHMENT_BYTES) return 'its images are over the 5 MB limit'
+    const kind = sniffImage(bytes)
+    if (!kind) return 'an image is not a PNG, JPEG, GIF or WebP'
+    images.push({ type: 'image', mimeType: kind.mimeType, data: bytes.toString('base64') })
+  }
+  return images
 }
 
 /**
@@ -167,10 +196,19 @@ export function attachAcp(
       )
       return
     }
-    if (msg.type === 'prompt' && typeof msg.text === 'string' && msg.text.trim() !== '') {
+    if (msg.type === 'prompt' && typeof msg.text === 'string') {
+      const images = promptImages(msg.images)
+      if (typeof images === 'string') {
+        // Said to the pane, which is waiting for this message's echo and would
+        // otherwise wait until the socket dropped.
+        send({ type: 'event', event: { type: 'error', message: `message not sent: ${images}`, seq: seq++ } })
+        return
+      }
+      const text = msg.text.trim() === '' ? '' : msg.text
+      if (text === '' && images.length === 0) return
       // Not awaited: the turn's progress is the event stream's business, and
       // the socket must stay responsive to a cancel while it runs.
-      void conversation.prompt(msg.text).catch((err: unknown) => {
+      void conversation.prompt(text, images).catch((err: unknown) => {
         serverLog(`[server] acp attach ${worktreeId}/${agentSessionId}: prompt failed: ${String(err)}`)
       })
     }
