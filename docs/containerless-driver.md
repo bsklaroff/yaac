@@ -136,6 +136,15 @@ defense is that nothing redirects it — so every variable that could is
 named ones are cleared too, so "no host tool-home value survives" holds on
 its own rather than only while every create remembers to re-supply one.
 
+The same clearing drops the markers a claude session stamps on the processes
+it spawns (`AGENT_SESSION_VARS`: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`,
+its session id, pid, trace context and messaging socket), which the server
+carries whenever an agent started it. A worktree is not that session's child,
+and a claude that inherits `CLAUDE_CODE_CHILD_SESSION` stops saving its
+transcript. The session also sets `GIT_EDITOR=true`, and that is dropped only
+as that literal value beside `CLAUDECODE` — anywhere else a `GIT_EDITOR` is
+the user's own preference and is inherited like any other.
+
 opencode is why the cleared half cannot simply be replaced by naming things.
 It has no home override at all: `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and
 `OPENCODE_CONFIG_CONTENT` are additional config *inputs* — the first is

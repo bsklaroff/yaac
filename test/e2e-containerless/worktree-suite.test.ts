@@ -412,6 +412,11 @@ beforeAll(async () => {
     OPENCODE_CONFIG_DIR: '/nowhere/opencode',
     XDG_CONFIG_HOME: '/nowhere/config',
     XDG_DATA_HOME: '/nowhere/share',
+    // As if an agent had started this server from its Bash tool.
+    CLAUDECODE: '1',
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDE_CODE_SESSION_ID: 'parent',
+    GIT_EDITOR: 'true',
   }
   server = await spawnYaacServer(serverEnv)
 
@@ -821,7 +826,11 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // No home override may be inherited: the ones with nothing to replace
     // them are gone outright, so the tool falls back through the private
     // HOME's staged links rather than to /nowhere.
-    for (const key of ['OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']) {
+    // Nor may the marks of a claude session that started the server.
+    for (const key of [
+      'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+      'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'GIT_EDITOR',
+    ]) {
       expect(env[key], `${key} reached the worktree`).toBeUndefined()
     }
     // And the ones a create names are the project's own directories, not

@@ -39,10 +39,42 @@ import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/cont
  *  invites a worktree to reconfigure the server that launched it. */
 const ENV_DENY_PREFIXES = ['YAAC_']
 
+/**
+ * The markers a running claude session stamps on every process it spawns,
+ * which the server inherits whenever it was started from inside one (an
+ * agent running `yaac server start`). A workspace is not that session's
+ * child, and claude acts on them: `CLAUDE_CODE_CHILD_SESSION` turns off
+ * transcript saving — its escape hatch, finding the marker in tmux's global
+ * environment, needs `$TMUX`, which the launch command unsets — and the
+ * messaging pair would address the parent session's inbox.
+ *
+ * Read from the pinned claude (2.1.282): its Bash tool's env builder adds
+ * everything from `CLAUDECODE` through `TRACEPARENT` (the last three only
+ * conditionally), and the rest reach a child through claude's own
+ * `process.env`. The builder's one other entry, `GIT_EDITOR=true`, is not
+ * here because a host `GIT_EDITOR` is a real preference; `workspaceEnvironment`
+ * drops only that literal value, and only beside these markers.
+ */
+export const AGENT_SESSION_VARS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_PID',
+  'AI_AGENT',
+  'CLAUDE_EFFORT',
+  'TRACEPARENT',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+]
+
 /** Host variables that could point a tool somewhere other than the project
- *  dirs staged for this workspace. See `tool-homes` for which of these the
- *  create names outright and which have nothing to name. */
-const ENV_DENY_KEYS = TOOL_HOME_VARS
+ *  dirs staged for this workspace (see `tool-homes` for which of these the
+ *  create names outright and which have nothing to name), and the marks of
+ *  whatever agent session happened to start the server. */
+const ENV_DENY_KEYS = [...TOOL_HOME_VARS, ...AGENT_SESSION_VARS]
 
 /**
  * The server's environment without its own wiring — what any process it
@@ -76,6 +108,8 @@ function workspaceEnvironment(
   paths: { workspaceDir: string },
 ): NodeJS.ProcessEnv {
   const env = userEnvironment()
+  // Without `true` a terminal's `git commit` aborts on an empty message.
+  if (env.CLAUDECODE !== undefined && env.GIT_EDITOR === 'true') delete env.GIT_EDITOR
   for (const key of ENV_DENY_KEYS) delete env[key]
   for (const entry of spec.env) {
     const eq = entry.indexOf('=')
