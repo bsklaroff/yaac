@@ -136,6 +136,8 @@ vi.mock('@yaac/shared/project-paths', () => ({
   // Per-worktree ACP conversation records; create makes the dir so acpd can
   // write into it through the mount.
   acpLogDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/acp/${worktreeId}`),
+  // Pasted images; create makes the dir so the read-only mount binds it.
+  worktreeAttachmentsDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/attachments/${worktreeId}`),
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   worktreeDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/worktrees/${worktreeId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
