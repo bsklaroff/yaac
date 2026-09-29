@@ -32,7 +32,7 @@ import {
   setWorktreeTitle,
   type QueuedWorktreeRow,
 } from '#db'
-import { resolveWorktreeInProject } from './resolve'
+import { resolveWorktree } from './resolve'
 import { stopWorktree } from './stop'
 import { queueWorktree } from './queued-worktrees'
 import { ServerError } from '@yaac/shared/errors'
@@ -362,7 +362,7 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
  * Shared by the two commands that take a `--worktree`, so both say "me" the
  * same way: omitted means the caller, which saves an agent looking up an id
  * it would only be using to name itself. Resolution is
- * `resolveWorktreeInProject`'s, so an id from another project simply is not
+ * `resolveWorktree`'s, so an id from another project simply is not
  * here, and an ambiguous prefix resolves to nothing rather than to whichever
  * row came back first.
  */
@@ -373,7 +373,7 @@ async function resolveTargetWorktree(
   const target = worktree === undefined || worktree.trim() === ''
     ? caller.workspaceId
     : worktree.trim()
-  const resolved = await resolveWorktreeInProject(caller.projectSlug, target)
+  const resolved = await resolveWorktree(target, { projectSlug: caller.projectSlug })
   return resolved.ok
     ? resolved
     : { ok: false, error: worktreeError(caller.projectSlug, target, resolved.reason) }
@@ -461,7 +461,7 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   // Resolved against the caller's OWN project's rows, which is what scopes
   // the move: a worktree id from another project simply is not here, so there
   // is no cross-project move to refuse separately.
-  const found = await resolveWorktreeInProject(caller.projectSlug, worktree.trim())
+  const found = await resolveWorktree(worktree, { projectSlug: caller.projectSlug })
   if (!found.ok) {
     return { ok: false, error: worktreeError(caller.projectSlug, worktree.trim(), found.reason) }
   }

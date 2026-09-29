@@ -85,7 +85,26 @@ describe('resolveProjectConfig', () => {
       await expect(roundTrip({ cacheVolumes: { store: 123 } }))
         .rejects.toThrow('cacheVolumes.store must be a string')
       await expect(roundTrip({ cacheVolumes: { store: 'relative/path' } }))
-        .rejects.toThrow('cacheVolumes.store must be an absolute path')
+        .rejects.toThrow('cacheVolumes.store must be a normalized absolute path')
+    })
+
+    it('refuses a value that is the root or not normalized', async () => {
+      for (const val of ['/', '/a/../b', '/a//b', '/a/./b']) {
+        await expect(roundTrip({ cacheVolumes: { store: val } }), val)
+          .rejects.toThrow('cacheVolumes.store must be a normalized absolute path')
+      }
+    })
+
+    it('refuses a key that could name any dir but its own', async () => {
+      // A key is a host dir name under cache-volumes/: a parent reference
+      // would mount some other server dir into the pod, and a subdir would
+      // nest one mount inside another the pod can swap for a link.
+      for (const key of ['../../../.credentials', 'a/b', '..', '.', '.hidden', '', 'x'.repeat(65), 'a b']) {
+        await expect(roundTrip({ cacheVolumes: { [key]: '/cache' } }), key)
+          .rejects.toThrow(`cacheVolumes key "${key}"`)
+      }
+      const ok = { cacheVolumes: { 'pnpm.store_v3-x': '/a', ['x'.repeat(64)]: '/b' } }
+      expect(await roundTrip(ok)).toEqual(ok)
     })
   })
 
@@ -177,6 +196,18 @@ describe('resolveProjectConfig', () => {
         .rejects.toThrow('portForward[0].containerPort must be an integer')
       await expect(roundTrip({ portForward: [{ containerPort: 8080, hostPortStart: 70000 }] }))
         .rejects.toThrow('portForward[0].hostPortStart must be an integer')
+    })
+
+    it('refuses yaac\'s own in-workspace infra ports, but allows a sensitive one', async () => {
+      // 10250-10350 is yaac's control surface (the stream daemon, the relay),
+      // never the project's to forward. A dev database is an ordinary,
+      // explicit thing to forward — only one-click detection skips it.
+      for (const containerPort of [10250, 10300, 10350]) {
+        await expect(roundTrip({ portForward: [{ containerPort, hostPortStart: 9000 }] }))
+          .rejects.toThrow(`portForward[0].containerPort ${containerPort} is reserved`)
+      }
+      const db = { portForward: [{ containerPort: 5432, hostPortStart: 15432 }] }
+      expect(await roundTrip(db)).toEqual(db)
     })
   })
 

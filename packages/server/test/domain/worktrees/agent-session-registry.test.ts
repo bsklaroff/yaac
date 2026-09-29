@@ -14,7 +14,7 @@ import { acpLogDir, claudeDir, codexDir } from '@yaac/shared/project-paths'
 import { _resetReportedModesForTests, reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
 import { listWorktreeAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
-import { getWorktreeRow, recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
+import { getWorktreeRow, recordWorktreeCreated, recordWorktreeLife, setWorktreePermissionMode } from '#db/worktree-store'
 import { _resetCodexPosturesForTests } from '#runtime/agents/codex'
 import { handleFixture, installFakeWorktreeDriver, snapshotFixture } from '@yaac/test-utils/fake-driver'
 import type { RuntimeHandle, WorktreeDriver } from '#drivers/contract'
@@ -271,7 +271,7 @@ describe('reconcileAgentSessions', () => {
   // A restart resumes a rollout whose newest entry is the old process's: that
   // is where the conversation was, not a move this life made.
   it('ignores a codex rollout entry written before this life', async () => {
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'accept-edits' })
+    await setWorktreePermissionMode('demo', 'wt-1', 'accept-edits')
     const rel = path.join('codex', 'sessions', 'rollout-conv-y.jsonl')
     const rollout = path.join(codexDir('demo'), 'sessions', 'rollout-conv-y.jsonl')
     await fs.mkdir(path.dirname(rollout), { recursive: true })
@@ -292,7 +292,7 @@ describe('reconcileAgentSessions', () => {
   // nothing until its next turn — so the row's recorded one is read instead,
   // and a Shift+Tab before that turn still reaches the row.
   it('follows a resumed codex pane through the rollout its row recorded', async () => {
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'accept-edits' })
+    await setWorktreePermissionMode('demo', 'wt-1', 'accept-edits')
     const rel = path.join('codex', 'sessions', 'rollout-conv-z.jsonl')
     await recordAgentSessions('demo', 'wt-1', [{ tool: 'codex', agentSessionId: 'conv-z', transcriptPath: rel }])
     const rollout = path.join(codexDir('demo'), 'sessions', 'rollout-conv-z.jsonl')
@@ -312,7 +312,7 @@ describe('reconcileAgentSessions', () => {
   // tmux keeps a pane's option while no server watches it, so the first
   // report a new server gets is news too.
   it('records reported modes up or down, including one made while no server watched', async () => {
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1', permissionMode: 'accept-edits' })
+    await setWorktreePermissionMode('demo', 'wt-1', 'accept-edits')
     const acp = (reportedMode: string): void => live([
       { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', reportedMode },
     ])

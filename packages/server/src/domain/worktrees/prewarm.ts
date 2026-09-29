@@ -366,22 +366,12 @@ export async function tryClaimPrewarmed(
     // Hidden under the create's row before the flip below lists it, so the
     // sidebar never shows the spare beside the row still creating it.
     claimProvisioning(requestId, claimedId)
-    await claimSpareWorktree(
-      projectSlug,
-      claimedId,
-      spareUpstreamBranch !== null ? spareUpstreamBranch : undefined,
-    )
-    // Now that it is a worktree, record it as created: warming inserted the
-    // row, but the live fields (no stop, no death) belong to the life the
-    // claimant is about to be handed.
-    await applyWorktreeEvent({
-      type: 'worktree-created',
-      projectSlug,
-      worktreeId: claimedId,
+    // The claim also records what the worktree runs once it is done — the
+    // spare's own launch when it matched, the respawn's otherwise — so a
+    // restart relaunches it that way. One UPDATE of the row warming
+    // inserted: the id was claimed then, and is handed over now.
+    await claimSpareWorktree(projectSlug, claimedId, {
       ...(spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {}),
-      // What the worktree runs once the claim is done — the spare's own
-      // launch when it matched, the respawn's otherwise — so a restart
-      // relaunches it that way.
       permissionMode: setup.permissionMode,
       mode: setup.mode,
       ...(setup.model !== undefined ? { model: setup.model } : {}),

@@ -715,15 +715,19 @@ export interface WorktreeDriver {
    *  tears its workspace's forwards down. */
   release(): void
 
-  /** Locate one workspace by id, id prefix, or runtime name. `preferCache`
+  /** Locate one workspace by its EXACT worktree id — prefix expansion is
+   *  domain's, over rows, and unit names are this runtime's own business.
+   *  An unclaimed spare is not a worktree and never matches. `preferCache`
    *  answers from a push-fed view when the runtime has a trustworthy one. */
-  find(idOrName: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle | undefined>
+  find(worktreeId: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle | undefined>
   /**
-   * Locate what a stop should address, including a workspace whose unit
-   * outlived its pod — a stop must still reach a runtime that is half gone,
-   * which is exactly the case a plain `find` reports as absent.
+   * Locate what a stop should address, by exact worktree id, including a
+   * workspace whose unit outlived its pod — a stop must still reach a
+   * runtime that is half gone, which is exactly the case a plain `find`
+   * reports as absent. An unclaimed spare matches only with `spares`: a
+   * failed warm tears down its own, and nothing else may stop one.
    */
-  findForTeardown(idOrName: string): Promise<TeardownTarget | undefined>
+  findForTeardown(worktreeId: string, opts?: { spares?: boolean }): Promise<TeardownTarget | undefined>
   /**
    * Every workspace the runtime is holding, optionally one project's,
    * spares included.

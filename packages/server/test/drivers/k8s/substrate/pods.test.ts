@@ -306,25 +306,23 @@ describe('findWorktreePod', () => {
     }
   }
 
-  it('matches by exact session id', () => {
+  it('matches by exact worktree id', () => {
     expect(findWorktreePod([pod()], 'abcd1234')).toBeDefined()
   })
 
-  it('matches by exact job name', () => {
-    expect(findWorktreePod([pod()], 'yaac-demo-abcd1234')).toBeDefined()
+  // Prefix expansion is domain's, over rows; unit names are this driver's
+  // own and no client sends one.
+  it('matches no prefix, job name or pod name', () => {
+    for (const input of ['abcd', '', 'yaac-demo-abcd1234', 'yaac-demo-abcd1234-x7k2p', 'yaac-']) {
+      expect(findWorktreePod([pod()], input), input).toBeUndefined()
+    }
   })
 
-  it('matches by session-id prefix', () => {
-    expect(findWorktreePod([pod()], 'abcd')?.worktreeId).toBe('abcd1234')
-  })
-
-  it('matches by exact pod name', () => {
-    expect(findWorktreePod([pod({ podName: 'deadbeef-x' })], 'deadbeef-x')?.worktreeId).toBe('abcd1234')
-  })
-
-  it('does not match name prefixes (every job name starts with yaac-)', () => {
-    expect(findWorktreePod([pod()], 'yaac')).toBeUndefined()
-    expect(findWorktreePod([pod()], 'yaac-')).toBeUndefined()
+  // An unclaimed spare is not a worktree; only a teardown asks for one.
+  it('skips a spare unless asked for spares', () => {
+    const spare = pod({ labels: { [LABEL_PREWARMED]: 'true' } })
+    expect(findWorktreePod([spare], 'abcd1234')).toBeUndefined()
+    expect(findWorktreePod([spare], 'abcd1234', { spares: true })).toBeDefined()
   })
 
   it('returns undefined when nothing matches', () => {

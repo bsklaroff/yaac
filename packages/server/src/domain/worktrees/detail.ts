@@ -2,7 +2,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { worktreeForkBranch } from './fork-branch'
-import { resolveWorktreeContainer, resolveWorktreeRecord } from './resolve'
+import { resolveWorktreeContainer, resolveWorktreeId, resolveWorktreeRecord } from './resolve'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { worktreeDriver } from '#drivers/driver'
 import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
@@ -24,15 +24,15 @@ export interface WorktreeDetail {
   createdAt: string
 }
 
-async function findWorktree(idOrName: string): Promise<RuntimeHandle> {
-  const match = await worktreeDriver().find(idOrName)
-  if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
+async function findWorktree(idOrPrefix: string): Promise<RuntimeHandle> {
+  const match = await worktreeDriver().find(await resolveWorktreeId(idOrPrefix))
+  if (!match) throw new ServerError('NOT_FOUND', `session ${idOrPrefix} not found`)
   return match
 }
 
-export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetail> {
+export async function getWorktreeDetail(idOrPrefix: string): Promise<WorktreeDetail> {
   const runtime = worktreeDriver()
-  const match = await findWorktree(idOrName)
+  const match = await findWorktree(idOrPrefix)
   const blocked = match.workspaceId
     ? await runtime.blockedHosts(match.workspaceId)
     : []
@@ -76,11 +76,11 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
  * an inconsistency of ours and blaming the caller for it would hide it.
  */
 export async function getWorktreeChanges(
-  idOrName: string,
+  idOrPrefix: string,
   base?: string,
 ): Promise<WorktreeChanges> {
   const { jobName, worktreeId, projectSlug } = await resolveWorktreeContainer(
-    idOrName, { requireRunning: true },
+    idOrPrefix, { requireRunning: true },
   )
   const forkBranch = await worktreeForkBranch(projectSlug, worktreeId)
   // Trimmed, because that is what the runtime does with it: a blank `base`
@@ -101,8 +101,8 @@ export async function getWorktreeChanges(
   }
 }
 
-export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[]> {
-  const match = await findWorktree(idOrName)
+export async function getWorktreeBlockedHosts(idOrPrefix: string): Promise<string[]> {
+  const match = await findWorktree(idOrPrefix)
   if (!match.workspaceId) return []
   return worktreeDriver().blockedHosts(match.workspaceId)
 }
@@ -117,8 +117,8 @@ export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[
  * fallback needs a live workspace, and it simply has nothing to read when
  * there is none.
  */
-export async function getWorktreePrompt(idOrName: string): Promise<string | undefined> {
-  const { projectSlug, worktreeId, jobName, tool } = await resolveWorktreeRecord(idOrName)
+export async function getWorktreePrompt(idOrPrefix: string): Promise<string | undefined> {
+  const { projectSlug, worktreeId, jobName, tool } = await resolveWorktreeRecord(idOrPrefix)
   if (!worktreeId || !projectSlug) return undefined
   // The captured prompt first: for opencode the live lookup is an exec into
   // the pod, and this route can be polled, so a repeat caller must not cost

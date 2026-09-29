@@ -32,7 +32,3 @@ export {
   parseChangesOutput,
   type ChangesLocation,
 } from './worktree-changes'
-// What a workspace's detected listeners may be offered as, and how many.
-// `SENSITIVE_PORTS` is behind `isForwardablePort`, which is the question a
-// driver actually asks.
-export { MAX_SURFACED_PORTS, isForwardablePort } from './port-policy'

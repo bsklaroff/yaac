@@ -299,18 +299,16 @@ export function worktreePodSelector(projectFilter?: string): string {
 }
 
 /**
- * Match a worktree pod by worktree-id prefix or exact Job/Pod name —
- * mirrors the podman-era matching (worktree-id prefix, container name
- * exact). Names are deliberately NOT prefix-matched: every Job name
- * starts with `yaac-`, so a short name prefix would resolve to an
- * arbitrary worktree.
+ * The pod hosting this exact worktree id. Spares are skipped unless asked
+ * for: an unclaimed spare is not a worktree, and only a teardown — which
+ * must reach a failed warm's own unit — addresses one.
  */
-export function findWorktreePod(pods: PodInfo[], idOrName: string): PodInfo | undefined {
-  return pods.find((p) =>
-    p.jobName === idOrName
-    || p.podName === idOrName
-    || p.worktreeId.startsWith(idOrName),
-  )
+export function findWorktreePod(
+  pods: PodInfo[],
+  worktreeId: string,
+  opts: { spares?: boolean } = {},
+): PodInfo | undefined {
+  return pods.find((p) => p.worktreeId === worktreeId && (opts.spares === true || !isPrewarmed(p)))
 }
 
 export interface JobInfo {

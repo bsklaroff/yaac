@@ -412,20 +412,20 @@ worktree
 worktree
   .command('rename')
   .description('Set a worktree\'s title — the label the sidebar shows in place of its id')
-  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .argument('<worktree-id>', 'Worktree ID or unique prefix')
   .argument('<title>', 'New title (quote it if it has spaces)')
   .action(worktreeRename)
 
 worktree
   .command('stop')
   .description('Stop a worktree: tear down its container, keep its checkout and diff')
-  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .argument('<worktree-id>', 'Worktree ID or unique prefix')
   .action(worktreeStop)
 
 worktree
   .command('restart')
   .description('Restart a worktree: kill its container, reuse its checkout, resume the agents that were running')
-  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .argument('<worktree-id>', 'Worktree ID or unique prefix')
   .action(async (worktreeId: string) => {
     await worktreeRestart(worktreeId)
   })
@@ -433,20 +433,20 @@ worktree
 worktree
   .command('agents')
   .description('List the agent sessions a worktree holds (open ones first)')
-  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .argument('<worktree-id>', 'Worktree ID or unique prefix')
   .action(worktreeAgents)
 
 worktree
   .command('attach')
   .description('Attach to the worktree\'s tmux session')
-  .argument('<container-id>', 'Worktree ID or container name')
+  .argument('<worktree-id>', 'Worktree ID or unique prefix')
   .addHelpText('after', '\nTmux shortcuts:\n  Ctrl-B C  Open a new shell\n  Ctrl-B N  Switch to the next window\n  Ctrl-B P  Switch to the previous window')
   .action(worktreeAttach)
 
 worktree
   .command('shell')
   .description('Open an interactive zsh shell in the worktree container')
-  .argument('<container-id>', 'Worktree ID or container name')
+  .argument('<worktree-id>', 'Worktree ID or unique prefix')
   .action(worktreeShell)
 
 worktree
@@ -554,7 +554,7 @@ auth
 
 auth
   .command('fake')
-  .description('Seed fake credentials so worktrees authenticate via a parent proxy (local/dev + yaac-in-yaac)')
+  .description('Seed fake credentials so worktrees authenticate via a parent proxy (local/dev + yaac-in-yaac); refused for a kind already holding a real credential')
   .addArgument(
     new Argument(
       '<kinds...>',

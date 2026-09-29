@@ -1,6 +1,7 @@
 import { worktreeDriver } from '#drivers/driver'
 import { teardownForRestart } from './cleanup'
 import { createWorktree } from './create'
+import { resolveWorktreeId } from './resolve'
 import {
   ensureProvisioning,
   failProvisioning,
@@ -33,9 +34,10 @@ export interface RestartResolution {
  * worktree row, so a stopped worktree can still be restarted against its
  * saved checkout and history.
  */
-export async function resolveRestartTarget(idOrName: string): Promise<RestartResolution> {
+export async function resolveRestartTarget(idOrPrefix: string): Promise<RestartResolution> {
+  const id = await resolveWorktreeId(idOrPrefix)
   try {
-    const match = await worktreeDriver().find(idOrName)
+    const match = await worktreeDriver().find(id)
     if (match) {
       // The pod answered everything but the group, which is a sidebar fact and
       // lives only in the row. Absent or unreadable just means no group: this
@@ -57,7 +59,7 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
     // the time the create runs.
   }
 
-  const row = await findWorktreeRow(idOrName)
+  const row = await findWorktreeRow(id)
   if (row) {
     // The tool is the first conversation's — a worktree has none of its own.
     // A worktree whose create died before recording one cannot say what to
@@ -74,7 +76,7 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
 
   throw new ServerError(
     'NOT_FOUND',
-    `No worktree found matching "${idOrName}". Run "yaac worktree list -s" to see stopped worktrees.`,
+    `No worktree found matching "${idOrPrefix}". Run "yaac worktree list -s" to see stopped worktrees.`,
   )
 }
 
@@ -83,7 +85,7 @@ export interface RestartWorktreeOptions {
 }
 
 /**
- * Tear down any existing Job for `idOrName` (preserving the git worktree) and
+ * Tear down any existing Job for `idOrPrefix` (preserving the git worktree) and
  * spin up a fresh one that resumes the agent sessions which were live when
  * the worktree stopped — each in its own window, in the order they were
  * first opened. All env, config, proxy rules, and port forwarders come from
@@ -96,32 +98,23 @@ export interface RestartWorktreeOptions {
  * comes back with one.
  */
 export async function restartWorktree(
-  idOrName: string,
+  idOrPrefix: string,
   opts: RestartWorktreeOptions = {},
 ): Promise<WorktreeCreateResult> {
-  const { projectSlug, worktreeId, tool, jobName, groupId } = await resolveRestartTarget(idOrName)
+  const { projectSlug, worktreeId, tool, jobName, groupId } = await resolveRestartTarget(idOrPrefix)
 
   // Enter the provisioning registry before the teardown below, and here
   // rather than only in the route: the registry is what `inFlightWorktreeIds`
   // reads, and that is the ONLY thing standing between a restart and the
-  // stale reaper. A caller that skipped it — the CLI, which passes no
-  // projectSlug because it wants no row — spent its whole restart reapable,
-  // and the reaper's teardown `rm -rf`s the session dirs (staged skills,
-  // worktree bin) out from under the create that is about to mount them.
-  // Registering after the resolve is what makes it possible at all: the
-  // project and tool are the resolve's answer, which is exactly why the
-  // route could only do this for a caller that already knew them.
+  // stale reaper, whose teardown `rm -rf`s the session dirs (staged skills,
+  // worktree bin) out from under the create that is about to mount them. So
+  // the interlock lives with the restart itself, whoever called it.
   //
-  // `ensure`, not `register`: the webapp registers up front so its row
-  // renders during the resolve, and re-registering would reorder it.
-  //
-  // Registering here means retiring it here too, which `runProvisioned` above
-  // cannot do for us: that wrapper is keyed on the id the CALLER passed, and
-  // the CLI passes whatever the user typed — `yaac worktree restart eaa70e`
-  // keys it on a PREFIX, while the entry below is keyed on the resolved id.
-  // This is the only scope that holds both, so the resolve/fail pair is
-  // explicit rather than inherited. Both calls are idempotent, so the
-  // webapp's full-id path simply runs them twice.
+  // `ensure`, not `register`: the route registers up front so a restart of
+  // one already provisioning is refused, and re-registering would reorder
+  // its row. The resolve/fail pair below is explicit for the same reason —
+  // this scope must hold the row whether or not a caller's `runProvisioned`
+  // does. Both calls are idempotent, so the route's path runs them twice.
   ensureProvisioning({
     worktreeId,
     projectSlug,
@@ -132,9 +125,8 @@ export async function restartWorktree(
     ...(groupId !== undefined ? { groupId } : {}),
   })
 
-  // Progress has to be mirrored here for the same keying reason: the route's
-  // mirror addresses the caller's id, so for a prefix restart it updates
-  // nothing and the row would sit at "Starting…" for the whole run.
+  // Progress is mirrored here for the same reason: a caller with no
+  // `runProvisioned` of its own would leave the row at "Starting…".
   const onProgress = (message: string): void => {
     updateProvisioningMessage(worktreeId, message)
     opts.onProgress?.(message)

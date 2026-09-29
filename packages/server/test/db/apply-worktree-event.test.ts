@@ -8,7 +8,9 @@ import {
 import {
   getProjectWorktreeRows,
   recordWorktreeCreated,
+  setWorktreeTitle,
 } from '#db/worktree-store'
+import { createWorktreeGroup } from '#db/group-store'
 import { listWorktreeAgentSessions } from '#db/agent-session-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
@@ -86,6 +88,53 @@ describe('applyWorktreeEvent', () => {
     await created('wt-p', { resume: true, permissionMode: 'plan' })
     expect(await posture()).toBe('plan')
     expect(await rowOf('wt-p')).toMatchObject({ model: 'claude-opus-5-5', mode: 'tui' })
+  })
+
+  // A worktree id is claimed once, across every project: an upsert here let
+  // a create posting a live worktree's id re-stamp it, then tear it down as
+  // its own when the create failed.
+  it('refuses a fresh create on a taken id, in this project or another, leaving the row be', async () => {
+    await applyWorktreeEvent({ type: 'base-branch-resolved', projectSlug: 'proj', worktreeId: 'wt-1', baseBranch: 'main' })
+    await stopped('wt-1', { cause: { reason: 'oom' } })
+    const before = await rowOf('wt-1')
+
+    await expect(created('wt-1', { baseBranch: 'other' })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(applyWorktreeEvent({
+      type: 'worktree-created', projectSlug: 'elsewhere', worktreeId: 'wt-1',
+    })).rejects.toMatchObject({ code: 'CONFLICT' })
+
+    expect(await rowOf('wt-1')).toEqual(before)
+    expect((await getProjectWorktreeRows('elsewhere')).size).toBe(0)
+  })
+
+  it('re-stamps a resumed worktree\'s live fields, keeping what belongs to the worktree', async () => {
+    await applyWorktreeEvent({ type: 'base-branch-resolved', projectSlug: 'proj', worktreeId: 'wt-1', baseBranch: 'main' })
+    await setWorktreeTitle('proj', 'wt-1', 'my worktree')
+    const group = await createWorktreeGroup('proj', 'release', 'wt-1')
+    await stopped('wt-1', { cause: { reason: 'oom', detail: 'exit code 137' } })
+    const before = await rowOf('wt-1')
+
+    await created('wt-1', { resume: true, permissionMode: 'plan' })
+
+    expect(await rowOf('wt-1')).toMatchObject({
+      createdAt: before?.createdAt,
+      title: 'my worktree',
+      groupId: group.groupId,
+      baseBranch: 'main',
+      permissionMode: 'plan',
+      deathSeen: false,
+    })
+    const row = await rowOf('wt-1')
+    expect(row?.stoppedAt).toBeUndefined()
+    expect(row?.deathReason).toBeUndefined()
+  })
+
+  // A stop keeps its row, so only a pod yaac has no record of (a reset or
+  // restored DB) can reach a resume without one — and minting a row for it
+  // would be making a record up.
+  it('refuses to resume a worktree with no row', async () => {
+    await expect(created('wt-ghost', { resume: true })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(await rowOf('wt-ghost')).toBeUndefined()
   })
 
   it('stamps a resolved base branch onto an existing row', async () => {

@@ -154,24 +154,21 @@ function handleFor(worktreeId: string): RuntimeHandle | undefined {
   return entry ? toHandle(entry) : undefined
 }
 
-/**
- * Resolve a workspace by id, id prefix, or handle — the same three forms
- * every caller of `find` may pass.
- */
-export function findWorkspace(idOrName: string): RuntimeHandle | undefined {
-  const direct = handleFor(idOrName)
-  if (direct) return direct
-  const matches = [...entries.values()].filter((e) =>
-    e.marker.worktreeId.startsWith(idOrName)
-    || containerlessJobName(e.marker.projectSlug, e.marker.worktreeId) === idOrName)
-  // An ambiguous prefix resolves to nothing rather than to an arbitrary
-  // one of the candidates.
-  const only = matches[0]
-  return matches.length === 1 && only ? toHandle(only) : undefined
+/** The workspace for this exact worktree id. An unclaimed spare is not a
+ *  worktree, so it matches only when asked for — a failed warm's teardown. */
+export function findWorkspace(
+  worktreeId: string,
+  opts: { spares?: boolean } = {},
+): RuntimeHandle | undefined {
+  const handle = handleFor(worktreeId)
+  return handle?.prewarmed === true && opts.spares !== true ? undefined : handle
 }
 
-export function findForTeardown(idOrName: string): TeardownTarget | undefined {
-  const handle = findWorkspace(idOrName)
+export function findForTeardown(
+  worktreeId: string,
+  opts: { spares?: boolean } = {},
+): TeardownTarget | undefined {
+  const handle = findWorkspace(worktreeId, opts)
   if (!handle) return undefined
   return {
     projectSlug: handle.projectSlug,

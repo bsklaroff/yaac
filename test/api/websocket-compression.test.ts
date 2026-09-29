@@ -95,6 +95,20 @@ describe('WebSocket compression', () => {
     }
   })
 
+  // An attach names its worktree by exact id, and one naming none is refused
+  // before any lookup: an empty id must never match whichever worktree the
+  // runtime lists first.
+  it('refuses an attach with no worktree id, before upgrading', async () => {
+    for (const path of ['/pty/attach', '/pty/attach?id=', '/forward/attach?port=80', '/acp/attach?session=s1']) {
+      await expect(upgrade(server.lock.port, path), path)
+        .rejects.toThrow(/no upgrade: HTTP 400/)
+    }
+    // The conversation id is joined into a path downstream, so it is checked
+    // against the agent-session charset first.
+    await expect(upgrade(server.lock.port, '/acp/attach?id=x&session=..%2F..%2Fetc'))
+      .rejects.toThrow(/no upgrade: HTTP 400/)
+  })
+
   it('still refuses an unidentified upgrade', async () => {
     // Compression is negotiated by the same `ws` server for every route, so
     // it must not have become a way to reach one unidentified: the identity

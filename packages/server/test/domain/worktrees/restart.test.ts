@@ -6,6 +6,7 @@ import type * as createModule from '#domain/worktrees/create'
 vi.mock('#db/worktree-store', () => ({
   clearWorktreeStopped: vi.fn().mockResolvedValue(undefined),
   findWorktreeRow: vi.fn().mockResolvedValue(undefined),
+  listWorktreeRows: vi.fn().mockResolvedValue([]),
 }))
 
 // A restart is three substrate calls bracketing two row reads, and the
@@ -20,8 +21,8 @@ vi.mock('#domain/worktrees/create', async (importOriginal) => ({
   createWorktree: vi.fn(),
 }))
 
-import { restartWorktree } from '#domain/worktrees/restart'
-import { clearWorktreeStopped, findWorktreeRow } from '#db/worktree-store'
+import { resolveRestartTarget, restartWorktree } from '#domain/worktrees/restart'
+import { clearWorktreeStopped, findWorktreeRow, listWorktreeRows, type WorktreeRow } from '#db/worktree-store'
 import { teardownForRestart } from '#domain/worktrees/cleanup'
 import { createWorktree, type WorktreeCreateResult } from '#domain/worktrees/create'
 import {
@@ -54,6 +55,23 @@ function handle(workspaceId: string): RuntimeHandle {
   }
 }
 
+function row(worktreeId: string, over: Partial<WorktreeRow> = {}): WorktreeRow {
+  return {
+    projectSlug: 'proj',
+    worktreeId,
+    createdAt: new Date(0),
+    deathSeen: false,
+    spare: false,
+    permissionMode: 'bypass',
+    ...over,
+  }
+}
+
+/** The recorded rows prefix expansion runs over. */
+function rows(...ids: string[]): void {
+  vi.mocked(listWorktreeRows).mockResolvedValue(ids.map((id) => row(id)))
+}
+
 const CREATED: WorktreeCreateResult = {
   worktreeId: 'sid-1',
   jobName: 'yaac-proj-sid-1',
@@ -83,6 +101,8 @@ describe('restartWorktree', () => {
     mockTeardown.mockReset().mockResolvedValue(undefined)
     mockCreate.mockReset().mockResolvedValue(CREATED)
     mockClearDeleted.mockClear()
+    vi.mocked(findWorktreeRow).mockReset().mockResolvedValue(undefined)
+    rows('sid-1')
     clearAllProvisioningForTests()
   })
 
@@ -127,18 +147,16 @@ describe('restartWorktree', () => {
     expect(listProvisioning()).toEqual([])
   })
 
-  // The registry is keyed on the RESOLVED id while the route's runProvisioned
-  // is keyed on whatever the caller typed, so a prefix restart has no wrapper
-  // that can retire its entry. Restarting by prefix is the ordinary CLI case,
-  // which is why the leak it caused was invisible to the full-id webapp path.
+  // The registry is keyed on the RESOLVED id, so a restart addressed by
+  // prefix — the ordinary CLI case — must retire that entry, not one named
+  // by what was typed.
   it('retires the row for a restart addressed by id prefix', async () => {
     await restartWorktree('sid')
     expect(listProvisioning()).toEqual([])
   })
 
-  // Same keying again: the route mirrors progress onto the id the caller
-  // passed, so a prefix restart's row would sit at "Starting…" for its whole
-  // run while the CLI's own stdout scrolled past.
+  // Same keying again: progress lands on the row of the resolved id, so a
+  // prefix restart's row does not sit at "Starting…" for its whole run.
   it('mirrors progress onto the row it registered, and to the caller', async () => {
     const seen: string[] = []
     let rowAtCreate = ''
@@ -166,9 +184,9 @@ describe('restartWorktree', () => {
     expect(inFlightWorktreeIds()).toEqual([])
   })
 
-  // The CLI passes no projectSlug, so nothing registers ahead of the route;
-  // this is that caller, and it is the one the reaper used to reap. Read
-  // mid-flight, since a successful restart retires the row on its way out.
+  // A caller that registered nothing ahead of this is tracked all the same:
+  // the reaper interlock is the restart's own. Read mid-flight, since a
+  // successful restart retires the row on its way out.
   it('registers a restart nothing pre-registered, naming the resolved project', async () => {
     const rows = duringTeardown()
 
@@ -185,15 +203,7 @@ describe('restartWorktree', () => {
   // the top of the list instead of in the section the user filed it under.
   // Only the row knows that; the pod that answered the resolve does not.
   it('files the row in the group the worktree row records', async () => {
-    vi.mocked(findWorktreeRow).mockResolvedValueOnce({
-      projectSlug: 'proj',
-      worktreeId: 'sid-1',
-      createdAt: new Date(0),
-      groupId: 'grp-1',
-      deathSeen: false,
-      spare: false,
-      permissionMode: 'bypass',
-    })
+    vi.mocked(findWorktreeRow).mockResolvedValue(row('sid-1', { groupId: 'grp-1' }))
     const rows = duringTeardown()
 
     await restartWorktree('sid-1')
@@ -201,8 +211,7 @@ describe('restartWorktree', () => {
     expect(rows()).toEqual([expect.objectContaining({ worktreeId: 'sid-1', groupId: 'grp-1' })])
   })
 
-  // The webapp registers up front so its row renders during the resolve, and
-  // the sidebar sorts oldest-first. Re-registering would take a fresh
+  // The route registers up front, and the sidebar sorts oldest-first. Re-registering would take a fresh
   // insertion order and jump the row to the bottom of a list the user is
   // already watching — which is what `ensure` avoids. Its MESSAGE is fair
   // game: progress legitimately overwrites that.
@@ -227,5 +236,34 @@ describe('restartWorktree', () => {
     mockFind.mockResolvedValue(undefined)
     await expect(restartWorktree('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(mockClearDeleted).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveRestartTarget', () => {
+  beforeEach(() => {
+    mockFind.mockReset().mockResolvedValue(undefined)
+    installFakeWorktreeDriver({ find: mockFind })
+    vi.mocked(findWorktreeRow).mockReset().mockResolvedValue(undefined)
+  })
+
+  // The runtime is asked by exact id only: a prefix is expanded over rows
+  // first, and one naming several worktrees never reaches it.
+  it('expands a unique prefix before asking the runtime, and refuses an ambiguous one', async () => {
+    rows('sid-1', 'other-1')
+    mockFind.mockResolvedValue(handle('sid-1'))
+    expect(await resolveRestartTarget('sid')).toMatchObject({ worktreeId: 'sid-1', jobName: 'yaac-proj-sid-1' })
+    expect(mockFind.mock.calls[0]?.[0]).toBe('sid-1')
+
+    rows('sid-1', 'sid-2')
+    mockFind.mockClear()
+    await expect(resolveRestartTarget('sid')).rejects.toMatchObject({ code: 'VALIDATION' })
+    expect(mockFind).not.toHaveBeenCalled()
+  })
+
+  it('answers a stopped worktree from its row, group and all', async () => {
+    vi.mocked(findWorktreeRow).mockResolvedValue(row('sid-1', { groupId: 'grp-1' }))
+    expect(await resolveRestartTarget('sid-1')).toEqual({
+      projectSlug: 'proj', worktreeId: 'sid-1', tool: 'claude', jobName: null, groupId: 'grp-1',
+    })
   })
 })

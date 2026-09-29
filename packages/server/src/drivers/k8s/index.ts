@@ -116,8 +116,8 @@ export function createK8sDriver(): WorktreeDriver {
     stop: () => stopK8sDriver(),
     release: () => releaseK8sDriver(),
 
-    find: (idOrName, opts) => findWorkspace(idOrName, opts),
-    findForTeardown: (idOrName) => findWorkspaceForTeardown(idOrName),
+    find: (worktreeId, opts) => findWorkspace(worktreeId, opts),
+    findForTeardown: (worktreeId, opts) => findWorkspaceForTeardown(worktreeId, opts),
     list: (projectSlug, opts) => listWorkspaces(projectSlug, opts),
     count: () => countWorkspaces(),
     countForProject: (projectSlug) => countProjectWorkspaces(projectSlug),

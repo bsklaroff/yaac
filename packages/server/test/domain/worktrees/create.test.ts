@@ -298,15 +298,18 @@ describe('createWorktree base branch', () => {
 
   /** The row as the first provisioning leg sees it — the create is then
    *  stopped there, since nothing after it bears on what was recorded. */
-  async function rowAtProvisioning(options: Parameters<typeof createWorktree>[1]): Promise<WorktreeRow | undefined> {
+  async function rowAtProvisioning(
+    worktreeId: string,
+    options: Parameters<typeof createWorktree>[1],
+  ): Promise<WorktreeRow | undefined> {
     let row: WorktreeRow | undefined
     installFakeWorktreeDriver({
       prepareImage: async () => {
-        row = await getWorktreeRow('demo', 'wt-1')
+        row = await getWorktreeRow('demo', worktreeId)
         throw new Error('stop here')
       },
     })
-    await expect(createWorktree('demo', { worktreeId: 'wt-1', ...options })).rejects.toThrow('stop here')
+    await expect(createWorktree('demo', { worktreeId, ...options })).rejects.toThrow('stop here')
     return row
   }
 
@@ -314,8 +317,8 @@ describe('createWorktree base branch', () => {
     // A worktree queued after this one defaults to it, and may be queued
     // while this one is still provisioning — so it cannot wait on the
     // checkout. The requested branch, else the clone's default.
-    expect((await rowAtProvisioning({ branch: 'release' }))?.baseBranch).toBe('release')
-    const fallback = (await rowAtProvisioning({}))?.baseBranch
+    expect((await rowAtProvisioning('wt-1', { branch: 'release' }))?.baseBranch).toBe('release')
+    const fallback = (await rowAtProvisioning('wt-2', {}))?.baseBranch
     expect(fallback).toMatch(/^(main|master)$/)
   })
 })

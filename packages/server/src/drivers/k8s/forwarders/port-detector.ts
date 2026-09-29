@@ -3,7 +3,7 @@ import { type PodInfo, isPrewarmed, relayDial } from '#drivers/k8s/substrate'
 import { getWorktreePorts } from './port-forwarders'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
-import { MAX_SURFACED_PORTS, isForwardablePort } from '#drivers/shared'
+import { MAX_SURFACED_PORTS, isForwardablePort } from '#lib/port-policy'
 
 /**
  * Detected in-pod listeners, per worktree: streamd's `ports` stream pushes
@@ -63,6 +63,12 @@ export function getUnforwardedPorts(worktreeId: string): number[] {
   return raw
     .filter((p) => isForwardablePort(p) && !forwarded.has(p) && !hidden?.has(p))
     .slice(0, MAX_SURFACED_PORTS)
+}
+
+/** Whether a port is a listener the worktree's detector has seen and the
+ *  policy would surface — forwarded, dismissed or not. */
+export function isDetectedPort(worktreeId: string, port: number): boolean {
+  return isForwardablePort(port) && (detected.get(worktreeId)?.includes(port) ?? false)
 }
 
 /**

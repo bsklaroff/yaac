@@ -25,7 +25,12 @@ async function streamWorktreeOp(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error(`request failed (HTTP ${res.status})`)
+  if (!res.ok) {
+    // A refusal before the stream (unknown worktree, an id already in use)
+    // carries the same `{error: {message}}` the stream's error event does.
+    const body = await res.json().catch(() => null) as { error?: { message?: string } } | null
+    throw new Error(body?.error?.message ?? `request failed (HTTP ${res.status})`)
+  }
   return await consumeNdjsonStream<unknown>(res, onProgress)
 }
 
@@ -64,9 +69,8 @@ export async function createWorktree(
 export async function restartWorktree(
   worktreeId: string,
   onProgress: (message: string) => void,
-  meta?: { projectSlug?: string; tool?: AgentTool },
 ): Promise<{ worktreeId: string }> {
-  return await streamWorktreeOp('/worktree/restart', { worktreeId, ...meta }, onProgress) as { worktreeId: string }
+  return await streamWorktreeOp('/worktree/restart', { worktreeId }, onProgress) as { worktreeId: string }
 }
 
 /** Dismiss a provisioning row (drops the server registry entry; used for a

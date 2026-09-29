@@ -25,9 +25,10 @@ import {
   removeProvisioning,
   renameWorktreeEntry,
   resolveGroup,
-  resolveWorktreeInProject,
+  resolveWorktree,
   resolveWorktreeContainer,
   resolveWorktreeRecord,
+  resolveRestartTarget,
   restartWorktree,
   runMamaCommand,
   saveWorktreeAttachment,
@@ -140,9 +141,26 @@ export const worktreeApp = new Hono()
       // provisioned, so a typo'd group is not a half-built worktree.
       group: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
     })),
-    (c) => {
+    async (c) => {
       const body = c.req.valid('json')
       const worktreeId = body.worktreeId ?? randomUUID()
+      // A client-chosen id is claimed once. Refused here, as a plain 409
+      // before any stream opens, when a worktree already holds it; the row
+      // insert inside the create is what enforces it against a race.
+      if (body.worktreeId !== undefined && await findWorktreeRow(worktreeId)) {
+        throw new ServerError('CONFLICT', `worktree id ${worktreeId} is already in use`)
+      }
+      // Reserved synchronously, before the stream: a second create on an id
+      // still provisioning is refused rather than sharing its row. A
+      // reservation the create never takes over (a bad group or model) is
+      // dropped, not left failed — its error is already in the stream.
+      registerProvisioning({
+        worktreeId,
+        projectSlug: body.project,
+        tool: body.tool ?? 'claude',
+        kind: 'create',
+        reserved: true,
+      })
       return streamProvisioned(c, worktreeId, async (onProgress) => {
         // Resolved before anything is provisioned, so a typo'd group is not a
         // half-built worktree.
@@ -170,15 +188,8 @@ export const worktreeApp = new Hono()
   .post(
     '/restart',
     zv('json', z.object({
+      // An id or its unique prefix.
       worktreeId: z.string().min(1),
-      // The webapp passes the worktree's project + tool (known from the
-      // stopped entry) so its row renders during the resolve rather than
-      // after it. Optional, and only that: `restartWorktree` registers the
-      // entry itself once the resolve answers, so a caller that omits these
-      // is tracked too — being in the registry is what exempts a restart
-      // from the stale reaper, not a display detail.
-      projectSlug: z.string().optional(),
-      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       // No `mode` here, deliberately: a worktree comes back the way it went
       // down, so restart resolves it from `agent_sessions` rather than from
       // the caller. Accepting one would advertise a choice this route does
@@ -188,27 +199,23 @@ export const worktreeApp = new Hono()
     })),
     async (c) => {
       const body = c.req.valid('json')
-      // Head start for a caller that already knows the answer, so the row is
-      // on screen while the resolve runs; `restartWorktree` registers for
-      // everyone else. Not the reaper interlock — that is the register
-      // inside restartWorktree, which no caller can skip.
-      if (body.projectSlug) {
-        // The group is read here rather than left to restartWorktree's own
-        // register: that one `ensure`s, so it would not correct this entry,
-        // and a groupless head start would park the restarting row at the top
-        // of the sidebar for the whole restart. Read, not taken from the
-        // caller — the row is what the sidebar files the worktree under.
-        const row = await findWorktreeRow(body.worktreeId)
-        registerProvisioning({
-          worktreeId: body.worktreeId,
-          projectSlug: body.projectSlug,
-          tool: body.tool ?? 'claude',
-          kind: 'restart',
-          ...(row?.groupId !== undefined ? { groupId: row.groupId } : {}),
-        })
-      }
-      return streamProvisioned(c, body.worktreeId, (onProgress) =>
-        restartWorktree(body.worktreeId, { onProgress }))
+      // Resolved first, so the row, the stream and the restart are all keyed
+      // on the exact id — never on whatever prefix a CLI user typed.
+      const target = await resolveRestartTarget(body.worktreeId)
+      // Registered here rather than left to restartWorktree's own `ensure`,
+      // so a restart of a worktree already provisioning is a plain 409, and
+      // filed under the group the row records — a groupless row would park
+      // the restarting worktree at the top of the sidebar for the whole
+      // restart.
+      registerProvisioning({
+        worktreeId: target.worktreeId,
+        projectSlug: target.projectSlug,
+        tool: target.tool,
+        kind: 'restart',
+        ...(target.groupId !== undefined ? { groupId: target.groupId } : {}),
+      })
+      return streamProvisioned(c, target.worktreeId, (onProgress) =>
+        restartWorktree(target.worktreeId, { onProgress }))
     },
   )
   .post(
@@ -440,7 +447,7 @@ export const worktreeApp = new Hono()
       // An id or its unique short prefix, which is what every surface prints
       // — the membership write itself matches exactly, so a prefix reaching
       // it would file nothing and report success.
-      const found = await resolveWorktreeInProject(projectSlug, worktreeId)
+      const found = await resolveWorktree(worktreeId, { projectSlug })
       if (!found.ok) {
         // An ambiguous prefix is an under-specified request, not a missing
         // worktree: the caller holds the right id and typed too little of

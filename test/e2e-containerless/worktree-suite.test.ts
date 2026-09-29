@@ -633,6 +633,32 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(windows).toContain('shell')
   })
 
+  // The terminal socket takes an exact id only, so what a person types is
+  // resolved first — here a short prefix, as `worktree list` prints ids.
+  it('attaches and opens a shell by a unique id prefix', async () => {
+    const prefix = worktreeId.slice(0, 8)
+    // Keys are typed only once the far end is drawing: bytes that arrive
+    // before a terminal program puts the tty in raw mode can be flushed.
+    // The first Enter answers zsh's new-user menu, which a fresh private
+    // HOME triggers; at an ordinary prompt it only prints another one.
+    const shell = await runYaac(serverEnv, 'worktree', 'shell', prefix, {
+      stdinOnPrompt: [
+        { when: /Type one of the keys|[%$#] /, send: '\n' },
+        { when: /[%$#] /, send: 'echo "prefix-$((6*7))"; exit\n' },
+      ],
+    })
+    expect(shell.exitCode, shell.stderr).toBe(0)
+    expect(shell.stdout).toContain('prefix-42')
+
+    // `C-b d` detaches, which ends the attach cleanly — sent once tmux has
+    // started drawing, so it is tmux that reads it.
+    const attach = await runYaac(serverEnv, 'worktree', 'attach', prefix, {
+      stdinOnPrompt: [{ when: /\x1b\[/, send: '\x02d' }],
+    })
+    expect(attach.exitCode, attach.stderr).toBe(0)
+    expect(attach.stderr).not.toMatch(/not found|error/i)
+  }, 60_000)
+
   it.skipIf(!CAN_RUN_PORTS)('tunnels a connection onto a port the worktree is listening on', async () => {
     // A dev server inside the worktree — a descendant of its tmux server,
     // which is the tree the port sweep walks — bound to loopback only, the
@@ -1667,7 +1693,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     // where a pod mounts it.
     const res = await fetch(`${origin()}/worktree/${id}/attachments`, {
       method: 'POST',
-      headers: { ...authHeader(), 'Content-Type': 'image/png' },
+      headers: { 'Content-Type': 'image/png' },
       body: png,
     })
     expect(res.status).toBe(200)
@@ -1684,7 +1710,6 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     const attach = async (): Promise<{ ws: WebSocket; hello: { events: Array<{ type: string; content?: unknown[] }> } }> => {
       const ws = new WebSocket(
         `ws://127.0.0.1:${String(server.lock.port)}/acp/attach?id=${id}&session=e2e-acp-claude`,
-        { headers: authHeader() },
       )
       const hello = await new Promise<{ events: Array<{ type: string; content?: unknown[] }> }>((resolve, reject) => {
         ws.on('message', (data) => {

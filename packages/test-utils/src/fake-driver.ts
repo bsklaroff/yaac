@@ -119,7 +119,7 @@ export function installFakeWorktreeDriver(
     stop: () => current.stop(),
     release: () => current.release(),
     find: (id, o) => current.find(id, o),
-    findForTeardown: (id) => current.findForTeardown(id),
+    findForTeardown: (id, opts) => current.findForTeardown(id, opts),
     list: (s, o) => current.list(s, o),
     count: () => current.count(),
     countForProject: (s) => current.countForProject(s),

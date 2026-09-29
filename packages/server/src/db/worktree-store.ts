@@ -5,6 +5,7 @@ import { deleteWorktreeAgentSessions } from './agent-session-store'
 import { agentSessions, worktreeAgentSessions, worktrees } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
 import { normalizeTitle } from '@yaac/shared/titles'
+import { ServerError } from '@yaac/shared/errors'
 import type {
   AgentMode,
   PermissionMode,
@@ -13,16 +14,18 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * The worktree spine: one row per (project, worktree id) for every worktree
+ * The worktree spine: one row per worktree id for every worktree
  * yaac has created. Reads that used to walk transcript directories, git
  * config, and four side tables come from here; the cluster stays
  * authoritative for whether a worktree is *running*, and the agent-session
  * store (its sibling) owns which conversations live inside it.
  *
  * Write discipline, in one line each:
- *  - `recordWorktreeCreated` is the only INSERT. It runs at every create,
- *    including the one that warms a prewarmed spare — a spare's row carries
- *    `spare: true`, and `claimSpareWorktree` is what clears it.
+ *  - `recordWorktreeCreated` is the only INSERT, and never upserts: a
+ *    worktree id is claimed once, across every project. It runs at every
+ *    fresh create, including the one that warms a prewarmed spare — a
+ *    spare's row carries `spare: true`, and `claimSpareWorktree` is what
+ *    clears it. A restart is `recordWorktreeResumed`, an UPDATE.
  *  - Everything else is an UPDATE, which no-ops for a row that doesn't
  *    exist. That is what keeps worktrees from a foreign data dir invisible
  *    without a single existence check.
@@ -74,17 +77,13 @@ export interface WorktreeRow {
   mode?: AgentMode
 }
 
-/** Fields `recordWorktreeCreated` stamps on a fresh (or restarted) worktree. */
+/** Fields `recordWorktreeCreated` stamps on a fresh worktree. */
 export interface WorktreeCreatedInput {
   projectSlug: string
   worktreeId: string
-  /** Branch the worktree forked from. Omitted when resuming onto an
-   *  existing worktree, whose recorded base is left untouched. */
+  /** Branch the worktree forked from. */
   baseBranch?: string
-  /** When the worktree came into being. Defaults to now; the startup
-   *  adoption of pre-existing worktrees passes the transcript's birth time
-   *  instead. Never overwritten by a later re-record, so a restart doesn't
-   *  reset the worktree's age. */
+  /** When the worktree came into being. Defaults to now. */
   createdAt?: Date
   /** Record it as an unclaimed prewarmed spare. Set only by warming; the
    *  flag is never cleared here, because clearing it is a claim and a claim
@@ -128,12 +127,11 @@ const key = (projectSlug: string, worktreeId: string) =>
   and(eq(worktrees.projectSlug, projectSlug), eq(worktrees.worktreeId, worktreeId))
 
 /**
- * Record a worktree as created. Also the restart path: the id is reused, so
- * this re-stamps the live fields and clears the previous life's stop — a
- * restarted worktree must not keep showing as stopped (or as having died).
- * The title and the sidebar group are deliberately left alone; they belong to
- * the worktree, not to one of its lives — which is what puts a restarted
- * worktree back in the group its ghost row was sitting in.
+ * Record a worktree as created — a plain INSERT, because a worktree id is
+ * claimed exactly once. Posting an id that is already taken, in this project
+ * or any other, is a `CONFLICT` that leaves the existing row as it was: an
+ * upsert here re-stamped the live worktree, and the create's own failure
+ * path then tore that worktree down as if it were its own.
  *
  * Throws on a failed write, and callers must treat that as a failed create:
  * a pod with no row is invisible to everything that reads recorded state
@@ -142,57 +140,95 @@ const key = (projectSlug: string, worktreeId: string) =>
  */
 export async function recordWorktreeCreated(input: WorktreeCreatedInput): Promise<void> {
   const db = await getDb()
-  // `createdAt` is deliberately absent here: it belongs to the worktree,
-  // not to the life being started, so a restart keeps the original.
-  const live = {
-    stoppedAt: null,
-    deathReason: null,
-    deathDetail: null,
-    deathSeen: false,
-    ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
-    // Only ever set, never cleared: a claim is what clears it, and it has to
-    // be able to fail loudly (a silently-missed flip would leave a real
-    // worktree looking reapable). A fresh row takes the column default.
-    ...(input.spare === true ? { spare: true } : {}),
-    ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    ...(input.mode !== undefined ? { mode: input.mode } : {}),
-  }
-  await db.insert(worktrees)
+  const rows = await db.insert(worktrees)
     .values({
       projectSlug: input.projectSlug,
       worktreeId: input.worktreeId,
       createdAt: input.createdAt ?? new Date(),
-      ...live,
+      ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
+      // Only ever set here, never cleared: a claim is what clears it, and it
+      // has to be able to fail loudly (a silently-missed flip would leave a
+      // real worktree looking reapable).
+      ...(input.spare === true ? { spare: true } : {}),
+      ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.mode !== undefined ? { mode: input.mode } : {}),
     })
-    .onConflictDoUpdate({
-      target: [worktrees.projectSlug, worktrees.worktreeId],
-      set: live,
-    })
+    .onConflictDoNothing({ target: worktrees.worktreeId })
+    .returning({ worktreeId: worktrees.worktreeId })
+  if (!rows[0]) {
+    throw new ServerError('CONFLICT', `worktree id ${input.worktreeId} is already in use`)
+  }
 }
 
 /**
- * Turn an unclaimed spare into a worktree: clear the flag, and stamp the
- * base branch the claim resolved.
+ * Record a stopped worktree as coming back up: re-stamp the live fields and
+ * clear the previous life's stop — a restarted worktree must not keep showing
+ * as stopped (or as having died). `createdAt`, the title and the sidebar
+ * group are deliberately left alone; they belong to the worktree, not to one
+ * of its lives — which is what puts a restarted worktree back in the group
+ * its ghost row was sitting in.
  *
- * The one spare write a caller must be able to fail on, and the reason it is
- * not folded into `recordWorktreeCreated`'s upsert. The startup sweep
+ * Never inserts. A stop keeps its row, so a restartable worktree always has
+ * one; a pod whose row is missing is one yaac has no record of (a reset or
+ * restored DB), and `NOT_FOUND` is the right answer for it.
+ */
+export async function recordWorktreeResumed(
+  input: Pick<WorktreeCreatedInput, 'projectSlug' | 'worktreeId' | 'permissionMode' | 'model' | 'mode'>,
+): Promise<void> {
+  const db = await getDb()
+  const rows = await db.update(worktrees).set({
+    stoppedAt: null,
+    deathReason: null,
+    deathDetail: null,
+    deathSeen: false,
+    ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.mode !== undefined ? { mode: input.mode } : {}),
+  }).where(key(input.projectSlug, input.worktreeId))
+    .returning({ worktreeId: worktrees.worktreeId })
+  if (!rows[0]) {
+    throw new ServerError('NOT_FOUND', `worktree ${input.worktreeId} has no record to resume`)
+  }
+}
+
+/**
+ * Turn an unclaimed spare into a worktree: clear the flag, and stamp what the
+ * claimant is handed — the base branch the claim resolved and the launch the
+ * agent now runs (posture, mode, model), with no stop or death from before.
+ * An UPDATE of the spare's own row, never a second insert: warming claimed
+ * the id, and this hands that row over.
+ *
+ * The one spare write a caller must be able to fail on. The startup sweep
  * DELETES a checkout on the strength of `spare = true`, so a silently-lost
  * flip would leave a real worktree — one a user is about to be handed —
  * marked reapable, and the next server start would take their work with it.
- * So this throws where every other spare write shrugs; the claim runs it
- * before touching the spare, and a failure costs nothing but a cold create.
+ * So this throws where every other spare write shrugs — including when no
+ * unclaimed spare row matched — and the claim runs it before touching the
+ * spare, so a failure costs nothing but a cold create.
  */
 export async function claimSpareWorktree(
   projectSlug: string,
   worktreeId: string,
-  baseBranch?: string,
+  claim: Pick<WorktreeCreatedInput, 'baseBranch' | 'permissionMode' | 'model' | 'mode'> = {},
 ): Promise<void> {
   const db = await getDb()
-  await db.update(worktrees).set({
+  const rows = await db.update(worktrees).set({
     spare: false,
-    ...(baseBranch !== undefined ? { baseBranch } : {}),
-  }).where(key(projectSlug, worktreeId))
+    stoppedAt: null,
+    deathReason: null,
+    deathDetail: null,
+    deathSeen: false,
+    ...(claim.baseBranch !== undefined ? { baseBranch: claim.baseBranch } : {}),
+    ...(claim.permissionMode !== undefined ? { permissionMode: claim.permissionMode } : {}),
+    ...(claim.model !== undefined ? { model: claim.model } : {}),
+    ...(claim.mode !== undefined ? { mode: claim.mode } : {}),
+  }).where(and(key(projectSlug, worktreeId), eq(worktrees.spare, true)))
+    .returning({ worktreeId: worktrees.worktreeId })
+  if (!rows[0]) {
+    throw new ServerError('CONFLICT', `worktree ${worktreeId} is not an unclaimed spare`)
+  }
+  notifyWorktreeListChanged()
 }
 
 /**
@@ -488,21 +524,16 @@ export async function listWorktreeRows(projectSlug?: string): Promise<WorktreeRo
 }
 
 /**
- * Resolve a worktree by id or unique id prefix, across projects — what
- * restart uses to find a stopped worktree once its pod is gone. A prefix is matched in JS rather than as a LIKE pattern, so
- * user-supplied wildcards stay inert.
+ * A worktree's row by its exact id, in whichever project holds it — ids are
+ * unique across projects. Unclaimed spares are not worktrees and never match.
+ * Prefix expansion is `resolveWorktree`'s, in domain, never this.
  */
-export async function findWorktreeRow(idOrPrefix: string): Promise<WorktreeRow | undefined> {
-  if (idOrPrefix === '') return undefined
-  // Exact id is the overwhelmingly common case (the webapp and every
-  // internal caller pass a full id) and answers from the index; only a
-  // human-typed prefix pays for the scan.
+export async function findWorktreeRow(worktreeId: string): Promise<WorktreeRow | undefined> {
+  if (worktreeId === '') return undefined
   const db = await getDb()
-  const exact = await db.select().from(worktrees)
-    .where(and(eq(worktrees.worktreeId, idOrPrefix), notSpare))
-  if (exact[0]) return toRow(exact[0])
-  const rows = await listWorktreeRows()
-  return rows.find((r) => r.worktreeId.startsWith(idOrPrefix))
+  const rows = await db.select().from(worktrees)
+    .where(and(eq(worktrees.worktreeId, worktreeId), notSpare))
+  return rows[0] ? toRow(rows[0]) : undefined
 }
 
 /** One worktree's row, or undefined. The point read the reaper and any

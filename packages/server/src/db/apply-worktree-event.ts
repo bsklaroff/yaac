@@ -5,6 +5,7 @@ import {
   priorStopOf,
   recordWorktreeCreated,
   recordWorktreeLife,
+  recordWorktreeResumed,
   recordWorktreeStopped,
   restoreWorktreeStop,
   setWorktreeBaseBranch,
@@ -110,14 +111,23 @@ async function applyCreated(event: WorktreeCreated): Promise<void> {
     if (prior) priorStops.set(key, prior)
     else priorStops.delete(key)
   }
+  const launch = {
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(mode !== undefined ? { mode } : {}),
+  }
+  // A fresh create claims the id — an INSERT that refuses one already taken —
+  // and a resume re-stamps the row it must already have.
+  if (resume) {
+    await recordWorktreeResumed({ projectSlug, worktreeId, ...launch })
+    return
+  }
   await recordWorktreeCreated({
     projectSlug,
     worktreeId,
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(event.spare === true ? { spare: true } : {}),
-    ...(permissionMode !== undefined ? { permissionMode } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(mode !== undefined ? { mode } : {}),
+    ...launch,
   })
 }
 

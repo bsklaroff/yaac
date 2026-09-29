@@ -52,28 +52,30 @@ describe('rememberWorkspace', () => {
 })
 
 describe('findWorkspace', () => {
-  it('resolves by id, by prefix, and by handle', () => {
+  // Prefix expansion is domain's, over rows; the unit name is this driver's
+  // own. Only the exact worktree id matches.
+  it('resolves by exact id only', () => {
     rememberWorkspace(marker(A))
     expect(findWorkspace(A)?.workspaceId).toBe(A)
-    expect(findWorkspace(A.slice(0, 8))?.workspaceId).toBe(A)
-    expect(findWorkspace(containerlessJobName('demo', A))?.workspaceId).toBe(A)
+    expect(findWorkspace(A.slice(0, 8))).toBeUndefined()
+    expect(findWorkspace(containerlessJobName('demo', A))).toBeUndefined()
+    expect(findWorkspace('')).toBeUndefined()
   })
 
-  it('answers nothing for a prefix two workspaces share', () => {
-    // Resolving to an arbitrary one would send an exec — or a teardown — at
-    // the wrong worktree.
-    rememberWorkspace(marker('0000aaaa-0000-4000-8000-000000000001'))
-    rememberWorkspace(marker('0000aaaa-0000-4000-8000-000000000002'))
-    expect(findWorkspace('0000aaaa')).toBeUndefined()
+  it('passes over an unclaimed spare, which is not a worktree', () => {
+    rememberWorkspace(marker(A, { prewarm: true }))
+    expect(findWorkspace(A)).toBeUndefined()
   })
 })
 
 describe('findForTeardown', () => {
-  it('hands back the unit name a stop has to address', () => {
-    rememberWorkspace(marker(A))
-    expect(findForTeardown(A)).toEqual({
+  it('hands back the unit name a stop has to address, a spare only when asked', () => {
+    rememberWorkspace(marker(A, { prewarm: true }))
+    expect(findForTeardown(A, { spares: true })).toEqual({
       projectSlug: 'demo', workspaceId: A, unitName: containerlessJobName('demo', A),
     })
+    expect(findForTeardown(A)).toBeUndefined()
+    expect(findForTeardown(A.slice(0, 8), { spares: true })).toBeUndefined()
   })
 })
 

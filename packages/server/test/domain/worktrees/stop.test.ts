@@ -49,6 +49,23 @@ afterEach(async () => {
 })
 
 describe('stopWorktree', () => {
+  // An unclaimed spare is not a worktree: its exact id reaches the runtime
+  // (no row knows it), but a stop never asks the runtime for spares.
+  it('does not stop an unclaimed spare, even by its exact id', async () => {
+    const asked: Array<{ spares?: boolean } | undefined> = []
+    installFakeWorktreeDriver({
+      findForTeardown: (id, opts) => {
+        asked.push(opts)
+        return Promise.resolve(id === 'spare1' && opts?.spares === true
+          ? { workspaceId: 'spare1', projectSlug: 'proj', unitName: 'yaac-proj-spare1' }
+          : undefined)
+      },
+    })
+    await expect(stopWorktree('spare1')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(asked).toEqual([undefined])
+    expect(cleanupWorktreeDetached).not.toHaveBeenCalled()
+  })
+
   it('tears the worktree down, then starts what was queued after it — only the top of a chain', async () => {
     const child = await queueWorktree('proj', { parent: 'parent', prompt: 'child', tool: 'claude' }, 'user')
     const sibling = await queueWorktree('proj', { parent: 'parent', prompt: 'sibling', tool: 'claude' }, 'user')

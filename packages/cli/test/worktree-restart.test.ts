@@ -93,7 +93,8 @@ describe('resolveRestartTarget', () => {
     expect(info.tool).toBe('opencode')
   })
 
-  it('resolves from a live pod by session id prefix', async () => {
+  it('resolves from a live pod by a worktree-id prefix its row expands', async () => {
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'abcd1234' })
     listSpy.mockResolvedValueOnce([pod()])
     const info = await resolveRestartTarget('abcd')
     expect(info.worktreeId).toBe('abcd1234')

@@ -748,8 +748,8 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 60_000)
 
     it('forwards exactly the ports --port names, on the local port it names', async () => {
-      // The escape hatch from what the server offers: a port it has not
-      // heard of, or one wanted on a different local number. Nothing is
+      // The escape hatch from what the server offers: a declared port on a
+      // different local number, or one the list did not name. Nothing is
       // polled here — the user said what they wanted.
       const explicit = startForwardCli(worktreeId, '--port', '8080:20500', '-p', '8081')
       try {
@@ -764,6 +764,20 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         expect(res.body).toBe('hello ipv4')
       } finally {
         await explicit.stop()
+      }
+    }, 60_000)
+
+    it('refuses to tunnel onto a port the worktree neither declared nor surfaced', async () => {
+      // 10300 is streamd, yaac's own in-pod control surface, and it IS
+      // listening — so this is the dial's check, not a connection refused
+      // inside the pod. The tunnel closes with the dial-failed code.
+      const stray = startForwardCli(worktreeId, '--port', '10300:20501')
+      try {
+        await stray.ready(1)
+        await expect(httpGet('http://127.0.0.1:20501/')).rejects.toThrow()
+        expect(stray.output()).toMatch(/dial failed/)
+      } finally {
+        await stray.stop()
       }
     }, 60_000)
 
@@ -2201,7 +2215,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     it('mounts a pasted image where the pod reads it, at the path the pane pastes', async () => {
       const res = await fetch(`${base}/worktree/${worktreeId}/attachments`, {
         method: 'POST',
-        headers: { ...auth, 'Content-Type': 'image/png' },
+        headers: { 'Content-Type': 'image/png' },
         body: E2E_PNG,
       })
       expect(res.status).toBe(200)

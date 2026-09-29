@@ -1,5 +1,5 @@
 import net from 'node:net'
-import { MAX_SURFACED_PORTS, isForwardablePort } from '#drivers/shared'
+import { MAX_SURFACED_PORTS, isForwardablePort } from '#lib/port-policy'
 import { descendantPids, listeningPorts, type Listener } from './host'
 import { listWorkspaces, tmuxPidOf } from './registry'
 import type { Duplex } from 'node:stream'
@@ -105,8 +105,8 @@ export function forgetPorts(worktreeId: string): void {
  * denylist on top — and dialling the recorded address rather than a
  * guessed loopback is what keeps a stranger on the OTHER loopback family
  * of the same port number from answering in the worktree's place. The
- * pod driver dials anything, because a pod is a sandbox; this host is
- * the user's machine. (A yaac-dev worktree's inner `yaac server` IS in
+ * pod driver also dials a declared port nothing listens on yet, because a
+ * pod is a sandbox; this host is the user's machine. (A yaac-dev worktree's inner `yaac server` IS in
  * its tree, so that port surfaces and is dialable — as under k8s.)
  *
  * The set is the LAST sweep's, not a live one: a port the worktree

@@ -40,7 +40,8 @@ vi.mock('@yaac/server/domain/worktrees/stop', () => ({
   stopWorktree: vi.fn(),
 } satisfies Partial<typeof sessionDeleteModule>))
 
-vi.mock('@yaac/server/domain/worktrees/restart', () => ({
+vi.mock('@yaac/server/domain/worktrees/restart', async () => ({
+  ...await vi.importActual<typeof sessionRestartModule>('@yaac/server/domain/worktrees/restart'),
   restartWorktree: vi.fn(),
 } satisfies Partial<typeof sessionRestartModule>))
 
@@ -779,6 +780,41 @@ describe('write routes', () => {
       expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({ worktreeId: id }))
     })
 
+    // A worktree id is claimed once. Reusing a live one used to re-stamp its
+    // row and then, when the create failed on the existing branch, tear the
+    // live worktree down as if it were the create's own.
+    it('answers 409 for an id a worktree already holds, touching nothing', async () => {
+      const id = '22222222-2222-4222-8222-222222222222'
+      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: id, baseBranch: 'main' })
+      const before = (await getProjectWorktreeRows('demo')).get(id)
+      const app = buildApp({ buildId: 'test' })
+
+      for (const project of ['demo', 'elsewhere']) {
+        const res = await app.request('/worktree/create', rawInit({
+          method: 'POST', body: JSON.stringify({ project, worktreeId: id }),
+        }))
+        expect(res.status, project).toBe(409)
+      }
+
+      expect(mockCreateWorktree).not.toHaveBeenCalled()
+      expect(listProvisioning()).toEqual([])
+      expect((await getProjectWorktreeRows('demo')).get(id)).toEqual(before)
+    })
+
+    // Still provisioning: no row yet, but the id is taken all the same.
+    it('answers 409 for an id a create is still provisioning, leaving its row alone', async () => {
+      const id = '33333333-3333-4333-8333-333333333333'
+      registerProvisioning({ worktreeId: id, projectSlug: 'demo', tool: 'claude', kind: 'create' })
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/create', rawInit({
+        method: 'POST', body: JSON.stringify({ project: 'demo', worktreeId: id }),
+      }))
+      expect(res.status).toBe(409)
+      expect(mockCreateWorktree).not.toHaveBeenCalled()
+      expect(listProvisioning()).toEqual([expect.objectContaining({ worktreeId: id, message: 'Starting…' })])
+      expect(listProvisioning()[0].error).toBeUndefined()
+    })
+
     it('rejects a non-uuid worktreeId with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/worktree/create', rawInit({
@@ -817,7 +853,17 @@ describe('write routes', () => {
       expect(res.status).toBe(400)
     })
 
-    it('streams progress and a result event from restartWorktree', async () => {
+    it('answers 404, before any stream, for an id no worktree has', async () => {
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/restart', rawInit({
+        method: 'POST', body: JSON.stringify({ worktreeId: 'nope' }),
+      }))
+      expect(res.status).toBe(404)
+      expect(mockRestartSession).not.toHaveBeenCalled()
+    })
+
+    it('streams progress and a result event from restartWorktree, by the resolved id', async () => {
+      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sess-x' })
       mockRestartSession.mockImplementation((_id, opts) => {
         opts?.onProgress?.('Stopping session job yaac-demo-sess-x...')
         opts?.onProgress?.('Reusing existing worktree at /wt/sess-x')
@@ -830,9 +876,11 @@ describe('write routes', () => {
         })
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      // A prefix, as the CLI sends what a user typed: the route resolves it
+      // and keys the restart on the full id.
       const res = await client.worktree.restart.$post({
         json: {
-          worktreeId: 'sess-x',
+          worktreeId: 'sess',
         },
       })
       expect(res.status).toBe(200)
@@ -859,14 +907,28 @@ describe('write routes', () => {
     })
 
     it('emits a terminal error event when restartWorktree throws', async () => {
-      mockRestartSession.mockRejectedValue(new ServerError('NOT_FOUND', 'missing'))
+      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sess-y' })
+      mockRestartSession.mockRejectedValue(new ServerError('INTERNAL', 'image pull failed'))
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.restart.$post({ json: { worktreeId: 'nope' } })
+      const res = await client.worktree.restart.$post({ json: { worktreeId: 'sess-y' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
       expect(events).toEqual([
-        { type: 'error', error: { code: 'NOT_FOUND', message: 'missing' } },
+        { type: 'error', error: { code: 'INTERNAL', message: 'image pull failed' } },
       ])
+    })
+
+    // One restart at a time: a second on a worktree still coming up is
+    // refused, not run alongside it on the same id.
+    it('answers 409 for a worktree already provisioning', async () => {
+      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sess-z' })
+      registerProvisioning({ worktreeId: 'sess-z', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/restart', rawInit({
+        method: 'POST', body: JSON.stringify({ worktreeId: 'sess-z' }),
+      }))
+      expect(res.status).toBe(409)
+      expect(mockRestartSession).not.toHaveBeenCalled()
     })
   })
 

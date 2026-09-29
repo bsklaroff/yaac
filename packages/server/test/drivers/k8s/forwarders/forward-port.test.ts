@@ -7,10 +7,12 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
 
 vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
   addWorktreeForwarder: vi.fn(),
+  getWorktreePorts: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('#drivers/k8s/forwarders/port-detector', () => ({
   getUnforwardedPorts: vi.fn().mockReturnValue([]),
+  isDetectedPort: vi.fn().mockReturnValue(false),
 }))
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
@@ -23,14 +25,16 @@ vi.mock('#drivers/k8s/substrate/stream-relay', () => ({
 
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { listWorktreePods, type PodInfo } from '#drivers/k8s/substrate/pods'
-import { addWorktreeForwarder } from '#drivers/k8s/forwarders/port-forwarders'
-import { getUnforwardedPorts } from '#drivers/k8s/forwarders/port-detector'
+import { addWorktreeForwarder, getWorktreePorts } from '#drivers/k8s/forwarders/port-forwarders'
+import { getUnforwardedPorts, isDetectedPort } from '#drivers/k8s/forwarders/port-detector'
 import { relayDial } from '#drivers/k8s/substrate/stream-relay'
 import { dialWorkspacePort, forwardWorktreePort } from '#drivers/k8s/forwarders/forward-port'
 
 const mockList = vi.mocked(listWorktreePods)
 const mockAdd = vi.mocked(addWorktreeForwarder)
 const mockDetected = vi.mocked(getUnforwardedPorts)
+const mockDeclared = vi.mocked(getWorktreePorts)
+const mockIsDetected = vi.mocked(isDetectedPort)
 const mockRelayDial = vi.mocked(relayDial)
 
 const target = { workspaceId: 'sess-1', projectSlug: 'proj', jobName: 'yaac-proj-sess-1' }
@@ -56,6 +60,8 @@ beforeEach(() => {
   mockDetected.mockReturnValue([8090])
   mockAdd.mockResolvedValue({ containerPort: 8090, hostPort: 8090 })
   mockList.mockResolvedValue([])
+  mockDeclared.mockReturnValue([])
+  mockIsDetected.mockReturnValue(false)
 })
 
 describe('forwardWorktreePort', () => {
@@ -106,10 +112,11 @@ describe('forwardWorktreePort', () => {
 })
 
 describe('dialWorkspacePort', () => {
-  it('opens a tcp stream on the named port, and hands the caller the stream itself', async () => {
+  it('opens a tcp stream on a declared port, and hands the caller the stream itself', async () => {
     // One dial per forwarded TCP connection — the kubectl shape — so there
     // is nothing to register and nothing to hand back but the stream: the
     // caller destroying it is what ends the pair.
+    mockDeclared.mockReturnValue([{ containerPort: 5173, hostPort: 5173 }])
     const stream = { destroy: vi.fn() }
     mockRelayDial.mockResolvedValue(stream as never)
 
@@ -117,14 +124,14 @@ describe('dialWorkspacePort', () => {
     expect(mockRelayDial).toHaveBeenCalledWith('sess-1', { kind: 'tcp', port: 5173 })
   })
 
-  it('names a port nothing surfaced as an unforwarded listener', async () => {
-    // Deliberately unlike `forwardWorktreePort`: by the time a client
-    // dials, the decision that this port is forwarded has been made and
-    // recorded, and re-deciding it would break a live forward the moment
-    // its dev server restarted.
-    mockDetected.mockReturnValue([])
+  it('dials a detected listener nobody declared, but never an arbitrary port', async () => {
     mockRelayDial.mockResolvedValue({ destroy: vi.fn() } as never)
-
+    mockIsDetected.mockImplementation((_id, port) => port === 3000)
     await expect(dialWorkspacePort('sess-1', 3000)).resolves.toBeDefined()
+
+    // yaac's own relay port is neither declared nor surfaced: the tunnel
+    // must not become a way into the pod's control surface.
+    await expect(dialWorkspacePort('sess-1', 10260)).rejects.toThrow(/neither declared nor a detected/)
+    expect(mockRelayDial).toHaveBeenCalledTimes(1)
   })
 })

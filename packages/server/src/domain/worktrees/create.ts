@@ -946,19 +946,6 @@ export async function createWorktree(
     options.resumeAgentSessions !== undefined && options.resumeAgentSessions.length > 0
       ? options.resumeAgentSessions
       : [{ agentSessionId: worktreeId, tool }]
-  const wtDir = worktreeDir(projectSlug, worktreeId)
-
-  // Pre-create the worktree dir so the Job's /workspace hostPath (type
-  // Directory) mounts on first attempt: the Job is applied while the
-  // checkout below may still be running.
-  await fs.mkdir(wtDir, { recursive: true })
-  // The ephemeral-module dirs land *inside* /workspace, so they are
-  // directories on the host worktree. Create them here — before either
-  // provisioning leg starts — rather than leaving them to the pod: the pod
-  // creates them root-owned 0700 whenever it happens to win the race with
-  // the checkout, and either way the checkout must cope with a destination
-  // that is not empty (see addWorktree, which is what makes that legal).
-  const moduleDirs = await prepareModuleDirs(wtDir, resolveEphemeralModulesPaths(config))
 
   // Record the worktree BEFORE anything is provisioned, so no pod can ever
   // exist without a row — a rowless pod is invisible to every path that
@@ -967,6 +954,12 @@ export async function createWorktree(
   // A failure to record therefore fails the create before it has built
   // anything, and a create that fails later reports that too (see
   // `reportCreateFailed`).
+  //
+  // It is also the claim on the id, which is why it precedes even the
+  // checkout's `mkdir`: a fresh create's insert refuses an id that is
+  // already taken, so a create posting a live worktree's id stops here,
+  // before it has touched that worktree's checkout — and every rollback
+  // below undoes only what this create went on to make.
   //
   // A prewarmed spare is recorded too, flagged `spare`: it is a checkout, a
   // branch and a pod from the moment it is warmed, and the flag is what lets
@@ -989,6 +982,20 @@ export async function createWorktree(
     resume: options.resume,
     ...(options.prewarm === true ? { spare: true } : {}),
   })
+
+  const wtDir = worktreeDir(projectSlug, worktreeId)
+
+  // Pre-create the worktree dir so the Job's /workspace hostPath (type
+  // Directory) mounts on first attempt: the Job is applied while the
+  // checkout below may still be running.
+  await fs.mkdir(wtDir, { recursive: true })
+  // The ephemeral-module dirs land *inside* /workspace, so they are
+  // directories on the host worktree. Create them here — before either
+  // provisioning leg starts — rather than leaving them to the pod: the pod
+  // creates them root-owned 0700 whenever it happens to win the race with
+  // the checkout, and either way the checkout must cope with a destination
+  // that is not empty (see addWorktree, which is what makes that legal).
+  const moduleDirs = await prepareModuleDirs(wtDir, resolveEphemeralModulesPaths(config))
 
   // File it under its group now that the row exists, before provisioning
   // takes its tens of seconds: the group is where the user expects to watch
@@ -1584,12 +1591,13 @@ export async function createWorktree(
     // GLOBAL.
     { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
     { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
-    // NODE-LOCAL: package-manager caches, whose link/stat traffic hates a
-    // network filesystem — and on a host, the project's pnpm store.
-    {
-      source: { kind: 'hostPath', path: cachedPackages },
-      mountPath: CACHED_PACKAGES_CONTAINER_DIR,
-    },
+    // NODE-LOCAL, and a host's only: the project's pnpm store (see the
+    // store env above). A pod keeps its store in its own module dirs, and a
+    // tree every pod of the project could write would be a channel between
+    // them with nothing left to carry.
+    ...(runtime.kind === 'containerless'
+      ? [{ source: { kind: 'hostPath' as const, path: cachedPackages }, mountPath: CACHED_PACKAGES_CONTAINER_DIR }]
+      : []),
     // Pod-local: the tmux server socket. A UNIX socket only rendezvouses
     // within the kernel that bound it, and every consumer (attach, the
     // `tmux -C` status stream, the liveness probe) reaches tmux through
@@ -1712,9 +1720,15 @@ export async function createWorktree(
       // its grace period AND a runtime that could not be reached at all —
       // the same condition that hides a unit hides its absence, so an
       // unreachable runtime is never read as "nothing is there".
+      //
+      // Only a unit of THIS project is taken down. The id's insert already
+      // made this create its only owner, so a foreign unit here would mean
+      // the substrate holds something the rows never granted — not this
+      // create's to destroy either way.
       let podGone: boolean
       try {
-        target ??= await worktreeDriver().findForTeardown(worktreeId)
+        target ??= await worktreeDriver().findForTeardown(worktreeId, { spares: options.prewarm === true })
+        if (target !== undefined && target.projectSlug !== projectSlug) target = undefined
         podGone = target === undefined
           ? true
           : await worktreeDriver().destroy(target, { salvageImages: false, unitOnly })

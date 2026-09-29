@@ -29,7 +29,6 @@ import {
   destroyProjectSubstrate,
   destroyWorkspace,
   detachedTeardownCommand,
-  reapNodeLocal,
 } from './teardown'
 import type { WorktreeDriver } from '#drivers/contract'
 
@@ -84,8 +83,8 @@ export function createContainerlessDriver(): WorktreeDriver {
     stop: () => stopContainerlessDriver(),
     release: () => releaseContainerlessDriver(),
 
-    find: (idOrName) => Promise.resolve(findWorkspace(idOrName)),
-    findForTeardown: (idOrName) => Promise.resolve(findForTeardown(idOrName)),
+    find: (worktreeId) => Promise.resolve(findWorkspace(worktreeId)),
+    findForTeardown: (worktreeId, opts) => Promise.resolve(findForTeardown(worktreeId, opts)),
     list: (projectSlug) => Promise.resolve(listWorkspaces(projectSlug)),
     count: () => Promise.resolve(countWorkspaces()),
     countForProject: (projectSlug) => Promise.resolve(countForProject(projectSlug)),
@@ -188,7 +187,9 @@ export function createContainerlessDriver(): WorktreeDriver {
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
-    reapNodeLocal: (running) => reapNodeLocal(running),
+    // Nothing per-worktree lands in this host's node-local tree: the pnpm
+    // store is the project's, and the module dirs live in the checkout.
+    reapNodeLocal: () => Promise.resolve(),
 
     // Empty forever, and NOT because the feature is missing: this pair is
     // the pull transport, which exists so a sandboxed pod — unable to dial

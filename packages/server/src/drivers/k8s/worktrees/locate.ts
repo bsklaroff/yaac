@@ -21,7 +21,7 @@ import type { RuntimeHandle, TeardownTarget } from '#drivers/contract'
  */
 
 /**
- * Locate a workspace by id, id prefix, or runtime name.
+ * Locate a workspace by its exact worktree id; spares never match.
  *
  * `preferCache` answers from the informer's push-fed view when it is healthy.
  * A MISS still falls through to a live listing rather than concluding the
@@ -35,17 +35,17 @@ import type { RuntimeHandle, TeardownTarget } from '#drivers/contract'
  * rather than consulted.
  */
 export async function findWorkspace(
-  idOrName: string,
+  worktreeId: string,
   opts: { preferCache?: boolean } = {},
 ): Promise<RuntimeHandle | undefined> {
   if (opts.preferCache) {
     const cache = getActiveClusterCache()
     if (cache?.healthy('worktree-pods')) {
-      const hit = findWorktreePod(cache.worktreePods(), idOrName)
+      const hit = findWorktreePod(cache.worktreePods(), worktreeId)
       if (hit) return runtimeHandleFromPod(hit)
     }
   }
-  const pod = findWorktreePod(await listWorkspacePods(), idOrName)
+  const pod = findWorktreePod(await listWorkspacePods(), worktreeId)
   return pod ? runtimeHandleFromPod(pod) : undefined
 }
 
@@ -77,22 +77,27 @@ export async function listWorkspaces(
 }
 
 /**
- * What a stop should address, including a workspace whose Job outlived its
- * pod.
+ * What a stop should address, by exact worktree id, including a workspace
+ * whose Job outlived its pod — and, with `spares`, an unclaimed spare, since
+ * a failed warm tears down its own unit.
  *
  * A pod deleted out-of-band leaves a Job with nothing to match on, and that
  * Job is exactly what still needs deleting — so a pod miss falls through to
- * the Job listing with the same match semantics. Job names match exactly,
- * never by prefix: every name starts with `yaac-`, so a short prefix would
- * resolve to an arbitrary workspace.
+ * the Job listing.
  */
 export async function findWorkspaceForTeardown(
-  idOrName: string,
+  worktreeId: string,
+  opts: { spares?: boolean } = {},
 ): Promise<TeardownTarget | undefined> {
-  const pod = findWorktreePod(await listWorkspacePods(), idOrName)
+  const pods = await listWorkspacePods()
+  const pod = findWorktreePod(pods, worktreeId, opts)
   if (pod) {
     return { projectSlug: pod.projectSlug, workspaceId: pod.worktreeId, unitName: pod.jobName }
   }
+
+  // A spare's pod is what says it is one; with the pod skipped as a spare,
+  // its Job must not answer in its place.
+  if (pods.some((p) => p.worktreeId === worktreeId)) return undefined
 
   let jobs
   try {
@@ -100,11 +105,7 @@ export async function findWorkspaceForTeardown(
   } catch (err) {
     throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
-  const job = jobs.find((j) =>
-    j.worktreeId === idOrName
-    || j.jobName === idOrName
-    || j.worktreeId.startsWith(idOrName),
-  )
+  const job = jobs.find((j) => j.worktreeId === worktreeId)
   return job
     ? { projectSlug: job.projectSlug, workspaceId: job.worktreeId, unitName: job.jobName }
     : undefined
