@@ -58,8 +58,7 @@ export function ambientDataDir(): string {
 
 /**
  * The one physical directory this yaac install owns. It is the INSTALL
- * IDENTITY (1:1 with the server lock — hashed into the cluster label and
- * the web-session cookie name), and on a host the parent of the three
+ * IDENTITY (1:1 with the server lock — hashed into the cluster label), and on a host the parent of the three
  * tier folders below. Inside the server pod it is an identity string only:
  * the tiers are mounts there, and nothing is at this path.
  *

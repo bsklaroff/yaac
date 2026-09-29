@@ -59,12 +59,15 @@ import { firstSnapshot } from '@yaac/test-utils/events-ws'
 
 let testEnv: YaacTestEnv
 let server: SpawnedServer
+const TAILNET_HOST = 'srv.tailnet.ts.net'
 
 beforeAll(async () => {
   await requirePodman()
   await requireCluster()
   testEnv = await createYaacTestEnv()
-  server = await spawnYaacServer(testEnv.env)
+  // A tailnet name admitted, so the identity refusal below can be asked
+  // for rather than stopping at the Host guard.
+  server = await spawnYaacServer({ ...testEnv.env, YAAC_ALLOWED_HOSTS: TAILNET_HOST })
   await setTestGitIdentity(testEnv.env)
 })
 
@@ -89,7 +92,7 @@ async function waitFor(
 }
 
 /** Open a WS against the server, collecting text + binary frames. */
-function openWs(url: string, headers: Record<string, string>): {
+function openWs(url: string, headers: Record<string, string> = {}): {
   ws: WebSocket
   text: string[]
   binary: () => string
@@ -158,11 +161,8 @@ async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
  * seeds a project. Nothing in this describe writes server state.
  */
 describe('empty state (must run before any state is seeded)', () => {
-  it('GET /events with a bearer sends a snapshot frame on connect', async () => {
-    const { ws, text, opened } = openWs(
-      `ws://127.0.0.1:${server.lock.port}/events`,
-      { authorization: `Bearer ${server.lock.secret}` },
-    )
+  it('GET /events sends a snapshot frame on connect', async () => {
+    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/events`)
     await opened
     // The snapshot is pushed immediately after the upgrade.
     for (let i = 0; i < 50 && text.length === 0; i++) await sleep(100)
@@ -191,23 +191,22 @@ describe('empty state (must run before any state is seeded)', () => {
 /**
  * Wire-level coverage for the server's WebSocket surface:
  *  - /events sends a `snapshot` frame on connect (see the empty-state
- *    describe above) and rejects missing auth.
+ *    describe above) and refuses a caller it cannot identify.
  *  - /pty/attach reports an error for unknown sessions.
  * The /pty/attach byte round-trip against a real session container lives
  * in worktree-create-suite.test.ts (it needs mock remotes + a session pod).
  */
 describe('server WebSocket surface (real server, no containers)', () => {
-  it('rejects /events without credentials', async () => {
-    const { ws, failed } = openWs(`ws://127.0.0.1:${server.lock.port}/events`, {})
+  it('refuses /events to a caller it cannot identify', async () => {
+    // The tailnet name this file's server admits, reached without
+    // tailscale serve.
+    const { ws, failed } = openWs(`ws://127.0.0.1:${server.lock.port}/events`, { host: TAILNET_HOST })
     expect(await failed).toBe(401)
     ws.close()
   })
 
   it('/pty/attach reports an error frame for an unknown session', async () => {
-    const { ws, text, opened } = openWs(
-      `ws://127.0.0.1:${server.lock.port}/pty/attach?id=definitely-bogus`,
-      { authorization: `Bearer ${server.lock.secret}` },
-    )
+    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/pty/attach?id=definitely-bogus`)
     await opened
     const closed = new Promise<void>((r) => ws.once('close', () => r()))
     await closed
@@ -230,7 +229,6 @@ describe('server WebSocket surface (real server, no containers)', () => {
 describe('provisioning sessions in the server snapshot (real server, no containers)', () => {
   it('surfaces a create as a provisioning entry, survives a reconnect, then dismisses', async () => {
     const base = `http://127.0.0.1:${server.lock.port}`
-    const auth: Record<string, string> = { authorization: `Bearer ${server.lock.secret}` }
     const worktreeId = crypto.randomUUID()
 
     // A create against a non-existent project: the route registers the
@@ -238,7 +236,7 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     // the entry is marked failed (kept until dismissed).
     const res = await fetch(`${base}/worktree/create`, {
       method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ project: 'ghost-project', tool: 'claude', worktreeId }),
     })
     expect(res.status).toBe(200)
@@ -248,12 +246,12 @@ describe('provisioning sessions in the server snapshot (real server, no containe
 
     // Reconnect (as a reloaded browser would) — the snapshot must still carry
     // the provisioning entry, with its kind, a createdAt, and the error.
-    let snap = await firstSnapshot(server.lock.port, server.lock.secret)
+    let snap = await firstSnapshot(server.lock.port)
     let entry = snap.provisioning.find((p) => p.worktreeId === worktreeId)
     // Give the fail-after-reject a beat if the very first reconnect raced it.
     for (let i = 0; i < 20 && !entry?.error; i++) {
       await sleep(100)
-      snap = await firstSnapshot(server.lock.port, server.lock.secret)
+      snap = await firstSnapshot(server.lock.port)
       entry = snap.provisioning.find((p) => p.worktreeId === worktreeId)
     }
     expect(entry).toBeDefined()
@@ -265,11 +263,10 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     // Dismiss drops it from the server registry → out of the snapshot.
     const dismiss = await fetch(`${base}/worktree/provisioning/${worktreeId}/dismiss`, {
       method: 'POST',
-      headers: auth,
     })
     expect(dismiss.status).toBe(204)
 
-    const after = await firstSnapshot(server.lock.port, server.lock.secret)
+    const after = await firstSnapshot(server.lock.port)
     expect(after.provisioning.some((p) => p.worktreeId === worktreeId)).toBe(false)
   }, 30_000)
 })
@@ -664,10 +661,7 @@ describe('with seeded projects', () => {
       for (let i = 0; i < 2; i++) {
         const res = await fetch(`http://127.0.0.1:${server.lock.port}/worktree/group/create`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${server.lock.secret}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ projectSlug: GRP_SLUG, name: 'twin' }),
         })
         expect(res.ok).toBe(true)

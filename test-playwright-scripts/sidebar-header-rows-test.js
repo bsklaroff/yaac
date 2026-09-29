@@ -14,19 +14,16 @@
  *
  * Drives the Vite dev server (`pnpm --filter @yaac/frontend dev`, port 1420),
  * which serves live source and proxies /auth,/project,/events,... to the
- * running yaac server. A one-time token is minted over the server's API
- * using the lock secret and exchanged for the session cookie.
+ * running yaac server. Loopback needs no credential.
  *
  * Run: node test-playwright-scripts/sidebar-header-rows-test.js
  * (set SCREENSHOT_DIR to capture the sidebar). Needs a running server
- * (`yaac server start`) and the dev server on :1420; reads port/secret from
- * $YAAC_DATA_DIR/.server.lock (or ~/.yaac). (playwright is resolved from the
+ * (`yaac server start`) and the dev server on :1420. (playwright is resolved from the
  * global npm root; browsers live under /opt/playwright-browsers)
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
@@ -40,17 +37,6 @@ function requirePlaywright() {
   }
 }
 
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
-}
-
 let failures = 0
 function check(name, cond, detail = '') {
   const mark = cond ? 'PASS' : 'FAIL'
@@ -61,27 +47,14 @@ function check(name, cond, detail = '') {
 const APP_URL = process.env.APP_URL ?? 'http://localhost:1420'
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR
 
-async function mintToken(lock, body) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 const { chromium } = requirePlaywright()
-const lock = readServerLock()
 const browser = await chromium.launch()
 try {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  const token = await mintToken(lock, { kind: 'one-time' })
-  await page.goto(`${APP_URL}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='))
+  await page.goto(`${APP_URL}/`)
 
   // The seeded env has a single project → auto-selected. Wait for its header.
   const aside = page.locator('aside').first()

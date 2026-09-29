@@ -1,21 +1,36 @@
 /**
  * Boot orchestration: resolve which server this launch should land on,
- * mint a one-time exchange token, and hand back the authed URL to load —
- * `<origin>/?token=…`, the URL the start banner prints. The SPA trades the
- * token for its session cookie at POST /auth/web-session; from then on the
- * window is a plain browser on the server origin, exactly like the webapp
- * (the origin IS the context).
+ * check that it answers and will say who this device is (`GET /whoami`),
+ * and hand back its origin to load. From then on the window is a plain
+ * browser on the server origin, exactly like the webapp (the origin IS the
+ * context), identified by the server from each request as any browser is.
  *
  * The shell never starts a server. Every server is reached the same way —
- * the origin and token this machine has registered in `server.json` — so
- * there is no local case to spawn into, and an unreachable one is a
- * failure the window renders as a picker rather than a spawn (see
- * `#connect-page`). Target resolution and the typed client come verbatim
- * from @yaac/shared/server-api. Deps are injected so every branch
- * unit-tests without Electron or a server.
+ * the origin this machine has registered in `server.json` — so there is no
+ * local case to spawn into, and an unreachable one is a failure the window
+ * renders as a picker rather than a spawn (see `#connect-page`). Target
+ * resolution and the typed client come verbatim from
+ * @yaac/shared/server-api. Deps are injected so every branch unit-tests
+ * without Electron or a server.
  */
-import { isLoopbackOrigin, type ServerTarget } from '@yaac/shared/server-api'
+import {
+  getApiClient, isLoopbackOrigin, type ApiClientOptions, type ServerTarget,
+} from '@yaac/shared/server-api'
+import type { Principal } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
+
+/**
+ * Ask the selected server who this device is, on the shared typed client —
+ * minus the build-skew warning (`warnOnBuildSkew: false`): the shell is a
+ * pure client with no build identity of its own. Rejects when the server
+ * is unreachable or refuses to identify this device, with the server's
+ * own message.
+ */
+export async function probeIdentity(opts: ApiClientOptions = {}): Promise<Principal> {
+  // Forced off, not defaulted: the shell ships no server code, so no
+  // caller of this package ever has a build id to compare.
+  return getApiClient({ ...opts, warnOnBuildSkew: false }).whoami.$get()
+}
 
 export interface FlowDeps {
   /** @yaac/shared resolveServerTarget: throws when no server is selected. */
@@ -27,15 +42,14 @@ export interface FlowDeps {
    * the window.
    */
   ensureAuthDaemon(target: ServerTarget): Promise<void>
-  /** Mint the one-time exchange token (see #mint); throws with a descriptive message. */
-  mintToken(): Promise<string>
+  /** `probeIdentity`; throws with a descriptive message. */
+  probeIdentity(): Promise<unknown>
   onStatus(text: string): void
   /**
    * Base URL to load in the window instead of the server origin — the
-   * `desktop:hot` dev flow points it at Vite (:1420), which proxies /auth (and
-   * the rest of the API) back to the server so the token exchange stays
-   * same-origin. The server target itself still resolves normally (mint talks
-   * to the real server).
+   * `desktop:hot` dev flow points it at Vite (:1420), which proxies the API
+   * back to the server. The server target itself still resolves normally
+   * (the identity probe talks to the real server).
    */
   rendererBaseUrl?: string
 }
@@ -69,12 +83,11 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
   void deps.ensureAuthDaemon(target).catch(() => { /* best-effort */ })
 
   deps.onStatus(`Connecting to ${target.baseUrl}…`)
-  let token: string
   try {
-    token = await deps.mintToken()
+    await deps.probeIdentity()
   } catch (err) {
-    // Unreachable, or the token was rejected — the client's own message
-    // says which, verbatim. The hint names a command only for a server on
+    // Unreachable, or this device was not identified — the client's own
+    // message says which, verbatim. The hint names a command only for a server on
     // THIS machine, where there is one to name: this page is now the whole
     // window for a desktop-only user, so it is where they learn how to
     // bring their own server back.
@@ -89,16 +102,11 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
     })
   }
 
-  // Trailing slashes stripped so both origin shapes compose with the /?token=
-  // suffix (target.baseUrl is already bare).
+  // Trailing slashes stripped so both origin shapes load as `<origin>/`
+  // (target.baseUrl is already bare).
   const base = deps.rendererBaseUrl?.replace(/\/+$/, '') ?? target.baseUrl
   deps.onStatus(`Opening ${base}…`)
-  return { ok: true, url: buildWebappUrl(base, token) }
-}
-
-/** The token is hex, so encoding is defensive only. */
-export function buildWebappUrl(baseUrl: string, token: string): string {
-  return `${baseUrl}/?token=${encodeURIComponent(token)}`
+  return { ok: true, url: `${base}/` }
 }
 
 function failure(error: LaunchError): FlowResult {

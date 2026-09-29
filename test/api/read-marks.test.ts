@@ -38,7 +38,7 @@ describe('worktree death read-marks', () => {
     await recordWorktreeStopped('one', 'sid-1', { reason: 'oom' })
     expect(await seen('one', 'sid-1')).toBe(false)
 
-    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ buildId: 'test' }))
     const res = await client.worktree['mark-death-seen'].$post({
       json: { projectSlug: 'one', worktreeId: 'sid-1' },
     })
@@ -48,7 +48,7 @@ describe('worktree death read-marks', () => {
   })
 
   it('is a 204 no-op for a session with no row (best-effort)', async () => {
-    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ buildId: 'test' }))
     const res = await client.worktree['mark-death-seen'].$post({
       json: { projectSlug: 'empty', worktreeId: 'ghost' },
     })
@@ -57,7 +57,7 @@ describe('worktree death read-marks', () => {
   })
 
   it('rejects a malformed body', async () => {
-    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ buildId: 'test' }))
     const res = await client.worktree['mark-death-seen'].$post({
       // @ts-expect-error — worktreeId is required
       json: { projectSlug: 'proj' },
@@ -77,7 +77,7 @@ describe('worktree death read-marks', () => {
     await recordWorktreeStopped('bulk', 'sid-3') // user-initiated: never a death
     await recordWorktreeStopped('other', 'sid-4', { reason: 'crashed' })
 
-    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ buildId: 'test' }))
     const res = await client.worktree['mark-all-deaths-seen'].$post({ json: { projectSlug: 'bulk' } })
     expect(res.status).toBe(204)
 
@@ -90,7 +90,7 @@ describe('worktree death read-marks', () => {
   })
 
   it('rejects a mark-all with no project', async () => {
-    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ buildId: 'test' }))
     // @ts-expect-error — projectSlug is required
     const res = await client.worktree['mark-all-deaths-seen'].$post({ json: {} })
     expect(res.status).toBe(400)

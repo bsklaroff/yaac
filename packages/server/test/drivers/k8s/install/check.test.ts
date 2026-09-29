@@ -1302,6 +1302,31 @@ describe('runClusterCheck', () => {
     expect(egress?.detail).toContain('forgery lock is open')
   })
 
+  it('fails the egress check when the deployed proxy has no egress policy', async () => {
+    // No session-pod probe can take this path: it runs through the proxy,
+    // which dials whatever a `*` allowlist names — the kind fronting's node
+    // port included, where the server would take it for its owner. An
+    // install whose proxy predates the policy has exactly this gap, so its
+    // presence is what the gate asserts.
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc' && args[2] === 'yaac-proxy') {
+        return { stdout: '10.96.7.7', stderr: '' }
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'networkpolicy' && args[2] === 'yaac-proxy-egress' ? null : happyGetJson(args),
+    ))
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    const egress = byName(results, 'egress')
+    expect(egress).toMatchObject({ status: 'fail' })
+    expect(egress?.detail).toContain('yaac-proxy-egress')
+    expect(egress?.fix).toContain('yaac server restart')
+  })
+
   it('fails the egress check when a session pod can reach the yaac server', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {

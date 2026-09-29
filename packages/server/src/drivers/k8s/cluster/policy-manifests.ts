@@ -7,12 +7,14 @@ import {
   NETD_LISTENER_PORT_END,
   POD_STREAM_PORT,
   PROXY_APP_NAME,
+  PROXY_EGRESS_NP_NAME,
   PROXY_INGRESS_NP_NAME,
   PROXY_PORT,
   RELAY_PORT,
   ROLE_BUILDER,
   SERVER_APP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
+  SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
   SERVER_POD_PORT,
   WORKTREE_EGRESS_NP_NAME,
@@ -207,16 +209,55 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
 }
 
 /**
+ * Egress rules for a pod that may dial anything EXCEPT the kind fronting's
+ * node port: builder pods, whose `RUN` steps come from agent-editable
+ * Dockerfiles, and the proxy, whose upstream is whatever a worktree's
+ * allowlist names.
+ *
+ * The fronting forwarder is a hostNetwork listener, which no pod policy
+ * covers, and its dial into the server is node-sourced — so the server's
+ * own ingress policy admits whatever reaches it, and a request with a
+ * loopback `Host` that got there would be the server's owner
+ * (docs/remote-hosting.md). The only place to stop a pod is on its way
+ * out: every node address on every port but that one, and everything else
+ * as before. Worktree pods need none of this — their own egress policy
+ * reaches node addresses on the netd listener range alone.
+ */
+export function egressAllButServerFront(nodeCidrs: string[]): Array<Record<string, unknown>> {
+  return [
+    { to: [{ ipBlock: { cidr: '0.0.0.0/0', except: nodeCidrs } }, { ipBlock: { cidr: '::/0' } }] },
+    {
+      to: ipBlocks(nodeCidrs),
+      ports: [
+        { protocol: 'TCP', port: 1, endPort: SERVER_FRONT_PORT - 1 },
+        { protocol: 'TCP', port: SERVER_FRONT_PORT + 1, endPort: 65535 },
+        { protocol: 'UDP', port: 1, endPort: 65535 },
+      ],
+    },
+  ]
+}
+
+/** Proxy EGRESS: its upstream dials, anywhere but the fronting's node port. */
+export function buildProxyEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
+  return np(PROXY_EGRESS_NP_NAME, k8sNamespace(), {
+    podSelector: { matchLabels: { app: PROXY_APP_NAME } },
+    policyTypes: ['Egress'],
+    egress: egressAllButServerFront(nodeCidrs),
+  })
+}
+
+/**
  * Server-pod INGRESS, node half: the API, from the node addresses.
  *
  * Load-bearing, not hardening. The in-cluster server binds `0.0.0.0` (a
- * pod's loopback has no reachable backend) and stays credential-optional on
- * a local install, so the two policies over its pod selector — this one
- * and `buildServerFrontIngressNpManifest` — are what separate an untrusted
- * worktree pod from an unauthenticated API. Together with the worktree
- * egress lockdown they are the whole wall, which is why `yaac cluster
- * check` proves it on every install rather than trusting that it was
- * applied.
+ * pod's loopback has no reachable backend), and a request that names a
+ * loopback Host without passing through `tailscale serve` is its owner
+ * (docs/remote-hosting.md), so the two policies over its pod selector — this
+ * one and `buildServerFrontIngressNpManifest` — are what keep an untrusted
+ * pod from being that owner. Together with the worktree egress lockdown,
+ * and `egressAllButServerFront` for the pods that may dial node addresses,
+ * they are the whole wall, which is why `yaac cluster check` proves it on
+ * every install rather than trusting that it was applied.
  *
  * An explicit allow, not an exclusion: what must never reach the server
  * is a pod, and the honest way to say so is to name nothing pod-shaped —

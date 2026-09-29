@@ -6,6 +6,7 @@ import {
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
 import {
+  buildProxyEgressNpManifest,
   buildServerIngressNpManifest,
   ensureMainRegistry,
   ensureNamespace,
@@ -143,7 +144,14 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     // node's kubelet itself, or it never goes Ready. The fronting half is
     // install's alone — the server never learns what fronts its Service,
     // and it never rolls its own Deployment for the same reason.
-    await kubectlApply(buildServerIngressNpManifest(await nodeIpBlocks()))
+    const nodeCidrs = await nodeIpBlocks()
+    await kubectlApply(buildServerIngressNpManifest(nodeCidrs))
+    // The proxy's egress, which keeps its upstream dials off the kind
+    // fronting's node port, from the same node list. Here as well as in the
+    // proxy's bootstrap because that bootstrap is skipped for a proxy that
+    // is already current — every install whose proxy predates the policy —
+    // and this runs on every server start, which `cluster install` causes.
+    await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
   })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
   // The substrate is usable and nothing is watching yet — the caller's

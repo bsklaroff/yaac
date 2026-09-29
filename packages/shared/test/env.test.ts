@@ -186,7 +186,7 @@ describe('env (configuration)', () => {
       vi.stubEnv('YAAC_WORKTREE_ID', undefined)
       expect(env.worktreeId).toBeUndefined()
       // Blank is unset, so an explicit `YAAC_WORKTREE_ID=` clears it rather
-      // than reading as "some worktree" to the credential gate.
+      // than reading as "some worktree" to the identity rule.
       vi.stubEnv('YAAC_WORKTREE_ID', '  ')
       expect(env.worktreeId).toBeUndefined()
     })
@@ -269,25 +269,16 @@ describe('env (configuration)', () => {
     })
   })
 
-  describe('trustProxy', () => {
-    it('is true only when YAAC_TRUST_PROXY is exactly "1"', () => {
-      vi.stubEnv('YAAC_TRUST_PROXY', '1')
-      expect(env.trustProxy).toBe(true)
-      vi.stubEnv('YAAC_TRUST_PROXY', 'true')
-      expect(env.trustProxy).toBe(false)
-      vi.stubEnv('YAAC_TRUST_PROXY', undefined)
-      expect(env.trustProxy).toBe(false)
-    })
-  })
-
-  describe('requireAuth', () => {
-    it('is true only when YAAC_REQUIRE_AUTH is exactly "1"', () => {
+  describe('requireAuthSet', () => {
+    it('is true for any non-empty YAAC_REQUIRE_AUTH — the tripwire fires on the ask, not its spelling', () => {
       vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
-      expect(env.requireAuth).toBe(true)
+      expect(env.requireAuthSet).toBe(true)
       vi.stubEnv('YAAC_REQUIRE_AUTH', 'true')
-      expect(env.requireAuth).toBe(false)
+      expect(env.requireAuthSet).toBe(true)
+      vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+      expect(env.requireAuthSet).toBe(false)
       vi.stubEnv('YAAC_REQUIRE_AUTH', undefined)
-      expect(env.requireAuth).toBe(false)
+      expect(env.requireAuthSet).toBe(false)
     })
   })
 
@@ -316,16 +307,12 @@ describe('testEnv (test-harness hooks)', () => {
     })
   })
 
-  describe('serverUrlOverride / serverSecretOverride', () => {
-    it('return undefined when unset and the value when set', () => {
+  describe('serverUrlOverride', () => {
+    it('returns undefined when unset and the value when set', () => {
       vi.stubEnv('YAAC_SERVER_URL', undefined)
-      vi.stubEnv('YAAC_SERVER_SECRET', undefined)
       expect(testEnv.serverUrlOverride).toBeUndefined()
-      expect(testEnv.serverSecretOverride).toBeUndefined()
       vi.stubEnv('YAAC_SERVER_URL', 'http://127.0.0.1:8787')
-      vi.stubEnv('YAAC_SERVER_SECRET', 'secret')
       expect(testEnv.serverUrlOverride).toBe('http://127.0.0.1:8787')
-      expect(testEnv.serverSecretOverride).toBe('secret')
     })
   })
 

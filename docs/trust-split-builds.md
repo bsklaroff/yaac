@@ -312,8 +312,8 @@ reattach to, and the next prewarm sweep re-derives what is missing.
 Builder pods are the untrusted principal here, and they must be able to
 push — so **an attacker-authored `RUN` step can write any `repo:tag` in the
 shared registry**. It is unauthenticated `registry:2` with mutable tags and
-no path ACLs, and the builder's egress is necessarily allow-all (builds
-fetch upstream packages). Nothing network-level closes this: the ingress
+no path ACLs, and the builder's egress is necessarily open (builds fetch
+upstream packages). Nothing network-level closes this: the ingress
 lock above pins *which pods* may be callers, not *what a legitimate caller
 may write*. The reachable blast radius is the whole store — the
 yaac-shipped `base`/`tools`/`nestable` content-hash tags, other projects'
@@ -337,9 +337,11 @@ and the trust split that keeps yaac-shipped layers off that path.
 ## Security hardening
 
 - **Builder egress.** Builder pods are excluded from the world-deny
-  NetworkPolicy and carry an explicit allow-all egress
-  NetworkPolicy — strictly better than a host build's unfiltered
-  host-network egress. Optionally routable through the worktree proxy later
+  NetworkPolicy and carry an egress NetworkPolicy that admits everywhere
+  except the kind fronting's node port, where a `RUN` step would reach the
+  server as its owner (docs/server-in-cluster.md "The ingress policy is the
+  wall") — strictly better than a host build's unfiltered host-network
+  egress. Optionally routable through the worktree proxy later
   with the combined CA bundle (see docs/nested-containers.md), the same
   mechanism nested builds already use.
 - **The `yaac.role=builder` label** (which carves builder pods out of the

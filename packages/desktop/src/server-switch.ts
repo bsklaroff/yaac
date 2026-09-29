@@ -10,8 +10,7 @@
  * the way down.
  *
  * The renderer is web content from the server origin, so it is only ever
- * shown origins — `DesktopServerTargets` and the selections carry no
- * tokens — and its IPC payloads are re-validated here
+ * shown origins, and its IPC payloads are re-validated here
  * (`parseServerSelection`). Deps are injected so every branch unit-tests
  * without fs or network.
  */
@@ -24,9 +23,9 @@ export interface ServerSwitchDeps {
   /** @yaac/shared writeServerConfig. */
   writeServerConfig(cfg: ServerConfig): Promise<void>
   /** @yaac/shared withServerSelected. */
-  select(existing: ServerConfig | null, url: string, token: string): ServerConfig
+  select(existing: ServerConfig | null, url: string): ServerConfig
   /** @yaac/shared probeServer — throws a prescriptive error on any failure. */
-  probeServer(origin: string, token: string): Promise<unknown>
+  probeServer(origin: string): Promise<unknown>
   /** @yaac/shared normalizeServerUrl — throws on a non-origin URL. */
   normalizeUrl(raw: string): string
 }
@@ -47,9 +46,9 @@ export async function getServerTargets(deps: ServerSwitchDeps): Promise<DesktopS
 }
 
 /**
- * Point the machine at `sel`. The server is re-probed with its saved token
- * before the config is written, so a dead server or revoked token surfaces
- * as an inline error and the shell stays where it is.
+ * Point the machine at `sel`. The server is re-probed before the config is
+ * written, so a dead server, or one that will not identify this device,
+ * surfaces as an inline error and the shell stays where it is.
  *
  * The already-selected server is probed and re-selected like any other,
  * rather than short-circuited: from the disconnected page, Connect on the
@@ -64,18 +63,17 @@ export async function applyServerSwitch(
   const saved = cfg?.saved.find((s) => s.url === sel.url)
   if (!saved) return { ok: false, error: `unknown server: ${sel.url}` }
   try {
-    await deps.probeServer(saved.url, saved.token)
+    await deps.probeServer(saved.url)
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-  await deps.writeServerConfig(deps.select(cfg, saved.url, saved.token))
+  await deps.writeServerConfig(deps.select(cfg, saved.url))
   return { ok: true }
 }
 
 /** Validate, probe, and select a brand-new server (the desktop `yaac remote set`). */
 export async function addServerRemote(
   rawUrl: string,
-  token: string,
   deps: ServerSwitchDeps,
 ): Promise<DesktopServerOutcome> {
   let origin: string
@@ -85,10 +83,10 @@ export async function addServerRemote(
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
   try {
-    await deps.probeServer(origin, token)
+    await deps.probeServer(origin)
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-  await deps.writeServerConfig(deps.select(await deps.readServerConfig(), origin, token))
+  await deps.writeServerConfig(deps.select(await deps.readServerConfig(), origin))
   return { ok: true }
 }

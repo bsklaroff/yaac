@@ -16,8 +16,8 @@
  * Creates ONE real worktree in the chosen project (check 4), which it leaves
  * running — stop it afterwards.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to ~/.yaac) — so run `pnpm build` +
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to ~/.yaac) — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
  * Needs a claude credential; pi's check is skipped without one.
  *
@@ -70,20 +70,9 @@ if (!PROJECT) throw new Error('set PROJECT=<slug> to the project to create in')
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const lock = readServerLock()
 const origin = `http://127.0.0.1:${lock.port}`
-const auth = { authorization: `Bearer ${lock.secret}` }
-
-async function mintToken() {
-  const res = await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
 
 const signedIn = new Set(
-  (await (await fetch(`${origin}/auth/list`, { headers: auth })).json()).toolAuth.map((t) => t.tool),
+  (await (await fetch(`${origin}/auth/list`)).json()).toolAuth.map((t) => t.tool),
 )
 if (!signedIn.has('claude')) throw new Error('needs a claude credential')
 
@@ -92,8 +81,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${PROJECT}&token=${await mintToken()}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`${origin}/?project=${PROJECT}`)
   fs.mkdirSync(SHOTS, { recursive: true })
 
   const open = async () => {

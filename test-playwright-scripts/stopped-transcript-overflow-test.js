@@ -27,8 +27,8 @@
  * exactly the ACP events a claude conversation produces, and everything from
  * the fetch down is the real app.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
  *
  * Needs a running `yaac server` with at least one project.
@@ -66,16 +66,6 @@ function readServerLock() {
   ].filter(Boolean)
   for (const p of candidates) if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   throw new Error('no .server.lock found — is the server running? try: yaac server start')
-}
-
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
 }
 
 /** A source line long enough that no pane is as wide as it is. */
@@ -175,9 +165,7 @@ async function run({ name, viewport }) {
   await page.route('**/worktree/*/agent-sessions/*/transcript*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
 
-  const token = await mintToken(lock)
-  await page.goto(`${origin}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`${origin}/`)
 
   await page.locator('text=Stopped worktrees').first().click({ timeout: 15_000 })
   const popup = page.locator('[role="dialog"]').last()

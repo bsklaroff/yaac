@@ -19,10 +19,10 @@ describe('resolveYaacCommand', () => {
 })
 
 describe('ensureAuthDaemonRunning', () => {
-  const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's' }
+  const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787' }
   const CMD = resolveYaacCommand('/App/Resources', ['auth', 'server', 'run'])
   const fakeEnsure = () => vi.fn(
-    (() => Promise.resolve({ baseUrl: TARGET.baseUrl, secret: TARGET.secret })) as typeof ensureAuthDaemonSpawned,
+    (() => Promise.resolve({ baseUrl: TARGET.baseUrl })) as typeof ensureAuthDaemonSpawned,
   )
 
   it('forwards the target and invocation with the inherited env (dev)', async () => {

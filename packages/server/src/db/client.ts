@@ -101,9 +101,9 @@ async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
   // A dangling previous handle (setDataDir moved the data dir mid-process,
   // which only unit tests do) would leak a postgres instance — close it.
   if (prev) await prev.then((db) => db.$client.close()).catch(() => undefined)
-  // 0700, not the default: web-session ids and tokens stored inside are
-  // bearer-equivalent. chmod after mkdir so a pre-existing dir (or a umask)
-  // can't leave it wider.
+  // 0700, not the default: the sealed secrets stored inside are only as
+  // private as the directory. chmod after mkdir so a pre-existing dir (or a
+  // umask) can't leave it wider.
   await fs.mkdir(dir, { recursive: true })
   await fs.chmod(dir, 0o700)
   const db = drizzle({ connection: { dataDir: dir } })

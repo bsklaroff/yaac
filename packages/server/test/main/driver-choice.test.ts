@@ -29,7 +29,7 @@ afterEach(async () => {
 /** Seed the record the way `yaac server start` / `yaac cluster install` do. */
 async function record(kind: 'k8s' | 'containerless'): Promise<void> {
   await writeServerConfig({
-    url: 'http://127.0.0.1:8787', token: 't', enabled: true, saved: [], driver: kind,
+    url: 'http://127.0.0.1:8787', enabled: true, saved: [], driver: kind,
   })
 }
 
@@ -79,7 +79,7 @@ describe('assertHostServerAllowed', () => {
     // The driver is a property of THIS data dir, not of whatever origin is
     // currently selected — so `yaac remote set` cannot unlock a host start.
     await writeServerConfig({
-      url: 'https://elsewhere.ts.net', token: 't', enabled: true, saved: [], driver: 'k8s',
+      url: 'https://elsewhere.ts.net', enabled: true, saved: [], driver: 'k8s',
     })
     await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
   })

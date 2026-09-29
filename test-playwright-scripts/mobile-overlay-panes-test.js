@@ -27,8 +27,8 @@
  *
  * Drives the Vite dev server (`pnpm frontend:dev`, port 1420), which serves
  * live source and proxies /auth,/project,/events,... to the running yaac
- * server, so no rebuild is needed between edits. A one-time token is minted
- * over the server's API using the lock secret and exchanged for the cookie.
+ * server, so no rebuild is needed between edits. Loopback needs no
+ * credential.
  *
  * Run: node test-playwright-scripts/mobile-overlay-panes-test.js
  * (set SCREENSHOT_DIR to capture each overlay; defaults to /tmp/yaac-shots).
@@ -39,7 +39,6 @@
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
@@ -55,17 +54,6 @@ function requirePlaywright() {
     const globalRoot = execSync('npm root -g').toString().trim()
     return require(path.join(globalRoot, 'playwright'))
   }
-}
-
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
 let failures = 0
@@ -117,16 +105,6 @@ const STOPPED = [
   })),
 ]
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 /** The two MasterDetail panes of the open dialog: which is displayed, and how
  *  wide. Exactly one may be displayed on a phone, and it must be full-bleed. */
 function panesReport() {
@@ -172,7 +150,6 @@ function smallTargets() {
 
 fs.mkdirSync(SHOTS, { recursive: true })
 const { chromium } = requirePlaywright()
-const lock = readServerLock()
 const browser = await chromium.launch()
 try {
   const ctx = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true })
@@ -186,9 +163,7 @@ try {
   await page.route('**/worktree/*/death-seen*', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
 
-  const token = await mintToken(lock)
-  await page.goto(`${APP_URL}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='))
+  await page.goto(`${APP_URL}/`)
   await page.evaluate(() => localStorage.removeItem('yaac.mobilescreen.v1'))
   await page.goto(`${APP_URL}/`)
   await page.waitForTimeout(4000)

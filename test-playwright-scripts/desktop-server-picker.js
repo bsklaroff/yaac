@@ -3,8 +3,7 @@
  * story — the part no unit test can reach, because it is the main process, the
  * preload bridge, and the window all cooperating.
  *
- * Every server the shell can reach is an origin plus a durable token in
- * `server.json`; there is no "local server" case and the shell starts nothing.
+ * Every server the shell can reach is an origin in `server.json`; there is no "local server" case and the shell starts nothing.
  * So the two things worth driving for real are (a) that a shell with no
  * reachable server shows the picker and can be talked back onto one, and (b)
  * that the picker's buttons actually reach the main process over the preload
@@ -14,12 +13,11 @@
  *     selected", with no rows and no "Local server" anywhere.
  *  1b. Register a server from a terminal, then hit "Try again" → the window
  *     lands. This is the exit from a zero-row picker: there are no rows to
- *     Connect to and the token is the one thing a user cannot read back, so
- *     without it the only way out is Quit and relaunch.
- *  2. Add the server with a BAD token → the rejection appears inline and the
+ *     Connect to, so without it the only way out is Quit and relaunch.
+ *  2. Add an origin nothing answers at → the failure appears inline and the
  *     window stays on the picker (nothing was written).
- *  3. Add it with a real token → the shell relands on the server origin and
- *     the SPA loads, authed, with no further interaction.
+ *  3. Add the real server's origin → the shell relands on it and the SPA
+ *     loads with no further interaction.
  *  4. Stop the server, relaunch → the picker again, this time naming the
  *     origin it could not reach, with a row for it.
  *  5. Start the server, click Connect on that row → lands. (Connect on the
@@ -78,12 +76,7 @@ const SHOT_DIR = '/tmp/yaac-shots'
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-desktop-e2e-'))
 const CLIENT_DIR = `${DATA_DIR}-client`
 const CONFIG = path.join(CLIENT_DIR, 'server.json')
-// The credential gate stays ON, as it is for a server anyone else can
-// reach. A loopback server is credential-OPTIONAL by default
-// (`isCredentialOptional` keys on configuration, not the bind address), and
-// there it accepts any bearer at all — so the "bad token is refused" step
-// would pass a garbage token and land, proving nothing.
-const ENV = { ...process.env, YAAC_DATA_DIR: DATA_DIR, YAAC_REQUIRE_AUTH: '1' }
+const ENV = { ...process.env, YAAC_DATA_DIR: DATA_DIR }
 
 function yaac(...args) {
   return execFileSync('node', [CLI, ...args], { env: ENV, encoding: 'utf8' })
@@ -199,11 +192,6 @@ async function main() {
   yaac('server', 'start')
   const origin = serverOrigin()
   console.log(`  server at ${origin} (data dir ${DATA_DIR})`)
-  // Minted while `server start`'s own registration is still in place: with
-  // nothing selected the CLI cannot reach the server either, which is the
-  // point of step 1.
-  const token = yaac('auth', 'token', 'create', 'desktop-e2e').trim()
-
   // 1. A shell with nothing selected.
   console.log('\n1. no server selected → the picker is the whole window')
   fs.rmSync(CONFIG, { force: true })
@@ -226,20 +214,19 @@ async function main() {
   check('Try again landed the window', (await win.evaluate(() => location.origin)) === origin)
   await shot(win, '1b-retry-landed')
 
-  // Back to the empty picker for the token cases.
+  // Back to the empty picker for the add-form cases.
   fs.rmSync(CONFIG, { force: true })
   await closeApp(app)
   ;({ app, win } = await launch(electron))
   await waitForPicker(win)
 
-  // 2. A bad token is refused inline, and writes nothing.
-  console.log('\n2. adding it with a bad token → inline rejection, still on the picker')
-  await win.fill('input[name="url"]', origin)
-  await win.fill('input[name="token"]', 'f'.repeat(64))
+  // 2. An origin nothing answers at is refused inline, and writes nothing.
+  console.log('\n2. adding a dead origin → inline rejection, still on the picker')
+  await win.fill('input[name="url"]', 'http://127.0.0.1:1')
   await win.click('button.add')
   try {
     await win.waitForFunction(
-      () => /rejected|cannot reach/i.test(document.getElementById('status')?.textContent ?? ''),
+      () => /cannot reach/i.test(document.getElementById('status')?.textContent ?? ''),
       null,
       { timeout: 30_000 },
     )
@@ -251,15 +238,14 @@ async function main() {
     throw err
   }
   const rejection = await win.textContent('#status')
-  check('the server\'s own rejection is shown', /rejected/i.test(rejection), rejection.trim())
+  check('the failure is shown', /cannot reach/i.test(rejection), rejection.trim())
   check('still on the picker', (await win.locator('#add').count()) === 1)
   check('nothing was written', !fs.existsSync(CONFIG))
-  await shot(win, '2-bad-token')
+  await shot(win, '2-dead-origin')
 
-  // 3. A real token lands the window on the SPA.
-  console.log('\n3. adding it with a real token → the shell relands, authed')
+  // 3. The real origin lands the window on the SPA.
+  console.log('\n3. adding the real origin → the shell relands')
   await win.fill('input[name="url"]', origin)
-  await win.fill('input[name="token"]', token)
   await win.click('button.add')
   await waitForApp(win, origin)
   check('window is on the server origin', (await win.evaluate(() => location.origin)) === origin)

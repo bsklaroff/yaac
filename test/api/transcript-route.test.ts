@@ -38,7 +38,7 @@ afterEach(async () => {
 })
 
 const client = (): ReturnType<typeof makeTestApiClient> =>
-  makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+  makeTestApiClient(buildApp({ buildId: 'test' }))
 
 async function get(sessionId: string): Promise<{ status: number; events?: AcpEvent[] }> {
   const res = await client().worktree[':id']['agent-sessions'][':sessionId'].transcript.$get({

@@ -16,8 +16,8 @@
  * what was measured, what would not open (a renamed label lands here), and what
  * this walk never attempts (NOT_WALKED).
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are measuring the frontend as it was.
  *
  * Needs a running `yaac server` with at least one project and one live
@@ -81,21 +81,10 @@ const USABLE = 48
  * row would still hide.
  */
 const NOT_WALKED = [
-  "ConnectSplash's token box (the walk mints a token, so it never sees the pre-auth screen)",
   'BranchPicker inside the new-worktree sheet (needs the picker opened)',
   'the badge popovers (unforwarded ports, blocked hosts, usage, image builds)',
   "FileEditor's expanded-editor dialog",
 ]
-
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
 
 /**
  * Every visible text control on screen right now, with the size it computed to.
@@ -158,8 +147,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  const token = await mintToken(lock)
-  await page.goto(`${APP_URL}/?token=${token}`)
+  await page.goto(`${APP_URL}/`)
   await page.waitForTimeout(5000)
 
   /** Measure whatever is on screen and file it under `where`. */

@@ -16,8 +16,8 @@
  *     of them (up to the max-height, after which the box scrolls internally),
  *     rather than leaving the writer looking at one line of five.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
  * Deliberately NOT the Vite dev server: React.StrictMode double-mounts every
  * effect in development, so the chat pane opens two ACP sockets, the second
@@ -99,16 +99,6 @@ const PHONE = { width: 390, height: 844 }
  */
 const LONG_TOKEN = `9f3c7ae${'0123456789abcdef'.repeat(6)}b21d`
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 /** Every element in the conversation that sticks out past the pane's right
  *  edge, plus the message list's own horizontal scroll. Reported as the
  *  offending elements rather than a bare boolean — which node overflows is the
@@ -183,9 +173,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  const token = await mintToken(lock)
-  await page.goto(`${APP_URL}/?token=${token}`)
-  await until(page, () => !window.location.search.includes('token='))
+  await page.goto(`${APP_URL}/`)
   await page.waitForTimeout(4000)
 
   // Walk in: project -> worktree -> pane. The mobile shell's screens are

@@ -52,15 +52,14 @@ describe('connectPageHtml', () => {
     expect(html.match(/class="add"/g) ?? []).toHaveLength(1)
     // The add form is the only way out of this state, so it must be here.
     expect(html).toContain('name="url"')
-    expect(html).toContain('name="token"')
-    expect(html).toContain('yaac auth token create')
+    expect(html).not.toContain('name="token"')
   })
 
   it('drives the preload bridge the SPA uses, not its own IPC', () => {
     const html = connectPageHtml(STATE)
     expect(html).toContain('window.yaacServer')
     expect(html).toContain('bridge.switchTo({ url:')
-    expect(html).toContain('bridge.addRemote(url, token)')
+    expect(html).toContain('bridge.addRemote(url)')
     // The native traffic lights are hidden, so the page provides its own.
     expect(html).toContain('window.yaacWindow.close()')
     expect(html).toContain('-webkit-app-region: drag')
@@ -102,8 +101,8 @@ describe('connectPageHtml (running in a document)', () => {
         calls.switchTo.push(sel)
         return Promise.resolve(outcome)
       },
-      addRemote: (url: string, token: string) => {
-        calls.addRemote.push([url, token])
+      addRemote: (url: string) => {
+        calls.addRemote.push([url])
         return Promise.resolve(outcome)
       },
       retry: () => {
@@ -155,23 +154,22 @@ describe('connectPageHtml (running in a document)', () => {
     expect(document.getElementById('status')?.textContent).toContain('Connecting…')
   })
 
-  it('the add form passes both fields, and refuses an incomplete one itself', async () => {
+  it('the add form passes the origin, and refuses an empty one itself', async () => {
     const calls = mount(STATE)
     const form = document.getElementById('add') as HTMLFormElement
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settle()
     expect(calls.addRemote).toHaveLength(0)
-    expect(document.getElementById('status')?.textContent).toMatch(/Enter both/)
+    expect(document.getElementById('status')?.textContent).toMatch(/Enter a server origin/)
 
     document.querySelector<HTMLInputElement>('input[name="url"]')!.value = ' https://new.ts.net '
-    document.querySelector<HTMLInputElement>('input[name="token"]')!.value = ' tok '
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settle()
-    expect(calls.addRemote).toEqual([['https://new.ts.net', 'tok']])
+    expect(calls.addRemote).toEqual([['https://new.ts.net']])
   })
 
   it('Try again re-runs the flow, which is the only exit from a zero-row picker', async () => {
-    // With no rows and no token to type, re-resolving is the ONLY way
+    // With no rows to pick, re-resolving is the ONLY way
     // forward for someone who just started a server in a terminal.
     const calls = mount({
       error: { title: 'No yaac server selected' },

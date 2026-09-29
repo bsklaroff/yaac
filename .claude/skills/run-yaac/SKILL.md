@@ -89,8 +89,9 @@ curl -s <that origin>/health          # {"ok":true,"buildId":…,"ready":true,"d
 
 ## Drive the web app
 
-`driver.mjs` mints a one-time token against the server `server.json`
-selects (so it follows `YAAC_DATA_DIR`) and drives it in headless Chromium:
+`driver.mjs` loads the origin `server.json` selects (so it follows
+`YAAC_DATA_DIR`) in headless Chromium — no credential, since a loopback
+origin is this machine's owner:
 
 ```bash
 node .claude/skills/run-yaac/driver.mjs shot                  # -> /tmp/yaac-shots/app.png

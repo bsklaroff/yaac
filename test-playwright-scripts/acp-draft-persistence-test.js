@@ -14,7 +14,7 @@
  *
  * Needs a running `yaac server` with a live ACP-mode worktree of the selected
  * project — `yaac worktree create <project> --tool claude --mode acp` — and
- * spends one small prompt turn on the agent. Reads the port + lock secret from
+ * spends one small prompt turn on the agent. Reads the port from
  * $YAAC_DATA_DIR/.server.lock (falling back to ~/.yaac) exactly like
  * .claude/skills/run-yaac/driver.mjs.
  *
@@ -55,16 +55,6 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running?')
 }
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 // Either placeholder — the box says "Reconnecting…" until the socket attaches.
 const CHAT = 'textarea[placeholder="Message the agent…"], textarea[placeholder="Reconnecting…"]'
 // The chat pane's tab in the strip. Scoped to a tab wrapper so it can't match
@@ -92,9 +82,7 @@ async function main() {
     console.log(`  screenshot → ${out}`)
   }
 
-  const token = await mintToken(lock)
-  await page.goto(`http://127.0.0.1:${lock.port}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`http://127.0.0.1:${lock.port}/`)
   // Wait for the worktree's workspace (the pushed /events snapshot) to arrive.
   await page.waitForTimeout(4000)
 

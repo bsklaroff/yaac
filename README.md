@@ -147,12 +147,10 @@ a live worktree sidebar, the project list, and an embedded terminal
 (below), or in a browser at the selected server's origin (the `url` line of
 `yaac remote status`).
 
-It's local-first — the server binds `127.0.0.1` only, where it needs no
-credential. A server published beyond loopback shows a connect screen
-instead: paste a token from `yaac auth token create <name>` there and the
-browser trades it for an `HttpOnly` session cookie. That token is durable —
-it stays a valid API bearer until `yaac auth token revoke <name>`. The CLI
-and web app drive the same on-disk state, so you can mix them freely.
+It's local-first — the server binds `127.0.0.1` only, where a caller is its
+owner and needs no credential. Reached over Tailscale, it asks the tailnet
+who the caller is instead (below), so there is still nothing to paste. The
+CLI and web app drive the same on-disk state, so you can mix them freely.
 
 ### Remote access over Tailscale
 
@@ -168,10 +166,9 @@ never expose it with `tailscale funnel`. On the server:
 tailscale up
 tailscale serve --bg 8787                            # tailnet-only TLS proxy
 export YAAC_ALLOWED_HOSTS=<host>.<tailnet>.ts.net    # admit the tailnet host
-export YAAC_TRUST_PROXY=1                            # trust the proxy's TLS
 ```
 
-How those two reach the server depends on which kind of install this is
+How that reaches the server depends on which kind of install this is
 (`yaac server start` never chooses — the data dir records it):
 
 ```sh
@@ -185,28 +182,24 @@ yaac cluster install
 Under `k8s` there is also `yaac cluster install --tailnet`, which fronts the
 server pod through the Tailscale Kubernetes operator instead of a
 `tailscale serve` on the host and sets `YAAC_ALLOWED_HOSTS` on the
-Deployment itself — plain http over the tailnet's WireGuard, so use `serve`
-when the cookie must be `Secure` (see [docs/remote-hosting.md](docs/remote-hosting.md)).
+Deployment itself, at an `https://` origin of its own (see
+[docs/remote-hosting.md](docs/remote-hosting.md)).
 
-Under `containerless`, put both vars in the server's permanent environment
+Under `containerless`, put the var in the server's permanent environment
 (a systemd unit or shell profile) before restarting — a detached restart
 won't inherit an interactive `export`. Under `k8s` the *Deployment* carries
-them, read from the shell that runs the install, so the export has to be
+it, read from the shell that runs the install, so the export has to be
 live for that command; `yaac server restart` only rolls the pods the
 Deployment already describes and will not pick up a new value. Install is
-idempotent — it converges the cluster it already made — and it prints a note
-that the server now requires a credential, plus the durable token it writes
-into `server.json` so this machine's own CLI keeps reaching it.
-
-Then, on either:
-
-```sh
-yaac auth token create laptop                        # per-device token (once)
-```
+idempotent — it converges the cluster it already made.
 
 Browse to `https://<host>.<tailnet>.ts.net` (the hostname over HTTPS, not
 `ip:8787`), or point a client CLI at it with `yaac remote set
-https://<host>.<tailnet>.ts.net --token <token>`. See
+https://<host>.<tailnet>.ts.net`. There is no token: `tailscale serve` tells
+the server which tailnet user each request is from, so the device has to be
+logged in to the tailnet as a user (a tagged device is refused), and on a
+shared tailnet an ACL grant decides who may reach the server at all. A lost
+device is revoked in the Tailscale admin console. See
 [docs/remote-hosting.md](docs/remote-hosting.md) for the full flow — client
 and phone setup, forwarded-port reachability, and the security model.
 
@@ -218,18 +211,17 @@ from other tailnet devices, run `yaac forward --bind <the server's tailnet
 IP>` on the server (from `tailscale ip -4`) and set `YAAC_FORWARD_BIND` to
 the same address so the webapp's port chips link to
 `http://<host>.<tailnet>.ts.net:<port>`. That var reaches the server the
-same way the two above do — a restart under `containerless`, a re-run of
+same way the one above does — a restart under `containerless`, a re-run of
 `yaac cluster install` under `k8s`. Those listeners are plain http and
-reachable by any tailnet device (not yaac-token-gated), so keep this to a
-personal tailnet.
+reachable by any tailnet device (they do not pass through `serve`, so no
+identity gates them), so keep this to a personal tailnet.
 
 ### Desktop app
 
 The same web app is also available as a macOS Electron shell (`@yaac/desktop`).
-It has no bundled frontend of its own: the main process resolves the target
-server (remote if enabled, else the local daemon — starting one if none is
-up), mints a one-time exchange token, and loads the server
-origin into a native window. It lives in the tray (close hides, Quit stops
+It has no bundled frontend of its own: the main process resolves the
+selected server from `server.json`, checks that it answers and will say who
+this device is, and loads the server origin into a native window. It lives in the tray (close hides, Quit stops
 only the shell) and badges the dock for waiting worktrees. It is not part of
 `pnpm build` and never ships in the npm artifact.
 
@@ -323,18 +315,14 @@ yaac auth <command>
   clear               Remove stored tool credentials (interactive)
   fake <kinds...>     Seed placeholder credentials (yaac-in-yaac and tests):
                       claude-oauth, opencode-openrouter, pi-openrouter, github
-  token <command>     Durable access tokens for remote clients
-    create <name>       Mint a token (printed once) for a remote client
-    list                List tokens (masked)
-    revoke <name>       Revoke a token by name
   server <command>    The login broker that runs Claude/Codex sign-ins on this machine
     run|start|stop|status
 
 yaac remote <command>      Which server this machine's clients talk to
-  set <url> --token <t>  Select a server (verifies the token first)
+  set <url>              Select a server (verifies it identifies this device first)
   unset                  Forget every configured server
-  on | off               Deselect / reselect without re-entering the token
-  status                 Show the selected server (masked token) and the saved ones
+  on | off               Deselect / reselect without re-entering it
+  status                 Show the selected server and the saved ones
 ```
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
@@ -535,9 +523,8 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster install` creates and converges. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed worktrees kept ready per active project (`0` disables prewarming). |
-| `YAAC_WORKTREE_ID` | _(unset)_ | Set automatically in every worktree, under both drivers — not something you set yourself. A yaac started inside one reads it as "reachable only through the outer server's port-forward" and skips the client credential (see docs/remote-hosting.md). |
-| `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
-| `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
+| `YAAC_WORKTREE_ID` | _(unset)_ | Set automatically in every worktree, under both drivers — not something you set yourself. A yaac started inside one reads it as "reached through the outer server's port-forward" and takes an unproxied request as local whatever Host it names (see docs/remote-hosting.md). |
+| `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed; a request to any other name must come through `tailscale serve`, which says who it is from. |
 | `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the webapp claims a worktree's forwarded ports are reachable at; a remote-hosting server sets its tailnet IP. The server binds nothing itself — match this with `yaac forward --bind <same address>` on that machine. |
 | `YAAC_SECRET` | _(unset)_ | Key the server encrypts stored secrets with. Unset → it generates one into `~/.yaac/server-local/secret.key` (see "Secrets at rest"). |
 | `YAAC_SECRETS` | _(unset)_ | Versioned keys, `"<version>:<secret>,…"`, newest first — how a key is rotated without re-encrypting anything. `YAAC_SECRET` alongside it opens payloads written before versioning. |
@@ -556,7 +543,7 @@ These are set by the build or the test harness; production reads several of them
 | `YAAC_REQUIRE_PREBUILT_IMAGES` | _(unset)_ | `1` fails fast if a required image isn't already in the registry (CI/e2e). |
 | `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created worktree pods from the stale-worktree reaper. |
 | `YAAC_BUILD_ID` | _(unset)_ | Override the build id for tests running from source (no `dist/.build-id`). |
-| `YAAC_SERVER_URL` / `YAAC_SERVER_SECRET` | _(unset)_ | Point the CLI at an in-process server without the lock file (tests). |
+| `YAAC_SERVER_URL` | _(unset)_ | Point the CLI at an in-process server without the lock file (tests). |
 | `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision terminal attach (no-TTY e2e). |
 | `YAAC_E2E_SKIP_FETCH` | _(unset)_ | `1` skips the host-side git fetch during create (e2e fixtures pre-populate the repo). |
 | `YAAC_E2E_CLAUDE_LOGIN` / `YAAC_E2E_CODEX_LOGIN` / `YAAC_E2E_OPENCODE_LOGIN` / `YAAC_E2E_PI_LOGIN` | _(unset)_ | Short-circuit the native tool login with a serialized OAuth bundle (claude/codex) or raw api key (opencode/pi). |

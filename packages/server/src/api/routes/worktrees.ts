@@ -304,9 +304,9 @@ export const worktreeApp = new Hono()
    * Authenticated per WORKTREE, not per user: the bearer is the opaque
    * token minted for this worktree at create, and it is what identifies the
    * caller — the request never says which worktree it is, so nothing it
-   * sends can claim to be another one. Unauthenticated at the global gate
-   * (`isPublicPath`) precisely because the credential it carries is not the
-   * server secret.
+   * sends can claim to be another one. The identity gate sees a local
+   * caller (a containerless worktree posts to loopback), and this check is
+   * the stricter, per-worktree one on top of it.
    */
   .post(
     '/mama',
@@ -328,7 +328,7 @@ export const worktreeApp = new Hono()
       }
       const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
       const caller = await findWorktreeByMamaToken(bearer)
-      if (!caller) throw new ServerError('BAD_BEARER', 'unknown or revoked yaac-mama token')
+      if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama token')
 
       const { command, args, body } = c.req.valid('json')
       // The caller's tool comes off the runtime, the same fact the drain

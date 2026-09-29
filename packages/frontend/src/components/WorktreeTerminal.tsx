@@ -38,8 +38,8 @@ const INPUT_BATCH_MS = 4
 /**
  * One embedded terminal attached to a worktree's tmux via the server's
  * /pty/attach WebSocket. Binary frames carry raw PTY bytes both ways;
- * text frames carry control (resize). Same-origin, so the worktree cookie
- * rides the upgrade.
+ * text frames carry control (resize). Same-origin, and identified like any
+ * other request to the server.
  */
 export function WorktreeTerminal({
   worktreeId,

@@ -24,7 +24,7 @@
  * Run: node test-playwright-scripts/git-auth-badge-test.js [--project yaac]
  * Needs a running server with a wired cluster and ONE running session for
  * the project (create one first: `yaac session create <project>`). Reads
- * port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac). Screenshots go
+ * port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac). Screenshots go
  * to $TMPDIR. (playwright is resolved from the global npm root; browsers
  * live under /opt/playwright-browsers)
  */
@@ -210,11 +210,10 @@ async function main() {
   const { chromium } = requirePlaywright()
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
   const shotDir = process.env.TMPDIR || os.tmpdir()
 
   // The one running session for the project — its pod is where git runs.
-  const list = await (await fetch(`${base}/session/list?project=${PROJECT}`, { headers: auth })).json()
+  const list = await (await fetch(`${base}/session/list?project=${PROJECT}`)).json()
   const session = list.sessions[0]
   if (!session) throw new Error(`no running session for project "${PROJECT}" — create one first`)
   const sessionId = session.sessionId
@@ -228,7 +227,7 @@ async function main() {
   const TITLE = 'GIT-AUTH-E2E'
   await fetch(`${base}/session/${sessionId}/title`, {
     method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ title: TITLE }),
   })
 
@@ -239,7 +238,7 @@ async function main() {
   })
   console.log('github.com upstream redirected to mock (mode=401)')
 
-  const codeRes = await fetch(`${base}/auth/bootstrap-code`, { headers: auth })
+  const codeRes = await fetch(`${base}/auth/bootstrap-code`)
   const { code } = await codeRes.json()
 
   const browser = await chromium.launch()

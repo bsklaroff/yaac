@@ -21,7 +21,7 @@ import {
 
 // The install root itself. Re-exported for the few callers that need the
 // identity of the install rather than a place to put bytes (the cluster
-// label hash, the web-session cookie hash) — everything that stores
+// label hash) — everything that stores
 // something picks a tier instead, which is why nothing in THIS file
 // imports it.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports

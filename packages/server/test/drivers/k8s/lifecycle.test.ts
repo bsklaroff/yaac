@@ -34,6 +34,7 @@ vi.mock('#drivers/k8s/substrate', () => ({
 }))
 vi.mock('#drivers/k8s/cluster', () => ({
   buildServerIngressNpManifest: vi.fn((cidrs: string[]) => ({ kind: 'NetworkPolicy', cidrs })),
+  buildProxyEgressNpManifest: vi.fn((cidrs: string[]) => ({ kind: 'NetworkPolicy', proxyEgress: cidrs })),
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   ensureNamespace: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
@@ -110,6 +111,17 @@ describe('startK8sDriver', () => {
       kind: 'NetworkPolicy', cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
     })
     expect(order.indexOf('wall')).toBeLessThan(order.indexOf('recover'))
+  })
+
+  it('applies the proxy\'s egress policy on every start, not only on a proxy bootstrap', async () => {
+    await startK8sDriver(sinks())
+
+    // The bootstrap is skipped for a proxy that is already current — every
+    // install whose proxy predates the policy — and without it a `*`
+    // allowlist reaches the kind fronting's node port as the server's owner.
+    expect(vi.mocked(kubectlApply)).toHaveBeenCalledWith({
+      kind: 'NetworkPolicy', proxyEgress: ['10.89.0.2/32', '10.89.0.3/32'],
+    })
   })
 
   it('reports the workspace set as handles, never as pods', async () => {

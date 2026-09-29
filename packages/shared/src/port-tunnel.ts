@@ -27,12 +27,10 @@ import { WebSocket } from 'ws'
  * that cost ever becomes visible).
  */
 
-/** Where the forwards go, and what authenticates them. */
+/** Where the forwards go. */
 export interface TunnelTarget {
   /** Server origin, no trailing slash — `ServerTarget.baseUrl`. */
   baseUrl: string
-  /** Bearer, exactly as the HTTP client sends it. */
-  secret: string
 }
 
 /** One port of one workspace, and where to offer it locally. */
@@ -93,9 +91,7 @@ function bridge(
   events: ForwardEvents,
 ): void {
   socket.pause()
-  const ws = new WebSocket(tunnelUrl(target, spec), {
-    headers: { authorization: `Bearer ${target.secret}` },
-  })
+  const ws = new WebSocket(tunnelUrl(target, spec))
 
   let reported = false
   const fail = (message: string): void => {

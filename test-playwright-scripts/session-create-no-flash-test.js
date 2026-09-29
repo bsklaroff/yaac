@@ -22,7 +22,7 @@
  *
  * Run: node test-playwright-scripts/session-create-no-flash-test.js
  * Needs a running server (`yaac server start`) with a project configured;
- * reads the port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
+ * reads the port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  * The created session is deleted at the end via the server API.
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
@@ -66,9 +66,8 @@ async function main() {
   const { chromium } = requirePlaywright()
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
 
-  const codeRes = await fetch(`${base}/auth/bootstrap-code`, { headers: auth })
+  const codeRes = await fetch(`${base}/auth/bootstrap-code`)
   if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
   const { code } = await codeRes.json()
 
@@ -198,7 +197,7 @@ async function main() {
     if (createdSessionId) {
       const del = await fetch(`${base}/session/delete`, {
         method: 'POST',
-        headers: { ...auth, 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId: createdSessionId }),
       }).catch((e) => ({ ok: false, status: String(e) }))
       console.log(`cleanup: deleted session ${createdSessionId} (ok=${del.ok ?? del.status})`)

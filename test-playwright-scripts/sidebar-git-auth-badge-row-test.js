@@ -17,8 +17,7 @@
  *  2. The badge renders strictly below the name strip.
  *
  * Drives the Vite dev server (`pnpm --filter @yaac/frontend dev`, port 1420)
- * against the running yaac server. Reads port/secret from
- * $YAAC_DATA_DIR/.server.lock (or ~/.yaac); mints a one-time token to auth.
+ * against the running yaac server.
  *
  * Run: node test-playwright-scripts/sidebar-git-auth-badge-row-test.js
  * (set SCREENSHOT_DIR to capture the sidebar). (playwright is resolved from
@@ -27,7 +26,6 @@
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
@@ -39,17 +37,6 @@ function requirePlaywright() {
     const globalRoot = execSync('npm root -g').toString().trim()
     return require(path.join(globalRoot, 'playwright'))
   }
-}
-
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
 let failures = 0
@@ -64,18 +51,7 @@ const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR
 // A fixed (not Date.now()) epoch so the injected frame is deterministic.
 const FAKE_AT_MS = 1_784_000_000_000
 
-async function mintToken(lock, body) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 const { chromium } = requirePlaywright()
-const lock = readServerLock()
 const browser = await chromium.launch()
 try {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
@@ -104,9 +80,7 @@ try {
     })
   })
 
-  const token = await mintToken(lock, { kind: 'one-time' })
-  await page.goto(`${APP_URL}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='))
+  await page.goto(`${APP_URL}/`)
 
   const aside = page.locator('aside').first()
   await aside.waitFor({ state: 'visible', timeout: 15_000 })

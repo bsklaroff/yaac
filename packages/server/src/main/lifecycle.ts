@@ -93,14 +93,7 @@ export async function startServer(): Promise<void> {
  */
 async function registerLocalServer(port: number): Promise<void> {
   try {
-    await registerServer(`http://127.0.0.1:${port}`, 'containerless', {
-      log: (message) => console.error(`[yaac] ${message}`),
-      // The same question `isCredentialOptional` asks server-side, and
-      // the same one `yaac cluster install` asks: keyed on CONFIGURATION,
-      // not on the bind address, so an install that sets these (or
-      // inherits them from the shell) hears about a failed mint.
-      credentialRequired: env.allowedHosts.length > 0 || env.trustProxy || env.requireAuth,
-    })
+    await registerServer(`http://127.0.0.1:${port}`, 'containerless')
   } catch (err) {
     console.error(
       `[yaac] WARNING: the server is up, but this machine could not be pointed at it: ${

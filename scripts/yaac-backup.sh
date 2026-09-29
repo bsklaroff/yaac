@@ -25,9 +25,8 @@
 #
 # Restore to the SAME absolute path. Every yaac object in the cluster is
 # labelled with sha256(dataDir) (dataDirHash, packages/server/src/platform/k8s/kubectl.ts),
-# per-project registry names hash it too, and the webapp session cookie is
-# keyed on it. A different path means the server cannot see its own cluster
-# objects and browser sessions are invalidated.
+# and per-project registry names hash it too. A different path means the
+# server cannot see its own cluster objects.
 #
 # This script is standalone POSIX sh with no repo or node dependency, so it
 # can be copied to a bare host to run the restore half.

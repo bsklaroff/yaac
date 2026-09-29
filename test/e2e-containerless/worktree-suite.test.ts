@@ -281,11 +281,8 @@ process.stdin.on('data', (chunk) => {
 process.stdin.resume()
 `
 
-/** The spawned server's own origin and credential — it binds a per-worker
- *  port and authenticates with its lock secret. */
+/** The spawned server's own origin — it binds a per-worker port. */
 const origin = (): string => `http://127.0.0.1:${String(server.lock.port)}`
-const authHeader = (): Record<string, string> =>
-  ({ Authorization: `Bearer ${server.lock.secret}` })
 
 /** The tmux socket the driver derives for a worktree — the same derivation
  *  the server used, so this is an independent check that it landed there. */
@@ -302,7 +299,7 @@ interface ListedWorktree {
 
 /** The worktrees the server currently reports, newest first. */
 async function listWorktrees(): Promise<ListedWorktree[]> {
-  const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
+  const res = await fetch(`${origin()}/worktree/list`)
   const body = await res.json() as { worktrees: ListedWorktree[] }
   return body.worktrees
 }
@@ -495,7 +492,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // remembered for the project yet — so the conversation is named from its
     // launch. The fake agent never answers, so this is the launch's value,
     // not anything a transcript reported.
-    const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
+    const res = await fetch(`${origin()}/worktree/list`)
     const { worktrees } = await res.json() as {
       worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
     }
@@ -519,9 +516,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId,
     )
     await fs.writeFile(path.join(dir, 'NEW.md'), '# added by the test\n')
-    const res = await fetch(`${origin()}/worktree/${worktreeId}/changes`, {
-      headers: authHeader(),
-    })
+    const res = await fetch(`${origin()}/worktree/${worktreeId}/changes`)
     const changes = await res.json() as { files: Array<{ path: string }> }
     expect(changes.files.map((f) => f.path)).toContain('NEW.md')
   })
@@ -529,7 +524,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   it('edits the checkout over HTTP: create, list, read, a stale save refused, then saved', async () => {
     const api = (route: string, init: RequestInit = {}): Promise<Response> => fetch(
       `${origin()}/worktree/${worktreeId}${route}`,
-      { ...init, headers: { ...authHeader(), 'content-type': 'application/json' } },
+      { ...init, headers: { 'content-type': 'application/json' } },
     )
     const put = (body: object): Promise<Response> => api('/file', { method: 'PUT', body: JSON.stringify(body) })
 
@@ -568,7 +563,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       const req = http.request(`${origin()}/worktree/${worktreeId}/file`, {
         method: 'PUT',
         agent: false,
-        headers: { ...authHeader(), 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
       }, (res) => {
         res.resume()
         resolve(res.statusCode ?? 0)
@@ -631,7 +626,6 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   it('opens a shell window through the same exec transport the webapp uses', async () => {
     const res = await fetch(`${origin()}/worktree/${worktreeId}/terminals`, {
       method: 'POST',
-      headers: authHeader(),
     })
     expect(res.ok).toBe(true)
     const windows = await tmux(worktreeId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
@@ -800,10 +794,6 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const creds = await mamaCreds()
     expect(creds.YAAC_MAMA_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(creds.YAAC_MAMA_TOKEN).toBeTruthy()
-    // A bearer of its own, never the server's secret — holding that would
-    // give the worktree the whole CLI rather than the subset.
-    expect(creds.YAAC_MAMA_TOKEN).not.toBe(server.lock.secret)
-    expect(Object.values(creds)).not.toContain(server.lock.secret)
   })
 
   it('resolves its tool homes from the project, not the server user', async () => {
@@ -895,9 +885,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
 
     // Read back through the ordinary API: what the command channel wrote is
     // the same state the sidebar renders.
-    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`, {
-      headers: authHeader(),
-    })
+    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     expect(groups.map((g) => g.name)).toContain('nightly')
 
@@ -913,9 +901,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(renamed.out).toContain('wiring up the mama channel')
 
     // Read back through the ordinary API — one title, one piece of state.
-    const res = await fetch(`${origin()}/worktree/list?project=${SLUG}`, {
-      headers: authHeader(),
-    })
+    const res = await fetch(`${origin()}/worktree/list?project=${SLUG}`)
     const body = await res.json() as { worktrees: Array<{ worktreeId: string; title?: string }> }
     const mine = body.worktrees.find((w) => w.worktreeId === worktreeId)
     expect(mine?.title).toBe('wiring up the mama channel')
@@ -967,9 +953,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       })
       expect(res.status).toBe(200)
 
-      const listed = await fetch(`${origin()}/worktree/list?project=${SLUG}`, {
-        headers: authHeader(),
-      })
+      const listed = await fetch(`${origin()}/worktree/list?project=${SLUG}`)
       const body = await listed.json() as {
         worktrees: Array<{ worktreeId: string; title?: string }>
       }
@@ -1009,8 +993,6 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const token = (await mamaCreds()).YAAC_MAMA_TOKEN
     expect(await post(token, 'delete')).toBe(422)
     expect(await post('not-a-real-token', 'list')).toBe(401)
-    // The server's own secret is not a yaac-mama credential either.
-    expect(await post(server.lock.secret, 'list')).toBe(401)
   })
 
   it('stops a worktree it names, and stops ITSELF when it names none', async () => {
@@ -1316,7 +1298,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   }, 60_000)
 
   it('still reads the checkout\'s files once the worktree is stopped', async () => {
-    const res = await fetch(`${origin()}/worktree/${worktreeId}/file?path=notes/todo.md`, { headers: authHeader() })
+    const res = await fetch(`${origin()}/worktree/${worktreeId}/file?path=notes/todo.md`)
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ path: 'notes/todo.md', content: 'mine\n' })
   })
@@ -1515,7 +1497,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
       // conversation is a row, which is what lets a webapp swap the
       // provisioning placeholder for the chat pane rather than a terminal on
       // acpd's log.
-      const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
+      const res = await fetch(`${origin()}/worktree/list`)
       const { worktrees } = await res.json() as {
         worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
       }
@@ -1776,9 +1758,7 @@ describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
 
     // The group was created by name — the caller was naming one, not picking
     // it from a list they could see.
-    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`, {
-      headers: authHeader(),
-    })
+    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     const made = groups.find((g) => g.name === 'friday batch')
     expect(made).toBeDefined()
@@ -1801,7 +1781,7 @@ describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
  */
 describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
   it('reports it as a failed provisioning row instead of a worktree that vanishes', async () => {
-    const watch = collectSnapshots(server.lock.port, server.lock.secret)
+    const watch = collectSnapshots(server.lock.port)
     await watch.opened
     try {
       // The fake codex, told `sick`, exits 127, so tmux closes the window the
@@ -1851,7 +1831,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
   }
 
   it('starts the top of a chain when its parent is stopped, with its prompt delivered', async () => {
-    const watch = collectSnapshots(server.lock.port, server.lock.secret)
+    const watch = collectSnapshots(server.lock.port)
     await watch.opened
     const latest = (): ServerSnapshot => {
       const snap = watch.latest()
@@ -1899,7 +1879,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
       expect(entry).toMatchObject({ parentWorktreeId: childWorktree })
       await fetch(`${origin()}/worktree/queue/discard`, {
         method: 'POST',
-        headers: { ...authHeader(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: grandchild }),
       })
     } finally {
@@ -1909,7 +1889,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
   }, 240_000)
 
   it('keeps a dead parent\'s child queued and the parent held, until the child is discarded', async () => {
-    const watch = collectSnapshots(server.lock.port, server.lock.secret)
+    const watch = collectSnapshots(server.lock.port)
     await watch.opened
     const latest = (): ServerSnapshot => {
       const snap = watch.latest()
@@ -1920,7 +1900,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
       const parent = await createWorktree()
       const res = await fetch(`${origin()}/worktree/queue/create`, {
         method: 'POST',
-        headers: { ...authHeader(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project: SLUG, parent, prompt: 'never on a crash' }),
       })
       expect(res.status).toBe(200)
@@ -1937,7 +1917,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
 
       const discarded = await fetch(`${origin()}/worktree/queue/discard`, {
         method: 'POST',
-        headers: { ...authHeader(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
       })
       expect(discarded.status).toBe(204)

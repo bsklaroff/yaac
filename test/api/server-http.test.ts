@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import http from 'node:http'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -10,7 +11,7 @@ import { clusterAvailable } from '@yaac/test-utils/setup'
 
 /**
  * HTTP-surface tests for the spawned server. These don't exercise the
- * CLI directly — they hit the server's bearer-guarded endpoints via
+ * CLI directly — they hit the server's identity-gated endpoints via
  * the typed RPC client to verify the response shapes the CLI relies on.
  *
  * The server itself boots without a cluster (its bootstrap is
@@ -27,10 +28,11 @@ describe('yaac server HTTP surface (real server)', () => {
   // One server for the file: every case below is a pure read of the
   // HTTP surface (auth rejections, empty lists, NOT_FOUND paths) and
   // none mutates server state, so a spawn apiece bought nothing but a
-  // ~2s tax per assertion.
+  // ~2s tax per assertion. It admits a tailnet name, so a request to it
+  // reaches the identity gate rather than stopping at the Host guard.
   beforeAll(async () => {
     testEnv = await createYaacTestEnv()
-    server = await spawnYaacServer(testEnv.env)
+    server = await spawnYaacServer({ ...testEnv.env, YAAC_ALLOWED_HOSTS: 'srv.tailnet.ts.net' })
     client = makeServerApiClient(server)
   })
 
@@ -39,25 +41,21 @@ describe('yaac server HTTP surface (real server)', () => {
     await testEnv.cleanup()
   })
 
-  it('rejects /project/list without a bearer token or cookie', async () => {
-    const res = await fetch(`http://127.0.0.1:${server.lock.port}/project/list`)
-    expect(res.status).toBe(401)
-    const body = await res.json() as unknown as { error: { code: string } }
-    // No credential at all → the generic code (a wrong bearer gets
-    // BAD_BEARER instead, tested below).
-    expect(body.error.code).toBe('UNAUTHENTICATED')
-  })
-
-  it('rejects a wrong bearer with BAD_BEARER', async () => {
-    const res = await fetch(`http://127.0.0.1:${server.lock.port}/project/list`, {
-      headers: { authorization: 'Bearer not-the-secret' },
+  it('refuses /project/list to a caller it cannot identify', async () => {
+    // The tailnet name reached without tailscale serve: no identity to be.
+    // A raw request, because fetch() silently drops a Host override.
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1', port: server.lock.port, path: '/project/list',
+        headers: { host: 'srv.tailnet.ts.net' },
+      }, (res) => { res.resume(); resolve(res.statusCode ?? 0) })
+      req.on('error', reject)
+      req.end()
     })
-    expect(res.status).toBe(401)
-    const body = await res.json() as unknown as { error: { code: string } }
-    expect(body.error.code).toBe('BAD_BEARER')
+    expect(status).toBe(401)
   })
 
-  it('returns the empty project list with the correct bearer', async () => {
+  it('returns the empty project list to a local caller', async () => {
     const res = await client.project.list.$get()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([])
@@ -81,9 +79,7 @@ describe('yaac server HTTP surface (real server)', () => {
     // The route was deleted along with the prewarm feature; the typed RPC
     // client no longer exposes it, so hit the path raw and expect the
     // uniform 404.
-    const res = await fetch(`http://127.0.0.1:${server.lock.port}/prewarm`, {
-      headers: { authorization: `Bearer ${server.lock.secret}` },
-    })
+    const res = await fetch(`http://127.0.0.1:${server.lock.port}/prewarm`)
     expect(res.status).toBe(404)
     const body = await res.json() as { error: { code: string } }
     expect(body.error.code).toBe('NOT_FOUND')

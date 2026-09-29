@@ -116,6 +116,8 @@ export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
 export const WORKTREE_EGRESS_NP_NAME = 'yaac-worktree-egress'
 /** NetworkPolicy locking the proxy's ingress (transparent ports = node only). */
 export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
+/** NetworkPolicy keeping the proxy's upstream dials off the kind fronting's node port. */
+export const PROXY_EGRESS_NP_NAME = 'yaac-proxy-egress'
 /** NetworkPolicy locking worktree-pod ingress to the proxy's relay dials. */
 export const WORKTREE_INGRESS_LOCK_NP_NAME = 'yaac-worktree-ingress-lock'
 /** Role label pods carry so policy and sweeps can select on what they are. */

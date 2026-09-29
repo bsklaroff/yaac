@@ -1,13 +1,14 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import { CheckIcon } from '#lib/icons'
 import { serverBridge } from '#lib/desktopServer'
-import type { DesktopServerSelection, DesktopServerTargets } from '@yaac/shared/types'
+import { api } from '#lib/api'
+import type { DesktopServerSelection, DesktopServerTargets, Principal } from '@yaac/shared/types'
 
 /**
  * Desktop-only server picker (Settings → Server). Lists every server this
  * machine has configured — including the one on this machine, which `yaac
- * server start` registers like any other — and takes a new one (origin +
- * access token). Switching rewrites `~/.yaac-client/server.json`, the same
+ * server start` registers like any other — and takes a new one by its
+ * origin. Switching rewrites `~/.yaac-client/server.json`, the same
  * machine-wide selection `yaac remote set/on` writes, so the CLI follows;
  * the shell then relands the window on the new origin, so a successful
  * switch tears this page down mid-flight ("Reconnecting…" is the last
@@ -19,10 +20,12 @@ export function ServerSettings(): JSX.Element {
   const [busy, setBusy] = useState<string | null>(null) // a server origin, or 'add'
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [principal, setPrincipal] = useState<Principal | null>(null)
 
   useEffect(() => {
     if (!bridge) return
     void bridge.targets().then(setTargets).catch((e: unknown) => console.error(e))
+    void api.whoami.$get().then(setPrincipal).catch((e: unknown) => console.error(e))
   }, [bridge])
 
   if (!bridge) {
@@ -51,14 +54,12 @@ export function ServerSettings(): JSX.Element {
     const formElement = event.currentTarget
     const form = new FormData(formElement)
     const rawUrl = form.get('url')
-    const rawToken = form.get('token')
     const url = (typeof rawUrl === 'string' ? rawUrl : '').trim()
-    const token = (typeof rawToken === 'string' ? rawToken : '').trim()
-    if (!url || !token) return
+    if (!url) return
     setBusy('add')
     setError(null)
     try {
-      const outcome = await bridge.addRemote(url, token)
+      const outcome = await bridge.addRemote(url)
       if (!outcome.ok) {
         setError(outcome.error)
         return
@@ -81,6 +82,9 @@ export function ServerSettings(): JSX.Element {
         Which yaac server this app is attached to. Switching applies machine-wide
         (the <code className="text-text-dim">yaac</code> CLI follows) and reconnects the window.
       </p>
+      {principal?.kind === 'tailnet' && (
+        <p className="mt-1 text-[11px] text-text-dim">Signed in as {principal.login}</p>
+      )}
 
       {switching && (
         <p className="mt-3 text-xs text-accent">Reconnecting…</p>
@@ -114,22 +118,15 @@ export function ServerSettings(): JSX.Element {
       <div className="mt-6">
         <div className="text-xs font-medium text-text">Add a server</div>
         <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-          A yaac server origin (e.g. https://host.ts.net, or http://127.0.0.1:8787 for
-          one on this machine) and an access token minted there
-          with <code className="text-text-dim">yaac auth token create &lt;name&gt;</code>.
+          A yaac server origin: https://host.ts.net for one served over your tailnet,
+          or http://127.0.0.1:8787 for one on this machine. The server knows you by
+          your tailnet login; there is nothing to paste.
         </p>
         <form onSubmit={(e) => void addRemote(e)} className="mt-2 flex gap-2">
           <input
             name="url"
             placeholder="https://host.ts.net"
             className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-              outline-none focus:border-border-strong"
-          />
-          <input
-            name="token"
-            type="password"
-            placeholder="token"
-            className="w-40 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
               outline-none focus:border-border-strong"
           />
           <button

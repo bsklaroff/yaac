@@ -42,8 +42,9 @@ export function snapshotForwards(snapshot: ServerSnapshot, baseUrl: string): For
 }
 
 export interface ForwarderDeps {
-  /** Fresh target per rebuild — a server restart rotates port and secret,
-   *  exactly as the events monitor re-resolves per connection. */
+  /** Fresh target per rebuild — the machine may have been re-pointed at
+   *  another server, exactly as the events monitor re-resolves per
+   *  connection. */
   resolveTarget(): Promise<ServerTarget>
   createSet?: typeof createForwardSet
   /** Bind failures and dropped connections, for the log. */
@@ -79,7 +80,7 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
     set?.close()
     targetUrl = target.baseUrl
     set = createSet(
-      { baseUrl: target.baseUrl, secret: target.secret },
+      { baseUrl: target.baseUrl },
       {
         onBindError: (spec, message) =>
           say(`port ${String(spec.hostPort)} could not be bound: ${message}`),

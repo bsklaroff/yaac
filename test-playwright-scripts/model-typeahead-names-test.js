@@ -7,8 +7,8 @@
  * checks that no suggestion row's name is clipped (scrollWidth > clientWidth)
  * while its id still gets whatever room is left. Creates nothing.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to
  * ~/.yaac) — so run `pnpm build` + `yaac server restart` first.
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/model-typeahead-names-test.js
@@ -40,7 +40,6 @@ function requirePlaywright() {
 const dataDir = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
 const lock = JSON.parse(fs.readFileSync(path.join(dataDir, 'server-local', '.server.lock'), 'utf8'))
 const origin = `http://127.0.0.1:${lock.port}`
-const auth = { authorization: `Bearer ${lock.secret}` }
 
 let failures = 0
 function check(name, cond, detail = '') {
@@ -52,14 +51,7 @@ const PROJECT = process.env.PROJECT
 if (!PROJECT) throw new Error('set PROJECT=<slug> to the project to open')
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 
-const minted = await fetch(`${origin}/tokens`, {
-  method: 'POST',
-  headers: { ...auth, 'content-type': 'application/json' },
-  body: JSON.stringify({ kind: 'one-time' }),
-})
-if (minted.status !== 201) throw new Error(`mint failed: HTTP ${minted.status}`)
-const token = (await minted.json()).token
-const tools = (await (await fetch(`${origin}/auth/list`, { headers: auth })).json()).toolAuth.map((t) => t.tool)
+const tools = (await (await fetch(`${origin}/auth/list`)).json()).toolAuth.map((t) => t.tool)
 if (tools.length === 0) throw new Error('needs at least one agent credential')
 
 const { chromium } = requirePlaywright()
@@ -67,8 +59,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${PROJECT}&token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`${origin}/?project=${PROJECT}`)
   fs.mkdirSync(SHOTS, { recursive: true })
 
   for (const tool of tools) {

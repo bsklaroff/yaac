@@ -21,7 +21,7 @@
  *
  * Run: node test-playwright-scripts/usage-badge-test.js
  * (set SCREENSHOT_DIR to capture closed/open screenshots there)
- * Needs a running server (`yaac server start`); reads the port/secret from
+ * Needs a running server (`yaac server start`); reads the port from
  * $YAAC_DATA_DIR/.server.lock (or ~/.yaac). (playwright is resolved from
  * the global npm root; browsers live under /opt/playwright-browsers)
  */
@@ -64,7 +64,6 @@ async function main() {
   const { chromium } = requirePlaywright()
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
 
   // Precondition: only an OAuth (subscription) credential produces a badge —
   // with api-key auth it is correctly hidden and there is nothing to drive.
@@ -78,10 +77,10 @@ async function main() {
 
   // The popover-open nudge endpoint (fire-and-forget on the client; data
   // arrives via the snapshot, so a 204 is all there is to see here).
-  const refreshRes = await fetch(`${base}/auth/claude/usage/refresh`, { method: 'POST', headers: auth })
+  const refreshRes = await fetch(`${base}/auth/claude/usage/refresh`, { method: 'POST' })
   check('usage-refresh nudge endpoint answers 204', refreshRes.status === 204, `HTTP ${refreshRes.status}`)
 
-  const codeRes = await fetch(`${base}/auth/bootstrap-code`, { headers: auth })
+  const codeRes = await fetch(`${base}/auth/bootstrap-code`)
   if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
   const { code } = await codeRes.json()
 

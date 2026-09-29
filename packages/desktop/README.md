@@ -3,11 +3,12 @@
 An Electron shell around the yaac webapp. There is no bundled frontend and no
 renderer code: the main process resolves the selected server
 (`~/.yaac-client/server.json`), ensures the machine-local auth-daemon (login
-broker) best-effort, mints a one-time exchange token (POST /tokens, via the
-shared typed client), and loads `<server-origin>/?token=…` into the window. From then on the
-window is a plain browser on the server origin, so the SPA, cookie auth, and
-WebSockets behave exactly like the webapp, and version skew is impossible (the
-SPA comes from the server it talks to).
+broker) best-effort, checks that the server answers and will say who this
+device is (`GET /whoami`, via the shared typed client), and loads the server
+origin into the window. From then on the window is a plain browser on that
+origin, identified by the server from each request as any browser is, so the
+SPA and its WebSockets behave exactly like the webapp, and version skew is
+impossible (the SPA comes from the server it talks to).
 
 **Every server is a URL, and the shell starts none.** A server on this machine
 is in `server.json` like any other — `yaac server start` registers the host
@@ -24,12 +25,12 @@ Server section uses.
 - **Tray, not quit-on-close.** Closing the window hides it; the shell lives
   in the tray (Open / waiting-count status / Quit). Quit quits the *shell*
   only — the server keeps running; it was never ours to stop. Reopening
-  (tray click, Dock activate) reruns the resolve→mint flow, because the
-  exchange token is single-use. A failed boot does not quit either: the tray
+  (tray click, Dock activate) reruns the resolve→identify flow, which also
+  notices a server that came back meanwhile. A failed boot does not quit either: the tray
   is what keeps the shell alive while the user goes and starts a server.
 - **Attention signals.** The main process follows the server's `/events`
-  WebSocket as a bearer client (re-resolving the target on every reconnect,
-  so a restarted server's rotated port/secret self-heals) and surfaces
+  WebSocket (re-resolving the target on every reconnect, so a machine
+  re-pointed at another server follows it) and surfaces
   waiting sessions as a macOS dock badge, the tray status line, and one OS
   notification per new waiting *spell* (`waitingSinceMs` — a session that
   waits anew re-notifies; an ongoing wait doesn't, and neither does a
@@ -81,27 +82,24 @@ server is up (so Vite reads its real port from the lock), starts Vite on
 `YAAC_DESKTOP_RENDERER_URL=http://localhost:1420/`. Only the *renderer*
 hot-reloads — main-process (`src/*.ts`) changes still need a restart.
 
-### How the boot flow authenticates (both modes)
+### How the boot flow reaches the server (both modes)
 
-`src/flow.ts` always resolves the real server target and mints a one-time
-exchange token against it (`POST /tokens`);
-`YAAC_DESKTOP_RENDERER_URL` never changes *which* server is minted against,
-only the origin the window then loads. The window opens `<base>/?token=…`, and
-the SPA (`App.tsx`) trades that token for an HttpOnly session cookie at
-`POST /auth/web-session`, then scrubs it from the URL.
+`src/flow.ts` always resolves the real server target and probes `GET /whoami`
+against it; `YAAC_DESKTOP_RENDERER_URL` never changes *which* server is
+probed, only the origin the window then loads (`<base>/`). No credential is
+carried: the server takes a request at its loopback as this machine's owner,
+and one through `tailscale serve` as the tailnet user it stamps.
 
-- **`desktop:dev` / installed:** `<base>` is the server origin, so the exchange
-  and every later API/WS call are same-origin to the server directly.
+- **`desktop:dev` / installed:** `<base>` is the server origin, so every
+  API/WS call is same-origin to the server directly.
 - **`desktop:hot`:** `<base>` is `http://localhost:1420`, so the SPA loads from
-  Vite. The exchange and all API/WS calls are relative (`/auth/web-session`,
-  `/session`, `/events`, `/pty`), so they hit Vite same-origin and its proxy
-  forwards them to the server it read from the lock — the cookie lands on the
-  `localhost:1420` origin, exactly like the browser `pnpm frontend:dev` flow.
+  Vite. All API/WS calls are relative (`/whoami`, `/session`, `/events`,
+  `/pty`), so they hit Vite same-origin and its proxy forwards them to the
+  server it read from the lock, exactly like the browser `pnpm frontend:dev`
+  flow.
 
 Plain `pnpm frontend:dev` (browser, no shell) is the same picture minus the
-mint step: open `http://localhost:1420/` and, with no `?token=` in the URL, the
-SPA falls through to the sign-in splash — paste a token from `yaac auth token
-create`, or open the Vite URL with a `?token=` you minted yourself.
+probe: open `http://localhost:1420/`.
 
 The desktop app is not part of `pnpm build`; the published npm artifact never
 includes it.
@@ -143,13 +141,13 @@ notices there is no cluster and offers setup, streaming
 
 | | server on this machine | server elsewhere |
 |---|---|---|
-| webapp | `yaac server start` → open the origin `yaac remote status` shows | `yaac remote set <url> --token <t>` → open that origin, paste a token from `yaac auth token create` |
-| desktop | `yaac server start` → `pnpm desktop:dev` lands authed on the loopback origin with no interaction | `yaac remote set …` → should land on `https://…`; break the token to see the picker |
+| webapp | `yaac server start` → open the origin `yaac remote status` shows | `yaac remote set <url>` → open that origin from a user-owned tailnet device |
+| desktop | `yaac server start` → `pnpm desktop:dev` lands on the loopback origin with no interaction | `yaac remote set …` → should land on `https://…`; from a tagged device it lands on the picker with the server's refusal |
 
 Also check from the desktop app: a terminal attaches (PTY WebSocket) and
 Cmd-C/V copy/paste inside it; a forwarded-port link opens in the system
 browser (`setWindowOpenHandler` in `src/main.ts`); close hides to the tray
-and tray-Open lands authed again (fresh mint); a waiting session badges the
+and tray-Open lands again; a waiting session badges the
 dock and notifies once, and clicking the notification focuses the window;
 Quit leaves `yaac server status` running; window bounds survive a relaunch.
 
@@ -157,7 +155,7 @@ The picker, which is the whole window whenever no server is reachable:
 `yaac server stop` then relaunch → "Could not connect to http://127.0.0.1:…"
 over a row for that origin; start the server and click Connect → lands.
 `yaac remote off` then relaunch → "No yaac server selected" with the rows
-still listed. Add a server with a bad token → the rejection inline, still on
+still listed. Add an origin that does not answer → the error inline, still on
 the picker. `test-playwright-scripts/desktop-server-picker.js` drives exactly
 this against a real Electron build.
 

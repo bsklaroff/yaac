@@ -107,7 +107,6 @@ export function connectPageHtml(state: ConnectPageState): string {
         background: light-dark(#fff, #171717); color: inherit;
       }
       input:focus { outline: none; border-color: light-dark(#999, #555); }
-      input.token { flex: 0 0 140px; }
       .note { color: light-dark(#777, #888); margin: 0; line-height: 1.5; }
       .status { margin-top: 14px; min-height: 17px; }
       .status.error { color: light-dark(#b3261e, #f2a49d); }
@@ -128,13 +127,11 @@ export function connectPageHtml(state: ConnectPageState): string {
 
       <h2>Add a server</h2>
       <p class="note">
-        A yaac server origin (<code>https://host.ts.net</code>, or
-        <code>http://127.0.0.1:8787</code> for one on this machine) and an access
-        token minted there with <code>yaac auth token create &lt;name&gt;</code>.
+        A yaac server origin: <code>https://host.ts.net</code> for one served on
+        your tailnet, or <code>http://127.0.0.1:8787</code> for one on this machine.
       </p>
       <form id="add">
         <input name="url" placeholder="https://host.ts.net" />
-        <input name="token" class="token" type="password" placeholder="token" />
         <button type="submit" class="add">Connect</button>
       </form>
 
@@ -188,12 +185,11 @@ export function connectPageHtml(state: ConnectPageState): string {
         document.getElementById('add').addEventListener('submit', function (e) {
           e.preventDefault()
           var url = e.target.elements.url.value.trim()
-          var token = e.target.elements.token.value.trim()
-          if (!url || !token) {
-            setStatus('Enter both an origin and a token.', 'error')
+          if (!url) {
+            setStatus('Enter a server origin.', 'error')
             return
           }
-          handle(bridge.addRemote(url, token))
+          handle(bridge.addRemote(url))
         })
       })()
     </script>

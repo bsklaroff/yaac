@@ -15,7 +15,7 @@
  * Run: node test-playwright-scripts/config-editor-expand-test.js
  * (set SCREENSHOT_DIR to also capture inline/expanded screenshots there)
  * Needs a running server (`yaac server start`) with a project configured;
- * reads the port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
+ * reads the port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
  */
@@ -89,9 +89,8 @@ async function main() {
   const { chromium } = requirePlaywright()
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
 
-  const codeRes = await fetch(`${base}/auth/bootstrap-code`, { headers: auth })
+  const codeRes = await fetch(`${base}/auth/bootstrap-code`)
   if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
   const { code } = await codeRes.json()
 

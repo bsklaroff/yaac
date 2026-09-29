@@ -28,12 +28,11 @@ function stubFetch(over: {
 }
 
 describe('frontend api client', () => {
-  it('sends same-origin credentials and a JSON Accept header', async () => {
+  it('sends a JSON Accept header to the page origin', async () => {
     const fetchMock = stubFetch({ json: () => Promise.resolve({ tool: 'claude' }) })
     await api.auth.list.$get()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/auth/list')
-    expect(init.credentials).toBe('same-origin')
     expect(new Headers(init.headers).get('accept')).toBe('application/json')
   })
 

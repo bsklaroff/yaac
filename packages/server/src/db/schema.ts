@@ -332,19 +332,6 @@ export const worktreeAgentSessions = snakeCase.table('worktree_agent_sessions', 
   columns: [t.projectSlug, t.worktreeId, t.tool, t.agentSessionId],
 })])
 
-/** All client credentials (durable bearers, one-time exchange tokens, web
- *  sessions) — faithful to TokenEntry. Name-uniqueness via PK matches the
- *  store's create() CONFLICT check; `expiresAt` is set only on `one-time`
- *  entries. No seq column: the only order consumer is the per-kind FIFO
- *  trim, and loadTokens orders by (createdAt, name). */
-export const tokens = snakeCase.table('tokens', {
-  name: text().primaryKey(),
-  token: text().notNull(),
-  kind: text().notNull(),
-  createdAt: text().notNull(),
-  expiresAt: text(),
-})
-
 /**
  * A project's environment: the variables every worktree of it launches with,
  * and the secrets the egress proxy injects on its behalf.

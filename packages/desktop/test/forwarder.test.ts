@@ -12,8 +12,8 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
 
-const LOCAL: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's' }
-const OTHER: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 't' }
+const LOCAL: ServerTarget = { baseUrl: 'http://127.0.0.1:8787' }
+const OTHER: ServerTarget = { baseUrl: 'https://srv.ts.net' }
 
 function worktree(worktreeId: string, ports: Array<[number, number]>): WorktreeListEntry {
   return {
@@ -172,8 +172,8 @@ describe('startForwarder', () => {
   })
 
   it('says so and carries on when the target cannot be resolved', async () => {
-    // A restarting server rotates its port and secret; the next snapshot
-    // resolves the fresh one.
+    // A server that is down between snapshots; the next snapshot resolves
+    // it again.
     resolveTarget.mockRejectedValueOnce(new Error('yaac server is not running'))
     const said: string[] = []
     const forwarder = startForwarder({

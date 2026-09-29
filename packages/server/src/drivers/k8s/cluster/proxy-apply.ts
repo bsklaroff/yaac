@@ -31,6 +31,7 @@ import {
 } from './proxy-manifests'
 import {
   buildEgressWorldDenyNpManifest,
+  buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildWorktreeEgressNpManifest,
   buildWorktreeIngressLockNpManifest,
@@ -151,6 +152,9 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   // Lock the proxy's transparent ports to the node (forgery guard): only
   // netd's Envoy, which runs in the node netns, may originate PP2.
   await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
+  // And its upstream dials kept off the kind fronting's node port, where a
+  // transparent CONNECT would otherwise reach the server as the node.
+  await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
   // World-egress default-deny over non-worktree, non-builder pods.
   await kubectlApply(buildEgressWorldDenyNpManifest())
   // The redirect layer.

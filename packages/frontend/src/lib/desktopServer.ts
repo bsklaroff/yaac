@@ -13,7 +13,7 @@ import type {
 export interface YaacServerBridge {
   targets(): Promise<DesktopServerTargets>
   switchTo(selection: DesktopServerSelection): Promise<DesktopServerOutcome>
-  addRemote(url: string, token: string): Promise<DesktopServerOutcome>
+  addRemote(url: string): Promise<DesktopServerOutcome>
   /** Re-run the boot flow. Used by the shell's own disconnected page. */
   retry?(): Promise<DesktopServerOutcome>
 }

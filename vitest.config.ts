@@ -38,8 +38,8 @@ const CONTAINERLESS_SETUP = [...SETUP, './packages/test-utils/src/containerless-
  *
  * A spawned server is no longer among them. It needs the CLI built, which is
  * why the project carries the containerless global setup (the CLI build and
- * nothing else) and names the driver in its env — `server-http` and
- * `token-auth-flow` could move here too, on the same terms.
+ * nothing else) and names the driver in its env — `server-http` could
+ * move here too, on the same terms.
  */
 const CONTAINERLESS_API = [
   'test/api/routes-containerless.test.ts',
@@ -47,7 +47,7 @@ const CONTAINERLESS_API = [
   'test/api/read-marks.test.ts',
   'test/api/server.test.ts',
   'test/api/shortcuts.test.ts',
-  'test/api/web-session-flow.test.ts',
+  'test/api/identity-flow.test.ts',
   // Driver-neutral: it guards the WebSocket compression pass-through, which
   // a dependency bump could drop for every install. That makes it worth
   // running where developers actually run things — a worktree with no

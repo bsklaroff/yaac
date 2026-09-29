@@ -100,9 +100,8 @@ describe('yaac auth server (real CLI + real servers)', () => {
     // seed runs before the auth server writes its lock, and `start` returns
     // once the lock lands, so each check below follows a finished seed.
     const base = `http://127.0.0.1:${server.lock.port}`
-    const auth = { authorization: `Bearer ${server.lock.secret}` }
     const identity = async (): Promise<unknown> =>
-      ((await (await fetch(`${base}/config/git-identity`, { headers: auth })).json()) as { identity: unknown }).identity
+      ((await (await fetch(`${base}/config/git-identity`)).json()) as { identity: unknown }).identity
     const gitConfig = testEnv.env.GIT_CONFIG_GLOBAL!
     await fs.writeFile(gitConfig, '[user]\n\tname = Seeded User\n\temail = seeded@example.com\n')
     try {
@@ -127,7 +126,7 @@ describe('yaac auth server (real CLI + real servers)', () => {
   it('without an agent, webapp-shaped login starts get actionable 503 guidance', async () => {
     const res = await fetch(
       `http://127.0.0.1:${server.lock.port}/auth/claude/login/start`,
-      { method: 'POST', headers: { authorization: `Bearer ${server.lock.secret}` } },
+      { method: 'POST' },
     )
     expect(res.status).toBe(503)
     const body = await res.json() as { error: { code: string; message: string } }
@@ -137,22 +136,21 @@ describe('yaac auth server (real CLI + real servers)', () => {
 
   it('a raw agent socket flips /auth/agent and dropping it fails running flows', async () => {
     const base = `http://127.0.0.1:${server.lock.port}`
-    const auth = { authorization: `Bearer ${server.lock.secret}` }
 
-    const ws = new WebSocket(`ws://127.0.0.1:${server.lock.port}/agent/auth`, { headers: auth })
+    const ws = new WebSocket(`ws://127.0.0.1:${server.lock.port}/agent/auth`)
     await new Promise<void>((resolve, reject) => {
       ws.once('open', () => resolve())
       ws.once('error', reject)
     })
 
-    const connected = await (await fetch(`${base}/auth/agent`, { headers: auth })).json() as { connected: boolean }
+    const connected = await (await fetch(`${base}/auth/agent`)).json() as { connected: boolean }
     expect(connected.connected).toBe(true)
 
     // Start a login; the fake agent receives the op with the flow id.
     const opReceived = new Promise<{ op: string; id: string; tool: string }>((resolve) => {
       ws.once('message', (data: Buffer) => resolve(JSON.parse(data.toString('utf8')) as { op: string; id: string; tool: string }))
     })
-    const start = await fetch(`${base}/auth/claude/login/start`, { method: 'POST', headers: auth })
+    const start = await fetch(`${base}/auth/claude/login/start`, { method: 'POST' })
     expect(start.status).toBe(200)
     const view = await start.json() as { id: string; status: string }
     expect(view.status).toBe('running')
@@ -165,16 +163,16 @@ describe('yaac auth server (real CLI + real servers)', () => {
       view: { id: view.id, tool: 'claude', status: 'running', output: 'visit https://sign.in' },
     }))
     await new Promise((r) => setTimeout(r, 200))
-    const polled = await (await fetch(`${base}/auth/login/${view.id}`, { headers: auth })).json() as { output?: string }
+    const polled = await (await fetch(`${base}/auth/login/${view.id}`)).json() as { output?: string }
     expect(polled.output).toBe('visit https://sign.in')
 
     // Dropping the socket fails the running flow and flips connectivity.
     ws.close()
     await new Promise((r) => setTimeout(r, 300))
-    const after = await (await fetch(`${base}/auth/login/${view.id}`, { headers: auth })).json() as { status: string; error?: string }
+    const after = await (await fetch(`${base}/auth/login/${view.id}`)).json() as { status: string; error?: string }
     expect(after.status).toBe('error')
     expect(after.error).toMatch(/disconnected/)
-    const disconnected = await (await fetch(`${base}/auth/agent`, { headers: auth })).json() as { connected: boolean }
+    const disconnected = await (await fetch(`${base}/auth/agent`)).json() as { connected: boolean }
     expect(disconnected.connected).toBe(false)
   })
 })

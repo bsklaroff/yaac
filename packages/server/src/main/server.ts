@@ -2,42 +2,28 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { setCookie } from 'hono/cookie'
 import {
-  cookieOrBearerAuth,
-  createTokenStore,
   denyBrowserCors,
   fetchSiteCheck,
   hostHeaderCheck,
+  identify,
   originHeaderCheck,
   registerStaticRoutes,
   requestLogger,
-  sessionCookieName,
   toErrorBody,
-  type TokenStore,
+  type IdentityEnv,
 } from '#http'
 import { projectApp } from '#routes/projects'
 import { worktreeApp } from '#routes/worktrees'
 import { authApp } from '#routes/auth'
-import { createTokensApp } from '#routes/tokens'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
 import { imageApp } from '#routes/images'
 import { hasWorktreeDriver, worktreeDriver } from '#drivers/driver'
-import { serverLog } from '#log'
-import { env } from '@yaac/shared/env'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 
 export interface ServerAppDeps {
-  secret: string
   buildId: string
-  /**
-   * Token store (durable client tokens + one-time exchange tokens + web
-   * worktrees). Optional so existing in-process tests can keep calling
-   * `buildApp({secret, buildId})`; a fresh empty store (nothing but the
-   * lock secret authenticates) is created when omitted.
-   */
-  tokens?: TokenStore
   /**
    * Reports whether startup initialization (DB open + first-boot
    * migrations) has finished. Surfaced on `/health` as `ready` so `yaac
@@ -56,9 +42,8 @@ export interface ServerAppDeps {
  * can be driven with `new Request(...)` directly).
  */
 export function buildApp(deps: ServerAppDeps) {
-  const tokens = deps.tokens ?? createTokenStore()
   const isReady = deps.isReady ?? (() => true)
-  const app = new Hono()
+  const app = new Hono<IdentityEnv>()
 
   app.use('*', requestLogger())
   // Stamp every response with the server build so a remote CLI (which
@@ -70,13 +55,14 @@ export function buildApp(deps: ServerAppDeps) {
   app.use('*', hostHeaderCheck())
   app.use('*', denyBrowserCors())
   // Reject cross-site requests two ways (both browser-set, JS-unforgeable,
-  // and effective on WS upgrades, which are never preflighted) so a loopback
-  // server without a credential is still safe against a malicious website:
-  // the request's Origin host, and the Fetch-metadata Sec-Fetch-Site signal.
-  // Hardening even when auth is on.
+  // and effective on WS upgrades, which are never preflighted), because a
+  // browser's identity is ambient — loopback or tailnet, a malicious site's
+  // request would carry it: the request's Origin (which must be the very
+  // origin it was sent to, port included), and the Fetch-metadata
+  // Sec-Fetch-Site signal.
   app.use('*', originHeaderCheck())
   app.use('*', fetchSiteCheck())
-  app.use('*', cookieOrBearerAuth(deps.secret, tokens))
+  app.use('*', identify())
 
   app.onError((err: Error, c: Context) => {
     const { status, body } = toErrorBody(err)
@@ -87,44 +73,6 @@ export function buildApp(deps: ServerAppDeps) {
     { error: { code: 'NOT_FOUND', message: `no route ${c.req.method} ${c.req.path}` } },
     404,
   ))
-
-  // Browser worktree mint. POST is public (allowlisted in
-  // cookieOrBearerAuth): exchanges a token — one-time from the start
-  // banner or the desktop app, or a pasted durable token — for an HttpOnly session cookie. Never
-  // log the token value — only ok/fail.
-  app.post('/auth/web-session', async (c) => {
-    const body: unknown = await c.req.json().catch(() => null)
-    const token = (body as { token?: unknown } | null)?.token
-    if (typeof token !== 'string' || token.length === 0) {
-      serverLog('[server] web-session exchange fail')
-      return c.json({ error: { code: 'BAD_REQUEST', message: 'missing token' } }, 400)
-    }
-    const worktreeId = tokens.consumeExchange(token)
-    if (!worktreeId) {
-      serverLog('[server] web-session exchange fail')
-      return c.json(
-        { error: { code: 'BAD_TOKEN', message: 'invalid or expired token' } },
-        401,
-      )
-    }
-    setCookie(c, sessionCookieName(), worktreeId, {
-      httpOnly: true,
-      sameSite: 'Strict',
-      path: '/',
-      // `Secure` only when a trusted TLS-terminating proxy (tailscale
-      // serve) says the outer leg was https. Gated on YAAC_TRUST_PROXY so
-      // a direct-loopback request can't spoof X-Forwarded-Proto into a
-      // posture change; on plain loopback http the flag stays off because
-      // browsers drop Secure cookies set over http.
-      secure: env.trustProxy && c.req.header('x-forwarded-proto') === 'https',
-    })
-    serverLog('[server] web-session exchange ok')
-    return c.body(null, 204)
-  })
-
-  // Authenticated (cookie or bearer) no-op: the SPA probes it on load to
-  // learn whether its session cookie is still good.
-  app.get('/auth/web-session', (c) => c.body(null, 204))
 
   // Serve the built SPA bundle when present (production: dist/frontend).
   // Absent in dev/test (Vite serves the app instead), so guard on it.
@@ -140,15 +88,17 @@ export function buildApp(deps: ServerAppDeps) {
       ready: isReady(),
       // Which substrate this server runs, or null before the composition
       // root has registered one. Here as well as on the snapshot because a
-      // caller may need it before it holds a credential: `yaac cluster …`
+      // caller may need it before it is identified: `yaac cluster …`
       // asks this to decide whether it means anything against THIS server,
       // rather than trusting its own shell's YAAC_DRIVER — a server started
       // elsewhere leaves no trace in it.
       driver: hasWorktreeDriver() ? worktreeDriver().kind : null,
     }))
+    // Who the server takes this caller to be — the SPA's bootstrap and the
+    // clients' "will this server take my requests" probe.
+    .get('/whoami', (c) => c.json(c.get('principal')))
     .route('/project', projectApp)
     .route('/worktree', worktreeApp)
-    .route('/tokens', createTokensApp(tokens))
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)

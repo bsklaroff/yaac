@@ -14,7 +14,7 @@ import {
 } from '#auth-daemon'
 import { setDataDir } from '#paths'
 
-const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's3cret' }
+const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787' }
 const INVOCATION = { bin: '/App/Resources/node/node', args: ['/App/Resources/server/dist/cli.js', 'auth', 'server', 'run'] }
 
 interface SpawnCall {
@@ -79,7 +79,7 @@ describe('ensureAuthDaemonSpawned', () => {
     const result = await ensureAuthDaemonSpawned({
       target: TARGET, invocation: INVOCATION, spawnImpl: impl, killImpl,
     })
-    expect(result).toEqual({ baseUrl: TARGET.baseUrl, secret: TARGET.secret })
+    expect(result).toEqual({ baseUrl: TARGET.baseUrl })
     expect(calls).toHaveLength(1)
     expect(calls[0].bin).toBe(INVOCATION.bin)
     expect(killImpl).not.toHaveBeenCalled()
@@ -147,7 +147,7 @@ describe('ensureAuthDaemon', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe(`${TARGET.baseUrl}/auth/agent`)
-    expect(init?.headers).toEqual({ authorization: `Bearer ${TARGET.secret}` })
+    expect(init?.headers).toBeUndefined()
     expect(init?.signal).toBeInstanceOf(AbortSignal)
   })
 

@@ -49,21 +49,42 @@ const target = `http://127.0.0.1:${serverPort}`
 
 // Bare-path API surface proxied to the server: the slice keeps the
 // existing paths rather than a /v1 prefix.
-const apiPrefixes = ['/session', '/project', '/auth', '/shortcuts', '/prewarm', '/health', '/image', '/cluster']
+const apiPrefixes = ['/session', '/project', '/auth', '/shortcuts', '/prewarm', '/health', '/whoami', '/image', '/cluster']
+
+interface OutgoingLike { setHeader(name: string, value: string): void }
+interface IncomingLike { headers: Record<string, string | string[] | undefined> }
+interface ProxyLike { on(event: string, listener: (out: OutgoingLike, req: IncomingLike) => void): void }
 
 interface ProxyEntry {
   target: string
   changeOrigin: boolean
+  configure: (proxy: ProxyLike) => void
   ws?: boolean
 }
 
+// `changeOrigin` rewrites Host to the server's; Origin has to follow it,
+// because the server admits only a request whose Origin is the origin it
+// was sent to (`isAllowedOrigin`). Only this dev page's own Origin is
+// rewritten: anything else — a forwarded dev server on another port — goes
+// through as sent and is refused, as it would be without the proxy.
+const sameOrigin = {
+  target,
+  changeOrigin: true,
+  configure: (proxy: ProxyLike) => {
+    for (const event of ['proxyReq', 'proxyReqWs']) {
+      proxy.on(event, (out, req) => {
+        if (req.headers.origin === `http://${String(req.headers.host)}`) out.setHeader('origin', target)
+      })
+    }
+  },
+}
 const proxy: Record<string, ProxyEntry> = {}
-for (const p of apiPrefixes) proxy[p] = { target, changeOrigin: true }
-proxy['/events'] = { target, changeOrigin: true, ws: true }
-proxy['/pty'] = { target, changeOrigin: true, ws: true }
+for (const p of apiPrefixes) proxy[p] = sameOrigin
+proxy['/events'] = { ...sameOrigin, ws: true }
+proxy['/pty'] = { ...sameOrigin, ws: true }
 // The chat pane's transport, alongside the terminal's — without it a `tui`
 // worktree works in dev and an `acp` one silently never connects.
-proxy['/acp'] = { target, changeOrigin: true, ws: true }
+proxy['/acp'] = { ...sameOrigin, ws: true }
 
 export default defineConfig({
   root: 'src',

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 
 /**
  * CSP for the SPA shell. Loopback-only http server, so cookies can't be
@@ -57,7 +57,7 @@ export function contentTypeFor(filePath: string): string {
  * Asset paths are confined to `frontendDir/assets` so a crafted
  * `..`-laden request can't escape the bundle.
  */
-export function registerStaticRoutes(app: Hono, frontendDir: string): void {
+export function registerStaticRoutes<E extends Env>(app: Hono<E>, frontendDir: string): void {
   const indexPath = path.join(frontendDir, 'index.html')
   const assetsDir = path.join(frontendDir, 'assets')
 

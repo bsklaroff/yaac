@@ -52,9 +52,11 @@ import {
 } from '#drivers/k8s/substrate'
 import {
   buildEgressWorldDenyNpManifest,
+  egressAllButServerFront,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
+  nodeIpBlocks,
 } from '#drivers/k8s/cluster'
 import { runStreamingProcess } from '#drivers/k8s/container'
 import type { EngineBuildContext } from './build-engine'
@@ -434,11 +436,12 @@ async function streamContextToPod(
   }
 }
 
-/** Builder egress: explicit allow-all for role=builder pods. The real
- *  gate is the world-deny policy's builder exclusion; this keeps the intent
- *  declared even if a future default-deny NetworkPolicy lands in the
- *  namespace. */
-export function buildBuilderEgressNetworkPolicyManifest(): Record<string, unknown> {
+/** Builder egress: everywhere a build fetches from — upstream package
+ *  registries, the image registry — but never the kind fronting's node
+ *  port, which would hand a `RUN` step the server as its owner
+ *  (`egressAllButServerFront`). The world-deny policy excludes builders, so
+ *  this is the policy that governs them. */
+function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
@@ -449,7 +452,7 @@ export function buildBuilderEgressNetworkPolicyManifest(): Record<string, unknow
     spec: {
       podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
       policyTypes: ['Egress'],
-      egress: [{}],
+      egress: egressAllButServerFront(nodeCidrs),
     },
   }
 }
@@ -464,7 +467,7 @@ export function buildBuilderEgressNetworkPolicyManifest(): Record<string, unknow
  */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
-  await kubectlApply(buildBuilderEgressNetworkPolicyManifest())
+  await kubectlApply(buildBuilderEgressNetworkPolicyManifest(await nodeIpBlocks()))
   const existing = await kubectlGetJson<Record<string, unknown>>([
     'get', 'networkpolicy', EGRESS_WORLD_DENY_NAME, '-n', k8sNamespace(),
   ]).catch(() => null)

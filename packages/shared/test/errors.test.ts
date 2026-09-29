@@ -10,7 +10,6 @@ describe('shared errors', () => {
         CONFLICT: 409,
         RUNTIME_UNAVAILABLE: 503,
         AUTH_AGENT_DISCONNECTED: 503,
-        BAD_BEARER: 401,
         UNAUTHENTICATED: 401,
         BAD_HOST: 403,
         NOT_SUPPORTED: 501,

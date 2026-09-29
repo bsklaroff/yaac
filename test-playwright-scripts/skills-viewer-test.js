@@ -14,9 +14,8 @@
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/skills-viewer-test.js
  * (set SCREENSHOT_DIR to also capture a screenshot of the open overlay)
- * Needs a running server (`yaac server start`) with a project configured;
- * authenticates the browser by minting a one-time ?token= URL over POST /tokens
- * (lock secret as bearer), which the SPA exchanges for its session cookie.
+ * Needs a running server (`yaac server start`) with a project configured; the
+ * browser loads its loopback origin, which needs no credential.
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
  */
@@ -82,18 +81,9 @@ async function main() {
   const project = process.env.PROJECT || 'yaac'
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
   const seededDirs = seedSkills(project)
 
-  // Fresh one-time exchange token → authed URL (?token=…); the SPA exchanges
-  // it for the session cookie on load.
-  const res = await fetch(`${base}/tokens`, {
-    method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status} ${await res.text()}`)
-  const authedUrl = `${base}/?token=${(await res.json()).token}`
+  const appUrl = `${base}/`
 
   const browser = await chromium.launch()
   const viewport = { width: 1400, height: 900 }
@@ -101,7 +91,7 @@ async function main() {
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
   try {
-    await page.goto(`${authedUrl}&project=${project}`)
+    await page.goto(`${appUrl}?project=${project}`)
 
     // Open the Skills overlay from the sidebar header.
     const skillsBtn = page.getByRole('button', { name: 'Skills', exact: true })

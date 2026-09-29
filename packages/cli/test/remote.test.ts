@@ -35,58 +35,53 @@ describe('yaac remote commands', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
+  const LOCAL = { kind: 'local' }
+
   describe('remoteSet', () => {
-    it('verifies health + token, then persists an enabled remote', async () => {
+    it('verifies health and identity, then persists an enabled remote, saying who it is', async () => {
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'cli-build' }))
-        .mockResolvedValueOnce(jsonResponse({ tokens: [] }))
+        .mockResolvedValueOnce(jsonResponse({ kind: 'tailnet', login: 'alice@example.com', name: 'Alice' }))
       vi.stubGlobal('fetch', fetchMock)
 
-      await remoteSet('https://srv.ts.net/', { token: 'tok' })
+      await remoteSet('https://srv.ts.net/')
 
-      expect(fetchMock.mock.calls[0][0]).toBe('https://srv.ts.net/health')
-      const tokenCall = fetchMock.mock.calls[1] as [string, RequestInit]
-      expect(tokenCall[0]).toBe('https://srv.ts.net/tokens')
-      expect(new Headers(tokenCall[1].headers).get('authorization')).toBe('Bearer tok')
+      expect(fetchMock.mock.calls.map(([u]) => u as string))
+        .toEqual(['https://srv.ts.net/health', 'https://srv.ts.net/whoami'])
       expect(await readServerConfig()).toEqual({
         url: 'https://srv.ts.net',
-        token: 'tok',
         enabled: true,
-        saved: [{ url: 'https://srv.ts.net', token: 'tok' }],
+        saved: [{ url: 'https://srv.ts.net' }],
       })
+      expect(logSpy).toHaveBeenCalledWith('Server selected: https://srv.ts.net (as alice@example.com)')
       expect(errorSpy).not.toHaveBeenCalled() // no skew warning
     })
 
     it('keeps previously set remotes in the saved list', async () => {
       await writeServerConfig({
         url: 'https://old.ts.net',
-        token: 'old-tok',
         enabled: true,
-        saved: [{ url: 'https://old.ts.net', token: 'old-tok' }],
+        saved: [{ url: 'https://old.ts.net' }],
       })
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'cli-build' }))
-        .mockResolvedValueOnce(jsonResponse({ tokens: [] })))
+        .mockResolvedValueOnce(jsonResponse(LOCAL)))
 
-      await remoteSet('https://new.ts.net', { token: 'new-tok' })
+      await remoteSet('https://new.ts.net')
 
       expect(await readServerConfig()).toEqual({
         url: 'https://new.ts.net',
-        token: 'new-tok',
         enabled: true,
-        saved: [
-          { url: 'https://new.ts.net', token: 'new-tok' },
-          { url: 'https://old.ts.net', token: 'old-tok' },
-        ],
+        saved: [{ url: 'https://new.ts.net' }, { url: 'https://old.ts.net' }],
       })
     })
 
     it('warns (but succeeds) on build skew', async () => {
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'server-build' }))
-        .mockResolvedValueOnce(jsonResponse({ tokens: [] })))
+        .mockResolvedValueOnce(jsonResponse(LOCAL)))
 
-      await remoteSet('https://srv.ts.net', { token: 'tok' })
+      await remoteSet('https://srv.ts.net')
 
       expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/differs from this CLI/))
       expect((await readServerConfig())?.enabled).toBe(true)
@@ -94,36 +89,42 @@ describe('yaac remote commands', () => {
 
     it('fails without persisting when the server is unreachable', async () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
-      await expect(remoteSet('https://down.ts.net', { token: 'tok' }))
+      await expect(remoteSet('https://down.ts.net'))
         .rejects.toThrow(/cannot reach https:\/\/down\.ts\.net/)
       expect(await readServerConfig()).toBeNull()
     })
 
-    it('fails without persisting when the token is rejected', async () => {
+    it('reports an unidentified device in the server\'s words, without persisting', async () => {
+      // A tagged device (or Funnel) reaching the server through tailscale
+      // serve: the server is up, and will not say who this is.
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'cli-build' }))
-        .mockResolvedValueOnce(jsonResponse({ error: { code: 'BAD_BEARER', message: 'x' } }, 401)))
-      await expect(remoteSet('https://srv.ts.net', { token: 'bad' }))
-        .rejects.toThrow(/token rejected.*yaac auth token create/s)
+        .mockResolvedValueOnce(jsonResponse({
+          error: {
+            code: 'UNAUTHENTICATED',
+            message: 'tailscale serve sent no user identity: this device is a tagged device',
+          },
+        }, 401)))
+      await expect(remoteSet('https://srv.ts.net'))
+        .rejects.toThrow(/refused to identify this device: tailscale serve sent no user identity.*tagged device/)
       expect(await readServerConfig()).toBeNull()
     })
 
     it('rejects a non-origin URL before any network call', async () => {
       const fetchMock = vi.fn()
       vi.stubGlobal('fetch', fetchMock)
-      await expect(remoteSet('https://srv.ts.net/path', { token: 't' }))
-        .rejects.toThrow(/bare origin/)
+      await expect(remoteSet('https://srv.ts.net/path')).rejects.toThrow(/bare origin/)
       expect(fetchMock).not.toHaveBeenCalled()
     })
   })
 
-  it('remoteOff / remoteOn toggle without losing the token', async () => {
-    const saved = [{ url: 'https://srv.ts.net', token: 'tok' }]
-    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved })
+  it('remoteOff / remoteOn toggle without losing the server', async () => {
+    const saved = [{ url: 'https://srv.ts.net' }]
+    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved })
     await remoteOff()
-    expect(await readServerConfig()).toEqual({ url: 'https://srv.ts.net', token: 'tok', enabled: false, saved })
+    expect(await readServerConfig()).toEqual({ url: 'https://srv.ts.net', enabled: false, saved })
     await remoteOn()
-    expect(await readServerConfig()).toEqual({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved })
+    expect(await readServerConfig()).toEqual({ url: 'https://srv.ts.net', enabled: true, saved })
   })
 
   it('remoteOn / remoteOff without a configured remote throw guidance', async () => {
@@ -132,36 +133,28 @@ describe('yaac remote commands', () => {
   })
 
   it('remoteUnset clears the config', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
+    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
     await remoteUnset()
     expect(await readServerConfig()).toBeNull()
   })
 
-  it('remoteStatus prints the masked token, never the full value', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', token: 'a'.repeat(64), enabled: true, saved: [] })
+  it('remoteStatus prints the selection, and other saved remotes when there are any', async () => {
+    await writeServerConfig({ url: 'https://a.ts.net', enabled: true, saved: [] })
     await remoteStatus()
-    const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
-    expect(printed).toContain('https://srv.ts.net')
-    expect(printed).toContain(`${'a'.repeat(8)}…`)
-    expect(printed).not.toContain('a'.repeat(64))
+    let printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+    expect(printed).toContain('https://a.ts.net')
     expect(printed).toMatch(/selected\s+yes/)
     expect(printed).not.toMatch(/^saved/m) // no other saved remotes → no line
-  })
 
-  it('remoteStatus lists other saved remotes without their tokens', async () => {
+    logSpy.mockClear()
     await writeServerConfig({
       url: 'https://a.ts.net',
-      token: 'tok-a',
       enabled: true,
-      saved: [
-        { url: 'https://a.ts.net', token: 'tok-a' },
-        { url: 'https://b.ts.net', token: 'tok-b' },
-      ],
+      saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }],
     })
     await remoteStatus()
-    const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+    printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
     expect(printed).toMatch(/saved\s+https:\/\/b\.ts\.net/)
-    expect(printed).not.toContain('tok-b')
   })
 
   it('remoteStatus without a remote prints setup guidance', async () => {

@@ -26,8 +26,8 @@
  *  4. Above the breakpoint none of this applies — the desktop keeps its own
  *     sizing, since there the visual viewport only moves under zoom.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
  * Needs no worktree and spends no agent turn.
  *
@@ -141,16 +141,6 @@ const { chromium } = requirePlaywright()
 const lock = readServerLock()
 const APP_URL = process.env.APP_URL ?? `http://127.0.0.1:${lock.port}`
 
-async function mintToken() {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 const browser = await chromium.launch()
 try {
   const ctx = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true })
@@ -158,8 +148,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  await page.goto(`${APP_URL}/?token=${await mintToken()}`)
-  await until(page, () => !window.location.search.includes('token='))
+  await page.goto(`${APP_URL}/`)
   await until(page, () => !!document.querySelector('#root > div'))
   await page.waitForTimeout(1000)
 
@@ -204,7 +193,7 @@ try {
   // ---- 5. above the breakpoint the hook publishes nothing ----
   const wide = await ctx.newPage()
   await wide.setViewportSize(DESKTOP)
-  await wide.goto(`${APP_URL}/?token=${await mintToken()}`)
+  await wide.goto(`${APP_URL}/`)
   await until(wide, () => !!document.querySelector('#root > div'))
   await wide.evaluate(() => window.__vv({ height: 500, offsetTop: 344 }))
   await wide.waitForTimeout(300)

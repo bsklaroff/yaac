@@ -134,7 +134,7 @@ export async function forward(
     : undefined
 
   const set = createForwardSet(
-    { baseUrl: target.baseUrl, secret: target.secret },
+    { baseUrl: target.baseUrl },
     {
       bindHost: options.bind,
       onChange: (spec, state) => {

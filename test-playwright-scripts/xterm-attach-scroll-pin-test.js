@@ -29,7 +29,7 @@
  * before/after-keypress screenshots to the script's directory, and deletes
  * the session afterwards; trials wait for the pool to respawn a spare.
  * Needs a running server and an existing session for <sessionId> whose agent
- * has booted. Reads port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
+ * has booted. Reads port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  * (playwright resolved from the global npm root; browsers under
  * /opt/playwright-browsers)
  */
@@ -89,10 +89,10 @@ function windowSize(pod) {
 }
 
 /** Claim a prewarmed spare via the server API; returns its sessionId. */
-async function claimSpare(base, auth) {
+async function claimSpare(base) {
   const res = await fetch(`${base}/session/create`, {
     method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ project: 'yaac' }),
   })
   if (!res.ok) throw new Error(`create failed: HTTP ${res.status}`)
@@ -104,15 +104,15 @@ async function claimSpare(base, auth) {
   throw new Error('create stream ended without a result')
 }
 
-async function deleteSession(base, auth, sessionId) {
+async function deleteSession(base, sessionId) {
   await fetch(`${base}/session/delete`, {
     method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId }),
   }).catch(() => {})
 }
 
-async function waitForSpare(base, auth) {
+async function waitForSpare(base) {
   for (let i = 0; i < 60; i++) {
     const out = execSync(
       'kubectl get pods -n yaac -l yaac.prewarmed=true'
@@ -281,7 +281,6 @@ async function main() {
   const { chromium } = requirePlaywright()
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
   const claimMode = sessionId === 'claim'
   const pod = claimMode ? null : podName(sessionId)
   if (pod) console.log(`session pod: ${pod}; window ${windowSize(pod)}`)
@@ -294,8 +293,8 @@ async function main() {
       let shotPrefix = null
       if (claimMode) {
         console.log(`waiting for a prewarmed spare…`)
-        await waitForSpare(base, auth)
-        trialSession = await claimSpare(base, auth)
+        await waitForSpare(base)
+        trialSession = await claimSpare(base)
         shotPrefix = path.join(os.tmpdir(), `scroll-pin-claim-${i}`)
         console.log(`claimed spare ${trialSession} (screenshots at ${shotPrefix}-*.png)`)
       } else if (i > 1) {
@@ -306,14 +305,14 @@ async function main() {
         await new Promise((r) => setTimeout(r, 3000))
         console.log(`window reset to ${windowSize(pod)}`)
       }
-      const codeRes = await fetch(`${base}/auth/bootstrap-code`, { headers: auth })
+      const codeRes = await fetch(`${base}/auth/bootstrap-code`)
       if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
       const { code } = await codeRes.json()
       try {
         results.push(
           await runTrial(browser, base, code, trialSession, `${i}/${trials}`, dpr, vw, vh, shotPrefix))
       } finally {
-        if (claimMode) await deleteSession(base, auth, trialSession)
+        if (claimMode) await deleteSession(base, trialSession)
       }
     }
   } finally {

@@ -227,9 +227,11 @@ export const env = {
    * it off the pod spec, containerless off the tmux server environment).
    * Undefined for a server running on a user's own machine.
    *
-   * Its one reader is the credential gate: a server in here is reachable only
-   * through the outer install's port-forward, never fronted on its own. Empty
-   * is treated as unset so an explicit `YAAC_WORKTREE_ID=` clears it.
+   * Its reader on the request path is `identify()`: a server in here is
+   * reached through the outer install's port-forward, a direct path that
+   * passes through no `tailscale serve`, so an unproxied request to it is
+   * local whatever Host it names (docs/remote-hosting.md). Empty is treated
+   * as unset so an explicit `YAAC_WORKTREE_ID=` clears it.
    */
   get worktreeId(): string | undefined {
     const raw = (process.env.YAAC_WORKTREE_ID ?? '').trim()
@@ -353,25 +355,13 @@ export const env = {
   },
 
   /**
-   * `YAAC_TRUST_PROXY` — set to `1` only when the server runs behind a
-   * trusted TLS-terminating proxy (tailscale serve). Gates trusting
-   * `X-Forwarded-Proto` for the Secure cookie flag; without it a direct
-   * loopback request could spoof the header into a posture change.
+   * `YAAC_REQUIRE_AUTH` — set at all. Nothing honors it: the server refuses
+   * to start while it is set, because it asked for a credential gate on a
+   * loopback shared with other OS users, and there is no such gate any more
+   * (docs/legacy-compat-shims.md).
    */
-  get trustProxy(): boolean {
-    return process.env.YAAC_TRUST_PROXY === '1'
-  },
-
-  /**
-   * `YAAC_REQUIRE_AUTH` — set to `1` to force the credential gate on even for
-   * a purely-local (loopback-only) server. A loopback-only deployment skips
-   * the bearer/cookie requirement by default (a browser or CLI on the same
-   * machine needs no token); the Host + Origin guards still defend it against
-   * a malicious website. Set this to opt back into a credential — for a
-   * shared machine, or so the auth-path tests exercise the 401 gate.
-   */
-  get requireAuth(): boolean {
-    return process.env.YAAC_REQUIRE_AUTH === '1'
+  get requireAuthSet(): boolean {
+    return (process.env.YAAC_REQUIRE_AUTH ?? '') !== ''
   },
 
   /**
@@ -412,14 +402,9 @@ export const testEnv = {
     return process.env.YAAC_BUILD_ID
   },
 
-  /** `YAAC_SERVER_URL` — full server base URL; paired with the secret below. */
+  /** `YAAC_SERVER_URL` — full server base URL, above `server.json`. */
   get serverUrlOverride(): string | undefined {
     return process.env.YAAC_SERVER_URL
-  },
-
-  /** `YAAC_SERVER_SECRET` — bearer token for the injected server URL. */
-  get serverSecretOverride(): string | undefined {
-    return process.env.YAAC_SERVER_SECRET
   },
 
   /**

@@ -25,11 +25,10 @@ claims").
 2. **The two ingress NetworkPolicies** — before the Service, so the port
    is never published to pods before the wall exists (see "The ingress
    policy is the wall").
-3. **The Service**, in the shape the install's *fronting* needs — a
-   ClusterIP on kind, the Tailscale operator's LoadBalancer under
-   `--tailnet` — and, on kind, the forwarder that fronts it (see
-   "Reachability"). Before the Deployment, because the origin the fronting
-   publishes is an input to the Deployment's environment.
+3. **The Service**, a ClusterIP, and the install's *fronting* of it — on
+   kind the forwarder, under `--tailnet` the Tailscale operator's Ingress
+   (see "Reachability"). Before the Deployment, because the origin the
+   fronting publishes is an input to the Deployment's environment.
 4. **The two storage claims** and, on kind, the static volumes behind
    them — applied before the Deployment that mounts them, and only after
    the server that is there has been stopped and the data dir moved into
@@ -37,20 +36,18 @@ claims").
 5. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
    priority, plain runc, `runAsUser` = the installing host's uid, three
    mounts (the two claims and the node's own node-local tree) named by the
-   three root variables, and `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`
-   stating whatever the fronting says about its origin, unioned with what
-   the install shell carried.
+   three root variables, and `YAAC_ALLOWED_HOSTS` stating whatever the
+   fronting says about its origin, unioned with what the install shell
+   carried.
 
 Then it waits for the published origin to report ready and registers the
-server: `server.json` gets that origin, a durable token, and `k8s` as what
-this data dir runs. The token is minted with the lock secret, and the lock
-is read by asking the **pod** (`kubectl exec … cat .server.lock`) rather
-than the host's disk: on kind the host could still open it through the
-volume's hostPath, on a cloud cluster the data dir is not on the CLI
-machine at all, and one path serves both. The registration itself is not install's own — it
-is the same `registerServer` `yaac server start` calls for a host process,
-because a client reaches either server the same way
-(docs/server-selection.md).
+server: `server.json` gets that origin and `k8s` as what this data dir
+runs. The registration is not install's own — it is the same
+`registerServer` `yaac server start` calls for a host process, because a
+client reaches either server the same way (docs/server-selection.md). It
+then asks `/whoami` as this machine, and warns when the server will not
+identify it: under the tailnet fronting there is no loopback path, and a
+tagged device has no tailnet user to be.
 
 Two things it refuses rather than doing. It will not deploy while a **host**
 server still holds the data dir: the documented upgrade is `npm update` then
@@ -136,42 +133,59 @@ Service is still the NodePort an earlier yaac applied converges in place:
 install applies the ClusterIP Service first, which releases the node port,
 and the forwarder binds it after.
 
-**Under `--tailnet`** the fronting is the Tailscale Kubernetes operator's
-LoadBalancer Service — `loadBalancerClass: tailscale`, `allocateLoadBalancerNodePorts:
-false` so no NodePort is opened on the side, `tailscale.com/hostname: yaac`
-— which gives the server a tailnet-only MagicDNS name and nothing else: no
-public LoadBalancer, no Ingress, no DNS to manage. Install waits for the
-operator to publish that name into the Service status, hands it to the
-Deployment as `YAAC_ALLOWED_HOSTS` (so the server admits the name, which
-is what requires a credential — the tailnet is the trust boundary now, not
-this machine's loopback), and registers
-`http://<name>.<tailnet>.ts.net`. The operator is the cluster owner's to
-install; `--tailnet` refuses up front without it, printing the helm
-command, and reports a cluster it cannot ask as *unevaluated* rather than
-as missing. This is an L4 exposure: the wire is WireGuard-encrypted but
-there is no TLS termination, so the origin is `http://` and the session
-cookie is not `Secure`. For the same reason `YAAC_TRUST_PROXY` stays
-unset on this path: nothing in an L4 exposure sanitizes `X-Forwarded-*`,
-so trusting them would hand them to any tailnet client. `--byo`
-(docs/plans/cloud-k8s.md) selects this fronting implicitly.
+**Under `--tailnet`** the fronting is the same ClusterIP behind the
+Tailscale Kubernetes operator's Ingress — `ingressClassName: tailscale`,
+named `yaac-server`, its default backend the Service and its TLS host
+`yaac` — which gives the server a tailnet-only MagicDNS name with a
+certificate and nothing else: no public LoadBalancer, no NodePort, no DNS
+to manage. Install waits for the operator to publish that name into the
+Ingress status, hands it to the Deployment as `YAAC_ALLOWED_HOSTS` (so the
+server admits the name, and every request to it has to carry the identity
+the Ingress proxy stamps — the tailnet is the trust boundary now, not this
+machine's loopback), and registers
+`https://<name>.<tailnet>.ts.net`. The first HTTPS request to a new name is
+what makes the operator's proxy fetch its certificate, so the publish probe
+waits longer here than on kind, and when it gives up it names the likely
+causes in order: the tailnet's HTTPS certificates setting (which nothing in
+the cluster can read), MagicDNS, then the ACLs.
 
-The **live Service records which fronting was installed** — nothing on disk
-does. `yaac server start|restart` read it back (`frontingOfService`), wait
-on the origin it implies, and print it: a Service of the tailnet class is
-the tailnet fronting; anything else — a ClusterIP, a not-yet-reconverged
-NodePort, or no Service at all, which is what the e2e harness deploys — is
-the kind fronting, by the general rule rather than a special case.
+The Ingress rather than the operator's L4 LoadBalancer Service because the
+Ingress proxy is `tailscale serve`: it terminates TLS, so the origin is a
+secure context the webapp needs for its clipboard and pickers, and it
+strips client-supplied identity and forwarding headers and stamps its own,
+which is what the server's identity rule reads (docs/remote-hosting.md). An
+L4 exposure would hand the pod whatever headers a tailnet device chose to
+send — `Host: 127.0.0.1` included, which would make every tailnet device
+the owner. An install still fronted by such a Service is re-installed, not
+restarted, onto a release that identifies callers: the re-install is what
+replaces the Service. The operator
+is the cluster owner's to install; `--tailnet` refuses up front without
+it (its CRD, its Deployment, its IngressClass), printing the helm command,
+and reports a cluster it cannot ask as *unevaluated* rather than as
+missing. `--byo` (docs/plans/cloud-k8s.md) selects this fronting
+implicitly. The device name stays `yaac`; a second install on the same
+tailnet gets the operator's suffixed name, which install reads back from
+the status rather than assuming.
+
+The **live Ingress records which fronting was installed** — nothing on disk
+does. `yaac server start|restart` read it back (`frontingOfIngress`), wait
+on the origin it implies, and print it: a `tailscale`-class `yaac-server`
+Ingress is the tailnet fronting; its absence — every kind install, and the
+e2e harness — is the kind fronting, by the general rule rather than a
+special case. Each fronting deletes the other's objects when it is
+applied, so a re-install that switches fronting leaves no Ingress (or
+forwarder) of the old one behind.
 
 ### The ingress policy is the wall, not hardening
 
-Auth keeps today's rules: `isCredentialOptional` keys on **configuration**
-(`YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`), not on the bind address, so a
-local install stays credential-optional exactly as the host process was,
-and the Host/Origin checks still force loopback-shaped requests. Install
-mints a durable token regardless, because an install that *does* set those
-(through a fronting, deliberately, or by inheriting them from the shell that
-ran it) would otherwise lock this machine's own CLI out of the server it
-just deployed — and it says so in its output when that happens.
+The server identifies a caller the way a host server does
+(docs/remote-hosting.md): a request that did not pass through `tailscale
+serve` and names a loopback `Host` is the owner. On kind the forwarder
+behind the host's `127.0.0.1` port mapping is TCP, so what reaches the pod
+is exactly what a host process sent. That makes this policy load-bearing
+for AUTHENTICATION, not only for reachability: a worktree pod that reached
+the bind could send `Host: 127.0.0.1` and be the owner, so every path onto
+it has to be the node's or the fronting's.
 
 What replaces the loopback bind is the server pod's ingress policy, which
 is an **explicit allow in two objects** over the server's pod selector,
@@ -202,12 +216,28 @@ Calico enforces a workload's source — and matches nothing. Nothing
 in-cluster wants this port anyway: a worktree's own `yaac-mama` calls go to
 the egress proxy's queue, which the server drains.
 
+The node half has one blind spot, and it is on the other side of the
+wire. On kind the fronting forwarder is a hostNetwork listener on the node
+port the port mapping targets, which no pod policy covers, and its dial into
+the server is node-sourced — so a pod that reached `<node>:<that port>` would
+reach the server as the node, and with a loopback `Host` be its owner.
+Worktree pods cannot: their egress reaches node addresses on the netd
+listener range alone. The two kinds of pod that may dial node addresses —
+builder pods, which run `RUN` steps from agent-editable Dockerfiles, and the
+egress proxy, whose upstream is whatever a worktree's allowlist names — carry
+egress policies that admit every node port but that one
+(`egressAllButServerFront`). The proxy's is applied on every server start
+as well as with the proxy, since a proxy that is already current is never
+redeployed; the builders' with each build. Every other pod in the
+namespace is under the world default-deny, and `cluster check`'s `egress`
+gate fails when a deployed proxy has no such policy.
+
 Together with the worktree egress default-deny, that is the whole of what
-keeps untrusted code off an unauthenticated control plane — so `yaac
-cluster check`'s `egress` gate proves it on every install, with a
-worktree-labelled probe pod that must fail to dial the server, alongside
-the apiserver, registry and forgery-lock denials it already proved. The
-`server` e2e suite proves the same from a per-file deployment.
+keeps untrusted code from being the server's owner — so `yaac cluster
+check`'s `egress` gate proves it on every install, with a worktree-labelled
+probe pod that must fail to dial the server, alongside the apiserver,
+registry and forgery-lock denials it already proved. The `server` e2e suite
+proves the same from a per-file deployment.
 
 The Host guard has one consequence worth knowing: the kubelet dials the
 POD IP, so its readiness probe would present `Host: <pod ip>` and be
@@ -355,7 +385,7 @@ and forwards a local port to it, handing back the `{ lock, stop }` shape a
 containerless spawn also answers — so no test file knows which it got. What the harness
 supplies is what a pod cannot read for itself — a reachable origin (the
 forward's local port is what the returned lock reports, never the port the
-pod binds), a durable token in `server.json`, RBAC in that namespace, the
+pod binds), its origin in `server.json`, RBAC in that namespace, the
 node half of the ingress wall (a port-forward is a CRI-side dial that never
 traverses policy, so no fronting and no fronting half), the claim pair for
 the file's namespace with static volumes into the file's own data dir, and
@@ -400,7 +430,7 @@ mounts at fixed pod paths, which the Deployment names in three variables:
 
 `YAAC_DATA_DIR` keeps naming the host's data dir inside the pod. It is an
 identity string there and a directory only on the host: `dataDirHash()`,
-every label, the registry claim name and the cookie name hash it, so none
+every label and the registry claim name hash it, so none
 of them change across the storage boundary. The path helpers resolve into
 the three roots, and the roots are what the Deployment re-points — a host
 process never sets the variables, so under containerless the split is
@@ -472,10 +502,10 @@ Two consequences worth stating:
 
 - **No server process records the driver.** `resolveDriverKind` writes
   nothing; the COMMAND that stands the server up records it, and `yaac
-  cluster install` writes `k8s` alongside the origin and token. There is
+  cluster install` writes `k8s` alongside the origin. There is
   nothing for the pod to add and nowhere to put it.
 - **`resolveServerTarget` reads neither the record nor the lock.** It reads
-  the origin and token in `server.json` and nothing else
+  the origin in `server.json` and nothing else
   (docs/server-selection.md). The lock is the server's own file — under this
   driver it belongs to the pod, a client may not be able to read it at all,
   and the port in it is the one bound inside the pod.

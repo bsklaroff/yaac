@@ -76,16 +76,16 @@ describe('startForward', () => {
     cleanups.push(server.close)
 
     const handle = track(await startForward(
-      { baseUrl: server.baseUrl, secret: 'sekrit' },
+      { baseUrl: server.baseUrl },
       { session: 'sess-1', containerPort: 5173, hostPort: 0 },
     ))
 
     expect(await roundTrip(handle.hostPort, 'hello')).toBe('hello')
 
-    // The bearer rides the upgrade, exactly as it does for the PTY —
-    // there is no token in the URL.
+    // No credential rides the upgrade: the server identifies the caller
+    // from the request itself, exactly as it does for the PTY.
     const [upgrade] = server.upgrades
-    expect(upgrade.authorization).toBe('Bearer sekrit')
+    expect(upgrade.authorization).toBeUndefined()
     expect(upgrade.path).toContain('/forward/attach')
     expect(upgrade.path).toContain('id=sess-1')
     expect(upgrade.path).toContain('port=5173')
@@ -97,7 +97,7 @@ describe('startForward', () => {
     const server = await fakeServer()
     cleanups.push(server.close)
     const handle = track(await startForward(
-      { baseUrl: server.baseUrl, secret: 's' },
+      { baseUrl: server.baseUrl },
       { session: 'sess-1', containerPort: 5173, hostPort: 0 },
     ))
 
@@ -118,7 +118,7 @@ describe('startForward', () => {
     })
     cleanups.push(server.close)
     const handle = track(await startForward(
-      { baseUrl: server.baseUrl, secret: 's' },
+      { baseUrl: server.baseUrl },
       { session: 'sess-1', containerPort: 5173, hostPort: 0 },
     ))
 
@@ -136,7 +136,7 @@ describe('startForward', () => {
     cleanups.push(server.close)
     const errors: string[] = []
     const handle = track(await startForward(
-      { baseUrl: server.baseUrl, secret: 's' },
+      { baseUrl: server.baseUrl },
       { session: 'sess-1', containerPort: 5173, hostPort: 0 },
       { onConnectionError: (m) => errors.push(m) },
     ))
@@ -160,7 +160,7 @@ describe('startForward', () => {
     const taken = typeof addr === 'object' && addr ? addr.port : 0
 
     await expect(startForward(
-      { baseUrl: 'http://127.0.0.1:1', secret: 's' },
+      { baseUrl: 'http://127.0.0.1:1' },
       { session: 'sess-1', containerPort: 5173, hostPort: taken },
     )).rejects.toThrow(/EADDRINUSE/)
   })
@@ -175,9 +175,9 @@ describe('startForward', () => {
     // and drops the handshake, the error names no host at all and the test
     // fails for a reason that has nothing to do with this module.
     const spec = { session: 'sess-1', containerPort: 5173, hostPort: 0 }
-    expect(tunnelUrl({ baseUrl: 'https://srv.example.ts.net', secret: 's' }, spec))
+    expect(tunnelUrl({ baseUrl: 'https://srv.example.ts.net' }, spec))
       .toBe('wss://srv.example.ts.net/forward/attach?id=sess-1&port=5173')
-    expect(tunnelUrl({ baseUrl: 'http://127.0.0.1:8787', secret: 's' }, spec))
+    expect(tunnelUrl({ baseUrl: 'http://127.0.0.1:8787' }, spec))
       .toBe('ws://127.0.0.1:8787/forward/attach?id=sess-1&port=5173')
   })
 })

@@ -42,16 +42,6 @@ function readServerLock() {
   for (const p of candidates) if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   throw new Error('no .server.lock found — is the server running?')
 }
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 // The VISIBLE terminal's grid + trailing-dot rows, and all mounted grids
 // (frozen-rect regression check: hidden grids must not move on a switch).
 const PROBE = () => {
@@ -84,13 +74,8 @@ try {
   const ctx = await browser.newContext({ viewport: { width: 1680, height: 1050 }, deviceScaleFactor: 2 })
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  const token = await mintToken(lock)
-  const project = process.env.PROJECT ? `project=${process.env.PROJECT}&` : ''
-  await page.goto(`${origin}/?${project}token=${token}`)
-  for (let i = 0; i < 60; i++) {
-    if (!(await page.evaluate(() => !window.location.search.includes('token=')))) await page.waitForTimeout(250)
-    else break
-  }
+  const project = process.env.PROJECT ? `project=${process.env.PROJECT}` : ''
+  await page.goto(`${origin}/?${project}`)
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(2000)
 

@@ -1381,6 +1381,18 @@ export interface CheckResult {
  */
 export type DriverKind = 'k8s' | 'containerless'
 
+/**
+ * Who a request came from, as the server derives it from the request
+ * itself (`GET /whoami`, docs/remote-hosting.md). `local` reached the
+ * server without passing through anything — this machine's loopback, or a
+ * nested server's direct path. `tailnet` came through `tailscale serve`,
+ * which stamped the device's tailnet user on it: `login` is that user's
+ * login name, `name` their display name.
+ */
+export type Principal =
+  | { kind: 'local' }
+  | { kind: 'tailnet'; login: string; name: string }
+
 export interface ServerSnapshot {
   /** Which substrate this server runs — see `DriverKind`. */
   driver: DriverKind

@@ -76,21 +76,16 @@ const GROUP = process.env.GROUP_NAME ?? 'Reviews'
 const lock = readServerLock()
 const origin = process.env.APP_URL ?? `http://127.0.0.1:${lock.port}`
 
-/** The loopback API, with the lock secret — the same door `yaac` itself uses. */
+/** The loopback API — the same door `yaac` itself uses. */
 async function api(pathname, body) {
   const res = await fetch(`${origin}${pathname}`, {
     ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }),
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
   })
   if (!res.ok) throw new Error(`${pathname}: HTTP ${res.status} ${await res.text()}`)
   return res
 }
 const get = async (p) => (await api(p)).json()
-
-async function mintToken() {
-  const res = await api('/tokens', { kind: 'one-time' })
-  return (await res.json()).token
-}
 
 let failures = 0
 function check(name, cond, detail = '') {
@@ -185,7 +180,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
-  await page.goto(`${origin}/?token=${await mintToken()}`)
+  await page.goto(`${origin}/`)
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 })
   const section = page.locator(`[role="group"][aria-label="${GROUP}"]`)
   await section.waitFor({ state: 'visible', timeout: 15_000 })

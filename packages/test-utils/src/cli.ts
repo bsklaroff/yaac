@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { ensureDataDir, setDataDir } from '@yaac/shared/paths'
-import { readServerConfig, registerServer } from '@yaac/shared/server-config'
+import { registerServer } from '@yaac/shared/server-config'
 import { readLock } from '@yaac/shared/lock'
 import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { TEST_NAMESPACE } from '#setup'
@@ -167,11 +167,6 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // every e2e server (and retitle worktrees mid-assertion); the feature is
     // unit-tested with a stubbed runner instead.
     YAAC_AUTO_TITLES: '0',
-    // Keep the credential gate on for spawned servers. A loopback server is
-    // credential-optional by default, but e2e/api suites assert the
-    // authenticated behavior (the CLI authenticates with the lock secret),
-    // so spawned servers stay auth-on exactly as in production remote use.
-    YAAC_REQUIRE_AUTH: '1',
   }
 
   const cleanup = async (): Promise<void> => {
@@ -213,8 +208,8 @@ export interface SpawnedServer {
 
 /**
  * Give this test file a yaac server, and hand back the two things a file
- * needs from one: a lock naming a loopback origin it can dial with a bearer
- * it can present, and a way to stop it.
+ * needs from one: a lock naming a loopback origin it can dial, and a way to
+ * stop it.
  *
  * Which KIND of server that is follows the driver, exactly as it does in
  * production (docs/server-in-cluster.md). A containerless install's server
@@ -312,14 +307,6 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
   // Without it every CLI call in the file resolves no server at all.
   try {
     await registerServer(`http://127.0.0.1:${lock.port}`, 'containerless')
-    const cfg = await readServerConfig()
-    if (!cfg?.token) {
-      throw new Error(
-        'the test server is up but would not issue a durable token, so every '
-        + 'CLI call in this file would be answered BAD_BEARER (these suites '
-        + 'run with YAAC_REQUIRE_AUTH=1).',
-      )
-    }
   } catch (err) {
     killGroup(child, 'SIGKILL')
     throw err
@@ -382,8 +369,8 @@ async function waitForLock(timeoutMs: number): Promise<ServerLock> {
     const lock = await readLock()
     // Wait for genuine readiness (`/health` reports ready), not just the
     // lock file: the port binds and the lock is written before the server
-    // opens its DB and mints the start-banner one-time token, so a caller
-    // that proceeds on the bare lock races those startup steps. Mirrors the
+    // opens its DB, so a caller that proceeds on the bare lock races that
+    // startup step. Mirrors the
     // real `yaac server start`, which waits on `isLockReady` for the same
     // reason.
     if (lock && await isLockReady(lock)) return lock

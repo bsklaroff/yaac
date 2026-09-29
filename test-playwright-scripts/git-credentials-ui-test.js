@@ -92,21 +92,16 @@ const slugOf = (url) => url.replace(/\.git$/, '').split('/').pop().toLowerCase()
 
 const lock = readServerLock()
 const origin = `http://127.0.0.1:${lock.port}`
-const auth = { authorization: `Bearer ${lock.secret}` }
 
 async function api(method, route, body) {
   const res = await fetch(`${origin}${route}`, {
     method,
-    headers: { ...auth, ...(body ? { 'content-type': 'application/json' } : {}) },
+    headers: body ? { 'content-type': 'application/json' } : {},
     ...(body ? { body: JSON.stringify(body) } : {}),
   })
   const text = await res.text()
   if (!res.ok) throw new Error(`${method} ${route}: HTTP ${res.status} ${text}`)
   return text ? JSON.parse(text) : null
-}
-
-async function mintToken() {
-  return (await api('POST', '/tokens', { kind: 'one-time' })).token
 }
 
 const projects = async () => await api('GET', '/project/list')
@@ -138,8 +133,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${unassigned}&token=${await mintToken()}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`${origin}/?project=${unassigned}`)
   fs.mkdirSync(SHOTS, { recursive: true })
 
   const row = (slug) => page.locator(`[data-project="${slug}"]`)

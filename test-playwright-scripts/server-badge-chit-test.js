@@ -18,8 +18,8 @@
  * Screenshots land in /tmp/yaac-shots/server-badge-*.png — the cropped
  * sidebar ones are the useful ones to look at.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
  *
  * Run: node test-playwright-scripts/server-badge-chit-test.js
@@ -57,16 +57,6 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running?')
 }
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 const SHOTS = '/tmp/yaac-shots'
 const CHIT = '[aria-label="Open server settings"]'
 // Kept in sync with store.ts by hand — this is a standalone node script, not
@@ -88,12 +78,10 @@ const BRIDGE = () => {
 }
 
 async function openApp(page, lock) {
-  const token = await mintToken(lock)
-  await page.goto(`http://127.0.0.1:${lock.port}/?token=${token}`)
+  await page.goto(`http://127.0.0.1:${lock.port}/`)
   // waitForURL, not waitForFunction: the app's CSP has no 'unsafe-eval', and
   // a string predicate evaluated in the page trips it once the served
   // document (rather than the pre-navigation one) is current.
-  await page.waitForURL((url) => !url.searchParams.has('token'), { timeout: 15_000 })
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 })
 }
 

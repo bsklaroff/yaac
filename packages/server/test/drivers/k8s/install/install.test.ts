@@ -319,7 +319,7 @@ function stageAdoptCidrs(opts: { pools?: string[]; nodeCidrs?: string[] } = {}):
 function tailnetRun(operator: 'present' | 'absent' | 'unreachable'): RunMock {
   return vi.fn((file: string, args: string[]) => {
     const operatorRead = file === 'kubectl' && args[0] === 'get'
-      && (args[1] === 'crd' || (args[1] === 'deployment' && args[2] === 'operator'))
+      && (args[1] === 'crd' || args[1] === 'ingressclass' || (args[1] === 'deployment' && args[2] === 'operator'))
     if (!operatorRead) return happyRun(file, args)
     if (operator === 'absent') {
       return Promise.reject(Object.assign(new Error('exit 1'), {

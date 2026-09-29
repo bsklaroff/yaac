@@ -20,10 +20,11 @@ describe('buildApp', () => {
   })
 
   it('GET /health returns buildId + ok without auth', async () => {
-    const app = buildApp({ secret: 'shh', buildId: 'abc123' })
-    // /health is the auth-exempt probe; hit it with a bare request
-    // (no bearer) to prove the exemption still holds.
-    const res = await app.request('/health')
+    const app = buildApp({ buildId: 'abc123' })
+    // /health is the identity-exempt probe; hit it at a name nobody is
+    // identified at to prove the exemption still holds.
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    const res = await app.request('/health', { headers: { host: 'srv.tailnet.ts.net' } })
     expect(res.status).toBe(200)
     // `driver` echoes whichever runtime the project's setup registered as
     // its stand-in for the composition root — k8s under `api-k8s`,
@@ -39,29 +40,26 @@ describe('buildApp', () => {
     })
   })
 
-  it('GET /project/list requires bearer auth', async () => {
-    // A loopback server is credential-optional by default; force the gate on
-    // to assert the bearer requirement.
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
-    const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
-    const res = await app.request('/project/list')
+  it('GET /project/list requires an identity', async () => {
+    // A tailnet name reached without tailscale serve has none.
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    const app = buildApp({ buildId: 'test-build-id' })
+    const res = await app.request('/project/list', { headers: { host: 'srv.tailnet.ts.net' } })
     expect(res.status).toBe(401)
   })
 
   it('GET /project/list returns [] on a fresh data dir', async () => {
-    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test-build-id' }))
+    const client = makeTestApiClient(buildApp({ buildId: 'test-build-id' }))
     const res = await client.project.list.$get()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([])
   })
 
   it('unknown routes return uniform 404 NOT_FOUND', async () => {
-    const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
+    const app = buildApp({ buildId: 'test-build-id' })
     // Unknown routes aren't in AppType, so the typed client can't
     // reach them — fall back to a raw app.request.
-    const res = await app.request('/no/such/route', {
-      headers: { authorization: 'Bearer shh' },
-    })
+    const res = await app.request('/no/such/route')
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({
       error: { code: 'NOT_FOUND', message: 'no route GET /no/such/route' },
@@ -69,9 +67,9 @@ describe('buildApp', () => {
   })
 
   it('handler exceptions are mapped to the uniform error body', async () => {
-    const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
+    const app = buildApp({ buildId: 'test-build-id' })
     app.get('/boom', () => { throw new Error('kaboom') })
-    const res = await app.request('/boom', { headers: { authorization: 'Bearer shh' } })
+    const res = await app.request('/boom')
     expect(res.status).toBe(500)
     const body = await res.json() as { error: { code: string; message: string } }
     expect(body.error.code).toBe('INTERNAL')

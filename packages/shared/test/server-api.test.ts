@@ -6,6 +6,7 @@ import {
   createServerFetch,
   describeBuildSkew,
   exitOnApiError,
+  getApiClient,
   isLoopbackOrigin,
   resolveServerTarget,
   type ServerTarget,
@@ -21,12 +22,11 @@ function jsonResponse(body: string, status = 200, headers: Record<string, string
 }
 
 describe('createServerFetch', () => {
-  const target: ServerTarget = { baseUrl: 'http://127.0.0.1:4242', secret: 'shh' }
+  const target: ServerTarget = { baseUrl: 'http://127.0.0.1:4242' }
 
-  it('issues requests against the target origin with the bearer header', async () => {
+  it('issues requests against the target origin, carrying no credential', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-      const auth = new Headers(init?.headers ?? {}).get('authorization')
-      expect(auth).toBe('Bearer shh')
+      expect(new Headers(init?.headers ?? {}).get('authorization')).toBeNull()
       return Promise.resolve(jsonResponse('[]'))
     })
     const serverFetch = createServerFetch({
@@ -40,47 +40,25 @@ describe('createServerFetch', () => {
     expect(url).toBe('http://127.0.0.1:4242/project/list')
   })
 
-  it('on BAD_BEARER re-resolves the target and retries once', async () => {
-    const rotated: ServerTarget = { ...target, secret: 'rotated', baseUrl: 'http://127.0.0.1:4243' }
-    const resolveTarget = vi.fn()
-      .mockResolvedValueOnce(target)
-      .mockResolvedValueOnce(rotated)
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401))
-      .mockResolvedValueOnce(jsonResponse('[]'))
-    const serverFetch = createServerFetch({
-      resolveTarget,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    })
-    const res = await serverFetch('/project/list')
-    expect(await res.json()).toEqual([])
-    expect(resolveTarget).toHaveBeenCalledTimes(2)
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-    const second = fetchImpl.mock.calls[1] as [string, RequestInit]
-    const auth = new Headers(second[1].headers ?? {}).get('authorization')
-    expect(auth).toBe('Bearer rotated')
-    expect(second[0]).toBe('http://127.0.0.1:4243/project/list')
-  })
-
-  it('a persistent BAD_BEARER throws token-refresh instructions for either kind of server', async () => {
-    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
-    const fetchImpl = vi.fn(() => Promise.resolve(
-      jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401),
-    ))
-    const serverFetch = createServerFetch({
+  it('surfaces a refused identity in the server\'s own words, without a retry', async () => {
+    // The 401's message is the only thing that says WHY — a tagged device,
+    // or a name reached without tailscale serve — so it reaches the user
+    // verbatim, and asking again changes nothing.
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net' }
+    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(
+      '{"error":{"code":"UNAUTHENTICATED","message":"tailscale serve sent no user identity"}}', 401,
+    )))
+    const api = getApiClient({
       resolveTarget: () => Promise.resolve(remote),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    await expect(serverFetch('/project/list')).rejects.toThrow(
-      /rejected the token.*yaac server start.*yaac auth token create.*yaac remote set https:\/\/srv\.ts\.net/s,
-    )
-    // No blind retry with the same credential.
+    await expect(api.project.list.$get()).rejects.toThrow('tailscale serve sent no user identity')
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
   it('warns once (stderr) when the server reports a different build id', async () => {
     vi.stubEnv('YAAC_BUILD_ID', 'local-build')
-    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net' }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
@@ -99,7 +77,7 @@ describe('createServerFetch', () => {
 
   it('warnOnBuildSkew: false suppresses the build-skew warning', async () => {
     vi.stubEnv('YAAC_BUILD_ID', 'local-build')
-    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net' }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
@@ -168,7 +146,6 @@ describe('resolveServerTarget', () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-target-'))
     setDataDir(dir)
     vi.stubEnv('YAAC_SERVER_URL', undefined)
-    vi.stubEnv('YAAC_SERVER_SECRET', undefined)
   })
 
   afterEach(async () => {
@@ -178,31 +155,30 @@ describe('resolveServerTarget', () => {
   })
 
   it('the env hatch wins over a selected server', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
+    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
     vi.stubEnv('YAAC_SERVER_URL', 'http://127.0.0.1:1234/')
-    vi.stubEnv('YAAC_SERVER_SECRET', 'env-secret')
     expect(await resolveServerTarget())
-      .toEqual({ baseUrl: 'http://127.0.0.1:1234', secret: 'env-secret' })
+      .toEqual({ baseUrl: 'http://127.0.0.1:1234' })
   })
 
   it('resolves the selected server, wherever it runs', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
-    expect(await resolveServerTarget()).toEqual({ baseUrl: 'https://srv.ts.net', secret: 'tok' })
+    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
+    expect(await resolveServerTarget()).toEqual({ baseUrl: 'https://srv.ts.net' })
     // A server on this machine is resolved the same way — the origin being
     // loopback is not a different code path.
     await writeServerConfig({
-      url: 'http://127.0.0.1:8787', token: 'local-tok', enabled: true, saved: [],
+      url: 'http://127.0.0.1:8787', enabled: true, saved: [],
       driver: 'containerless',
     })
     expect(await resolveServerTarget())
-      .toEqual({ baseUrl: 'http://127.0.0.1:8787', secret: 'local-tok' })
+      .toEqual({ baseUrl: 'http://127.0.0.1:8787' })
   })
 
   it('a deselected server resolves nothing — there is no fallback to look for one', async () => {
     // A live server could well be listening on this machine right now; with
     // nothing selected the answer is still "none", because the lock is not a
     // client's to read.
-    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: false, saved: [] })
+    await writeServerConfig({ url: 'https://srv.ts.net', enabled: false, saved: [] })
     await expect(resolveServerTarget()).rejects.toThrow(/No yaac server selected/)
   })
 

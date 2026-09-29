@@ -14,10 +14,8 @@ export interface SnapshotWatch {
 }
 
 /** Collect every `snapshot` frame off a persistent WS, exposing the latest. */
-export function collectSnapshots(port: number, secret: string): SnapshotWatch {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/events`, {
-    headers: { authorization: `Bearer ${secret}` },
-  })
+export function collectSnapshots(port: number): SnapshotWatch {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/events`)
   let latest: ServerSnapshot | null = null
   ws.on('message', (data, isBinary) => {
     if (isBinary) return
@@ -34,10 +32,8 @@ export function collectSnapshots(port: number, secret: string): SnapshotWatch {
 
 /** Open a WS and resolve the first `snapshot` frame's data (what a connecting
  *  or reloading browser hydrates from). */
-export async function firstSnapshot(port: number, secret: string): Promise<ServerSnapshot> {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/events`, {
-    headers: { authorization: `Bearer ${secret}` },
-  })
+export async function firstSnapshot(port: number): Promise<ServerSnapshot> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/events`)
   try {
     return await new Promise<ServerSnapshot>((resolve, reject) => {
       ws.once('error', reject)

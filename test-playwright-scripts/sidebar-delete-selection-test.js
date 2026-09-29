@@ -19,7 +19,7 @@
  * Needs a running `yaac server` with at least FOUR live worktrees in the
  * selected project (`yaac worktree create <project>` ×4), and it DELETES three
  * of them — run it against worktrees you are willing to lose. Reads the port
- * + lock secret from $YAAC_DATA_DIR/.server.lock and drives the app the
+ * from $YAAC_DATA_DIR/.server.lock and drives the app the
  * server serves out of `dist/`, so run `pnpm build` + `yaac server restart`
  * first or you are testing the frontend as it was.
  *
@@ -50,16 +50,6 @@ function readServerLock() {
   for (const p of candidates) if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   throw new Error('no .server.lock found — is the server running?')
 }
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 /** The worktree id the URL says is open. */
 const selectedId = (page) => new URL(page.url()).searchParams.get('worktree')
 
@@ -78,8 +68,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
-  await page.goto(`http://127.0.0.1:${lock.port}/?token=${await mintToken(lock)}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`http://127.0.0.1:${lock.port}/`)
   const rows = page.locator('[aria-label="Ungrouped worktrees"] > div')
   await rows.first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.waitForTimeout(3000)

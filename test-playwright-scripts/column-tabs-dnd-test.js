@@ -45,16 +45,6 @@ function readLock() {
 const lock = readLock()
 const origin = `http://127.0.0.1:${lock.port}`
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-async function mintToken() {
-  const r = await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (r.status !== 201) throw new Error(`token mint HTTP ${r.status}`)
-  return (await r.json()).token
-}
-
 // Per-column tab labels: each tiles column is a <section> positioned by an
 // inline style; its tabs are the non-empty button labels.
 const readColumns = (page) => page.evaluate(() => {
@@ -94,9 +84,7 @@ async function main() {
     })
     const page = await ctx.newPage()
     page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-    const token = await mintToken()
-    await page.goto(`${origin}/?token=${token}&project=yaac`)
-    await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15000 })
+    await page.goto(`${origin}/?project=yaac`)
     // Select the session from the sidebar by its title.
     const title = process.argv[2]
     if (!title) throw new Error('usage: column-tabs-dnd-test.js "<worktree title>"')

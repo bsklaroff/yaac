@@ -53,9 +53,7 @@ export async function attachWorktreePty(
     cols: process.stdout.columns,
     rows: process.stdout.rows,
   })
-  const ws = new WebSocket(url, {
-    headers: { authorization: `Bearer ${server.secret}` },
-  })
+  const ws = new WebSocket(url)
 
   await new Promise<void>((resolve, reject) => {
     const stdin = process.stdin
