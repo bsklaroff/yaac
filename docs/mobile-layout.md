@@ -272,9 +272,20 @@ those cases: nothing resets the parser's DECSET state, so reporting stays
 nominally active and the reports are generated and then dropped at the closed
 socket. Which is the right outcome anyway — the pane is alternate-screen for
 the whole attach, so there is no local scrollback for the other branch to move.
-Unlike the wheel path it needs no pacing: a wheel gesture outruns the
-round trip because a trackpad keeps emitting after the fingers stop, whereas a
-drag *is* the finger and cannot earn reports faster than tmux answers them.
+
+A drag tracks the finger; a flick glides on after it lifts, as native scrolling
+does on a phone. The release velocity — measured over the drag's last 100ms
+by event timestamps (so a busy main thread handling queued moves back to back
+doesn't read as a fast finger), restarted at a reversal, and zero if the finger
+stopped before lifting — drives the same travel-to-reports conversion on
+animation frames, decaying with iOS's 500ms time constant, so a flick travels
+about its speed × 500ms. The glide needs no wheel-style pacer: its starting
+speed is capped at about one report a frame and it only slows from there, so it
+cannot queue redraws faster than tmux answers them, and it ends on its own. A
+frame that comes more than 100ms late (a backgrounded tab, a locked phone)
+ends the glide rather than emitting the rest of it at once. Touching the pane
+stops a glide, and that touch's touchend is canceled so it does not also land
+as a tap on the TUI.
 
 Two details carry the rest of the behavior. `.xterm` is `touch-action: none`
 (in `index.css`) — a touchmove the browser has already claimed for its own
@@ -286,10 +297,6 @@ the gesture is only claimed past an 8px slop, so a tap stays a tap: below the
 threshold nothing is preventDefault'd and the browser still synthesizes the
 click `patchClickForwarding` hands to the TUI, while a swipe cancels that click
 and so cannot also press whatever it started over.
-
-There is deliberately no flick momentum. Every report is a round trip to the
-pod, and the wheel pacer exists precisely to stop a gesture's tail from
-scrolling the pane after the user stopped asking.
 
 ## Chrome
 

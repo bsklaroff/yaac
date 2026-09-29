@@ -25,7 +25,9 @@
  *   - patched, a swipe down reveals earlier history, and back up returns to
  *     the live bottom of the pane;
  *   - patched, a swipe fires no click, while a tap still fires exactly one;
- *   - a swipe under the slop threshold is left alone entirely.
+ *   - a swipe under the slop threshold is left alone entirely;
+ *   - a flick glides on well past a held drag of the same length, and a tap
+ *     during the glide stops it without firing a click.
  *
  * Run (inside a yaac dev session; needs tmux and /opt/yaac/streamd for the
  * prebuilt node-pty):
@@ -213,18 +215,28 @@ async function open(patch) {
   return { page, cdp }
 }
 
-/** Drag one finger `dy` px from the middle of the screen (positive = down). */
-async function swipe(cdp, dy, { steps = 20, id = 1 } = {}) {
+/** Drag one finger `dy` px from the middle of the screen (positive = down),
+ *  holding still for `holdMs` before lifting — long enough by default that
+ *  the release is a drag's, with no glide after it. Every event carries an
+ *  explicit timestamp 16ms after the last (the handler measures the finger by
+ *  event time), so the gesture's speed doesn't depend on CDP latency. */
+async function swipe(cdp, dy, { steps = 20, id = 1, holdMs = 150, settleMs = 900 } = {}) {
   const x = 195
   let y = dy > 0 ? 250 : 600
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id }] })
+  let timestamp = Date.now() / 1000
+  const send = (type, touchPoints) =>
+    cdp.send('Input.dispatchTouchEvent', { type, touchPoints, timestamp })
+  await send('touchStart', [{ x, y, id }])
   for (let i = 0; i < steps; i++) {
     y += dy / steps
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y, id }] })
+    timestamp += 0.016
+    await send('touchMove', [{ x, y, id }])
     await sleep(16)
   }
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
-  await sleep(900) // let the reports round-trip and tmux redraw
+  await sleep(holdMs)
+  timestamp += Math.max(holdMs, 16) / 1000
+  await send('touchEnd', [])
+  await sleep(settleMs) // let the reports round-trip and tmux redraw
 }
 
 async function tap(cdp) {
@@ -311,6 +323,44 @@ const topLine = (rows) => {
   check(afterCreep !== null && beforeCreep !== null && beforeCreep - afterCreep >= 10,
     'patched: a drag that creeps through the slop still scrolls',
     `top line ${beforeCreep} → ${afterCreep}`)
+  await page.close()
+}
+
+// ── 3. Patched: a flick glides, and a tap stops the glide ───────────────────
+{
+  const { page, cdp } = await open(true)
+  const bottom = topLine(await page.evaluate(() => window.__screen()))
+  await swipe(cdp, 200, { steps: 8 }) // held: a drag
+  const dragged = topLine(await page.evaluate(() => window.__screen()))
+  const dragLines = bottom - dragged
+  // Same travel, lifted while moving (200px in ~130ms, ~1.5px/ms).
+  await swipe(cdp, 200, { steps: 8, holdMs: 0, settleMs: 3000 })
+  const flicked = topLine(await page.evaluate(() => window.__screen()))
+  const flickLines = dragged - flicked
+  check(dragLines > 0 && flickLines >= dragLines * 3,
+    'patched: a flick glides on well past the same drag', `drag ${dragLines} lines, flick ${flickLines} lines`)
+
+  // Flick again (away from the bottom, so the glide can't run out of history)
+  // and tap mid-glide — once it is provably gliding, so the stop and no-click
+  // checks can't pass or fail against a gesture that never glided.
+  const clicks = (await page.evaluate(() => window.__m)).clicks
+  await swipe(cdp, 200, { steps: 8, holdMs: 0, settleMs: 150 })
+  const gliding = topLine(await page.evaluate(() => window.__screen()))
+  await sleep(100)
+  const stillGliding = topLine(await page.evaluate(() => window.__screen()))
+  const glided = gliding !== null && stillGliding !== null
+    && flicked - stillGliding > dragLines && stillGliding < gliding
+  check(glided, 'patched: the second flick is still gliding before the tap',
+    `top line ${flicked} → ${gliding} → ${stillGliding}`)
+  if (glided) {
+    await tap(cdp)
+    const caught = topLine(await page.evaluate(() => window.__screen()))
+    await sleep(2000)
+    const later = topLine(await page.evaluate(() => window.__screen()))
+    check(later === caught, 'patched: a tap stops a glide where it is', `top line ${caught} → ${later}`)
+    const tapClicks = (await page.evaluate(() => window.__m)).clicks - clicks
+    check(tapClicks === 0, 'patched: the tap that stops a glide fires no click', `${tapClicks} clicks`)
+  }
   await page.close()
 }
 

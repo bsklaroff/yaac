@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import type { Terminal } from '@xterm/xterm'
 import { patchTouchScroll, reportsForTravel } from '#lib/touch-scroll'
 
@@ -26,6 +26,20 @@ describe('reportsForTravel', () => {
 })
 
 describe('patchTouchScroll', () => {
+  // The glide runs on animation frames and measures the finger on the
+  // performance clock; both are faked so a test decides how fast a swipe was.
+  // Node has no animation frames, so they are timers at 60Hz.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) =>
+      setTimeout(() => cb(performance.now()), 16))
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
   type Report = { col: number; row: number; button: number; action: number }
 
   /** A fake of exactly the internals the patch touches, plus a stand-in for
@@ -41,7 +55,11 @@ describe('patchTouchScroll', () => {
     scrolledLines: number[]
     prevented: number
     setMouseActive: (a: boolean) => void
-    swipe: (dy: number, opts?: { steps?: number; fingers?: number }) => void
+    swipe: (
+      dy: number,
+      opts?: { steps?: number; fingers?: number; msPerStep?: number; holdMs?: number },
+    ) => void
+    touch: (type: string, y: number, opts?: { fingers?: number; stamp?: number }) => void
     listeners: Map<string, (e: TouchEvent) => void>
   } {
     const reports: Report[] = []
@@ -79,19 +97,37 @@ describe('patchTouchScroll', () => {
       scrollLines: (n: number): void => { scrolledLines.push(n) },
     } as unknown as Terminal
 
-    /** Drag `dy` pixels (positive = down the screen) in `steps` touchmoves. */
-    const swipe = (dy: number, { steps = 10, fingers = 1 } = {}): void => {
-      const touches = (y: number): Touch[] =>
-        Array.from({ length: fingers }, (_, i) => (
+    /** Drag `dy` pixels (positive = down the screen) in `steps` touchmoves,
+     *  `msPerStep` apart, then hold still for `holdMs` before lifting. With no
+     *  time passing the release speed is unmeasurable, so nothing glides. */
+    const swipe = (
+      dy: number,
+      { steps = 10, fingers = 1, msPerStep = 0, holdMs = 0 } = {},
+    ): void => {
+      touch('touchstart', 300, { fingers })
+      for (let i = 1; i <= steps; i++) {
+        vi.advanceTimersByTime(msPerStep)
+        touch('touchmove', 300 + (dy * i) / steps, { fingers })
+      }
+      vi.advanceTimersByTime(holdMs)
+      touch('touchend', 300 + dy, { fingers: 0 })
+    }
+
+    /** Dispatch one touch event at `y`, stamped with when the finger was
+     *  there — now, unless the test says the handler is running late. */
+    const touch = (
+      type: string,
+      y: number,
+      { fingers = 1, stamp = performance.now() }: { fingers?: number; stamp?: number } = {},
+    ): void => {
+      listeners.get(type)?.({
+        touches: Array.from({ length: fingers }, (_, i) => (
           { identifier: i, clientX: 100, clientY: y } as unknown as Touch
-        ))
-      const event = (y: number): TouchEvent => ({
-        touches: touches(y),
+        )),
+        timeStamp: stamp,
+        cancelable: true,
         preventDefault: () => { prevented++ },
       } as unknown as TouchEvent)
-      listeners.get('touchstart')?.(event(300))
-      for (let i = 1; i <= steps; i++) listeners.get('touchmove')?.(event(300 + (dy * i) / steps))
-      listeners.get('touchend')?.({} as TouchEvent)
     }
 
     return {
@@ -101,6 +137,7 @@ describe('patchTouchScroll', () => {
       get prevented(): number { return prevented },
       setMouseActive: (a) => { mouseActive = a },
       swipe,
+      touch,
       listeners,
     }
   }
@@ -172,10 +209,120 @@ describe('patchTouchScroll', () => {
     expect(f.reports).toHaveLength(0)
   })
 
-  it('the disposer unbinds every listener', () => {
+  it('glides on after a flick, in its direction, and comes to a stop', () => {
+    const f = fakeTerm()
+    patchTouchScroll(f.term)
+    // 200px in 100ms: 2px/ms at release. The drag alone earns 2 reports; the
+    // glide adds about velocity × 500ms more travel — ~1000px, ~12 reports.
+    f.swipe(200, { msPerStep: 10 })
+    expect(f.reports).toHaveLength(2)
+    vi.advanceTimersByTime(500)
+    const early = f.reports.length
+    vi.advanceTimersByTime(3000)
+    expect(f.reports.length).toBeGreaterThanOrEqual(12)
+    expect(f.reports.length).toBeLessThanOrEqual(16)
+    // Decelerating: most of the glide lands in its first time constant.
+    expect(early - 2).toBeGreaterThan(f.reports.length - early)
+    expect(f.reports.every((r) => r.action === 0)).toBe(true) // all UP
+    // The frame chain itself ended, not just the reports.
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('ends a glide whose next frame comes late, rather than emitting the rest at once', () => {
+    let frame: FrameRequestCallback | null = null
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      frame = cb
+      return 1
+    })
+    const f = fakeTerm()
+    patchTouchScroll(f.term)
+    f.swipe(200, { msPerStep: 10 })
+    const held = frame as FrameRequestCallback | null
+    expect(held).not.toBeNull()
+    // The tab was backgrounded for 5s; the frame fires on return.
+    vi.advanceTimersByTime(5000)
+    frame = null
+    held?.(performance.now())
+    expect(f.reports).toHaveLength(2) // the drag's, and nothing more
+    expect(frame).toBeNull() // and no further frame asked for
+  })
+
+  it('measures the finger by when it moved, not when the handler ran', () => {
+    const f = fakeTerm()
+    patchTouchScroll(f.term)
+    // A slow drag (0.25px/ms) whose moves a busy main thread handles 1ms
+    // apart: by handler time it would look like a fast flick.
+    const t0 = performance.now()
+    f.touch('touchstart', 300, { stamp: t0 })
+    for (let i = 1; i <= 10; i++) {
+      vi.advanceTimersByTime(1)
+      f.touch('touchmove', 300 + i * 10, { stamp: t0 + i * 40 })
+    }
+    f.touch('touchend', 400, { fingers: 0, stamp: t0 + 410 })
+    const dragged = f.reports.length
+    vi.advanceTimersByTime(3000)
+    expect(f.reports).toHaveLength(dragged)
+  })
+
+  it('glides the way the finger was going when it reversed just before lifting', () => {
+    const f = fakeTerm()
+    patchTouchScroll(f.term)
+    f.touch('touchstart', 300)
+    // Down 80px over 80ms, then flicked back up 40px in 20ms: the window's net
+    // travel is still down, but the finger left going up.
+    for (let i = 1; i <= 8; i++) {
+      vi.advanceTimersByTime(10)
+      f.touch('touchmove', 300 + i * 10)
+    }
+    for (let i = 1; i <= 4; i++) {
+      vi.advanceTimersByTime(5)
+      f.touch('touchmove', 380 - i * 10)
+    }
+    f.touch('touchend', 340, { fingers: 0 })
+    vi.advanceTimersByTime(3000)
+    expect(f.reports.length).toBeGreaterThan(5)
+    expect(f.reports.every((r) => r.action === 1)).toBe(true) // all DOWN
+  })
+
+  it('does not glide after a drag the finger stopped before lifting', () => {
+    const f = fakeTerm()
+    patchTouchScroll(f.term)
+    f.swipe(200, { msPerStep: 10, holdMs: 100 })
+    vi.advanceTimersByTime(3000)
+    expect(f.reports).toHaveLength(2)
+  })
+
+  it('a touch stops a glide, and is not also a tap', () => {
+    const f = fakeTerm()
+    patchTouchScroll(f.term)
+    f.swipe(-200, { msPerStep: 10 })
+    vi.advanceTimersByTime(100)
+    const prevented = f.prevented
+    f.swipe(0, { steps: 0 }) // a tap
+    const stopped = f.reports.length
+    vi.advanceTimersByTime(3000)
+    expect(f.reports).toHaveLength(stopped)
+    expect(f.reports.every((r) => r.action === 1)).toBe(true) // all DOWN
+    // The tap's touchend is canceled, so no click reaches the TUI.
+    expect(f.prevented).toBe(prevented + 1)
+  })
+
+  it('leaves a tap after a glide has ended alone', () => {
+    const f = fakeTerm()
+    patchTouchScroll(f.term)
+    f.swipe(200, { msPerStep: 10 })
+    vi.advanceTimersByTime(5000)
+    const prevented = f.prevented
+    f.swipe(0, { steps: 0 })
+    expect(f.prevented).toBe(prevented)
+  })
+
+  it('the disposer unbinds every listener and stops a glide', () => {
     const f = fakeTerm()
     const dispose = patchTouchScroll(f.term)
+    f.swipe(200, { msPerStep: 10 })
     dispose?.()
+    expect(vi.getTimerCount()).toBe(0)
     expect(f.listeners.size).toBe(0)
   })
 
