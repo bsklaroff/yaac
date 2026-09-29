@@ -267,6 +267,63 @@ function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
   return sandbox === 'read-only' ? 'read-only' : 'accept-edits'
 }
 
+/**
+ * The thread a rollout file holds, from its name: codex files each as
+ * `rollout-<YYYY-MM-DDTHH-MM-SS>-<thread id>.jsonl` (codex-cli 0.156.1, which
+ * also knows a `.jsonl.zst` compressed form of the same name). Undefined for
+ * any other file.
+ */
+export function codexRolloutThreadId(fileName: string): string | undefined {
+  return /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+?)\.jsonl(\.zst)?$/.exec(fileName)?.[1]
+}
+
+/** How much of a rollout's head is read for its first line: `session_meta`
+ *  carries the base instructions, some 20 KB in 0.156.1. */
+const ROLLOUT_META_BYTES = 256 * 1024
+
+/**
+ * The thread a rollout descends from, or undefined for a root: a
+ * `spawn_agent` child names its parent as a `parent_thread_id` inside its
+ * `session_meta` source (the `thread_spawn` variant of codex's subagent
+ * source — found wherever it nests, since only the field name is pinned), a
+ * `/fork` names its origin as `forked_from_id`. Both are only in that first
+ * line, and a child may never fire a hook of its own, so the file is the one
+ * record that ties it to its parent.
+ */
+export async function codexRolloutParent(rollout: SandboxFile): Promise<string | undefined> {
+  let handle: FileHandle | null = null
+  try {
+    handle = await openSandboxFile(rollout)
+    if (handle === null) return undefined
+    const buf = Buffer.alloc(ROLLOUT_META_BYTES)
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0)
+    const text = buf.subarray(0, bytesRead).toString('utf8')
+    const eol = text.indexOf('\n')
+    const entry = JSON.parse(eol < 0 ? text : text.slice(0, eol)) as {
+      type?: unknown
+      payload?: { forked_from_id?: unknown; source?: unknown }
+    }
+    if (entry.type !== 'session_meta') return undefined
+    const parent = spawnParent(entry.payload?.source) ?? entry.payload?.forked_from_id
+    return typeof parent === 'string' && parent !== '' ? parent : undefined
+  } catch {
+    return undefined
+  } finally {
+    await handle?.close()
+  }
+}
+
+function spawnParent(source: unknown): unknown {
+  if (source === null || typeof source !== 'object') return undefined
+  const own = (source as { parent_thread_id?: unknown }).parent_thread_id
+  if (own !== undefined) return own
+  for (const value of Object.values(source)) {
+    const found = spawnParent(value)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
 /** Test helper: forget what each rollout last answered. */
 export function _resetCodexPosturesForTests(): void {
   rolloutPostures.clear()

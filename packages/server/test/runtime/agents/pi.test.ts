@@ -3,11 +3,12 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-import { setDataDir, piSessionsDir } from '@yaac/shared/project-paths'
+import { setDataDir, piDir } from '@yaac/shared/project-paths'
 import {
   PI_BUSY_MARKERS,
-  getSessionPiFirstUserMessage,
+  getPiFirstUserMessage,
 } from '#runtime/agents/pi'
+import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 
 describe('PI_BUSY_MARKERS', () => {
   it('pins the tmux-ERE busy markers the status format searches for', () => {
@@ -23,78 +24,45 @@ describe('PI_BUSY_MARKERS', () => {
   })
 })
 
-describe('pi first-message + session records', () => {
+describe('getPiFirstUserMessage', () => {
   const slug = 'proj'
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-status-test-'))
     setDataDir(tmpDir)
-    // All of a project's pi logs share one dir (mirroring ~/.claude); pi names
-    // each `<timestamp>_<worktreeId>.jsonl` and the server keys off that id.
-    await fs.mkdir(piSessionsDir(slug), { recursive: true })
+    await fs.mkdir(piDir(slug), { recursive: true })
   })
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
-  // `ts` (the timestamp prefix) orders logs chronologically; `worktreeId` is the
-  // id pi embeds so the server can tell one session's logs from another's.
-  function writeLog(ts: string, worktreeId: string, entries: Record<string, unknown>[]): Promise<void> {
-    const body = entries.map((e) => JSON.stringify(e)).join('\n') + '\n'
-    return fs.writeFile(path.join(piSessionsDir(slug), `${ts}_${worktreeId}.jsonl`), body)
+  async function log(entries: Record<string, unknown>[]): Promise<SandboxFile> {
+    await fs.writeFile(path.join(piDir(slug), '100_sess-1.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n') + '\n')
+    return { slug, dir: piDir(slug), rel: '100_sess-1.jsonl' }
   }
 
   it('returns the first user message (string content)', async () => {
-    await writeLog('100', 'sess-1', [
+    expect(await getPiFirstUserMessage(await log([
       { type: 'session', id: 'x' },
       { type: 'message', message: { role: 'user', content: 'fix the login bug' } },
       { type: 'message', message: { role: 'assistant', content: 'on it' } },
-    ])
-    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('fix the login bug')
+    ]))).toBe('fix the login bug')
   })
 
   it('joins array text content parts', async () => {
-    await writeLog('100', 'sess-1', [
-      {
-        type: 'message',
-        message: { role: 'user', content: [{ type: 'text', text: 'hello ' }, { type: 'text', text: 'world' }] },
-      },
-    ])
-    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('hello world')
+    expect(await getPiFirstUserMessage(await log([{
+      type: 'message',
+      message: { role: 'user', content: [{ type: 'text', text: 'hello ' }, { type: 'text', text: 'world' }] },
+    }]))).toBe('hello world')
   })
 
   it('ignores assistant messages and non-message entries', async () => {
-    await writeLog('100', 'sess-1', [
+    expect(await getPiFirstUserMessage(await log([
       { type: 'tool', name: 'bash' },
       { type: 'message', message: { role: 'assistant', content: 'thinking' } },
       { type: 'message', message: { role: 'user', content: 'the real prompt' } },
-    ])
-    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('the real prompt')
-  })
-
-  it('reads the oldest log first when several exist', async () => {
-    // Filenames sort chronologically by their timestamp prefix.
-    await writeLog('200', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'newer' } }])
-    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'older' } }])
-    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('older')
-  })
-
-  it('falls through to a later log when the first has no user message', async () => {
-    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'assistant', content: 'no user here' } }])
-    await writeLog('200', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'found me' } }])
-    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('found me')
-  })
-
-  it('reads only the requested session when the shared dir holds several', async () => {
-    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'from one' } }])
-    await writeLog('100', 'sess-2', [{ type: 'message', message: { role: 'user', content: 'from two' } }])
-    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('from one')
-    expect(await getSessionPiFirstUserMessage(slug, 'sess-2')).toBe('from two')
-  })
-
-  it('returns undefined when no logs exist', async () => {
-    expect(await getSessionPiFirstUserMessage(slug, 'other-session')).toBeUndefined()
+    ]))).toBe('the real prompt')
   })
 })

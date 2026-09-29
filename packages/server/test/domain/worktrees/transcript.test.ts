@@ -7,7 +7,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorktreeCreated } from '#db/worktree-store'
 import { recordAgentSessions, setAgentSessionCapture } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
-import { acpLogDir, claudeDir } from '@yaac/shared/project-paths'
+import { acpLogDir, agentHistoryDir, claudeDir } from '@yaac/shared/project-paths'
 import { getAgentSessionTranscript } from '#domain/worktrees/transcript'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
@@ -106,6 +106,20 @@ describe('getAgentSessionTranscript', () => {
 
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
     expect(events[1].type === 'agent' && events[1].content).toEqual([{ type: 'text', text: 'the router' }])
+  })
+
+  it('finds a conversation with no recorded path in the worktree\'s own history', async () => {
+    // The layout every tool writes today; the conversation id and the
+    // worktree id are both needed to find it, and are not interchangeable.
+    await seedSession(TUI_SESSION)
+    await writeClaudeTranscript(
+      TUI_SESSION,
+      path.join(agentHistoryDir(SLUG, WORKTREE, 'claude'), '-workspace', `${TUI_SESSION}.jsonl`),
+    )
+
+    const events = await getAgentSessionTranscript(SLUG, WORKTREE, TUI_SESSION)
+
+    expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
   })
 
   it('prefers a recorded transcript path over the one the layout implies', async () => {

@@ -18,6 +18,8 @@ import type {
 import {
   repoDir,
   acpLogDir,
+  agentHistoryDir,
+  type AgentHistoryPart,
   claudeDir,
   codexDir,
   opencodeCheckpointDir,
@@ -60,6 +62,7 @@ import {
   agentDriver,
   AgentLaunchDeadError,
   agentWindowName,
+  CLAUDE_POD_REPO,
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,
@@ -88,6 +91,7 @@ import {
 import {
   builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts, reconcileSharedSkillRoots,
 } from '#domain/skills'
+import { convergeAgentHistory } from '#domain/agent-history'
 import { deleteWorktreeState } from './cleanup'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
@@ -129,11 +133,16 @@ const CLAUDE_CONTAINER_HOME = '/home/yaac/.claude'
  *  backing dirs of the ephemeral-modules mounts. */
 const CACHED_PACKAGES_CONTAINER_DIR = '/home/yaac/.cached-packages'
 /** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
- *  mirroring `~/.claude`), so every worktree's pi session logs are visible to all. */
+ *  mirroring `~/.claude`), shared by every worktree of the project. */
 const PI_CONTAINER_HOME = '/home/yaac/.pi'
 /** In-pod dir pi writes its JSONL session logs to (PI_CODING_AGENT_SESSION_DIR
- *  points here; it lives under the mounted `PI_CONTAINER_HOME`). */
-const PI_SESSIONS_CONTAINER_DIR = `${PI_CONTAINER_HOME}/agent/sessions`
+ *  points here): the worktree's own history, outside the shared home, so a
+ *  host realizes it as an ordinary link. */
+const PI_SESSIONS_CONTAINER_DIR = '/home/yaac/.yaac-pi-sessions'
+/** In-pod dir codex keeps its sqlite state in (CODEX_SQLITE_HOME points
+ *  here): per worktree like its rollouts, and outside the shared home for the
+ *  same reason as pi's. */
+const CODEX_SQLITE_CONTAINER_DIR = '/home/yaac/.codex-sqlite'
 
 /**
  * Each path, plus what it resolves to where that differs — for the places a
@@ -830,10 +839,13 @@ export async function createWorktree(
   // workspace only ever holds sentinels; without it, it holds the real
   // secrets, because nothing downstream would swap them.
   const mediatedEgress = runtime.kind !== 'containerless'
-  // Whether yaac's own skills reach the workspace as host state rather than
-  // as mounts — a runtime with no mount namespace cannot layer a per-worktree
-  // staging over the tool homes it links in (see #domain/skills).
-  const hostSkills = runtime.kind === 'containerless'
+  // Whether the runtime can layer a per-worktree mount over the per-project
+  // tool homes. One with no mount namespace cannot — its tool homes are links
+  // into the project's dirs, and anything written below one lands in them —
+  // so yaac's own skills reach it as host state (see #domain/skills), and a
+  // worktree's history is linked into the shared homes rather than mounted
+  // over them (see #domain/agent-history).
+  const layersToolHomes = runtime.kind !== 'containerless'
 
   await runtime.ensureRuntimeReachable()
 
@@ -1208,6 +1220,11 @@ export async function createWorktree(
     // Per-project pi home (mounted at PI_CONTAINER_HOME); pi creates the
     // agent/worktrees subdir under it on first run.
     await fs.mkdir(pi, { recursive: true })
+    // This worktree's conversations: every tool's history, made before the
+    // workspace mounts it and moved into the shape this runtime reaches —
+    // mounted over the tool homes, or linked into them. A worktree restarted
+    // on the other driver finds its conversations where this one needs them.
+    await convergeAgentHistory(projectSlug, worktreeId, { layers: layersToolHomes })
     // One worktree's ACP conversation records, written by acpd inside the pod
     // and read by the server from here — including after the pod is gone,
     // which is why they sit under the project rather than the worktree dir
@@ -1305,9 +1322,9 @@ export async function createWorktree(
     // tool homes (which are links into those very dirs), so the skills are
     // linked into the project's shared skills roots once instead.
     const builtinSkillsStaging = path.join(worktreeStateDir(projectSlug, worktreeId), 'builtin-skills')
-    const builtinSkillNames = hostSkills
-      ? await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'link')
-      : await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
+    const builtinSkillNames = layersToolHomes
+      ? await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
+      : await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'link')
 
     // In-session helper commands (yaac-mama, and the yaac-worktree-init
     // postStart hook): staged like the builtin skills and File-mounted
@@ -1323,7 +1340,7 @@ export async function createWorktree(
         `worktree-bin staging is missing ${WORKTREE_INIT_SCRIPT} — broken yaac install?`,
       )
     }
-    if (!hostSkills && builtinSkillNames.length > 0) {
+    if (layersToolHomes && builtinSkillNames.length > 0) {
       // Pre-create each tool's skills root AND every per-skill mountpoint
       // (server-owned) before the pod mounts a skill at `<root>/<name>`.
       // Anything the kubelet has to create instead it creates root:root: a
@@ -1496,12 +1513,12 @@ export async function createWorktree(
   // background (verified against 2.1.282).
   env.push('DISABLE_AUTOUPDATER=1')
 
-  // Point pi at its worktree-log dir inside its `.pi` home so its JSONL
-  // transcripts are readable on the host (first-message / status). pi resumes
-  // by `--session-id` (buildAgentCmd), so the shared home holding every
-  // worktree's logs is fine. Skip pi's startup version check so a fresh pod
-  // doesn't stall on a network probe. Set unconditionally (only pi reads them)
-  // so a spare retooled to pi gets them.
+  // Point pi at its session-log dir and codex at its sqlite home, both in the
+  // worktree's own history, where the host reads pi's transcripts from
+  // (first-message / status); pi resumes by `--session-id` (buildAgentCmd).
+  // Skip pi's startup version check so a fresh pod doesn't stall on a network
+  // probe. Set unconditionally (only their tools read them) so a spare
+  // retooled to either gets them.
   //
   // Name each tool's home outright rather than leaving it to be derived from
   // `$HOME`, so what a worktree resolves is stated instead of inferred.
@@ -1525,6 +1542,7 @@ export async function createWorktree(
   env.push(`CODEX_HOME=${CODEX_CONTAINER_HOME}`)
   env.push(`PI_CODING_AGENT_DIR=${PI_CONTAINER_HOME}/agent`)
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
+  env.push(`CODEX_SQLITE_HOME=${CODEX_SQLITE_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
   // pnpm's content-addressed store, one per project rather than one per
   // worktree — on a host, where every worktree is a process on one disk.
@@ -1596,6 +1614,7 @@ export async function createWorktree(
       // GLOBAL: where the copy is checkpointed to.
       { source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_CHECKPOINT },
     ]
+  const history = (part: AgentHistoryPart): string => agentHistoryDir(projectSlug, worktreeId, part)
   const mounts: WorkspaceMount[] = [
     // GLOBAL.
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
@@ -1613,6 +1632,25 @@ export async function createWorktree(
     // GLOBAL.
     { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
     { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
+    // GLOBAL: the worktree's own history. The two with an env override sit
+    // outside every tool home, so both runtimes realize them as they are.
+    { source: { kind: 'hostPath', path: history('codex-sqlite') }, mountPath: CODEX_SQLITE_CONTAINER_DIR },
+    { source: { kind: 'hostPath', path: history('pi') }, mountPath: PI_SESSIONS_CONTAINER_DIR },
+    // The rest are where the tools look inside their shared homes, so they
+    // are layered over them, with the project's shared auto-memory put back on
+    // top of the conversations mount. A runtime that cannot layer reaches
+    // the same directories through links the create planted in the homes.
+    ...(layersToolHomes
+      ? [
+        { source: { kind: 'hostPath' as const, path: history('claude') }, mountPath: `${CLAUDE_CONTAINER_HOME}/projects` },
+        {
+          source: { kind: 'hostPath' as const, path: path.join(claude, 'projects', CLAUDE_POD_REPO, 'memory') },
+          mountPath: `${CLAUDE_CONTAINER_HOME}/projects/${CLAUDE_POD_REPO}/memory`,
+        },
+        { source: { kind: 'hostPath' as const, path: history('claude-file-history') }, mountPath: `${CLAUDE_CONTAINER_HOME}/file-history` },
+        { source: { kind: 'hostPath' as const, path: history('codex') }, mountPath: `${CODEX_CONTAINER_HOME}/sessions` },
+      ]
+      : []),
     // NODE-LOCAL, and a host's only: the project's pnpm store (see the
     // store env above). A pod keeps its store in its own module dirs, and a
     // tree every pod of the project could write would be a channel between
@@ -1634,8 +1672,8 @@ export async function createWorktree(
     })),
     // GLOBAL: server-staged trees (skills, worktree bin), written
     // host-side and read in-pod. The skills are mounted only where a mount
-    // is what delivers them; `hostSkills` already put them on disk.
-    ...(hostSkills ? [] : builtinSkillMounts(builtinSkillsStaging, builtinSkillNames)),
+    // is what delivers them; without layering they are already on disk.
+    ...(layersToolHomes ? builtinSkillMounts(builtinSkillsStaging, builtinSkillNames) : []),
     ...worktreeBinMounts(worktreeBinStaging, worktreeBinNames),
   ]
 

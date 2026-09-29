@@ -221,9 +221,30 @@ project's claude dir at `/home/yaac/.claude` and then a builtin skill at
 into shared project state, so writing the second would reach through it and
 leave one worktree's staging in a directory every other worktree reads. Such
 a mount is skipped and logged; nothing routinely asks for one, because the
-one caller that did now writes host state instead (see below). Anything with
-no host equivalent at all fails the create rather than being silently
-dropped.
+callers that would — builtin skills (see below) and a worktree's agent
+history — write host state instead. Anything with no host equivalent at all fails the
+create rather than being silently dropped.
+
+## Agent history, linked into the shared homes
+
+A pod reaches its own conversations through mounts layered over the tool
+homes (docs/worktree-storage.md "Agent history"). Of those, the two a tool has
+an env override for — codex's sqlite home and pi's session dir — sit outside
+every tool home, so this driver realizes them like any other mount: a link in
+the private HOME, and the variable translated to the history dir itself. The
+other three (claude's `projects/` and `file-history/`, codex's `sessions/`) are
+nested, and are not declared here. The create plants links in the shared
+homes instead: the folder claude files this checkout's conversations under
+(its cwd, munged by claude's own rule, in every spelling the data dir
+resolves to) links to the history's `claude/-workspace`, so a host
+conversation is written straight into the history; the folder the host repo
+path names links to `-repo`, so claude's auto-memory is the one a pod uses;
+and each file-history dir and codex rollout already in the history is linked
+at the path its tool looks for it by. What a host run writes outside those —
+a new rollout, a new file-history dir — is a real file in the shared home
+until the next create moves it in. None of this isolates anything, since a
+host agent can reach anything the server's user can; it keeps the layout the
+same on both drivers, which is what lets an install switch between them.
 
 ## Builtin skills, shared per project
 

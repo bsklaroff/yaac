@@ -869,11 +869,13 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(projectDir, 'claude'))
     expect(env.CODEX_HOME).toBe(path.join(projectDir, 'codex'))
     expect(env.PI_CODING_AGENT_DIR).toBe(path.join(projectDir, 'pi', 'agent'))
-    // pi's two variables describe one home, so they are spelled the same
-    // way — a session dir under the private HOME would name the same files
-    // only for as long as the link is what resolves them.
+    // The per-worktree ones name the worktree's history the same way — the
+    // directory itself, never the private HOME's link to it, which would name
+    // the same files only for as long as the link is what resolves them.
     expect(env.PI_CODING_AGENT_SESSION_DIR)
-      .toBe(path.join(projectDir, 'pi', 'agent', 'sessions'))
+      .toBe(path.join(projectDir, 'history', worktreeId, 'pi'))
+    expect(env.CODEX_SQLITE_HOME)
+      .toBe(path.join(projectDir, 'history', worktreeId, 'codex-sqlite'))
     // pnpm installs into the project's one store, beside the checkouts on
     // the same filesystem — never a store of the private HOME's own, which
     // would be a full copy of every dependency per worktree. Asked of pnpm
@@ -1398,6 +1400,20 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const admin = path.join(repoGit, 'worktrees', worktreeId)
     await fs.writeFile(path.join(checkout, '.git'), `gitdir: /repo/.git/worktrees/${worktreeId}\n`)
     await fs.writeFile(path.join(admin, 'gitdir'), '/workspace/.git\n')
+    // And the history a pod leaves: every conversation in the worktree's own
+    // `history/`, which a pod reaches through mounts and this host must reach
+    // through links (docs/worktree-storage.md "Agent history").
+    const project = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
+    const history = path.join(project, 'history', worktreeId)
+    const rollout = path.join('2026', '09', '29', 'rollout-2026-09-29T08-32-40-pod-thread.jsonl')
+    for (const [file, body] of [
+      [path.join(history, 'claude', '-workspace', 'pod-conv.jsonl'), '{"from":"the pod"}\n'],
+      [path.join(history, 'claude-file-history', 'pod-conv', 'edit@v1'), 'before\n'],
+      [path.join(history, 'codex', rollout), '{"type":"session_meta","payload":{"id":"pod-thread"}}\n'],
+    ]) {
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      await fs.writeFile(file, body)
+    }
 
     const { stdout, stderr, exitCode } = await runYaac(
       serverEnv, 'worktree', 'restart', worktreeId,
@@ -1419,6 +1435,21 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // Host git in the checkout is exactly what the agent runs.
     await expect(execFileAsync('git', ['-C', checkout, 'status', '--porcelain']))
       .resolves.toBeDefined()
+
+    // The pod's conversations resume here: claude files this checkout's under
+    // a folder of the shared home now linked to the history (claude 2.1.282
+    // writes and resumes through such a link), and each file-history dir and
+    // rollout is linked where its tool looks it up.
+    const projects = path.join(project, 'claude', 'projects')
+    const linked: string[] = []
+    for (const name of await fs.readdir(projects)) {
+      const real = await fs.realpath(path.join(projects, name)).catch(() => '')
+      if (real === await fs.realpath(path.join(history, 'claude', '-workspace'))) linked.push(name)
+    }
+    expect(linked.length).toBeGreaterThan(0)
+    expect(await fs.readFile(path.join(projects, linked[0], 'pod-conv.jsonl'), 'utf8')).toBe('{"from":"the pod"}\n')
+    expect(await fs.readFile(path.join(project, 'claude', 'file-history', 'pod-conv', 'edit@v1'), 'utf8')).toBe('before\n')
+    expect((await fs.lstat(path.join(project, 'codex', 'sessions', rollout))).isSymbolicLink()).toBe(true)
     await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
   }, 180_000)
   // A codex conversation is known by its hook alone, so this is the path

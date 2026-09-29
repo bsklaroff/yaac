@@ -216,3 +216,27 @@ it. Installs in it then refetch every package, or fail partway.
 **How to tell it is safe to remove:** no containerless workspace started
 before project ids is still running. Every one has been stopped or restarted
 since the upgrade, which re-points its store at `projects/<id>/`.
+
+## pi's shared session dir
+
+pi's logs used to go to the project's `pi/agent/sessions/` (`piSessionsDir`);
+every create now points pi at the worktree's own `history/<wt>/pi/`. Two
+things still read the old place: `movePi` in `#domain/agent-history`, which
+moves a worktree's logs out of it on each create, and the `pi` entry in
+`TRANSCRIPT_LAYOUT` (`runtime/agents/transcripts.ts`), whose shared half makes
+every pi reader search it after the history. Nothing writes there any more on
+either driver, unlike claude's and codex's shared dirs, where a host run keeps
+landing new files and the fallback is permanent.
+
+**What it reads:** `pi/agent/sessions/**/<ts>_<sid>.jsonl` written before the
+change — by a worktree not restarted since, or a stopped one.
+
+**What breaks silently if it goes too early:** those worktrees lose their pi
+history. A stopped one shows no founding ask, and a restart launches pi with
+`--session-id` against an empty session dir, starting the conversation over.
+
+**How to tell it is safe to remove:** `pi/agent/sessions/` holds no `.jsonl`
+in any project dir (a create empties it of its own worktree's logs, so only
+worktrees never restarted since the upgrade keep any there). Then drop
+`movePi` and point the `pi` layout at the history alone, and delete
+`piSessionsDir`.

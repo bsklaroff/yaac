@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { worktreeDriver } from '#drivers/driver'
 import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
+import { removeAgentHistory } from '#domain/agent-history'
 import { inFlightWorktreeIds, listProvisioning } from './provisioning'
 import {
   applyWorktreeEvent,
@@ -17,6 +18,7 @@ import {
   markWorktreeTerminating,
 } from '#runtime/status'
 import {
+  acpLogDir,
   getProjectsDir,
   globalProjectPath,
   opencodeCheckpointDir,
@@ -92,11 +94,12 @@ async function checkoutEphemeralPaths(
 /**
  * Remove everything on disk that belongs to one worktree, in one call.
  *
- * The counterpart to a create: the checkout, git's admin dir for it, and the
- * per-worktree opencode database. Every one of them is keyed by the worktree
- * id, which is what makes this a single function rather than a list each
- * caller has to remember — the opencode checkpoint included, which is
- * global; a node-local working copy is the runtime's sweep's.
+ * The counterpart to a create: the checkout, git's admin dir for it, the
+ * per-worktree opencode database, its ACP conversation records and its agent
+ * history. Every one of them is keyed by the worktree id, which is what makes
+ * this a single function rather than a list each caller has to remember —
+ * the opencode checkpoint included, which is global; a node-local working
+ * copy is the runtime's sweep's.
  *
  * NOT called by an ordinary stop. A stopped worktree is a checkout still on
  * disk, diff and all, waiting to be restarted; this is for the cases where the
@@ -110,10 +113,6 @@ async function checkoutEphemeralPaths(
  * precisely so `git worktree prune` can never reap a live worktree from
  * outside its own pod (see buildWorktreeLinkExec), and it would otherwise
  * outlive the checkout it protects.
- *
- * Transcripts are deliberately left. The tool homes are shared across a
- * project, so a worktree resumed into a second worktree would lose its history
- * to the first one's deletion.
  *
  * Plain recursive `rm`s over trees a sandbox wrote, which is sound only
  * because every caller runs this once the pod is gone (its `podGone` gate):
@@ -147,6 +146,8 @@ export async function deleteWorktreeState(
     fs.rm(path.join(adminDir, 'locked'), { force: true })
       .then(() => fs.rm(adminDir, { recursive: true, force: true })),
     fs.rm(opencodeCheckpointDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    fs.rm(acpLogDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    removeAgentHistory(projectSlug, worktreeId),
   ].map((p) => p.then(() => true, (err: unknown) => {
     serverLog(`[server] delete worktree state ${projectSlug}/${worktreeId}: ${String(err)}`)
     return false

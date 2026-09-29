@@ -67,10 +67,9 @@ export async function seedClaudeJson(
  * itself).
  *
  * Also raises `cleanupPeriodDays` from claude-code's 30-day default to
- * 100 years: a worktree's transcripts live in the project's claude dir —
- * a mount under `k8s`, a symlink into it under `containerless` — and yaac
- * owns their lifecycle, so claude-code must never garbage-collect them on
- * startup. (0 would disable transcript persistence entirely, not cleanup —
+ * 100 years: a worktree's transcripts live in its history
+ * (docs/worktree-storage.md) and yaac owns their lifecycle — they go with
+ * the worktree — so claude-code must never garbage-collect them on startup. (0 would disable transcript persistence entirely, not cleanup —
  * hence a large finite value.) codex and opencode need no equivalent:
  * neither expires worktrees.
  */

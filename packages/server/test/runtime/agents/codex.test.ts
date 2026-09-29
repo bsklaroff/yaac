@@ -5,6 +5,8 @@ import os from 'node:os'
 import {
   _resetCodexPosturesForTests,
   classifyCodexTitle,
+  codexRolloutParent,
+  codexRolloutThreadId,
   getCodexFirstUserMessage,
   getCodexPermissionMode,
 } from '#runtime/agents/codex'
@@ -281,5 +283,42 @@ describe('getCodexPermissionMode', () => {
 
   it('reads nothing from a rollout that is not there', async () => {
     await expect(getCodexPermissionMode(at(path.join(dir, 'missing.jsonl')))).resolves.toBeUndefined()
+  })
+})
+
+describe('codexRolloutThreadId', () => {
+  it('reads the thread id out of codex\'s rollout name, plain or compressed', () => {
+    const id = '01a0ec4b-6990-7182-92ca-65550d232d3c'
+    expect(codexRolloutThreadId(`rollout-2026-09-29T08-32-40-${id}.jsonl`)).toBe(id)
+    expect(codexRolloutThreadId(`rollout-2026-09-29T08-32-40-${id}.jsonl.zst`)).toBe(id)
+    expect(codexRolloutThreadId(`${id}.jsonl`)).toBeUndefined()
+    expect(codexRolloutThreadId('rollout-thread-42.jsonl')).toBeUndefined()
+  })
+})
+
+describe('codexRolloutParent', () => {
+  let dir: string
+  beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-lineage-')) })
+  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }) })
+
+  async function rollout(meta: Record<string, unknown>, type = 'session_meta'): Promise<SandboxFile> {
+    const file = path.join(dir, `r-${String(Math.random()).slice(2)}.jsonl`)
+    // The base instructions make the real first line some 20 KB.
+    const payload = { id: 'child', base_instructions: 'x'.repeat(30_000), ...meta }
+    await fs.writeFile(file, `${JSON.stringify({ type, payload })}\n{"type":"event_msg"}\n`)
+    return at(file)
+  }
+
+  it('names a spawned child\'s parent, and a fork\'s origin', async () => {
+    expect(await codexRolloutParent(await rollout({
+      source: { subagent: { thread_spawn: { parent_thread_id: 'parent', depth: 1 } } },
+    }))).toBe('parent')
+    expect(await codexRolloutParent(await rollout({ source: 'cli', forked_from_id: 'origin' }))).toBe('origin')
+  })
+
+  it('has none for a root thread, another first line, or no file', async () => {
+    expect(await codexRolloutParent(await rollout({ source: 'cli' }))).toBeUndefined()
+    expect(await codexRolloutParent(await rollout({ forked_from_id: 'x' }, 'turn_context'))).toBeUndefined()
+    expect(await codexRolloutParent(at(path.join(dir, 'missing.jsonl')))).toBeUndefined()
   })
 })
