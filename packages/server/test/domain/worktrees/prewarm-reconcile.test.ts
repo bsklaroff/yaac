@@ -35,6 +35,7 @@ import {
   snapshotFixture,
 } from '@yaac/test-utils/fake-driver'
 import { createWorktree, resolveCreate, type CreateSetup } from '#domain/worktrees/create'
+import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/worktrees/provisioning'
 import { cleanupWorktree, deleteWorktreeState } from '#domain/worktrees/cleanup'
 import { getWorktreeRow, listProjectRows, type ProjectRow, type WorktreeRow } from '#db'
 
@@ -47,7 +48,7 @@ const mockResolveCreate = vi.mocked(resolveCreate)
 
 /** What the project's untouched create resolves to — what a spare is warmed as. */
 const SETUP: CreateSetup = { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui' }
-const WARM = { ...SETUP, prewarm: true }
+const WARM = { ...SETUP, prewarm: true, worktreeId: expect.any(String) as string }
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
@@ -79,6 +80,7 @@ describe('reconcilePrewarmPool', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
+    clearAllProvisioningForTests()
     mockWorkspaces.mockResolvedValue([])
     installFakeWorktreeDriver({
       snapshot: () => ({ resync: true, workspaces: mockWorkspaces, strayUnits: () => Promise.resolve([]) }),
@@ -314,7 +316,7 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
-  it('decrements the in-flight count per settled spawn, clearing it at zero', async () => {
+  it('drops each spawn from the in-flight set as it settles', async () => {
     vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '2')
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', worktreeId: 'r1' })])
     let settleFirst = (): void => { /* replaced below */ }
@@ -325,13 +327,56 @@ describe('reconcilePrewarmPool', () => {
       .mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
 
     await pass()
-    expect(inFlight.get('p')).toBe(2)
+    expect([...inFlight.values()]).toEqual(['p', 'p'])
 
     settleFirst()
     await flush()
-    // One of two settled: the counter drops rather than clearing, so the
-    // next tick still sees the outstanding spawn and doesn't stampede.
-    expect(inFlight.get('p')).toBe(1)
+    // One of two settled: the other stays, so the next tick still sees the
+    // outstanding spawn and doesn't stampede.
+    expect([...inFlight.values()]).toEqual(['p'])
+  })
+
+  // A spawn's pod lists long before its create settles, and a reap then
+  // kills it under a create that retries it into the same fate — which is
+  // what a stop racing a spawn used to do, three attempts over.
+  it('never reaps a spare whose spawn is still in flight, nor counts it twice', async () => {
+    mockCreate.mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
+    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', worktreeId: 'r1' })])
+    await pass()
+    const [[, { worktreeId }]] = mockCreate.mock.calls as unknown as [[string, { worktreeId: string }]]
+    const warming = pod({ jobName: `yaac-p-${worktreeId}`, worktreeId, prewarmed: true, running: false })
+
+    // Listed beside the real worktree: one spare, not two, so no refill.
+    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', worktreeId: 'r1' }), warming])
+    await pass()
+    // The real worktree stopped: the project is idle, but the spare is not
+    // its to drain until the spawn settles.
+    mockWorkspaces.mockResolvedValue([warming])
+    await pass()
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(mockCleanup).not.toHaveBeenCalled()
+
+    inFlight.clear()
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: `yaac-p-${worktreeId}`, projectSlug: 'p', worktreeId })
+  })
+
+  // A restart takes its pod down before the new one runs. The project is not
+  // idle for that gap, so its spare stays rather than being drained and
+  // re-warmed once the restart is up. A failed restart holds nothing.
+  it('keeps an idle project\'s spare while one of its worktrees is restarting', async () => {
+    mockWorkspaces.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', worktreeId: 'r1', running: false, terminating: true }),
+      pod({ jobName: 'yaac-p-spare', worktreeId: 's2', prewarmed: true }),
+    ])
+    registerProvisioning({ worktreeId: 'r1', projectSlug: 'p', tool: 'claude', kind: 'restart' })
+    await pass()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
+
+    failProvisioning('r1', 'boom')
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectSlug: 'p', worktreeId: 's2' })
   })
 
   it('swallows a failed reap — the stale-session reaper retries', async () => {

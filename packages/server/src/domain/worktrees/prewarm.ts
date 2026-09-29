@@ -76,12 +76,14 @@ import type { RuntimeHandle } from '#drivers/contract'
 export const claiming = new Set<string>()
 
 /**
- * In-flight prewarm spawns, keyed by projectSlug → count. `createWorktree`
- * only launches near the very end, so a spawn is invisible to the runtime's
- * own listing for seconds; counting it here stops successive ticks from
- * stampeding duplicate spares.
+ * In-flight prewarm spawns, keyed by the spare's worktree id → projectSlug.
+ * `createWorktree` only launches near the very end, so a spawn is invisible
+ * to the runtime's own listing for seconds; counting it here stops
+ * successive ticks from stampeding duplicate spares. Keyed by id because a
+ * spawn's pod, once listed, is still its create's until the create settles:
+ * a reap then would kill the pod under a create that retries it.
  */
-export const inFlight = new Map<string, number>()
+export const inFlight = new Map<string, string>()
 
 /** Test helper: reset all shared prewarm state. */
 export function clearPrewarmStateForTests(): void {
@@ -104,6 +106,18 @@ export interface PrewarmPlan {
   toReap: PrewarmReapTarget[]
 }
 
+/** What the planner reads besides the listing and the pool size. */
+export interface PrewarmState {
+  /** In-flight spawns, worktree id → projectSlug (`inFlight`). */
+  inFlight: ReadonlyMap<string, string>
+  /** Job names of spares mid-claim (`claiming`). */
+  claiming: ReadonlySet<string>
+  /** Projects with a worktree being created or restarted. */
+  provisioning: ReadonlySet<string>
+  /** Spares warmed in an agent mode the project no longer creates in. */
+  stale: ReadonlySet<string>
+}
+
 /**
  * Pure planner: given the current workspaces and the desired pool size,
  * decide which spares to spawn and which to reap. No side effects (mirrors
@@ -112,25 +126,27 @@ export interface PrewarmPlan {
  *
  * - "claimed" = running, non-prewarmed workspaces (the real user worktrees).
  * - "spares" = prewarmed workspaces (any state, so a still-starting spare
- *   counts), minus any currently being claimed (never spawn against / reap
- *   one mid-claim).
+ *   counts), minus any currently being claimed or still being spawned —
+ *   neither is ever reaped. An in-flight spawn counts toward the pool
+ *   whether or not its pod is listed yet.
  * - A project with ≥1 claimed worktree wants `poolSize` spares: spawn to fill
- *   (counting in-flight so we don't stampede) and reap genuine excess. A
- *   spare warmed with a different agent, model or posture than the project
- *   now uses is still claimable — its agent is respawned at claim time — so
- *   it counts toward the pool and is never reaped for that.
- * - A spare in `staleJobNames` is reaped and does not count: it was warmed in
- *   the other agent mode than the project's creates now ask for, and a claim
+ *   and reap genuine excess. A spare warmed with a different agent, model or
+ *   posture than the project now uses is still claimable — its agent is
+ *   respawned at claim time — so it counts toward the pool and is never
+ *   reaped for that.
+ * - A spare in `stale` is reaped and does not count: it was warmed in the
+ *   other agent mode than the project's creates now ask for, and a claim
  *   cannot convert it (see `tryClaimPrewarmed`), so left in place it would
  *   fill the pool with a spare nothing takes.
- * - A project with 0 claimed worktrees drains all its spares.
+ * - A project with 0 claimed worktrees drains all its spares — unless one of
+ *   its worktrees is provisioning. A restart takes its pod down before the
+ *   new one runs, and the project is not idle for that gap: draining there
+ *   would tear the spare down only to warm another once the restart is up.
  */
 export function computePrewarmPlan(
   pods: RuntimeHandle[],
   poolSize: number,
-  inFlightCounts: Map<string, number>,
-  claimingJobNames: Set<string>,
-  staleJobNames: ReadonlySet<string> = new Set(),
+  state: PrewarmState,
 ): PrewarmPlan {
   const toSpawn: PrewarmSpawn[] = []
   const toReap: PrewarmReapTarget[] = []
@@ -142,8 +158,8 @@ export function computePrewarmPlan(
   for (const p of pods) {
     if (!p.projectSlug) continue
     if (p.prewarmed) {
-      if (claimingJobNames.has(p.jobName)) continue
-      if (staleJobNames.has(p.jobName)) {
+      if (state.claiming.has(p.jobName) || state.inFlight.has(p.workspaceId)) continue
+      if (state.stale.has(p.jobName)) {
         reap(p)
         continue
       }
@@ -154,6 +170,10 @@ export function computePrewarmPlan(
       claimedByProject.set(p.projectSlug, (claimedByProject.get(p.projectSlug) ?? 0) + 1)
     }
   }
+  const inFlightByProject = new Map<string, number>()
+  for (const project of state.inFlight.values()) {
+    inFlightByProject.set(project, (inFlightByProject.get(project) ?? 0) + 1)
+  }
 
   const projects = new Set([...claimedByProject.keys(), ...sparesByProject.keys()])
   for (const project of projects) {
@@ -161,7 +181,7 @@ export function computePrewarmPlan(
     const spares = sparesByProject.get(project) ?? []
     if (claimed === 0) {
       // Idle project: drain every spare.
-      spares.forEach(reap)
+      if (!state.provisioning.has(project)) spares.forEach(reap)
       continue
     }
     // Reap genuine excess (oldest first) — e.g. after the pool size is lowered.
@@ -170,7 +190,7 @@ export function computePrewarmPlan(
       spares.slice(0, spares.length - poolSize).forEach(reap)
     }
     // Spawn to fill, counting in-flight spawns so ticks don't stampede.
-    const current = spares.length + (inFlightCounts.get(project) ?? 0)
+    const current = spares.length + (inFlightByProject.get(project) ?? 0)
     for (let i = current; i < poolSize; i++) toSpawn.push({ projectSlug: project })
   }
   return { toSpawn, toReap }
