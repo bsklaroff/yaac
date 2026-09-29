@@ -1,5 +1,6 @@
 import {
   listActiveWorktrees,
+  listDraftWorktrees,
   listHeldWorktrees,
   listProvisioning,
   listQueuedWorktrees,
@@ -24,7 +25,7 @@ export interface WsLike {
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
   const [
-    active, worktreeGroups, projects, planUsage, codexPlanUsage, queuedWorktrees, heldWorktrees,
+    active, worktreeGroups, projects, planUsage, codexPlanUsage, queuedWorktrees, heldWorktrees, draftWorktrees,
   ] = await Promise.all([
     listActiveWorktrees(),
     listWorktreeGroups(),
@@ -33,6 +34,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     codexPlanUsageForSnapshot(),
     listQueuedWorktrees(),
     listHeldWorktrees(),
+    listDraftWorktrees(),
   ])
   const imageBuilds = worktreeDriver().listImageBuilds()
   // A worktree with a provisioning entry is mid-create/mid-restart (or
@@ -56,6 +58,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     provisioning,
     queuedWorktrees,
     heldWorktrees,
+    draftWorktrees,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     planUsage,

@@ -2,6 +2,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorktrees } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
+import { isUuid } from '#lib/uuid'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
@@ -173,12 +174,9 @@ export async function deleteQueuedWorktree(id: string): Promise<boolean> {
   return deleted
 }
 
-/** Entry ids are uuids; anything else names no entry (and would be a type
- *  error to compare against the column). */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
 export async function getQueuedWorktreeRow(id: string): Promise<QueuedWorktreeRow | undefined> {
-  if (!UUID_RE.test(id)) return undefined
+  // Entry ids are uuids; anything else names no entry.
+  if (!isUuid(id)) return undefined
   const db = await getDb()
   const rows = await db.select().from(queuedWorktrees).where(eq(queuedWorktrees.id, id))
   return rows[0] ? toRow(rows[0]) : undefined

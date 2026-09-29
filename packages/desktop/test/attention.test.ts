@@ -15,6 +15,7 @@ const snap = (entries: Array<Partial<WorktreeListEntry>>): ServerSnapshot => ({
   worktreeGroups: [],
   queuedWorktrees: [],
   heldWorktrees: [],
+  draftWorktrees: [],
   worktrees: entries.map((s, i): WorktreeListEntry => ({
     worktreeId: s.worktreeId ?? `s${i}`,
     projectSlug: s.projectSlug ?? 'proj',

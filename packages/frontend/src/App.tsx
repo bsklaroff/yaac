@@ -182,6 +182,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     .filter((g) => g.projectSlug === activeProjectSlug)
   const scopedQueued = (snapshot?.queuedWorktrees ?? []).filter((e) => e.projectSlug === activeProjectSlug)
   const scopedHeld = (snapshot?.heldWorktrees ?? []).filter((h) => h.projectSlug === activeProjectSlug)
+  const scopedDrafts = (snapshot?.draftWorktrees ?? []).filter((d) => d.projectSlug === activeProjectSlug)
 
   // Worktree shortcuts, window-captured so the chord is swallowed before
   // xterm's textarea handler could forward it to the PTY, and registered
@@ -371,6 +372,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
             provisioning={scopedProvisioning}
             queued={scopedQueued}
             held={scopedHeld}
+            drafts={scopedDrafts}
             connected={connected}
             gitAuthFailures={scopedGitAuthFailures}
             onBack={goBackScreen}
@@ -385,6 +387,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
           provisioning={scopedProvisioning}
           queued={scopedQueued}
           held={scopedHeld}
+          drafts={scopedDrafts}
           connected={connected}
           gitAuthFailures={scopedGitAuthFailures}
         />

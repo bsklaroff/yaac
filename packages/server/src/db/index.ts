@@ -66,6 +66,15 @@ export {
 } from './group-store'
 export { closeDb, openDb } from './client'
 export {
+  deleteDraftWorktree,
+  deleteProjectDraftWorktrees,
+  insertDraftWorktree,
+  listDraftWorktreeRows,
+  setDraftWorktreeTitle,
+  updateDraftWorktree,
+  type DraftWorktreeRow,
+} from './draft-worktree-store'
+export {
   claimQueuedLaunch,
   deleteProjectQueuedWorktrees,
   deleteQueuedWorktree,

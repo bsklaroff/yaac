@@ -1304,6 +1304,34 @@ export interface QueuedWorktreeEntry {
 }
 
 /**
+ * What a draft worktree keeps of the create dialog (docs/draft-worktrees.md)
+ * — the fields as the dialog showed them, so reopening it puts them back.
+ * `model` and `branch` are absent when the dialog had not resolved them yet;
+ * `startAfter` is the Start field's parent (a worktree or queued entry id),
+ * absent for "Now".
+ */
+export interface DraftWorktreeSettings {
+  prompt: string
+  tool: AgentTool
+  mode: AgentMode
+  permissionMode: PermissionMode
+  model?: string
+  branch?: string
+  startAfter?: string
+}
+
+/** A create-dialog's contents the user kept instead of running. */
+export interface DraftWorktreeEntry extends DraftWorktreeSettings {
+  id: string
+  projectSlug: string
+  /** Model-generated from the prompt, once the title sweep has run. */
+  title?: string
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  createdAt: string
+  updatedAt: string
+}
+
+/**
  * A stopped worktree that still has queued worktrees waiting on it — kept
  * in the sidebar, as a stopped row, until the last of them has launched or
  * been discarded. Slimmer than `StoppedWorktreeEntry` because the snapshot
@@ -1417,6 +1445,8 @@ export interface ServerSnapshot {
   queuedWorktrees: QueuedWorktreeEntry[]
   /** Stopped worktrees that queued worktrees still wait on. */
   heldWorktrees: HeldWorktreeEntry[]
+  /** Every project's draft worktrees, oldest first (clients filter by slug). */
+  draftWorktrees: DraftWorktreeEntry[]
   /** Project slug -> git credentials the upstream rejected (project-wide;
    *  see ActiveWorktreesResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>

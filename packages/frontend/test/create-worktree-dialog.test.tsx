@@ -2,8 +2,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { AuthListResult, QueuedWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
+import type { AuthListResult, DraftWorktreeEntry, QueuedWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
 import type { ProjectBranches } from '#lib/projectApi'
+import { ServerError } from '@yaac/shared/errors'
 
 const provision = vi.hoisted(() => vi.fn())
 
@@ -18,6 +19,10 @@ vi.mock('#lib/queueApi', () => ({
   updateQueuedWorktree: vi.fn(),
   runQueuedWorktree: vi.fn(),
   discardQueuedWorktree: vi.fn(),
+}))
+vi.mock('#lib/draftApi', () => ({
+  saveDraftWorktree: vi.fn(),
+  discardDraftWorktree: vi.fn(),
 }))
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
@@ -36,6 +41,7 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 import { CreateWorktreeDialog } from '#components/CreateWorktreeDialog'
 import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { createWorktree } from '#lib/createWorktree'
+import { discardDraftWorktree, saveDraftWorktree } from '#lib/draftApi'
 import { queueWorktree, runQueuedWorktree, updateQueuedWorktree } from '#lib/queueApi'
 import { getProjectBranches, setProjectReferenceBranch } from '#lib/projectApi'
 import { getAuthList } from '#lib/settingsApi'
@@ -85,6 +91,7 @@ function project(memory: Record<string, unknown> = {}, driver = 'k8s', extra: Re
     worktrees: [],
     queuedWorktrees: [],
     heldWorktrees: [],
+    draftWorktrees: [],
     provisioning: [],
     ...extra,
   }
@@ -142,6 +149,9 @@ beforeEach(() => {
     Promise.resolve({ id: 'q-new', projectSlug: 'proj', parentWorktreeId: parent, createdAt: '', ...settings }))
   vi.mocked(updateQueuedWorktree).mockImplementation((id) => Promise.resolve(entry(id)))
   vi.mocked(runQueuedWorktree).mockResolvedValue({ worktreeId: 'w-run' })
+  vi.mocked(saveDraftWorktree).mockImplementation((projectSlug, settings, id) =>
+    Promise.resolve({ id: id ?? 'd-new', projectSlug, createdAt: '', updatedAt: '', ...settings }))
+  vi.mocked(discardDraftWorktree).mockResolvedValue(undefined)
 })
 
 afterEach(cleanup)
@@ -164,7 +174,7 @@ async function openMenu(): Promise<void> {
 }
 
 /** Open the dialog the way a row menu or queued row does. */
-async function openWith(opts: { parent?: string; editId?: string }): Promise<void> {
+async function openWith(opts: { parent?: string; editId?: string; draftId?: string }): Promise<void> {
   mount()
   act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', ...opts }))
   await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
@@ -311,9 +321,12 @@ describe('CreateWorktreeDialog', () => {
 
     expect(useUiStore.getState().createWorktreeDialog).not.toBeNull()
     expect(promptInput().value).toBe('keep me')
-    // With no list open, Escape is the dialog's again.
+    // With no list open, Escape is the dialog's again — which, with a prompt
+    // typed, asks before letting it go.
     fireEvent.keyDown(modelInput(), { key: 'Escape' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
     await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+    expect(saveDraftWorktree).not.toHaveBeenCalled()
   })
 
   it('takes a model id the catalog does not list', async () => {
@@ -463,7 +476,7 @@ describe('CreateWorktreeDialog', () => {
 
       await waitFor(() => expect(vi.mocked(queueWorktree)).toHaveBeenCalledWith('proj', 'w-parent', {
         prompt: 'follow up', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits', branch: 'dev',
-      }))
+      }, undefined))
       expect(createWorktree).not.toHaveBeenCalled()
       await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull())
     })
@@ -552,6 +565,138 @@ describe('CreateWorktreeDialog', () => {
       mount()
       act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', editId: 'gone' }))
       await waitFor(() => expect(screen.getByText('Queued worktree gone')).toBeTruthy())
+    })
+  })
+
+  describe('drafts', () => {
+    const closeX = (): void => { fireEvent.click(screen.getByRole('button', { name: 'Close' })) }
+    const draft = (extra: Partial<DraftWorktreeEntry> = {}): DraftWorktreeEntry => ({
+      id: 'd1', projectSlug: 'proj', prompt: 'half an idea', tool: 'codex', mode: 'tui',
+      permissionMode: 'read-only', model: 'gpt-5.5', branch: 'dev', createdAt: '', updatedAt: '', ...extra,
+    })
+
+    it('closes without asking when nothing was typed', async () => {
+      await openReady()
+      closeX()
+      await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+      expect(screen.queryByText('Save as a draft?')).toBeNull()
+    })
+
+    it('asks on dismissal with a prompt, and saves every setting as shown', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
+      await openReady()
+      fireEvent.change(promptInput(), { target: { value: '  later, maybe  ' } })
+      fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
+
+      // Keep editing goes back to the form, prompt and all.
+      // A reload would lose it as surely as a close.
+      const unload = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(unload)
+      expect(unload.defaultPrevented).toBe(true)
+
+      closeX()
+      fireEvent.click(await screen.findByRole('button', { name: 'Keep editing' }))
+      await waitFor(() => expect(screen.queryByText('Save as a draft?')).toBeNull())
+      expect(useUiStore.getState().createWorktreeDialog).not.toBeNull()
+      fireEvent.change(select('Start'), { target: { value: 'w-parent' } })
+
+      closeX()
+      fireEvent.click(await screen.findByRole('button', { name: 'Save draft' }))
+      await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+      expect(saveDraftWorktree).toHaveBeenCalledWith('proj', {
+        prompt: 'later, maybe', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
+        branch: 'dev', startAfter: 'w-parent',
+      }, undefined)
+      expect(createWorktree).not.toHaveBeenCalled()
+      expect(queueWorktree).not.toHaveBeenCalled()
+      const after = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(after)
+      expect(after.defaultPrevented).toBe(false)
+    })
+
+    it('keeps a typed prompt as a draft on the way to missing credentials', async () => {
+      // Codex was last used, but only Claude is signed in.
+      snapshot.mockReturnValue(project({ lastTool: 'codex' }))
+      await openMenu()
+      const signIn = await screen.findByRole('button', { name: 'Sign in to Codex…' })
+      fireEvent.change(promptInput(), { target: { value: 'first thing' } })
+      fireEvent.click(signIn)
+      await waitFor(() => expect(useUiStore.getState().settingsOpen).toBe(true))
+      expect(saveDraftWorktree).toHaveBeenCalledWith('proj', expect.objectContaining({
+        prompt: 'first thing', tool: 'codex',
+      }), undefined)
+      expect(useUiStore.getState().createWorktreeDialog).toBeNull()
+    })
+
+    it('reopens a draft on its fields, asks only once it changes, and a create consumes it', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      // Its Start parent has gone since it was saved: it starts now instead.
+      snapshot.mockReturnValue(project({}, 'k8s', { draftWorktrees: [draft({ startAfter: 'w-gone' })] }))
+      mount()
+      act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
+      await waitFor(() => expect(createButton().disabled).toBe(false))
+      expect(promptInput().value).toBe('half an idea')
+      expect(select('Start').value).toBe('')
+      expect(select('Agent').value).toBe('codex')
+      expect(modelInput().value).toBe('GPT-5.5')
+      expect(select('Permissions').value).toBe('read-only')
+      await waitFor(() => expect(branchInput().value).toBe('dev'))
+
+      fireEvent.change(promptInput(), { target: { value: 'a whole idea' } })
+      closeX()
+      fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }))
+      await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+      expect(saveDraftWorktree).toHaveBeenLastCalledWith('proj', expect.objectContaining({ prompt: 'a whole idea' }), 'd1')
+
+      // Gone meanwhile (another tab created from it): the edit is saved anew.
+      cleanup()
+      vi.mocked(saveDraftWorktree).mockClear()
+        .mockRejectedValueOnce(new ServerError('NOT_FOUND', 'project proj has no draft worktree d1'))
+      mount()
+      act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
+      await waitFor(() => expect(createButton().disabled).toBe(false))
+      fireEvent.change(promptInput(), { target: { value: 'kept anyway' } })
+      closeX()
+      fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }))
+      await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+      expect(vi.mocked(saveDraftWorktree).mock.calls.map((c) => c[2])).toEqual(['d1', undefined])
+      expect(vi.mocked(saveDraftWorktree).mock.calls[1][1]).toMatchObject({ prompt: 'kept anyway' })
+
+      // Reopened exactly as saved, a dismissal has nothing to lose.
+      cleanup()
+      snapshot.mockReturnValue(project({}, 'k8s', { draftWorktrees: [draft()] }))
+      mount()
+      act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
+      await waitFor(() => expect(createButton().disabled).toBe(false))
+      closeX()
+      await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+      expect(screen.queryByText('Save changes to this draft?')).toBeNull()
+
+      cleanup()
+      mount()
+      act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
+      await waitFor(() => expect(createButton().disabled).toBe(false))
+      fireEvent.click(createButton())
+      // The server drops the draft once the create succeeds, so a failed one keeps it.
+      expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
+        branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea', draftId: 'd1',
+      })
+      expect(discardDraftWorktree).not.toHaveBeenCalled()
+    })
+
+    it('queueing from a draft names it, for the server to drop once queued', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        worktrees: [PARENT], draftWorktrees: [draft({ startAfter: 'w-parent' })],
+      }))
+      await openWith({ draftId: 'd1' })
+      expect(select('Start').value).toBe('w-parent')
+      fireEvent.click(submitButton())
+      await waitFor(() => expect(queueWorktree).toHaveBeenCalledWith('proj', 'w-parent', expect.objectContaining({
+        prompt: 'half an idea', permissionMode: 'read-only',
+      }), 'd1'))
+      expect(discardDraftWorktree).not.toHaveBeenCalled()
     })
   })
 })

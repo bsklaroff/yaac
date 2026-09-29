@@ -34,6 +34,7 @@
 import fs from 'node:fs/promises'
 import { replayAcpLog } from './acp-log'
 import { ACP } from './acp-protocol'
+import { isUuid } from '#lib/uuid'
 import { serverLog } from '#log'
 import type { AcpEvent } from '@yaac/shared/acp'
 // Type-only, so the lazy runtime import below stays the only load of these
@@ -52,7 +53,6 @@ import type { SessionStore, SessionStoreEntry } from '@anthropic-ai/claude-agent
  * below answers with this transcript's lines whatever it is asked for, and the
  * `sessionId` it stamps on each notification is dropped by the projection.
  */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PLACEHOLDER_SESSION_ID = '00000000-0000-0000-0000-000000000000'
 
 /**
@@ -100,7 +100,7 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
     await import('@agentclientprotocol/claude-agent-acp')
   /* eslint-enable no-restricted-syntax */
 
-  const sessionId = UUID_RE.test(agentSessionId) ? agentSessionId : PLACEHOLDER_SESSION_ID
+  const sessionId = isUuid(agentSessionId) ? agentSessionId : PLACEHOLDER_SESSION_ID
   // A store that only reads, and only ever has one session to answer with.
   // `getSessionMessages` is the SDK's own transcript parser — it threads the
   // `parentUuid` chain, drops summaries and sidechain (subagent) turns, and

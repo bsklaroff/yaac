@@ -142,6 +142,9 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/worktree/queue/update', body: { id: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/worktree/queue/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/worktree/queue/run', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
+  // Drafts are rows alone: substrate-neutral.
+  { method: 'POST', path: '/worktree/draft/save', body: { project: 'nope', prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/worktree/draft/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/worktree/group/list', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/worktree/group/create', body: { name: 'g' }, k8s: [200, 400], containerless: [200, 400] },
   { method: 'POST', path: '/worktree/group/move', body: { worktreeId: 'nope', group: null }, k8s: [200, 400, 404], containerless: [200, 400, 404] },
