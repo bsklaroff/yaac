@@ -262,43 +262,55 @@ const LEAF_REFRESH_MS = 60 * 60 * 1000
  * process, which is all a run without worktrees needs.
  */
 async function loadOrGenerateCA(): Promise<CA> {
-  let loaded: CA | null = null
+  let result: CA | null = null
   if (IN_CLUSTER) {
     const stored = decodeCa(await readOutputObject('secret', CA_SECRET_NAME))
     if (stored) {
       const key = forge.pki.privateKeyFromPem(stored.keyPem)
       const cert = forge.pki.certificateFromPem(stored.certPem)
-      // A CA minted before the SKI/AKI issuer-disambiguation fix carries no
-      // subjectKeyIdentifier, so a verifier holding another identically-named
-      // "yaac Proxy CA" can't tell which one signed a leaf and hard-fails on
-      // the wrong key. Regenerate it so new leaves get a matching AKI. See
-      // getLeafCert.
-      if (cert.getExtension('subjectKeyIdentifier')) {
+      // An older CA may lack what generateCA now sets: a subjectKeyIdentifier
+      // (without it a verifier holding another identically-named "yaac Proxy
+      // CA" can't tell which one signed a leaf — see getLeafCert), or a
+      // critical basicConstraints (strict X.509 verifiers, Python 3.13+ by
+      // default, reject a CA without it). Re-sign such a CA over its OWN key:
+      // a process that loaded the old cert at startup (a running agent's
+      // NODE_EXTRA_CA_CERTS, a nested container's bundle) still verifies
+      // the leaves, where a new key would cut its TLS until its pod restarts.
+      const bc = cert.getExtension('basicConstraints') as { critical?: boolean } | undefined
+      if (cert.getExtension('subjectKeyIdentifier') && bc?.critical) {
         console.log('[proxy] Loaded existing CA')
-        loaded = { key, cert, pem: stored.certPem }
+        result = { key, cert, pem: stored.certPem }
       } else {
-        console.log('[proxy] Existing CA lacks a subjectKeyIdentifier — regenerating')
+        console.log('[proxy] Existing CA predates the current extensions — re-signing over its key')
+        result = generateCA({ privateKey: key, publicKey: cert.publicKey as forge.pki.rsa.PublicKey })
       }
     }
   }
-  const result = loaded ?? generateCA()
+  result ??= generateCA()
   if (IN_CLUSTER) {
     await writeCa(encodeCa({
       keyPem: forge.pki.privateKeyToPem(result.key),
       certPem: result.pem,
       bundlePem: combineCaBundle(fs.readFileSync(SYSTEM_ROOTS_PATH, 'utf8'), result.pem),
     }))
-    console.log(`[proxy] CA ${loaded ? 'bundle refreshed in' : 'saved to'} ${CA_SECRET_NAME}`)
+    console.log(`[proxy] CA saved to ${CA_SECRET_NAME}`)
   }
   return result
 }
 
-function generateCA(): CA {
-  console.log('[proxy] Generating new CA...')
-  const keys = forge.pki.rsa.generateKeyPair(2048)
+/** A positive 128-bit serial, so a re-signed CA never shares issuer+serial
+ *  with the cert it replaces (NSS rejects that). */
+function randomSerial(): string {
+  const bytes = crypto.randomBytes(16)
+  bytes[0] &= 0x7f // clear high bit to ensure positive integer
+  return bytes.toString('hex')
+}
+
+function generateCA(keys = forge.pki.rsa.generateKeyPair(2048)): CA {
+  console.log('[proxy] Generating CA...')
   const cert = forge.pki.createCertificate()
   cert.publicKey = keys.publicKey
-  cert.serialNumber = '01'
+  cert.serialNumber = randomSerial()
   cert.validity.notBefore = new Date()
   cert.validity.notAfter = new Date()
   cert.validity.notAfter.setFullYear(cert.validity.notAfter.getFullYear() + 10)
@@ -307,7 +319,9 @@ function generateCA(): CA {
   cert.setSubject(attrs)
   cert.setIssuer(attrs)
   cert.setExtensions([
-    { name: 'basicConstraints', cA: true },
+    // Critical, as RFC 5280 requires of a CA: strict verifiers (Python
+    // 3.13+'s default VERIFY_X509_STRICT) reject the whole chain otherwise.
+    { name: 'basicConstraints', cA: true, critical: true },
     { name: 'keyUsage', keyCertSign: true, cRLSign: true },
     // SKI so a verifier can pick THIS CA over another identically-named
     // "yaac Proxy CA" (each proxy mints its own self-signed CA with the same
@@ -331,9 +345,7 @@ function getLeafCert(hostname: string): { key: string; cert: string } {
   const keys = forge.pki.rsa.generateKeyPair(2048)
   const cert = forge.pki.createCertificate()
   cert.publicKey = keys.publicKey
-  const serialBytes = crypto.randomBytes(16)
-  serialBytes[0] &= 0x7f // clear high bit to ensure positive integer
-  cert.serialNumber = serialBytes.toString('hex')
+  cert.serialNumber = randomSerial()
   cert.validity.notBefore = new Date()
   cert.validity.notAfter = new Date(now + LEAF_VALIDITY_MS)
 
