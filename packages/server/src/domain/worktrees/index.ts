@@ -46,6 +46,7 @@ export { allowWorktreeHost } from './allow-host'
 export {
   createWorktreeFolder,
   deleteWorktreeEntry,
+  getWorktreeGitStatus,
   listWorktreeDir,
   listWorktreeFiles,
   readWorktreeFile,

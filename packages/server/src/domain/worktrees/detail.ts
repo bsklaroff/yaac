@@ -56,8 +56,8 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
  * The working-tree diff of a running worktree.
  *
  * The default base is the branch the worktree forked from — its recorded
- * base, the same source as the sidebar's base label — and choosing it here
- * is the substance rather than a detail. Left to the runtime's own default,
+ * base, the same source as the status bar above its panes — and choosing it
+ * here is the substance rather than a detail. Left to the runtime's own default,
  * the diff collapses to nothing once the agent renames and pushes its
  * branch: the current branch's `@{upstream}` then resolves to itself, and
  * the merge-base with it is HEAD. Passing the fork point keeps committed

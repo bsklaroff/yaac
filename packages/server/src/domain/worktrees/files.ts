@@ -4,16 +4,19 @@ import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { repoDir, worktreeDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
+import { formatUtcTimestamp } from '@yaac/shared/time'
 import type {
   SymlinkTarget,
   WorktreeDir,
   WorktreeFile,
   WorktreeFiles,
   WorktreeFileSaved,
+  WorktreeGitStatus,
 } from '@yaac/shared/types'
-import { listCheckoutFiles } from '#domain/git'
+import { listCheckoutFiles, worktreeAheadBehind } from '#domain/git'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
+import { worktreeForkBranch } from './fork-branch'
 import { resolveWorktreeRecord } from './resolve'
 
 /**
@@ -402,6 +405,24 @@ export async function listWorktreeFiles(idOrName: string): Promise<WorktreeFiles
     emptyDirs: await findEmptyDirs(co, listing.untrackedDirs, paths, ignored),
     status,
     truncated,
+  }
+}
+
+/**
+ * How far the checkout's HEAD is ahead of and behind its reference branch:
+ * `base` when the caller names one (the Changes pane's pick), else the branch
+ * the worktree forked from — the same default the Changes diff takes.
+ */
+export async function getWorktreeGitStatus(idOrName: string, base?: string): Promise<WorktreeGitStatus> {
+  const co = await openCheckout(idOrName)
+  const branch = base?.trim() || await worktreeForkBranch(co.projectSlug, co.worktreeId)
+  if (!branch) return { base: null, comparison: null }
+  const found = await worktreeAheadBehind(repoDir(co.projectSlug), co.worktreeId, co.dir, branch)
+  if (!found) return { base: branch, comparison: null }
+  const { fetchedAtMs, ...comparison } = found
+  return {
+    base: branch,
+    comparison: fetchedAtMs === null ? comparison : { ...comparison, fetchedAt: formatUtcTimestamp(fetchedAtMs) },
   }
 }
 

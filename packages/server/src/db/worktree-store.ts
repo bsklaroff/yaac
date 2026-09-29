@@ -564,7 +564,8 @@ export async function setWorktreeBaseBranch(
     const db = await getDb()
     await db.update(worktrees).set({ baseBranch }).where(key(projectSlug, worktreeId))
   } catch {
-    // Non-fatal: the session runs; only the sidebar's base chip is missing.
+    // Non-fatal: the session runs, and its fork branch falls back to the
+    // checkout's own upstream (worktreeForkBranch).
   }
 }
 

@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { serverLocalPath } from '@yaac/shared/paths'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { readRepoConfig, runGit } from './run'
 import type { GitTarget } from './run'
@@ -133,6 +135,15 @@ export async function readBlobAt(repoPath: string, ref: string, blobPath: string
 const fetchOriginMutex = createKeyedMutex()
 
 /**
+ * Where the server records when it last fetched a repo — see lastFetchedAtMs.
+ * Server-private, so no pod can forge or plant a link at it, and on disk, so
+ * a restart does not forget it.
+ */
+function fetchRecord(repoPath: string): string {
+  return serverLocalPath('git-fetched', createHash('sha256').update(repoPath).digest('hex').slice(0, 32))
+}
+
+/**
  * Fetch every branch of `remoteUrl` into `refs/remotes/origin/*`. The URL is
  * the project row's, passed in: the repository's own `remote.origin.*` is
  * written by pods, so it never decides where a fetch goes, what it runs, or
@@ -149,6 +160,8 @@ export async function fetchOrigin(
     await runGit(repo(repoPath), [
       'fetch', url, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok',
     ], { env, remoteUrl })
+    await fs.mkdir(path.dirname(fetchRecord(repoPath)), { recursive: true })
+    await fs.writeFile(fetchRecord(repoPath), String(Date.now()))
   })
 }
 
@@ -331,6 +344,76 @@ export async function listCheckoutFiles(
     untrackedDirs: untrackedDirs.filter((p) => p.endsWith('/')).map((p) => p.slice(0, -1)),
     status: parsePorcelainStatus(status),
   }
+}
+
+/** Where HEAD stands against a worktree's reference branch. */
+export interface AheadBehind {
+  /** What was counted against: `origin/<base>`, or `<base>` for a branch that
+   *  was never pushed. */
+  ref: string
+  ahead: number
+  behind: number
+  /** When `ref` was last fetched, epoch ms; null for a local branch, or when
+   *  nothing on disk or in memory records a fetch. */
+  fetchedAtMs: number | null
+}
+
+/**
+ * How far a worktree's HEAD has diverged from `base`: commits on HEAD and not
+ * on the base (`ahead`), and the reverse (`behind`). The base is
+ * `origin/<base>`, else the local `<base>` for a branch that was never pushed,
+ * as the Changes diff resolves it; null when neither exists or `base` is not a
+ * plain branch name. Reading HEAD through the admin dir follows the agent
+ * across a branch rename. Read-only, and only as fresh as the last fetch —
+ * which is why it says when that was.
+ */
+export async function worktreeAheadBehind(
+  repoPath: string,
+  worktreeId: string,
+  worktreePath: string,
+  base: string,
+): Promise<AheadBehind | null> {
+  // Git's own ref-name rules, which also keep `base` from reading as a range
+  // (or, below, as a path out of the reflog dir).
+  if (!/^[^\s~^:?*[\\]+$/.test(base) || base.includes('..') || base.includes('@{')) return null
+  const target: GitTarget = { kind: 'worktree', repoPath, worktreeId, workTree: worktreePath }
+  for (const remote of [true, false]) {
+    const ref = remote ? `refs/remotes/origin/${base}` : `refs/heads/${base}`
+    // `--`: a file of that name in the (pod-writable) checkout must not turn
+    // an unresolvable revision into a pathspec.
+    const out = await runGit(target, ['rev-list', '--left-right', '--count', `${ref}...HEAD`, '--'])
+      .catch(() => null)
+    if (out === null) continue
+    const [behind, ahead] = out.trim().split(/\s+/).map(Number)
+    return {
+      ref: remote ? `origin/${base}` : base,
+      ahead,
+      behind,
+      fetchedAtMs: remote ? await lastFetchedAtMs(repoPath, base) : null,
+    }
+  }
+  return null
+}
+
+/**
+ * The newest record of a fetch into `origin/<branch>`. No one file holds it:
+ * the server's own fetches run in a throwaway git dir whose FETCH_HEAD is
+ * deleted with it, so each records itself (`fetchRecord`); a fetch run inside
+ * a worktree leaves that worktree's FETCH_HEAD; and a fetch that moved the
+ * branch appends to its reflog. The repo's files are read only for their
+ * mtimes, through lstat, so a planted symlink leads nowhere.
+ */
+async function lastFetchedAtMs(repoPath: string, branch: string): Promise<number | null> {
+  const gitDir = path.join(repoPath, '.git')
+  const admins = await fs.readdir(path.join(gitDir, 'worktrees')).catch(() => [])
+  const mtimes = await Promise.all([
+    path.join(gitDir, 'logs', 'refs', 'remotes', 'origin', branch),
+    path.join(gitDir, 'FETCH_HEAD'),
+    ...admins.map((a) => path.join(gitDir, 'worktrees', a, 'FETCH_HEAD')),
+  ].map((p) => fs.lstat(p).then((st) => st.mtimeMs, () => 0)))
+  const recorded = Number(await fs.readFile(fetchRecord(repoPath), 'utf8').catch(() => '0')) || 0
+  const newest = Math.max(recorded, ...mtimes)
+  return newest > 0 ? newest : null
 }
 
 /**

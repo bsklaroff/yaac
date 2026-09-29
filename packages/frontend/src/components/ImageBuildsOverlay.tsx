@@ -6,19 +6,7 @@ import { MasterDetail } from '#components/ui/MasterDetail'
 import { dismissImageBuild, getImageBuildLog, retryImageBuild } from '#lib/imageBuildsApi'
 import { useIsMobile } from '#lib/viewport'
 import type { ImageBuildEntry } from '@yaac/shared/types'
-
-/** Human relative age from the entry's UTC 'YYYY-MM-DD HH:MM:SS' time. */
-function relativeAge(startedAt: string): string {
-  const t = Date.parse(startedAt.replace(' ', 'T') + 'Z')
-  if (Number.isNaN(t)) return ''
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
+import { relativeAge } from '#lib/time'
 
 /** `yaac-base:abc123def456…` → `yaac-base:abc123` — enough to tell tags apart. */
 function shortTag(tag: string): string {

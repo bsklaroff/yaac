@@ -155,6 +155,9 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // never about which driver is installed.
   { method: 'GET', path: '/worktree/:id/agent-sessions/:sessionId/transcript', request: '/worktree/nope/agent-sessions/s1/transcript', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/worktree/:id/changes', request: '/worktree/nope/changes', k8s: [404, 503], containerless: MISSING },
+  // Read off the server's own refs, resolved from the record like the file
+  // editor below — no workspace needed, so both substrates answer alike.
+  { method: 'GET', path: '/worktree/:id/git-status', request: '/worktree/nope/git-status', k8s: MISSING, containerless: MISSING },
   // The file editor reads the checkout on the server's own disk, resolved from
   // the record — so it needs no workspace and answers alike on both substrates.
   { method: 'GET', path: '/worktree/:id/files', request: '/worktree/nope/files', k8s: MISSING, containerless: MISSING },

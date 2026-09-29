@@ -43,6 +43,7 @@ The cost is coupling to where the checkout lives: node-local checkouts
 | `POST /worktree/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /worktree/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
 | `DELETE /worktree/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
+| `GET /worktree/:id/git-status?base=` | `WorktreeGitStatus`: `{ base, comparison: { ref, ahead, behind, fetchedAt? } \| null }` |
 
 ### Listing
 
@@ -81,6 +82,23 @@ mount does not make every file look dirty.
 The listing is capped at 50,000 paths (`truncated`). git reports a symlink as
 one entry, so each path is `lstat`ed and links answer `{ target, dir }`, the
 target relative to the worktree or null when broken or outside.
+
+### Git status bar
+
+The strip above a worktree's panes (`GitStatusBar`) names its reference
+branch and how many commits HEAD is ahead of and behind it:
+`worktreeAheadBehind` runs `rev-list --left-right --count <base>...HEAD` on
+the same `worktree` target, so HEAD is read through the admin dir and follows
+the agent across a branch rename. The base is the Changes pane's pick, else
+the fork branch (`worktreeForkBranch`), tried as `origin/<base>` and then the
+local branch, as the Changes diff does. It reads refs only and never fetches,
+so `behind` is as fresh as the project's last fetch — and the bar says when
+that was. No one file records it: the server's own fetches run in a throwaway
+git dir whose `FETCH_HEAD` goes with it, so each writes its time to a
+server-private record (`server-local/git-fetched/`); a fetch inside a worktree
+leaves that worktree's `FETCH_HEAD`; and a fetch that moved the branch appends
+to its reflog. The newest of those (the repo's files read only for their
+mtimes, with `lstat`) is `fetchedAt`.
 
 ### Confinement
 
