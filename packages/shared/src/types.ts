@@ -6,6 +6,14 @@ export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 /**
+ * The tools that mint their own conversation ids. claude and pi are launched
+ * under an id yaac chooses — the worktree id, for a create's conversation —
+ * but codex and opencode take none, so the id a create records for them is a
+ * stand-in no agent ever runs under, until the pane names the real one.
+ */
+export const SELF_NAMING_TOOLS: readonly AgentTool[] = ['codex', 'opencode']
+
+/**
  * Coerce a raw tool name into an `AgentTool`, defaulting to claude.
  *
  * Where raw strings enter: a driver reading back what it stamped on a

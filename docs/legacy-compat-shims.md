@@ -102,6 +102,31 @@ until the pod restarts. Keeping the key is what makes the swap invisible.
 **How to tell it is safe to remove:** a season after the release that sets
 the critical flag. Then drop the condition and load any stored CA.
 
+## A codex/opencode pin beside a conversation of its tool
+
+`recordAgentSessions` hands a codex or opencode worktree's worktree-id pin to
+the first conversation of its tool a pane names (docs/worktree-storage.md,
+"Agent worktrees") — but not when the worktree already links another
+conversation of that tool. The takeover replaces the pin in the same
+transaction that records its first sibling, so under current code the two
+never coexist and the guard never fires.
+
+**What it reads:** a worktree recorded before the takeover existed: the pin at
+ordinal 0 (with the `--prompt` ask, if one was given) and its real first
+codex/opencode conversation at ordinal 1 or later.
+
+**What breaks silently if it goes too early:** the first conversation new to
+such a worktree — its next `/new` or `/clear` — takes over the pin. It inherits
+the founding ask over its own opening message, the pin's birth time, and
+ordinal 0, so it relabels the worktree and a restart puts it in the primary
+`yaac:<tool>` window ahead of the conversation that really came first.
+
+**How to tell it is safe to remove:** no row matches
+`select 1 from worktree_agent_sessions p join worktree_agent_sessions s using
+(project_slug, worktree_id, tool) where p.tool in ('codex', 'opencode') and
+p.agent_session_id = p.worktree_id and s.agent_session_id <> s.worktree_id`
+on the installs that matter. Removing it then changes nothing.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

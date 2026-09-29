@@ -385,8 +385,11 @@ export async function tryClaimPrewarmed(
     })
     // The spare's agent is already running, pinned to its own id — report it
     // as the worktree's first conversation, since that is where the
-    // worktree's tool is read from. Not under acp: that conversation has no
-    // id until its handshake mints one, which is when the registry writes it.
+    // worktree's tool and founding ask are read from. The ask is recorded as
+    // a cold create records it, rather than left to be read back once the
+    // agent has it: opencode would only give back a title summarizing it.
+    // Not under acp: that conversation has no id until its handshake mints
+    // one, which is when the registry writes it.
     if (setup.mode === 'tui') {
       await applyWorktreeEvent({
         type: 'sessions-launched',
@@ -396,6 +399,7 @@ export async function tryClaimPrewarmed(
           tool,
           agentSessionId: claimedId,
           ...(setup.model !== undefined ? { model: setup.model } : {}),
+          ...(request.prompt !== undefined ? { firstPrompt: request.prompt } : {}),
         }],
       })
     }

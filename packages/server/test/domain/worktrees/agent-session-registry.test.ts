@@ -13,6 +13,7 @@ import { closeDb } from '#db/client'
 import { acpLogDir, claudeDir, codexDir } from '@yaac/shared/project-paths'
 import { _resetReportedModesForTests, reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
 import { listWorktreeAgentSessions, recordAgentSessions } from '#db/agent-session-store'
+import { applyWorktreeEvent } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { getWorktreeRow, recordWorktreeCreated, recordWorktreeLife, setWorktreePermissionMode } from '#db/worktree-store'
 import { _resetCodexPosturesForTests } from '#runtime/agents/codex'
@@ -173,6 +174,92 @@ describe('reconcileAgentSessions', () => {
     // Read once: the row remembers the answer.
     await sweep()
     expect(podExec).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the create\'s pin to the first conversation a codex or opencode pane names', async () => {
+    // What a tui create records: one conversation under the worktree id — for
+    // opencode with the `--prompt` ask and the launch's model, for codex in a
+    // second worktree with neither. Neither tool ever runs under that id.
+    const launch = (worktreeId: string, session: { tool: 'codex' | 'opencode'; firstPrompt?: string; model?: string }) =>
+      applyWorktreeEvent({
+        type: 'sessions-launched',
+        projectSlug: 'demo',
+        worktreeId,
+        sessions: [{ agentSessionId: worktreeId, mode: 'tui', ...session }],
+      })
+    await launch('wt-1', { tool: 'opencode', firstPrompt: 'build a thing', model: 'opencode/big-pickle' })
+    const [pin] = await listWorktreeAgentSessions('demo', 'wt-1')
+
+    // The pane names the session opencode minted, which takes the pin's place:
+    // first in the window order, carrying the ask the user typed rather than
+    // the title opencode summarized it into.
+    podExec.mockResolvedValue({ stdout: JSON.stringify({ data: { id: 'ses_1', title: 'Thing builder' } }), stderr: '' })
+    live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_1' }])
+    await sweep()
+    const summary = async (worktreeId: string) => (await listWorktreeAgentSessions('demo', worktreeId))
+      .map((l) => [l.agentSessionId, l.ordinal, l.active, l.firstPrompt, l.model])
+    expect(await summary('wt-1')).toEqual([['ses_1', 0, true, 'build a thing', 'opencode/big-pickle']])
+    expect((await row('ses_1'))?.createdAt).toEqual(pin?.createdAt)
+
+    // Only the first: a `/new` after it is a conversation of its own.
+    live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_2' }])
+    await sweep()
+    expect(await summary('wt-1')).toEqual([
+      ['ses_1', 0, false, 'build a thing', 'opencode/big-pickle'],
+      ['ses_2', 1, true, 'Thing builder', undefined],
+    ])
+
+    // With no ask on the pin, the conversation's own opening message is the
+    // worktree's.
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-2' })
+    await launch('wt-2', { tool: 'codex' })
+    const rel = path.join('codex', 'sessions', 'rollout-conv-c.jsonl')
+    await fs.mkdir(path.join(codexDir('demo'), 'sessions'), { recursive: true })
+    await fs.writeFile(path.join(codexDir('demo'), rel.slice('codex/'.length)), `${JSON.stringify({
+      type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' },
+    })}\n`)
+    setWorktreeStreamHealth('demo', 'wt-2', true)
+    setLiveAgents('demo', 'wt-2', [{ handle: '%0', tool: 'codex', agentSessionId: 'conv-c', transcriptPath: rel }])
+    await reconcileAgentSessions(snapshotFixture([
+      handleFixture({ workspaceId: 'wt-2', projectSlug: 'demo', jobName: 'yaac-demo-wt-2' }),
+    ]))
+    expect(await summary('wt-2')).toEqual([['conv-c', 0, true, 'fix the login bug', undefined]])
+  })
+
+  it('leaves a pin alone beside a conversation of its tool recorded before the takeover', async () => {
+    // Rows written before a pin was replaced: the pin first, carrying the ask,
+    // and the conversation opencode actually ran behind it.
+    await recordAgentSessions('demo', 'wt-1', [
+      { tool: 'opencode', agentSessionId: 'wt-1', firstPrompt: 'the founding ask' },
+      { tool: 'opencode', agentSessionId: 'ses_old' },
+    ])
+    podExec.mockResolvedValue({ stdout: JSON.stringify({ data: { title: 'a later ask' } }), stderr: '' })
+    // A `/new` is not the worktree's first conversation, so it takes nothing.
+    live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_new' }])
+    await sweep()
+    const links = await listWorktreeAgentSessions('demo', 'wt-1')
+    expect(links.map((l) => [l.agentSessionId, l.ordinal, l.firstPrompt])).toEqual([
+      ['wt-1', 0, 'the founding ask'],
+      ['ses_old', 1, undefined],
+      ['ses_new', 2, 'a later ask'],
+    ])
+  })
+
+  it('keeps claude\'s pin, which is the conversation it runs', async () => {
+    await applyWorktreeEvent({
+      type: 'sessions-launched',
+      projectSlug: 'demo',
+      worktreeId: 'wt-1',
+      sessions: [{ tool: 'claude', agentSessionId: 'wt-1', mode: 'tui', firstPrompt: 'the original ask' }],
+    })
+    live([await claudeOn('%0', 'wt-1', 'the original ask')])
+    await sweep()
+    // A `/clear` names a new conversation beside it, as for any other.
+    live([await claudeOn('%0', 'conv-b')])
+    await sweep()
+    const links = await listWorktreeAgentSessions('demo', 'wt-1')
+    expect(links.map((l) => [l.agentSessionId, l.ordinal, l.active, l.firstPrompt]))
+      .toEqual([['wt-1', 0, false, 'the original ask'], ['conv-b', 1, true, undefined]])
   })
 
   it('records the model a pane reports, and keeps it while the pane says nothing', async () => {

@@ -54,8 +54,9 @@ goes through them, and they are the only writers.
   with the first agent session — a worktree with no conversation could name
   neither its tool nor its label, so create records the one it is about to
   launch rather than waiting for discovery to notice it. (Discovery only ever
-  adds to that — and for codex and opencode, which mint their own ids, the
-  one create recorded is a stand-in until the agent names its own.) Before
+  adds to that — save that for codex and opencode, which mint their own ids,
+  the one create recorded is a stand-in that the agent's first named
+  conversation replaces; see "Agent worktrees".) Before
   the Job in `createWorktree`, so no pod can exist without a
   row — which matters because a rowless pod is invisible to every path that
   reads recorded state. A create that fails afterwards rolls its row back; a
@@ -194,6 +195,19 @@ not enumerated panes yet the active set is left untouched, so a stream gap
 never reads as "every agent exited". And discovery only ever adds rows: a
 `/clear` leaves the old conversation recorded, inactive, beside the new one.
 
+The one row discovery replaces is the **pin**: the conversation a `tui` create
+records under the worktree id, so the worktree has a tool and a founding ask
+before any agent has spoken. claude and pi are launched under that id, so the
+pin is their real conversation. codex and opencode take no id and mint their
+own (`SELF_NAMING_TOOLS`), so for them the pin is a stand-in, and the first
+conversation of its tool a pane names takes it over (`recordAgentSessions`):
+the link keeps ordinal 0, and the conversation keeps what the create recorded
+on the pin — the `--prompt` ask, the launch's model, the birth time — so every
+reader of "the first conversation" (the worktree's prompt, its title, restart)
+finds the one the agent actually runs. A worktree stopped before its pane named
+one still holds the pin, and its restart starts that tool fresh rather than
+resuming an id the tool never knew.
+
 What a pane option cannot give is history no server was there for: it holds
 only the pane's current conversation, so one that starts and is replaced
 entirely while no server runs never becomes a row (a restart still resumes the
@@ -269,9 +283,8 @@ opencode is the exception throughout: it keeps history in a per-worktree sqlite
 DB (`opencode-data/`) and leaves no host transcript, so its first message comes
 from an `opencode api` probe while the worktree runs. A data dir written by the
 1.x line holds its history as JSON under `storage/` instead, which opencode 2
-has no importer for: such a worktree resumes into a fresh, empty session (with
-an error toast from its own `--continue` lookup), and the JSON stays on disk
-untouched.
+has no importer for: such a worktree resumes into a fresh, empty session, and
+the JSON stays on disk untouched.
 
 ### opencode
 

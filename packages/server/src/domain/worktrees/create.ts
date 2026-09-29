@@ -100,6 +100,7 @@ import {
   defaultPermissionMode,
   launchablePermissionMode,
   resolveToolCreateDefaults,
+  SELF_NAMING_TOOLS,
   supportedPermissionModes,
   toolSupportsPermissionMode,
   type AgentMode,
@@ -474,18 +475,18 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   // the worktree row — the two must not diverge, or the DB would name a
   // conversation the agent never opened.
   //
-  // Only a *resume* passes `--resume`, and never for codex's worktree-id pin:
-  // codex mints its own ids and never runs under the pin, so
-  // `codex resume <worktree id>` finds no conversation and kills the window.
-  // A codex conversation still on the pin (never prompted, or not yet seen by
-  // a reconcile) starts anew instead.
+  // Only a *resume* resumes, and never the worktree-id pin of a tool that
+  // mints its own ids: it never ran under the pin, so a resume by that id
+  // finds no conversation (`codex resume` kills the window). A worktree whose
+  // pane never named a conversation to take the pin's place starts anew.
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => ({
     tool: a.tool,
     cmd: driver.launchCmd({
       tool: a.tool,
       agentSessionId: a.agentSessionId,
-      resume: options.resume === true && (a.tool !== 'codex' || a.agentSessionId !== worktreeId),
+      resume: options.resume === true
+        && !(SELF_NAMING_TOOLS.includes(a.tool) && a.agentSessionId === worktreeId),
       // The window a conversation lands in — the primary keeps the tool's own
       // name, extras get `<tool>-2`, … . Under acp it doubles as the acpd
       // socket's name, which is why the driver needs it and the TUI one

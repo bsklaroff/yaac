@@ -48,16 +48,15 @@ const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/
  * its id. Anything else — the worktree-id pin a create records before the
  * pane names a session — names no session, so it reads as no title rather
  * than borrowing one out of a listing (whose page holds only the 50 most
- * recently updated anyway). The split is on the prefix a resume splits on
- * (`buildAgentCmd`); the full pattern is the shell-safety gate. An exec
- * failure — `session.get` exits 1 for an id opencode lacks — or a session
- * opencode has not titled yet reads the same way.
+ * recently updated anyway). The pattern is also the shell-safety gate. An
+ * exec failure — `session.get` exits 1 for an id opencode lacks — or a
+ * session opencode has not titled yet reads the same way.
  */
 export async function getSessionOpencodeFirstUserMessage(
   jobName: string,
   agentSessionId?: string,
 ): Promise<string | undefined> {
-  if (!agentSessionId?.startsWith('ses_') || !OPENCODE_SESSION_ID.test(agentSessionId)) return undefined
+  if (agentSessionId === undefined || !OPENCODE_SESSION_ID.test(agentSessionId)) return undefined
   try {
     const { stdout } = await worktreeDriver().exec(
       jobName,

@@ -112,12 +112,9 @@ describe('buildAgentCmd', () => {
 
     it('names the session it resumes on its pane, and resumes it by id', () => {
       // opencode names a session only as it creates one, so the launch says
-      // which one the pane holds. The worktree-id pin of a create whose
-      // session was never named is no opencode id: that continues the newest.
-      const resume = (id: string): string =>
-        buildAgentCmd({ tool: 'opencode', worktreeId: id, resume: true, permissionMode: 'bypass' })
-      expect(resume('ses_1')).toMatch(/^yaac-agent-links "" opencode ses_1; OPENCODE_CONFIG_CONTENT=.* opencode --standalone --session ses_1$/)
-      expect(resume('sess-1')).toMatch(/^yaac-agent-links "" opencode sess-1; .* opencode --standalone --continue$/)
+      // which one the pane holds.
+      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'ses_1', resume: true, permissionMode: 'bypass' })
+      expect(cmd).toMatch(/^yaac-agent-links "" opencode ses_1; OPENCODE_CONFIG_CONTENT=.* opencode --standalone --session ses_1$/)
     })
 
     it('carries a provider/model override in the config, never as a flag', () => {
