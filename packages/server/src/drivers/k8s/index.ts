@@ -13,6 +13,7 @@ import {
   launchWorkspace,
   listWorkspaces,
   prepareWorkspaceSubstrate,
+  registerWorkspace,
   salvageWorkspaceImages,
 } from '#drivers/k8s/worktrees'
 import {
@@ -23,7 +24,6 @@ import {
   readAllGitAuthFailures,
   readGitAuthFailures,
   refreshedCredentials,
-  registerWorkspace,
 } from '#drivers/k8s/egress'
 import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
 import {

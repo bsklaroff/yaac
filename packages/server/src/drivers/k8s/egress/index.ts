@@ -37,7 +37,7 @@ export {
   buildWorktreeRegistration,
   deregisterWorkspaceEgress,
   reconcileRegistrationGc,
-  registerWorkspace,
+  registerWorkspaceEgress,
   type WorktreeRegistration,
 } from './proxy-registration'
 export {

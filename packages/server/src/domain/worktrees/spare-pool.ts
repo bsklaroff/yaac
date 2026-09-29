@@ -1,5 +1,5 @@
 import { worktreeDriver } from '#drivers/driver'
-import { projectRemoteUrl, resolveProjectConfig, resolveEphemeralModulesPaths, resolveProjectEnv } from '#domain/projects'
+import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#domain/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { shellEscape } from '#lib/shell'
 import {
@@ -61,38 +61,26 @@ async function piProviderFor(tool: AgentTool): Promise<PiProvider | undefined> {
  * Spares are provisioned tool-agnostically (mounts, env placeholders, and
  * per-tool config cover every tool), so only three things are keyed to the
  * booted tool: the proxy registration (drives credential injection), the
- * agent tmux window's name, and the process running in it. Re-registers the
- * workspace, then renames + respawns the agent window and verifies the
- * respawned agent survived. What the workspace DECLARES flips later, in the
- * claim's own commit (`claimSpare`). Throws on failure — the caller must
- * treat the spare as tainted (registration, window name, and what it
- * declares may disagree) and reap it.
+ * agent tmux window's name, and the process running in it. The registration
+ * is the claim's own step, taken on every claim (`tryClaimPrewarmed`); this
+ * renames + respawns the agent window and verifies the respawned agent
+ * survived. What the workspace DECLARES flips later, in the claim's own
+ * commit (`claimSpare`). Throws on failure — the caller must treat the
+ * spare as tainted (window name and what it declares may disagree) and
+ * reap it.
  *
  * The in-pod commands ride the runtime's transport, so the caller must have
  * gated on `awaitAgentTransport` (the claim path does, before its first
  * mutation).
  */
 export async function retoolSpare(
-  spare: { jobName: string; workspaceId: string; projectSlug: string; tool: string },
+  spare: { jobName: string; workspaceId: string; tool: string },
   agent: SpareAgent,
 ): Promise<void> {
   const { tool } = agent
-  const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
-  const remoteUrl = await projectRemoteUrl(spare.projectSlug)
   const runtime = worktreeDriver()
   const paths = runtime.workspacePaths(spare.jobName)
   const TMUX = tmuxCmd(paths)
-  await runtime.registerWorkspace({
-    workspaceId: spare.workspaceId,
-    projectSlug: spare.projectSlug,
-    tool,
-    config,
-    remoteUrl,
-    proxySecretRules: Object.fromEntries(
-      Object.entries((await resolveProjectEnv(spare.projectSlug)).secrets)
-        .map(([name, { rule }]) => [name, rule]),
-    ),
-  })
   // Written to tolerate having already run, so the dial retries stay on:
   // by the time a claim gets here any throw reaps the spare, and a blip on
   // the shared port-forward is far likelier than the rename failing for

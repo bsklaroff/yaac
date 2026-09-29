@@ -38,6 +38,7 @@ vi.mock('#domain/git', () => ({
 }))
 vi.mock('#domain/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
 vi.mock('#domain/projects/credentials', () => ({ resolveProjectCredential: vi.fn() }))
+vi.mock('#domain/projects/env', () => ({ resolveProjectEnv: vi.fn() }))
 vi.mock('#domain/projects/detail', async (importOriginal) => ({
   ...await importOriginal<object>(),
   projectRemoteUrl: vi.fn(() => Promise.resolve('https://example.com/p.git')),
@@ -65,6 +66,7 @@ import {
   worktreeUpstreamBranch,
 } from '#domain/git'
 import { resolveProjectConfig } from '#domain/projects/config'
+import { resolveProjectEnv } from '#domain/projects/env'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeEvent } from '#db'
 import {
@@ -79,7 +81,7 @@ import {
 import type { CreateSetup } from '#domain/worktrees/create'
 import { _resetAcpRegistryForTests, takeAcpLaunchModel } from '#runtime/agents/acp-registry'
 import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import type { RuntimeHandle } from '#drivers/contract'
+import type { RuntimeHandle, WorkspaceRegistration } from '#drivers/contract'
 import type { AgentTool } from '@yaac/shared/types'
 
 // The runtime verbs the claim drives, as mocks — the fake runtime installed
@@ -89,6 +91,7 @@ const mockList = vi.fn<(projectSlug?: string) => Promise<RuntimeHandle[]>>()
 const mockClaimSpare = vi.fn<(workspaceId: string, tool: AgentTool) => Promise<void>>()
 const mockExec = vi.fn<(jobName: string, cmd: string) => Promise<{ stdout: string; stderr: string }>>()
 const mockAwaitTransport = vi.fn<(jobName: string, opts?: { timeoutMs?: number }) => Promise<void>>()
+const mockRegister = vi.fn<(reg: WorkspaceRegistration) => Promise<void>>()
 
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
 const mockRetool = vi.mocked(retoolSpare)
@@ -153,12 +156,15 @@ describe('tryClaimPrewarmed', () => {
     mockClaimSpare.mockResolvedValue(undefined)
     mockExec.mockResolvedValue({ stdout: '', stderr: '' })
     mockAwaitTransport.mockResolvedValue(undefined)
+    mockRegister.mockResolvedValue(undefined)
     installFakeWorktreeDriver({
       list: mockList,
       claimSpare: mockClaimSpare,
       exec: mockExec,
       awaitAgentTransport: mockAwaitTransport,
+      registerWorkspace: mockRegister,
     })
+    vi.mocked(resolveProjectEnv).mockResolvedValue({ plain: {}, secrets: {} })
     mockRetool.mockResolvedValue(undefined)
     mockRebranch.mockResolvedValue(undefined)
     vi.mocked(setWorktreeGroup).mockResolvedValue(undefined)
@@ -191,6 +197,56 @@ describe('tryClaimPrewarmed', () => {
       "git config --global user.name 'A B' && git config --global user.email 'a@b.co'",
     )
     expect(claiming.size).toBe(0) // released in finally
+  })
+
+  // A spare's registration is written when it is warmed, from the project
+  // as it was then. A claim hands the user a worktree as a cold create would
+  // make it now, so an allowlist or secret edited since must reach it — even
+  // on a claim that changes nothing else about the spare.
+  it('re-registers the spare from the project as it is at claim time', async () => {
+    mockList.mockResolvedValue([spare()])
+    // Edited while the claim runs (a persisted allow-host click during its
+    // fetch): the registration takes the config as it is when written.
+    mockResolveConfig.mockResolvedValueOnce({}).mockResolvedValue({ setAllowedUrls: ['*'] })
+    vi.mocked(resolveProjectEnv).mockResolvedValue({
+      plain: {},
+      secrets: { API_KEY: { value: 'v', rule: { hosts: ['api.example.com'] } } },
+    } as unknown as Awaited<ReturnType<typeof resolveProjectEnv>>)
+
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+
+    expect(mockRegister).toHaveBeenCalledWith({
+      workspaceId: 'spare1',
+      projectSlug: 'p',
+      tool: 'claude',
+      config: { setAllowedUrls: ['*'] },
+      remoteUrl: 'https://example.com/p.git',
+      proxySecretRules: { API_KEY: { hosts: ['api.example.com'] } },
+    })
+    expect(mockRetool).not.toHaveBeenCalled()
+    // Before the commit, so the worktree is never handed over on the old one.
+    expect(mockRegister.mock.invocationCallOrder[0])
+      .toBeLessThan(mockClaimSpare.mock.invocationCallOrder[0])
+  })
+
+  // Under its own tool a spare holds a consistent registration whether or
+  // not the write landed, so it goes back to the pool; under another, its
+  // registration may no longer match its agent, and it is reaped.
+  it('releases a spare whose re-registration failed under its own tool, reaps one retooled', async () => {
+    mockRegister.mockRejectedValue(new Error('apiserver down'))
+
+    mockList.mockResolvedValue([spare()])
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    await flush()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    expect(vi.mocked(restoreSpareWorktree)).toHaveBeenCalledWith('p', 'spare1')
+    expect(claiming.size).toBe(0)
+
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    await flush()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(mockRetool).not.toHaveBeenCalled()
   })
 
   it('reports the worktree and its first conversation, warmed-from branch and all', async () => {

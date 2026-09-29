@@ -293,7 +293,6 @@ import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/drivers/k8s/worktrees/launch'
 import { destroyWorkspace } from '@yaac/server/drivers/k8s/worktrees/teardown'
 import { prepareWorkspaceImage } from '@yaac/server/drivers/k8s/images/workspace-image'
-import type { WorkspaceRegistration } from '@yaac/server/drivers/contract'
 
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
@@ -1244,45 +1243,25 @@ describe('buildAgentCmd', () => {
 })
 
 describe('retoolSpare', () => {
-  const spare = { jobName: 'yaac-demo-spare1', workspaceId: 'spare1', projectSlug: 'demo', tool: 'claude' }
+  const spare = { jobName: 'yaac-demo-spare1', workspaceId: 'spare1', tool: 'claude' }
 
-  /** Commands the retool ran, and the registration it sent, in order. */
+  /** Commands the retool ran, in order. */
   let execs: Array<[string, string, { timeout?: number; maxAttempts?: number } | undefined]>
-  let registrations: WorkspaceRegistration[]
 
-  function installRuntime(registerWorkspace?: () => Promise<void>): void {
+  beforeEach(() => {
+    vi.resetAllMocks()
     execs = []
-    registrations = []
     installFakeWorktreeDriver({
       exec: (jobName, cmd, opts) => {
         execs.push([jobName, cmd, opts])
         return Promise.resolve({ stdout: '', stderr: '' })
       },
-      registerWorkspace: registerWorkspace ?? ((reg) => {
-        registrations.push(reg)
-        return Promise.resolve()
-      }),
     })
-  }
-
-  beforeEach(() => {
-    vi.resetAllMocks()
-    vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(resolveProjectEnv).mockResolvedValue({ plain: {}, secrets: {} })
-    vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
-    vi.mocked(projectRemoteUrl).mockResolvedValue('https://github.com/example/repo.git')
-    installRuntime()
   })
 
-  it('re-registers the session for the new tool, then renames + respawns the agent window', async () => {
+  it('renames + respawns the agent window for the new tool', async () => {
     await retoolSpare(spare, { tool: 'codex', permissionMode: 'bypass', mode: 'tui' })
 
-    expect(registrations).toEqual([expect.objectContaining({
-      workspaceId: 'spare1',
-      projectSlug: 'demo',
-      tool: 'codex',
-      remoteUrl: 'https://github.com/example/repo.git',
-    })])
     const cmds = execs.map((c) => c[1])
     expect(cmds.some((c) => c.includes('rename-window -t yaac:claude codex'))).toBe(true)
     const respawn = cmds.find((c) => c.includes('respawn-window'))
@@ -1312,12 +1291,6 @@ describe('retoolSpare', () => {
     const respawn = execs.map((c) => c[1]).find((c) => c.includes('respawn-window'))
     expect(respawn).toContain('--model claude-opus-5-5')
     expect(respawn).toContain('--permission-mode plan')
-  })
-
-  it('propagates registration failures without touching the tmux window', async () => {
-    installRuntime(() => Promise.reject(new Error('proxy down')))
-    await expect(retoolSpare(spare, { tool: 'codex', permissionMode: 'bypass', mode: 'tui' })).rejects.toThrow('proxy down')
-    expect(execs).toEqual([])
   })
 })
 

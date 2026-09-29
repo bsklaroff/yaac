@@ -212,7 +212,7 @@ const NPMJS_HOST = 'registry.npmjs.org'
  * packages would stop resolving. (A token in the project's own `.npmrc` is
  * the project's to route — see the `registry=` note in docs/worktree-storage.md.)
  */
-function npmCacheApplies(
+export function npmCacheApplies(
   config: YaacConfig,
   allowedHosts: string[],
   secretRules: Record<string, SecretProxyRule>,

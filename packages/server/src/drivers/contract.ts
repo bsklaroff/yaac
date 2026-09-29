@@ -1090,8 +1090,9 @@ export interface WorktreeDriver {
    */
   dialPort(workspaceId: string, containerPort: number): Promise<Duplex>
 
-  /** Tell the egress path what a workspace may reach. Idempotent — a
-   *  retooled spare re-registers under its new tool. */
+  /** Tell the egress path what a running workspace may reach now.
+   *  Idempotent — a claimed spare re-registers from its project's current
+   *  config, under its claimed tool. */
   registerWorkspace(reg: WorkspaceRegistration): Promise<void>
   /**
    * Stop routing for a workspace: its port forwards go down as a set and

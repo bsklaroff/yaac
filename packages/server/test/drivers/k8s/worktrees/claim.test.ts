@@ -9,14 +9,18 @@ import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 // for real.
 const mockKubectl = vi.hoisted(() => vi.fn())
 const mockGetJson = vi.hoisted(() => vi.fn())
+const mockApply = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   kubectlWithRetry: mockKubectl,
   kubectlGetJson: mockGetJson,
+  kubectlApply: mockApply,
 }))
 
-import { claimSpareWorkspace } from '#drivers/k8s/worktrees/claim'
+import { claimSpareWorkspace, registerWorkspace } from '#drivers/k8s/worktrees/claim'
 import { LABEL_PREWARMED, LABEL_TOOL, LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
+import { LABEL_NPM_CACHE } from '#drivers/k8s/substrate/proxy-constants'
+import type { WorkspaceRegistration } from '#drivers/contract'
 import { dataDirHash } from '#drivers/k8s/substrate/kubectl'
 
 /** The argv of the lookup a claim does before its write. */
@@ -43,6 +47,7 @@ function patchOps(): Array<{ op: string; path: string; value?: string }> {
 beforeEach(() => {
   mockKubectl.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
   mockGetJson.mockReset().mockResolvedValue({ items: [{ metadata: { name: 'yaac-proj-s1-abcde' } }] })
+  mockApply.mockReset().mockResolvedValue(undefined)
 })
 
 describe('claimSpareWorkspace', () => {
@@ -163,5 +168,73 @@ describe('claimSpareWorkspace and the npm cache', () => {
       ? Promise.reject(new Error('container not running'))
       : Promise.resolve({ stdout: '', stderr: '' }))
     await expect(claimSpareWorkspace('s1', 'codex')).resolves.toBeUndefined()
+  })
+})
+
+describe('registerWorkspace', () => {
+  const reg = (o: Partial<WorkspaceRegistration> = {}): WorkspaceRegistration => ({
+    workspaceId: 's1',
+    projectSlug: 'proj',
+    tool: 'codex',
+    config: {},
+    remoteUrl: 'https://github.com/example/repo.git',
+    proxySecretRules: {},
+    ...o,
+  })
+  /** The allowlist the registration handed the proxy. */
+  const registeredHosts = (): string[] => {
+    const cm = mockApply.mock.calls[0][0] as { data: { 'registration.json': string } }
+    return (JSON.parse(cm.data['registration.json']) as { allowedHosts: string[] }).allowedHosts
+  }
+  const kubectlVerbs = (): string[] => mockKubectl.mock.calls.map(([a]) => (a as string[])[0])
+
+  // A pod the cache still applies to keeps it: re-registering is the whole
+  // of the work, and the pod is never looked up.
+  it('writes the registration from the config it is handed', async () => {
+    await registerWorkspace(reg({ config: { setAllowedUrls: ['*'] } }))
+
+    expect(registeredHosts()).toEqual(['*'])
+    expect(mockGetJson).not.toHaveBeenCalled()
+    expect(mockKubectl).not.toHaveBeenCalled()
+  })
+
+  // The cache fetches outside the proxy, so a pod admitted to it when its
+  // project's allowlist named npmjs keeps a path the narrowed allowlist
+  // refuses — until the label the cache's policies admit it by comes off.
+  it('takes a pod off the npm cache once its allowlist stops admitting npmjs', async () => {
+    await registerWorkspace(reg({ config: { setAllowedUrls: ['api.example.com'] } }))
+
+    expect(registeredHosts()).toEqual(['api.example.com'])
+    const selector = flag(getArgv(), '-l').split(',')
+    expect(selector).toContain(`${LABEL_WORKTREE_ID}=s1`)
+    expect(selector).toContain(`${LABEL_NPM_CACHE}=true`)
+    // ~/.npmrc first, so installs never point at a cache the pod can no
+    // longer reach; the label after.
+    expect(kubectlVerbs()).toEqual(['exec', 'label'])
+    const [exec, label] = mockKubectl.mock.calls.map(([a]) => a as string[])
+    expect(exec).toEqual(expect.arrayContaining(['yaac-proj-s1-abcde', '-c', 'worktree']))
+    expect(exec.at(-1)).toBe('')
+    expect(label).toEqual(expect.arrayContaining(['yaac-proj-s1-abcde', `${LABEL_NPM_CACHE}-`]))
+  })
+
+  it('revokes for a proxied npmjs secret too, and leaves a pod without the label alone', async () => {
+    mockGetJson.mockResolvedValue({ items: [] })
+    await registerWorkspace(reg({
+      config: { setAllowedUrls: ['*'] },
+      proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'] } },
+    }))
+
+    expect(mockGetJson).toHaveBeenCalledTimes(1)
+    expect(mockKubectl).not.toHaveBeenCalled()
+  })
+
+  // A revocation that did not land must fail the claim rather than hand
+  // the pod over still admitted.
+  it('propagates a failed revocation', async () => {
+    mockKubectl.mockImplementation((args: string[]) => args[0] === 'label'
+      ? Promise.reject(new Error('apiserver down'))
+      : Promise.resolve({ stdout: '', stderr: '' }))
+    await expect(registerWorkspace(reg({ config: { setAllowedUrls: ['api.example.com'] } })))
+      .rejects.toThrow('apiserver down')
   })
 })
