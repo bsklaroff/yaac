@@ -124,10 +124,11 @@ describe('validateMamaRequest', () => {
     expect(validateMamaRequest('create', { model: "o'pus" }, 'p').ok).toBe(false)
     expect(validateMamaRequest('create', { model: '-opus' }, 'p').ok).toBe(false)
 
-    expect(validateMamaRequest('create', { 'permission-mode': 'accept-edits', mode: 'acp' }, 'p'))
+    expect(validateMamaRequest('create', { 'permission-mode': 'accept-edits', 'ui-mode': 'acp' }, 'p'))
       .toEqual({ ok: true })
     expect(validateMamaRequest('create', { 'permission-mode': 'Bypass!' }, 'p').ok).toBe(false)
-    expect(validateMamaRequest('create', { mode: 'a'.repeat(33) }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('create', { 'ui-mode': 'a'.repeat(33) }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('create', { mode: 'acp' }, 'p').ok).toBe(false)
 
     expect(validateMamaRequest('create', { branch: 'feature/x-1.2' }, 'p')).toEqual({ ok: true })
     expect(validateMamaRequest('create', { branch: 'two words' }, 'p').ok).toBe(false)
@@ -139,8 +140,14 @@ describe('validateMamaRequest', () => {
     expect(validateMamaRequest('group-move', { group: 'a\nb' }, 'p').ok).toBe(false)
     expect(validateMamaRequest('group-move', { group: 'x'.repeat(201) }, 'p').ok).toBe(false)
 
+    expect(validateMamaRequest('create', { title: 'Port the lexer' }, 'p')).toEqual({ ok: true })
+    expect(validateMamaRequest('create', { title: 'a\nb' }, 'p').ok).toBe(false)
+
     expect(validateMamaRequest('group-move', { worktree: 'a1b2c3d4' }, 'p')).toEqual({ ok: true })
     expect(validateMamaRequest('group-move', { worktree: 'a/b' }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('edit-queued', { queued: 'a1b2c3d4', 'parent-worktree': 'e5f6' }, 'p'))
+      .toEqual({ ok: true })
+    expect(validateMamaRequest('queue', { 'parent-worktree': 'a/b' }, 'p').ok).toBe(false)
   })
 })
 

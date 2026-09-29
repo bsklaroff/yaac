@@ -62,7 +62,7 @@ export const MAMA_MAX_PENDING_TOTAL = 32
 const ARG_SHAPES: Record<string, RegExp> = {
   tool: /^[a-z0-9-]{1,32}$/,
   'permission-mode': /^[a-z-]{1,32}$/,
-  mode: /^[a-z-]{1,32}$/,
+  'ui-mode': /^[a-z-]{1,32}$/,
   // A git branch name: git itself refuses whitespace in one.
   branch: /^\S{1,255}$/,
   // Mirrors the server's MODEL_RE.
@@ -71,8 +71,12 @@ const ARG_SHAPES: Record<string, RegExp> = {
   // group). Bounded, and newline-free so it cannot smuggle a second line
   // into anything that renders it.
   group: /^[^\n\r]{1,200}$/,
-  // A worktree id or its short prefix.
+  // A worktree title: free-form like a group name, and bounded the same way.
+  title: /^[^\n\r]{1,200}$/,
+  // A worktree or queued worktree id, or its short prefix.
   worktree: /^[A-Za-z0-9-]{1,64}$/,
+  'parent-worktree': /^[A-Za-z0-9-]{1,64}$/,
+  queued: /^[A-Za-z0-9-]{1,64}$/,
 }
 
 /** Command names the proxy will queue. Deliberately a SHAPE, not a list: the

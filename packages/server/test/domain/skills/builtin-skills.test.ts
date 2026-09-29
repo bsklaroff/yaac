@@ -72,8 +72,11 @@ describe('yaac-mama skill', () => {
   it('is discoverable and documents the worktree-bin usage shape', async () => {
     expectShipped('yaac-mama')
     const body = await bodyOf('yaac-mama')
-    expect(body).toContain('yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M] [--branch B] [--group G] "<prompt>"')
-    expect(body).toContain('yaac-mama queue [--worktree W] [--tool T] [--model M] [--permission-mode P] "<prompt>"')
+    expect(body).toContain('yaac-mama create [opts] "<prompt>"')
+    expect(body).toContain('yaac-mama queue --parent-worktree W [opts] "<prompt>"')
+    expect(body).toContain('yaac-mama edit-queued [--parent-worktree W] [opts] <queued> ["<prompt>"]')
+    expect(body).toContain(
+      '# opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
     // Stopping is in the subset, and the two things an agent has to know

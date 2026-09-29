@@ -34,6 +34,7 @@ import { listQueuedWorktreeRows } from '#db/queued-worktree-store'
 import { clearAllProvisioningForTests } from '#domain/worktrees/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/worktrees/list'
 import { runMamaCommand, type MamaCaller } from '#domain/worktrees/mama'
+import { queueWorktree } from '#domain/worktrees/queued-worktrees'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 
 const CALLER: MamaCaller = {
@@ -124,7 +125,7 @@ describe('runMamaCommand', () => {
     // What each command DOES take still passes.
     await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-worktree' })
     expect((await run('create', 'p', {
-      tool: 'claude', model: 'opus', 'permission-mode': 'plan', mode: 'acp', branch: 'b', group: 'g',
+      tool: 'claude', model: 'opus', 'permission-mode': 'plan', 'ui-mode': 'acp', branch: 'b', group: 'g', title: 't',
     })).ok).toBe(true)
   })
 
@@ -195,11 +196,13 @@ describe('runMamaCommand', () => {
 
     it('takes every option the webapp\'s create form has, capped at the caller\'s own posture', async () => {
       expect((await run('create', 'do it', {
-        tool: 'claude', model: 'opus', 'permission-mode': 'accept-edits', mode: 'acp', branch: 'feature/x',
+        tool: 'claude', model: 'opus', 'permission-mode': 'accept-edits', 'ui-mode': 'acp', branch: 'feature/x',
+        title: '  Port   the lexer ',
       })).ok).toBe(true)
       await created()
       expect(vi.mocked(createWorktree).mock.calls[0][1]).toMatchObject({
         tool: 'claude', model: 'opus', permissionMode: 'accept-edits', mode: 'acp', branch: 'feature/x',
+        title: 'Port the lexer',
       })
 
       // The ceiling is read off the caller's recorded row, which the request
@@ -246,6 +249,47 @@ describe('runMamaCommand', () => {
       await settle()
       expect(vi.mocked(createWorktree)).not.toHaveBeenCalled()
     })
+
+    it('refuses a malformed option without creating', async () => {
+      const refusals: Array<[Record<string, string>, string]> = [
+        [{ tool: 'not-a-tool' }, "invalid tool 'not-a-tool'"],
+        [{ model: "opus'; rm -rf /" }, "invalid model 'opus'; rm -rf /'"],
+        [{ 'permission-mode': 'yolo' }, "invalid permission mode 'yolo'"],
+        [{ 'ui-mode': 'gui' }, "invalid ui mode 'gui'"],
+        [{ branch: '  ' }, 'branch must not be empty'],
+        [{ title: '  ' }, 'title must not be empty'],
+      ]
+      for (const [args, error] of refusals) {
+        const outcome = await run('create', 'x', args)
+        expect(outcome.ok, JSON.stringify(args)).toBe(false)
+        if (!outcome.ok) expect(outcome.error).toContain(error)
+      }
+      await settle()
+      expect(vi.mocked(createWorktree)).not.toHaveBeenCalled()
+    })
+  })
+
+  it('creates a named group only for a request that goes through', async () => {
+    // A request refused anywhere — the posture ceiling, an unknown parent, a
+    // user's entry above the caller — must not change the user's sidebar.
+    await recordWorktreeCreated({
+      projectSlug: 'proj', worktreeId: 'caller-worktree', permissionMode: 'accept-edits', baseBranch: 'main',
+    })
+    await recordWorktreeCreated({
+      projectSlug: 'proj', worktreeId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
+    })
+    const entry = await queueWorktree('proj', {
+      parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
+    }, 'user')
+    const refused: Array<[string, Record<string, string>]> = [
+      ['create', { 'permission-mode': 'bypass', group: 'Typo-A' }],
+      ['queue', { 'parent-worktree': 'nope', group: 'Typo-B' }],
+      ['edit-queued', { queued: entry.id, group: 'Typo-C' }],
+    ]
+    for (const [command, args] of refused) {
+      expect((await run(command, 'x', args)).ok, command).toBe(false)
+    }
+    expect(await listWorktreeGroupRows('proj')).toEqual([])
   })
 
   describe('queue', () => {
@@ -258,10 +302,12 @@ describe('runMamaCommand', () => {
       })
     })
 
-    it('queues under the caller by default, prints the id, and chains after it', async () => {
-      const first = await output('queue', 'step 2', { tool: 'claude' })
+    const ME = { 'parent-worktree': 'caller-worktree' }
+
+    it('queues under the named parent, prints the id, and chains after it', async () => {
+      const first = await output('queue', 'step 2', { ...ME, tool: 'claude' })
       expect(first).toMatch(/^[0-9a-f-]{36}$/)
-      const second = await output('queue', 'step 3', { worktree: first.slice(0, 8) })
+      const second = await output('queue', 'step 3', { 'parent-worktree': first.slice(0, 8) })
 
       const rows = await listQueuedWorktreeRows('proj')
       expect(rows.find((r) => r.id === first)).toMatchObject({
@@ -279,26 +325,119 @@ describe('runMamaCommand', () => {
       expect(listed).toMatch(new RegExp(`\\n    ${second.slice(0, 8)}  claude  queued  step 3`))
     })
 
+    it('takes every option create does', async () => {
+      const id = await output('queue', 'x', {
+        ...ME, tool: 'claude', model: 'opus', 'permission-mode': 'manual', 'ui-mode': 'acp',
+        branch: 'feature/x', group: 'follow-ups', title: 'Step two',
+      })
+      const group = (await listWorktreeGroupRows('proj')).find((g) => g.name === 'follow-ups')
+      expect((await listQueuedWorktreeRows('proj')).find((r) => r.id === id)).toMatchObject({
+        tool: 'claude', model: 'opus', permissionMode: 'manual', mode: 'acp',
+        branch: 'feature/x', groupId: group?.groupId, title: 'Step two',
+      })
+    })
+
     it('never grants more than the caller has, and refuses rather than queueing', async () => {
       // Under a looser sibling, its posture is stepped down to the caller's.
-      await output('queue', 'x', { worktree: 'loose-sibling', tool: 'claude' })
+      await output('queue', 'x', { 'parent-worktree': 'loose-sibling', tool: 'claude' })
       expect((await listQueuedWorktreeRows('proj'))[0].permissionMode).toBe('accept-edits')
 
       const refusals: Array<Record<string, string>> = [
         // Named above the ceiling.
-        { worktree: 'loose-sibling', tool: 'claude', 'permission-mode': 'bypass' },
+        { 'parent-worktree': 'loose-sibling', tool: 'claude', 'permission-mode': 'bypass' },
         // A tool with nothing at or below it.
-        { tool: 'pi' },
+        { ...ME, tool: 'pi' },
         // A mode the tool lacks.
-        { tool: 'opencode', 'permission-mode': 'auto' },
-        { 'permission-mode': 'yolo' },
-        { worktree: 'nope' },
+        { ...ME, tool: 'opencode', 'permission-mode': 'auto' },
+        { ...ME, 'permission-mode': 'yolo' },
+        { ...ME, 'ui-mode': 'gui' },
+        { ...ME, title: '   ' },
+        { 'parent-worktree': 'nope' },
+        // The parent is never implied.
+        {},
       ]
       for (const args of refusals) {
         expect((await run('queue', 'x', args)).ok, JSON.stringify(args)).toBe(false)
       }
-      expect(await run('queue', '  ')).toMatchObject({ ok: false })
+      expect(await run('queue', '  ', ME)).toMatchObject({ ok: false })
       expect(await listQueuedWorktreeRows('proj')).toHaveLength(1)
+    })
+  })
+
+  describe('edit-queued', () => {
+    beforeEach(async () => {
+      await recordWorktreeCreated({
+        projectSlug: 'proj', worktreeId: 'caller-worktree', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+      await recordWorktreeCreated({
+        projectSlug: 'proj', worktreeId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
+      })
+      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-worktree', baseBranch: 'main' })
+    })
+
+    const ME = { 'parent-worktree': 'caller-worktree' }
+    const rowOf = async (id: string, slug = 'proj') =>
+      (await listQueuedWorktreeRows(slug)).find((r) => r.id === id)
+
+    it('rewrites a queued worktree by short id, keeping what the edit does not name', async () => {
+      const id = await output('queue', 'step 2', { ...ME, tool: 'claude', model: 'opus' })
+      const text = await output('edit-queued', 'step 2, but also run the linter', { queued: id.slice(0, 8) })
+      expect(text).toContain(`Updated queued worktree ${id.slice(0, 8)}`)
+      expect(text).toContain('step 2, but also run the linter')
+      expect(await rowOf(id)).toMatchObject({
+        prompt: 'step 2, but also run the linter', tool: 'claude', model: 'opus',
+        permissionMode: 'accept-edits', parentWorktreeId: 'caller-worktree',
+      })
+
+      // Options alone leave the prompt; every one create takes is here, and
+      // so is the parent.
+      await output('edit-queued', '', {
+        queued: id, 'parent-worktree': 'loose-sibling', model: 'sonnet', 'permission-mode': 'plan',
+        'ui-mode': 'acp', branch: 'feature/y', group: 'later', title: 'Lint too',
+      })
+      const group = (await listWorktreeGroupRows('proj')).find((g) => g.name === 'later')
+      expect(await rowOf(id)).toMatchObject({
+        prompt: 'step 2, but also run the linter', parentWorktreeId: 'loose-sibling', model: 'sonnet',
+        permissionMode: 'plan', mode: 'acp', branch: 'feature/y', groupId: group?.groupId, title: 'Lint too',
+      })
+    })
+
+    it('holds an entry the user queued above the caller to its ceiling', async () => {
+      // The user queued this at `bypass`; an agent in `accept-edits` may not
+      // put its own words behind that grant, and it is not quietly lowered.
+      const entry = await queueWorktree('proj', {
+        parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
+      }, 'user')
+      const refused = await run('edit-queued', 'agent wrote this', { queued: entry.id })
+      expect(refused.ok).toBe(false)
+      if (!refused.ok) expect(refused.error).toContain('more permissive than this worktree')
+      expect(await rowOf(entry.id)).toMatchObject({ prompt: 'user wrote this', permissionMode: 'bypass' })
+
+      // Naming one at or below the caller's own is the way through.
+      await output('edit-queued', 'agent wrote this', { queued: entry.id, 'permission-mode': 'accept-edits' })
+      expect(await rowOf(entry.id)).toMatchObject({ prompt: 'agent wrote this', permissionMode: 'accept-edits' })
+    })
+
+    it('refuses what it cannot find, a no-op, a cycle, and another project\u2019s entry', async () => {
+      const foreign = await queueWorktree('other', {
+        parent: 'foreign-worktree', prompt: 'theirs', tool: 'claude',
+      }, 'user')
+      const id = await output('queue', 'mine', { ...ME, tool: 'claude' })
+      const child = await output('queue', 'after mine', { 'parent-worktree': id })
+      const refusals: Array<[string, Record<string, string>]> = [
+        ['x', {}],
+        ['x', { queued: 'nope' }],
+        ['x', { queued: foreign.id }],
+        ['', { queued: id }],
+        ['  ', { queued: id }],
+        ['x', { queued: id, 'permission-mode': 'yolo' }],
+        ['x', { queued: id, 'parent-worktree': child }],
+      ]
+      for (const [body, args] of refusals) {
+        expect((await run('edit-queued', body, args)).ok, JSON.stringify([body, args])).toBe(false)
+      }
+      expect(await rowOf(foreign.id, 'other')).toMatchObject({ prompt: 'theirs' })
+      expect(await rowOf(id)).toMatchObject({ prompt: 'mine', parentWorktreeId: 'caller-worktree' })
     })
   })
 

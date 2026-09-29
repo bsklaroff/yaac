@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this worktree to list the project's worktrees, start a sibling worktree with a prompt (now, or queued to start when a worktree stops), retitle a worktree, stop a worktree (a sibling, or this one), or file worktrees into named groups — via the in-worktree `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac worktree (or "session"), queue a follow-up to run after this one, farm a task out to a parallel one, see what else is running, rename/retitle a worktree, stop/shut down/wind down a worktree or this one when its work is done, or organize worktrees into groups.
+description: Ask the yaac server running this worktree to list the project's worktrees, start a sibling worktree with a prompt (now, or queued to start when a worktree stops), edit a queued worktree's prompt or settings, retitle a worktree, stop a worktree (a sibling, or this one), or file worktrees into named groups — via the in-worktree `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac worktree (or "session"), queue a follow-up to run after this one (or change one already queued), farm a task out to a parallel one, see what else is running, rename/retitle a worktree, stop/shut down/wind down a worktree or this one when its work is done, or organize worktrees into groups.
 ---
 
 You are running **inside a yaac worktree**. The `yaac-mama` command (already on
@@ -11,8 +11,10 @@ same project**. Use it directly — this skill is just the manual.
 
 ```
 yaac-mama list                                    # worktrees + groups here
-yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M] [--branch B] [--group G] "<prompt>"
-yaac-mama queue [--worktree W] [--tool T] [--model M] [--permission-mode P] "<prompt>"
+yaac-mama create [opts] "<prompt>"
+yaac-mama queue --parent-worktree W [opts] "<prompt>"
+yaac-mama edit-queued [--parent-worktree W] [opts] <queued> ["<prompt>"]
+  # opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
 yaac-mama rename [<worktree>] "<title>"            # omit the worktree to rename yourself
 yaac-mama stop [<worktree>]                        # omit the worktree to stop yourself
 yaac-mama group create "<name>"
@@ -57,9 +59,9 @@ pass — the server resolves who is calling and answers for that project only.
     lacks that one, the most permissive it has below it). You can grant a
     sibling **at most your own permission mode**: asking for a more
     permissive one is refused with an error, never quietly lowered. So is
-    one the tool lacks (pi has only `bypass`; codex under `--mode acp` has no
+    one the tool lacks (pi has only `bypass`; codex under `--ui-mode acp` has no
     `manual` or `plan`).
-  - **`--mode`**: `tui` (the default — the agent's own terminal UI) or `acp`
+  - **`--ui-mode`**: `tui` (the default — the agent's own terminal UI) or `acp`
     (a chat pane in the yaac webapp).
   - **`--branch`**: the branch on origin the new worktree starts from.
     Omitted, the project's reference branch. Push a branch first to hand a
@@ -67,23 +69,38 @@ pass — the server resolves who is calling and answers for that project only.
     here: the id comes back and the worktree then fails to provision.
   - **`--group`**: file the new worktree in this group, creating the group
     if it does not exist. Good for a fan-out you want kept together.
+  - **`--title`**: the label the sidebar shows for it. Omitted, it is
+    titled automatically from its prompt.
 
-- **`queue "<prompt>"`** — save a worktree to start **when a worktree
-  stops**: by default this one. Prints the queued worktree's id. Settings
-  default from the parent — its tool, current model, permission mode, and the
-  branch it forked from (the child starts from that branch's *latest* tip on
-  origin, not from this worktree's commits: push, and name your branch in the
-  prompt, to hand work over).
-  - **`--worktree`**: what it waits on instead — another worktree in this
-    project, or a queued worktree's id to **chain** after it.
-  - **`--tool`**, **`--model`**, **`--permission-mode`**: as for `create`.
-    The permission mode defaults to the parent's, stepped down to your own
-    when the parent's is more permissive; naming one above yours is refused.
+- **`queue --parent-worktree <id> "<prompt>"`** — save a worktree to start
+  **when a worktree stops**. Prints the queued worktree's id.
+  - **`--parent-worktree`** (required): what it waits on — a worktree in
+    this project (`"$YAAC_WORKTREE_ID"` is this one), or a queued worktree's
+    id to **chain** after it.
+  - Takes every option `create` does. The ones it omits default from the
+    parent — its tool, current model, UI mode, permission mode, group, and the
+    branch it forked from (the child starts from that branch's *latest* tip
+    on origin, not from this worktree's commits: push, and name your branch in
+    the prompt, to hand work over). The permission mode is stepped down to
+    your own when the parent's is more permissive; naming one above yours is
+    refused.
   - It starts only on a **natural stop** — `yaac-mama stop` or the user
     stopping the worktree. A worktree that crashes, runs out of memory, or
     whose agent simply exits does **not** start what is queued after it; that
     waits in the sidebar for the user.
   - `list` shows what is queued, indented under what it waits on.
+
+- **`edit-queued <queued> ["<prompt>"]`** — change a queued worktree before
+  it starts: a prompt given replaces the stored one (omit it to keep it),
+  each `create` option given replaces that setting (a new tool without a
+  model takes that tool's default), and `--parent-worktree` moves it under
+  another parent. `<queued>` is its id or 8-character prefix from `list` —
+  any queued worktree in this project, not only yours, so edit one you did
+  not queue only when the user asked. One whose stored permission mode is
+  above your own is refused until you pass a `--permission-mode` at or below
+  yours — or a new `--tool`, whose permission mode is then worked out afresh,
+  at or below yours. One that is already starting cannot be edited. Prints
+  the result.
 
 - **`rename [<worktree>] "<title>"`** — set the label the sidebar shows in
   place of a worktree's id. **Omit the worktree to rename yourself**, which is
@@ -140,8 +157,8 @@ yourself as your last act — that stop is what starts it. For a multi-step
 plan whose steps must run one after another, chain them:
 
 ```
-a=$(yaac-mama queue "step 2: …")
-yaac-mama queue --worktree "$a" "step 3: …"
+a=$(yaac-mama queue --parent-worktree "$YAAC_WORKTREE_ID" "step 2: …")
+yaac-mama queue --parent-worktree "$a" "step 3: …"
 ```
 
 A chain moves on only when each link's agent calls `yaac-mama stop` (or the

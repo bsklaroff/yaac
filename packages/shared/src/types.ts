@@ -1556,6 +1556,7 @@ export const MAMA_COMMANDS = [
   'group-move',
   'models',
   'queue',
+  'edit-queued',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]
 

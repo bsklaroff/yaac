@@ -186,8 +186,8 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
 
     const PROMPT = 'hello from spawn e2e'
     const { exitCode, output } = await runMama(
-      'create --model claude-opus-4-8 --permission-mode plan --mode tui --branch main '
-      + `--group "release train" "${PROMPT}"`)
+      'create --model claude-opus-4-8 --permission-mode plan --ui-mode tui --branch main '
+      + `--group "release train" --title "Spawned by e2e" "${PROMPT}"`)
     expect(exitCode).toBe(0)
     const newWorktreeId = output.trim()
     expect(newWorktreeId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
@@ -229,6 +229,7 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
       if (!handedOff) await sleep(1000)
     }
     expect(handedOff).toBe(true)
+    expect(sub.latest()?.worktrees.find((s) => s.worktreeId === newWorktreeId)?.title).toBe('Spawned by e2e')
     sub.ws.close()
 
     // The prompt lands in the spawned agent's pane (typed via the shared
@@ -276,7 +277,8 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
     // one is filed under the group `create --group` made.
     const { exitCode, output } = await runMama('list')
     expect(exitCode).toBe(0)
-    expect(output).toMatch(/WORKTREE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
+    // TITLE shows because the spawn above named one.
+    expect(output).toMatch(/WORKTREE\s+TOOL\s+STATUS\s+GROUP\s+TITLE\s+PROMPT/)
     // The caller's own row is marked, which is how an agent tells itself
     // from its siblings.
     expect(output).toContain('(you)')
@@ -412,10 +414,15 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
 
   it('stops ITSELF when no worktree is named, starting what it queued after itself', async () => {
     // The agent's "when I'm done, this picks up from here": queued over the
-    // proxy queue, then started by the caller's own natural stop.
-    const queued = await runMama('queue "follow-up from queue e2e"')
+    // proxy queue under its own id, refined in place, then started by the
+    // caller's own natural stop.
+    const queued = await runMama('queue --parent-worktree "$YAAC_WORKTREE_ID" "draft follow-up"')
     expect(queued.exitCode).toBe(0)
     expect(queued.output.trim()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    const edited = await runMama(
+      `edit-queued --title "Follow-up" ${queued.output.trim().slice(0, 8)} "follow-up from queue e2e"`)
+    expect(edited.exitCode).toBe(0)
+    expect(edited.output).toContain('follow-up from queue e2e')
     const listedQueue = await runMama('list')
     expect(listedQueue.output).toContain('follow-up from queue e2e')
 
