@@ -171,12 +171,20 @@ try {
   const entry = aside.getByRole('button', { name: /^Stopped worktrees/ })
   const ghost = (label) => aside.locator('button[title="Read this worktree\'s conversation"]', { hasText: label })
   const section = aside.getByRole('group', { name: GROUP, exact: true })
-  // The group's ghost rows are folded behind a count until it is opened, and
-  // fold again whenever the section remounts (a project switch).
+  // The group's ghost rows stay hidden until its menu shows them, and hide
+  // again whenever the section remounts (a project switch).
   const openGhosts = async () => {
-    const toggle = section.getByRole('button', { name: /^\d+ stopped worktrees?\b/ })
-    await toggle.waitFor({ timeout: 20_000 })
-    if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+    const trigger = section.getByRole('button', { name: 'Group actions' }).first()
+    await trigger.waitFor({ state: 'attached', timeout: 20_000 })
+    // The header, not the section: its centre is over a row, and the `…` is
+    // pointer-inert until the header itself is hovered.
+    await section.locator('button[aria-expanded]').first().hover()
+    await trigger.click()
+    const show = page.getByRole('menuitem', { name: 'Show stopped worktrees' })
+    const hide = page.getByRole('menuitem', { name: 'Hide stopped worktrees' })
+    await show.or(hide).waitFor({ timeout: 20_000 })
+    if (await show.count()) await show.click()
+    else await page.keyboard.press('Escape')
   }
   await entry.waitFor({ timeout: 20_000 })
   await openGhosts()

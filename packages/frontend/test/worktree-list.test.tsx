@@ -202,7 +202,7 @@ describe('WorktreeList', () => {
     expect(screen.getByText('OpenCode')).toBeTruthy()
   })
 
-  it('folds a group\'s stopped members behind a count and offers them a way out of it', async () => {
+  it('counts a group\'s stopped members in its header, and shows them only when asked', async () => {
     const stoppedMember = (worktreeId: string, title: string): StoppedWorktreeEntry => ({
       worktreeId,
       projectSlug: 'proj',
@@ -217,21 +217,85 @@ describe('WorktreeList', () => {
     stoppedRows.push(stoppedMember('gone', 'Stopped one'), stoppedMember('gone2', 'Stopped two'))
     renderList([entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
 
-    // Closed by default, at the foot of the section, after the live rows.
-    const expander = await screen.findByRole('button', { name: '2 stopped worktrees' })
     const section = screen.getByRole('group', { name: group().name })
-    expect(section.textContent?.indexOf('2 stopped worktrees'))
-      .toBeGreaterThan(section.textContent?.indexOf('Filed one') ?? Infinity)
+    await waitFor(() => expect(section.textContent).toContain('(1/3)'))
     expect(screen.queryByText('Stopped one')).toBeNull()
 
-    fireEvent.click(expander)
-    expect(screen.getByText('Stopped one')).toBeTruthy()
+    // Shown at the foot of the section, after the live rows.
+    await pickAction('Show stopped worktrees', 'Group actions')
+    expect(section.textContent?.indexOf('Stopped one'))
+      .toBeGreaterThan(section.textContent?.indexOf('Filed one') ?? Infinity)
     const row = screen.getByText('Stopped one').closest<HTMLElement>('.group')
     fireEvent.click(within(row ?? document.body).getByLabelText('Remove from group'))
     await waitFor(() => expect(setWorktreeGroup).toHaveBeenCalledWith('proj', 'gone', null))
+
+    // Hiding them leaves the live rows where they were.
+    await pickAction('Hide stopped worktrees', 'Group actions')
+    expect(screen.queryByText('Stopped one')).toBeNull()
+    expect(screen.getByText('Filed one')).toBeTruthy()
   })
 
-  it('moves a stopped member in and out of the fold as its queue comes and goes', async () => {
+  it('makes the caret the show/hide toggle for a group with only stopped members', async () => {
+    stoppedRows.push({
+      worktreeId: 'gone',
+      projectSlug: 'proj',
+      tool: 'claude',
+      createdAt: '2026-08-10 00:00:00',
+      stoppedAt: '2026-08-10 01:00:00',
+      title: 'Stopped one',
+      seen: true,
+      agentSessions: [],
+      groupId: 'g1',
+    })
+    renderList([], { groups: [group({ pinned: true })] })
+
+    const caret = await screen.findByRole('button', { name: /Release.*\(0\/1\)/ })
+    expect(caret.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(caret)
+    expect(screen.getByText('Stopped one')).toBeTruthy()
+
+    // The menu sees the same state the caret set, and closes the caret too.
+    await pickAction('Hide stopped worktrees', 'Group actions')
+    expect(screen.queryByText('Stopped one')).toBeNull()
+    expect(caret.getAttribute('aria-expanded')).toBe('false')
+    await pickAction('Show stopped worktrees', 'Group actions')
+    expect(screen.getByText('Stopped one')).toBeTruthy()
+    expect(caret.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('keeps an all-stopped group the caret opened open once a member restarts', async () => {
+    // Collapsed while it still has a live member...
+    const opts = { groups: [group({ pinned: true })] }
+    const rerender = renderList([entry({ worktreeId: 'gone', title: 'Live one', groupId: 'g1' })], opts)
+    fireEvent.click(screen.getByRole('button', { name: /Release.*\(1\/1\)/ }))
+    expect(screen.queryByText('Live one')).toBeNull()
+
+    // ...then it stops, leaving only stopped members, and the caret opens it.
+    stoppedRows.push({
+      worktreeId: 'gone',
+      projectSlug: 'proj',
+      tool: 'claude',
+      createdAt: '2026-08-10 00:00:00',
+      stoppedAt: '2026-08-10 01:00:00',
+      title: 'Stopped one',
+      seen: true,
+      agentSessions: [],
+      groupId: 'g1',
+    })
+    rerender([], opts)
+    const caret = await screen.findByRole('button', { name: /Release.*\(0\/1\)/ })
+    expect(caret.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(caret)
+    expect(screen.getByText('Stopped one')).toBeTruthy()
+
+    // A restart makes it live again: it must not snap back to how it was left
+    // while it last had a live member, hiding the row the user just asked for.
+    rerender([], { ...opts, provisioning: [provisioning({ worktreeId: 'gone', groupId: 'g1' })] })
+    expect(screen.getByRole('button', { name: /Release.*\(1\/1\)/ }).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('Restarting worktree')).toBeTruthy()
+  })
+
+  it('keeps a held member on screen as its queue comes and goes', async () => {
     const stoppedMember = (worktreeId: string, over: Partial<StoppedWorktreeEntry> = {}): StoppedWorktreeEntry => ({
       worktreeId,
       projectSlug: 'proj',
@@ -254,28 +318,27 @@ describe('WorktreeList', () => {
     expect(await screen.findByText('Stopped s')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '1 queued worktree' }))
     expect(screen.getByText('Step q1')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /stopped worktree/ })).toBeNull()
 
-    // Its queue drains: into a closed fold.
+    // Its queue drains: hidden with the other stopped members.
     rerender(live, { groups: [group()] })
-    expect(screen.getByRole('button', { name: '1 stopped worktree' }).getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('Stopped s')).toBeNull()
 
-    // Opened, it stays open as another member stops — and an unread death
-    // shows on the trigger, since a closed fold would hide it.
-    fireEvent.click(screen.getByRole('button', { name: '1 stopped worktree' }))
+    // Shown, they stay shown as another member stops — and an unread death
+    // shows on the header, since hidden rows would hide it.
+    await pickAction('Show stopped worktrees', 'Group actions')
     // The stopped list is refetched when the live set changes.
     stoppedRows.push(stoppedMember('t', { deathReason: 'oom', seen: false }))
     const more = [...live, entry({ worktreeId: 'c', title: 'Other' })]
     rerender(more, { groups: [group()] })
-    const toggle = await screen.findByRole('button', { name: /2 stopped worktrees.*1 died/ })
-    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(await screen.findByRole('button', { name: /Release.*\(1\/3\).*1 died/ })).toBeTruthy()
     expect(screen.getByText('Stopped t')).toBeTruthy()
-
-    // It gains a queued child: out of the fold again.
-    rerender(more, { groups: [group()], queued: [queuedEntry('q2', { parentWorktreeId: 's' })], held })
-    expect(screen.getByRole('button', { name: /1 stopped worktree.*1 died/ })).toBeTruthy()
     expect(screen.getByText('Stopped s')).toBeTruthy()
+
+    // It gains a queued child: on screen again whatever the toggle says.
+    await pickAction('Hide stopped worktrees', 'Group actions')
+    rerender(more, { groups: [group()], queued: [queuedEntry('q2', { parentWorktreeId: 's' })], held })
+    expect(screen.getByText('Stopped s')).toBeTruthy()
+    expect(screen.queryByText('Stopped t')).toBeNull()
   })
 
   it('opens a stopped member\'s conversation, without selecting a worktree', async () => {
@@ -296,7 +359,8 @@ describe('WorktreeList', () => {
     })
     renderList([entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
 
-    fireEvent.click(await screen.findByRole('button', { name: '1 stopped worktree' }))
+    await screen.findByRole('button', { name: /Release.*\(1\/2\)/ })
+    await pickAction('Show stopped worktrees', 'Group actions')
     fireEvent.click(screen.getByText('Stopped one'))
 
     expect(useUiStore.getState().stoppedOverlayOpen).toBe(true)
@@ -313,15 +377,17 @@ describe('WorktreeList', () => {
       provisioning: [
         provisioning({ worktreeId: 'r', groupId: 'g1' }),
         provisioning({ worktreeId: 'loose', kind: 'create' }),
+        provisioning({ worktreeId: 'f', groupId: 'g1', error: 'boom' }),
       ],
     })
 
     const section = screen.getByRole('group', { name: 'Release' })
-    expect(section.contains(screen.getByText('Restarting worktree'))).toBe(true)
+    for (const row of screen.getAllByText('Restarting worktree')) expect(section.contains(row)).toBe(true)
     // The ungrouped one stays where every provisioning row used to go.
     expect(section.contains(screen.getByText('New worktree'))).toBe(false)
-    // Counted in the section's tally alongside the live row.
-    expect(screen.getByText('2')).toBeTruthy()
+    // Counted in the section's active count alongside the live row — a failed
+    // one is on screen but has nothing running behind it.
+    expect(screen.getByText('(2/3)')).toBeTruthy()
   })
 
   it('keeps a group on screen while its last worktree restarts', () => {
@@ -613,17 +679,17 @@ describe('WorktreeList', () => {
 
     it('pins, deletes, and renames the group inline', async () => {
       renderGrouped()
-      fireEvent.click(screen.getByLabelText('Pin group'))
+      await pickAction('Pin', 'Group actions')
       await waitFor(() => expect(setWorktreeGroupPinned).toHaveBeenCalledWith('proj', 'g1', true))
 
-      fireEvent.click(screen.getByLabelText('Rename group'))
-      const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Group name' })
+      await pickAction('Rename', 'Group actions')
+      const input = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Group name' })
       expect(input.value).toBe('Release')
       fireEvent.change(input, { target: { value: 'Shipping' } })
       fireEvent.keyDown(input, { key: 'Enter' })
       await waitFor(() => expect(renameWorktreeGroup).toHaveBeenCalledWith('proj', 'g1', 'Shipping'))
 
-      fireEvent.click(screen.getByLabelText('Delete group'))
+      await pickAction('Delete group', 'Group actions')
       await waitFor(() => expect(deleteWorktreeGroup).toHaveBeenCalledWith('proj', 'g1'))
     })
   })
