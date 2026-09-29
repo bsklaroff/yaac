@@ -11,7 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import clsx from 'clsx'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
 import { Dialog } from '@base-ui/react/dialog'
 import { Menu } from '@base-ui/react/menu'
@@ -43,12 +43,12 @@ import {
   setWorktreeGroupPinned,
 } from '#lib/groupApi'
 import { useInlineEdit, useInlineRename } from '#lib/useInlineRename'
-import { getStoppedWorktrees } from '#lib/stoppedApi'
 import { discardDraftWorktree } from '#lib/draftApi'
 import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
 import { clip, queuedChildren, queuedTitle } from '#lib/queued'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
+import { patchStopped, useStoppedWorktrees } from '#lib/useStoppedWorktrees'
 import { useIsMobile } from '#lib/viewport'
 import { isUnreadWaiting, useUiStore } from '#lib/store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
@@ -313,33 +313,11 @@ export function WorktreeList({
   // already-deleting rows out of the delete successor order; each row reads it
   // again for its own placeholder.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
-  const optimisticStopped = useUiStore((s) => s.optimisticStopped)
   // Only for the empty-state copy: there is no rail on a phone to point at.
   const isMobile = useIsMobile()
-  // Re-fetch the deleted list whenever the active set changes (a just-deleted
-  // worktree appears, a restarted one drops).
-  const activeSignature = worktrees.map((s) => s.worktreeId).sort().join(',')
-
-  // Stopped worktrees feed the groups' ghost rows. Same query key as
-  // StoppedWorktreesButton, so the two share one fetch.
-  const { data: deletedList } = useQuery({
-    queryKey: ['deleted', projectSlug, activeSignature],
-    queryFn: () => getStoppedWorktrees(projectSlug ?? '', 100),
-    enabled: !!projectSlug,
-    staleTime: 2000,
-  })
-  // Optimistic just-stopped entries ahead of the fetched list (de-duped),
-  // minus anything active again — a worktree mid-termination is still in the
-  // snapshot (its row renders the stopping placeholder), and one mid-restart
-  // has a provisioning row instead. Which of these are drawn at all is the
-  // layout's call: only members of a shown group become ghost rows.
-  const activeIds = new Set(worktrees.map((s) => s.worktreeId))
-  const provisioningIds = new Set(provisioning.map((p) => p.worktreeId))
-  const fetchedIds = new Set((deletedList ?? []).map((d) => d.worktreeId))
-  const stopped = [
-    ...optimisticStopped.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.worktreeId)),
-    ...(deletedList ?? []),
-  ].filter((d) => !activeIds.has(d.worktreeId) && !provisioningIds.has(d.worktreeId))
+  // Only members of a shown group become ghost rows — the layout's call; the
+  // rest are in the overlay behind the entry point at the foot of the list.
+  const stopped = useStoppedWorktrees(projectSlug, worktrees, provisioning)
 
   const layout = sidebarLayout(worktrees, groups, stopped, provisioning, queued, held)
   // Display order of the selectable rows, so a stop from a row's menu can hand
@@ -563,7 +541,7 @@ export function WorktreeList({
           />
         ))}
 
-        {projectSlug && <StoppedWorktreesButton projectSlug={projectSlug} activeSignature={activeSignature} />}
+        {projectSlug && <StoppedWorktreesButton projectSlug={projectSlug} stopped={stopped} />}
       </div>
     </QueueContext.Provider>
   )
@@ -1201,10 +1179,8 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
   // cached query (and any optimistic copy) for an instant regroup; the server
   // write makes it durable.
   const ungroup = (): void => {
-    queryClient.setQueriesData<StoppedWorktreeEntry[]>(
-      { queryKey: ['deleted', entry.projectSlug] },
-      (old) => old?.map((e) => (e.worktreeId === entry.worktreeId ? { ...e, groupId: undefined } : e)),
-    )
+    patchStopped(queryClient, entry.projectSlug,
+      (e) => (e.worktreeId === entry.worktreeId ? { ...e, groupId: undefined } : e))
     removeOptimisticStopped(entry.worktreeId)
     void setWorktreeGroup(entry.projectSlug, entry.worktreeId, null)
       .catch((e: unknown) => console.error('group move failed', e))

@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import type { JSX } from 'react'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
@@ -15,6 +16,7 @@ vi.mock('#lib/createWorktree', () => ({ restartWorktree: vi.fn() }))
 vi.mock('#lib/useProvisionWorktree', () => ({ useProvisionWorktree: () => provision }))
 
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
+import { useStoppedWorktrees } from '#lib/useStoppedWorktrees'
 import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
 import { useUiStore } from '#lib/store'
 
@@ -57,10 +59,17 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
+/** The button as WorktreeList mounts it: fed by the hook, given the live ids. */
+function Harness({ live = [], provisioning = [] }: { live?: string[]; provisioning?: string[] }): JSX.Element {
+  const ids = (list: string[]): { worktreeId: string }[] => list.map((worktreeId) => ({ worktreeId }))
+  const stopped = useStoppedWorktrees('proj', ids(live), ids(provisioning))
+  return <StoppedWorktreesButton projectSlug="proj" stopped={stopped} />
+}
+
 function renderButton(): void {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <StoppedWorktreesButton projectSlug="proj" activeSignature="s0" />
+      <Harness />
     </QueryClientProvider>,
   )
 }
@@ -248,53 +257,37 @@ describe('StoppedWorktreesButton', () => {
     expect(useUiStore.getState().stoppedOverlayOpen).toBe(false)
   })
 
-  it('re-lists a restarted worktree after it is deleted again', async () => {
-    // Bug: restarting a worktree left its id in a local mid-restart filter that
-    // was never cleared. Because a restart reuses the worktree id, removing that
-    // worktree again stayed hidden until a browser reload reset the component.
-    // Presence is observed here via the sidebar death dot, whose count is taken
-    // from the merged (post-filter) list.
+  it('hides live and provisioning entries, and never blinks out while refetching', async () => {
+    // Each change to the live set is a fresh fetch. Until it lands the last
+    // list stands, or the entry point and every ghost row blink out.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-
-    // s1 died and is unseen → the dot shows before the overlay is even opened.
-    vi.mocked(getStoppedWorktrees).mockResolvedValue([
-      entry({ worktreeId: 's1', title: 'OOMed run', deathReason: 'oom' }),
-    ])
-    const { rerender } = render(
-      <QueryClientProvider client={client}>
-        <StoppedWorktreesButton projectSlug="proj" activeSignature="sig-a" />
-      </QueryClientProvider>,
+    const mount = (live: string[], provisioning: string[] = []): JSX.Element => (
+      <QueryClientProvider client={client}><Harness live={live} provisioning={provisioning} /></QueryClientProvider>
     )
-    expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
+    const { rerender } = render(mount([]))
+    expect(await screen.findByRole('button', { name: /^Stopped worktrees\s*2/ })).toBeTruthy()
 
-    // Restart s1 from the overlay → records it mid-restart and closes the overlay.
-    fireEvent.click(await screen.findByRole('button', STOPPED_ENTRY))
-    fireEvent.click(await screen.findByRole('button', { name: /Restart/ }))
-    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Restart' }))
-    expect(provision).toHaveBeenCalledTimes(1)
+    // A restart's provisioning row takes its entry off the list, and a failed
+    // restart dismissed puts it straight back. Neither is a refetch: the
+    // provisioning set isn't part of the key.
+    rerender(mount([], ['s1']))
+    expect(screen.getByRole('button', { name: /^Stopped worktrees\s*1/ })).toBeTruthy()
+    rerender(mount([]))
+    expect(screen.getByRole('button', { name: /^Stopped worktrees\s*2/ })).toBeTruthy()
+    expect(getStoppedWorktrees).toHaveBeenCalledTimes(1)
 
-    // Restart took hold: s1 is live again and leaves the deleted list. The active
-    // set changed, re-keying the query; the refetch comes back empty. That drop
-    // must prune s1 from the mid-restart filter.
-    vi.mocked(getStoppedWorktrees).mockResolvedValue([])
-    rerender(
-      <QueryClientProvider client={client}>
-        <StoppedWorktreesButton projectSlug="proj" activeSignature="sig-b" />
-      </QueryClientProvider>,
-    )
-    await waitFor(() => expect(client.getQueryData(['deleted', 'proj', 'sig-b'])).toEqual([]))
-    await waitFor(() => expect(screen.queryByRole('button', STOPPED_ENTRY)).toBeNull())
+    let land: (rows: StoppedWorktreeEntry[]) => void = () => {}
+    vi.mocked(getStoppedWorktrees).mockReturnValue(new Promise((r) => { land = r }))
+    rerender(mount(['w1']))
+    await waitFor(() => expect(getStoppedWorktrees).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: /^Stopped worktrees\s*2/ })).toBeTruthy()
 
-    // s1 dies again and re-enters the deleted list. With the stale filter pruned,
-    // the death dot must reappear immediately — no browser reload needed.
-    vi.mocked(getStoppedWorktrees).mockResolvedValue([
-      entry({ worktreeId: 's1', title: 'OOMed run', deathReason: 'oom' }),
-    ])
-    rerender(
-      <QueryClientProvider client={client}>
-        <StoppedWorktreesButton projectSlug="proj" activeSignature="sig-c" />
-      </QueryClientProvider>,
-    )
-    expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
+    // A restart landing: s1 is live again, so it leaves the list at once, and
+    // stays gone once the refetch agrees.
+    rerender(mount(['w1', 's1']))
+    expect(screen.getByRole('button', { name: /^Stopped worktrees\s*1/ })).toBeTruthy()
+    land([TWO[1]])
+    await waitFor(() => expect(getStoppedWorktrees).toHaveBeenCalledTimes(3))
+    expect(screen.getByRole('button', { name: /^Stopped worktrees\s*1/ })).toBeTruthy()
   })
 })
