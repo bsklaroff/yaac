@@ -267,7 +267,6 @@ import {
   recordWorktreeCreated,
   recordWorktreeStopped,
   restoreWorktreeStop,
-  setWorktreeBaseBranch,
 } from '@yaac/server/db/worktree-store'
 import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/runtime/agents/agent-command'
@@ -479,6 +478,9 @@ describe('createWorktree', () => {
       permissionMode: 'bypass',
       mode: 'tui',
       model: 'gpt-6-sol',
+      // With the row, not after provisioning: a worktree queued after this
+      // one defaults to it, and may be queued while this one still boots.
+      baseBranch: 'dev',
     })
     // The tool and the founding ask live on the conversation create launches,
     // which is the only reason a worktree can name either — and the model it
@@ -546,11 +548,6 @@ describe('createWorktree', () => {
 
     expect(vi.mocked(restoreWorktreeStop)).toHaveBeenCalledWith('demo', 'died-session', prior)
     expect(vi.mocked(recordWorktreeStopped)).not.toHaveBeenCalled()
-  })
-
-  it('stamps the resolved base branch after provisioning', async () => {
-    const result = await createWorktree('demo', { tool: 'claude', branch: 'dev' })
-    expect(vi.mocked(setWorktreeBaseBranch)).toHaveBeenCalledWith('demo', result?.worktreeId, 'dev')
   })
 
   it('flags a prewarmed spare — a spare is not a worktree until claimed', async () => {
