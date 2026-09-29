@@ -436,7 +436,8 @@ export async function tryClaimPrewarmed(
     // spare was warmed with holds the allowlist, proxied-secret rules and
     // remote of that moment, and a project edited since must reach a claimed
     // spare exactly as it would a cold create — a revoked host must not be
-    // reachable by a new connection, nor a newly allowed one stay blocked.
+    // reachable (the proxy drops the tunnels it no longer admits), nor a
+    // newly allowed one stay blocked.
     // Under the claimed tool, since the proxy gates credential injection on
     // it; a retool below respawns the agent to match. The config is read
     // again rather than reused from above: the fetch awaited since can take
