@@ -35,5 +35,6 @@ export {
   readBlobAt,
   remoteBranchExists,
   resolveRemoteRef,
+  worktreeAheadBehind,
   worktreeUpstreamBranch,
 } from './repo'

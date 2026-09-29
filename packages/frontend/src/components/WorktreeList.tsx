@@ -12,7 +12,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
 import { Dialog } from '@base-ui/react/dialog'
 import {
-  BranchIcon,
   ChevronIcon,
   CloseIcon,
   GroupAddIcon,
@@ -53,6 +52,7 @@ import type {
   WorktreeGroupSummary,
   WorktreeListEntry,
 } from '@yaac/shared/types'
+import { relativeAge } from '#lib/time'
 
 /** A worktree is stopping when the server has marked it (its pod has a
  *  deletionTimestamp, or a delete was just issued) or a client-side optimistic
@@ -181,19 +181,6 @@ export function sidebarRowIds(
       ...selectable(s.members),
     ]),
   ]
-}
-
-/** Human relative age from the worktree's UTC 'YYYY-MM-DD HH:MM:SS' time. */
-function relativeAge(createdAt: string): string {
-  const t = Date.parse(createdAt.replace(' ', 'T') + 'Z')
-  if (Number.isNaN(t)) return ''
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
 }
 
 /** Pointer travel that turns a press on a row into a drag rather than a
@@ -761,7 +748,7 @@ function WorktreeRow({
     )
   }
 
-  // The age/agents/branch/tool line, unchanged whether the title above it is
+  // The age/agents/tool line, unchanged whether the title above it is
   // the marquee display or the rename input.
   const metaLine = (
     <span className="flex items-center gap-2 text-xs text-text-faint">
@@ -775,13 +762,6 @@ function WorktreeRow({
           title={`${openAgentCount(worktree)} agent worktrees open in this worktree`}
         >
           {openAgentCount(worktree)} agents
-        </span>
-      )}
-      {/* The remote branch this worktree's worktree tracks. */}
-      {worktree.baseBranch && (
-        <span className="flex min-w-0 items-center gap-1" title={`Tracking origin/${worktree.baseBranch}`}>
-          <BranchIcon size={10} className="shrink-0" />
-          <span className="truncate font-mono text-[11px]">{worktree.baseBranch}</span>
         </span>
       )}
       {/* Tool name moved off the title line so the title can run full-width;

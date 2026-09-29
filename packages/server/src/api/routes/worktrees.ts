@@ -13,6 +13,7 @@ import {
   getWorktreeBlockedHosts,
   getWorktreeChanges,
   getWorktreeDetail,
+  getWorktreeGitStatus,
   getWorktreePrompt,
   listActiveWorktrees,
   listStoppedWorktrees,
@@ -513,6 +514,13 @@ export const worktreeApp = new Hono()
     '/:id/changes',
     zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
     async (c) => c.json(await getWorktreeChanges(c.req.param('id'), c.req.valid('query').base)),
+  )
+  // The status bar's ahead/behind, read off the server's own refs like the
+  // file editor below, so a stopped worktree answers too.
+  .get(
+    '/:id/git-status',
+    zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
+    async (c) => c.json(await getWorktreeGitStatus(c.req.param('id'), c.req.valid('query').base)),
   )
   // The file editor (docs/file-editor.md). Served from the server's own view
   // of the checkout, resolved from the record: a stopped worktree browses and

@@ -33,6 +33,7 @@ import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
+import { GitStatusBar } from '#components/GitStatusBar'
 import { ForwardedPortLinks, portLinkHref, portLinkLabel } from '#components/ForwardedPortLinks'
 import { getWorktreeTerminals, createShellTerminal, killWorktreeTerminal } from '#lib/terminalsApi'
 import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
@@ -863,6 +864,8 @@ export function WorktreeView({
           {leading && <div className="no-drag">{leading}</div>}
         </header>
       )}
+
+      {worktree && <GitStatusBar key={worktree.worktreeId} worktreeId={worktree.worktreeId} />}
 
       {/* `isolate`: the provisioning overlay below is z-30, and without an
           isolating stacking context here it escapes into the root context and

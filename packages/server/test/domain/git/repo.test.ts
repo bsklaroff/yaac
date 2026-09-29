@@ -13,6 +13,7 @@ import {
   readBlobAt,
   remoteBranchExists,
   resolveRemoteRef,
+  worktreeAheadBehind,
   worktreeUpstreamBranch,
 } from '#domain/git'
 import { serverLocalPath } from '@yaac/shared/paths'
@@ -572,6 +573,48 @@ describe('listCheckoutFiles', () => {
     const listing = await listCheckoutFiles(h.clone, 'wt-hostile-list', wtPath)
     expect(listing.status).toEqual({ 'hello.txt': 'modified' })
     await expectUntouched(h)
+  })
+})
+
+describe('worktreeAheadBehind', () => {
+  it('counts HEAD against origin/<base>, else the local branch, following a rename', async () => {
+    const cloneDir = path.join(tmpDir, 'clone-ab')
+    await cloneRepo(sourceRepo, cloneDir, null)
+    const main = await getDefaultBranch(cloneDir)
+    const wtPath = path.join(tmpDir, 'wt-ab')
+    await addWorktree(cloneDir, wtPath, 'agent/ab', `origin/${main}`)
+    await git(cloneDir, ['config', 'user.email', 'test@test.com'])
+    await git(cloneDir, ['config', 'user.name', 'Test'])
+    // Two commits of the agent's, then a rename (HEAD is read through the
+    // admin dir, so it follows); one landed upstream and fetched.
+    await git(wtPath, ['commit', '--allow-empty', '-m', 'one'])
+    await git(wtPath, ['commit', '--allow-empty', '-m', 'two'])
+    await git(wtPath, ['branch', '-m', 'feature/renamed'])
+    await commitToSource('upstream.txt', 'upstream')
+
+    const fetchedBefore = Date.now()
+    await fetchOrigin(cloneDir, sourceRepo, null)
+    // A local-only branch, never pushed, at the fork point.
+    await git(cloneDir, ['branch', 'local-only', `origin/${main}~1`])
+
+    // The fetch just run is the newest on record; a local branch has none.
+    const counted = await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, main)
+    expect(counted).toMatchObject({ ref: `origin/${main}`, ahead: 2, behind: 1 })
+    expect(counted?.fetchedAtMs).toBeGreaterThanOrEqual(fetchedBefore)
+    expect(await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, 'local-only'))
+      .toEqual({ ref: 'local-only', ahead: 2, behind: 0, fetchedAtMs: null })
+    // A fetch the agent ran inside its worktree counts too: it leaves that
+    // worktree's FETCH_HEAD, which the server's fetches never touch.
+    // Whole seconds, so the filesystem stores it exactly.
+    const agentFetch = new Date(Math.ceil(Date.now() / 1000) * 1000 + 60_000)
+    const fetchHead = path.join(cloneDir, '.git', 'worktrees', 'wt-ab', 'FETCH_HEAD')
+    await fs.writeFile(fetchHead, '')
+    await fs.utimes(fetchHead, agentFetch, agentFetch)
+    expect((await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, main))?.fetchedAtMs)
+      .toBe(agentFetch.getTime())
+    expect(await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, 'no-such-branch')).toBeNull()
+    // Not a branch name: a range would otherwise count something else.
+    expect(await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, `${main}..HEAD`)).toBeNull()
   })
 })
 

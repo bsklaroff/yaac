@@ -9,6 +9,7 @@ import { addWorktree } from '#domain/git'
 import {
   createWorktreeFolder,
   deleteWorktreeEntry,
+  getWorktreeGitStatus,
   listWorktreeDir,
   listWorktreeFiles,
   readWorktreeFile,
@@ -203,6 +204,41 @@ describe('listWorktreeFiles', () => {
     // Every file here is untracked; the status map shares the cap.
     expect(Object.keys(files.status)).toHaveLength(50_000)
   }, 120_000)
+})
+
+describe('getWorktreeGitStatus', () => {
+  // One commit on the checkout's branch and one on main after the fork. The
+  // repo has no remote, so every count here comes off the local-branch
+  // fallback — the one a never-pushed base takes.
+  beforeAll(async () => {
+    await makeCheckout('gs')
+    const run = wtGit('gs')
+    await run(['config', 'user.email', 'test@test.com'])
+    await run(['config', 'user.name', 'Test'])
+    await run(['commit', '--allow-empty', '-m', 'agent work'])
+    await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'landed on main'])
+    // What a fetch leaves: the remote-tracking ref, and its reflog entry.
+    await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
+    // No worktree row here, so the fork branch is the checkout's own upstream.
+    await git(repoDir(SLUG), ['config', 'branch.agent/gs.merge', 'refs/heads/main'])
+  })
+
+  it('counts against the fork branch by default and an explicit base on request', async () => {
+    const fork = await getWorktreeGitStatus('gs')
+    expect(fork).toMatchObject({
+      base: 'main', comparison: { ref: 'origin/main', ahead: 1, behind: 1 },
+    })
+    expect(fork.comparison?.fetchedAt).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/)
+    // A branch never pushed is counted locally, and has no fetch to report.
+    await expect(getWorktreeGitStatus('gs', 'agent/gs')).resolves.toEqual({
+      base: 'agent/gs', comparison: { ref: 'agent/gs', ahead: 0, behind: 0 },
+    })
+    await expect(getWorktreeGitStatus('gs', 'gone')).resolves.toEqual({ base: 'gone', comparison: null })
+  })
+
+  it('refuses a worktree with no checkout', async () => {
+    expect((await refusal(getWorktreeGitStatus('nope'))).code).toBe('NOT_FOUND')
+  })
 })
 
 describe('listWorktreeDir', () => {

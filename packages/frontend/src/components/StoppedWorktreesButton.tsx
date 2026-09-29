@@ -14,20 +14,7 @@ import { useIsMobile } from '#lib/viewport'
 import { isUnseenDeath, useUiStore } from '#lib/store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
-
-/** Human relative age from a UTC 'YYYY-MM-DD HH:MM:SS' time, '' if unset. */
-function relativeAge(utc: string | undefined): string {
-  if (!utc) return ''
-  const t = Date.parse(utc.replace(' ', 'T') + 'Z')
-  if (Number.isNaN(t)) return ''
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
+import { relativeAge } from '#lib/time'
 
 const label = (d: StoppedWorktreeEntry): string => d.title || d.prompt || 'New worktree'
 

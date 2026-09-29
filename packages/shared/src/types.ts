@@ -990,6 +990,24 @@ export interface WorktreeChanges {
   truncated: boolean
 }
 
+/** Where a worktree's HEAD stands against its reference branch — the status
+ *  bar above its panes. Counts come from the server's own refs, so `behind`
+ *  is only as fresh as `fetchedAt`. */
+export interface WorktreeGitStatus {
+  /** The branch compared against; null when nothing records one. */
+  base: string | null
+  /** Null when `base` resolves to no branch, remote or local. */
+  comparison: {
+    /** `origin/<base>`, or `<base>` for a branch that was never pushed. */
+    ref: string
+    ahead: number
+    behind: number
+    /** When `ref` was last fetched, 'YYYY-MM-DD HH:MM:SS' (UTC); absent for
+     *  a local branch or when no fetch is on record. */
+    fetchedAt?: string
+  } | null
+}
+
 /**
  * A file's git status in the file explorer — what differs from HEAD, staged
  * and unstaged alike. Deletions are absent: a deleted file is not in the tree.
