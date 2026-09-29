@@ -16,7 +16,7 @@
 import crypto from 'node:crypto'
 import { resolveCreate } from './create'
 import { inFlightCreate, listProvisioning, removeProvisioning, runProvisioned } from './provisioning'
-import { resolveWorktreeInProject } from './resolve'
+import { resolveWorktree } from './resolve'
 import { startWorktree } from './start'
 import { agentPermissionMode } from './spawn-policy'
 import { modelDisplayName } from '#domain/auth'
@@ -352,7 +352,7 @@ function pointerOf(row: QueuedWorktreeRow): QueuedParent {
 async function resolveParent(projectSlug: string, parent: string): Promise<ParentInfo> {
   const target = parent.trim()
   const [worktree, entries] = await Promise.all([
-    resolveWorktreeInProject(projectSlug, target),
+    resolveWorktree(target, { projectSlug }),
     listQueuedWorktreeRows(projectSlug),
   ])
   const asWorktree = (worktreeId: string): Promise<ParentInfo> =>

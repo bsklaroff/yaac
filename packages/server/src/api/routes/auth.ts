@@ -66,12 +66,7 @@ export const authApp = new Hono()
     '/fake',
     zv('json', z.object({ kinds: z.array(z.enum(FAKE_AUTH_KINDS)).min(1) })),
     async (c) => {
-      const { kinds } = c.req.valid('json')
-      // De-dupe so `auth fake pi-openrouter pi-openrouter` seeds once; order is irrelevant
-      // (each seed is independent).
-      for (const kind of new Set(kinds)) {
-        await seedFakeAuth(kind)
-      }
+      await seedFakeAuth(c.req.valid('json').kinds)
       await pushCredentialsToRuntime()
       return c.body(null, 204)
     },

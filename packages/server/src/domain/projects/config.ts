@@ -4,6 +4,9 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { worktreeDriver } from '#drivers/driver'
+import { isInfraPort } from '#lib/port-policy'
+
+const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
 
 const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'npmCache', 'referenceBranch'])
 
@@ -151,11 +154,22 @@ export function parseProjectConfig(raw: string): YaacConfig {
     }
     const volumes = obj.cacheVolumes as Record<string, unknown>
     for (const [key, val] of Object.entries(volumes)) {
+      // The key names a host dir under the project's `cache-volumes/`, which
+      // the server `mkdir -p`s and mounts read-write: one naming a parent
+      // (`..`) mounts some other server dir into the pod, and one naming a
+      // subdir (`a/b`) puts a mount inside another the pod can swap for a
+      // link. A single plain segment rules out both.
+      if (!CACHE_VOLUME_KEY_RE.test(key)) {
+        throw new Error(
+          `yaac-config.json: cacheVolumes key "${key}" must be 1-64 letters, digits, "_", "-" or "." `
+          + 'and not start with "."',
+        )
+      }
       if (typeof val !== 'string') {
         throw new Error(`yaac-config.json: cacheVolumes.${key} must be a string (absolute container path)`)
       }
-      if (!val.startsWith('/')) {
-        throw new Error(`yaac-config.json: cacheVolumes.${key} must be an absolute path`)
+      if (!val.startsWith('/') || val === '/' || path.posix.normalize(val) !== val) {
+        throw new Error(`yaac-config.json: cacheVolumes.${key} must be a normalized absolute path other than /`)
       }
     }
     config.cacheVolumes = volumes as Record<string, string>
@@ -184,6 +198,12 @@ export function parseProjectConfig(raw: string): YaacConfig {
       }
       if (typeof entry.containerPort !== 'number' || !Number.isInteger(entry.containerPort) || entry.containerPort < 1 || entry.containerPort > 65535) {
         throw new Error(`yaac-config.json: portForward[${i}].containerPort must be an integer between 1 and 65535`)
+      }
+      if (isInfraPort(entry.containerPort)) {
+        throw new Error(
+          `yaac-config.json: portForward[${i}].containerPort ${entry.containerPort} is reserved for yaac's own `
+          + 'in-workspace services (10250-10350)',
+        )
       }
       if (typeof entry.hostPortStart !== 'number' || !Number.isInteger(entry.hostPortStart) || entry.hostPortStart < 1 || entry.hostPortStart > 65535) {
         throw new Error(`yaac-config.json: portForward[${i}].hostPortStart must be an integer between 1 and 65535`)

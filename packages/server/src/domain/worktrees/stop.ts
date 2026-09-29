@@ -1,5 +1,6 @@
 import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktreeDetached } from './cleanup'
+import { resolveWorktreeId } from './resolve'
 import { startQueuedChildren } from './queued-worktrees'
 import { harvestToolCredentials } from '#domain/auth'
 import { serverLog } from '#log'
@@ -12,7 +13,7 @@ export interface StoppedWorktreeInfo {
 }
 
 /**
- * Resolve a worktree by prefix match on id or Job/pod name and schedule a
+ * Resolve a worktree by its id or unique prefix and schedule a
  * detached cleanup (delete the Job + prune the worktree dirs). The *git
  * worktree* is deliberately kept — that is what makes this a stop rather
  * than a delete, and what a later restart re-attaches to.
@@ -24,12 +25,12 @@ export interface StoppedWorktreeInfo {
  * `NOT_FOUND` if nothing matches, `RUNTIME_UNAVAILABLE` if the cluster
  * can't be reached.
  */
-export async function stopWorktree(idOrName: string): Promise<StoppedWorktreeInfo> {
-  const target = await worktreeDriver().findForTeardown(idOrName)
+export async function stopWorktree(idOrPrefix: string): Promise<StoppedWorktreeInfo> {
+  const target = await worktreeDriver().findForTeardown(await resolveWorktreeId(idOrPrefix))
   if (!target) {
     throw new ServerError(
       'NOT_FOUND',
-      `No worktree found matching "${idOrName}". Run "yaac worktree list" to see running worktrees.`,
+      `No worktree found matching "${idOrPrefix}". Run "yaac worktree list" to see running worktrees.`,
     )
   }
 

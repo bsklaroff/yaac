@@ -1165,7 +1165,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
     // The group goes with it, so the restarting row replaces this ghost right
     // here instead of jumping to the top of the sidebar.
     provision(entry.projectSlug, entry.tool, 'restart', entry.worktreeId,
-      (sid, onProgress) => restartWorktree(sid, onProgress, { projectSlug: entry.projectSlug, tool: entry.tool }),
+      (sid, onProgress) => restartWorktree(sid, onProgress),
       entry.groupId)
   }
 

@@ -214,6 +214,7 @@ vi.mock('@yaac/server/lib/status-right', async (importOriginal) => ({
 // is a failed create (see the teardown case below), not a swallowed hiccup.
 vi.mock('@yaac/server/db/worktree-store', () => ({
   recordWorktreeCreated: vi.fn(),
+  recordWorktreeResumed: vi.fn(),
   recordWorktreeLife: vi.fn(),
   recordWorktreeStopped: vi.fn(),
   deleteWorktreeRow: vi.fn(),
@@ -756,8 +757,11 @@ describe('createWorktree', () => {
       '/tmp/demo/opencode-data/abcd1234',
       '/tmp/demo/opencode-config',
       '/tmp/demo/pi',
-      '/tmp/demo/.cached-packages',
     ]))
+    // No project-wide package tree under a pod: its pnpm store lives in its
+    // own module dirs, and a tree every pod could write would be a channel
+    // between them.
+    expect(hostPaths).not.toContain('/tmp/demo/.cached-packages')
     // claude's global config gets no mount of its own: naming
     // CLAUDE_CONFIG_DIR puts it at `<claude home>/.claude.json`, inside the
     // directory the mount above already carries.

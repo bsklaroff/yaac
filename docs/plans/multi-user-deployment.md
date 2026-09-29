@@ -434,25 +434,12 @@ flaws. Two structural facts frame all of them:
 
 ### Preconditions — pre-existing bugs that make ownership meaningless until fixed
 
-These are exploitable in the *current* single-user server too; ownership
-cannot be enforced on top of them. They are planned in detail, with the
-dispositions some of them have since changed to, in
-docs/plans/isolation-groundwork.md workstream 1.
+This one is exploitable in the *current* single-user server too; ownership
+cannot be enforced on top of it. docs/plans/isolation-groundwork.md
+workstream 1 plans it (1.6). The rest of that list — exact worktree-id
+resolution, the `.cached-packages` mount, `cacheVolumes` key traversal and
+the ungated `POST /auth/fake` — has shipped.
 
-- **Empty/prefix worktree-id resolution → a shell in an arbitrary pod.**
-  `findWorktreePod` (`drivers/k8s/substrate/pods.ts`) matches
-  `worktreeId.startsWith(idOrName)` with no empty-string guard, and the
-  `/pty/attach`, `/forward/attach` and `/acp/attach` upgrades in
-  `main/server-run.ts` default a missing `id` to `''`, so `GET
-  /pty/attach?id=&target=shell` resolves to *the first running pod in the
-  cluster*. `resolveWorktreeContainer` delegates to the driver's `find` with
-  no exact-match preference, so every `/worktree/:id/*` route inherits the
-  ambiguity. The fix already exists in the same folder:
-  `resolveWorktreeInProject` trims, rejects empty, prefers an exact match and
-  reports `ambiguous` on a multi-prefix hit — propagate that discipline to
-  the pod-side resolver and the upgrade handlers. **Fix first, before any
-  owner lookup** — an owner check keyed off a fuzzy resolve targets the
-  wrong row.
 - **`/repo/.git` is mounted read-write, so a worktree can point the
   server's git at other projects' files.** The server's git no longer runs
   anything a pod wrote into `/repo/.git`: hooks, filters and fsmonitor
@@ -465,24 +452,6 @@ docs/plans/isolation-groundwork.md workstream 1.
   server. Fix: mount `/repo/.git` read-only with only per-worktree
   `worktrees/<id>` writable, or confine the server's git to the one
   repository.
-- **`.cached-packages` lets one worktree write another's live
-  `node_modules`.** The whole per-project pnpm store is mounted RW and the
-  per-worktree ephemeral module backings live *inside* it
-  (`modules/<worktreeId>/<slot>`, staged by `seed.ts`), so same-uid
-  worktree A can write B's `node_modules` directly, and can poison the
-  content-addressed store the next `pnpm install` hardlinks from. Mount
-  only `<store>` plus the worktree's own `modules/<id>` slot; then
-  owner-key the store root.
-- **`cacheVolumes` keys are unvalidated → host path traversal.** The key is
-  taken from project config and only the *value* is checked for
-  absoluteness (`domain/projects/config.ts`); a key of `../../../.credentials`
-  flows into `cacheVolumeDir`'s `path.join`, is `mkdir`'d at create and
-  mounted RW into the pod. Validate the key (`/^[A-Za-z0-9._-]{1,64}$/`)
-  now; owner-key the dirs under tenancy.
-- **`POST /auth/fake` is a test seam on the production API** with no env
-  gate — it overwrites the real Claude bundle and fans placeholder
-  credentials out to every project's tool home, and writes a `github.com/*`
-  credential entry. Gate on `testEnv` or remove from the HTTP surface.
 
 ### Action-takeover chains (multi-user)
 
@@ -529,11 +498,11 @@ docs/plans/isolation-groundwork.md workstream 1.
   Disposition: `/forward/attach` authorizes `act` on the worktree, which
   closes both. A delegated tunnel (handoff, later) hands over the inner
   control plane with it, which is the trust class handoff means anyway —
-  the delegate can already type into the agent. Separately, the
-  click-to-forward `isForwardablePort` policy (`drivers/shared/port-policy.ts`,
-  sensitive and infra ports) is applied only by the two port *detectors*;
-  `declareWorktreeForwards` never calls it, so a config-declared
-  `portForward: 9229` is honored — apply it there too.
+  the delegate can already type into the agent. Separately, the port
+  policy (`lib/port-policy.ts`) now refuses yaac's infra range in config
+  `portForward` and on the k8s dial (isolation-groundwork 1.3); a
+  config-declared *sensitive* port such as 9229 is still honored on
+  purpose, and the owner gate above is what limits who reaches it.
 
 ### Install-global writes that need admin/owner gating
 

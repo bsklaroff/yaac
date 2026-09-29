@@ -46,9 +46,9 @@ floor both stand on.
 
 `drivers/shared` exists because a driver is sealed from its siblings: they
 cannot see each other, so neither can host what both need (the review
-diff's script and parser, the port-exposure policy). Without it the choice
-would be duplicating that or pushing substrate concerns up into `#lib`,
-where every mediator would inherit them. The arrow runs driver → shared and
+diff's script and parser). Without it the choice would be duplicating
+that or pushing substrate concerns up into `#lib`, where every mediator
+would inherit them. The arrow runs driver → shared and
 never back, and the lint says so — nothing in `shared/` may import a
 driver, and nothing above a driver may import `shared/`. What belongs there
 is decided by who calls it: both drivers and nobody else.

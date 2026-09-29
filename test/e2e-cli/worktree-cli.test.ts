@@ -462,6 +462,8 @@ describe('with seeded projects', () => {
   describe('yaac worktree rename (real CLI + real server)', () => {
     const REN_SLUG = 'proj-rename'
     const renameId = crypto.randomUUID()
+    // Two ids sharing a prefix, for the terminal commands' ambiguity check.
+    const twinIds = ['feedface-0000-4000-8000-000000000001', 'feedface-0000-4000-8000-000000000002']
 
     beforeAll(async () => {
       const repo = path.join(testEnv.scratchDir, REN_SLUG)
@@ -471,6 +473,10 @@ describe('with seeded projects', () => {
       setDataDir(testEnv.dataDir)
       await recordWorktreeCreated({ projectSlug: REN_SLUG, worktreeId: renameId })
       await recordWorktreeStopped(REN_SLUG, renameId)
+      for (const id of twinIds) {
+        await recordWorktreeCreated({ projectSlug: REN_SLUG, worktreeId: id })
+        await recordWorktreeStopped(REN_SLUG, id)
+      }
       await closeDb()
       server = await spawnYaacServer(testEnv.env)
     })
@@ -484,6 +490,16 @@ describe('with seeded projects', () => {
 
       const listed = await runYaac(testEnv.env, 'worktree', 'list', REN_SLUG, '--stopped')
       expect(listed.stdout).toContain('porting the lexer to rust')
+    })
+
+    // A prefix naming two worktrees is refused with what to do about it,
+    // never resolved to whichever came first — and before any socket opens.
+    it('refuses an ambiguous prefix for attach and shell', async () => {
+      for (const command of ['attach', 'shell']) {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'worktree', command, 'feedface')
+        expect(exitCode, command).not.toBe(0)
+        expect(stderr, command).toMatch(/Ambiguous worktree prefix: feedface/)
+      }
     })
 
     it('404s for an id no worktree has', async () => {

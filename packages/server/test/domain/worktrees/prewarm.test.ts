@@ -200,11 +200,10 @@ describe('tryClaimPrewarmed', () => {
     // The spare's own id is the worktree's first conversation — that is
     // where its tool is read from — and no re-branch means no second
     // branch report.
+    expect(vi.mocked(claimSpareWorktree)).toHaveBeenCalledWith('p', 'spare1', {
+      baseBranch: 'main', permissionMode: 'bypass', mode: 'tui',
+    })
     expect(appliedEvents).toEqual([
-      {
-        type: 'worktree-created', projectSlug: 'p', worktreeId: 'spare1', baseBranch: 'main',
-        permissionMode: 'bypass', mode: 'tui',
-      },
       {
         type: 'sessions-launched',
         projectSlug: 'p',
@@ -558,7 +557,7 @@ describe('tryClaimPrewarmed', () => {
     // worktree: `deleteSpareWorktreeRow` no-ops on the flag guard when the
     // pool reaps it, the checkout goes, and the stale reaper later stamps a
     // phantom `never-started` stop whose restart resolves into nothing.
-    expect(vi.mocked(claimSpareWorktree)).toHaveBeenCalledWith('p', 'spare1', 'main')
+    expect(vi.mocked(claimSpareWorktree)).toHaveBeenCalledWith('p', 'spare1', expect.objectContaining({ baseBranch: 'main' }))
     expect(vi.mocked(restoreSpareWorktree)).toHaveBeenCalledWith('p', 'spare1')
   })
 
@@ -615,8 +614,8 @@ describe('tryClaimPrewarmed', () => {
     expect(mockRetool).not.toHaveBeenCalled()
     // What the worktree runs is recorded — posture, mode and model — and the
     // conversation is named from its launch before the agent has answered.
-    expect(appliedEvents).toContainEqual(expect.objectContaining({
-      type: 'worktree-created', permissionMode: 'plan', mode: 'tui', model: 'claude-opus-5-5',
+    expect(vi.mocked(claimSpareWorktree)).toHaveBeenCalledWith('p', 'spare1', expect.objectContaining({
+      permissionMode: 'plan', mode: 'tui', model: 'claude-opus-5-5',
     }))
     expect(appliedEvents).toContainEqual(expect.objectContaining({
       type: 'sessions-launched',

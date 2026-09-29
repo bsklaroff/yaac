@@ -68,25 +68,25 @@ describe('worktree death read-marks', () => {
   it('marks every death in the project seen at once, scoped to that project', async () => {
     // Two deaths and a plain delete here, plus a death in another project that
     // must be left alone.
-    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'sid-1' })
-    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'sid-2' })
-    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'sid-3' })
-    await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'sid-4' })
-    await recordWorktreeStopped('bulk', 'sid-1', { reason: 'oom' })
-    await recordWorktreeStopped('bulk', 'sid-2', { reason: 'evicted' })
-    await recordWorktreeStopped('bulk', 'sid-3') // user-initiated: never a death
-    await recordWorktreeStopped('other', 'sid-4', { reason: 'crashed' })
+    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'bulk-1' })
+    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'bulk-2' })
+    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'bulk-3' })
+    await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'bulk-4' })
+    await recordWorktreeStopped('bulk', 'bulk-1', { reason: 'oom' })
+    await recordWorktreeStopped('bulk', 'bulk-2', { reason: 'evicted' })
+    await recordWorktreeStopped('bulk', 'bulk-3') // user-initiated: never a death
+    await recordWorktreeStopped('other', 'bulk-4', { reason: 'crashed' })
 
     const client = makeTestApiClient(buildApp({ buildId: 'test' }))
     const res = await client.worktree['mark-all-deaths-seen'].$post({ json: { projectSlug: 'bulk' } })
     expect(res.status).toBe(204)
 
-    expect(await seen('bulk', 'sid-1')).toBe(true)
-    expect(await seen('bulk', 'sid-2')).toBe(true)
+    expect(await seen('bulk', 'bulk-1')).toBe(true)
+    expect(await seen('bulk', 'bulk-2')).toBe(true)
     // A plain delete has no death to acknowledge, and the other project's death
     // keeps flagging.
-    expect(await seen('bulk', 'sid-3')).toBe(false)
-    expect(await seen('other', 'sid-4')).toBe(false)
+    expect(await seen('bulk', 'bulk-3')).toBe(false)
+    expect(await seen('other', 'bulk-4')).toBe(false)
   })
 
   it('rejects a mark-all with no project', async () => {

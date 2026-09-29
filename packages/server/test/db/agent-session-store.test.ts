@@ -74,6 +74,17 @@ describe('deleteWorktreeAgentSessions', () => {
  * reconciler and the listings that read it back.
  */
 describe('recordAgentSessions', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
   const conversation = async (id: string) =>
     (await listWorktreeAgentSessions('demo', 'wt-1')).find((l) => l.agentSessionId === id)
 
@@ -117,6 +128,17 @@ describe('recordAgentSessions', () => {
 })
 
 describe('recordedConversationHandles', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
   // Keyed by the driver's handle, and only conversations that are on one:
   // the ACP driver re-addresses a live agent by handle, so a link with no
   // pane id names nothing it could attach to.

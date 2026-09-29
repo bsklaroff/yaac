@@ -41,6 +41,15 @@ goes through them, and they are the only writers.
 
 ## Write discipline
 
+- **A worktree id is claimed once, across every project.** It is the
+  `worktrees` primary key, and a fresh create's row is a plain INSERT that
+  refuses a taken id (`CONFLICT`) before the create has touched a disk or a
+  substrate — so a create posting a live worktree's id can neither re-stamp
+  that worktree nor, failing, tear it down as its own. A restart is an
+  UPDATE of the row it must already have. The provisioning registry, the
+  runtime registries, the proxy registration and the relay identity are all
+  keyed on the id alone, which is why it is unique globally rather than per
+  project.
 - **`recordWorktreeCreated` is the only INSERT, and it runs first**, together
   with the first agent session — a worktree with no conversation could name
   neither its tool nor its label, so create records the one it is about to
@@ -393,7 +402,9 @@ repo with several of them spends a copy per dir against the one-dir limit.
 
 A store shared between pods is not an option: pnpm 11 indexes the store in one
 SQLite database in WAL mode, which needs every writer on one kernel, and every
-pod is its own sandbox — worktrees installing at once corrupt it.
+pod is its own sandbox — worktrees installing at once corrupt it. So a pod
+mounts no project-wide package tree at all: one every pod of a project could
+write would be a channel between them with nothing left to carry.
 
 A cold store per worktree makes every install a full fetch, so fetches go to
 the install's **npm cache** instead of the internet: one Verdaccio

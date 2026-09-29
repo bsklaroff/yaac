@@ -5,6 +5,7 @@ vi.mock('#notify', () => ({
 }))
 
 import {
+  ensureProvisioning,
   registerProvisioning,
   updateProvisioningMessage,
   failProvisioning,
@@ -39,12 +40,19 @@ describe('registerProvisioning', () => {
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
-  it('overwrites an existing id (e.g. a retry)', () => {
+  it('overwrites a failed entry on the same id (a retry), but refuses a live one', () => {
     register('a', { message: 'first' })
+    expect(() => register('a', { message: 'second' })).toThrow(
+      expect.objectContaining({ code: 'CONFLICT' }) as Error,
+    )
+    expect(listProvisioning()[0].message).toBe('first')
+
+    failProvisioning('a', 'boom')
     register('a', { message: 'second' })
     const list = listProvisioning()
     expect(list).toHaveLength(1)
-    expect(list[0].message).toBe('second')
+    expect(list[0]).toMatchObject({ message: 'second' })
+    expect(list[0].error).toBeUndefined()
   })
 })
 
@@ -184,6 +192,25 @@ describe('runProvisioned', () => {
     expect(listProvisioning()[0]).toMatchObject({
       worktreeId: 'a', error: 'missing',
     })
+  })
+
+  // The create route claims the id before it streams. A run refused before
+  // it took the reservation over (a typo'd group, a bad model) drops the
+  // entry — its error is already in the caller's stream — while one that
+  // got under way leaves the usual failed row.
+  it('drops a reservation the run never took over, and fails one it did', async () => {
+    registerProvisioning({ worktreeId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create', reserved: true })
+    await expect(runProvisioned('a', () => Promise.reject(new Error('no such group')))).rejects.toThrow()
+    expect(listProvisioning()).toEqual([])
+
+    registerProvisioning({ worktreeId: 'b', projectSlug: 'p', tool: 'claude', kind: 'create', reserved: true })
+    await expect(runProvisioned('b', () => {
+      ensureProvisioning({ worktreeId: 'b', projectSlug: 'p', tool: 'codex', kind: 'create', model: 'gpt-6' })
+      return Promise.reject(new Error('image pull failed'))
+    })).rejects.toThrow()
+    expect(listProvisioning()).toEqual([
+      expect.objectContaining({ worktreeId: 'b', tool: 'codex', model: 'gpt-6', error: 'image pull failed' }),
+    ])
   })
 
   it('leaves the registry alone when the caller never registered a row', async () => {

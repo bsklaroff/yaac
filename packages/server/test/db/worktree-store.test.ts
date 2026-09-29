@@ -18,10 +18,11 @@ import {
   recordDeathSeen,
   recordWorktreeCreated,
   recordWorktreeStopped,
+  claimSpareWorktree,
   clearWorktreeStopped,
   setWorktreeTitle,
 } from '#db/worktree-store'
-import { createWorktreeGroup } from '#db/group-store'
+import { applyWorktreeEvent } from '#db/apply-worktree-event'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
@@ -47,56 +48,48 @@ describe('session store', () => {
     recordWorktreeCreated({ projectSlug: 'proj', worktreeId, ...extra })
 
   describe('recordWorktreeCreated', () => {
-    it('stores the row, keyed per project', async () => {
-      await create('sid-1', { baseBranch: 'main' })
-      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'sid-1' })
+    it('stores the row', async () => {
+      await create('sid-1', { baseBranch: 'main', createdAt: new Date('2026-01-01') })
 
       const row = (await getProjectWorktreeRows('proj')).get('sid-1')
       expect(row).toMatchObject({
         projectSlug: 'proj',
         worktreeId: 'sid-1',
         baseBranch: 'main',
+        createdAt: new Date('2026-01-01'),
         deathSeen: false,
       })
       expect(row?.stoppedAt).toBeUndefined()
     })
+  })
 
-    it('re-recording an id clears the previous life\'s deletion and death', async () => {
-      await create('sid-1')
-      await recordWorktreeStopped('proj', 'sid-1', { reason: 'oom', detail: 'exit code 137' })
-      await create('sid-1')
-
-      const row = (await getProjectWorktreeRows('proj')).get('sid-1')
-      expect(row?.stoppedAt).toBeUndefined()
-      expect(row?.deathReason).toBeUndefined()
-      expect(row?.deathDetail).toBeUndefined()
-    })
-
-    it('keeps the title and the sidebar group across a restart', async () => {
-      await create('sid-1')
-      await setWorktreeTitle('proj', 'sid-1', 'my session')
-      const group = await createWorktreeGroup('proj', 'release', 'sid-1')
-      await create('sid-1') // restart: same id, no new prompt
-
-      expect((await getProjectWorktreeRows('proj')).get('sid-1')).toMatchObject({
-        title: 'my session',
-        groupId: group.groupId,
+  // Against the real table, the calls prewarm makes: warming inserts the
+  // row, and the claim must hand that same row over — a second insert on
+  // the id is refused now, which silently sent every claim to a cold create.
+  describe('claimSpareWorktree', () => {
+    it('hands the warmed row over with the claim\'s launch, and refuses a second claim', async () => {
+      await applyWorktreeEvent({
+        type: 'worktree-created', projectSlug: 'proj', worktreeId: 'spare1',
+        spare: true, baseBranch: 'main', permissionMode: 'bypass', mode: 'tui',
       })
-    })
+      const warmed = (await getWorktreeRow('proj', 'spare1'))!
+      pushes = 0
 
-    it('keeps the original creation time across a restart', async () => {
-      await recordWorktreeCreated({
-        projectSlug: 'proj', worktreeId: 'sid-1', createdAt: new Date('2026-01-01'),
+      await claimSpareWorktree('proj', 'spare1', {
+        baseBranch: 'dev', permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
       })
-      await create('sid-1')
-      expect((await getProjectWorktreeRows('proj')).get('sid-1')?.createdAt)
-        .toEqual(new Date('2026-01-01'))
-    })
 
-    it('keeps the recorded base branch when a resume does not resolve one', async () => {
-      await create('sid-1', { baseBranch: 'main' })
-      await create('sid-1')
-      expect((await getProjectWorktreeRows('proj')).get('sid-1')?.baseBranch).toBe('main')
+      expect(await getWorktreeRow('proj', 'spare1')).toMatchObject({
+        spare: false,
+        createdAt: warmed.createdAt,
+        baseBranch: 'dev',
+        permissionMode: 'plan',
+        mode: 'acp',
+        model: 'claude-opus-5-5',
+      })
+      expect(pushes).toBe(1)
+      await expect(claimSpareWorktree('proj', 'spare1')).rejects.toMatchObject({ code: 'CONFLICT' })
+      await expect(claimSpareWorktree('proj', 'no-such-spare')).rejects.toMatchObject({ code: 'CONFLICT' })
     })
   })
 
@@ -250,7 +243,7 @@ describe('session store', () => {
       expect(prior).toBeDefined()
 
       // The restart clears the deletion, then fails.
-      await create('sid-1')
+      await clearWorktreeStopped('proj', 'sid-1')
       await restoreWorktreeStop('proj', 'sid-1', prior!)
 
       expect((await getProjectWorktreeRows('proj')).get('sid-1')).toMatchObject({
@@ -262,7 +255,7 @@ describe('session store', () => {
     })
 
     it('priorStopOf ignores a row that was not deleted', async () => {
-      await create('sid-1')
+      await clearWorktreeStopped('proj', 'sid-1')
       expect(priorStopOf((await getProjectWorktreeRows('proj')).get('sid-1'))).toBeUndefined()
       expect(priorStopOf(undefined)).toBeUndefined()
     })
@@ -282,12 +275,11 @@ describe('session store', () => {
   })
 
   describe('getWorktreeRow', () => {
-    it('point-reads one session, per project', async () => {
+    it('point-reads one session, in the project named', async () => {
       await create('sid-1')
-      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'sid-1' })
 
       expect(await getWorktreeRow('proj', 'sid-1')).toMatchObject({ worktreeId: 'sid-1' })
-      expect(await getWorktreeRow('other', 'sid-1')).toMatchObject({ projectSlug: 'other' })
+      expect(await getWorktreeRow('other', 'sid-1')).toBeUndefined()
       expect(await getWorktreeRow('proj', 'nope')).toBeUndefined()
     })
   })
@@ -303,21 +295,18 @@ describe('session store', () => {
   })
 
   describe('findWorktreeRow', () => {
-    it('resolves by exact id and by unique prefix, across projects', async () => {
+    it('finds an exact id in whichever project holds it, and nothing shorter', async () => {
       await create('abcdef-1234')
       await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'zzz' })
+      await create('spare-1', { spare: true })
 
       expect((await findWorktreeRow('abcdef-1234'))?.projectSlug).toBe('proj')
-      expect((await findWorktreeRow('abcdef'))?.worktreeId).toBe('abcdef-1234')
       expect((await findWorktreeRow('zzz'))?.projectSlug).toBe('other')
+      // Prefix expansion is domain's `resolveWorktree`, never this.
+      expect(await findWorktreeRow('abcdef')).toBeUndefined()
+      expect(await findWorktreeRow('spare-1')).toBeUndefined()
       expect(await findWorktreeRow('nope')).toBeUndefined()
       expect(await findWorktreeRow('')).toBeUndefined()
-    })
-
-    it('prefers an exact match over a longer id that starts with it', async () => {
-      await create('abc')
-      await create('abcdef')
-      expect((await findWorktreeRow('abc'))?.worktreeId).toBe('abc')
     })
   })
 })

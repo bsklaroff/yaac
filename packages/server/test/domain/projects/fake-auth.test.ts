@@ -3,7 +3,10 @@ import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { assignProjectCredential, listCredentialSummaries, resolveProjectCredential, seedFakeAuth } from '#domain/projects'
 import { closeDb, recordProject } from '#db'
+import { buildFakeClaudeOAuthBundle } from '#domain/projects/fake-auth'
 import {
+  saveClaudeOAuthBundle,
+  saveOpencodeCredentialsFile,
   loadClaudeCredentialsFile,
   loadOpencodeCredentialsFile,
   loadPiCredentialsFile,
@@ -29,7 +32,7 @@ describe('seedFakeAuth', () => {
   it('seeds claude as an OAuth bundle of proxy placeholders, expiring far out', async () => {
     // OAuth, not api-key: only an OAuth token can chain through a parent
     // yaac's MITM proxy, which swaps the sentinels for the real credential.
-    await seedFakeAuth('claude-oauth')
+    await seedFakeAuth(['claude-oauth'])
 
     const creds = await loadClaudeCredentialsFile()
     expect(creds?.kind).toBe('oauth')
@@ -46,7 +49,7 @@ describe('seedFakeAuth', () => {
     await fs.mkdir(claudeDir('demo'), { recursive: true })
     await fs.mkdir(projectDir('demo'), { recursive: true })
 
-    await seedFakeAuth('claude-oauth')
+    await seedFakeAuth(['claude-oauth'])
 
     const parsed = JSON.parse(
       await fs.readFile(projectClaudeCredentialsFile('demo'), 'utf8'),
@@ -55,8 +58,7 @@ describe('seedFakeAuth', () => {
   })
 
   it('seeds opencode and pi as placeholder OpenRouter api-keys', async () => {
-    await seedFakeAuth('opencode-openrouter')
-    await seedFakeAuth('pi-openrouter')
+    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'])
 
     for (const creds of [await loadOpencodeCredentialsFile(), await loadPiCredentialsFile()]) {
       expect(creds?.kind).toBe('api-key')
@@ -67,8 +69,8 @@ describe('seedFakeAuth', () => {
   })
 
   it('seeds github as the fake-github token credential, once', async () => {
-    await seedFakeAuth('github')
-    await seedFakeAuth('github')
+    await seedFakeAuth(['github'])
+    await seedFakeAuth(['github'])
 
     const listing = await listCredentialSummaries()
     expect(listing).toEqual([{
@@ -82,5 +84,24 @@ describe('seedFakeAuth', () => {
     await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
     await assignProjectCredential('web', listing[0].id)
     expect(await resolveProjectCredential('web')).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
+  })
+
+  it('refuses, seeding nothing, over a real credential — and re-seeds over a fake', async () => {
+    await seedFakeAuth(['claude-oauth'])
+    await seedFakeAuth(['claude-oauth'])
+
+    await saveOpencodeCredentialsFile({
+      kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-real',
+    })
+    await expect(seedFakeAuth(['pi-openrouter', 'opencode-openrouter']))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('opencode-openrouter') as string })
+    // All or nothing: pi was not seeded alongside the refusal.
+    expect(await loadPiCredentialsFile()).toBeNull()
+    expect((await loadOpencodeCredentialsFile())?.apiKey).toBe('sk-or-real')
+
+    await saveClaudeOAuthBundle({ ...buildFakeClaudeOAuthBundle(), accessToken: 'sk-ant-oat-real' })
+    await expect(seedFakeAuth(['claude-oauth'])).rejects.toMatchObject({ code: 'CONFLICT' })
+    const creds = await loadClaudeCredentialsFile()
+    expect(creds?.kind === 'oauth' && creds.claudeAiOauth.accessToken).toBe('sk-ant-oat-real')
   })
 })

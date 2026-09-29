@@ -128,9 +128,27 @@ describe('yaac auth (real CLI + shared server)', () => {
   })
 
   describe('auth fake', () => {
+    it('refuses to replace a real credential, and seeds once it is cleared', async () => {
+      // `auth list` above left a real claude api-key behind. A fake must
+      // never take its place: sentinels would fan out to every project and
+      // authenticate nothing.
+      const credsDir = await resetCreds()
+      await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
+        kind: 'api-key', savedAt: '2026-01-15T00:00:00.000Z', apiKey: 'sk-ant-api03-real',
+      }) + '\n')
+      const refused = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
+      expect(refused.exitCode).not.toBe(0)
+      expect(refused.stderr).toMatch(/real credential is already stored for claude-oauth/)
+      expect(await fs.readFile(credPath('claude.json'), 'utf8')).toContain('sk-ant-api03-real')
+
+      await resetCreds()
+      const seeded = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
+      expect(seeded.exitCode, seeded.stderr).toBe(0)
+    })
+
     it('auth fake claude-oauth seeds an OAuth bundle in the data dir', async () => {
-      // No reset needed: the server writes claude.json wholesale, so any
-      // earlier claude.json content is fully replaced before we parse it.
+      // Over the fake the previous case seeded: a re-seed is allowed, and
+      // the server writes claude.json wholesale.
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
       expect(exitCode, stderr).toBe(0)
 

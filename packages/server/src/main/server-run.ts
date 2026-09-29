@@ -1,6 +1,7 @@
 import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
+import type { MiddlewareHandler } from 'hono'
 import { buildApp } from '#main/server'
 import {
   authAgentHub,
@@ -39,7 +40,8 @@ import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
-import type { DriverKind } from '@yaac/shared/types'
+import { agentSessionIdSchema, type DriverKind } from '@yaac/shared/types'
+import { ServerError } from '@yaac/shared/errors'
 
 export interface ServerRunOptions {
   port?: number
@@ -391,10 +393,22 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     },
   })))
 
+  // Every attach names its worktree by EXACT id — clients hold full ids from
+  // the snapshot, and the CLI pre-resolves what a user typed — so one with
+  // none is refused before any lookup rather than matched against anything.
+  // A conversation id is checked too: it is joined into a path downstream.
+  const attachQuery = (opts: { session?: boolean } = {}): MiddlewareHandler => async (c, next) => {
+    if (!c.req.query('id')) throw new ServerError('VALIDATION', 'a worktree id is required')
+    if (opts.session && !agentSessionIdSchema.safeParse(c.req.query('session')).success) {
+      throw new ServerError('VALIDATION', 'a valid conversation id is required')
+    }
+    await next()
+  }
+
   // PTY bridge: one embedded terminal per connection, attached to the
   // worktree's tmux. Path is /pty/attach (not /worktree/...) to avoid
   // colliding with the GET /worktree/:id route. Auth rides the upgrade.
-  app.get('/pty/attach', nodeWs.upgradeWebSocket((c) => {
+  app.get('/pty/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     // Which window to attach and the browser's reported grid — validated by
     // attachPty, which spawns the PTY at that size so the tmux window and the
@@ -409,7 +423,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         void (async () => {
           let jobName: string
           try {
-            const resolved = await resolveWorktreeContainer(id, { requireRunning: true })
+            const resolved = await resolveWorktreeContainer(id, { requireRunning: true, exact: true })
             jobName = resolved.jobName
           } catch {
             try {
@@ -445,7 +459,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // the workspace binds its own — so `yaac forward` and the desktop app
   // accept connections on the user's machine and open one of these for
   // each. Auth rides the upgrade like every WS.
-  app.get('/forward/attach', nodeWs.upgradeWebSocket((c) => {
+  app.get('/forward/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     const port = Number(c.req.query('port'))
     return {
@@ -460,7 +474,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           }
           let workspaceId: string
           try {
-            workspaceId = (await resolveWorktreeContainer(id, { requireRunning: true })).worktreeId
+            workspaceId = (await resolveWorktreeContainer(id, { requireRunning: true, exact: true })).worktreeId
           } catch {
             fail('session not found or not running')
             return
@@ -487,7 +501,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // live `AcpConversation` the status watcher's driver holds. The PTY route's
   // twin — same auth-on-upgrade, same per-client disposability — but the
   // frames are JSON events rather than terminal bytes.
-  app.get('/acp/attach', nodeWs.upgradeWebSocket((c) => {
+  app.get('/acp/attach', attachQuery({ session: true }), nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     const agentSessionId = c.req.query('session') ?? ''
     return {
@@ -500,13 +514,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             } catch { /* socket already gone */ }
             ws.close(1011, message)
           }
-          if (agentSessionId === '') {
-            fail('missing session')
-            return
-          }
           let projectSlug: string
           try {
-            projectSlug = (await resolveWorktreeContainer(id, { requireRunning: true })).projectSlug
+            projectSlug = (await resolveWorktreeContainer(id, { requireRunning: true, exact: true })).projectSlug
           } catch {
             fail('session not found or not running')
             return

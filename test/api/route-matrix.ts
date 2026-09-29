@@ -123,9 +123,9 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/worktree/list', k8s: [200, 503], containerless: 200 },
   { method: 'GET', path: '/worktree/list-stopped', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/worktree/create', body: { project: '' }, k8s: 400, containerless: 400 },
-  // Streams its progress as NDJSON, so the status is 200 before the work
-  // starts and a failure travels in the stream rather than in the code.
-  { method: 'POST', path: '/worktree/restart', body: { worktreeId: 'nope' }, k8s: 200, containerless: 200 },
+  // Resolves the worktree before it streams, so an unknown one is a plain
+  // 404; past that, progress and any failure travel in the NDJSON stream.
+  { method: 'POST', path: '/worktree/restart', body: { worktreeId: 'nope' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/worktree/stop', body: { worktreeId: 'nope' }, k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/worktree/mark-death-seen', body: { projectSlug: 'nope', worktreeId: 'nope' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
   { method: 'POST', path: '/worktree/mark-all-deaths-seen', body: { projectSlug: 'nope' }, k8s: [200, 204], containerless: [200, 204] },

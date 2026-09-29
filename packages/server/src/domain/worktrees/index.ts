@@ -77,11 +77,12 @@ export {
   updateQueuedWorktree,
 } from './queued-worktrees'
 export {
-  resolveWorktreeInProject,
+  resolveWorktree,
   resolveWorktreeContainer,
+  resolveWorktreeId,
   resolveWorktreeRecord,
 } from './resolve'
-export { restartWorktree } from './restart'
+export { resolveRestartTarget, restartWorktree } from './restart'
 export { startWorktree } from './start'
 export { rebranchSpare, retoolSpare } from './spare-pool'
 export { runMamaCommand, type MamaCaller } from './mama'

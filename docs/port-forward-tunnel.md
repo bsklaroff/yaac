@@ -44,7 +44,10 @@ port and opens one WebSocket per accepted TCP connection to
 the same way as every other WS (docs/remote-hosting.md). The server splices that socket
 to a `dialPort` stream into the workspace (`attachPortTunnel`) — under k8s,
 a `tcp` stream through the pod's streamd, exactly the relay every other
-byte rides (docs/stream-relay.md).
+byte rides (docs/stream-relay.md). The `id` is an exact worktree id (an
+attach naming none is a 400 before any lookup), and the pod driver dials
+only a port the worktree declared or its detector surfaced — never yaac's
+own in-pod infra range (`isInfraPort`), which no config may declare either.
 
 One WebSocket per TCP connection is the kubectl shape, and it is what makes
 the splice the entire protocol: every binary frame is bytes for that one
@@ -110,9 +113,10 @@ server host's loopback, so the desktop preview pane's `127.0.0.1:<port>`
 is true against a remote containerless server too. Only a listener the
 sweep has surfaced can be dialled, at the address it is bound to: the
 sweep walks the worktree's own process tree, so the set is an allowlist of
-that tree's listeners with the sensitive-port denylist on top, and the
-pod driver dials anything because a pod is a sandbox, while this host is
-the user's machine.
+that tree's listeners with the sensitive-port denylist on top. The pod
+driver also dials a declared port with nothing listening yet (a forward
+must survive its dev server restarting), because a pod is a sandbox, while
+this host is the user's machine.
 
 The one "is this the server's machine?" question a client has is the
 origin it resolved (`isLoopbackOrigin`), which is why an `ssh -L` tunnel

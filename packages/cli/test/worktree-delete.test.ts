@@ -24,7 +24,9 @@ import { listWorktreePods, listWorktreeJobs, type PodInfo } from '@yaac/server/d
 import type * as podsModule from '@yaac/server/drivers/k8s/substrate/pods'
 import { cleanupWorktreeDetached } from '@yaac/server/domain/worktrees/cleanup'
 import type * as cleanupModule from '@yaac/server/domain/worktrees/cleanup'
-import { setDataDir } from '@yaac/shared/project-paths'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { closeDb } from '@yaac/server/db/client'
+import { recordWorktreeCreated } from '@yaac/server/db/worktree-store'
 
 const mockListPods = vi.mocked(listWorktreePods)
 const mockListJobs = vi.mocked(listWorktreeJobs)
@@ -37,7 +39,7 @@ describe('worktreeStop', () => {
 })
 
 /**
- * Unit coverage for `stopWorktree`: the prefix-matching logic, the
+ * Unit coverage for `stopWorktree`: the prefix expansion over rows, the
  * NOT_FOUND / RUNTIME_UNAVAILABLE error shapes, the pod-less-Job
  * fallback, and the handoff to `cleanupWorktreeDetached` with the matched
  * session's metadata. Uses mocked pod/Job listings so no cluster is
@@ -47,20 +49,24 @@ describe('worktreeStop', () => {
  * e2e session-delete tests.
  */
 describe('stopWorktree', () => {
-  beforeEach(() => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
     // The real k8s driver, with only `listWorktreePods`/`listWorktreeJobs`
     // mocked below: what this file exercises is the resolve-then-teardown
     // pipeline, so the driver has to be the real one.
     installRealWorktreeDriver()
-    setDataDir('/tmp/unit-session-delete')
     mockListPods.mockReset()
     mockListJobs.mockReset()
     mockListJobs.mockResolvedValue([])
     cleanupSpy.mockClear()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
   })
 
   function pod(overrides: Partial<PodInfo> = {}): PodInfo {
@@ -94,23 +100,22 @@ describe('stopWorktree', () => {
     })
   })
 
-  it('resolves by session-id prefix', async () => {
+  // Expanded over the recorded rows, then handed to the runtime exactly.
+  it('resolves by worktree-id prefix', async () => {
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'abcd1234' })
     mockListPods.mockResolvedValueOnce([pod()])
     const info = await stopWorktree('abcd')
     expect(info.worktreeId).toBe('abcd1234')
     expect(cleanupSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('resolves by full job name', async () => {
-    mockListPods.mockResolvedValueOnce([pod()])
-    const info = await stopWorktree('yaac-demo-abcd1234')
-    expect(info.jobName).toBe('yaac-demo-abcd1234')
-  })
-
-  it('resolves by exact pod name', async () => {
-    mockListPods.mockResolvedValueOnce([pod({ podName: 'deadbeef00000000' })])
-    const info = await stopWorktree('deadbeef00000000')
-    expect(info.worktreeId).toBe('abcd1234')
+  // Unit names are the runtime's own: nothing a client sends is one.
+  it('does not resolve a job or pod name', async () => {
+    for (const name of ['yaac-demo-abcd1234', 'yaac-demo-abcd1234-p0d42']) {
+      mockListPods.mockResolvedValueOnce([pod()])
+      await expect(stopWorktree(name)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    }
+    expect(cleanupSpy).not.toHaveBeenCalled()
   })
 
   it('schedules cleanup even for a non-running pod', async () => {
@@ -128,7 +133,7 @@ describe('stopWorktree', () => {
       projectSlug: 'demo',
       createdAtMs: 1_700_000_000_000,
     }])
-    const info = await stopWorktree('podless')
+    const info = await stopWorktree('podless1')
     expect(info).toEqual({
       jobName: 'yaac-demo-podless1',
       worktreeId: 'podless1',

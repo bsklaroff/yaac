@@ -6,23 +6,26 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // drifts is invisible to any test that stubs the lookup itself.
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
+  listWorktreeJobs: vi.fn(),
   listWorktreePods: vi.fn(),
 }))
 vi.mock('#drivers/k8s/substrate/cluster-cache', () => ({ getActiveClusterCache: vi.fn(() => null) }))
 
-import { LABEL_PREWARMED, listWorktreePods, type PodInfo } from '#drivers/k8s/substrate/pods'
+import { LABEL_PREWARMED, listWorktreeJobs, listWorktreePods, type PodInfo } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { getActiveClusterCache } from '#drivers/k8s/substrate/cluster-cache'
 import {
   countProjectWorkspaces,
   countWorkspaces,
   findWorkspace,
+  findWorkspaceForTeardown,
   listWorkspaces,
 } from '#drivers/k8s/worktrees/locate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 const mockList = vi.mocked(listWorktreePods)
 const mockCache = vi.mocked(getActiveClusterCache)
+const mockJobs = vi.mocked(listWorktreeJobs)
 
 function pod(over: Partial<PodInfo> = {}): PodInfo {
   return {
@@ -54,6 +57,7 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   mockList.mockReset().mockResolvedValue([])
   mockCache.mockReset().mockReturnValue(null)
+  mockJobs.mockReset().mockResolvedValue([])
 })
 
 afterEach(async () => {
@@ -62,8 +66,8 @@ afterEach(async () => {
 
 describe('findWorkspace', () => {
   it('describes a match in the server’s vocabulary, not the substrate’s', async () => {
-    mockList.mockResolvedValue([pod({ tool: 'Claude', labels: { [LABEL_PREWARMED]: 'true' } })])
-    expect(await findWorkspace('abc123')).toEqual({
+    mockList.mockResolvedValue([pod({ tool: 'Claude', labels: { 'yaac.nested': 'true' } })])
+    expect(await findWorkspace('abc123def456')).toEqual({
       workspaceId: 'abc123def456',
       projectSlug: 'proj',
       jobName: 'yaac-proj-abc123',
@@ -75,9 +79,9 @@ describe('findWorkspace', () => {
       mode: 'tui',
       running: true,
       state: 'running',
-      labels: { [LABEL_PREWARMED]: 'true' },
+      labels: { 'yaac.nested': 'true' },
       createdAtMs: 1_700_000_000_000,
-      prewarmed: true,
+      prewarmed: false,
       terminating: false,
       deathCause: { reason: 'pod-stopped' },
     })
@@ -87,9 +91,20 @@ describe('findWorkspace', () => {
     expect(await findWorkspace('nope')).toBeUndefined()
   })
 
+  // Prefix expansion is domain's, over rows; unit names are this driver's
+  // own. And an unclaimed spare is not a worktree at all.
+  it('matches the exact worktree id only, and never a spare', async () => {
+    mockList.mockResolvedValue([pod()])
+    for (const input of ['abc123', '', 'yaac-proj-abc123', 'yaac-proj-abc123-xyz']) {
+      expect(await findWorkspace(input), input).toBeUndefined()
+    }
+    mockList.mockResolvedValue([pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
+    expect(await findWorkspace('abc123def456')).toBeUndefined()
+  })
+
   it('reports a non-running pod with its lowercased phase', async () => {
     mockList.mockResolvedValue([pod({ phase: 'Pending', running: false })])
-    expect(await findWorkspace('abc123')).toMatchObject({
+    expect(await findWorkspace('abc123def456')).toMatchObject({
       running: false, state: 'pending',
     })
   })
@@ -98,7 +113,7 @@ describe('findWorkspace', () => {
   // for a `kubectl get pods` subprocess.
   it('answers from the informer cache without listing, when asked to', async () => {
     mockCache.mockReturnValue(healthyCache([pod()]))
-    const found = await findWorkspace('abc123', { preferCache: true })
+    const found = await findWorkspace('abc123def456', { preferCache: true })
     expect(found?.jobName).toBe('yaac-proj-abc123')
     expect(mockList).not.toHaveBeenCalled()
   })
@@ -109,7 +124,7 @@ describe('findWorkspace', () => {
   it('falls back to a live listing when the cache does not have it yet', async () => {
     mockCache.mockReturnValue(healthyCache([]))
     mockList.mockResolvedValue([pod()])
-    const found = await findWorkspace('abc123', { preferCache: true })
+    const found = await findWorkspace('abc123def456', { preferCache: true })
     expect(found?.jobName).toBe('yaac-proj-abc123')
     expect(mockList).toHaveBeenCalledTimes(1)
   })
@@ -122,7 +137,7 @@ describe('findWorkspace', () => {
       worktreePods: () => { throw new Error('must not read an unhealthy cache') },
     } as unknown as ReturnType<typeof getActiveClusterCache>)
     mockList.mockResolvedValue([pod()])
-    const found = await findWorkspace('abc123', { preferCache: true })
+    const found = await findWorkspace('abc123def456', { preferCache: true })
     expect(found?.jobName).toBe('yaac-proj-abc123')
   })
 
@@ -131,7 +146,7 @@ describe('findWorkspace', () => {
   it('does not consult the cache unless asked', async () => {
     mockCache.mockReturnValue(healthyCache([pod()]))
     mockList.mockResolvedValue([pod({ jobName: 'yaac-proj-live' })])
-    const found = await findWorkspace('abc123')
+    const found = await findWorkspace('abc123def456')
     expect(found?.jobName).toBe('yaac-proj-live')
   })
 
@@ -139,9 +154,38 @@ describe('findWorkspace', () => {
   // catches this, and one without lets it through to the client.
   it('surfaces a listing failure as RUNTIME_UNAVAILABLE', async () => {
     mockList.mockRejectedValue(new Error('connection refused'))
-    await expect(findWorkspace('abc123')).rejects.toMatchObject({
+    await expect(findWorkspace('abc123def456')).rejects.toMatchObject({
       code: 'RUNTIME_UNAVAILABLE',
     })
+  })
+})
+
+describe('findWorkspaceForTeardown', () => {
+  // A failed warm tears its own spare down, so a teardown that asks for
+  // spares reaches one — and a stop, which does not, never does, not even
+  // through the spare's Job.
+  it('reaches a spare by its exact id only when asked for spares', async () => {
+    mockList.mockResolvedValue([pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
+    mockJobs.mockResolvedValue([
+      { jobName: 'yaac-proj-abc123', worktreeId: 'abc123def456', projectSlug: 'proj', createdAtMs: 0 },
+    ])
+    expect(await findWorkspaceForTeardown('abc123def456', { spares: true })).toEqual({
+      projectSlug: 'proj', workspaceId: 'abc123def456', unitName: 'yaac-proj-abc123',
+    })
+    expect(await findWorkspaceForTeardown('abc123def456')).toBeUndefined()
+    expect(await findWorkspaceForTeardown('abc123', { spares: true })).toBeUndefined()
+  })
+
+  // A pod deleted out-of-band leaves its Job, which still needs deleting.
+  it('falls through to the Job when the pod is gone, matching it exactly', async () => {
+    mockJobs.mockResolvedValue([
+      { jobName: 'yaac-proj-orphan', worktreeId: 'orphan-1', projectSlug: 'proj', createdAtMs: 0 },
+    ])
+    expect(await findWorkspaceForTeardown('orphan-1')).toEqual({
+      projectSlug: 'proj', workspaceId: 'orphan-1', unitName: 'yaac-proj-orphan',
+    })
+    expect(await findWorkspaceForTeardown('orphan')).toBeUndefined()
+    expect(await findWorkspaceForTeardown('yaac-proj-orphan')).toBeUndefined()
   })
 })
 

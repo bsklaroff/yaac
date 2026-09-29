@@ -128,7 +128,11 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
  */
 export const worktrees = snakeCase.table('worktrees', {
   projectSlug: text().notNull(),
-  worktreeId: text().notNull(),
+  /** Unique across projects, not just within one: provisioning, the runtime
+   *  registries, the proxy registration and the relay identity are all keyed
+   *  on the id alone, so a second row carrying it would hand one worktree's
+   *  pod another's egress rules and traffic. */
+  worktreeId: text().primaryKey(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** Display title — user-assigned or model-generated. */
   title: text(),
@@ -208,7 +212,7 @@ export const worktrees = snakeCase.table('worktrees', {
    * sitting in the database.
    */
   mamaTokenHash: text(),
-}, (t) => [primaryKey({ columns: [t.projectSlug, t.worktreeId] })])
+}, (t) => [index().on(t.projectSlug)])
 
 /**
  * A named sidebar group, one row per (project, group id). Purely how a user

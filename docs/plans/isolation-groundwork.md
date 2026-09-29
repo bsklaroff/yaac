@@ -86,232 +86,15 @@ workspace can already write the server's files directly
 
 ## Workstream 1: the phase-0 fixes
 
-### 1.1 Resolve worktree ids exactly, in one place
-
-**Today.** Id resolution is spread out, and most of it is fuzzy.
-
-- **k8s `findWorktreePod`** (`drivers/k8s/substrate/pods.ts`) is
-  first-match:
-  `jobName === x || podName === x || worktreeId.startsWith(x)`. It has no
-  empty guard and no ambiguity check, and its pod list includes prewarmed
-  spares. `findWorkspaceForTeardown` (`drivers/k8s/worktrees/locate.ts`)
-  repeats the pattern over Jobs.
-- **containerless `findWorkspace`** (`drivers/containerless/registry.ts`)
-  does refuse an ambiguous prefix. It still has no empty guard, so `''`
-  resolves to the only workspace when exactly one exists.
-- **`findWorktreeRow`** (`db/worktree-store.ts`) rejects `''` but is
-  first-match across *all* projects.
-- **`resolveWorktreeInProject`** (`domain/worktrees/resolve.ts`) is the one
-  correct resolver. It trims, rejects empty, prefers an exact match,
-  reports `ambiguous`, and excludes spares. Only `group move` and `mama`
-  use it.
-- **The WebSocket upgrades** in `main/server-run.ts` (`/pty/attach`,
-  `/forward/attach`, `/acp/attach`) use `c.req.query('id') ?? ''`. So
-  `/pty/attach?id=&target=shell` resolves to the first running pod in the
-  namespace.
-- **`/worktree/restart`** registers provisioning under the *raw* input,
-  which may be a prefix, before it resolves the real id.
-- **The create-failure teardown** (`create.ts`) looks the unit up with
-  `findForTeardown(worktreeId)`, scoped to no project.
-
-**Who sends what.**
-
-- The SPA and the desktop forwarder always send full ids from the
-  snapshot.
-- The CLI sends raw user input for `attach`, `shell`, `stop`, `restart`,
-  `rename` and `agents`. `forward` already pre-resolves through
-  `GET /worktree/:id` and then tunnels with the full id.
-- No e2e test passes a job name or container name. Short prefixes appear
-  only for `mama` and `group move`.
-
-**Design.** Prefix expansion happens once, in domain, over rows. Everything
-below domain is exact.
-
-- **Driver contract.** `find` and `findForTeardown` take an **exact
-  worktree id**. Update the contract doc comments in `drivers/contract.ts`,
-  which say "id, id prefix, or runtime name". The unit-name match goes too:
-  names are an implementation detail, and no client sends one.
-  - k8s: `findWorktreePod` becomes `pods.find(p => p.worktreeId === id)`,
-    skipping spares unless the caller asks for them. The Job fallback in
-    `findWorkspaceForTeardown` matches exactly as well.
-  - containerless: `findWorkspace` keeps its exact `handleFor` path and
-    drops the prefix branch.
-- **One domain resolver.** `resolveWorktree(input, { projectSlug? })`
-  lives in `domain/worktrees/resolve.ts`.
-  - It generalizes `resolveWorktreeInProject`: trim, reject empty, exact id
-    first, then a *unique* prefix over non-spare rows, and otherwise
-    `not-found` or `ambiguous`.
-  - With `projectSlug` it is the existing project-scoped resolver, which
-    becomes a call to it.
-  - `resolveWorktreeContainer`, `resolveWorktreeRecord`, `findWorktree`
-    (`detail.ts`), `resolveRestartTarget` and `stopWorktree` all resolve
-    through it, then hand the exact id to the driver.
-  - The prefix walk in `findWorktreeRow` is deleted. Only the exact lookup
-    stays.
-- **The WS upgrades are exact-only.** A missing or empty `id` is a 400
-  before any lookup. The `session` query of `/acp/attach` must match the
-  agent-session-id charset from 3.4 before it reaches `path.join`.
-  - `/pty/attach` can be exact-only once `yaac worktree attach` and
-    `yaac worktree shell` pre-resolve through `GET /worktree/:id`, as
-    `forward` does. That is a CLI change of a few lines.
-- **`/restart`** resolves first and registers provisioning under the
-  resolved id.
-- **The create-failure teardown** looks up the exact id and checks that the
-  unit's project matches before it destroys anything. Workstream 2 removes
-  the case where it could find someone else's unit, and this check is the
-  belt to that brace.
-- **CLI help** for those commands changes from "Worktree ID, container
-  name, or container ID" to "Worktree ID or unique prefix".
-
-**Tests.**
-
-- **Unit, `domain/worktrees`:** resolver cases for empty, exact-beats-prefix,
-  unique prefix, ambiguous prefix, a spare's exact id (`not-found`), and
-  cross-project ambiguity.
-- **api:** `/pty/attach` and `/forward/attach` without an id answer 400,
-  next to the existing upgrade cases in `websocket-compression.test.ts`. The
-  WS upgrades live in `main/server-run.ts`, not in the Hono route table, so
-  they have no route-matrix row.
-- **e2e-cli:** `worktree attach <prefix>` still works, and an ambiguous
-  prefix fails with the ambiguity message. Per CLAUDE.md, every CLI
-  argument needs an e2e.
-
-### 1.2 Validate `cacheVolumes` keys
-
-**Today.** `parseProjectConfig` (`domain/projects/config.ts`) checks only
-that each *value* is an absolute path. The key flows into
-`cacheVolumeDir(slug, key)`, which is a `path.join`. Create then does
-`mkdir -p` on the result and mounts it read-write. That allows two things:
-
-- a key of `../../../.credentials` mounts the host credential store into
-  the pod;
-- a key of `a/b` puts a mount *inside* the mounted `a`, which the pod can
-  replace with a link, so the next create's `mkdir -p` follows it.
-
-**Design.**
-
-- Keys must match `^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`. That forbids `/`,
-  a leading `.`, and so also `.` and `..`.
-- Values must be absolute and normalized: `path.posix.normalize(v) === v`,
-  and not `/`.
-- The config write routes run `parseProjectConfig`, so a bad key is refused
-  when it is written.
-- An overlay already holding a bad key fails the next create with the same
-  message. That is acceptable: such a key is either an attack or a nested
-  layout that never worked safely.
-
-With `/` gone, `cache-volumes/` itself is never mounted, so the server's
-`mkdir` there cannot be redirected. 3.3 needs nothing more for it.
-
-**Tests.** Unit tests for `parseProjectConfig`, in its existing test file.
-
-### 1.3 Forward-port policy covers declarations and dials
-
-**Today.**
-
-- `isForwardablePort` (`drivers/shared/port-policy.ts`) is applied only by
-  the two port *detectors*.
-- Config `portForward` is checked only for the 1–65535 range. k8s
-  `declareWorktreeForwards` allocates without the policy, and containerless
-  `declareForwards` is an identity map.
-- The k8s `/forward/attach` dial (`dialWorkspacePort`) relays to **any**
-  container port the client names, declared or not. That includes yaac's
-  own in-pod infra range, 10250–10350: the stream daemon and the relay.
-- The containerless dial already refuses a port that is not a detected,
-  policy-filtered listener.
-
-**Design.** The policy has two tiers, and the difference is intent.
-
-- **Infra ports (10250–10350)** are never declarable, detectable or
-  dialable. They are yaac's own control surface.
-- **Sensitive ports** (22, 5432, 6379, 9229, …) stay excluded from
-  *one-click detection*, their original purpose. A config `portForward` of
-  5432 remains legal: forwarding a dev database is an explicit, ordinary
-  thing to write in a config. Under tenancy the tunnel is gated to the
-  owner (multi-user plan), and that is the right place to limit who can
-  reach it.
-
-Changes:
-
-1. Move `port-policy.ts` from `drivers/shared` to `src/lib`. Config
-   validation is in domain, which may not import `#drivers/shared`, and the
-   file has no imports. Both drivers import it from `#lib`, and the
-   `drivers/shared` barrel drops the re-export.
-2. Add `isInfraPort`. `parseProjectConfig` refuses an infra port in
-   `portForward`.
-3. k8s `dialWorkspacePort` checks the port is one the worktree declared, or
-   one its detector surfaced (`isForwardablePort`), before relaying. The
-   declarations are already held per worktree in `forwarders`. This matches
-   containerless, which already dials only detected listeners.
-
-**Tests.**
-
-- Unit: config refusal.
-- e2e: `/forward/attach` to an undeclared, undetected port is refused. Add
-  this to the forward cases in `e2e-containerless/worktree-suite`, where
-  it already holds, and to the k8s forward e2e, where it is new.
-
-### 1.4 `POST /auth/fake` never overwrites a real credential
-
-**Today.** `POST /auth/fake` overwrites the real Claude bundle, fans
-placeholders out to every project, and adds a `github.com/*` credential,
-with no gate. Gating it on `testEnv` is not an option:
-
-- `yaac auth fake` is a real CLI feature for yaac-in-yaac;
-- this repo's own `yaac-config.json` init commands run it against the dev
-  worktree's inner server;
-- `testEnv` is a naming convention, not a gate.
-
-**Design.** Keep the route, but make it refuse (`CONFLICT`) to write a kind
-whose store already holds a **real** credential. Its only legitimate uses
-start from an empty store (a fresh inner data dir, an e2e server), where it
-behaves exactly as today. A real credential is recognized by the same
-predicates credential-sync already uses (`isPlaceholderClaudeBundle`, and
-so on); for GitHub, an entry for the same pattern whose token is not the
-fake one.
-
-- There is no `--force`. Clearing a real credential first is what
-  `yaac auth clear` is for.
-- `route-matrix.ts` is unchanged, since 409 is in the 4xx class and the
-  matrix checks classes.
-
-**Tests.**
-
-- e2e-cli `auth-cli`: `auth fake` over a real `auth` entry fails, and
-  succeeds after `resetCreds`.
-- The existing `auth fake` cases already reset or merge. Check their order
-  against the new refusal.
-
-### 1.5 Drop the k8s `.cached-packages` mount
-
-**Today.** Under k8s, every worktree pod still mounts the whole node-local
-`projects/<slug>/.cached-packages` read-write at `/home/yaac/.cached-packages`,
-but nothing current writes there:
-
-- module dirs are per-pod `emptyDir` volumes;
-- the pnpm store is pod-local (`drivers/k8s/worktrees/launch.ts`);
-- what remains is the retired shared store and `modules/<id>` dirs, which
-  the node-local sweep reaps (docs/legacy-compat-shims.md, "The retired pnpm
-  store and module dirs").
-
-The mount is a shared-writable channel with no remaining user. Under
-containerless the directory *is* the live project pnpm store, which is
-shared by design and a correctness concern only.
-
-**Design.**
-
-- The mount list in `createWorktree` includes `.cached-packages` only when
-  `runtime.kind === 'containerless'`. That is a "whether the feature
-  applies" branch, which the layering allows.
-- The sweep's arms keep running for residue. Their shim entry gains one
-  line: new pods no longer mount the dir, so once the removal criteria
-  hold, the whole `.cached-packages` under k8s can go.
-- `containerless/teardown.ts`'s `reapNodeLocal` sweep of
-  `.cached-packages/modules/*` has no current writer either. Either delete
-  it, or record it in the same shim entry, which today does not mention it.
-
-**Tests.** The unit test for the pod-spec mount list (`test/domain/worktrees`)
-asserts that there is no `.cached-packages` mount under k8s.
+1.1–1.5 have shipped: one domain resolver (`resolveWorktree`) expands a
+worktree-id prefix over rows and every driver lookup is exact; the
+WebSocket attaches take an exact id and check the conversation id against
+`agentSessionIdSchema` (`@yaac/shared/types`); `cacheVolumes` keys are a
+single plain segment; the infra port range is refused in config
+`portForward` and on the k8s dial, which also refuses any port the worktree
+neither declared nor surfaced; `POST /auth/fake` refuses (`CONFLICT`) to
+replace a real credential; and a k8s pod mounts no `.cached-packages`.
+What remains is 1.6, deferred until after workstreams 2–5.
 
 ### 1.6 `/repo/.git` read-only: delivered by worktree-reference-clones
 
@@ -328,106 +111,10 @@ things from this plan interact with it:
 
 ## Workstream 2: a worktree id is claimed once
 
-**Today.**
-
-- `POST /worktree/create` accepts a client `worktreeId` (any UUID). The SPA
-  sends one for optimistic UI and re-sends the *same* id on retry after a
-  failure.
-- Nothing checks the id is unused. `recordWorktreeCreated`
-  (`db/worktree-store.ts`) is an upsert on `(projectSlug, worktreeId)`, and
-  the table's primary key is that pair, so an id is not even unique across
-  projects.
-- Most runtime state assumes it is unique:
-  - the provisioning registry, terminating marks and `detachedTeardowns`;
-  - the containerless registry and the k8s forwarders;
-  - the proxy registration ConfigMap (`yaac-proxy-reg-<worktreeId>`);
-  - the proxy's pod index.
-
-Posting an existing worktree's id therefore does one of two things:
-
-- **Same project:**
-  1. the row is re-stamped;
-  2. `addWorktree` fails on the existing branch;
-  3. the failure path tears down the *existing* pod, deletes its checkout
-     and state, and deletes its row.
-
-  The existing worktree's uncommitted work is lost.
-- **Different project:** the create succeeds. Two pods then share one
-  proxy registration and one relay identity, so one runs under the other
-  project's egress rules and PTY traffic can reach the wrong pod.
-
-**Design.**
-
-1. **The worktree id is the primary key.** In `db/schema.ts`, the
-   `worktrees` key changes from `primaryKey({ columns: [projectSlug,
-   worktreeId] })` to `worktreeId: text().primaryKey()`, in migration
-   `worktree_id_primary_key`. The column stays `text`: every writer already
-   passes a UUID, and changing the type is a separate cast for no gain.
-   The constraint is named `worktrees_pkey` (renamed in
-   `rename_agent_sessions_to_worktrees`), so the SQL is a
-   `DROP CONSTRAINT "worktrees_pkey"` followed by `ADD PRIMARY KEY
-   ("worktree_id")`. Check what drizzle-kit emits against that.
-   - `projectSlug` stays a not-null column and gains its own index,
-     `index().on(t.projectSlug)`, in the same migration. It replaces the
-     leading-column index the composite key gave the per-project listings
-     (`getProjectWorktreeRows`, the project purge's delete). Every query
-     keyed on `(projectSlug, worktreeId)` keeps working unchanged, since the
-     pair is still unique.
-   - Nothing else names the composite key. The one reference is the upsert's
-     conflict target in `recordWorktreeCreated`, which step 2 deletes.
-   - The other tables that carry `(projectSlug, worktreeId)` in their keys
-     (`worktree_agent_sessions`) declare no foreign key, and are left alone.
-   - No existing install can hold a duplicate id without having been
-     attacked this way. If one does, the migration fails loudly on start,
-     which is the right outcome.
-2. **Nothing upserts.** `recordWorktreeCreated` splits on the event's
-   `resume` flag, which `applyCreated` already has.
-   - A fresh create, prewarm or spawn does a plain `INSERT`. A unique
-     violation becomes `ServerError('CONFLICT', …)`.
-   - A resume does an `UPDATE` of the live fields, keyed on
-     `(projectSlug, worktreeId)`, and must match exactly one row, or it
-     throws `NOT_FOUND`.
-   - A claim is untouched: `claimSpareWorktree` is already an `UPDATE` of
-     the spare's own row.
-
-   Why a resume never needs to insert: a non-spare row is deleted in only
-   two places, a failed *fresh* create (`applyCreateFailed`) and project
-   removal, and a stopped worktree keeps its row. So a restartable worktree
-   always has a row, with one exception. `resolveRestartTarget` can find a
-   live pod whose row is missing, which happens only when the database lost
-   rows the substrate still holds (a reset or restored DB). Today's upsert
-   quietly mints a new row for such a pod, with the wrong `createdAt`. After
-   this change that restart fails with `NOT_FOUND`, which is the right
-   answer for a pod yaac has no record of. The failure path already
-   restores a failed resume's previous stop (`priorStops`), so nothing else
-   needs changing.
-3. **The create owns only what it inserted.** The `worktree-created` event
-   is applied before any disk or substrate action (create.ts, ahead of the
-   checkout `mkdir`). An `owned` flag is set only after the insert
-   succeeds. The failure path's rollback runs only when `owned` is true,
-   which covers teardown, `deleteWorktreeState` and `applyCreateFailed`.
-   A conflict unwinds nothing, because nothing was done.
-4. **The provisioning registry refuses a live duplicate.**
-   `registerProvisioning` keeps "a re-register on one id is the retry", but
-   only when the existing entry is in a *failed* state. A running entry
-   with the same id is `CONFLICT`. This preserves the SPA's retry, whose
-   failed create has already deleted its row via `applyCreateFailed`.
-5. **Restart resolves exactly.** It finds its row through the exact
-   resolver (1.1), so no fuzzy input reaches `resume`.
-
-**Tests.**
-
-- **Unit `test/db`**, through `applyWorktreeEvent`:
-  - a fresh create on an existing id, in the same project or another,
-    throws the conflict and leaves the existing row as it was;
-  - a resume re-stamps the live fields and keeps `createdAt`, title and
-    group;
-  - a resume with no row throws.
-- **api `write-routes.test.ts`:** a create reusing a live worktree's id
-  answers 409. The live worktree's row, checkout and pod are untouched;
-  under the containerless column, its tmux handle is still up.
-- **e2e `worktree-create-suite`:** the SPA-style retry (same id after a
-  forced failure) still succeeds.
+Shipped: the worktree id is the `worktrees` primary key, a fresh create's
+row is an INSERT that refuses a taken id before anything is provisioned, a
+resume is an UPDATE of the row it must have, and the provisioning registry
+refuses a live duplicate (docs/worktree-storage.md, "Write discipline").
 
 ---
 
@@ -937,21 +624,17 @@ scope, because the writer *is* the sandbox.
 Each numbered step is one reviewable change.
 
 1. **3.1 harvest gate.** A few lines, and the most severe finding.
-2. **Workstream 2.** Unique index, insert-only create, owned rollback,
-   provisioning conflict.
-3. **1.1 exact resolution**, including the CLI pre-resolve for
-   `attach` / `shell`.
-4. **1.2–1.5.** Four independent small changes, in any order.
-5. **3.2 helper, then 3.3 / 3.4 call sites**, one group per change,
+2. ~~Workstream 2~~, ~~1.1~~, ~~1.2–1.5~~: shipped.
+3. **3.2 helper, then 3.3 / 3.4 call sites**, one group per change,
    starting with the seeding writes.
-6. **Workstream 4.** Schema and `project.json`, then the `ProjectRef`
+4. **Workstream 4.** Schema and `project.json`, then the `ProjectRef`
    plumbing and names, then the id-keyed GCs.
-7. **Workstream 5.** Repo layout (`yaac-proj-<id>`), then key and minting,
+5. **Workstream 5.** Repo layout (`yaac-proj-<id>`), then key and minting,
    then the gate and client authfiles in one change, since a gate without
    clients breaks every build.
 
-worktree-reference-clones proceeds independently. per-worktree-agent-history
-starts after step 5.
+1.6 (worktree-reference-clones) follows after workstream 5.
+per-worktree-agent-history starts after step 3.
 
 ## Dependencies
 
@@ -960,33 +643,14 @@ starts after step 5.
   cross-project writes, but a re-added slug would then inherit the old
   project's repos and write rights, and moving off slugs later means a
   second rename and rebuild.
-- **1.1 and 3.4** share `agentSessionIdSchema`, for the `/acp/attach`
-  `session` query. Whichever lands first defines it.
+- **3.4 reuses `agentSessionIdSchema`** (`@yaac/shared/types`), which 1.1
+  defined for the `/acp/attach` `session` query.
 - **3.3 relies on 1.2** to leave `cache-volumes/` out of the call-site
   table: a key without `/` means no mount sits under a server `mkdir`.
-  Until 1.2 lands, that mkdir is exposed.
-- **1.1 and 2 back each other up.** Neither needs the other to be correct.
-  2's owned rollback makes 1.1's project check in the create-failure
-  teardown redundant, and 1.1's exact resolver keeps fuzzy input away from
-  2's resume `UPDATE`.
-- **1.5 before 4** saves re-keying a mount that is about to go. After 4,
-  its id-keyed node-local sweep also removes the retired `.cached-packages`
-  store and module dirs, so the two legacy arms for them can be deleted
-  (see below).
-- **2 and 4** each add a migration and both edit `create.ts`. That is a
-  merge-order concern only.
 - **3.1** stands alone.
 
 ## Legacy-compat entries (docs/legacy-compat-shims.md)
 
-- **"The retired pnpm store and module dirs"** gains: new k8s pods no
-  longer mount `.cached-packages` (1.5). The containerless
-  `reapNodeLocal` `.cached-packages/modules/*` arm is added to the entry,
-  or deleted with 1.5. When workstream 4 ships, the entry's two sweep arms
-  are deleted. The id-keyed node-local sweep removes whole slug-named
-  project dirs that no live pod mounts. It must spare those a live pod
-  still mounts, and that is the older-server case the pnpm-store arm's
-  idle wait exists for.
 - **"`adoptProjectDirs`"** gains: it adopts or mints the project id from
   `project.json`.
 - Nothing else. The id-keyed GCs in workstream 4 are permanent, because
@@ -998,8 +662,7 @@ starts after step 5.
 - **docs/trust-split-builds.md:** the gate and grants (workstream 5).
 - **docs/nested-containers.md:** registry names and node-store paths by
   project id; the project-shared-namespace statement from 5.6.
-- **docs/worktree-storage.md:** the node-local tree keyed by project id;
-  no `.cached-packages` mount under k8s.
+- **docs/worktree-storage.md:** the node-local tree keyed by project id.
 - **docs/server-git.md:** once worktree-reference-clones lands, not
   before.
 - **docs/plans/multi-user-deployment.md:**

@@ -18,6 +18,7 @@
  */
 import { notifyWorktreeListChanged } from '#notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 export type ProvisioningKind = 'create' | 'restart'
@@ -45,6 +46,12 @@ interface ProvisioningEntry {
    *  worktree queued after this one, before its row exists, defaults to. Not
    *  on the wire. */
   branch?: string
+  /** Held for a caller that has not started the provision yet — the create
+   *  route claims the id before it streams. A run that fails while this is
+   *  still set was refused before it began (a typo'd group, a bad model),
+   *  so its entry is dropped rather than left as a failed row: the error is
+   *  already in the caller's stream. Cleared by `ensureProvisioning`. */
+  reserved?: boolean
   startedAt: number
   /** Monotonic insertion order, the sort tiebreak. `startedAt` (a wall-clock
    *  ms read) can tie or straddle a millisecond between two back-to-back
@@ -55,11 +62,7 @@ interface ProvisioningEntry {
 const entries = new Map<string, ProvisioningEntry>()
 let nextSeq = 0
 
-/** Track a new in-flight provision (idempotent overwrite on the same id, e.g.
- *  a retry). Pushes a fresh snapshot so the row appears immediately. Every
- *  creating/restarting worktree is shown — entries are only dropped when the
- *  create/restart resolves (the routes remove them) or on dismiss. */
-export function registerProvisioning(input: {
+interface ProvisioningInput {
   worktreeId: string
   projectSlug: string
   tool: AgentTool
@@ -69,7 +72,25 @@ export function registerProvisioning(input: {
   model?: string
   modelName?: string
   branch?: string
-}): void {
+  reserved?: boolean
+}
+
+/**
+ * Track a new in-flight provision. Pushes a fresh snapshot so the row appears
+ * immediately. Every creating/restarting worktree is shown — entries are only
+ * dropped when the create/restart resolves (the routes remove them) or on
+ * dismiss.
+ *
+ * A re-register on one id is a retry, and overwrites — but only once the
+ * entry it replaces has FAILED. A live entry is a `CONFLICT`: a second
+ * provision on an id that is still coming up would share every registry
+ * keyed on it, and its own failure would mark the first one's row failed.
+ */
+export function registerProvisioning(input: ProvisioningInput): void {
+  const existing = entries.get(input.worktreeId)
+  if (existing !== undefined && existing.error === undefined) {
+    throw new ServerError('CONFLICT', `worktree ${input.worktreeId} is already provisioning`)
+  }
   entries.set(input.worktreeId, {
     worktreeId: input.worktreeId,
     projectSlug: input.projectSlug,
@@ -80,6 +101,7 @@ export function registerProvisioning(input: {
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
     ...(input.branch !== undefined ? { branch: input.branch } : {}),
+    ...(input.reserved === true ? { reserved: true } : {}),
     startedAt: Date.now(),
     seq: nextSeq++,
   })
@@ -87,26 +109,28 @@ export function registerProvisioning(input: {
 }
 
 /**
- * Register only if this worktree has no entry yet.
+ * Register, or — when this worktree already has an entry — fill in what the
+ * caller has since resolved (its tool, group, model, branch) without touching
+ * its place, message or error.
  *
  * For a caller that must be tracked but may have been registered already by
  * the route above it: re-registering would reset `startedAt` and take a
  * fresh `seq`, which reorders a row the user is already watching, and would
  * clear an `error` a failed attempt is still displaying.
- *
- * Distinct from `registerProvisioning`'s deliberate overwrite, which is what
- * a genuine re-attempt on the same id wants.
  */
-export function ensureProvisioning(input: {
-  worktreeId: string
-  projectSlug: string
-  tool: AgentTool
-  kind: ProvisioningKind
-  message?: string
-  groupId?: string
-}): void {
-  if (entries.has(input.worktreeId)) return
-  registerProvisioning(input)
+export function ensureProvisioning(input: ProvisioningInput): void {
+  const e = entries.get(input.worktreeId)
+  if (e === undefined) {
+    registerProvisioning(input)
+    return
+  }
+  e.tool = input.tool
+  delete e.reserved
+  if (input.groupId !== undefined) e.groupId = input.groupId
+  if (input.model !== undefined) e.model = input.model
+  if (input.modelName !== undefined) e.modelName = input.modelName
+  if (input.branch !== undefined) e.branch = input.branch
+  notifyWorktreeListChanged()
 }
 
 /** Update the progress message of a tracked entry. No-op if absent — a late
@@ -175,8 +199,10 @@ export async function reportAgentLaunchFailure(input: {
   // A create that failed on its own has already said why, and that reason is
   // the CAUSE — an agent window missing after a create that blew up is the
   // consequence. Overwriting would replace the useful error with a
-  // downstream symptom, and re-registering would reset the row besides.
-  if (entries.get(input.worktreeId)?.error !== undefined) return
+  // downstream symptom, and re-registering would reset the row besides. Any
+  // other entry still here is a newer provision on this id (a restart begun
+  // since), whose row is not this verdict's to take.
+  if (entries.has(input.worktreeId)) return
   registerProvisioning({
     worktreeId: input.worktreeId,
     projectSlug: input.projectSlug,
@@ -248,7 +274,8 @@ export async function runProvisioned<T>(
     notifyWorktreeListChanged()
     return result
   } catch (err) {
-    failProvisioning(worktreeId, err instanceof Error ? err.message : String(err))
+    if (entries.get(worktreeId)?.reserved === true) removeProvisioning(worktreeId)
+    else failProvisioning(worktreeId, err instanceof Error ? err.message : String(err))
     throw err
   } finally {
     // Clear before releasing, and only if this run is still the current one:

@@ -1,5 +1,5 @@
 import { createWorktree, resolveCreate, type WorktreeCreateResult } from './create'
-import { registerProvisioning } from './provisioning'
+import { ensureProvisioning } from './provisioning'
 import { tryClaimPrewarmed } from './prewarm'
 import { modelDisplayName } from '#domain/auth'
 import { recordProjectCreate } from '#db'
@@ -67,9 +67,11 @@ export async function startWorktree(
   }
 
   // Registered before the long await so the row shows up instantly and
-  // survives a browser reload.
+  // survives a browser reload. `ensure`, because a caller that hands the id
+  // out before this resolves (the create route, `yaac-mama create`) has
+  // reserved it already, and this only fills in what the resolve decided.
   const modelName = setup.model !== undefined ? modelDisplayName(tool, setup.model) : undefined
-  registerProvisioning({
+  ensureProvisioning({
     worktreeId,
     projectSlug,
     tool,

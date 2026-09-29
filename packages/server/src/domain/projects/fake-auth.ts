@@ -1,4 +1,8 @@
 import {
+  isPlaceholderClaudeBundle,
+  loadClaudeCredentialsFile,
+  loadOpencodeCredentialsFile,
+  loadPiCredentialsFile,
   saveClaudeOAuthBundle,
   saveOpencodeCredentialsFile,
   savePiCredentialsFile,
@@ -9,6 +13,7 @@ import {
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { getGitCredentialByName, insertGitCredential } from '#db'
+import { ServerError } from '@yaac/shared/errors'
 import type { ClaudeOAuthBundle, FakeAuthKind } from '@yaac/shared/types'
 
 /** The git credential `auth fake github` seeds. */
@@ -52,7 +57,7 @@ export function buildFakeClaudeOAuthBundle(): ClaudeOAuthBundle {
  * bundle out to every existing project — matching a real `auth update` OAuth
  * login, so already-added projects pick it up without a re-seed.
  */
-export async function seedFakeClaudeOAuth(): Promise<void> {
+async function seedFakeClaudeOAuth(): Promise<void> {
   const bundle = buildFakeClaudeOAuthBundle()
   await saveClaudeOAuthBundle(bundle)
   await fanOutClaudePlaceholders(bundle)
@@ -75,7 +80,7 @@ export async function seedFakeClaudeOAuth(): Promise<void> {
  * A genuinely fake value would instead be forwarded as-is and rejected
  * (401) one hop too early.
  */
-export async function seedFakeGithubCredential(): Promise<void> {
+async function seedFakeGithubCredential(): Promise<void> {
   if (await getGitCredentialByName(FAKE_GITHUB_CREDENTIAL_NAME)) return
   await insertGitCredential({ name: FAKE_GITHUB_CREDENTIAL_NAME, kind: 'https', secret: PLACEHOLDER_GH_TOKEN })
 }
@@ -88,7 +93,7 @@ export async function seedFakeGithubCredential(): Promise<void> {
  * sentinel intact so the outer proxy does the real substitution — the same
  * chaining trick as the OAuth bundles above.
  */
-export async function seedFakeOpencodeOpenrouter(): Promise<void> {
+async function seedFakeOpencodeOpenrouter(): Promise<void> {
   await saveOpencodeCredentialsFile({
     kind: 'api-key',
     provider: 'openrouter',
@@ -102,7 +107,7 @@ export async function seedFakeOpencodeOpenrouter(): Promise<void> {
  * as `seedFakeOpencodeOpenrouter` — pi reads OpenRouter's key from
  * `OPENROUTER_API_KEY` and the proxy swaps the placeholder on `openrouter.ai`.
  */
-export async function seedFakePiOpenrouter(): Promise<void> {
+async function seedFakePiOpenrouter(): Promise<void> {
   await savePiCredentialsFile({
     kind: 'api-key',
     provider: 'openrouter',
@@ -111,16 +116,70 @@ export async function seedFakePiOpenrouter(): Promise<void> {
   })
 }
 
-/** Seed one fake credential by its `yaac auth fake` kind. */
-export async function seedFakeAuth(kind: FakeAuthKind): Promise<void> {
+/**
+ * Whether this kind's store already holds a credential that is not a fake —
+ * one a person signed in with. A fake over a fake is a re-seed and fine.
+ * GitHub is never real here: its seed is a no-op when `fake-github` exists
+ * and touches no other credential.
+ */
+async function holdsRealCredential(kind: FakeAuthKind): Promise<boolean> {
   switch (kind) {
-    case 'claude-oauth':
-      return seedFakeClaudeOAuth()
-    case 'opencode-openrouter':
-      return seedFakeOpencodeOpenrouter()
-    case 'pi-openrouter':
-      return seedFakePiOpenrouter()
+    case 'claude-oauth': {
+      const creds = await loadClaudeCredentialsFile()
+      if (creds === null) return false
+      return creds.kind === 'oauth'
+        ? !isPlaceholderClaudeBundle(creds.claudeAiOauth)
+        : creds.apiKey !== PLACEHOLDER_API_KEY
+    }
+    case 'opencode-openrouter': {
+      const creds = await loadOpencodeCredentialsFile()
+      return creds !== null && creds.apiKey !== PLACEHOLDER_API_KEY
+    }
+    case 'pi-openrouter': {
+      const creds = await loadPiCredentialsFile()
+      return creds !== null && creds.apiKey !== PLACEHOLDER_API_KEY
+    }
     case 'github':
-      return seedFakeGithubCredential()
+      return false
+  }
+}
+
+/**
+ * Seed fake credentials by their `yaac auth fake` kinds.
+ *
+ * Refuses (`CONFLICT`), seeding nothing, when any kind's store already holds
+ * a REAL credential: the fakes exist for a store that starts empty (a fresh
+ * inner data dir, an e2e server), and an install's real sign-in replaced by
+ * sentinels would fan out to every project and authenticate nothing. There
+ * is no force — `yaac auth clear` is what clears a real credential first.
+ */
+export async function seedFakeAuth(kinds: readonly FakeAuthKind[]): Promise<void> {
+  const unique = [...new Set(kinds)]
+  const real: FakeAuthKind[] = []
+  for (const kind of unique) {
+    if (await holdsRealCredential(kind)) real.push(kind)
+  }
+  if (real.length > 0) {
+    throw new ServerError(
+      'CONFLICT',
+      `a real credential is already stored for ${real.join(', ')}; `
+      + 'run "yaac auth clear" first to replace it with a fake one',
+    )
+  }
+  for (const kind of unique) {
+    switch (kind) {
+      case 'claude-oauth':
+        await seedFakeClaudeOAuth()
+        break
+      case 'opencode-openrouter':
+        await seedFakeOpencodeOpenrouter()
+        break
+      case 'pi-openrouter':
+        await seedFakePiOpenrouter()
+        break
+      case 'github':
+        await seedFakeGithubCredential()
+        break
+    }
   }
 }
