@@ -257,6 +257,20 @@ describe('sidebarLayout with queued worktrees', () => {
     expect(layout.orphans).toEqual([])
   })
 
+  it('draws a held parent once, as its live or restarting row', () => {
+    // Every list the group header sums: provisioning, members, held, ghosts.
+    const counted = (layout: ReturnType<typeof sidebarLayout>): string[][][] => layout.groups.map((s) =>
+      [s.provisioning, s.members, s.held, s.ghosts].map((l) => l.map((w) => w.worktreeId)))
+    const stopping = sidebarLayout([entry('a', 1, { groupId: 'g' })], [group('g', 10)], [], [],
+      [queued('q1', 'a')], [held('a', 'g')])
+    expect(counted(stopping)).toEqual([[[], ['a'], [], []]])
+    expect(stopping.orphans).toEqual([])
+    const restarting = sidebarLayout([], [group('g', 10)], [], [prov('a', 1, { groupId: 'g' })],
+      [queued('q1', 'a')], [held('a', 'g')])
+    expect(counted(restarting)).toEqual([[['a'], [], [], []]])
+    expect(restarting.orphans).toEqual([])
+  })
+
   it('does not show a group for a stopped member nothing waits on', () => {
     expect(sidebarLayout([], [group('g', 10)], [stopped('gone', 1, 'g')], [], [], []).groups).toEqual([])
   })
