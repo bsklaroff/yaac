@@ -51,7 +51,7 @@ import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { patchStopped, useStoppedWorktrees } from '#lib/useStoppedWorktrees'
 import { useIsMobile } from '#lib/viewport'
-import { isUnreadWaiting, useUiStore } from '#lib/store'
+import { isUnreadWaiting, isUnseenDeath, useUiStore } from '#lib/store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 // A group name is stored under this cap, and the routes refuse a longer one
 // — so the fields that mint names stop there rather than taking a name the
@@ -95,7 +95,11 @@ export interface SidebarGroupSection {
   provisioning: ProvisioningWorktreeEntry[]
   /** Live (and terminating) members, newest first. */
   members: WorktreeListEntry[]
-  /** Stopped members, newest first — ghost rows rendered after the live ones. */
+  /** Held members — stopped, with queued worktrees still waiting on them —
+   *  newest first, as stopped rows after the live ones. */
+  held: StoppedWorktreeEntry[]
+  /** The other stopped members, newest first — ghost rows at the foot of the
+   *  section, collapsed behind a count by default. */
   ghosts: StoppedWorktreeEntry[]
 }
 
@@ -152,7 +156,8 @@ function heldAsStopped(h: HeldWorktreeEntry): StoppedWorktreeEntry {
  *
  * A group is shown when it is pinned, holds at least one live worktree, or has
  * one provisioning into it, and a shown group lists ALL its members: live ones
- * as ordinary rows, stopped ones as ghost rows with a restart action. So an
+ * as ordinary rows, stopped ones as ghost rows with a restart action, folded
+ * behind a count at the foot of the section so they don't crowd it. So an
  * unpinned group whose worktrees have all stopped simply disappears — its row
  * survives on the server, and restarting a member brings the whole section
  * back — while pinning keeps it on screen as somewhere to restart into.
@@ -166,7 +171,8 @@ function heldAsStopped(h: HeldWorktreeEntry): StoppedWorktreeEntry {
  * A `held` worktree — stopped, with queued worktrees still waiting on it —
  * is the exception: it keeps a stopped row in its normal place, the default
  * list included, and holds its group on screen as a live member would, so
- * what is queued under it stays visible until it has run or been discarded.
+ * what is queued under it stays visible until it has run or been discarded —
+ * which is also why it is never folded away with the ghosts.
  * Each queued worktree nests under the row it waits on; one whose parent has
  * no row here goes to the top of the list (`orphans`).
  */
@@ -185,8 +191,11 @@ export function sidebarLayout(
   // The stopped listing's row wins over the snapshot's slimmer held entry.
   const stoppedIds = new Set(stopped.map((d) => d.worktreeId))
   const heldIds = new Set(held.map((h) => h.worktreeId))
-  const ghosts = [...stopped, ...held.filter((h) => !stoppedIds.has(h.worktreeId)).map(heldAsStopped)]
-    .sort(byCreatedAt)
+  const heldRows = [
+    ...stopped.filter((d) => heldIds.has(d.worktreeId)),
+    ...held.filter((h) => !stoppedIds.has(h.worktreeId)).map(heldAsStopped),
+  ].sort(byCreatedAt)
+  const ghosts = stopped.filter((d) => !heldIds.has(d.worktreeId)).sort(byCreatedAt)
   // Provisioning rows keep the order they were started in (the caller's merge
   // already sorts them oldest-first): they have no place among the live rows
   // to sort into, and a row moving under the pointer while it provisions is
@@ -197,17 +206,17 @@ export function sidebarLayout(
       group,
       provisioning: provisioning.filter((p) => filedIn(p) === group.groupId),
       members: live.filter((w) => filedIn(w) === group.groupId),
+      held: heldRows.filter((d) => filedIn(d) === group.groupId),
       ghosts: ghosts.filter((d) => filedIn(d) === group.groupId),
     }))
-    .filter((s) => s.group.pinned || s.members.length > 0 || s.provisioning.length > 0
-      || s.ghosts.some((d) => heldIds.has(d.worktreeId)))
-  const defaultHeld = ghosts.filter((d) => filedIn(d) === null && heldIds.has(d.worktreeId))
+    .filter((s) => s.group.pinned || s.members.length > 0 || s.provisioning.length > 0 || s.held.length > 0)
+  const defaultHeld = heldRows.filter((d) => filedIn(d) === null)
 
   const onScreen = new Set([
     ...provisioning.map((p) => p.worktreeId),
     ...live.map((w) => w.worktreeId),
     ...defaultHeld.map((d) => d.worktreeId),
-    ...sections.flatMap((s) => s.ghosts.map((d) => d.worktreeId)),
+    ...sections.flatMap((s) => s.held.map((d) => d.worktreeId)),
   ])
   const queuedIds = new Set(queued.map((e) => e.id))
   return {
@@ -325,7 +334,7 @@ export function WorktreeList({
   // the selection to the row below it. Same list the Alt+K/J cycle steps through.
   const rowIds = sidebarRowIds(provisioning, worktrees, groups, pendingDeleteIds)
   const visibleCount = layout.defaultList.length + layout.defaultHeld.length + layout.orphans.length
-    + layout.groups.reduce((n, s) => n + s.members.length + s.ghosts.length, 0)
+    + layout.groups.reduce((n, s) => n + s.members.length + s.held.length + s.ghosts.length, 0)
   // What a queued row's discard needs to say about the row its children would
   // move under.
   const names = new Map<string, QueueParent>([
@@ -607,8 +616,9 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorktreeEntry }): JSX.E
 }
 
 /**
- * One named group: a collapsible section holding its live rows and then its
- * ghost rows, and a whole-section drop zone. The header carries the same
+ * One named group: a collapsible section holding its live rows, its held
+ * rows, and then its ghost rows behind their own expander, and a
+ * whole-section drop zone. The header carries the same
  * overlay actions a worktree row does — rename inline, pin (keep the section
  * when nothing in it is live), and delete, which needs no confirmation
  * because it only releases the worktrees back to the default list.
@@ -631,7 +641,7 @@ function GroupSection({
   dropTarget: boolean
   zoneRef: (el: HTMLDivElement | null) => void
 }): JSX.Element {
-  const { group, provisioning, members, ghosts } = section
+  const { group, provisioning, members, held, ghosts } = section
   const [open, setOpen] = useState(true)
   const {
     editing,
@@ -687,7 +697,7 @@ function GroupSection({
                 {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
                 <span className="truncate">{group.name}</span>
                 <span className="text-text-faint/70">
-                  {provisioning.length + members.length + ghosts.length}
+                  {provisioning.length + members.length + held.length + ghosts.length}
                 </span>
               </Collapsible.Trigger>
 
@@ -745,15 +755,41 @@ function GroupSection({
               <QueuedSet parentId={s.worktreeId} />
             </Fragment>
           ))}
-          {ghosts.map((d) => (
+          {held.map((d) => (
             <Fragment key={d.worktreeId}>
               <DeletedWorktreeRow entry={d} />
               <QueuedSet parentId={d.worktreeId} />
             </Fragment>
           ))}
+          {ghosts.length > 0 && <StoppedSet ghosts={ghosts} />}
         </Collapsible.Panel>
       </Collapsible.Root>
     </div>
+  )
+}
+
+/** A group's stopped members, folded behind a count at the foot of the
+ *  section — closed by default, so a long-lived group stays as short as its
+ *  live rows. It comes back closed whenever it remounts: the group collapsed,
+ *  dropped off screen, or ran out of stopped members. A death the user has
+ *  not read yet is counted on the trigger, as `QueuedSet` counts a failed
+ *  launch, or a closed fold would hide which group it happened in. */
+function StoppedSet({ ghosts }: { ghosts: StoppedWorktreeEntry[] }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const n = ghosts.length
+  const died = ghosts.filter(isUnseenDeath).length
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen}>
+      <Collapsible.Trigger className="mx-2 flex items-center gap-1 px-2.5 py-1 text-xs
+        text-text-faint outline-none transition hover:text-text-dim">
+        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
+        {n} stopped worktree{n === 1 ? '' : 's'}
+        {died > 0 && <span className="text-[#d65858]">· {died} died</span>}
+      </Collapsible.Trigger>
+      <Collapsible.Panel>
+        {ghosts.map((d) => <DeletedWorktreeRow key={d.worktreeId} entry={d} />)}
+      </Collapsible.Panel>
+    </Collapsible.Root>
   )
 }
 

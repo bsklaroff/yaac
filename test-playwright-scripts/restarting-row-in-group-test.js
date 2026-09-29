@@ -184,9 +184,17 @@ try {
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 })
   const section = page.locator(`[role="group"][aria-label="${GROUP}"]`)
   await section.waitFor({ state: 'visible', timeout: 15_000 })
+  // A group's ghost rows are folded behind a count, which is a fresh (closed)
+  // one each time the section goes from no ghosts to some.
+  const openGhosts = async () => {
+    const toggle = section.getByRole('button', { name: /^\d+ stopped worktrees?\b/ })
+    await toggle.waitFor({ state: 'visible', timeout: 30_000 })
+    if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+  }
 
   // --- pass 1: restarted by clicking the ghost row, as a user does ---
   await api('/worktree/stop', { worktreeId: subject.worktreeId })
+  await openGhosts()
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row')
   check('the stopped member is a ghost row in the group', true)
 
@@ -203,6 +211,7 @@ try {
   // snapshot row is ever drawn ---
   await untilShape(page, (s) => !(s.all ?? []).some((t) => t.startsWith('Restarting')), 'the restart to finish')
   await api('/worktree/stop', { worktreeId: subject.worktreeId })
+  await openGhosts()
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row again')
   // Exactly what the webapp posts, minus the browser: projectSlug + tool, the
   // pair that makes the route register the row before it resolves anything.
