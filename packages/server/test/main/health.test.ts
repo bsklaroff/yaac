@@ -6,7 +6,7 @@ describe('GET /health', () => {
   it('reports ok, the buildId, and the driver', async () => {
     installFakeWorktreeDriver()
     const app = buildApp({ buildId: 'bid-1' })
-    const res = await app.request('/health')
+    const res = await app.request('/api/health')
     expect(res.status).toBe(200)
     expect(await res.json())
       .toEqual({ ok: true, buildId: 'bid-1', ready: true, driver: 'k8s' })
@@ -17,14 +17,14 @@ describe('GET /health', () => {
     // server, including whether its substrate came up — so it must answer
     // during the window before the composition root has registered one.
     const app = buildApp({ buildId: 'b' })
-    const res = await app.request('/health')
+    const res = await app.request('/api/health')
     expect(res.status).toBe(200)
     expect((await res.json() as { driver: string | null }).driver).toBeNull()
   })
 
   it('defaults ready to true when no isReady is injected (in-process tests)', async () => {
     const app = buildApp({ buildId: 'b' })
-    const res = await app.request('/health')
+    const res = await app.request('/api/health')
     expect((await res.json() as { ready: boolean }).ready).toBe(true)
   })
 
@@ -34,11 +34,11 @@ describe('GET /health', () => {
     let ready = false
     const app = buildApp({ buildId: 'b', isReady: () => ready })
 
-    const before = await app.request('/health')
+    const before = await app.request('/api/health')
     expect((await before.json() as { ready: boolean }).ready).toBe(false)
 
     ready = true
-    const after = await app.request('/health')
+    const after = await app.request('/api/health')
     expect((await after.json() as { ready: boolean }).ready).toBe(true)
   })
 })

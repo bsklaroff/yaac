@@ -91,7 +91,7 @@ async function refuseLocalContainerlessForward(baseUrl: string, bind: string | u
   if (bind !== undefined) return
   let driver: DriverKind | undefined
   try {
-    const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(5_000) })
+    const res = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(5_000) })
     if (!res.ok) return
     driver = (await res.json() as { driver?: DriverKind | null }).driver ?? undefined
   } catch {

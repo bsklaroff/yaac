@@ -24,7 +24,7 @@ export function useEvents(enabled: boolean): { connected: boolean } {
 
     const connect = (): void => {
       const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      ws = new WebSocket(`${scheme}://${window.location.host}/events`)
+      ws = new WebSocket(`${scheme}://${window.location.host}/api/events`)
 
       ws.onopen = (): void => {
         setConnected(true)

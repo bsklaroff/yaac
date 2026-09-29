@@ -189,7 +189,7 @@ describe('probeServer', () => {
       buildId: 'b1', principal: { kind: 'tailnet', login: 'bob@x', name: 'Bob' },
     })
     expect(fetchMock.mock.calls.map(([u]) => u as string))
-      .toEqual(['https://srv.ts.net/health', 'https://srv.ts.net/whoami'])
+      .toEqual(['https://srv.ts.net/api/health', 'https://srv.ts.net/api/whoami'])
   })
 
   it('throws prescriptively on unreachable or unhealthy servers', async () => {

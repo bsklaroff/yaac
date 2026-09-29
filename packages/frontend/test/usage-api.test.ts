@@ -12,7 +12,7 @@ describe('requestUsageRefresh', () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch
     await requestUsageRefresh()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/auth/claude/usage/refresh')
+    expect(url).toBe('/api/auth/claude/usage/refresh')
     expect(init.method).toBe('POST')
   })
 })

@@ -11,11 +11,11 @@ import { parseSnapshotMessage } from '#attention'
  * without sockets or timers wired to a real server.
  */
 
-/** The `/events` WS endpoint for a server origin (http→ws, https→wss). */
+/** The `/api/events` WS endpoint for a server origin (http→ws, https→wss). */
 export function eventsWsUrl(baseUrl: string): string {
   const u = new URL(baseUrl)
   u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
-  u.pathname = '/events'
+  u.pathname = '/api/events'
   u.search = ''
   return u.toString()
 }

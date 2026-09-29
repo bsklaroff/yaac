@@ -129,7 +129,7 @@ async function main() {
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
-  const { worktrees } = await (await fetch(`${origin}/worktree/list`, { headers: auth })).json()
+  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`, { headers: auth })).json()
   const find = (id) => {
     const wt = worktrees.find((w) => w.worktreeId.startsWith(id))
     if (!wt) throw new Error(`no running worktree ${id}`)

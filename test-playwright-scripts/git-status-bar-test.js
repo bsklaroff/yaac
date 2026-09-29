@@ -73,10 +73,10 @@ async function main() {
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
-  const { worktrees } = await (await fetch(`${origin}/worktree/list`, { headers: auth })).json()
+  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`, { headers: auth })).json()
   const wt = worktrees.find((w) => w.worktreeId.startsWith(worktreeId))
   if (!wt) throw new Error(`no running worktree ${worktreeId}`)
-  const status = await (await fetch(`${origin}/worktree/${wt.worktreeId}/git-status`, { headers: auth })).json()
+  const status = await (await fetch(`${origin}/api/worktree/${wt.worktreeId}/git-status`, { headers: auth })).json()
   console.log('git-status:', JSON.stringify(status))
 
   const token = await (await fetch(`${origin}/tokens`, {

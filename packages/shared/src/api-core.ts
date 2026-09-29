@@ -103,13 +103,14 @@ function unwrapClient<T extends object>(client: T): UnwrappedClient<T> {
 }
 
 /**
- * Build the typed Hono API client. `base` is the origin hono bakes into every
- * request URL; `fetch` is the transport (cookie same-origin in the browser,
- * bearer/lock resolution in the CLI). Non-2xx throws (see `throwingFetch`); a
+ * Build the typed Hono API client. `origin` is where the server is (empty
+ * for the page's own), and every request goes to its `/api` mount; `fetch`
+ * is the transport (cookie same-origin in the browser, bearer/lock
+ * resolution in the CLI). Non-2xx throws (see `throwingFetch`); a
  * successful call resolves to the unwrapped body (see `unwrapClient`).
  */
-export function createApiClient(base: string, fetch: FetchLike) {
-  return unwrapClient(hc<AppType>(base, { fetch: throwingFetch(fetch) }))
+export function createApiClient(origin: string, fetch: FetchLike) {
+  return unwrapClient(hc<AppType>(`${origin}/api`, { fetch: throwingFetch(fetch) }))
 }
 
 /**
@@ -117,6 +118,6 @@ export function createApiClient(base: string, fetch: FetchLike) {
  * need to inspect a raw non-2xx `Response` (HTTP-contract tests asserting
  * status codes). Application code should use `createApiClient`.
  */
-export function createRawApiClient(base: string, fetch: FetchLike) {
-  return hc<AppType>(base, { fetch })
+export function createRawApiClient(origin: string, fetch?: FetchLike) {
+  return hc<AppType>(`${origin}/api`, { fetch })
 }

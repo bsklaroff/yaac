@@ -316,7 +316,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     threshold: 512,
     zlibDeflateOptions: { level: 6 },
   }
-  app.get('/events', nodeWs.upgradeWebSocket(() => {
+  app.get('/api/events', nodeWs.upgradeWebSocket(() => {
     // Hold the raw `ws` socket, not Hono's WSContext: the context's send
     // forwards `{ compress: opts?.compress }`, and that explicit `undefined`
     // overrides ws's own `compress: true` default — which would silently
@@ -352,7 +352,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Auth-daemon relay: the login broker on the user's machine holds one
   // outbound socket here; sign-in routes forward ops over it and serve
   // the views it pushes back. Auth rides the upgrade like every WS.
-  app.get('/agent/auth', nodeWs.upgradeWebSocket(() => ({
+  app.get('/api/agent/auth', nodeWs.upgradeWebSocket(() => ({
     onOpen: (_evt, ws) => {
       const raw = ws.raw as RawWebSocket | undefined
       if (!raw) {
@@ -408,7 +408,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // PTY bridge: one embedded terminal per connection, attached to the
   // worktree's tmux. Path is /pty/attach (not /worktree/...) to avoid
   // colliding with the GET /worktree/:id route. Auth rides the upgrade.
-  app.get('/pty/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
+  app.get('/api/pty/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     // Which window to attach and the browser's reported grid — validated by
     // attachPty, which spawns the PTY at that size so the tmux window and the
@@ -459,7 +459,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // the workspace binds its own — so `yaac forward` and the desktop app
   // accept connections on the user's machine and open one of these for
   // each. Auth rides the upgrade like every WS.
-  app.get('/forward/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
+  app.get('/api/forward/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     const port = Number(c.req.query('port'))
     return {
@@ -501,7 +501,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // live `AcpConversation` the status watcher's driver holds. The PTY route's
   // twin — same auth-on-upgrade, same per-client disposability — but the
   // frames are JSON events rather than terminal bytes.
-  app.get('/acp/attach', attachQuery({ session: true }), nodeWs.upgradeWebSocket((c) => {
+  app.get('/api/acp/attach', attachQuery({ session: true }), nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     const agentSessionId = c.req.query('session') ?? ''
     return {

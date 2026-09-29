@@ -141,7 +141,7 @@ async function runTrial(browser, base, code, sessionId, label, dpr, vw, vh, shot
       window.WebSocket = class extends OrigWS {
         constructor(...args) {
           super(...args)
-          if (String(args[0]).includes('/pty/attach')) {
+          if (String(args[0]).includes('/api/pty/attach')) {
             let handler = null
             Object.defineProperty(this, 'onmessage', {
               set: (fn) => { handler = fn },
@@ -305,7 +305,7 @@ async function main() {
         await new Promise((r) => setTimeout(r, 3000))
         console.log(`window reset to ${windowSize(pod)}`)
       }
-      const codeRes = await fetch(`${base}/auth/bootstrap-code`)
+      const codeRes = await fetch(`${base}/api/auth/bootstrap-code`)
       if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
       const { code } = await codeRes.json()
       try {

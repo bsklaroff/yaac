@@ -13,7 +13,7 @@ export interface IdentityEnv {
  * and be told what is wrong — and the health probe.
  */
 function isPublicPath(path: string): boolean {
-  return path === '/health' || path === '/' || path.startsWith('/assets/')
+  return path === '/api/health' || path === '/' || path.startsWith('/assets/')
 }
 
 /**

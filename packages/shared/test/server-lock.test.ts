@@ -153,15 +153,8 @@ describe('server lock', () => {
       expect(await isLockLive(lock)).toBe(false)
     })
 
-    it('returns true when /health responds 2xx', async () => {
-      const server = http.createServer((req, res) => {
-        if (req.url === '/health') {
-          res.writeHead(200, { 'content-type': 'application/json' })
-          res.end('{"ok":true}')
-        } else {
-          res.writeHead(404).end()
-        }
-      })
+    it('returns true for any HTTP answer, even a 404 from a server predating /api/health', async () => {
+      const server = http.createServer((_req, res) => { res.writeHead(404).end() })
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
@@ -256,7 +249,7 @@ describe('server lock', () => {
       run: (lock: ServerLock) => Promise<void>,
     ): Promise<void> {
       const server = http.createServer((req, res) => {
-        if (req.url === '/health') {
+        if (req.url === '/api/health') {
           res.writeHead(200, { 'content-type': 'application/json' })
           res.end(body)
         } else {
@@ -325,7 +318,7 @@ describe('server lock', () => {
 
     it('reports the existing lock when a live server already holds it', async () => {
       const server = http.createServer((req, res) => {
-        if (req.url === '/health') { res.writeHead(200).end('{"ok":true}') }
+        if (req.url === '/api/health') { res.writeHead(200).end('{"ok":true}') }
         else res.writeHead(404).end()
       })
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
@@ -366,7 +359,7 @@ describe('server lock', () => {
       // flow, each attempt has just bound a real port, so the analog of
       // this "live port" holds by construction.
       const server = http.createServer((req, res) => {
-        if (req.url === '/health') { res.writeHead(200).end('{"ok":true}') }
+        if (req.url === '/api/health') { res.writeHead(200).end('{"ok":true}') }
         else res.writeHead(404).end()
       })
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))

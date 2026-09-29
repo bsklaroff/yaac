@@ -102,7 +102,7 @@ const origin = `http://127.0.0.1:${lock.port}`
 /** The live ACP worktree to drive: the one named, else the first the server
  *  reports whose primary conversation is acp-mode. */
 async function pickWorktree() {
-  const res = await fetch(`${origin}/worktree/list`)
+  const res = await fetch(`${origin}/api/worktree/list`)
   if (!res.ok) throw new Error(`worktree list failed: HTTP ${res.status}`)
   const { worktrees } = await res.json()
   const acp = worktrees.filter((w) => w.agentSessions.some((a) => a.mode === 'acp' && a.active))

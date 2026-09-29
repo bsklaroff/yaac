@@ -23,7 +23,7 @@ export function buildPtyAttachUrl(
   baseUrl: string,
   params: { worktreeId: string; target: string; cols?: number; rows?: number },
 ): string {
-  const url = new URL(`${toWsUrl(baseUrl)}/pty/attach`)
+  const url = new URL(`${toWsUrl(baseUrl)}/api/pty/attach`)
   url.searchParams.set('id', params.worktreeId)
   url.searchParams.set('target', params.target)
   if (params.cols) url.searchParams.set('cols', String(params.cols))

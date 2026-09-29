@@ -75,7 +75,7 @@ export function useAcpStream(
       if (closed) return
       const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
       const params = new URLSearchParams({ id: worktreeId, session: agentSessionId })
-      const sock = new WebSocket(`${scheme}://${window.location.host}/acp/attach?${params}`)
+      const sock = new WebSocket(`${scheme}://${window.location.host}/api/acp/attach?${params}`)
       socketRef.current = sock
 
       sock.onmessage = (e) => {

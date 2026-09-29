@@ -143,7 +143,7 @@ try {
   check('a provisioning row appears', row)
   const founded = await (async () => {
     for (let i = 0; i < 90; i++) {
-      const list = await (await fetch(`${origin}/worktree/list?project=${PROJECT}`, { headers: auth })).json()
+      const list = await (await fetch(`${origin}/api/worktree/list?project=${PROJECT}`, { headers: auth })).json()
       if (list.worktrees.some((w) => (w.prompt ?? '').startsWith(ask))) return true
       await new Promise((r) => setTimeout(r, 2000))
     }

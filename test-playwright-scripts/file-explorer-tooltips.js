@@ -61,7 +61,7 @@ async function main() {
   fs.mkdirSync(SHOT_DIR, { recursive: true })
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
-  const { worktrees } = await (await fetch(`${origin}/worktree/list`)).json()
+  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`)).json()
   const wt = worktrees.find((w) => w.worktreeId.startsWith(worktreeId))
   if (!wt) throw new Error(`no running worktree ${worktreeId}`)
   const browser = await chromium.launch()

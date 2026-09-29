@@ -483,7 +483,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
           rule: { hosts: ['api.github.com'], header: 'x-kitchen-key' },
         },
       ]) {
-        const res = await fetch(`${base}/project/kitchen/env`, {
+        const res = await fetch(`${base}/api/project/kitchen/env`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
@@ -715,7 +715,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 30_000)
 
     it('surfaces the offered forwards on /worktree/list (feeds the webapp snapshot)', async () => {
-      const res = await fetch(`${base}/worktree/list?project=kitchen`)
+      const res = await fetch(`${base}/api/worktree/list?project=kitchen`)
       expect(res.status).toBe(200)
       const body = await res.json() as {
         worktrees: Array<{ forwardedPorts: Array<{ containerPort: number; hostPort: number }> }>
@@ -806,7 +806,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         + ' && printf "\\nappended\\n" >> README.md',
       ])
 
-      const res = await fetch(`${base}/worktree/${worktreeId}/changes`)
+      const res = await fetch(`${base}/api/worktree/${worktreeId}/changes`)
       expect(res.status).toBe(200)
       const body = await res.json() as {
         base: string
@@ -843,7 +843,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await execInJob(jobName, ['sh', '-c',
         'cd /workspace && rm -f untracked.txt && printf "second\\n" > later.txt',
       ])
-      const res2 = await fetch(`${base}/worktree/${worktreeId}/changes`)
+      const res2 = await fetch(`${base}/api/worktree/${worktreeId}/changes`)
       expect(res2.status).toBe(200)
       const body2 = await res2.json() as { files: Array<{ path: string }> }
       const paths2 = body2.files.map((f) => f.path)
@@ -865,15 +865,15 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     // unchanged file is clean although in-pod git wrote the index's stat data
     // through a different mount.
     it('edits the checkout from the server, visibly to the pod and back', async () => {
-      const files = await (await fetch(`${base}/worktree/${worktreeId}/files`)).json() as {
+      const files = await (await fetch(`${base}/api/worktree/${worktreeId}/files`)).json() as {
         paths: string[]; status: Record<string, string>
       }
       expect(files.paths).toContain('README.md')
       expect(files.status['README.md']).toBeUndefined()
 
-      const read = await (await fetch(`${base}/worktree/${worktreeId}/file?path=README.md`))
+      const read = await (await fetch(`${base}/api/worktree/${worktreeId}/file?path=README.md`))
         .json() as { version: string; content: string }
-      const saved = await fetch(`${base}/worktree/${worktreeId}/file`, {
+      const saved = await fetch(`${base}/api/worktree/${worktreeId}/file`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ path: 'README.md', content: `${read.content}saved by the server\n`, baseVersion: read.version }),
@@ -885,7 +885,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       await execInJob(jobName, ['sh', '-c', 'printf "edited in the pod\\n" >> /workspace/README.md'])
       const reread = await (await fetch(
-        `${base}/worktree/${worktreeId}/file?path=README.md&known=${version}`,
+        `${base}/api/worktree/${worktreeId}/file?path=README.md&known=${version}`,
       )).json() as { version: string; content?: string }
       expect(reread.version).not.toBe(version)
       expect(reread.content).toContain('edited in the pod')
@@ -900,7 +900,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     // rather than as a server fault.
     it('answers 400 for a ?base= ref that resolves nowhere', async () => {
       const res = await fetch(
-        `${base}/worktree/${worktreeId}/changes?base=no-such-branch`,
+        `${base}/api/worktree/${worktreeId}/changes?base=no-such-branch`,
       )
       expect(res.status).toBe(400)
       const body = await res.json() as { error: { code: string; message: string } }
@@ -930,7 +930,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       forwardedPorts: Array<{ containerPort: number; hostPort: number }>
       unforwardedPorts: number[]
     }> {
-      const res = await fetch(`${base}/worktree/list?project=kitchen`)
+      const res = await fetch(`${base}/api/worktree/list?project=kitchen`)
       expect(res.status).toBe(200)
       const body = await res.json() as {
         worktrees: Array<{
@@ -977,7 +977,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 90_000)
 
     it('forwards a detected port for this session and serves real traffic', async () => {
-      const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
+      const res = await fetch(`${base}/api/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: detectedPort }),
@@ -998,7 +998,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       // Now forwarded → subtracted from the offerable set, so a repeat
       // request is rejected.
-      const again = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
+      const again = await fetch(`${base}/api/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: detectedPort }),
@@ -1007,7 +1007,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 60_000)
 
     it('rejects forwarding a port with no detected listener', async () => {
-      const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
+      const res = await fetch(`${base}/api/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8099 }),
@@ -1022,7 +1022,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         `listener on ${persistedPort} never surfaced in unforwardedPorts`,
       )
 
-      const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
+      const res = await fetch(`${base}/api/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: persistedPort, persist: true }),
@@ -1055,7 +1055,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         'listener on 8092 never surfaced in unforwardedPorts',
       )
 
-      const res = await fetch(`${base}/worktree/${worktreeId}/dismiss-port`, {
+      const res = await fetch(`${base}/api/worktree/${worktreeId}/dismiss-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8092 }),
@@ -1064,7 +1064,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect((await kitchenSession()).unforwardedPorts).not.toContain(8092)
 
       // A dismissed port is also no longer forwardable.
-      const forward = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
+      const forward = await fetch(`${base}/api/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8092 }),
@@ -1134,7 +1134,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         return Array.isArray(key) ? key[0] : key
       }
       const putKey = async (apiKey: string): Promise<void> => {
-        const res = await fetch(`${base}/auth/claude`, {
+        const res = await fetch(`${base}/api/auth/claude`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ kind: 'api-key', apiKey }),
@@ -1228,7 +1228,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // webapp's "+" path), attach it over the WS, round-trip a command.
       // A shell window needs no agent auth — just the container and tmux.
       const createRes = await fetch(
-        `${base}/worktree/${worktreeId}/terminals`,
+        `${base}/api/worktree/${worktreeId}/terminals`,
         { method: 'POST' },
       )
       expect(createRes.ok).toBe(true)
@@ -1236,7 +1236,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(shell.name).toBe('shell')
       expect(shell.target).toMatch(/^window:@\d+$/)
       const { ws, binary, opened } = openWs(
-        `ws://127.0.0.1:${server!.lock.port}/pty/attach`
+        `ws://127.0.0.1:${server!.lock.port}/api/pty/attach`
           + `?id=${worktreeId}&target=${encodeURIComponent(shell.target)}&cols=100&rows=30`,
       )
       await opened
@@ -1251,7 +1251,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // C-b d detaches the grouped client, which exits the container-side
       // tmux client, ends the PTY, and closes the socket server-side.
       const native = openWs(
-        `ws://127.0.0.1:${server!.lock.port}/pty/attach`
+        `ws://127.0.0.1:${server!.lock.port}/api/pty/attach`
           + `?id=${worktreeId}&target=native&cols=100&rows=30`,
       )
       const nativeClosed = new Promise<void>((resolve) => native.ws.on('close', () => resolve()))
@@ -1267,7 +1267,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // target=shell — the CLI's `session shell` transport: a raw zsh, no
       // tmux. `exit` ends the shell and closes the socket.
       const rawShell = openWs(
-        `ws://127.0.0.1:${server!.lock.port}/pty/attach`
+        `ws://127.0.0.1:${server!.lock.port}/api/pty/attach`
           + `?id=${worktreeId}&target=shell&cols=100&rows=30`,
       )
       const shellClosed = new Promise<void>((resolve) => rawShell.ws.on('close', () => resolve()))
@@ -1553,7 +1553,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await sub.opened
 
       // Fire the webapp create (don't await — we want to observe the in-flight row).
-      const createDone = fetch(`${base}/worktree/create`, {
+      const createDone = fetch(`${base}/api/worktree/create`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', worktreeId }),
@@ -1579,7 +1579,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(ndjson).not.toContain('"type":"error"')
 
       // The real session exists under the SAME client-supplied id...
-      const list = await (await fetch(`${base}/worktree/list?project=no-ephemeral`)).json() as
+      const list = await (await fetch(`${base}/api/worktree/list?project=no-ephemeral`)).json() as
         { worktrees: Array<{ worktreeId: string }> }
       expect(list.worktrees.some((s) => s.worktreeId === worktreeId)).toBe(true)
 
@@ -2117,7 +2117,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // it — ACP mode's replacement for the in-pod hook and its log, so
       // this is also the proof that replacement works.
       for (let i = 0; i < 120 && agentSessionId === ''; i++) {
-        const res = await fetch(`${base}/worktree/list?project=${SLUG}`)
+        const res = await fetch(`${base}/api/worktree/list?project=${SLUG}`)
         const body = await res.json() as {
           worktrees: Array<{
             worktreeId: string
@@ -2179,7 +2179,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // RECORD rather than a reply, so it proves the path without depending on
       // what the agent decides to answer.
       const { ws, opened } = openWs(
-        `ws://127.0.0.1:${server!.lock.port}/acp/attach`
+        `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
           + `?id=${worktreeId}&session=${encodeURIComponent(agentSessionId)}`,
       )
       await opened
@@ -2209,7 +2209,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // there when something was said still sees it. This is what the
       // in-memory event log used to do, badly.
       const { ws, text, opened } = openWs(
-        `ws://127.0.0.1:${server!.lock.port}/acp/attach`
+        `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
           + `?id=${worktreeId}&session=${encodeURIComponent(agentSessionId)}`,
       )
       await opened
@@ -2227,7 +2227,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 120_000)
 
     it('mounts a pasted image where the pod reads it, at the path the pane pastes', async () => {
-      const res = await fetch(`${base}/worktree/${worktreeId}/attachments`, {
+      const res = await fetch(`${base}/api/worktree/${worktreeId}/attachments`, {
         method: 'POST',
         headers: { 'Content-Type': 'image/png' },
         body: E2E_PNG,
@@ -2241,7 +2241,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
     it('serves the conversation over /acp/attach', async () => {
       const { ws, text, opened } = openWs(
-        `ws://127.0.0.1:${server!.lock.port}/acp/attach`
+        `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
           + `?id=${worktreeId}&session=${encodeURIComponent(agentSessionId)}`,
       )
       await opened

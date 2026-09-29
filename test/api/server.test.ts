@@ -24,7 +24,7 @@ describe('buildApp', () => {
     // /health is the identity-exempt probe; hit it at a name nobody is
     // identified at to prove the exemption still holds.
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    const res = await app.request('/health', { headers: { host: 'srv.tailnet.ts.net' } })
+    const res = await app.request('/api/health', { headers: { host: 'srv.tailnet.ts.net' } })
     expect(res.status).toBe(200)
     // `driver` echoes whichever runtime the project's setup registered as
     // its stand-in for the composition root — k8s under `api-k8s`,
@@ -44,7 +44,7 @@ describe('buildApp', () => {
     // A tailnet name reached without tailscale serve has none.
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     const app = buildApp({ buildId: 'test-build-id' })
-    const res = await app.request('/project/list', { headers: { host: 'srv.tailnet.ts.net' } })
+    const res = await app.request('/api/project/list', { headers: { host: 'srv.tailnet.ts.net' } })
     expect(res.status).toBe(401)
   })
 

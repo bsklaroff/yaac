@@ -77,13 +77,13 @@ function check(name, cond, detail = '') {
 }
 
 async function readDockerfile(base) {
-  const res = await fetch(`${base}/project/${PROJECT}/dockerfile`)
+  const res = await fetch(`${base}/api/project/${PROJECT}/dockerfile`)
   if (!res.ok) throw new Error(`dockerfile GET failed: HTTP ${res.status}`)
   return (await res.json()).content
 }
 
 async function writeDockerfile(base, content) {
-  return fetch(`${base}/project/${PROJECT}/dockerfile`, {
+  return fetch(`${base}/api/project/${PROJECT}/dockerfile`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content }),

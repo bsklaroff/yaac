@@ -14,8 +14,8 @@ import { createApiClient, createRawApiClient, type FetchLike } from '@yaac/share
 
 /**
  * Fetch used by the API client. hono hands us a relative path (the client's
- * base is '/'), so requests resolve against the page origin; we only add the
- * JSON Accept header the server expects.
+ * origin is empty), so requests resolve against the page origin; we only add
+ * the JSON Accept header the server expects.
  */
 const sameOriginFetch: FetchLike = (input, init) => {
   const headers = new Headers(init?.headers)
@@ -23,9 +23,9 @@ const sameOriginFetch: FetchLike = (input, init) => {
   return fetch(input, { ...init, headers })
 }
 
-export const api = createApiClient('/', sameOriginFetch)
+export const api = createApiClient('', sameOriginFetch)
 
 /** The same routes without the throwing/unwrapping wrappers, for the one call
  *  whose error body carries more than a code: a file save refused against a
  *  newer version (see `saveWorktreeFile`). */
-export const rawApi = createRawApiClient('/', sameOriginFetch)
+export const rawApi = createRawApiClient('', sameOriginFetch)

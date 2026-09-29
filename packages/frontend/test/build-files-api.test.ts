@@ -29,7 +29,7 @@ describe('projectBuildFilesApi', () => {
     const entry = { path: 'a.txt', size: 1, binary: false }
     const fetchMock = stub({ files: [entry] })
     expect(await projectBuildFilesApi('demo').list()).toEqual([entry])
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/project/demo/build-files')
+    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/project/demo/build-files')
   })
 
   it('read GETs /file with the path query', async () => {
@@ -37,14 +37,14 @@ describe('projectBuildFilesApi', () => {
     const fetchMock = stub(file)
     expect(await projectBuildFilesApi('demo').read('nvim/init.lua')).toEqual(file)
     expect(fetchMock.mock.calls[0][0] as string)
-      .toBe('/project/demo/build-files/file?path=nvim%2Finit.lua')
+      .toBe('/api/project/demo/build-files/file?path=nvim%2Finit.lua')
   })
 
   it('saveText PUTs { path, content }', async () => {
     const fetchMock = stub({ path: 'a.txt', size: 1, binary: false })
     await projectBuildFilesApi('demo').saveText('a.txt', 'x')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/project/demo/build-files/file')
+    expect(url).toBe('/api/project/demo/build-files/file')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ path: 'a.txt', content: 'x' })
   })
@@ -60,7 +60,7 @@ describe('projectBuildFilesApi', () => {
     const fetchMock = stub({ path: 'b.txt', size: 1, binary: false })
     await projectBuildFilesApi('demo').rename('a.txt', 'b.txt')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/project/demo/build-files/rename')
+    expect(url).toBe('/api/project/demo/build-files/rename')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ from: 'a.txt', to: 'b.txt' })
   })
@@ -69,7 +69,7 @@ describe('projectBuildFilesApi', () => {
     const fetchMock = stub(undefined, 200)
     await projectBuildFilesApi('demo').remove('a.txt')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/project/demo/build-files/file?path=a.txt')
+    expect(url).toBe('/api/project/demo/build-files/file?path=a.txt')
     expect(init.method).toBe('DELETE')
   })
 })
@@ -78,11 +78,11 @@ describe('userBuildFilesApi', () => {
   it('targets the /config/user-build-files routes', async () => {
     const fetchMock = stub({ files: [] })
     expect(await userBuildFilesApi().list()).toEqual([])
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/config/user-build-files')
+    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/config/user-build-files')
 
     stub({ path: 'a', size: 1, binary: false })
     await userBuildFilesApi().saveText('a', 'x')
     expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)
-      .toBe('/config/user-build-files/file')
+      .toBe('/api/config/user-build-files/file')
   })
 })

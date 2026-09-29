@@ -46,7 +46,7 @@ describe('yaac server HTTP surface (real server)', () => {
     // A raw request, because fetch() silently drops a Host override.
     const status = await new Promise<number>((resolve, reject) => {
       const req = http.request({
-        host: '127.0.0.1', port: server.lock.port, path: '/project/list',
+        host: '127.0.0.1', port: server.lock.port, path: '/api/project/list',
         headers: { host: 'srv.tailnet.ts.net' },
       }, (res) => { res.resume(); resolve(res.statusCode ?? 0) })
       req.on('error', reject)

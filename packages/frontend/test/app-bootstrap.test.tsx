@@ -22,6 +22,6 @@ describe('App', () => {
     render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>)
     expect(screen.getByText('Loading…')).toBeTruthy()
     await waitFor(() => expect(screen.getByText(message)).toBeTruthy())
-    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain('/whoami')
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain('/api/whoami')
   })
 })

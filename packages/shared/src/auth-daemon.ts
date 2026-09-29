@@ -128,7 +128,7 @@ export async function spawnAuthDaemonDetached(opts: SpawnAuthDaemonOptions = {})
 /** Is the main server currently seeing a connected auth agent? */
 async function agentConnected(baseUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/auth/agent`, { signal: AbortSignal.timeout(3000) })
+    const res = await fetch(`${baseUrl}/api/auth/agent`, { signal: AbortSignal.timeout(3000) })
     if (!res.ok) return false
     const body = await res.json() as { connected?: boolean }
     return body.connected === true

@@ -285,7 +285,7 @@ forwards for itself. Nothing in production sets it.
 
 ## The lock is a lease
 
-`process.kill(pid, 0)` and a `127.0.0.1:<port>` `/health` probe both
+`process.kill(pid, 0)` and a `127.0.0.1:<port>/api/health` probe both
 answer about *this* machine, and a lock file on a shared data dir now has
 readers on both sides of a container boundary — where every pod's pid
 namespace hands out the same low pids, so "is pid 1 alive?" answers about

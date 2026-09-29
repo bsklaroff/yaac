@@ -89,9 +89,13 @@ export function parseServerLock(raw: string): ServerLock | null {
 }
 
 /**
- * A lock is "live" if (a) the pid still exists and (b) /health answers
- * within 500ms. Used both by the CLI (is there a server to talk to?) and
- * by a second `yaac server` invocation (should I exit idempotently?).
+ * A lock is "live" if (a) the pid still exists and (b) its port answers
+ * HTTP within 500ms. Used both by the CLI (is there a server to talk to?)
+ * and by a second `yaac server` invocation (should I exit idempotently?).
+ * Any answer counts, a 404 included: liveness is not API compatibility. A
+ * server too old to know `/api/health` still holds the database, so it must
+ * be stopped rather than reclaimed; the caller's buildId check is what
+ * says it is outdated.
  *
  * Both signals are local ones, so a lock written on the other side of a
  * container boundary is judged by its lease instead (see
@@ -105,8 +109,8 @@ export async function isLockLive(lock: ServerLock): Promise<boolean> {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 500)
     try {
-      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, { signal: ctl.signal })
-      return res.ok
+      await fetch(`http://127.0.0.1:${lock.port}/api/health`, { signal: ctl.signal })
+      return true
     } finally {
       clearTimeout(timer)
     }
@@ -137,7 +141,7 @@ export async function isLockReady(lock: ServerLock): Promise<boolean> {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 500)
     try {
-      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, { signal: ctl.signal })
+      const res = await fetch(`http://127.0.0.1:${lock.port}/api/health`, { signal: ctl.signal })
       if (!res.ok) return false
       const body = await res.json() as { ready?: unknown }
       return body.ready === true

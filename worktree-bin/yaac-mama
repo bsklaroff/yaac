@@ -156,7 +156,7 @@ run() {
       -H 'Content-Type: application/json' \
       -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
       --data-binary @- -w '\n%{http_code}' \
-      "${YAAC_MAMA_URL}/worktree/mama") || {
+      "${YAAC_MAMA_URL}/api/worktree/mama") || {
       echo "yaac-mama: cannot reach the yaac server at $YAAC_MAMA_URL" >&2
       exit 1
     }

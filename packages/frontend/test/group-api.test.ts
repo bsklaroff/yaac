@@ -33,7 +33,7 @@ describe('createWorktreeGroup', () => {
     const fetchMock = stub({ groupId: 'g-1' }, 200)
     expect(await createWorktreeGroup('proj', 'sid-1', 'release')).toEqual({ groupId: 'g-1' })
     expect(sent(fetchMock)).toEqual([
-      '/worktree/group/create',
+      '/api/worktree/group/create',
       { projectSlug: 'proj', worktreeId: 'sid-1', name: 'release' },
     ])
   })
@@ -44,7 +44,7 @@ describe('renameWorktreeGroup', () => {
     const fetchMock = stub()
     await renameWorktreeGroup('proj', 'g-1', 'shipping')
     expect(sent(fetchMock)).toEqual([
-      '/worktree/group/rename',
+      '/api/worktree/group/rename',
       { projectSlug: 'proj', groupId: 'g-1', name: 'shipping' },
     ])
   })
@@ -55,7 +55,7 @@ describe('setWorktreeGroupPinned', () => {
     const pin = stub()
     await setWorktreeGroupPinned('proj', 'g-1', true)
     expect(sent(pin)).toEqual([
-      '/worktree/group/set-pinned',
+      '/api/worktree/group/set-pinned',
       { projectSlug: 'proj', groupId: 'g-1', pinned: true },
     ])
 
@@ -70,7 +70,7 @@ describe('deleteWorktreeGroup', () => {
     const fetchMock = stub()
     await deleteWorktreeGroup('proj', 'g-1')
     expect(sent(fetchMock)).toEqual([
-      '/worktree/group/delete',
+      '/api/worktree/group/delete',
       { projectSlug: 'proj', groupId: 'g-1' },
     ])
   })
@@ -81,7 +81,7 @@ describe('setWorktreeGroup', () => {
     const into = stub()
     await setWorktreeGroup('proj', 'sid-1', 'g-1')
     expect(sent(into)).toEqual([
-      '/worktree/set-group',
+      '/api/worktree/set-group',
       { projectSlug: 'proj', worktreeId: 'sid-1', groupId: 'g-1' },
     ])
 

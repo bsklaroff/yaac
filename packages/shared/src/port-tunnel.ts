@@ -70,7 +70,7 @@ export interface ForwardEvents {
  * sandbox whose proxy answers for every name.
  */
 export function tunnelUrl(target: TunnelTarget, spec: ForwardSpec): string {
-  const url = new URL('/forward/attach', target.baseUrl)
+  const url = new URL('/api/forward/attach', target.baseUrl)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('id', spec.session)
   url.searchParams.set('port', String(spec.containerPort))

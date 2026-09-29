@@ -118,7 +118,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
           name: 'probe',
           image: await resolveTestBaseImageRef(),
           command: ['sh', '-c',
-            `curl -s -m 4 http://${podIp.trim()}:${String(SERVER_POD_PORT)}/health >/dev/null `
+            `curl -s -m 4 http://${podIp.trim()}:${String(SERVER_POD_PORT)}/api/health >/dev/null `
             + '&& echo NP_SERVER_OPEN || echo NP_SERVER_LOCKED'],
         }],
       },
@@ -155,7 +155,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(afterLock!.host).toBe(after)
 
     // Still reachable at the same published origin the fixture holds.
-    const health = await fetch(`http://127.0.0.1:${server.lock.port}/health`)
+    const health = await fetch(`http://127.0.0.1:${server.lock.port}/api/health`)
     expect(health.status).toBe(200)
     expect(await health.json()).toMatchObject({ ok: true, ready: true })
   })

@@ -146,7 +146,7 @@ describe('ensureAuthDaemon', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe(`${TARGET.baseUrl}/auth/agent`)
+    expect(url).toBe(`${TARGET.baseUrl}/api/auth/agent`)
     expect(init?.headers).toBeUndefined()
     expect(init?.signal).toBeInstanceOf(AbortSignal)
   })
