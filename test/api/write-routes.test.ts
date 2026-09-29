@@ -1063,8 +1063,13 @@ describe('write routes', () => {
 
       // A launch still in flight: a second Run now loses the claim.
       let finish!: () => void
-      mockCreateWorktree.mockImplementation((_slug, opts) => new Promise((resolve) => {
-        finish = () => resolve({ worktreeId: opts.worktreeId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' })
+      // It records the worktree's row, as the real create does — the launched
+      // entry keeps a foreign key to it.
+      mockCreateWorktree.mockImplementation((slug, opts) => new Promise((resolve) => {
+        finish = () => {
+          void recordWorktreeCreated({ projectSlug: slug, worktreeId: opts.worktreeId ?? 'x' }).then(() =>
+            resolve({ worktreeId: opts.worktreeId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }))
+        }
       }))
       const run = await client().worktree.queue.run.$post({ json: { id: queued.id } })
       expect(run.status).toBe(200)

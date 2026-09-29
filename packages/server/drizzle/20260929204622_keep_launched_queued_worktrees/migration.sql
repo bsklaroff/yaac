@@ -1,0 +1,2 @@
+ALTER TABLE "queued_worktrees" ADD COLUMN "launched_worktree_id" text;--> statement-breakpoint
+ALTER TABLE "queued_worktrees" ADD CONSTRAINT "queued_worktrees_bd37KT4zgNlW_fkey" FOREIGN KEY ("launched_worktree_id") REFERENCES "worktrees"("worktree_id") ON DELETE CASCADE;

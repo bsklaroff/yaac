@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { getDb } from './client'
 import { draftWorktrees, queuedWorktrees, worktreeGroups, worktrees } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
@@ -127,8 +127,13 @@ export async function deleteWorktreeGroup(
   await db.transaction(async (tx) => {
     await tx.update(worktrees).set({ groupId: null })
       .where(and(eq(worktrees.projectSlug, projectSlug), eq(worktrees.groupId, groupId)))
+    // A launched entry is a record of what it launched into; left as it was.
     await tx.update(queuedWorktrees).set({ groupId: null })
-      .where(and(eq(queuedWorktrees.projectSlug, projectSlug), eq(queuedWorktrees.groupId, groupId)))
+      .where(and(
+        eq(queuedWorktrees.projectSlug, projectSlug),
+        eq(queuedWorktrees.groupId, groupId),
+        isNull(queuedWorktrees.launchedWorktreeId),
+      ))
     await tx.update(draftWorktrees).set({ groupId: null })
       .where(and(eq(draftWorktrees.projectSlug, projectSlug), eq(draftWorktrees.groupId, groupId)))
     await tx.delete(worktreeGroups).where(key(projectSlug, groupId))
