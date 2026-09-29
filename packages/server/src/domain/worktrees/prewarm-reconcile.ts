@@ -7,10 +7,12 @@
  * The decision is the pure `computePrewarmPlan`; this wrapper just lists pods,
  * reads what they were warmed as, and drives the side effects.
  */
+import crypto from 'node:crypto'
 import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { createWorktree, resolveCreate } from './create'
+import { listProvisioning } from './provisioning'
 import {
   claiming,
   computePrewarmPlan,
@@ -22,23 +24,22 @@ import { env } from '@yaac/shared/env'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /**
- * Fire a prewarm spawn, decrementing the in-flight counter when it settles.
+ * Fire a prewarm spawn under `worktreeId`, dropping it from `inFlight` when
+ * it settles.
  *
  * Warmed as the project's untouched create — what the create form would
  * submit if opened and confirmed, agent mode included, since the webapp is
  * who claims spares — so the usual claim runs the agent on as booted.
  * Resolved at spawn time, so a spare always reflects the latest choice.
  */
-async function spawnSpare(projectSlug: string): Promise<void> {
+async function spawnSpare(projectSlug: string, worktreeId: string): Promise<void> {
   try {
     const setup = await resolveCreate(projectSlug, {}, { modeFromMemory: true })
-    await createWorktree(projectSlug, { ...setup, prewarm: true })
+    await createWorktree(projectSlug, { ...setup, prewarm: true, worktreeId })
   } catch (err) {
     serverLog(`[prewarm] spawn for ${projectSlug} failed: ${String(err)}`)
   } finally {
-    const n = (inFlight.get(projectSlug) ?? 1) - 1
-    if (n <= 0) inFlight.delete(projectSlug)
-    else inFlight.set(projectSlug, n)
+    inFlight.delete(worktreeId)
   }
 }
 
@@ -57,9 +58,12 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
     return
   }
 
-  const { toSpawn, toReap } = computePrewarmPlan(
-    pods, poolSize, inFlight, claiming, await staleModeSpares(pods),
-  )
+  const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, {
+    inFlight,
+    claiming,
+    provisioning: new Set(listProvisioning().filter((e) => e.error === undefined).map((e) => e.projectSlug)),
+    stale: await staleModeSpares(pods),
+  })
 
   for (const target of toReap) {
     // A spare that is reaped unclaimed never became a worktree, so no
@@ -93,9 +97,11 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
   }
 
   for (const spawn of toSpawn) {
-    // Bump in-flight BEFORE awaiting anything so a concurrent tick sees it.
-    inFlight.set(spawn.projectSlug, (inFlight.get(spawn.projectSlug) ?? 0) + 1)
-    void spawnSpare(spawn.projectSlug)
+    // Minted and recorded BEFORE awaiting anything so a concurrent tick sees
+    // it — and knows its pod, once listed, for this spawn's.
+    const worktreeId = crypto.randomUUID()
+    inFlight.set(worktreeId, spawn.projectSlug)
+    void spawnSpare(spawn.projectSlug, worktreeId)
   }
 }
 
