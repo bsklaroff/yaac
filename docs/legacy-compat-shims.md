@@ -46,8 +46,8 @@ worktree's branch concretely, defaulting to the parent's
 `worktrees.baseBranch`. A create now records that column with the row, but a
 row written before it was recorded at creation may have none: an interrupted
 create, or a claimed spare whose upstream could not be read. For such a
-parent, `referenceBranch` answers what a create in the project would fork
-from. (The same function also serves a parent whose create is still in
+parent, the remote's default branch answers what a create in the project
+would fork from. (The same function also serves a parent whose create is still in
 flight and has no row yet; that use is not legacy and stays.)
 
 **What it reads:** `worktrees.baseBranch IS NULL` on the parent row.

@@ -198,23 +198,22 @@ export function computePrewarmPlan(
 
 /**
  * Resolve the branch a claim must re-branch its spare onto, or null when the
- * spare's baked worktree already matches. Pure — the IO (config read,
- * upstream lookup, default-branch probe) lives in the caller.
+ * spare's baked worktree already matches. Pure — the IO (upstream lookup,
+ * default-branch probe) lives in the caller.
  *
  * Both sides fall back to the repo's default branch: a create with no
- * explicit branch wants the *current* config default (the spare may have
- * been warmed before the default changed), and a spare with no recorded
+ * explicit branch wants the *current* default (the spare may have been
+ * warmed before origin's default changed), and a spare with no recorded
  * upstream (the write is guaranteed before tmux exists, so this is
  * effectively unreachable for a claimable spare) is treated as warmed from
  * the default.
  */
 export function resolveRebranchTarget(params: {
   requestedBranch: string | undefined
-  configReferenceBranch: string | undefined
   spareUpstreamBranch: string | null
   defaultBranch: string
 }): string | null {
-  const desired = params.requestedBranch ?? params.configReferenceBranch ?? params.defaultBranch
+  const desired = params.requestedBranch ?? params.defaultBranch
   const spareBranch = params.spareUpstreamBranch ?? params.defaultBranch
   return desired === spareBranch ? null : desired
 }
@@ -376,12 +375,10 @@ export async function tryClaimPrewarmed(
     // claimable spare). No new state: prep's own --set-upstream-to keeps
     // the record current.
     const repo = repoDir(projectSlug)
-    const config = await resolveProjectConfig(projectSlug) ?? {}
     const spareUpstreamBranch = await worktreeUpstreamBranch(repo, `agent/${chosen.workspaceId}`)
     const defaultBranch = await getDefaultBranch(repo)
     const rebranchTo = resolveRebranchTarget({
       requestedBranch: branch,
-      configReferenceBranch: config.referenceBranch,
       spareUpstreamBranch,
       defaultBranch,
     })
@@ -446,11 +443,7 @@ export async function tryClaimPrewarmed(
       if (!(await remoteBranchExists(repo, rebranchTo))) {
         // Pre-mutation user error: propagate instead of burning the spare
         // on a cold create that hits the identical VALIDATION failure.
-        const source = branch ? 'the requested branch' : 'referenceBranch in yaac-config.json'
-        throw new ServerError(
-          'VALIDATION',
-          `branch "${rebranchTo}" not found on origin — check ${source}.`,
-        )
+        throw new ServerError('VALIDATION', `branch "${rebranchTo}" not found on origin.`)
       }
       prep = { branch: rebranchTo, sha: await resolveRemoteRef(repo, rebranchTo) }
       emit(`Switching prewarmed session to branch ${rebranchTo}...`)

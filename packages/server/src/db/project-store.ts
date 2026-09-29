@@ -68,6 +68,7 @@ export interface ProjectRow extends ProjectMeta {
    *  the `projects.id` column. */
   id: string
   lastTool?: AgentTool
+  lastBranch?: string
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
   gitCredentialId: string | null
   /** The remote's host key, for an SSH credential. Null for a token, and
@@ -97,6 +98,7 @@ function toProjectRow(
     remoteUrl: r.remoteUrl,
     addedAt: r.addedAt,
     ...(r.lastTool !== null ? { lastTool: normalizeTool(r.lastTool) } : {}),
+    ...(r.lastBranch !== null ? { lastBranch: r.lastBranch } : {}),
     createDefaults,
     gitCredentialId: r.gitCredentialId,
     knownHostsEntry: r.knownHostsEntry,
@@ -123,10 +125,11 @@ export async function listProjectRows(): Promise<ProjectRow[]> {
 
 /**
  * Remember a create as the project's next defaults: `tool` becomes the agent
- * this project was last created with, and whichever of model, posture and
- * mode the request named become that agent's. A field the request left out
- * is left as it was — a create that took the resolved default for a field
- * must not overwrite what a person picked for it.
+ * this project was last created with, a named `branch` the branch it was
+ * last created from, and whichever of model, posture and mode the request
+ * named become that agent's. A field the request left out is left as it
+ * was — a create that took the resolved default for a field must not
+ * overwrite what a person picked for it.
  *
  * Called by the create route alone, since only there is the choice known to
  * be a person's rather than a restart's, a prewarm's or the spawn policy's.
@@ -135,6 +138,7 @@ export async function recordProjectCreate(
   slug: string,
   tool: AgentTool,
   picked: ToolCreateDefaults,
+  branch?: string,
 ): Promise<void> {
   const db = await getDb()
   const set = {
@@ -143,7 +147,8 @@ export async function recordProjectCreate(
     ...(picked.mode !== undefined ? { mode: picked.mode } : {}),
   }
   await db.transaction(async (tx) => {
-    const updated = await tx.update(projects).set({ lastTool: tool })
+    const updated = await tx.update(projects)
+      .set({ lastTool: tool, ...(branch !== undefined ? { lastBranch: branch } : {}) })
       .where(eq(projects.slug, slug)).returning({ slug: projects.slug })
     // No such project (the create is about to fail for it): nothing to
     // remember, and a row here would be inherited by a later project of the

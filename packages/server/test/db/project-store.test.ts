@@ -191,12 +191,13 @@ describe('recordProjectCreate', () => {
   // is always the one this project was last created with.
   it('writes only the fields it is given', async () => {
     await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
-    await recordProjectCreate('p', 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan' })
+    await recordProjectCreate('p', 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan' }, 'develop')
     await recordProjectCreate('p', 'claude', { mode: 'acp' })
     await recordProjectCreate('p', 'claude', {})
 
     expect(await getProjectRow('p')).toMatchObject({
       lastTool: 'claude',
+      lastBranch: 'develop',
       createDefaults: { claude: { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' } },
     })
 

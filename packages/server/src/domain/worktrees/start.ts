@@ -65,7 +65,7 @@ export async function startWorktree(
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
-    })
+    }, request.branch)
   }
 
   // Registered before the long await so the row shows up instantly and

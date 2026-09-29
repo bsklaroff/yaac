@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectConfigDir, getProjectsDir } from '@yaac/shared/project-paths'
-import { addAllowedHostToProjectConfig, addPortForwardToProjectConfig, readProjectConfigRaw, removeProjectConfig, setProjectReferenceBranch, writeProjectConfig } from '#domain/projects'
+import { addAllowedHostToProjectConfig, addPortForwardToProjectConfig, readProjectConfigRaw, removeProjectConfig, writeProjectConfig } from '#domain/projects'
 import { recordProject } from '#db'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 
@@ -158,38 +158,5 @@ describe('addPortForwardToProjectConfig', () => {
     await seedOverlay('{"portForward": "not-an-array"}')
     await expect(addPortForwardToProjectConfig(slug, 8090))
       .rejects.toThrow('portForward must be an array')
-  })
-})
-
-describe('setProjectReferenceBranch', () => {
-  it('persists set, overwrite, and clear round-trips through the validating writer', async () => {
-    await seedOverlay(JSON.stringify({ hideInitPane: true }))
-
-    const set = await setProjectReferenceBranch(slug, 'develop')
-    expect(set).toEqual({ hideInitPane: true, referenceBranch: 'develop' })
-    expect((await readOverlay()).referenceBranch).toBe('develop')
-
-    const moved = await setProjectReferenceBranch(slug, 'release/2.x')
-    expect(moved.referenceBranch).toBe('release/2.x')
-
-    const cleared = await setProjectReferenceBranch(slug, null)
-    expect(cleared).toEqual({ hideInitPane: true })
-    expect((await readOverlay()).referenceBranch).toBeUndefined()
-  })
-
-  it('rejects malformed branch names via the config parser', async () => {
-    await expect(setProjectReferenceBranch(slug, 'origin/develop'))
-      .rejects.toThrow(/drop the "origin\/" prefix/)
-  })
-
-  it('throws NOT_FOUND for an unknown project', async () => {
-    await expect(setProjectReferenceBranch('nope', 'develop'))
-      .rejects.toMatchObject({ code: 'NOT_FOUND' })
-  })
-
-  it('rejects a malformed stored overlay as VALIDATION', async () => {
-    await seedOverlay('{"referenceBranch": 5}')
-    await expect(setProjectReferenceBranch(slug, 'develop'))
-      .rejects.toThrow(/non-empty string/)
   })
 })

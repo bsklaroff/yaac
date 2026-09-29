@@ -97,7 +97,7 @@ try {
   await open()
   const order = await page.evaluate(() => {
     const at = (label) => document.querySelector(`[aria-label="${label}"]`)
-    const labels = ['Prompt', 'Start', 'Reference branch', 'Agent', 'Model', 'Permissions', 'UI']
+    const labels = ['Prompt', 'Start', 'Base branch', 'Agent', 'Model', 'Permissions', 'UI']
     const els = labels.map(at)
     const create = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Create')
     const all = [...els, create]

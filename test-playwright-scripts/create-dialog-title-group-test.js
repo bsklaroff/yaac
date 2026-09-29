@@ -8,7 +8,7 @@
  *  2. Picking "+ New group" in the Group dropdown swaps it for a focused name
  *     box; Esc in that box goes back to the dropdown and leaves the dialog
  *     open.
- *  3. The reference-branch input sits in a row labeled "Base branch".
+ *  3. The branch typeahead sits in a row labeled "Base branch".
  *
  * Creates nothing: it closes the dialog (discarding) at the end.
  *
@@ -90,7 +90,7 @@ try {
   check(backToList, 'Esc goes back to the dropdown')
   check(await dialog.isVisible(), 'Esc in the name box leaves the dialog open')
 
-  const branchRow = dialog.getByLabel('Reference branch').locator('xpath=ancestor::div[span][1]')
+  const branchRow = dialog.getByLabel('Base branch').locator('xpath=ancestor::div[span][1]')
   check((await branchRow.locator('> span').first().textContent()) === 'Base branch', 'branch input is labeled "Base branch"')
 } finally {
   await browser.close()

@@ -26,7 +26,6 @@ vi.mock('#lib/draftApi', () => ({
 }))
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
-  setProjectReferenceBranch: vi.fn(),
   projectBranchesKey: (slug: string) => ['project-branches', slug],
 }))
 vi.mock('#lib/useProvisionWorktree', () => ({
@@ -43,7 +42,7 @@ import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { createWorktree } from '#lib/createWorktree'
 import { discardDraftWorktree, saveDraftWorktree } from '#lib/draftApi'
 import { queueWorktree, runQueuedWorktree, updateQueuedWorktree } from '#lib/queueApi'
-import { getProjectBranches, setProjectReferenceBranch } from '#lib/projectApi'
+import { getProjectBranches } from '#lib/projectApi'
 import { getAuthList } from '#lib/settingsApi'
 import { useUiStore } from '#lib/store'
 
@@ -80,7 +79,6 @@ const SIGNED_IN: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE, CODEX
 const BRANCHES: ProjectBranches = {
   branches: ['main', 'dev', 'release/2.x'],
   defaultBranch: 'main',
-  referenceBranch: null,
 }
 
 /** A snapshot for project `proj` with the given create memory. */
@@ -144,7 +142,6 @@ beforeEach(() => {
   snapshot.mockReturnValue(project())
   vi.mocked(getAuthList).mockResolvedValue(CLAUDE_ONLY)
   vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
-  vi.mocked(setProjectReferenceBranch).mockImplementation((_slug, branch) => Promise.resolve(branch))
   // Run the op the button hands the provisioning flow, so what it sends is
   // what `createWorktree` is called with.
   provision.mockImplementation(
@@ -195,7 +192,7 @@ async function openReady(): Promise<void> {
 
 const promptInput = (): HTMLTextAreaElement => screen.getByLabelText<HTMLTextAreaElement>('Prompt')
 const submitButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^(Queue|Save)$/ })
-const branchInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Reference branch')
+const branchInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Base branch')
 const modelInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Model')
 const select = (label: string): HTMLSelectElement => screen.getByLabelText<HTMLSelectElement>(label)
 const createButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^Create$|^Sign in to|^Add git/ })
@@ -216,21 +213,22 @@ describe('CreateWorktreeDialog', () => {
     vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
     snapshot.mockReturnValue(project({
       lastTool: 'codex',
+      lastBranch: 'dev',
       createDefaults: { codex: { model: 'gpt-5.5', permissionMode: 'read-only' } },
     }))
     await openReady()
 
     expect(select('Agent').value).toBe('codex')
+    expect(branchInput().value).toBe('dev')
     // Shown by name, sent by id.
     expect(modelInput().value).toBe('GPT-5.5')
     expect(select('Permissions').value).toBe('read-only')
     expect(select('UI').value).toBe('tui')
 
     fireEvent.click(createButton())
-    // Every field is sent, so every field becomes the next default. The
-    // branch is omitted: the picker is on the project's default.
+    // Every field is sent, so every field becomes the next default.
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
-      model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
+      branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
     })
     // The provisioning row names the model from its first frame.
     expect(provision.mock.calls[0][6]).toEqual({ model: 'gpt-5.5', modelName: 'GPT-5.5' })
@@ -344,22 +342,37 @@ describe('CreateWorktreeDialog', () => {
     expect(saveDraftWorktree).not.toHaveBeenCalled()
   })
 
-  it('takes a model id the catalog does not list', async () => {
+  it('takes only models and branches the lists have', async () => {
     await openReady()
-    fireEvent.change(modelInput(), { target: { value: 'claude-next' } })
-    fireEvent.click(screen.getByText('Use "claude-next" as a model id'))
-    expect(modelInput().value).toBe('claude-next')
+    await waitFor(() => expect(branchInput().value).toBe('main'))
 
-    fireEvent.click(createButton())
-    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
-      expect.objectContaining({ model: 'claude-next' }))
+    for (const [input, typed, shown] of [
+      [modelInput, 'claude-next', 'Opus 5.5'],
+      [branchInput, 'no-such-branch', 'main'],
+    ] as const) {
+      fireEvent.change(input(), { target: { value: typed } })
+      expect(screen.getByText('No matches')).toBeTruthy()
+      // Enter has nothing to pick, and the unpicked text cannot create.
+      fireEvent.keyDown(input(), { key: 'Enter' })
+      expect(createButton().disabled).toBe(true)
+      expect(createWorktree).not.toHaveBeenCalled()
+      // Escape abandons it for what was chosen — not the dialog.
+      fireEvent.keyDown(input(), { key: 'Escape' })
+      expect(input().value).toBe(shown)
+      expect(useUiStore.getState().createWorktreeDialog).not.toBeNull()
+    }
   })
 
   it('creates on Enter straight after opening, but not from a button', async () => {
     await openReady()
     await waitFor(() => expect(branchInput().value).toBe('main'))
-    fireEvent.change(branchInput(), { target: { value: 'dev' } })
-    fireEvent.keyDown(screen.getByRole('button', { name: 'Set as default branch' }), { key: 'Enter' })
+    // As in the model field, typed text is a search: Enter picks the top
+    // match rather than creating.
+    fireEvent.change(branchInput(), { target: { value: 'de' } })
+    expect(createButton().disabled).toBe(true)
+    fireEvent.keyDown(branchInput(), { key: 'Enter' })
+    expect(branchInput().value).toBe('dev')
+    fireEvent.keyDown(createButton(), { key: 'Enter' })
     expect(createWorktree).not.toHaveBeenCalled()
 
     fireEvent.keyDown(promptInput(), { key: 'Enter' })
@@ -499,10 +512,41 @@ describe('CreateWorktreeDialog', () => {
     expect(provision.mock.calls[1][5]).toBeUndefined()
   })
 
-  it('prefills the branch input with the project default', async () => {
-    vi.mocked(getProjectBranches).mockResolvedValue({ ...BRANCHES, referenceBranch: 'dev' })
+  // The branch last created from is remembered (see the first test) — but
+  // one origin no longer has falls back to origin's default.
+  it('opens on origin\'s default when origin lost the branch last created from', async () => {
+    vi.mocked(getProjectBranches).mockResolvedValue({ ...BRANCHES, defaultBranch: 'dev' })
+    snapshot.mockReturnValue(project({ lastBranch: 'deleted' }))
     await openMenu()
     await waitFor(() => expect(branchInput().value).toBe('dev'))
+  })
+
+  // Whether origin still has it is only known once the list lands.
+  it('sends a remembered branch only once the list confirms it', async () => {
+    let land: (b: ProjectBranches) => void = () => {}
+    vi.mocked(getProjectBranches).mockReturnValue(new Promise((r) => { land = r }))
+    snapshot.mockReturnValue(project({ lastBranch: 'dev' }))
+    await openMenu()
+    await waitFor(() => expect(createButton().title).toBe('Loading branches…'))
+    expect(branchInput().value).toBe('dev')
+    expect(createButton().disabled).toBe(true)
+
+    act(() => land(BRANCHES))
+    await waitFor(() => expect(createButton().disabled).toBe(false))
+    fireEvent.click(createButton())
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
+      expect.objectContaining({ branch: 'dev' }))
+  })
+
+  it('leaves the branch to the server when the list fails to load', async () => {
+    vi.mocked(getProjectBranches).mockRejectedValue(new Error('boom'))
+    snapshot.mockReturnValue(project({ lastBranch: 'dev' }))
+    await openMenu()
+    await waitFor(() => expect(createButton().disabled).toBe(false))
+    expect(branchInput().value).toBe('')
+
+    fireEvent.click(createButton())
+    expect(vi.mocked(createWorktree).mock.calls[0][4]).not.toHaveProperty('branch')
   })
 
   it('typeahead filters the branch list and a picked branch rides the create', async () => {
@@ -520,24 +564,6 @@ describe('CreateWorktreeDialog', () => {
     fireEvent.click(createButton())
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
       expect.objectContaining({ branch: 'release/2.x' }))
-  })
-
-  it('pins the picked branch as the project default', async () => {
-    await openMenu()
-    await waitFor(() => expect(branchInput().value).toBe('main'))
-
-    // Pinning the current default is a no-op — the button is disabled.
-    const pin = screen.getByRole('button', { name: 'Set as default branch' })
-    expect((pin as HTMLButtonElement).disabled).toBe(true)
-
-    fireEvent.change(branchInput(), { target: { value: 'dev' } })
-    expect((pin as HTMLButtonElement).disabled).toBe(false)
-    fireEvent.click(pin)
-
-    expect(vi.mocked(setProjectReferenceBranch)).toHaveBeenCalledWith('proj', 'dev')
-    // The pinned branch becomes the default resolution — pin disables again.
-    await waitFor(() => expect((pin as HTMLButtonElement).disabled).toBe(true))
-    expect(branchInput().value).toBe('dev')
   })
 
   describe('queueing', () => {

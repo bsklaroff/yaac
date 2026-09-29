@@ -141,8 +141,7 @@ export const worktreeApp = new Hono()
       // provisions anything.
       mode: z.enum(['tui', 'acp']).optional(),
       // Reference branch for the fresh worktree (no `origin/` prefix).
-      // Omitted → the project's referenceBranch config default, else the
-      // remote default branch.
+      // Omitted → the remote default branch.
       branch: z.string().min(1).optional(),
       // Initial prompt typed into the agent pane once it's up.
       prompt: z.string().min(1).max(10000).optional(),

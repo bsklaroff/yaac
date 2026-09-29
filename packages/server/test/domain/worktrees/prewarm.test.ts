@@ -209,9 +209,7 @@ describe('tryClaimPrewarmed', () => {
   // on a claim that changes nothing else about the spare.
   it('re-registers the spare from the project as it is at claim time', async () => {
     mockList.mockResolvedValue([spare()])
-    // Edited while the claim runs (a persisted allow-host click during its
-    // fetch): the registration takes the config as it is when written.
-    mockResolveConfig.mockResolvedValueOnce({}).mockResolvedValue({ setAllowedUrls: ['*'] })
+    mockResolveConfig.mockResolvedValue({ setAllowedUrls: ['*'] })
     vi.mocked(resolveProjectEnv).mockResolvedValue({
       plain: {},
       secrets: { API_KEY: { value: 'v', rule: { hosts: ['api.example.com'] } } },
@@ -563,15 +561,6 @@ describe('tryClaimPrewarmed', () => {
     warn.mockRestore()
   })
 
-  it('re-branches a stale spare on a bare create after the config default changed', async () => {
-    // Spare warmed from main; the project default is now develop.
-    mockList.mockResolvedValue([spare()])
-    mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
-    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
-    expect(result?.worktreeId).toBe('spare1')
-    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'develop', 'cafebabe1234', setup('claude'))
-  })
-
   it('hands the agent respawn to the retool when tool and branch both differ', async () => {
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
     const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
@@ -646,20 +635,17 @@ describe('tryClaimPrewarmed', () => {
     expect(mockCleanup).toHaveBeenCalledTimes(1)
   })
 
-  it('lets an explicit branch request win over the project default', async () => {
-    // Spare warmed from the project default; the caller asked for another
-    // branch, so the request — not the config — is the re-branch target.
+  it('re-branches onto an explicitly requested branch', async () => {
+    // Spare warmed from develop; the caller asked for another branch.
     mockList.mockResolvedValue([spare()])
-    mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
     mockWorktreeUpstream.mockResolvedValue('develop')
     const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
     expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', setup('claude'))
   })
 
-  it('re-branches back to the default branch when the config default is cleared', async () => {
-    // Spare warmed from develop; the project no longer pins a reference
-    // branch, so a bare create wants the repo default again.
+  it('re-branches a spare warmed off the default branch back to it on a bare create', async () => {
+    // Spare warmed from develop; a bare create wants the repo default.
     mockList.mockResolvedValue([spare()])
     mockWorktreeUpstream.mockResolvedValue('develop')
     const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)

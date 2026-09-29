@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setDataDir, projectDir, repoDir } from '@yaac/shared/project-paths'
-import { getProjectBranches, setProjectReferenceBranch } from '#domain/projects'
+import { getProjectBranches } from '#domain/projects'
 import { cloneRepo } from '#domain/git'
 import { recordProject } from '#db'
 import { git } from '@yaac/test-utils/git'
@@ -41,19 +41,12 @@ describe('getProjectBranches', () => {
     await fs.rm(tmp, { recursive: true, force: true })
   })
 
-  it('returns branches, the default branch, and a null referenceBranch when unset', async () => {
+  it('returns branches and the default branch', async () => {
     const result = await getProjectBranches(slug)
     expect(result.branches).toContain('main')
     expect(result.branches).toContain('develop')
     expect(result.branches).not.toContain('HEAD')
     expect(result.defaultBranch).toBe('main')
-    expect(result.referenceBranch).toBeNull()
-  })
-
-  it('surfaces the configured referenceBranch', async () => {
-    await setProjectReferenceBranch(slug, 'develop')
-    const result = await getProjectBranches(slug)
-    expect(result.referenceBranch).toBe('develop')
   })
 
   it('refresh picks up a branch pushed after the clone', async () => {

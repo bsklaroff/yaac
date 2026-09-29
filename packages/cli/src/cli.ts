@@ -390,7 +390,7 @@ worktree
   .description('Create a new worktree for a project')
   .argument('<project>', 'Project slug')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi). Defaults to the agent this project was last created with, else claude')
-  .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
+  .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the remote default branch)')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the worktree is up')
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi. Defaults to the model this project last used for the tool, else a per-tool default')
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI').choices([...AGENT_MODES]))
