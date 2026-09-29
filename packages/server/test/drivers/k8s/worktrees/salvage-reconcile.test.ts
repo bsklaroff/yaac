@@ -29,12 +29,15 @@ import {
   _clearTerminatingForTests,
 } from '#runtime/status/terminating'
 
+const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+
 function pod(worktreeId: string, over: Partial<PodInfo> = {}): PodInfo {
   return {
     jobName: `yaac-p-${worktreeId}`,
     podName: `yaac-p-${worktreeId}-x1`,
     worktreeId,
     projectSlug: 'p',
+    projectId: PROJECT_ID,
     tool: 'claude',
     phase: 'Running',
     running: true,
@@ -64,7 +67,7 @@ describe('reconcileImageSalvage', () => {
     await reconcileImageSalvage(isWorktreeTerminating, 1_000)
     expect(mockSalvage).toHaveBeenCalledTimes(1)
     expect(mockSalvage).toHaveBeenCalledWith({
-      jobName: 'yaac-p-s1', projectSlug: 'p', worktreeId: 's1',
+      jobName: 'yaac-p-s1', project: { slug: 'p', id: PROJECT_ID }, worktreeId: 's1',
     })
 
     // Within the interval: no re-run.
@@ -83,6 +86,8 @@ describe('reconcileImageSalvage', () => {
       pod('s-term', { terminating: true }),
       pod('s-marked'),
       pod('s-stopped', { running: false }),
+      // From before project ids: there is no id-named registry to push to.
+      pod('s-legacy', { projectId: undefined }),
     ])
     await reconcileImageSalvage(isWorktreeTerminating, 1_000)
     expect(mockSalvage).not.toHaveBeenCalled()

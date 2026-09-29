@@ -151,9 +151,16 @@ export function nodeLocalPath(...rest: string[]): string {
   return path.join(nodeLocalRoot(), ...rest)
 }
 
-/** A NODE-LOCAL per-project path: `<nodeLocalRoot>/projects/<slug>/<…rest>`. */
-export function nodeLocalProjectPath(slug: string, ...rest: string[]): string {
-  return path.join(getNodeLocalProjectsDir(), slug, ...rest)
+/**
+ * A NODE-LOCAL per-project path: `<nodeLocalRoot>/projects/<id>/<…rest>`.
+ * Keyed by the project's immutable id, not its slug, unlike the global
+ * tree: nothing removes a node's copy reliably (the node may be gone or
+ * unreachable at removal), so a slug-keyed tree would be inherited by the
+ * next project of that name. The node-local sweep reaps any id no live
+ * project holds.
+ */
+export function nodeLocalProjectPath(projectId: string, ...rest: string[]): string {
+  return path.join(nodeLocalRoot(), 'projects', projectId, ...rest)
 }
 
 /** A SERVER-LOCAL path: `<serverLocalRoot>/<…rest>`. */
@@ -210,16 +217,6 @@ export async function ensureClientLocalRoot(): Promise<void> {
  */
 export function getProjectsDir(): string {
   return path.join(globalRoot(), 'projects')
-}
-
-/**
- * NODE-LOCAL twin of {@link getProjectsDir}: the per-project caches and
- * working copies. A sweep that must see every project enumerates BOTH
- * (see `projectsRoots`), because a project whose global half is gone can
- * still have a node-local tree.
- */
-export function getNodeLocalProjectsDir(): string {
-  return path.join(nodeLocalRoot(), 'projects')
 }
 
 /**

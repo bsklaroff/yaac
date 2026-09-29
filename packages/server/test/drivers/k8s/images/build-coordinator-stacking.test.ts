@@ -13,6 +13,9 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { HASH_RE, setupStackingHarness } from '#test/drivers/k8s/image-engine/stacking-harness'
+import type { ProjectRef } from '#drivers/contract'
+
+const PROJECT: ProjectRef = { slug: 'myproject', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
 
 /** The layers `yaac cluster install` produces, by name. */
 const PREBUILT = new Set(['base', 'tools', 'nestable'])
@@ -22,13 +25,12 @@ describe('ensureImage', () => {
 
   /** Put every yaac-shipped layer of this project's chain in the registry. */
   async function stagePrebuilt(
-    resolveImageChain: (slug: string, prefix: string, nested?: boolean) => Promise<{
+    resolveImageChain: (project: ProjectRef, prefix: string, nested?: boolean) => Promise<{
       layers: Array<{ name: string; tag: string }>
     }>,
-    slug: string,
     nested = false,
   ): Promise<void> {
-    const { layers } = await resolveImageChain(slug, 'yaac', nested)
+    const { layers } = await resolveImageChain(PROJECT, 'yaac', nested)
     h.stageRegistry(layers.filter((l) => PREBUILT.has(l.name)).map((l) => l.tag))
   }
 
@@ -41,25 +43,25 @@ describe('ensureImage', () => {
     )
 
     const { ensureImage, resolveImageChain } = await h.load()
-    await stagePrebuilt(resolveImageChain, 'myproject')
-    const result = await ensureImage('myproject')
+    await stagePrebuilt(resolveImageChain)
+    const result = await ensureImage(PROJECT)
 
     // base and tools cost a registry HEAD each; only the user layer — which
     // runs a Dockerfile the user wrote — is realized, and in a builder pod.
     expect(h.operations).toEqual([
       expect.stringMatching(
-        new RegExp(`^build yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
+        new RegExp(`^build yaac-user-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
       ),
     ])
-    expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-user-${PROJECT.id}:${HASH_RE}$`))
   })
 
   it('needs nothing built at all when the chain is yaac-shipped end to end', async () => {
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
 
     const { ensureImage, resolveImageChain } = await h.load()
-    await stagePrebuilt(resolveImageChain, 'myproject')
-    const result = await ensureImage('myproject')
+    await stagePrebuilt(resolveImageChain)
+    const result = await ensureImage(PROJECT)
 
     expect(h.operations).toEqual([])
     expect(result).toMatch(new RegExp(`^yaac-tools:${HASH_RE}$`))
@@ -73,7 +75,7 @@ describe('ensureImage', () => {
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
 
     const { ensureImage } = await h.load()
-    await expect(ensureImage('myproject')).rejects.toThrow(/yaac cluster install/)
+    await expect(ensureImage(PROJECT)).rejects.toThrow(/yaac cluster install/)
     expect(h.operations).toEqual([])
   })
 
@@ -87,14 +89,14 @@ describe('ensureImage', () => {
     )
 
     const { ensureImage, resolveImageChain } = await h.load()
-    await stagePrebuilt(resolveImageChain, 'myproject', true)
-    await ensureImage('myproject', undefined, false, true)
+    await stagePrebuilt(resolveImageChain, true)
+    await ensureImage(PROJECT, undefined, false, true)
 
     // The project layer's parent is the nestable tag, not tools — that is
     // what carries the in-pod engine into the image the session runs.
     expect(h.operations).toEqual([
       expect.stringMatching(
-        new RegExp(`^build yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
+        new RegExp(`^build yaac-proj-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
       ),
     ])
   })
@@ -112,12 +114,12 @@ describe('ensureImage', () => {
     )
 
     const { ensureImage } = await h.load()
-    const result = await ensureImage('myproject')
+    const result = await ensureImage(PROJECT)
 
     expect(h.operations).toEqual([
-      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE}$`)),
+      expect.stringMatching(new RegExp(`^build yaac-proj-${PROJECT.id}:${HASH_RE}$`)),
     ])
-    expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-proj-${PROJECT.id}:${HASH_RE}$`))
   })
 
   it('rejects Dockerfile.user without ARG BASE_IMAGE', async () => {
@@ -129,7 +131,7 @@ describe('ensureImage', () => {
     )
 
     const { ensureImage } = await h.load()
-    await expect(ensureImage('myproject'))
+    await expect(ensureImage(PROJECT))
       .rejects.toThrow('must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}`')
   })
 })

@@ -1,11 +1,16 @@
-import { k8sNamespace, kubectlWithRetry,
+import {
   PRE_STOP_GRACE_SECONDS,
+  findWorktreePod,
+  getActiveClusterCache,
+  k8sNamespace,
+  kubectlWithRetry,
+  listWorktreePods,
 } from '#drivers/k8s/substrate'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorktreeForwarders } from '#drivers/k8s/forwarders'
 import { removeNodeLocalProject, salvageWorktreeImages } from '#drivers/k8s/images'
 import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluster'
-import type { TeardownTarget } from '#drivers/contract'
+import type { ProjectRef, TeardownTarget } from '#drivers/contract'
 
 /**
  * How the k8s runtime destroys what it was holding for a workspace — the
@@ -48,14 +53,21 @@ export async function deregisterWorkspace(workspaceId: string): Promise<void> {
  * Best-effort and self-gating — the in-pod survey does nothing in a pod
  * that carries no engine, so a non-nested or already-dead workspace costs
  * one probe — and never throws: losing a salvage costs a rebuild, and must
- * not strand a teardown. Unlike the mid-life reconciler this is unfiltered:
- * a teardown holds a name, not a pod, so the gate that decides is the
- * in-pod one.
+ * not strand a teardown. Unlike the mid-life reconciler it does not filter
+ * on the nested label: the gate that decides is the in-pod one.
+ *
+ * The registry is named by the project id the pod carries, so the pod is
+ * looked up for it; a pod with none predates ids, and there is no registry
+ * of its project to salvage into.
  */
 export async function salvageWorkspaceImages(target: TeardownTarget): Promise<void> {
+  const pods = getActiveClusterCache()?.worktreePods()
+    ?? await listWorktreePods().catch(() => [])
+  const projectId = findWorktreePod(pods, target.workspaceId, { spares: true })?.projectId
+  if (!projectId) return
   await salvageWorktreeImages({
     jobName: target.unitName,
-    projectSlug: target.projectSlug,
+    project: { slug: target.projectSlug, id: projectId },
     worktreeId: target.workspaceId,
   }).then(() => undefined, () => undefined)
 }
@@ -151,21 +163,21 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
  * be reached must not stop the node stores from going, and a stale store
  * is a cache nothing will ever mount again.
  */
-export async function destroyProjectSubstrate(projectSlug: string): Promise<void> {
+export async function destroyProjectSubstrate(project: ProjectRef): Promise<void> {
   try {
-    await removeProjectRegistry(projectSlug)
+    await removeProjectRegistry(project.id)
   } catch {
-    // Unreachable cluster — the server-start orphan GC collects it.
+    // Unreachable cluster — the orphan registry GC collects it by id.
   }
   try {
-    await removeProjectSecrets(projectSlug)
+    await removeProjectSecrets(project.slug)
   } catch (err) {
     // The object lingers, naming a project nothing registers under.
-    console.warn(`Failed to remove the egress secrets of ${projectSlug}: ${(err as Error).message}`)
+    console.warn(`Failed to remove the egress secrets of ${project.slug}: ${(err as Error).message}`)
   }
   try {
-    await removeNodeLocalProject(projectSlug)
+    await removeNodeLocalProject(project.id)
   } catch {
-    // Node-side residue is a cache nothing will mount.
+    // The node-local sweep reaps an id no live project holds.
   }
 }

@@ -1,5 +1,6 @@
 import { ensureImage, pushImageShared } from './build-coordinator'
 import { testEnv } from '@yaac/shared/env'
+import type { ProjectRef } from '#drivers/contract'
 
 /**
  * The image half of a workspace launch: build (or reuse) the project's
@@ -19,7 +20,7 @@ import { testEnv } from '@yaac/shared/env'
  * has, and the layer messages come from deep inside this half.
  */
 export async function prepareWorkspaceImage(opts: {
-  projectSlug: string
+  project: ProjectRef
   nestedContainers: boolean
   onProgress?: (message: string) => void
 }): Promise<string> {
@@ -27,7 +28,7 @@ export async function prepareWorkspaceImage(opts: {
 
   emit('Ensuring container images are built...')
   const imageName = await ensureImage(
-    opts.projectSlug,
+    opts.project,
     testEnv.imagePrefix,
     testEnv.requirePrebuiltImages,
     opts.nestedContainers,
@@ -43,5 +44,5 @@ export async function prepareWorkspaceImage(opts: {
   // or built by a pod that pushed it — so this is a HEAD, and the push
   // behind it is the backstop for a registry that lost the tag mid-run.
   emit('Publishing the session image to the local registry...')
-  return pushImageShared(imageName, { projectSlug: opts.projectSlug, reason: 'session' })
+  return pushImageShared(imageName, { project: opts.project, reason: 'session' })
 }

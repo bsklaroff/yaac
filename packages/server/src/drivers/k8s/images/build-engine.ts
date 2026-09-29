@@ -27,6 +27,7 @@
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import type { ImageLayerName } from '@yaac/shared/types'
 import { missingPrebuiltImage, type ImageLayer } from '#drivers/k8s/image-engine'
+import type { ProjectRef } from '#drivers/contract'
 
 export type BuildEngineKind = 'prebuilt' | 'cluster-pod'
 
@@ -46,8 +47,8 @@ export function engineKindForLayer(name: ImageLayerName): BuildEngineKind {
 }
 
 export interface EngineBuildContext {
-  /** Project whose chain is being built (keys the step-cache repo). */
-  projectSlug: string
+  /** Project whose chain is being built (its id keys the step-cache repo). */
+  project: ProjectRef
   onLog?: (line: string) => void
   /**
    * Shared builder pod for adjacent untrusted layers of one request.

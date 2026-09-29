@@ -290,7 +290,7 @@ the JSON stays on disk untouched.
 
 SQLite is unusable on a network filesystem, so under `k8s` a pod runs opencode
 against a NODE-LOCAL working copy of its data dir
-(`node-local/projects/<slug>/opencode-data/<id>`, mounted at
+(`node-local/projects/<project id>/opencode-data/<id>`, mounted at
 `~/.local/share/opencode`) and the GLOBAL tier holds the one durable copy: the
 checkpoint at `global/projects/<slug>/opencode-data/<id>`
 (`opencodeCheckpointDir`, mounted at `~/.yaac/opencode-checkpoint`).
@@ -414,6 +414,21 @@ the result to the row, so a settled worktree costs one file read a tick. Where
 the transcripts live per tool is `runtime/agents/transcripts.ts`. A worktree
 that died before capture parses its first conversation's transcript on demand
 from the stopped listing, and the result is persisted.
+
+## The node-local tree
+
+The NODE-LOCAL tier (`node-local/projects/<project id>/…` and
+`node-local/shared-images/<project id>/…`) is keyed by the project's
+immutable id — the `projects.id` column, minted at insert and never reused —
+not by its slug as the global tree is. A node's copy cannot be removed
+reliably: the node may be gone or unreachable when the project is removed.
+Keyed by slug, a project re-added under the same name would mount the old
+one's caches and image store. Keyed by id, it starts from nothing, and the
+node-local sweep (`reapNodeLocal`) collects by the same key: the caller
+hands it the live project ids and live worktree ids, and it removes any
+project tree no live id holds — except one a live pod still mounts — and any
+opencode working copy whose worktree is gone. A project list that cannot be
+read stands the sweep down rather than reading as empty.
 
 ## Package installs
 

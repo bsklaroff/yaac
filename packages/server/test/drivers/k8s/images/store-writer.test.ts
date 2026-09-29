@@ -69,7 +69,8 @@ const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRetry = vi.mocked(kubectlWithRetry)
 
-const SLUG = 'demo'
+const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+const PROJECT = { slug: 'demo', id: ID }
 const NODE = 'yaac-control-plane'
 const CLUSTER_IP = '10.96.0.50'
 
@@ -336,7 +337,7 @@ async function runStoreWriterScript(
 describe('ensureNodeImageStore', () => {
   it('runs an unprivileged node-pinned builder that writes the store on the host network', async () => {
     stageLiveCluster()
-    await expect(ensureNodeImageStore(SLUG)).resolves.toBe(true)
+    await expect(ensureNodeImageStore(PROJECT)).resolves.toBe(true)
 
     const [pod] = appliedPods()
     expect(pod.kind).toBe('Pod')
@@ -363,9 +364,9 @@ describe('ensureNodeImageStore', () => {
     // the server-side spelling.
     expect(pod.spec.volumes).toEqual([{
       name: 'store',
-      hostPath: { path: nodeLocalHostPath(imageStoreDir(SLUG)), type: 'DirectoryOrCreate' },
+      hostPath: { path: nodeLocalHostPath(imageStoreDir(ID)), type: 'DirectoryOrCreate' },
     }])
-    expect(pod.spec.volumes[0].hostPath?.path).toBe(`${nodeLocalNodePath()}/shared-images/${SLUG}`)
+    expect(pod.spec.volumes[0].hostPath?.path).toBe(`${nodeLocalNodePath()}/shared-images/${ID}`)
     expect(ctr.volumeMounts).toEqual([{ name: 'store', mountPath: STORE_POD_PATH }])
     expect(podCommand().argv[0]).toBe(STORE_POD_PATH)
     await expect(execFileAsync('sh', ['-n', '-c', podCommand().script])).resolves.toBeTruthy()
@@ -377,7 +378,7 @@ describe('ensureNodeImageStore', () => {
     mockGetJson.mockImplementation((args: string[]) => args[1] === 'nodes'
       ? Promise.resolve({ items: [{ metadata: { name: 'n1' } }, { metadata: { name: 'n2' } }] })
       : base(args))
-    await expect(ensureNodeImageStore(SLUG)).resolves.toBe(true)
+    await expect(ensureNodeImageStore(PROJECT)).resolves.toBe(true)
 
     const pods = appliedPods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1', 'n2'])
@@ -388,7 +389,7 @@ describe('ensureNodeImageStore', () => {
 
   it('pulls the newest generations of yaac-built repos and nothing a dead one supports', async () => {
     stageLiveCluster()
-    await ensureNodeImageStore(SLUG)
+    await ensureNodeImageStore(PROJECT)
     const storeRoot = await fs.mkdtemp(path.join(tmpDataDir, 'store-'))
     const { pulled, published } = await runStoreWriterScript(podCommand().script, storeRoot, [])
 
@@ -441,7 +442,7 @@ describe('ensureNodeImageStore', () => {
 
   it('whites out a replaced directory ALL THE WAY DOWN, not just its first level', async () => {
     stageLiveCluster()
-    await ensureNodeImageStore(SLUG)
+    await ensureNodeImageStore(PROJECT)
     const storeRoot = await fs.mkdtemp(path.join(tmpDataDir, 'store-'))
     const { whiteouts, published } = await runStoreWriterScript(
       podCommand().script, storeRoot, [], { overlay: true })
@@ -459,7 +460,7 @@ describe('ensureNodeImageStore', () => {
 
   it('publishes nothing when the lower chain it must read is broken', async () => {
     stageLiveCluster()
-    await ensureNodeImageStore(SLUG)
+    await ensureNodeImageStore(PROJECT)
     const storeRoot = await fs.mkdtemp(path.join(tmpDataDir, 'store-'))
     // A `lower` file naming a link that does not resolve. Fail-open here
     // would shrink the whiteout set and then hardlink that hole into every
@@ -486,7 +487,7 @@ describe('ensureNodeImageStore', () => {
     }
 
     stageLiveCluster()
-    await ensureNodeImageStore(SLUG)
+    await ensureNodeImageStore(PROJECT)
     // Deliberately an EMPTY keep list: no pod had been created when the
     // server computed it. The newest complete generation must survive
     // anyway — a create reads it and fires this build, so a pod can appear
@@ -505,7 +506,7 @@ describe('ensureNodeImageStore', () => {
     // fails before the marker, leaving the last good generation mounted.
     _resetImageStoreForTests()
     mockApply.mockClear()
-    await ensureNodeImageStore(SLUG)
+    await ensureNodeImageStore(PROJECT)
     const storeRoot2 = await fs.mkdtemp(path.join(tmpDataDir, 'store2-'))
     await expect(runStoreWriterScript(podCommand().script, storeRoot2, [], {
       layers: [{ id: 'l1', 'diff-size': 4096 }, { id: 'l2' }],
@@ -519,18 +520,18 @@ describe('ensureNodeImageStore', () => {
   it('throttles repeat builds, and lets a salvage that pushed jump the queue', async () => {
     stageLiveCluster()
     const t0 = 1_000_000
-    await expect(ensureNodeImageStore(SLUG, { nowMs: t0 })).resolves.toBe(true)
-    await expect(ensureNodeImageStore(SLUG, { nowMs: t0 + 1000 })).resolves.toBe(false)
+    await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 })).resolves.toBe(true)
+    await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 + 1000 })).resolves.toBe(false)
     // A push into the registry is the one moment there is new content, so
     // it is worth a build regardless of when the last one ran.
-    await expect(ensureNodeImageStore(SLUG, { nowMs: t0 + 1000, force: true })).resolves.toBe(true)
+    await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 + 1000, force: true })).resolves.toBe(true)
     // The forced build reset the clock like any other, so the next
     // unforced one waits a full interval from IT.
     await expect(
-      ensureNodeImageStore(SLUG, { nowMs: t0 + 1000 + STORE_REFRESH_INTERVAL_MS - 1 }),
+      ensureNodeImageStore(PROJECT, { nowMs: t0 + 1000 + STORE_REFRESH_INTERVAL_MS - 1 }),
     ).resolves.toBe(false)
     await expect(
-      ensureNodeImageStore(SLUG, { nowMs: t0 + 1000 + STORE_REFRESH_INTERVAL_MS }),
+      ensureNodeImageStore(PROJECT, { nowMs: t0 + 1000 + STORE_REFRESH_INTERVAL_MS }),
     ).resolves.toBe(true)
   })
 
@@ -538,11 +539,11 @@ describe('ensureNodeImageStore', () => {
   // mid-poll cannot leave a pod behind that a later namesake never collects.
   it('sweeps strays from a crashed run before building', async () => {
     stageLiveCluster()
-    await ensureNodeImageStore(SLUG)
+    await ensureNodeImageStore(PROJECT)
     const deletes = mockRetry.mock.calls.map((c) => c[0].join(' '))
     expect(deletes.some((d) =>
       d.includes('delete pod') && d.includes('app=yaac-image-store')
-      && d.includes(`yaac.project=${SLUG}`),
+      && d.includes(`yaac.project-id=${ID}`),
     )).toBe(true)
   })
 
@@ -551,7 +552,7 @@ describe('ensureNodeImageStore', () => {
       if (args[1] === 'service') return Promise.resolve(null)
       return Promise.resolve({ items: [] })
     })
-    await expect(ensureNodeImageStore(SLUG)).resolves.toBe(false)
+    await expect(ensureNodeImageStore(PROJECT)).resolves.toBe(false)
     expect(appliedPods()).toHaveLength(0)
   })
 
@@ -562,27 +563,27 @@ describe('ensureNodeImageStore', () => {
     // for the whole interval.
     mockGetJson.mockImplementation(() => Promise.resolve(null))
     const t0 = 1_000_000
-    await expect(ensureNodeImageStore(SLUG, { nowMs: t0 })).resolves.toBe(false)
+    await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 })).resolves.toBe(false)
     stageLiveCluster()
     await expect(
-      ensureNodeImageStore(SLUG, { nowMs: t0 + STORE_REFRESH_RETRY_MS - 1 }),
+      ensureNodeImageStore(PROJECT, { nowMs: t0 + STORE_REFRESH_RETRY_MS - 1 }),
     ).resolves.toBe(false)
     await expect(
-      ensureNodeImageStore(SLUG, { nowMs: t0 + STORE_REFRESH_RETRY_MS }),
+      ensureNodeImageStore(PROJECT, { nowMs: t0 + STORE_REFRESH_RETRY_MS }),
     ).resolves.toBe(true)
   })
 })
 
 describe('nodeImageStoreMount', () => {
   it('pins the newest COMPLETE generation, read-only', async () => {
-    const parent = imageStoreDir(SLUG)
+    const parent = imageStoreDir(ID)
     const [older, newer, partial] = [generationName(1), generationName(2), generationName(3)]
     for (const g of [older, newer, partial]) await fs.mkdir(path.join(parent, g), { recursive: true })
     for (const g of [older, newer]) await fs.writeFile(path.join(parent, g, DONE_MARKER), 'x')
 
     // `partial` sorts newest but has no marker: a build that crashed
     // mid-pull must never become a worktree's store.
-    await expect(nodeImageStoreMount(SLUG)).resolves.toEqual({
+    await expect(nodeImageStoreMount(ID)).resolves.toEqual({
       source: { kind: 'hostPath', path: path.join(parent, newer), type: 'DirectoryOrCreate' },
       mountPath: SHARED_IMAGES_MOUNT,
       readOnly: true,
@@ -590,28 +591,29 @@ describe('nodeImageStoreMount', () => {
   })
 
   it('mounts nothing on a cold node', async () => {
-    await expect(nodeImageStoreMount(SLUG)).resolves.toBeUndefined()
-    await fs.mkdir(path.join(imageStoreDir(SLUG), generationName(1)), { recursive: true })
-    await expect(nodeImageStoreMount(SLUG)).resolves.toBeUndefined()
+    await expect(nodeImageStoreMount(ID)).resolves.toBeUndefined()
+    await fs.mkdir(path.join(imageStoreDir(ID), generationName(1)), { recursive: true })
+    await expect(nodeImageStoreMount(ID)).resolves.toBeUndefined()
   })
 })
 
 describe('reconcileNodeImageStores', () => {
   it('fires one detached build per project', async () => {
     stageLiveCluster()
-    reconcileNodeImageStores([SLUG, 'other'])
+    const other = { slug: 'other', id: '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9' }
+    reconcileNodeImageStores([PROJECT, other])
     // Detached: the sweep returns before any pod has been applied.
     expect(appliedPods()).toHaveLength(0)
     await vi.waitFor(() => expect(appliedPods()).toHaveLength(2))
-    const slugs = appliedPods().map((p) => p.metadata.labels['yaac.project'])
-    expect(new Set(slugs)).toEqual(new Set([SLUG, 'other']))
+    const ids = appliedPods().map((p) => p.metadata.labels['yaac.project-id'])
+    expect(new Set(ids)).toEqual(new Set([ID, other.id]))
   })
 })
 
 describe('removeNodeLocalProject', () => {
   it('removes the image store and the node-local project tree from every node with a one-shot pod', async () => {
     stageLiveCluster()
-    await removeNodeLocalProject(SLUG)
+    await removeNodeLocalProject(ID)
     const [pod] = appliedPods()
     expect(pod.spec.nodeName).toBe(NODE)
     // The install's node root is mounted, so both trees can go in one
@@ -619,7 +621,7 @@ describe('removeNodeLocalProject', () => {
     // and the project tree may be on a node its filesystem never sees.
     expect(pod.spec.volumes[0].hostPath?.path).toBe(nodeLocalNodePath())
     expect(pod.spec.containers[0].command[2])
-      .toBe(`rm -rf "/node/shared-images/${SLUG}" "/node/projects/${SLUG}"`)
-    expect(nodeLocalHostPath(nodeLocalProjectPath(SLUG))).toBe(`${nodeLocalNodePath()}/projects/${SLUG}`)
+      .toBe(`rm -rf "/node/shared-images/${ID}" "/node/projects/${ID}"`)
+    expect(nodeLocalHostPath(nodeLocalProjectPath(ID))).toBe(`${nodeLocalNodePath()}/projects/${ID}`)
   })
 })

@@ -374,7 +374,7 @@ export function proxyProjectSecretsName(projectSlug: string): string {
   return installScopedName(PROXY_PROJECT_SECRETS_PREFIX, projectSlug)
 }
 
-export function installScopedName(prefix: string, projectSlug: string): string {
+function installScopedName(prefix: string, projectSlug: string): string {
   const safeSlug = projectSlug
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '-')

@@ -39,6 +39,27 @@ import type {
  */
 
 /**
+ * A project as the runtime is handed it. The slug is for display, labels
+ * and log lines; the id is what every per-project object the runtime holds
+ * is NAMED by — immutable and never reused, so a project re-added under a
+ * freed slug cannot inherit an old one's registry, repos or node-local tree,
+ * whether or not their removal succeeded. The runtime never looks the id
+ * up: it is a row, handed down with every call that needs it.
+ */
+export interface ProjectRef {
+  slug: string
+  id: string
+}
+
+/** What `reapNodeLocal` must keep. Both sets are read by the caller from
+ *  its own records, and an unreadable one stands the sweep down rather
+ *  than reading as empty. */
+export interface NodeLocalLiveSet {
+  projectIds: ReadonlySet<string>
+  worktreeIds: ReadonlySet<string>
+}
+
+/**
  * A worktree as the substrate can see it — everything a resolver needs and
  * nothing db keeps. The durable half (a title, a pin, the recorded
  * creation time, the conversations) never appears here.
@@ -267,6 +288,8 @@ export interface WorkspaceResources {
  */
 export interface SubstrateIntent {
   projectSlug: string
+  /** What the project's substrate objects are named by (`ProjectRef`). */
+  projectId: string
   workspaceId: string
   tool: AgentTool
   config: YaacConfig
@@ -518,8 +541,10 @@ export interface PassContext {
   snapshot: () => RuntimeSnapshot
   /** Which projects exist — memoized, read on first use and handed to the
    *  steps that need it: it is a row question, so a runtime step is handed
-   *  the answer instead of reading db itself. */
-  projectSlugs: () => Promise<string[]>
+   *  the answer instead of reading db itself. An unreadable list REJECTS
+   *  rather than resolving empty, because a step that collects whatever
+   *  no live project owns would read "none" as "collect everything". */
+  projects: () => Promise<ProjectRef[]>
   /**
    * One project's resolved config, memoized per project for the pass.
    *
@@ -986,7 +1011,7 @@ export interface WorktreeDriver {
    * how much of that is a no-op because the image is already there.
    */
   prepareImage(opts: {
-    projectSlug: string
+    project: ProjectRef
     nestedContainers: boolean
     onProgress?: (message: string) => void
   }): Promise<string>
@@ -1167,16 +1192,19 @@ export interface WorktreeDriver {
    *  tears the workspaces down first and removes the global tree after.
    *  Best-effort per part, so one unreachable piece cannot strand the
    *  rest. */
-  destroyProjectSubstrate(projectSlug: string): Promise<void>
+  destroyProjectSubstrate(project: ProjectRef): Promise<void>
   /**
-   * Collect the NODE-LOCAL leftovers of workspaces that are gone — the
-   * per-worktree dirs and working copies whose owner is not in `running`
-   * (live workspace ids, per project slug), on every node the runtime has.
-   * The global half of the same sweep is the caller's; this is the half
-   * that lives where the caller's filesystem may not reach. Throttled by the
-   * runtime, never by the caller; never rejects.
+   * Collect the NODE-LOCAL leftovers of what is gone, on every node the
+   * runtime has: a whole per-project tree whose project id is not in
+   * `live.projectIds`, and a per-worktree working copy whose worktree is not
+   * in `live.worktreeIds`. Keyed on ids rather than on what a removal
+   * managed to delete, so it also collects every failed removal. The global
+   * half of the same sweep is the caller's; this is the half that lives
+   * where the caller's filesystem may not reach. Throttled by the runtime
+   * where a sweep costs anything (a pod per node), never by the caller;
+   * never rejects.
    */
-  reapNodeLocal(running: Map<string, Set<string>>): Promise<void>
+  reapNodeLocal(live: NodeLocalLiveSet): Promise<void>
 
   /**
    * Take the in-workspace `yaac-mama` requests waiting to be answered.

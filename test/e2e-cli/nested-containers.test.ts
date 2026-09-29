@@ -13,6 +13,7 @@ import {
   kubectlWithRetry,
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import {
+  ORPHAN_REGISTRY_MIN_AGE_MS,
   ensureProjectRegistry,
   gcOrphanProjectRegistries,
   projectRegistryHost,
@@ -31,7 +32,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential, registerTestProject } from '@yaac/test-utils/api'
+import { assignTestGitCredential, makeServerApiClient, registerTestProject } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -156,8 +157,13 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
    */
   let sharedJob = ''
   let sharedSessionId = ''
-  /** Every project set up here, so afterAll can sweep their registries. */
-  const createdSlugs: string[] = []
+  /** The shared project's id, read off its pod's `yaac.project-id` label. */
+  let sharedProjectId = ''
+  /** A registry stood up for an id no project holds (the isolation test). */
+  let orphanRegistryId = ''
+  /** Every project id a registry was stood up for, so afterAll can sweep
+   *  them. */
+  const createdRegistries: string[] = []
 
   async function seedCredentials(): Promise<void> {
     const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
@@ -169,10 +175,13 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     }) + '\n')
   }
 
-  async function setupProject(slug: string): Promise<void> {
-    await seedMockGitRepo(mockGit!, slug, {
-      files: { 'README.md': '# demo\n' },
-    })
+  /** `seeded`: the mock remote already holds the repo (a re-add). */
+  async function setupProject(slug: string, opts: { seeded?: boolean } = {}): Promise<void> {
+    if (!opts.seeded) {
+      await seedMockGitRepo(mockGit!, slug, {
+        files: { 'README.md': '# demo\n' },
+      })
+    }
     const projectPath = path.join(testEnv.dataDir, 'global', 'projects', slug)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
@@ -180,14 +189,17 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const fakeRemote = `https://github.com/test-org/${slug}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
     await registerTestProject(server!, slug, fakeRemote)
-    await assignTestGitCredential(server!, slug, 'fake-ghp-token')
+    // A re-add's credential needs a name of its own: the first add's
+    // outlives the project's removal.
+    await assignTestGitCredential(
+      server!, slug, 'fake-ghp-token', opts.seeded ? `${slug} token (re-add)` : undefined,
+    )
     const configDir = path.join(projectPath, 'config')
     await fs.mkdir(configDir, { recursive: true })
     await fs.writeFile(
       path.join(configDir, 'yaac-config.json'),
       JSON.stringify({ nestedContainers: true }, null, 2) + '\n',
     )
-    createdSlugs.push(slug)
   }
 
   async function findWorktreePod(slug: string, exclude: Set<string> = new Set()): Promise<PodInfo> {
@@ -205,7 +217,10 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    return findWorktreePod(slug)
+    const pod = await findWorktreePod(slug)
+    if (!pod.projectId) throw new Error(`session pod ${pod.jobName} carries no project id`)
+    createdRegistries.push(pod.projectId)
+    return pod
   }
 
   /** Wait for the detached cleanup (image salvage → job delete) to finish. */
@@ -255,6 +270,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const shared = await createWorktree('nested-shared')
     sharedJob = shared.jobName
     sharedSessionId = shared.worktreeId
+    sharedProjectId = shared.projectId!
   }, 900_000)
 
   afterAll(async () => {
@@ -264,8 +280,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     if (server) await server.stop()
     server = null
     await cleanupWorktreeJobs()
-    for (const slug of createdSlugs.splice(0)) {
-      await removeProjectRegistry(slug).catch(() => { /* already gone */ })
+    for (const id of createdRegistries.splice(0)) {
+      await removeProjectRegistry(id).catch(() => { /* already gone */ })
     }
     await cleanupMocks([mockLLM, mockGit, mockRegistry])
     mockLLM = null
@@ -284,8 +300,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
    * kind extraMount does not bind to the host, so it is read through the
    * node itself (`podman exec`, the node being a container).
    */
-  async function waitForStoreGeneration(projectSlug: string, timeoutMs: number): Promise<void> {
-    const parent = nodeLocalHostPath(imageStoreDir(projectSlug))
+  async function waitForStoreGeneration(projectId: string, timeoutMs: number): Promise<void> {
+    const parent = nodeLocalHostPath(imageStoreDir(projectId))
     const nodes = (await kubectlGetJson<{ items: Array<{ metadata: { name: string } }> }>(['get', 'nodes']))
       ?.items.map((n) => n.metadata.name) ?? []
     const deadline = Date.now() + timeoutMs
@@ -329,7 +345,9 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
     ])
     const registryHost = /location = "([^"]+)"/.exec(regConf)?.[1] ?? ''
-    expect(registryHost).toMatch(/^yaac-reg-nested-cache-[0-9a-f]{8}\..+:5000$/)
+    // Named by the project's id, never its slug.
+    expect(registryHost.startsWith(`yaac-reg-${session1.projectId!}.`), registryHost).toBe(true)
+    expect(registryHost.endsWith(':5000'), registryHost).toBe(true)
     expect(regConf).toContain('insecure = true')
 
     // The rootful graphroot (a root-owned tmpfs at /var/lib/containers) is
@@ -385,7 +403,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // That is the intended product behavior (a create must never block on a
     // multi-minute build), which makes waiting the test's job, not the
     // server's.
-    await waitForStoreGeneration(slug, 600_000)
+    await waitForStoreGeneration(session1.projectId!, 600_000)
 
     // --- Session 2 ---
     const session2 = await createWorktree(slug)
@@ -600,9 +618,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
   it('serves the project registry by svc name, isolated per project and pullable by the node', async () => {
     const name = sharedJob
-    const slug = 'nested-shared'
-    const regName = projectRegistryName(slug)
-    const regHost = projectRegistryHost(slug)
+    const regName = projectRegistryName(sharedProjectId)
+    const regHost = projectRegistryHost(sharedProjectId)
 
     // --- Appears, with an allocator-assigned (no longer pinned) ClusterIP ---
     const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
@@ -615,7 +632,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // registry name resolves to its live ClusterIP from inside the session —
     // no hostAliases, no pin.
     const { stdout: hostsOut } = await execInJob(name, [
-      'getent', 'hosts', projectRegistryHostname(slug),
+      'getent', 'hosts', projectRegistryHostname(sharedProjectId),
     ])
     expect(hostsOut).toContain(regVip)
 
@@ -634,12 +651,13 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // project's worktrees NetworkPolicy does not select this pod, and the
     // other registry's ingress policy does not admit it. curl must time out
     // (policy drop), not answer.
-    const otherSlug = 'nested-registry-other'
-    createdSlugs.push(otherSlug)
-    await ensureProjectRegistry(otherSlug)
+    const other = { slug: 'nested-registry-other', id: crypto.randomUUID() }
+    orphanRegistryId = other.id
+    createdRegistries.push(other.id)
+    await ensureProjectRegistry(other)
     const { stdout: cross } = await execInJob(name, [
       'sh', '-c',
-      `curl -sS --max-time 5 http://${projectRegistryHost(otherSlug)}/v2/ >/dev/null 2>&1`
+      `curl -sS --max-time 5 http://${projectRegistryHost(other.id)}/v2/ >/dev/null 2>&1`
       + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
     ], { timeout: 30_000 })
     expect(cross).toContain('CROSS_BLOCKED')
@@ -797,10 +815,10 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   }, 900_000)
 
   // Runs last on purpose: it stops the shared session and removes the
-  // project directory, which every test above needs intact.
-  it('keeps the project registry across worktree stop and GCs it once the project is gone', async () => {
+  // project, which every test above needs intact.
+  it('keeps the project registry across worktree stop, and never hands it to a re-added project', async () => {
     const slug = 'nested-shared'
-    const regName = projectRegistryName(slug)
+    const regName = projectRegistryName(sharedProjectId)
 
     const { exitCode } = await runYaac(serverEnv, 'worktree', 'stop', sharedSessionId)
     expect(exitCode).toBe(0)
@@ -812,16 +830,43 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ])
     expect(depAfterDelete?.metadata?.name).toBe(regName)
 
-    // --- GCs once the project dir is gone (server-start sweep) ---
-    await fs.rm(path.join(testEnv.dataDir, 'global', 'projects', slug), { recursive: true, force: true })
-    await gcOrphanProjectRegistries()
-    const svcAfterGc = await kubectlGetJson<{ metadata?: { name?: string } }>([
-      'get', 'service', regName, '-n', k8sNamespace(),
+    // --- Remove the project and add the same remote back ---
+    // The re-added project gets a fresh id, so its registry is a different
+    // Service with an empty catalog — the `probe:v1` the old one holds
+    // (pushed above) must not be visible to it, whether or not the old
+    // registry's removal succeeded.
+    // No CLI verb removes a project; the webapp's route is the one door.
+    const removed = await makeServerApiClient(server!).project[':slug'].$delete({ param: { slug } })
+    expect(removed.ok, await removed.text()).toBe(true)
+    await setupProject(slug, { seeded: true })
+    const readded = await createWorktree(slug)
+    expect(readded.projectId).toBeTruthy()
+    expect(readded.projectId).not.toBe(sharedProjectId)
+    const newRegName = projectRegistryName(readded.projectId!)
+    const newSvc = await kubectlGetJson<{ metadata?: { name?: string } }>([
+      'get', 'service', newRegName, '-n', k8sNamespace(),
     ])
-    expect(svcAfterGc).toBeNull()
-    const depAfterGc = await kubectlGetJson<{ metadata?: { name?: string } }>([
-      'get', 'deployment', regName, '-n', k8sNamespace(),
-    ])
-    expect(depAfterGc).toBeNull()
+    expect(newSvc?.metadata?.name).toBe(newRegName)
+    const { stdout: catalog } = await execInJob(readded.jobName, [
+      'sh', '-c', `curl -fsS --max-time 20 http://${projectRegistryHost(readded.projectId!)}/v2/_catalog`,
+    ], { timeout: 60_000 })
+    expect((JSON.parse(catalog) as { repositories: string[] }).repositories).toEqual([])
+    // The removal took the old registry with it.
+    expect(await kubectlGetJson(['get', 'service', regName, '-n', k8sNamespace()])).toBeNull()
+
+    // --- An orphan (no live project holds its id) is swept by id ---
+    // The isolation test's second registry was never a project's. `now` is
+    // pushed past the sweep's minimum age, which exists for registries a
+    // pass stands up after reading the live set.
+    const otherName = projectRegistryName(orphanRegistryId)
+    await gcOrphanProjectRegistries(
+      new Set(createdRegistries.filter((id) => id !== orphanRegistryId && id !== sharedProjectId)),
+      Date.now() + ORPHAN_REGISTRY_MIN_AGE_MS,
+    )
+    expect(await kubectlGetJson(['get', 'service', otherName, '-n', k8sNamespace()])).toBeNull()
+    expect(await kubectlGetJson(['get', 'deployment', otherName, '-n', k8sNamespace()])).toBeNull()
+    expect(await kubectlGetJson(['get', 'service', newRegName, '-n', k8sNamespace()]))
+      .toMatchObject({ metadata: { name: newRegName } })
+    await runYaac(serverEnv, 'worktree', 'stop', readded.worktreeId).catch(() => { /* best-effort */ })
   }, 900_000)
 })

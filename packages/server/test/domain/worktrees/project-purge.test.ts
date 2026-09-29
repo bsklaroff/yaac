@@ -12,11 +12,14 @@ vi.mock('#domain/worktrees/cleanup', () => ({ cleanupWorktreeDetached: vi.fn() }
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
 import { purgeProjectBytes } from '#domain/worktrees'
 import { nodeLocalProjectPath, projectDir } from '@yaac/shared/project-paths'
-import type { RuntimeHandle } from '#drivers/contract'
+import type { ProjectRef, RuntimeHandle } from '#drivers/contract'
 
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
 const mockList = vi.fn<(projectSlug?: string) => Promise<RuntimeHandle[]>>()
-const mockDestroySubstrate = vi.fn<(projectSlug: string) => Promise<void>>()
+const mockDestroySubstrate = vi.fn<(project: ProjectRef) => Promise<void>>()
+
+const DEMO: ProjectRef = { slug: 'demo', id: '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d' }
+const KEEPER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'
 
 let tmpDir: string
 
@@ -35,8 +38,8 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-async function writeProject(slug: string): Promise<void> {
-  for (const root of [projectDir(slug), nodeLocalProjectPath(slug)]) {
+async function writeProject(slug: string, id: string): Promise<void> {
+  for (const root of [projectDir(slug), nodeLocalProjectPath(id)]) {
     await fs.mkdir(path.join(root, 'repo'), { recursive: true })
   }
 }
@@ -51,11 +54,11 @@ function workspace(projectSlug: string, workspaceId: string): RuntimeHandle {
 
 describe('purgeProjectBytes', () => {
   it('tears down every live session, drops what the runtime holds, then the global tree', async () => {
-    await writeProject('demo')
-    await writeProject('keeper')
+    await writeProject('demo', DEMO.id)
+    await writeProject('keeper', KEEPER_ID)
     mockList.mockResolvedValue([workspace('demo', 'a'), workspace('demo', 'b')])
 
-    await purgeProjectBytes('demo')
+    await purgeProjectBytes(DEMO)
 
     // First argument only: the fake's delegation passes its optional opts
     // through, so the recorded call carries a trailing undefined.
@@ -64,35 +67,35 @@ describe('purgeProjectBytes', () => {
       { jobName: 'yaac-demo-a', projectSlug: 'demo', worktreeId: 'a' },
       { jobName: 'yaac-demo-b', projectSlug: 'demo', worktreeId: 'b' },
     ])
-    expect(mockDestroySubstrate).toHaveBeenCalledWith('demo')
+    expect(mockDestroySubstrate).toHaveBeenCalledWith(DEMO)
 
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()
     // The node-local tree is the runtime's to remove — it lives on the
     // node the worktrees ran on, which may not be this filesystem.
-    await expect(fs.access(nodeLocalProjectPath('demo'))).resolves.toBeUndefined()
+    await expect(fs.access(nodeLocalProjectPath(DEMO.id))).resolves.toBeUndefined()
     await expect(fs.access(projectDir('keeper'))).resolves.toBeUndefined()
   })
 
   // Best-effort throughout: a runtime that cannot be reached must not stop
-  // the directories going away, and the server-start orphan GCs sweep the
+  // the directories going away, and the id-keyed orphan GCs sweep the
   // rest.
   it('still removes the dirs when the runtime is unreachable', async () => {
-    await writeProject('demo')
+    await writeProject('demo', DEMO.id)
     mockList.mockRejectedValue(new Error('connection refused'))
     mockDestroySubstrate.mockRejectedValue(new Error('connection refused'))
 
-    await purgeProjectBytes('demo')
+    await purgeProjectBytes(DEMO)
 
     expect(mockCleanup).not.toHaveBeenCalled()
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()
   })
 
   it('carries on when one session fails to tear down', async () => {
-    await writeProject('demo')
+    await writeProject('demo', DEMO.id)
     mockList.mockResolvedValue([workspace('demo', 'a'), workspace('demo', 'b')])
     mockCleanup.mockRejectedValueOnce(new Error('exec failed'))
 
-    await purgeProjectBytes('demo')
+    await purgeProjectBytes(DEMO)
 
     expect(mockCleanup).toHaveBeenCalledTimes(2)
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()

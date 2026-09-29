@@ -53,9 +53,17 @@ interface PodManifest {
 }
 const appliedPods = (): PodManifest[] => mockApply.mock.calls.map((c) => c[0] as unknown as PodManifest)
 
-function stageNodes(names: string[]): void {
+const LIVE = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+const GONE = 'c9d8e7f6-a5b4-4c3d-8e2f-1a0b9c8d7e6f'
+const NOTHING = { projectIds: new Set<string>(), worktreeIds: new Set<string>() }
+
+/** Nodes, and the hostPath volumes this install's worktree pods mount. */
+function stageNodes(names: string[], podHostPaths: string[] = []): void {
   mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
     if (args[1] === 'nodes') return Promise.resolve({ items: names.map((name) => ({ metadata: { name } })) })
+    if (args[1] === 'pods') {
+      return Promise.resolve({ items: [{ spec: { volumes: podHostPaths.map((p) => ({ hostPath: { path: p } })) } }] })
+    }
     return Promise.resolve({ status: { phase: 'Succeeded' } })
   })
 }
@@ -69,8 +77,15 @@ beforeEach(() => {
 
 describe('reapNodeLocal', () => {
   it('runs one root pod per node over the install\'s node tree, with the live set as argv', async () => {
-    stageNodes(['n1', 'n2'])
-    await reapNodeLocal(new Map([['demo', new Set(['a', 'b'])], ['empty', new Set()]]))
+    // A pod started under the slug naming still mounts `projects/demo`,
+    // which is what keeps that tree until the pod stops; a volume outside
+    // the node-local tree names nothing.
+    stageNodes(['n1', 'n2'], [
+      '/var/lib/yaac/node/ddh16/projects/demo/.cached-packages',
+      `/var/lib/yaac/node/ddh16/shared-images/${LIVE}/gen-1`,
+      '/var/lib/yaac/global/ddh16/projects/elsewhere',
+    ])
+    await reapNodeLocal({ projectIds: new Set([LIVE]), worktreeIds: new Set(['a', 'b']) })
 
     const pods = appliedPods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1', 'n2'])
@@ -82,16 +97,26 @@ describe('reapNodeLocal', () => {
       expect(pod.spec.volumes[0].hostPath?.path).toBe('/var/lib/yaac/node/ddh16')
       expect(pod.spec.containers[0].volumeMounts).toEqual([{ name: 'node', mountPath: '/node' }])
       const argv = pod.spec.containers[0].command.slice(4)
-      expect(argv).toHaveLength(2)
+      expect(argv).toHaveLength(3)
       expect(Number(argv[0])).toBeGreaterThan(0)
-      expect(argv[1]).toBe('demo=a,b')
+      expect(argv[1].split(',').sort()).toEqual([LIVE, 'demo'].sort())
+      expect(argv[2]).toBe('a,b')
     }
     await expect(execFileAsync('sh', ['-n', '-c', pods[0].spec.containers[0].command[2]])).resolves.toBeTruthy()
   })
 
+  it('stands down when the pods holding the tree cannot be read', async () => {
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => (args[1] === 'pods'
+      ? Promise.reject(new Error('connection refused'))
+      : Promise.resolve({ items: [{ metadata: { name: 'n1' } }] })))
+    await expect(reapNodeLocal(NOTHING)).resolves.toBeUndefined()
+    // An unknown mount set must not read as "nothing is mounted".
+    expect(appliedPods()).toHaveLength(0)
+  })
+
   it('first deletes the sweep pods a previous server life left behind, by this install\'s labels', async () => {
     stageNodes(['n1'])
-    await reapNodeLocal(new Map())
+    await reapNodeLocal(NOTHING)
     // runPodToCompletion deletes each finished pod by name; the stray
     // delete is the one by label, and it comes before any pod is applied.
     const strays = mockWithRetry.mock.calls
@@ -104,10 +129,10 @@ describe('reapNodeLocal', () => {
 
   it('throttles to once per interval, and runs again after it', async () => {
     stageNodes(['n1'])
-    await reapNodeLocal(new Map(), { nowMs: 1_000_000 })
-    await reapNodeLocal(new Map(), { nowMs: 1_000_000 + 60_000 })
+    await reapNodeLocal(NOTHING, { nowMs: 1_000_000 })
+    await reapNodeLocal(NOTHING, { nowMs: 1_000_000 + 60_000 })
     expect(appliedPods()).toHaveLength(1)
-    await reapNodeLocal(new Map(), { nowMs: 1_000_000 + NODE_LOCAL_SWEEP_INTERVAL_MS })
+    await reapNodeLocal(NOTHING, { nowMs: 1_000_000 + NODE_LOCAL_SWEEP_INTERVAL_MS })
     expect(appliedPods()).toHaveLength(2)
   })
 
@@ -116,7 +141,7 @@ describe('reapNodeLocal', () => {
       if (args[1] === 'nodes') return Promise.resolve({ items: [{ metadata: { name: 'n1' } }, { metadata: { name: 'n2' } }] })
       return Promise.resolve({ status: { phase: 'Failed' } })
     })
-    await expect(reapNodeLocal(new Map())).resolves.toBeUndefined()
+    await expect(reapNodeLocal(NOTHING)).resolves.toBeUndefined()
     expect(appliedPods()).toHaveLength(2)
   })
 
@@ -140,29 +165,54 @@ describe('reapNodeLocal', () => {
     }
 
     /** Run the script with `root` standing in for the pod's /node mount. */
-    async function run(keep: string[], cutoffEpoch: number): Promise<string> {
+    async function run(kept: string[], live: string[], cutoffEpoch: number): Promise<string> {
       const script = buildNodeLocalSweepScript().replaceAll('/node/', `${root}/`)
-      const { stdout } = await execFileAsync('sh', ['-c', script, '--', String(cutoffEpoch), ...keep])
+      const { stdout } = await execFileAsync('sh', ['-c', script, '--', String(cutoffEpoch), kept.join(','), live.join(',')])
       return stdout
     }
 
-    it('spares the live ids per slug, removes the rest, and honours the cutoff', async () => {
-      const liveCopy = await seed('projects/demo/opencode-data/live')
-      const stoppedCopy = await seed('projects/demo/opencode-data/stopped')
-      const otherSlugSameId = await seed('projects/other/opencode-data/live')
-      const fresh = await seed('projects/demo/opencode-data/staging', new Date())
+    /** Stamp a directory stale AFTER its contents are seeded (seeding bumps it). */
+    const stale = (rel: string): Promise<void> => fs.utimes(path.join(root, rel), STALE, STALE)
 
-      const out = await run(['demo=live,x'], Math.floor((Date.now() - 10_000) / 1000))
+    it('keeps live and mounted project trees, removes the rest whole, and honours the cutoff', async () => {
+      const liveStore = await seed(`shared-images/${LIVE}/gen-1`)
+      const liveCache = await seed(`projects/${LIVE}/.cached-packages`)
+      const mounted = await seed('projects/legacy-mounted/.cached-packages')
+      const goneTree = await seed(`projects/${GONE}/.cached-packages`)
+      const goneStore = await seed(`shared-images/${GONE}/gen-1`)
+      const slugNamed = await seed('shared-images/old-slug/gen-1')
+      const staging = await seed('projects/just-added/.cached-packages', new Date())
+      for (const rel of [`projects/${LIVE}`, 'projects/legacy-mounted', `projects/${GONE}`,
+        `shared-images/${GONE}`, 'shared-images/old-slug', `shared-images/${LIVE}`]) await stale(rel)
+
+      const out = await run([LIVE, 'legacy-mounted'], [], Math.floor((Date.now() - 10_000) / 1000))
+
+      for (const kept of [liveStore, liveCache, mounted, staging]) {
+        await expect(fs.access(kept)).resolves.toBeUndefined()
+      }
+      for (const gone of [goneTree, goneStore, slugNamed]) {
+        await expect(fs.access(gone)).rejects.toThrow()
+      }
+      await expect(fs.access(path.join(root, 'projects', GONE))).rejects.toThrow()
+      expect(out).toContain(`removed projects/${GONE}`)
+      expect(out).toContain(`removed shared-images/${GONE}`)
+      expect(out).toContain('removed shared-images/old-slug')
+      expect(out.trim().endsWith('node-local-sweep removed 3')).toBe(true)
+    })
+
+    it('inside a live project, spares live worktrees\' working copies and removes the rest', async () => {
+      const liveCopy = await seed(`projects/${LIVE}/opencode-data/live`)
+      const stoppedCopy = await seed(`projects/${LIVE}/opencode-data/stopped`)
+      const fresh = await seed(`projects/${LIVE}/opencode-data/staging`, new Date())
+
+      const out = await run([LIVE], ['live', 'x'], Math.floor((Date.now() - 10_000) / 1000))
 
       for (const kept of [liveCopy, fresh]) {
         await expect(fs.access(kept)).resolves.toBeUndefined()
       }
-      for (const gone of [stoppedCopy, otherSlugSameId]) {
-        await expect(fs.access(gone)).rejects.toThrow()
-      }
-      expect(out).toContain('removed demo/opencode-data/stopped')
-      expect(out).toContain('removed other/opencode-data/live')
-      expect(out.trim().endsWith('node-local-sweep removed 2')).toBe(true)
+      await expect(fs.access(stoppedCopy)).rejects.toThrow()
+      expect(out).toContain(`removed ${LIVE}/opencode-data/stopped`)
+      expect(out.trim().endsWith('node-local-sweep removed 1')).toBe(true)
     })
 
     it('never walks through a symlink a pod planted, at any level', async () => {
@@ -176,17 +226,22 @@ describe('reapNodeLocal', () => {
       await fs.symlink('../../..', path.join(root, 'projects/demo/opencode-data/relative'))
       await fs.mkdir(path.join(root, 'projects/other'), { recursive: true })
       await fs.symlink(path.join(root, 'victim'), path.join(root, 'projects/other/opencode-data'))
+      await fs.mkdir(path.join(root, 'shared-images'), { recursive: true })
+      await fs.symlink(path.join(root, 'victim'), path.join(root, 'shared-images/evil'))
 
       const future = Math.floor(Date.now() / 1000) + 60
-      const out = await run([], future)
+      // `evil` is not a live project either: a link in the tree is skipped
+      // whole, never followed and never taken for a tree to remove.
+      const out = await run(['demo', 'other'], [], future)
 
       await expect(fs.access(victim)).resolves.toBeUndefined()
-      await expect(fs.access(path.join(root, 'projects'))).resolves.toBeUndefined()
+      await expect(fs.lstat(path.join(root, 'projects/evil'))).resolves.toBeTruthy()
+      await expect(fs.lstat(path.join(root, 'shared-images/evil'))).resolves.toBeTruthy()
       expect(out.trim()).toBe('node-local-sweep removed 0')
     })
 
     it('is a no-op on an empty tree', async () => {
-      const out = await run([], Math.floor(Date.now() / 1000))
+      const out = await run([], [], Math.floor(Date.now() / 1000))
       expect(out.trim()).toBe('node-local-sweep removed 0')
     })
   })

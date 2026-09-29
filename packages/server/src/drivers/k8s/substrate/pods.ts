@@ -10,6 +10,15 @@ import {
 /** Label keys attached to every worktree Job and its Pod. */
 export const LABEL_PROJECT = 'yaac.project'
 /**
+ * The project's immutable id (`ProjectRef`), on worktree pods and on every
+ * object the project's registry and image store own. What the registry's
+ * NetworkPolicies select a project's pods by, and what the orphan GCs key
+ * on, so an object can never be claimed by a later project of the same
+ * slug. Absent on a pod that predates it, which therefore reaches no
+ * id-named registry and is skipped by the image salvage.
+ */
+export const LABEL_PROJECT_ID = 'yaac.project-id'
+/**
  * The worktree a pod runs. Every list query, informer and cluster-side
  * NetworkPolicy podSelector matches on this key, so it is what makes a
  * worktree pod findable at all.
@@ -103,6 +112,8 @@ export interface PodInfo {
   podName: string
   worktreeId: string
   projectSlug: string
+  /** `yaac.project-id` when stamped (see LABEL_PROJECT_ID). */
+  projectId?: string
   tool: string
   /** `yaac.mode` when stamped; absent on every TUI pod (see LABEL_MODE). */
   mode?: string
@@ -216,6 +227,9 @@ export function mapPodItem({ metadata, status }: PodItem): PodInfo {
     podName: metadata.name,
     worktreeId: metadata.labels[LABEL_WORKTREE_ID],
     projectSlug: metadata.labels[LABEL_PROJECT],
+    ...(metadata.labels[LABEL_PROJECT_ID] !== undefined
+      ? { projectId: metadata.labels[LABEL_PROJECT_ID] }
+      : {}),
     tool: metadata.labels[LABEL_TOOL],
     ...(metadata.labels[LABEL_MODE] !== undefined ? { mode: metadata.labels[LABEL_MODE] } : {}),
     phase: status.phase,

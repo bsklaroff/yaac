@@ -5,7 +5,7 @@
  *
  * - **Step-cache entries** (docs/trust-split-builds.md). Every builder-pod
  *   build pushes one cache image per Dockerfile step into
- *   `yaac-buildcache-<slug>`, tagged by cache key, and an edited Dockerfile
+ *   `yaac-buildcache-<id>`, tagged by cache key, and an edited Dockerfile
  *   mints fresh keys. Retired once no build has written them for
  *   BUILD_CACHE_TTL: `--cache-ttl` already makes those reads misses, so
  *   retirement costs no cache hit. The age signal is the tag link's mtime
@@ -13,7 +13,7 @@
  *   re-pushes the entry and refreshes the link: retention is last-used,
  *   not first-built.
  * - **Content-hash generations** of every yaac-built repo (`yaac-base`,
- *   `yaac-tools`, `yaac-user-<slug>`, proxy, netd, the server; not the e2e
+ *   `yaac-tools`, `yaac-proj-<id>`, proxy, netd, the server; not the e2e
  *   suite's `yaac-test-*`). Each source change pushes a new tag and leaves
  *   the old one tagged. Retired by the per-project registries' retention
  *   pass (`buildRegistryRetentionScript`), handed the live set
@@ -22,6 +22,12 @@
  *   project's current chain. Past that, the newest
  *   MAIN_REGISTRY_GENERATIONS_KEPT per repo stay as rollback. Mirrors carry
  *   no content-hash tag and are never candidates.
+ *
+ * And one kind of whole repo: a project's own (`yaac-proj-<id>`,
+ * `yaac-user-<id>`, `yaac-buildcache-<id>`) whose id no live project holds —
+ * a removed project's, or one named before projects had ids
+ * (`orphanProjectRepoSweepScript`). Permanent rather than a removal step,
+ * so it also covers every removal that never ran.
  *
  * The same pass then drops the nodes' unpacked copies of whatever the
  * registry no longer holds (node-image-gc.ts), which is where most of the
@@ -84,6 +90,7 @@ import { kubectlGetJson } from '#drivers/k8s/substrate'
 import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { testEnv } from '@yaac/shared/env'
 import type { YaacConfig } from '@yaac/shared/types'
+import type { ProjectRef } from '#drivers/contract'
 import { serverLog } from '#log'
 import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
@@ -221,6 +228,46 @@ export function buildCacheSweepScript(days = buildCacheRetainDays()): string {
   ].join('\n')
 }
 
+/** How old a project repo must be before the orphan sweep may take it —
+ *  the registry GC's youth guard, on the repo directory's mtime. */
+export const ORPHAN_REPO_MIN_AGE_MINUTES = 10
+
+/**
+ * The in-container sweep of whole project repos: untag every
+ * `yaac-{proj,user,buildcache}-<x>` whose `x` is not a live project id,
+ * unless a workload still names one of its tags (`keepRepos`) — a pod of a
+ * project removed moments ago, or of another install sharing this
+ * registry, has not stopped pulling it. Each is named on stdout as the
+ * retention pass names its tags.
+ *
+ * The e2e suite's image repos (`yaac-test-…`) never match, which is how
+ * the TEST_IMAGE_REPOS exemption reaches this pass too. Its step-cache
+ * repos do (a cache repo carries no prefix), which costs a running suite
+ * cache misses at worst: the quiet probe keeps this off a registry that is
+ * being pushed to.
+ */
+export function orphanProjectRepoSweepScript(liveIds: string[], keepRepos: string[]): string {
+  return [
+    'set -eu',
+    `ROOT=${REGISTRY_REPOS_DIR}`,
+    '[ -d "$ROOT" ] || exit 0',
+    // Ids and repo names are of the image-name charset, so single quotes
+    // are safe.
+    `LIVE=',${liveIds.join(',')},'`,
+    `KEEP='${keepRepos.join('\n')}'`,
+    'for dir in "$ROOT"/yaac-proj-* "$ROOT"/yaac-user-* "$ROOT"/yaac-buildcache-*; do',
+    '  [ -d "$dir" ] || continue',
+    // Too young to judge: a repo is made by its first push, and a project
+    // added after this pass read the live set may be pushing it now.
+    `  [ -n "$(find "$dir" -maxdepth 0 -mmin +${ORPHAN_REPO_MIN_AGE_MINUTES})" ] || continue`,
+    '  repo=${dir##*/}',
+    '  case "$LIVE" in *",${repo#yaac-*-},"*) continue;; esac',
+    '  printf \'%s\\n\' "$KEEP" | grep -qxF "$repo" && continue',
+    '  rm -rf "$dir" && echo "RETIRED $repo"',
+    'done',
+  ].join('\n')
+}
+
 interface MainRegistryGcResult {
   /** Cache keys and `repo:tag` generations untagged this sweep. */
   retired: string[]
@@ -275,6 +322,8 @@ async function collectMarkerPresent(): Promise<boolean> {
 
 /** What the retention pass must not retire, gathered before it runs. */
 interface LiveImages {
+  /** Every live project's id — what the orphan repo sweep keeps. */
+  projectIds: string[]
   /** `repo:tag` of every generation a pod or workload names, any namespace. */
   inUse: Set<string>
   /**
@@ -324,32 +373,30 @@ async function readInUse(): Promise<Set<string>> {
  * in a builder pod, for the untrusted layers.
  *
  * A chain that cannot be resolved fails CLOSED for the whole pass, not
- * just that project: a project's `Dockerfile.yaac` layer lives in the
- * shared `yaac-base` repo beside every other project's, so the newest-two
- * rule is no cushion for any one of them, and the likeliest cause — a
- * non-layered `Dockerfile.user` mid-edit — fails EVERY project's chain at
- * once.
+ * just that project: the likeliest cause — a non-layered `Dockerfile.user`
+ * mid-edit — fails EVERY project's chain at once, and a pass that went on
+ * would retire the generations of every chain it could not name.
  */
 async function readLiveImages(
-  projectSlugs: string[],
+  projects: ProjectRef[],
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
 ): Promise<LiveImages> {
   const inUse = await readInUse()
   let wanted: Set<string> | null = new Set<string>()
   const prefix = testEnv.imagePrefix ?? 'yaac'
-  for (const slug of projectSlugs) {
+  for (const project of projects) {
     try {
-      const nested = (await projectConfig(slug))?.nestedContainers === true
-      const { layers, finalTag } = await resolveImageChain(slug, prefix, nested)
+      const nested = (await projectConfig(project.slug))?.nestedContainers === true
+      const { layers, finalTag } = await resolveImageChain(project, prefix, nested)
       for (const tag of [...layers.map((l) => l.tag), finalTag]) wanted.add(tag)
     } catch (err) {
-      serverLog(`[main-registry-gc] ${slug}: cannot resolve its image chain, `
+      serverLog(`[main-registry-gc] ${project.slug}: cannot resolve its image chain, `
         + `so no image generation is retired this pass: ${String(err)}`)
       wanted = null
       break
     }
   }
-  return { inUse, wanted }
+  return { projectIds: projects.map((p) => p.id), inUse, wanted }
 }
 
 /**
@@ -375,6 +422,11 @@ async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
   }
 
   let stdout = await mainRegistryExec(['sh', '-c', buildCacheSweepScript()], SWEEP_TIMEOUT_MS)
+  const inUseRepos = [...new Set([...live.inUse].map((ref) => ref.slice(0, ref.lastIndexOf(':'))))]
+  stdout += `\n${await mainRegistryExec(
+    ['sh', '-c', orphanProjectRepoSweepScript(live.projectIds, inUseRepos)],
+    SWEEP_TIMEOUT_MS,
+  )}`
   if (live.wanted) {
     stdout += `\n${await mainRegistryExec(['sh', '-c', buildRegistryRetentionScript({
       keep: MAIN_REGISTRY_GENERATIONS_KEPT,
@@ -471,14 +523,14 @@ function sweepDue(nowMs: number): boolean {
  * and every later tick behind it.
  */
 export function reconcileMainRegistryGc(
-  projectSlugs: string[],
+  projects: ProjectRef[],
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
   nowMs: number = Date.now(),
 ): Promise<void> {
   if (!sweepDue(nowMs)) return Promise.resolve()
   lastSweepMs = nowMs
   inFlightPass = (async () => {
-    const live = await readLiveImages(projectSlugs, projectConfig)
+    const live = await readLiveImages(projects, projectConfig)
     const { retired, busy, collected, restored } = await gcMainRegistry(live)
     if (busy) {
       serverLog('[main-registry-gc] registry has pushes in flight, leaving the collect for later')

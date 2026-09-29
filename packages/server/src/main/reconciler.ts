@@ -1,5 +1,11 @@
 import { worktreeDriver } from '#drivers/driver'
-import type { PassContext, ReconcileStep, ReconcileTrigger, RuntimeSnapshot } from '#drivers/contract'
+import type {
+  PassContext,
+  ProjectRef,
+  ReconcileStep,
+  ReconcileTrigger,
+  RuntimeSnapshot,
+} from '#drivers/contract'
 import { defaultReconcileSteps } from '#domain/reconcile'
 import { listProjectRows } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
@@ -100,7 +106,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
       )
       let snapshot: RuntimeSnapshot | null = null
-      let projectSlugs: Promise<string[]> | null = null
+      let projects: Promise<ProjectRef[]> | null = null
       const projectConfigs = new Map<string, Promise<YaacConfig | undefined>>()
       const ctx: PassContext = {
         triggers,
@@ -109,20 +115,19 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         snapshot: () => (snapshot ??= worktreeDriver().snapshot(resync)),
         // Which projects exist is a row question, so it is resolved once here
         // and handed down — a runtime step never reads db itself. An
-        // unreadable list
-        // degrades to none rather than failing the pass, because every
-        // consumer of it is upkeep that the next pass retries.
-        projectSlugs: () => (projectSlugs ??= listProjectRows()
-          .then((rows) => rows.map((r) => r.slug))
-          .catch(() => [])),
+        // unreadable list REJECTS, standing each consumer down for the pass:
+        // the orphan collectors keep only what a live project owns, so an
+        // empty answer would read as "collect everything".
+        projects: () => (projects ??= listProjectRows()
+          .then((rows) => rows.map(({ slug, id }) => ({ slug, id })))),
         // Memoized per project rather than per pass, since a pass reads a
         // handful of different ones. Same reason as the one above: which
         // config a project has is answered by the layers that own disk, so
         // a runtime step is handed the answer.
         //
-        // NO catch, unlike `projectSlugs` — and the difference is the point.
-        // A project with no config file resolves `undefined`, which genuinely
-        // means "all defaults". A config file that EXISTS and cannot be read
+        // NO catch here either. A project with no config file resolves
+        // `undefined`, which genuinely means "all defaults". A config file
+        // that EXISTS and cannot be read
         // (malformed JSON, an invalid field, a mid-edit save) rejects, and
         // the rejection must reach the step: a consumer handed `{}` there
         // would build the wrong artifact and succeed at it — a

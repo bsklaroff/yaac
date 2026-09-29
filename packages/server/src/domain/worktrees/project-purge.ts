@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import { worktreeDriver } from '#drivers/driver'
-import type { RuntimeHandle } from '#drivers/contract'
+import type { ProjectRef, RuntimeHandle } from '#drivers/contract'
 import { projectDir } from '@yaac/shared/project-paths'
 import { cleanupWorktreeDetached } from './cleanup'
 
@@ -13,9 +13,11 @@ import { cleanupWorktreeDetached } from './cleanup'
  * are the server's and it deletes them itself (see `project-teardown.ts`);
  * this half knows only about bytes, which is why it is best-effort throughout
  * — a cluster that cannot be reached must not stop the directories from going
- * away, and the server-start orphan GCs sweep whatever a failure leaves.
+ * away, and the runtime's orphan GCs, keyed on the project id, sweep
+ * whatever a failure leaves.
  */
-export async function purgeProjectBytes(slug: string): Promise<void> {
+export async function purgeProjectBytes(project: ProjectRef): Promise<void> {
+  const { slug } = project
   let pods: RuntimeHandle[] = []
   try {
     pods = await worktreeDriver().list(slug)
@@ -47,9 +49,9 @@ export async function purgeProjectBytes(slug: string): Promise<void> {
   // collect whatever a failure leaves, and an unreachable runtime must not
   // stop the global tree from going away.
   try {
-    await worktreeDriver().destroyProjectSubstrate(slug)
+    await worktreeDriver().destroyProjectSubstrate(project)
   } catch {
-    // runtime unavailable — the node-local sweep will catch it
+    // runtime unavailable — the id-keyed sweeps will catch it
   }
 
   // A plain recursive `rm` over trees the sandboxes wrote, sound because it

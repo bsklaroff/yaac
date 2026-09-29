@@ -219,6 +219,9 @@ const mockPush = vi.mocked(pushImageToRegistry)
 const mockHasTag = vi.mocked(registryHasTag)
 
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
+const PROJ = { slug: 'proj', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
+const PROJ_A = { slug: 'proj-a', id: '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e' }
+const PROJ_B = { slug: 'proj-b', id: 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5' }
 const LAYERED_DOCKERFILE = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n'
 
 /**
@@ -381,16 +384,16 @@ describe('ensureImage', () => {
 
   it('coalesces a shared layer across chains and fans out the distinct ones', async () => {
     const shared = await podLayer({ tag: 'yaac-base:shared', buildArgs: undefined })
-    mockResolveChain.mockImplementation(async (slug: string) => ({
+    mockResolveChain.mockImplementation(async (project) => ({
       layers: [shared, await podLayer({
-        tag: `yaac-user-${slug}:x`, name: 'user', buildArgs: { BASE_IMAGE: shared.tag },
+        tag: `yaac-user-${project.id}:x`, name: 'user', buildArgs: { BASE_IMAGE: shared.tag },
       })],
-      finalTag: `yaac-user-${slug}:x`,
+      finalTag: `yaac-user-${project.id}:x`,
     }))
     const nextBuild = holdInPodBuilds()
 
-    const a = ensureImage('proj-a', undefined, false, false, { reason: 'prewarm' })
-    const b = ensureImage('proj-b', undefined, false, false, { reason: 'prewarm' })
+    const a = ensureImage(PROJ_A, undefined, false, false, { reason: 'prewarm' })
+    const b = ensureImage(PROJ_B, undefined, false, false, { reason: 'prewarm' })
 
     // Both chains wait on ONE shared build, and both projects attach to its
     // single registry entry. Which of them registered and which attached is
@@ -409,8 +412,8 @@ describe('ensureImage', () => {
     await vi.waitFor(() => { expect(held.length).toBe(3) })
 
     for (const h of held.slice(1)) h.close(0)
-    expect(await a).toBe('yaac-user-proj-a:x')
-    expect(await b).toBe('yaac-user-proj-b:x')
+    expect(await a).toBe(`yaac-user-${PROJ_A.id}:x`)
+    expect(await b).toBe(`yaac-user-${PROJ_B.id}:x`)
     expect(listImageBuilds().every((e) => e.status === 'succeeded')).toBe(true)
   })
 
@@ -418,8 +421,8 @@ describe('ensureImage', () => {
     const project = await podLayer({ tag: 'yaac-base:x', buildArgs: undefined })
     chain([project])
     const nextBuild = holdInPodBuilds()
-    const a = ensureImage('proj-a')
-    const b = ensureImage('proj-b')
+    const a = ensureImage(PROJ_A)
+    const b = ensureImage(PROJ_B)
 
     await nextBuild()
     await flush()
@@ -431,7 +434,7 @@ describe('ensureImage', () => {
     expect(listImageBuilds()[0]).toMatchObject({ status: 'failed' })
     // A failed tag is not memoized as realized — the next ensure retries.
     const retry = nextBuild()
-    const again = ensureImage('proj-a')
+    const again = ensureImage(PROJ_A)
     await retry
     await flush()
     held.at(-1)!.close(0)
@@ -441,7 +444,7 @@ describe('ensureImage', () => {
   it('fans build output into the registry log', async () => {
     chain([await podLayer({ tag: 't:1', buildArgs: undefined })])
     const nextBuild = holdInPodBuilds()
-    const done = ensureImage('proj')
+    const done = ensureImage(PROJ)
 
     await nextBuild()
     held[0].log('STEP 1/2: FROM ubuntu')
@@ -458,7 +461,7 @@ describe('ensureImage', () => {
     mockHasTag.mockImplementation((tag: string) =>
       Promise.resolve(tag === 't:1' || tag === BUILDER_LOCAL_TAG))
 
-    await ensureImage('proj')
+    await ensureImage(PROJ)
     // Only the absent layer built; both tags were probed once.
     expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
     expect(mockHasTag.mock.calls.filter(([tag]) => tag === 't:1')).toHaveLength(1)
@@ -467,7 +470,7 @@ describe('ensureImage', () => {
     // built tag is re-checked on the next ensure.
     mockHasTag.mockClear()
     mockKubectlApply.mockClear()
-    await ensureImage('proj')
+    await ensureImage(PROJ)
     expect(mockHasTag.mock.calls.filter(([tag]) => tag === 't:1' || tag === 't:2')).toEqual([])
     expect(appliedKinds()).not.toContain('Pod')
   })
@@ -478,7 +481,7 @@ describe('ensureImage', () => {
       await podLayer({ tag: 't:2', name: 'user', buildArgs: undefined }),
     ])
     const starts: string[] = []
-    await ensureImage('proj', undefined, false, false, {
+    await ensureImage(PROJ, undefined, false, false, {
       onLayerStart: (i, total, name) => starts.push(`${i}/${total} ${name}`),
     })
     expect(starts).toEqual(['1/2 project', '2/2 user'])
@@ -486,7 +489,7 @@ describe('ensureImage', () => {
 
   it('throws under requirePrebuilt without building or registering', async () => {
     chain([layer('t:1')])
-    await expect(ensureImage('proj', undefined, true)).rejects.toThrow('missing or stale')
+    await expect(ensureImage(PROJ, undefined, true)).rejects.toThrow('missing or stale')
     expect(appliedKinds()).not.toContain('Pod')
     expect(listImageBuilds()).toEqual([])
   })
@@ -495,7 +498,7 @@ describe('ensureImage', () => {
     // Nothing else produces base/tools/nestable: the server has no engine
     // to build them with, so the actionable answer is which command does.
     chain([layer('yaac-base:missing')])
-    await expect(ensureImage('proj')).rejects.toThrow(
+    await expect(ensureImage(PROJ)).rejects.toThrow(
       /yaac-base:missing is missing from the local registry.*yaac cluster install/s,
     )
     expect(appliedKinds()).not.toContain('Pod')
@@ -520,7 +523,7 @@ describe('ensureImage', () => {
     mockHasTag.mockImplementation((tag: string) =>
       Promise.resolve(tag === tools.tag || tag === BUILDER_LOCAL_TAG))
 
-    await ensureImage('proj')
+    await ensureImage(PROJ)
 
     expect(mockBuildImage).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
@@ -602,7 +605,7 @@ describe('ensureImage', () => {
     // Build: chroot isolation, per-project registry step cache.
     expect(remote[3].slice(0, 4)).toEqual(['podman', 'build', '--isolation', 'chroot'])
     expect(remote[3]).toContain(project.tag)
-    const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-proj`
+    const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-${PROJ.id}`
     expect(remote[3].join(' '))
       .toContain(`--cache-from ${cacheRef} --cache-to ${cacheRef} --cache-ttl 168h`)
     expect(remote[3].join(' ')).toContain(`-f ${BUILDER_CONTEXT_DIR}/Dockerfile.yaac`)
@@ -626,7 +629,7 @@ describe('ensureImage', () => {
       { 'Dockerfile.yaac': 'FROM ubuntu\n', '.containerignore': 'Dockerfile.yaac\n' },
     )
     chain([project])
-    await ensureImage('proj')
+    await ensureImage(PROJ)
 
     const scripts = remoteCommands().map((argv) => argv.join(' '))
     expect(scripts.some((s) => s.includes('podman pull'))).toBe(false)
@@ -637,10 +640,14 @@ describe('ensureImage', () => {
     expect(tarLists[0]).toContain('Dockerfile.yaac')
   })
 
-  it('sanitizes the project slug into a valid OCI cache repo', async () => {
+  it('names the step-cache repo by the project id, never its slug', async () => {
+    // A project re-added under a freed slug must not read the old one's
+    // entries as cache hits.
     chain([await podLayer({ buildArgs: undefined })])
-    await ensureImage('My Project!')
-    expect(remoteCommands()[2].join(' ')).toContain(`${CLUSTER_HOST}/yaac-buildcache-my-project-`)
+    await ensureImage({ slug: 'demo', id: PROJ_B.id })
+    const build = remoteCommands()[2].join(' ')
+    expect(build).toContain(`${CLUSTER_HOST}/yaac-buildcache-${PROJ_B.id}`)
+    expect(build).not.toContain('buildcache-demo')
   })
 
   it('reuses one builder pod across adjacent untrusted layers and deletes it once', async () => {
@@ -650,7 +657,7 @@ describe('ensureImage', () => {
     })
     chain([first, second])
 
-    await ensureImage('proj')
+    await ensureImage(PROJ)
 
     expect(mockKubectlApply.mock.calls
       .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
@@ -664,7 +671,7 @@ describe('ensureImage', () => {
     mockImageExists.mockResolvedValue(true)
     mockHasTag.mockResolvedValue(true) // project tag already in the registry
 
-    await ensureImage('proj')
+    await ensureImage(PROJ)
     expect(mockHasTag).toHaveBeenCalledWith(project.tag)
     expect(appliedKinds()).not.toContain('Pod')
     expect(mockPush).not.toHaveBeenCalled()
@@ -673,7 +680,7 @@ describe('ensureImage', () => {
   it('sandboxes any non-whitelisted layer name', async () => {
     // Whitelist semantics: an unknown name must not fall through to host podman.
     chain([await podLayer({ name: 'some-future-layer' as ImageLayerName, buildArgs: undefined })])
-    await ensureImage('proj')
+    await ensureImage(PROJ)
     expect(appliedKinds()).toContain('Pod')
     expect(mockBuildImage).not.toHaveBeenCalled()
   })
@@ -686,7 +693,7 @@ describe('ensureImage', () => {
         ? Promise.reject(new Error("the server doesn't have a resource type"))
         : Promise.resolve({ stdout: '', stderr: '' }))
     chain([await podLayer({ buildArgs: undefined })])
-    await expect(ensureImage('proj')).rejects.toThrow(/ValidatingAdmissionPolicy/)
+    await expect(ensureImage(PROJ)).rejects.toThrow(/ValidatingAdmissionPolicy/)
     // Without the guard the builder role label is forgeable — no pod may exist.
     expect(appliedKinds()).not.toContain('Pod')
   })
@@ -694,7 +701,7 @@ describe('ensureImage', () => {
   it('maps an unreachable cluster to a `yaac cluster check` pointer', async () => {
     mockEnsureKubernetes.mockRejectedValue(new Error('no cluster'))
     chain([await podLayer({ buildArgs: undefined })])
-    await expect(ensureImage('proj')).rejects.toThrow(/yaac cluster check/)
+    await expect(ensureImage(PROJ)).rejects.toThrow(/yaac cluster check/)
   })
 
   it('explains a Ready timeout with whatever the pod status accounts for', async () => {
@@ -715,7 +722,7 @@ describe('ensureImage', () => {
     mockKubectlGetJson.mockImplementation((args: string[]) =>
       Promise.resolve(args[1] === 'pod' ? unschedulable : null))
     chain([await podLayer({ buildArgs: undefined })])
-    await expect(ensureImage('proj'))
+    await expect(ensureImage(PROJ))
       .rejects.toThrow(/not scheduled \(Unschedulable\): 0\/1 nodes are available/)
     // The pod is torn down even though provisioning failed after apply.
     expect(deleteCalls().length).toBeGreaterThan(0)
@@ -732,13 +739,13 @@ describe('ensureImage', () => {
         }
         : null))
     chain([await podLayer({ tag: 'yaac-base:p2', buildArgs: undefined })])
-    await expect(ensureImage('proj')).rejects.toThrow(/container waiting \(ImagePullBackOff\)/)
+    await expect(ensureImage(PROJ)).rejects.toThrow(/container waiting \(ImagePullBackOff\)/)
 
     // A status that explains nothing leaves the bare timeout.
     _clearBuildCoordinatorForTests()
     mockKubectlGetJson.mockResolvedValue({ status: {} })
     chain([await podLayer({ tag: 'yaac-base:p3', buildArgs: undefined })])
-    await expect(ensureImage('proj')).rejects.toThrow('timed out')
+    await expect(ensureImage(PROJ)).rejects.toThrow('timed out')
   })
 
   it('kills an in-pod build only once it stops producing output', async () => {
@@ -748,7 +755,7 @@ describe('ensureImage', () => {
     const reachedBuild = new Promise<void>((r) => { spawnState.onHold = r })
     chain([await podLayer({ buildArgs: undefined })])
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const build = ensureImage('proj')
+    const build = ensureImage(PROJ)
     const settled = vi.fn()
     void build.then(settled, settled)
 
@@ -783,7 +790,7 @@ describe('ensureImage', () => {
     ))
     chain([await podLayer({ buildArgs: undefined })])
 
-    await expect(ensureImage('proj')).rejects.toThrow(
+    await expect(ensureImage(PROJ)).rejects.toThrow(
       /exited with code 137[\s\S]*stopped at the whole-pod deadline/,
     )
   })
@@ -794,7 +801,7 @@ describe('ensureImage', () => {
       tag: 'yaac-base:o1', name: 'project', dockerfile: '/elsewhere/Dockerfile',
       context: dir, contentHash: 'o1',
     }])
-    await expect(ensureImage('proj')).rejects.toThrow(/outside its build context/)
+    await expect(ensureImage(PROJ)).rejects.toThrow(/outside its build context/)
 
     _clearBuildCoordinatorForTests()
     // Sparse file: st_size crosses the cap without touching the disk.
@@ -805,14 +812,14 @@ describe('ensureImage', () => {
       tag: 'yaac-base:o2', name: 'project', dockerfile: path.join(dir, 'Dockerfile.yaac'),
       context: dir, contentHash: 'o2',
     }])
-    await expect(ensureImage('proj')).rejects.toThrow(/\.containerignore/)
+    await expect(ensureImage(PROJ)).rejects.toThrow(/\.containerignore/)
   })
 })
 
 describe('pushImageShared', () => {
   it('returns the ref without pushing or registering when the tag is present', async () => {
     mockHasTag.mockResolvedValue(true)
-    const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'prewarm' })
+    const ref = await pushImageShared('t:1', { project: PROJ_A, reason: 'prewarm' })
     expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
     expect(mockPush).not.toHaveBeenCalled()
     expect(listImageBuilds()).toEqual([])
@@ -820,10 +827,10 @@ describe('pushImageShared', () => {
 
   it('caches a verified registry tag — the second push skips even the HEAD', async () => {
     mockHasTag.mockResolvedValue(true)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
     mockHasTag.mockClear()
 
-    const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+    const ref = await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
     expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
     expect(mockHasTag).not.toHaveBeenCalled()
   })
@@ -831,26 +838,26 @@ describe('pushImageShared', () => {
   it('caches a completed push the same way', async () => {
     mockHasTag.mockResolvedValue(false)
     mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
     mockHasTag.mockClear()
     mockPush.mockClear()
 
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
     expect(mockHasTag).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
   })
 
   it('passes the compression format through to the push', async () => {
     mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }, { compressionFormat: 'zstd' })
+    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' }, { compressionFormat: 'zstd' })
     expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
   })
 
   it('coalesces concurrent pushes of the same tag', async () => {
     const d = deferred()
     mockPush.mockImplementation(() => d.promise.then(() => `${CLUSTER_HOST}/t:1`))
-    const a = pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
-    const b = pushImageShared('t:1', { projectSlug: 'b', reason: 'session' })
+    const a = pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
+    const b = pushImageShared('t:1', { project: PROJ_B, reason: 'session' })
     await flush()
     expect(mockPush).toHaveBeenCalledTimes(1)
     d.resolve()
@@ -861,7 +868,7 @@ describe('pushImageShared', () => {
 
   it('marks the entry failed and rejects when the push fails', async () => {
     mockPush.mockRejectedValue(new Error('registry down'))
-    await expect(pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }))
+    await expect(pushImageShared('t:1', { project: PROJ_A, reason: 'session' }))
       .rejects.toThrow('registry down')
     expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'failed' })
   })

@@ -19,10 +19,12 @@ import { proxyClient } from '#drivers/k8s/egress'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 import type { YaacConfig } from '@yaac/shared/types'
+import type { ProjectRef } from '#drivers/contract'
 import {
   forgetImageBuild,
   getImageBuild,
   hasBlockingFailure,
+  imageBuildProjects,
   resolveImageChain,
 } from '#drivers/k8s/image-engine'
 
@@ -40,8 +42,8 @@ const FAILED_RETRY_MS = 10 * 60_000
  *  for the sweep; worktree creates bypass the sweep and build immediately. */
 export const PREWARM_SWEEP_INTERVAL_MS = 60_000
 
-/** Projects with a prewarm task in flight; added synchronously before the
- *  task's first await so a concurrent tick can't double-fire. */
+/** Project ids with a prewarm task in flight; added synchronously before
+ *  the task's first await so a concurrent tick can't double-fire. */
 const prewarming = new Set<string>()
 
 let lastSweepMs = 0
@@ -61,19 +63,19 @@ let lastSweepMs = 0
  *  caller writing `{}` is making that call; a caller who forgot should not
  *  compile. */
 export async function prewarmProjectImage(
-  projectSlug: string,
+  project: ProjectRef,
   config: YaacConfig,
 ): Promise<void> {
   const nestedContainers = config.nestedContainers === true
   const prefix = testEnv.imagePrefix ?? 'yaac'
 
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(project, prefix, nestedContainers)
   if (hasBlockingFailure([...layers.map((l) => l.tag), finalTag], FAILED_RETRY_MS)) return
 
-  await ensureImage(projectSlug, testEnv.imagePrefix, false, nestedContainers, {
+  await ensureImage(project, testEnv.imagePrefix, false, nestedContainers, {
     reason: 'prewarm',
   })
-  await pushImageShared(finalTag, { projectSlug, reason: 'prewarm' })
+  await pushImageShared(finalTag, { project, reason: 'prewarm' })
 }
 
 /**
@@ -82,7 +84,7 @@ export async function prewarmProjectImage(
  * next eligible tick retries. Throttled to PREWARM_SWEEP_INTERVAL_MS.
  */
 export function reconcileImagePrewarm(
-  projectSlugs: string[],
+  projects: ProjectRef[],
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
   nowMs: number = Date.now(),
 ): void {
@@ -91,15 +93,15 @@ export function reconcileImagePrewarm(
   if (nowMs - lastSweepMs < PREWARM_SWEEP_INTERVAL_MS) return
   lastSweepMs = nowMs
 
-  for (const slug of projectSlugs) {
-    if (prewarming.has(slug)) continue
-    prewarming.add(slug)
-    void projectConfig(slug)
-      .then((config) => prewarmProjectImage(slug, config ?? {}))
+  for (const project of projects) {
+    if (prewarming.has(project.id)) continue
+    prewarming.add(project.id)
+    void projectConfig(project.slug)
+      .then((config) => prewarmProjectImage(project, config ?? {}))
       .catch((err: unknown) => {
-        serverLog(`[image-prewarm] ${slug}: ${String(err)}`)
+        serverLog(`[image-prewarm] ${project.slug}: ${String(err)}`)
       })
-      .finally(() => prewarming.delete(slug))
+      .finally(() => prewarming.delete(project.id))
   }
 }
 
@@ -138,18 +140,19 @@ export function retryImageBuild(
 ): boolean {
   const entry = getImageBuild(id)
   if (!entry || entry.status === 'running') return false
+  const projects = imageBuildProjects(id)
   forgetImageBuild(id)
 
-  if (entry.projectSlugs.length === 0) {
+  if (projects.length === 0) {
     void proxyClient.ensureRunning().catch((err: unknown) =>
       serverLog(`[image-retry] proxy: ${String(err)}`))
     return true
   }
 
-  for (const slug of entry.projectSlugs) {
-    void projectConfig(slug)
-      .then((config) => prewarmProjectImage(slug, config ?? {}))
-      .catch((err: unknown) => serverLog(`[image-retry] ${slug}: ${String(err)}`))
+  for (const project of projects) {
+    void projectConfig(project.slug)
+      .then((config) => prewarmProjectImage(project, config ?? {}))
+      .catch((err: unknown) => serverLog(`[image-retry] ${project.slug}: ${String(err)}`))
   }
   return true
 }

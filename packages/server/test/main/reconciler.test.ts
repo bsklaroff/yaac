@@ -268,7 +268,7 @@ describe('startReconciler', () => {
  *  engine's own filtering is asserted above with injected steps). */
 async function runPass(
   triggers: ReconcileTrigger[],
-  opts: { resync?: boolean; projectSlugs?: string[] } = {},
+  opts: { resync?: boolean } = {},
 ): Promise<void> {
   const resync = opts.resync ?? false
   const ctx: PassContext = {
@@ -276,7 +276,7 @@ async function runPass(
     resync,
     signal: new AbortController().signal,
     snapshot: () => snapshotFixture(),
-    projectSlugs: () => Promise.resolve(opts.projectSlugs ?? []),
+    projects: () => Promise.resolve([]),
     projectConfig: () => Promise.resolve(undefined),
         terminating: () => false,
   }

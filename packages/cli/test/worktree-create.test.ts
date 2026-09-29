@@ -148,11 +148,23 @@ vi.mock('@yaac/shared/project-paths', () => ({
   PACKAGE_ROOT: '/tmp/yaac-package',
 }))
 
-// The project row's remote — the only source the create reads it from.
-vi.mock('@yaac/server/domain/projects/detail', async (importOriginal) => ({
-  ...await importOriginal<typeof projectDetailModule>(),
-  projectRemoteUrl: vi.fn().mockResolvedValue('https://github.com/example/repo.git'),
-} satisfies Partial<typeof projectDetailModule>))
+// The project row — the only source the create reads the remote and the
+// project id from.
+const { projectRow } = vi.hoisted(() => ({
+  projectRow: (remoteUrl: string) => ({
+    slug: 'demo',
+    id: '5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b',
+    remoteUrl,
+    addedAt: '2026-01-01T00:00:00.000Z',
+    createDefaults: {},
+    gitCredentialId: null,
+    knownHostsEntry: null,
+  }),
+}))
+vi.mock('@yaac/server/db/project-store', async (importOriginal) => ({
+  ...await importOriginal<typeof projectStoreModule>(),
+  getProjectRow: vi.fn().mockResolvedValue(projectRow('https://github.com/example/repo.git')),
+} satisfies Partial<typeof projectStoreModule>))
 
 vi.mock('@yaac/server/domain/projects/config', () => ({
   resolveProjectConfig: vi.fn().mockResolvedValue({}),
@@ -278,7 +290,7 @@ import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/domain/git'
-import { projectRemoteUrl } from '@yaac/server/domain/projects/detail'
+import { getProjectRow } from '@yaac/server/db/project-store'
 import { podExec, waitForStreamd } from '@yaac/server/drivers/k8s/substrate/stream-relay'
 import type * as streamRelayModule from '@yaac/server/drivers/k8s/substrate/stream-relay'
 import { waitForJobPodReady } from '@yaac/server/drivers/k8s/substrate/pod-wait'
@@ -395,7 +407,7 @@ describe('createWorktree', () => {
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
-    vi.mocked(projectRemoteUrl).mockResolvedValue('https://github.com/example/repo.git')
+    vi.mocked(getProjectRow).mockResolvedValue(projectRow('https://github.com/example/repo.git'))
     vi.mocked(remoteBranchExists).mockResolvedValue(true)
     vi.mocked(resolveProjectEnv).mockResolvedValue({ plain: {}, secrets: {} })
     vi.mocked(getGitIdentity).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
@@ -811,7 +823,7 @@ describe('createWorktree', () => {
     // SSH-scheme remote: ncat CONNECTs to the sentinel address that netd
     // redirects to the proxy tunnel listener, carrying no proxy-auth — so
     // identity is the source pod IP (not a leakable bearer credential).
-    vi.mocked(projectRemoteUrl).mockResolvedValue('git@github.com:example/repo.git')
+    vi.mocked(getProjectRow).mockResolvedValue(projectRow('git@github.com:example/repo.git'))
     vi.mocked(resolveProjectCredential).mockResolvedValue({
       kind: 'ssh', id: 'k', publicKey: 'ssh-ed25519 AAAA yaac k', knownHostsEntry: 'github.com ssh-ed25519 AAAAC3',
     })
@@ -850,7 +862,7 @@ describe('createWorktree', () => {
   })
 
   it('does not seed GH_TOKEN for a non-GitHub HTTPS remote', async () => {
-    vi.mocked(projectRemoteUrl).mockResolvedValue('https://gitlab.com/example/repo.git')
+    vi.mocked(getProjectRow).mockResolvedValue(projectRow('https://gitlab.com/example/repo.git'))
 
     await createWorktree('demo', { worktreeId: 'abcd1234' })
 
@@ -1355,7 +1367,7 @@ import type * as kubectlModule from '@yaac/server/drivers/k8s/substrate/kubectl'
 import type * as execModule from '@yaac/server/drivers/k8s/substrate/exec'
 import type * as projectConfigModule from '@yaac/server/domain/projects/config'
 import type * as credentialsModule from '@yaac/server/domain/projects/credentials'
-import type * as projectDetailModule from '@yaac/server/domain/projects/detail'
+import type * as projectStoreModule from '@yaac/server/db/project-store'
 import type * as gitModule from '@yaac/server/domain/git'
 import type * as portForwardersModule from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
 import type * as storeModule from '@yaac/server/db/worktree-store'

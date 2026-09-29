@@ -41,6 +41,7 @@ export {
   finishImageBuild,
   forgetImageBuild,
   getImageBuild,
+  imageBuildProjects,
   getImageBuildLog,
   hasBlockingFailure,
   ingestImageBuildLine,

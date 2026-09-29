@@ -1,23 +1,33 @@
 /**
  * The node-local orphan sweep: one root pod per node, walking this
- * install's node-local tree and removing what no live worktree owns.
+ * install's node-local tree and removing what no live project or worktree
+ * owns.
  *
- * The NODE-LOCAL tier holds, per project, package-manager caches and each
- * opencode worktree's working copy (docs/server-in-cluster.md "Storage is
- * two claims"). None of it is on the server's own filesystem on a multi-node cluster — it is on
- * whichever node the worktree ran on — so nothing about it is read or
- * written from the server; the sweep runs where the bytes are, on the
- * node-write-pod shape the image store's writer uses (store-writer.ts).
+ * The NODE-LOCAL tier holds, per project id, package-manager caches, each
+ * opencode worktree's working copy and the nested image store
+ * (docs/server-in-cluster.md "Storage is two claims"). None of it is on the
+ * server's own filesystem on a multi-node cluster — it is on whichever node
+ * the worktree ran on — so nothing about it is read or written from the
+ * server; the sweep runs where the bytes are, on the node-write-pod shape
+ * the image store's writer uses (store-writer.ts).
  *
- * The keep-list is the set of worktree ids with a LIVE pod, per slug, and
- * it is the only keep-list: a stopped worktree's opencode working copy is
- * either already deleted by its own `preStop` checkpoint or a stale copy
- * the global checkpoint outranks on the next start. Everything else is an
- * orphan — except what was written since the cutoff, which is a create
- * staging into a directory its pod has not appeared with yet (the same
- * slack `inUseBySweep` gives the global half).
+ * Two keep-lists, both handed in by the caller from its own records:
+ *  - **project ids.** A `projects/<x>` or `shared-images/<x>` whose `x` no
+ *    live project holds goes whole. That covers every removal whose own
+ *    cleanup pod failed or never reached the node, and every tree named
+ *    before projects had ids — except a tree a live pod still mounts, read
+ *    off this install's pod specs, which is what spares a pod created
+ *    under the old naming until it stops.
+ *  - **worktree ids.** Inside a live project, an opencode working copy
+ *    whose worktree is not live goes: a stopped worktree's copy is either
+ *    already deleted by its own `preStop` checkpoint or a stale copy the
+ *    global checkpoint outranks on the next start.
+ * Either way, what was written since the cutoff stays: a create staging
+ * into a directory its pod has not appeared with yet (the same slack
+ * `inUseBySweep` gives the global half).
  */
 import crypto from 'node:crypto'
+import path from 'node:path'
 import {
   PRIORITY_CLASS_INFRA,
   dataDirHash,
@@ -26,9 +36,11 @@ import {
   kubectlWithRetry,
   nodeLocalNodePath,
   runPodToCompletion,
+  worktreePodSelector,
 } from '#drivers/k8s/substrate'
 import { ensureBuilderImage } from '#drivers/k8s/cluster'
 import { serverLog } from '#log'
+import type { NodeLocalLiveSet } from '#drivers/contract'
 
 /** Where the sweep pod mounts the install's node-local tree. */
 export const SWEEP_POD_PATH = '/node'
@@ -65,11 +77,12 @@ function sweepLabels(): Record<string, string> {
 }
 
 /**
- * The in-pod script. Argv is `<cutoff epoch seconds> <slug>=<id>,<id>…`,
- * one keep entry per project with live worktrees. It walks
- * `/node/projects/<slug>/opencode-data/*` and removes each entry whose
- * basename is not in its slug's keep set and whose mtime is older than the
- * cutoff (`find -newermt` is the in-pod form of the slack).
+ * The in-pod script. Argv is `<cutoff epoch seconds> <kept names>
+ * <live worktree ids>`, both lists comma-separated. It removes each
+ * `/node/{projects,shared-images}/<x>` whose `x` is not a kept name, then
+ * each `/node/projects/<x>/opencode-data/<id>` whose `id` is not a live
+ * worktree — in both cases only when its mtime is older than the cutoff
+ * (`find -newermt` is the in-pod form of the slack).
  *
  * Never through a symlink. The tree is mounted read-write into worktree
  * pods, so a pod can replace a directory (or an entry under it) with a link
@@ -79,22 +92,30 @@ function sweepLabels(): Record<string, string> {
 export function buildNodeLocalSweepScript(): string {
   return [
     'set -u',
-    'CUTOFF="$1"; shift',
-    'keep_of() { for kv in "$@"; do case "$kv" in "$1="*) echo "${kv#*=}"; return;; esac; done; }',
+    'CUTOFF="$1"; KEPT=",$2,"; LIVE=",$3,"',
+    'fresh() { [ -n "$(find "$1" -maxdepth 0 -newermt "@$CUTOFF" 2>/dev/null)" ]; }',
     'removed=0',
-    'for slugdir in /node/projects/*; do',
-    '  [ -d "$slugdir" ] && [ ! -L "$slugdir" ] || continue',
-    '  slug=$(basename "$slugdir")',
-    '  keep=$(keep_of "$slug" "$@")',
-    '  kinddir="$slugdir/opencode-data"',
+    'for root in /node/projects /node/shared-images; do',
+    '  [ -d "$root" ] && [ ! -L "$root" ] || continue',
+    '  for dir in "$root"/*; do',
+    '    [ -d "$dir" ] && [ ! -L "$dir" ] || continue',
+    '    x=$(basename "$dir")',
+    '    case "$KEPT" in *",$x,"*) continue;; esac',
+    '    fresh "$dir" && continue',
+    '    rm -rf "$dir" && removed=$((removed+1)) && echo "removed ${root#/node/}/$x"',
+    '  done',
+    'done',
+    'for projdir in /node/projects/*; do',
+    '  [ -d "$projdir" ] && [ ! -L "$projdir" ] || continue',
+    '  kinddir="$projdir/opencode-data"',
     '  [ -d "$kinddir" ] && [ ! -L "$kinddir" ] || continue',
     '  for entry in "$kinddir"/*; do',
     '    [ -e "$entry" ] && [ ! -L "$entry" ] || continue',
     '    id=$(basename "$entry")',
-    '    case ",$keep," in *",$id,"*) continue;; esac',
+    '    case "$LIVE" in *",$id,"*) continue;; esac',
     // A directory touched since the cutoff is a create staging into it.
-    '    if [ -n "$(find "$entry" -maxdepth 0 -newermt "@$CUTOFF" 2>/dev/null)" ]; then continue; fi',
-    '    rm -rf "$entry" && removed=$((removed+1)) && echo "removed $slug/opencode-data/$id"',
+    '    fresh "$entry" && continue',
+    '    rm -rf "$entry" && removed=$((removed+1)) && echo "removed $(basename "$projdir")/opencode-data/$id"',
     '  done',
     'done',
     'echo "node-local-sweep removed $removed"',
@@ -110,14 +131,13 @@ export function buildNodeLocalSweepScript(): string {
 export function buildNodeLocalSweepPodManifest(params: {
   nodeName: string
   imageRef: string
-  running: Map<string, Set<string>>
+  /** Live project ids plus every name a live pod mounts. */
+  kept: ReadonlySet<string>
+  liveWorktreeIds: ReadonlySet<string>
   cutoffEpoch: number
   runId: string
   nodeIndex: number
 }): Record<string, unknown> {
-  const keep = [...params.running.entries()]
-    .filter(([, ids]) => ids.size > 0)
-    .map(([slug, ids]) => `${slug}=${[...ids].join(',')}`)
   return {
     apiVersion: 'v1',
     kind: 'Pod',
@@ -139,7 +159,7 @@ export function buildNodeLocalSweepPodManifest(params: {
         imagePullPolicy: 'IfNotPresent',
         command: [
           'sh', '-c', `${buildNodeLocalSweepScript()}\n`, '--',
-          String(params.cutoffEpoch), ...keep,
+          String(params.cutoffEpoch), [...params.kept].join(','), [...params.liveWorktreeIds].join(','),
         ],
         securityContext: { runAsUser: 0 },
         volumeMounts: [{ name: 'node', mountPath: SWEEP_POD_PATH }],
@@ -150,6 +170,32 @@ export function buildNodeLocalSweepPodManifest(params: {
       }],
     },
   }
+}
+
+interface RawPodList {
+  items: Array<{ spec?: { volumes?: Array<{ hostPath?: { path?: string } }> } }>
+}
+
+/**
+ * The `<x>` of every `projects/<x>` and `shared-images/<x>` a pod of this
+ * install mounts, read off the pod specs the server wrote. Rejects rather
+ * than resolving empty: an unreadable list must not read as "nothing is
+ * mounted".
+ */
+async function mountedProjectNames(): Promise<Set<string>> {
+  const pods = await kubectlGetJson<RawPodList>([
+    'get', 'pods', '-n', k8sNamespace(), '-l', worktreePodSelector(),
+  ])
+  const names = new Set<string>()
+  for (const pod of pods?.items ?? []) {
+    for (const vol of pod.spec?.volumes ?? []) {
+      const p = vol.hostPath?.path
+      if (!p) continue
+      const [tier, name] = path.posix.relative(nodeLocalNodePath(), p).split('/')
+      if ((tier === 'projects' || tier === 'shared-images') && name) names.add(name)
+    }
+  }
+  return names
 }
 
 /** Last sweep this server life ran, or never. */
@@ -173,7 +219,7 @@ interface RawNodeList {
  * else.
  */
 export async function reapNodeLocal(
-  running: Map<string, Set<string>>,
+  live: NodeLocalLiveSet,
   opts: { nowMs?: number } = {},
 ): Promise<void> {
   const now = opts.nowMs ?? Date.now()
@@ -193,10 +239,17 @@ export async function reapNodeLocal(
     const imageRef = await ensureBuilderImage()
     const runId = crypto.randomBytes(4).toString('hex')
     const cutoffEpoch = Math.floor((now - NODE_LOCAL_SWEEP_SLACK_MS) / 1000)
+    const kept = new Set([...live.projectIds, ...await mountedProjectNames()])
     const nodes = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
     for (const [nodeIndex, { metadata }] of (nodes?.items ?? []).entries()) {
       const manifest = buildNodeLocalSweepPodManifest({
-        nodeName: metadata.name, imageRef, running, cutoffEpoch, runId, nodeIndex,
+        nodeName: metadata.name,
+        imageRef,
+        kept,
+        liveWorktreeIds: live.worktreeIds,
+        cutoffEpoch,
+        runId,
+        nodeIndex,
       })
       const { phase, logs } = await runPodToCompletion(manifest, {
         timeoutMs: NODE_LOCAL_SWEEP_TIMEOUT_MS,

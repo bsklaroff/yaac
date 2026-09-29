@@ -3,6 +3,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { HASH_RE, setupStackingHarness } from './stacking-harness'
 
+const PROJECT = { slug: 'myproject', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
+
 describe('resolveImageChain', () => {
   const h = setupStackingHarness()
 
@@ -16,7 +18,7 @@ describe('resolveImageChain', () => {
     await fs.writeFile(path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain('myproject', 'yaac', true)
+    const { layers } = await resolveImageChain(PROJECT, 'yaac', true)
     expect(layers.map((l) => l.name)).toEqual(['base', 'tools', 'nestable', 'project', 'user'])
   })
 
@@ -38,7 +40,7 @@ describe('resolveImageChain', () => {
     )
 
     const { resolveImageChain } = await h.load()
-    const { layers, finalTag } = await resolveImageChain('myproject', 'yaac', true)
+    const { layers, finalTag } = await resolveImageChain(PROJECT, 'yaac', true)
 
     const described = layers.map((l) => {
       const args = Object.entries(l.buildArgs ?? {}).map(([k, v]) => `${k}=${v}`).join(',')
@@ -52,12 +54,14 @@ describe('resolveImageChain', () => {
       expect.stringMatching(
         new RegExp(`^yaac-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
       ),
+      // The project's own layers live in repos named by its id, never beside
+      // the trusted chain.
       expect.stringMatching(
-        new RegExp(`^yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
+        new RegExp(`^yaac-proj-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
       ),
-      expect.stringMatching(
-        new RegExp(`^yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`),
-      ),
+      expect.stringMatching(new RegExp(
+        `^yaac-user-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-proj-${PROJECT.id}:${HASH_RE}\\]$`,
+      )),
     ])
     expect(finalTag).toBe(layers.at(-1)!.tag)
   })
@@ -74,7 +78,7 @@ describe('resolveImageChain', () => {
     )
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain('myproject', 'yaac', true)
+    const { layers } = await resolveImageChain(PROJECT, 'yaac', true)
     expect(layers.map((l) => l.name)).toEqual(['project'])
     // A standalone Dockerfile.yaac owns its own user setup, so it is handed
     // no build arg — not even a uid.
@@ -88,7 +92,7 @@ describe('resolveImageChain', () => {
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain('myproject', 'yaac')
+    const { layers } = await resolveImageChain(PROJECT, 'yaac')
     expect(layers.map((l) => l.name)).toEqual(['project'])
   })
 
@@ -100,7 +104,7 @@ describe('resolveImageChain', () => {
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain('myproject', 'yaac')
+    const { layers } = await resolveImageChain(PROJECT, 'yaac')
     expect(layers.map((l) => l.name)).toEqual(['project'])
   })
 
@@ -115,7 +119,7 @@ describe('resolveImageChain', () => {
 
     const { resolveImageChain } = await h.load()
     const tagsByName = async (): Promise<Record<string, string>> => {
-      const { layers } = await resolveImageChain('myproject', 'yaac')
+      const { layers } = await resolveImageChain(PROJECT, 'yaac')
       return Object.fromEntries(layers.map((l) => [l.name, l.tag]))
     }
 
