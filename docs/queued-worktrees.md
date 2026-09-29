@@ -157,5 +157,7 @@ stands in for it.
   shows entries indented under their parents.
 - **Webapp.** One create dialog (Alt+N, a row's `…` menu, a queued row) with
   a **Start** field: `Now`, or after a live worktree or queued entry stops.
-  Queued rows nest under their parent in the sidebar; the stop dialog lists a
-  worktree's children so they can be edited or discarded before they start.
+  Queued rows nest under their parent in the sidebar, each worktree's whole
+  set (chains included) behind one collapsible "n queued worktrees"
+  expander; the stop dialog lists a worktree's children so they can be
+  edited or discarded before they start.

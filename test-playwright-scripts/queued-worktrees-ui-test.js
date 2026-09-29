@@ -10,6 +10,9 @@
  *     shows nested under the worktree with a "· queued" meta line.
  *  3. The queued row's own menu queues a second entry after it, which nests
  *     one step deeper (a chain).
+ *  3b. The worktree's whole queued set sits behind one "2 queued worktrees"
+ *     expander (the chain counted, and no expander of its own); clicking it
+ *     hides both rows and clicking again brings them back.
  *  4. Clicking a queued row opens the dialog in edit mode; Save updates it.
  *  5. The row menu's Stop… lists the queued children ("Stop and start 1
  *     queued"), marks the chained one as waiting, and its Edit opens the
@@ -24,9 +27,10 @@
  * makes are discarded by the end; if a check fails midway, discard leftovers
  * from the sidebar.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to
- * ~/.yaac) — so run `pnpm build` + `yaac server restart` first.
+ * Drives the app the server itself serves (`dist/`), at the origin
+ * `$YAAC_DATA_DIR-client/server.json` selects (data dir defaults to ~/.yaac)
+ * with no credential, as a loopback origin is this machine's owner — so run
+ * `pnpm build` + `yaac server restart` first.
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/queued-worktrees-ui-test.js
  * (SCREENSHOT_DIR for screenshots; defaults to /tmp/yaac-shots.
@@ -54,16 +58,19 @@ function requirePlaywright() {
   }
 }
 
-function readServerLock() {
-  const dataDir = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
-  const candidates = [
-    path.join(dataDir, 'server-local', '.server.lock'),
-    path.join(dataDir, '.server.lock'),
-  ]
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
+/** The origin this install's clients dial: `server.json`'s selected entry,
+ *  which must be loopback — the script sends no credential. */
+function readServerOrigin() {
+  const dataDir = process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac')
+  const file = `${dataDir}-client/server.json`
+  if (!fs.existsSync(file)) throw new Error(`no ${file} — is the server running?`)
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
+  if (!cfg.enabled || !cfg.url) throw new Error(`no server selected in ${file} — try: yaac server start`)
+  const host = new URL(cfg.url).hostname
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(host)) {
+    throw new Error(`${cfg.url} is not loopback; this script only drives a local server`)
   }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
+  return cfg.url
 }
 
 let failures = 0
@@ -75,21 +82,11 @@ function check(name, cond, detail = '') {
 const PROJECT = process.env.PROJECT
 if (!PROJECT) throw new Error('set PROJECT=<slug> to a project with a running worktree')
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
-const lock = readServerLock()
-const origin = `http://127.0.0.1:${lock.port}`
-const auth = { authorization: `Bearer ${lock.secret}` }
+const origin = readServerOrigin()
 
-async function mintToken() {
-  const res = await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
-const { worktrees } = await (await fetch(`${origin}/worktree/list?project=${PROJECT}`, { headers: auth })).json()
+const listRes = await fetch(`${origin}/worktree/list?project=${PROJECT}`)
+if (!listRes.ok) throw new Error(`listing worktrees failed: HTTP ${listRes.status}`)
+const { worktrees } = await listRes.json()
 const parent = process.env.WORKTREE
   ? worktrees.find((w) => w.worktreeId.startsWith(process.env.WORKTREE))
   : worktrees.find((w) => !w.stopping)
@@ -104,8 +101,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${PROJECT}&token=${await mintToken()}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`${origin}/?project=${PROJECT}`)
   fs.mkdirSync(SHOTS, { recursive: true })
 
   const aside = page.locator('aside')
@@ -167,6 +163,19 @@ try {
   check('a chain nests one step deeper', await indent(secondRow) > firstIndent,
     `${firstIndent} → ${await indent(secondRow)}`)
   await page.screenshot({ path: path.join(SHOTS, 'queued-rows.png') })
+
+  // (3b) One expander for the whole set, chain included.
+  const expanders = aside.getByRole('button', { name: /^\d+ queued worktrees?$/ })
+  check('one expander, counting the chain', JSON.stringify(await expanders.allTextContents()) === '["2 queued worktrees"]',
+    JSON.stringify(await expanders.allTextContents()))
+  await expanders.first().click()
+  const hidden = await aside.getByText(second).waitFor({ state: 'hidden', timeout: 5_000 }).then(() => true, () => false)
+  check('collapsing hides the whole set', hidden && !(await aside.getByText(first).isVisible()))
+  await page.waitForTimeout(300) // let the chevron finish turning
+  await page.screenshot({ path: path.join(SHOTS, 'queued-collapsed.png') })
+  await expanders.first().click()
+  check('expanding brings it back',
+    await secondRow.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false))
 
   // (4) Edit on click.
   await firstRow.getByText(first).click()

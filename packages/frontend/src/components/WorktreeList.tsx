@@ -355,9 +355,29 @@ export function WorktreeList({
     ...held.map((h) => [h.worktreeId, { name: h.title || h.prompt || 'New worktree', kind: 'held' }] as const),
     ...queued.map((e) => [e.id, { name: queuedTitle(e), kind: 'queued' }] as const),
   ])
+  // Held here rather than in each set, so a set stays collapsed while its
+  // worktree moves between sections (stops, restarts, changes group).
+  const [collapsedQueues, setCollapsedQueues] = useState<ReadonlySet<string>>(new Set())
+  // Forget a set once it empties, so the next one queued under that worktree
+  // starts open rather than hiding an entry the user never collapsed.
+  const queuedParents = [...layout.queuedChildren.keys()].join('\n')
+  useEffect(() => {
+    const parents = new Set(queuedParents.split('\n'))
+    setCollapsedQueues((prev) => {
+      const kept = [...prev].filter((id) => parents.has(id))
+      return kept.length === prev.size ? prev : new Set(kept)
+    })
+  }, [queuedParents])
   const queueContext: QueueContextValue = {
     children: layout.queuedChildren,
     parent: (id) => names.get(id) ?? { name: '', kind: 'gone' },
+    collapsed: collapsedQueues,
+    setOpen: (id, open) => setCollapsedQueues((prev) => {
+      const next = new Set(prev)
+      if (open) next.delete(id)
+      else next.add(id)
+      return next
+    }),
   }
 
   // --- row drag (move a worktree between the default list and groups) ---
@@ -498,7 +518,7 @@ export function WorktreeList({
         {layout.provisioning.map((p) => (
           <Fragment key={p.worktreeId}>
             <ProvisioningRow entry={p} />
-            <QueuedRows parentId={p.worktreeId} depth={1} />
+            <QueuedSet parentId={p.worktreeId} />
           </Fragment>
         ))}
 
@@ -515,13 +535,13 @@ export function WorktreeList({
           {layout.defaultList.map((s) => (
             <Fragment key={s.worktreeId}>
               <WorktreeRow worktree={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
-              <QueuedRows parentId={s.worktreeId} depth={1} />
+              <QueuedSet parentId={s.worktreeId} />
             </Fragment>
           ))}
           {layout.defaultHeld.map((d) => (
             <Fragment key={d.worktreeId}>
               <DeletedWorktreeRow entry={d} />
-              <QueuedRows parentId={d.worktreeId} depth={1} />
+              <QueuedSet parentId={d.worktreeId} />
             </Fragment>
           ))}
           {drag?.active && layout.defaultList.length === 0 && (
@@ -737,19 +757,19 @@ function GroupSection({
           {provisioning.map((p) => (
             <Fragment key={p.worktreeId}>
               <ProvisioningRow entry={p} />
-              <QueuedRows parentId={p.worktreeId} depth={1} />
+              <QueuedSet parentId={p.worktreeId} />
             </Fragment>
           ))}
           {members.map((s) => (
             <Fragment key={s.worktreeId}>
               <WorktreeRow worktree={s} shownGroups={shownGroups} drag={drag} rowIds={rowIds} />
-              <QueuedRows parentId={s.worktreeId} depth={1} />
+              <QueuedSet parentId={s.worktreeId} />
             </Fragment>
           ))}
           {ghosts.map((d) => (
             <Fragment key={d.worktreeId}>
               <DeletedWorktreeRow entry={d} />
-              <QueuedRows parentId={d.worktreeId} depth={1} />
+              <QueuedSet parentId={d.worktreeId} />
             </Fragment>
           ))}
         </Collapsible.Panel>
@@ -1270,6 +1290,9 @@ interface QueueContextValue {
   /** Queued worktrees by the id they wait on. */
   children: Map<string, QueuedWorktreeEntry[]>
   parent: (id: string) => QueueParent
+  /** Worktree ids whose queued set is collapsed. */
+  collapsed: ReadonlySet<string>
+  setOpen: (id: string, open: boolean) => void
 }
 
 /** Handed through the list rather than threaded through every section and
@@ -1278,7 +1301,42 @@ interface QueueContextValue {
 const QueueContext = createContext<QueueContextValue>({
   children: new Map(),
   parent: () => ({ name: '', kind: 'gone' }),
+  collapsed: new Set(),
+  setOpen: () => {},
 })
+
+/** Everything queued under a worktree row, behind one expander counting it
+ *  at every depth. Only this top-level set collapses; the chains inside it
+ *  always show in full. A failed launch is shown only on its own row, so the
+ *  expander counts those too, or a collapsed set would hide one. */
+function QueuedSet({ parentId }: { parentId: string }): JSX.Element | null {
+  const { children, collapsed, setOpen } = useContext(QueueContext)
+  if (!children.has(parentId)) return null
+  const entries: QueuedWorktreeEntry[] = []
+  const walk = (id: string): void => {
+    for (const e of children.get(id) ?? []) {
+      entries.push(e)
+      walk(e.id)
+    }
+  }
+  walk(parentId)
+  const n = entries.length
+  const failed = entries.filter((e) => e.launchError !== undefined).length
+  const open = !collapsed.has(parentId)
+  return (
+    <Collapsible.Root open={open} onOpenChange={(next) => setOpen(parentId, next)}>
+      <Collapsible.Trigger className="mx-2 flex items-center gap-1 pl-5 pr-2 py-1 text-xs
+        text-text-faint outline-none transition hover:text-text-dim">
+        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
+        {n} queued worktree{n === 1 ? '' : 's'}
+        {failed > 0 && <span className="text-[#d65858]">· {failed} failed</span>}
+      </Collapsible.Trigger>
+      <Collapsible.Panel>
+        <QueuedRows parentId={parentId} depth={1} />
+      </Collapsible.Panel>
+    </Collapsible.Root>
+  )
+}
 
 /** The queued worktrees waiting on `parentId`, each followed by its own
  *  chain, one indent step deeper per link. */
