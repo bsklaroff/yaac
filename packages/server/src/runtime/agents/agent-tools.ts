@@ -11,7 +11,8 @@
  * Splitting them across folders is how a rename silently stops a pane from
  * ever being classified.
  */
-import { AGENT_TOOLS, MAX_MODEL_LENGTH } from '@yaac/shared/types'
+import path from 'node:path'
+import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES } from '@yaac/shared/types'
 import { codexDir } from '@yaac/shared/project-paths'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 import { acpAdapterFor, acpPermissionModeFor } from './acp-adapters'
@@ -39,15 +40,16 @@ export type AgentPaneStatus = 'running' | 'waiting'
  * derivable from any id at all — the recorded path is the only handle.
  *
  * opencode is the exception it always is: no host transcript, so its first
- * message comes from an HTTP probe into the running container and is
- * unavailable once the pod is gone.
+ * message comes from an HTTP probe into the running container, for the
+ * session its id names, and is unavailable once the pod is gone.
  */
 export async function getAgentSessionFirstMessage(
   tool: AgentTool,
   transcriptPath: string | undefined,
   jobName?: string,
+  agentSessionId?: string,
 ): Promise<string | undefined> {
-  if (tool === 'opencode') return jobName ? getSessionOpencodeFirstUserMessage(jobName) : undefined
+  if (tool === 'opencode') return jobName ? getSessionOpencodeFirstUserMessage(jobName, agentSessionId) : undefined
   if (transcriptPath === undefined) return undefined
   if (tool === 'codex') return getCodexFirstUserMessage(transcriptPath)
   if (tool === 'pi') return getPiFirstUserMessage(transcriptPath)
@@ -115,6 +117,56 @@ export function splitAgentReport(value: string): { model: string; mode: string }
 }
 
 /**
+ * The tmux pane option naming the conversation a pane holds, as
+ * `<tool>|<id>|<project-relative transcript>` — set by
+ * `worktree-bin/yaac-agent-links` from claude's and codex's `SessionStart`
+ * hooks, pi's extension and opencode's plugin, so it moves on every `/clear`,
+ * `/new` or resume, and dies with its pane.
+ */
+const SESSION_PANE_OPTION = '@yaac-session'
+
+/**
+ * The tmux format a pane's session subscription watches. Filtered and bounded
+ * inside the format for the same reason the model is (`agentModelFormat`):
+ * anything in the workspace can set the option.
+ */
+export const PANE_SESSION_FORMAT = `#{=1024;s/[^ -~]//:${SESSION_PANE_OPTION}}`
+
+/** A conversation as a pane names it (`PANE_SESSION_FORMAT`). */
+export interface PaneSession {
+  tool: AgentTool
+  agentSessionId: string
+  /** Project-relative, as the column stores it. */
+  transcriptPath?: string
+}
+
+/**
+ * The conversation a pushed `PANE_SESSION_FORMAT` value names, or undefined
+ * for an empty or malformed one.
+ *
+ * This is the layer that treats the value as untrusted, and it is the only
+ * one: the registry records it verbatim, a restart interpolates the id into a
+ * launch command as a bare argv word (`--resume <id>`), and the stopped
+ * listing stats and parses whatever path it names. So the id is held to a
+ * bounded charset no shell reads anything into, starting with a letter or
+ * digit so it can never be read as a flag (`codex resume
+ * --dangerously-bypass-approvals-and-sandbox`), and a path the reporter could
+ * not legitimately have written — absolute, or climbing out of the project —
+ * is dropped.
+ */
+export function parsePaneSession(value: string): PaneSession | undefined {
+  const [tool, id, ...rest] = value.trim().split('|')
+  const rel = rest.join('|')
+  if (!AGENT_TOOLS.includes(tool as AgentTool) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id ?? '')) return undefined
+  const safe = rel !== '' && !path.isAbsolute(rel) && !rel.split(/[\\/]/).includes('..')
+  return {
+    tool: tool as AgentTool,
+    agentSessionId: id,
+    ...(safe ? { transcriptPath: rel } : {}),
+  }
+}
+
+/**
  * The posture an agent's reported mode (`LiveAgent.reportedMode`) stands for,
  * or undefined when it names none yaac has — which is left unrecorded rather
  * than rounded to a neighbour.
@@ -122,9 +174,10 @@ export function splitAgentReport(value: string): { model: string; mode: string }
  * Under `acp` it is a session mode id, read back through the adapter's
  * profile. Under `tui` it is what the tool's reporter published: claude's own
  * mode name, or opencode's agent, which only means something against the
- * posture the worktree runs under now (`current`). codex publishes none — its
- * hooks can only tell `bypassPermissions` from everything else, so its posture
- * is read from its rollout (`getCodexPermissionMode`) — and pi has no modes.
+ * posture the worktree runs under now (`current`). codex's is already a
+ * posture: its hooks can only tell `bypassPermissions` from everything else,
+ * so the registry reads it from the rollout its pane names
+ * (`getCodexPermissionMode`). pi has no modes.
  */
 export function resolveAgentPermissionMode(
   mode: AgentMode,
@@ -135,6 +188,7 @@ export function resolveAgentPermissionMode(
   if (mode === 'acp') return acpPermissionModeFor(acpAdapterFor(tool), reported)
   if (tool === 'claude') return claudePermissionMode(reported)
   if (tool === 'opencode') return opencodePermissionMode(reported, current)
+  if (tool === 'codex') return PERMISSION_MODES.find((m) => m === reported)
   return undefined
 }
 

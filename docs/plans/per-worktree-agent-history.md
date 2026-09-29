@@ -10,8 +10,8 @@ so any session can delete any sibling's history, and yaac has no second copy —
 The same goes for claude's `file-history/` (what `/rewind` restores from) and
 codex's sqlite databases.
 
-ACP records (`acp/<worktreeId>`), opencode data (`opencode-data/<worktreeId>`)
-and the session-starts log are already per worktree and are not touched here.
+ACP records (`acp/<worktreeId>`) and opencode data (`opencode-data/<worktreeId>`)
+are already per worktree and are not touched here.
 
 ## Goal and boundary
 
@@ -101,9 +101,6 @@ union of:
 
 - the link rows (`listWorktreeAgentSessions`, the whole history rather than
   only `active`)
-- every id in the worktree's session-starts log, including lines from earlier
-  lives. The log is never truncated, so it names each `/clear` and each extra
-  window even when the pod died before the sweep turned a sighting into a row.
 - the ACP record names in `acp/<wt>/`. ACP conversations get no hook line, and
   the SDK's claude still writes a transcript under `projects/`.
 - the worktree id itself, which the pinned first conversation uses and which
@@ -269,8 +266,7 @@ test that fails if a pin bump changes it:
   spawned a child. After a restart every active one resumes, and every inactive
   one has been moved into A's history. That includes the claude subagent's
   `<sid>/subagents/` files, a codex child rollout planted with only a
-  `session_meta` parent link, and a conversation planted only as a
-  session-starts line with no row. A pre-upgrade layout, planted before
+  `session_meta` parent link. A pre-upgrade layout, planted before
   restart, is moved in.
 - **test/e2e-containerless:** the existing cases, plus a worktree whose
   history was planted in the k8s shape resumes (the k8s→containerless half of

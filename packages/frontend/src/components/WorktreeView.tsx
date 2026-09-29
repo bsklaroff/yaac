@@ -36,7 +36,7 @@ import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
 import { ForwardedPortLinks, portLinkHref, portLinkLabel } from '#components/ForwardedPortLinks'
 import { getWorktreeTerminals, createShellTerminal, killWorktreeTerminal } from '#lib/terminalsApi'
-import { claimChord, cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
+import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import {
   addColumn,
   computeColumns,
@@ -446,13 +446,15 @@ export function WorktreeView({
       const id = matchShortcut(state.bindings, e)
       switch (id) {
         case 'new-shell':
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           ctx.openShell()
           return
         case 'kill-terminal': {
           // The agent pane isn't killable — leave the chord alone then.
           if (!ctx.activeTab || ctx.activeTab === 'agent') return
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           // A special pane just closes (no tmux window, no confirm).
           if (isSpecialPane(ctx.activeTab)) {
             closePaneRef.current(ctx.activeTab)
@@ -464,12 +466,14 @@ export function WorktreeView({
         case 'open-files':
           // Open (or surface) the explorer and focus its filter — the
           // quick-open: Alt+E, a few letters, Enter.
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           state.openFiles(ctx.sid)
           state.setFilesFindPending(true)
           return
         case 'open-changes':
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           state.openChanges(ctx.sid)
           return
         case 'open-preview':
@@ -477,7 +481,8 @@ export function WorktreeView({
           if (ctx.previewPorts.length === 0) return
           // Open/focus the preview pane; the store seeds the shown port lazily
           // (the first forwarded port until the toolbar dropdown picks another).
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           state.openPreview(ctx.sid)
           return
         case 'view-tabs':
@@ -488,7 +493,8 @@ export function WorktreeView({
           // hardware keyboard attached. Leave the chord alone there, the same
           // way the header's toggle button is `!isMobile`-gated.
           if (ctx.isMobile) return
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           state.setViewMode(id === 'view-tabs' ? 'tabs' : 'tiles')
           return
         case 'move-terminal-left':
@@ -497,7 +503,8 @@ export function WorktreeView({
           // mode, its slot in the flat strip in tabs mode. Then re-focus it so
           // it stays the visible/active pane after the shuffle.
           if (!ctx.activeTab) return
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           const dir = id === 'move-terminal-right' ? 1 : -1
           const cur = ctx.sid in state.layouts ? state.layouts[ctx.sid] : singleColumn('agent')
           if (!cur) return
@@ -515,7 +522,8 @@ export function WorktreeView({
           if (delta === null) return
           const next = resolveCycleTarget(ctx.targets, ctx.activeTab, delta)
           if (!next) return
-          claimChord(e)
+          e.preventDefault()
+          e.stopPropagation()
           useUiStore.getState().focusTerminal(ctx.sid, next)
           return
         }

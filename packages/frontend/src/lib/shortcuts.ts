@@ -173,68 +173,6 @@ export function matchShortcut(bindings: BindingMap, e: ShortcutKey): ShortcutId 
   return null
 }
 
-/**
- * Take a matched chord's keydown for its command: nothing else — xterm's
- * textarea, the browser — acts on it.
- *
- * On macOS an Option chord on a dead key (Option+N is `˜`, Option+E `´` on a
- * US layout) is a problem preventDefault cannot touch: Chrome hands the key to
- * the input method before the page sees it, so the accent is already on its
- * way as a composition, and it lands on whatever has focus when it arrives —
- * usually the field the command just focused. Such a keydown says so with
- * `key === 'Dead'`, and a composition that starts before the next key event
- * is discarded.
- */
-export function claimChord(e: KeyboardEvent): void {
-  e.preventDefault()
-  e.stopPropagation()
-  if (e.key !== 'Dead') return
-  deadChord = e
-  if (straysWatched) return
-  straysWatched = true
-  // Chrome sends the accent before the chord's own keyup, and none at all
-  // when nothing editable had focus — so the next key event of any kind ends
-  // the wait, and a later composition (dictation, a mouse-picked candidate)
-  // is the user's.
-  for (const type of ['keydown', 'keyup']) {
-    window.addEventListener(type, (k) => { if (k !== deadChord) deadChord = null }, true)
-  }
-  window.addEventListener('compositionstart', discardStray, true)
-  // The stray's own events never reach the field's handlers, so React state
-  // never holds the accent and xterm never forwards it to the PTY.
-  for (const type of ['compositionupdate', 'compositionend', 'beforeinput', 'input', 'change']) {
-    window.addEventListener(type, (ev) => { if (ev.target === stray) ev.stopImmediatePropagation() }, true)
-  }
-}
-
-let straysWatched = false
-/** The dead-key chord whose accent is still to come. */
-let deadChord: KeyboardEvent | null = null
-/** The field the accent landed in, until it is removed. */
-let stray: EventTarget | null = null
-
-function discardStray(e: Event): void {
-  if (deadChord === null) return
-  deadChord = null
-  const el = e.target
-  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return
-  e.stopImmediatePropagation()
-  stray = el
-  const { value, selectionStart, selectionEnd } = el
-  // Once the composition has landed: a blur commits it and makes Chrome drop
-  // the input method's pending accent too, then the field goes back to what
-  // it held (selection too), which is what its handlers — having seen none
-  // of it — expect.
-  setTimeout(() => {
-    const focused = document.activeElement === el
-    el.blur()
-    el.value = value
-    el.setSelectionRange(selectionStart, selectionEnd)
-    if (focused) el.focus()
-    stray = null
-  })
-}
-
 /** The cycle direction a command implies, or null if it isn't a cycler. */
 export function cycleDeltaFor(id: ShortcutId): CycleDelta | null {
   if (id === 'prev-worktree' || id === 'prev-terminal') return -1

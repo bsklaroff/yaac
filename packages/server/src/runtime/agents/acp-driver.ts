@@ -415,8 +415,8 @@ class AcpConnection implements AgentConnection {
         if (entry.conversation) {
           registerAcpConversation(this.session.slug, this.session.worktreeId, { handle, agentSessionId }, entry.conversation)
         }
-        // The registry reconciler turns this into the conversation's DB row —
-        // ACP mode's replacement for the in-pod hook's session-starts log.
+        // The registry reconciler turns this into the conversation's DB row,
+        // as it does a tui pane's named conversation.
         this.publishAgents()
       },
       onModel: (model, name) => {

@@ -12,14 +12,24 @@ interface CodexEntry {
   payload?: {
     type?: string
     message?: string
+    item?: { type?: string; content?: Array<{ type?: string; text?: string }> }
   }
 }
 
+/**
+ * A user turn's text: a `user_message` event, or — as codex-cli 0.156.1
+ * writes it — an `item_completed` event carrying a `UserMessage` item. Never
+ * a `response_item` with the user role, which also carries the bootstrap
+ * context (AGENTS.md) codex injects ahead of the first real turn.
+ */
 function getUserMessageText(entry: CodexEntry): string | undefined {
-  if (entry.payload?.type === 'user_message' && typeof entry.payload.message === 'string' && entry.payload.message.length > 0) {
-    return entry.payload.message
-  }
-  return undefined
+  const p = entry.payload
+  const text = p?.type === 'user_message'
+    ? p.message
+    : p?.type === 'item_completed' && p.item?.type === 'UserMessage'
+      ? p.item.content?.find((c) => c.type === 'text')?.text
+      : undefined
+  return typeof text === 'string' && text.length > 0 ? text : undefined
 }
 
 /**
@@ -72,17 +82,9 @@ export async function getCodexFirstUserMessage(jsonlPath: string): Promise<strin
 export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 
 /**
- * The SessionStart hook codex is launched with: the `yaac-agent-links` claude
- * registers in its settings.json, which records each conversation codex
- * starts, on the pane it runs in, in the worktree's session-starts log.
- */
-const CODEX_SESSION_HOOK = 'yaac-agent-links "$CODEX_HOME" codex'
-
-/**
- * The `-c` settings that give codex its session hook, trust the repository
- * root codex keys folder trust on (the parent of `repoGitDir`), and skip its
- * startup update check — the same on every substrate, since nothing here
- * needs an image to carry it.
+ * The `-c` settings that trust the repository root codex keys folder trust on
+ * (the parent of `repoGitDir`) and skip its startup update check — the same
+ * on every substrate, since nothing here needs an image to carry it.
  *
  * With the launch's `--dangerously-bypass-hook-trust` (`buildAgentCmd`),
  * codex opens no startup screen at all: no "Trust this folder?", no "Hooks
@@ -97,7 +99,6 @@ const CODEX_SESSION_HOOK = 'yaac-agent-links "$CODEX_HOME" codex'
 export function codexLaunchConfig(repoGitDir?: string): string[] {
   return [
     'check_for_update_on_startup=false',
-    `hooks.SessionStart=[{matcher="*",hooks=[{type="command",command=${JSON.stringify(CODEX_SESSION_HOOK)},timeout=10}]}]`,
     ...(repoGitDir !== undefined
       ? [`projects={${JSON.stringify(path.dirname(repoGitDir))}={trust_level="trusted"}}`]
       : []),

@@ -444,12 +444,12 @@ them announces a change to anything outside the process as it happens:
   posture no looser. The collaboration mode those entries also name is not
   read — codex's plan mode restrains the model by instruction only, over
   whatever sandbox is in force, so it is left unrecorded. It is read on the
-  reconcile pass rather than pushed. A reading is news when it changed since
-  the last, or — on the first — when its entry was written during the current
-  pod life: a restart resumes a rollout whose newest entry is the old
-  process's until codex writes its first turn, and that is where the worktree
-  stands, not a move. The rollouts read are the ones codex's hook recorded
-  (docs/worktree-storage.md).
+  reconcile pass, from the rollout each codex pane names
+  (docs/worktree-storage.md), and then treated as that pane's report like any
+  other — but only an entry written during the current pod life counts: a
+  restart resumes a rollout whose newest entry is the old process's until
+  codex writes its first turn, and that is where the worktree stands, not a
+  move.
 - **pi** has no permission system to move.
 
 claude and opencode reach the server by push: the reporter's option rides the

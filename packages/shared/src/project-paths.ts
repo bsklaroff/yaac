@@ -312,25 +312,6 @@ export function worktreesDir(slug: string): string {
 }
 
 /**
- * GLOBAL. What the in-pod `SessionStart` hook appends to — one JSON line per
- * firing, named for the only thing that ever writes it.
- *
- * The hook is the only witness of a user-started agent session (`/clear`, a
- * hand-typed `claude --resume`), because it alone sees `TMUX_PANE` beside the
- * tool's worktree id. Appending is what makes it safe to mount as a `File`
- * hostPath from inside a gVisor sandbox: nothing ever renames it, so the
- * inode the mount pins stays the one both sides are writing and reading.
- */
-export function worktreeSessionStartsPath(slug: string, worktreeId: string): string {
-  return globalProjectPath(slug, 'meta', `${worktreeId}.session-starts.jsonl`)
-}
-
-/** GLOBAL. The `meta/` directory the session-starts logs live in. */
-export function worktreeMetaDir(slug: string): string {
-  return globalProjectPath(slug, 'meta')
-}
-
-/**
  * GLOBAL, deliberately. The worktree's `/workspace`. A worktree is hot,
  * per-worktree data that would rather be node-local, but its `.git` file
  * points into `repo/.git/worktrees/<sid>` and the server creates it with

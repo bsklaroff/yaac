@@ -249,20 +249,6 @@ export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
 export const CONTAINER_ACP_DIR = '/tmp/yaac-acp'
 
 /**
- * In-pod path of the worktree's session-starts log — the host side is
- * `worktreeSessionStartsPath`. The `SessionStart` hook appends one JSON line
- * here per firing, and the discovery sweep folds them into the worktree's metadata
- * document.
- *
- * Tool-independent on purpose: one path for every tool, so the hook needs no
- * per-tool knowledge to find it. What it still takes as arguments is its own
- * home and that home's project-relative name, which is all the translation a
- * transcript path needs (an in-pod `/home/yaac/.claude/...` becomes a
- * `claude/...` the host can resolve).
- */
-export const CONTAINER_SESSION_STARTS_LOG = '/home/yaac/.yaac/session-starts.jsonl'
-
-/**
  * Where opencode keeps its per-worktree SQLite database inside the
  * workspace — the NODE-LOCAL working copy under a pod, the global
  * checkpoint itself under containerless (`opencodeCheckpointDir`).

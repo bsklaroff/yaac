@@ -36,7 +36,6 @@ import {
   CONTAINER_ATTACHMENTS_DIR,
   CONTAINER_OPENCODE_CHECKPOINT,
   CONTAINER_OPENCODE_DATA,
-  CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
 import { missingCredentialError, parseGitRemote, projectRemoteUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
@@ -64,7 +63,6 @@ import {
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,
-  ensureClaudeHooks,
   ensureAgentReporters,
   validateInitWindows,
   verifyAgentWindowAlive,
@@ -79,7 +77,6 @@ import {
   setWorktreeMamaTokenHash,
 } from '#db'
 import { reportAgentLaunchFailure } from './provisioning'
-import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
   prepareModuleDirs,
@@ -1003,13 +1000,11 @@ export async function createWorktree(
   // The life this create is starting, stamped after the row exists (it is an
   // UPDATE) and before any handle can be recorded — a life is exactly the
   // boundary that invalidates the previous one's handles, and stamping it
-  // clears them in the same transaction. Removing the pane pointers from
-  // three tool homes is what worktree create used to do here instead.
+  // clears them in the same transaction.
   await applyWorktreeEvent({
     type: 'worktree-life-started',
     projectSlug,
     worktreeId,
-    logBytes: await sessionStartsLogSize(projectSlug, worktreeId),
   })
 
   if (!options.prewarm) {
@@ -1210,11 +1205,6 @@ export async function createWorktree(
     // carries neither the directory nor the mount.
     const acpLogs = mode === 'acp' ? acpLogDir(projectSlug, worktreeId) : undefined
     if (acpLogs !== undefined) await fs.mkdir(acpLogs, { recursive: true })
-    // Pre-created so the pod's `File` hostPath mount resolves on the first
-    // attempt, the same reason the worktree dir is. The hook appends to it;
-    // nothing renames it, which is what keeps the mount valid for the pod's
-    // whole life.
-    const sessionStarts = await ensureSessionStartsLog(projectSlug, worktreeId)
     // Images pasted into a terminal pane (`saveWorktreeAttachment`): made now
     // so the read-only mount below has a server-owned directory to bind.
     const attachments = worktreeAttachmentsDir(projectSlug, worktreeId)
@@ -1270,21 +1260,16 @@ export async function createWorktree(
       mediatedEgress ? ['/workspace', '/repo'] : await withResolved([wtDir, repo]),
     )
     await seedClaudeSettings(path.join(claude, 'settings.json'))
-    // Register the agent-session discovery and model hooks (the scripts are
-    // staged from worktree-bin onto the workspace's PATH below; this only
-    // points claude at them). Best-effort: without it the session still runs, with only the
-    // `--session-id`-pinned conversation known to yaac.
-    await ensureClaudeHooks(path.join(claude, 'settings.json')).catch(() => {})
-    // pi and opencode report their model from code loaded into the tool, which
-    // lives in their homes the same way. Best-effort for the same reason: a
-    // missed write costs the model label, not the session.
+    // Point every tool at the reporters that name its conversation, model and
+    // mode on its pane (the scripts are staged from worktree-bin onto the
+    // workspace's PATH below). Best-effort: without them the agents still
+    // run, and only what yaac learns about them is lost.
     await ensureAgentReporters({
+      claudeDir: claude,
+      codexDir: codex,
       piAgentDir: path.join(pi, 'agent'),
       opencodeConfigDir: opencodeConfig,
     }).catch(() => {})
-
-    // Codex runs the same script, from `-c` settings its launch command
-    // carries (`codexLaunchConfig`), so nothing is seeded into its dir.
 
     // Pre-create cacheVolumes host dirs so they're server-owned rather than
     // root-owned via DirectoryOrCreate — the in-container yaac user carries
@@ -1339,7 +1324,7 @@ export async function createWorktree(
       toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
       claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-      cachedPackages, acpLogs, sessionStarts, attachments,
+      cachedPackages, acpLogs, attachments,
     }
   })()
 
@@ -1348,7 +1333,7 @@ export async function createWorktree(
     toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
     claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-    cachedPackages, acpLogs, sessionStarts, attachments,
+    cachedPackages, acpLogs, attachments,
   } = prep
 
   // Build container env. Unlike the podman create API (whose Env field
@@ -1594,14 +1579,6 @@ export async function createWorktree(
       : []),
     // GLOBAL, server-written: the agent only reads what a paste names.
     { source: { kind: 'hostPath', path: attachments }, mountPath: CONTAINER_ATTACHMENTS_DIR, readOnly: true },
-    // GLOBAL, and the one file the pod writes that the server reads back. A
-    // `File` mount is safe here precisely because nothing ever renames it: a
-    // rename would replace the inode the mount pins, and the pod would go on
-    // writing to a file nobody reads.
-    {
-      source: { kind: 'hostPath', path: sessionStarts, type: 'File' },
-      mountPath: CONTAINER_SESSION_STARTS_LOG,
-    },
     ...codexHomeMounts(runtime.kind, codex),
     ...opencodeMounts,
     // GLOBAL.

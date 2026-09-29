@@ -54,12 +54,14 @@ export interface LiveAgent {
   handle: string
   tool: AgentTool
   /**
-   * The conversation's own id, when the driver knows it. `acp` always does —
-   * it created the session and holds the id. `tui` never does: which
-   * conversation a pane has loaded is the in-pod hook's session-starts log to
-   * answer, and the registry joins the two.
+   * The conversation's own id, once the driver knows it. `acp` learns it from
+   * `session/new`; `tui` from the pane itself, where the tool's reporter names
+   * the conversation it runs (`PANE_SESSION_FORMAT`). Absent until then —
+   * a codex or opencode pane says nothing before its first turn.
    */
   agentSessionId?: string
+  /** Its transcript, project-relative, when the pane named one (`tui`). */
+  transcriptPath?: string
   /**
    * The model it is running, as the agent itself last reported it — pushed
    * the moment it switches, never polled. `acp` hears it from the adapter

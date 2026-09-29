@@ -84,20 +84,13 @@ export interface WorktreeCreateFailed {
  * The event that invalidates the previous life's handles. Handling it NULLs
  * every recorded pane id in the same transaction that stamps the life,
  * because tmux pane ids restart at `%0` in a new pod and a surviving handle
- * would name a pane this life owns.
- *
- * Emitted after the worktree is recorded and before the Job exists, so the
- * first thing the in-pod hook can append is already on the right side of the
- * boundary below.
+ * would name a pane this life owns. Emitted after the worktree is recorded
+ * and before the Job exists.
  */
 export interface WorktreeLifeStarted {
   type: 'worktree-life-started'
   projectSlug: string
   worktreeId: string
-  /** The session-starts log's length right now. Nothing this life wrote is
-   *  in it yet, so everything already there belongs to a previous pod — which
-   *  is what the discovery fold reads it back to decide. */
-  logBytes: number
 }
 
 /** A claimed spare was re-branched: the branch it now forks from. */
@@ -141,16 +134,11 @@ export interface LaunchedSession {
 }
 
 /**
- * The sessions a sweep found in a worktree — its whole history, since a
- * session the sweep can still see is one the worktree has hosted. Only
- * ever adds: the handler fills in what it did not know and keeps what it
- * did, so a sweep that reads a compacted transcript cannot rewrite an
- * opening message.
- *
- * Where the history comes from is the one thing that differs by mode. Under
- * `tui` the sweep folds whatever the in-pod hook has appended to the
- * worktree's session-starts log; under `acp` there is nothing to discover,
- * because the server is the ACP client and the handshake handed it the id.
+ * The sessions a pass found running in a worktree — each named by its live
+ * agent: a tui pane's reporter, or an acp handshake. Only ever adds: the
+ * handler fills in what it did not know and keeps what it did, so a pass that
+ * reads a compacted transcript cannot rewrite an opening message, and a
+ * conversation a `/clear` replaced stays recorded.
  */
 export interface SessionsDiscovered {
   type: 'sessions-discovered'

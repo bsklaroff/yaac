@@ -1178,7 +1178,7 @@ const STORAGE_SEMANTICS_FIX =
   'A worktree relies on these from the global claim: creation ownership '
   + 'and O_EXCL for the lock and the staged files, atomic rename for every '
   + 'seed the server writes, hardlinks for the git object store, append for '
-  + 'the session-starts log. On kind a failure is a virtiofs or gofer quirk '
+  + 'the ACP conversation records. On kind a failure is a virtiofs or gofer quirk '
   + 'worth reporting; on a cloud cluster it is the storage class, and the '
   + 'claim needs one that passes.'
 

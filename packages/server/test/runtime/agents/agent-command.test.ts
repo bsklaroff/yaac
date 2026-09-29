@@ -20,7 +20,6 @@ interface OpencodeConfig {
   model?: string
   default_agent?: string
   permissions?: Array<{ action: string; resource: string; effect: string }>
-  plugins?: string[]
 }
 
 /** The config document an opencode launch carries in OPENCODE_CONFIG_CONTENT. */
@@ -52,7 +51,7 @@ describe('buildAgentCmd', () => {
       expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo')
     })
 
-    it('records the conversation it resumes on its pane, then resumes it', () => {
+    it('names the conversation it resumes on its pane, then resumes it', () => {
       // codex fires no SessionStart for a resume until its next turn, so the
       // launch reports the conversation itself.
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
@@ -61,7 +60,7 @@ describe('buildAgentCmd', () => {
       )
     })
 
-    it('runs codex in the workspace, hands it its session hook, trusts the repository, and opens no startup screen', () => {
+    it('runs codex in the workspace, trusts the repository, and opens no startup screen', () => {
       // What codex receives, after the launch shell has had its turn: the
       // command is run with `codex` swapped for a printer of its argv.
       const cmd = buildAgentCmd({
@@ -83,11 +82,10 @@ describe('buildAgentCmd', () => {
         // A host codex behind the latest release would otherwise open an
         // "Update available" screen.
         '-c', 'check_for_update_on_startup=false',
-        '-c', 'hooks.SessionStart=[{matcher="*",hooks=[{type="command",'
-          + 'command="yaac-agent-links \\"$CODEX_HOME\\" codex",timeout=10}]}]',
         // The root codex keys folder trust on, and the bypass that runs every
-        // hook untrusted: with the update check off, codex opens no startup
-        // screen, which would swallow the prompt pasted into it.
+        // hook — yaac's own, from its home's hooks.json — untrusted: with the
+        // update check off, codex opens no startup screen, which would swallow
+        // the prompt pasted into it.
         '-c', 'projects={"/data/repo"={trust_level="trusted"}}',
         '--dangerously-bypass-hook-trust',
       ])
@@ -112,9 +110,14 @@ describe('buildAgentCmd', () => {
       expect(cmd).toMatch(/ opencode --standalone$/)
     })
 
-    it('appends --continue when resuming', () => {
-      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toMatch(/ opencode --standalone --continue$/)
+    it('names the session it resumes on its pane, and resumes it by id', () => {
+      // opencode names a session only as it creates one, so the launch says
+      // which one the pane holds. The worktree-id pin of a create whose
+      // session was never named is no opencode id: that continues the newest.
+      const resume = (id: string): string =>
+        buildAgentCmd({ tool: 'opencode', worktreeId: id, resume: true, permissionMode: 'bypass' })
+      expect(resume('ses_1')).toMatch(/^yaac-agent-links "" opencode ses_1; OPENCODE_CONFIG_CONTENT=.* opencode --standalone --session ses_1$/)
+      expect(resume('sess-1')).toMatch(/^yaac-agent-links "" opencode sess-1; .* opencode --standalone --continue$/)
     })
 
     it('carries a provider/model override in the config, never as a flag', () => {
@@ -236,10 +239,7 @@ describe('buildAgentCmd', () => {
         expect(cmd).not.toContain("'")
         expect(cmd).not.toContain('--auto')
         expect(cmd).not.toContain('--agent')
-        // Every posture also loads yaac's model reporter.
-        const { plugins, ...posture } = opencodeConfigOf(cmd)
-        expect(plugins).toEqual(['$HOME/.config/opencode/yaac-report'])
-        return posture
+        return opencodeConfigOf(cmd)
       }
       const rule = (action: string, effect: string) => ({ action, resource: '*', effect })
 
@@ -290,16 +290,8 @@ describe('buildAgentCmd', () => {
       const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
       // Exactly how it travels: single-quoted inside the tmux argument, which
       // a shell then unwraps and runs.
-      const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: '/home/someone' },
-      })
-      // The plugin path is the one part the shell is meant to change: it
-      // expands to the workspace's own opencode config home.
-      expect(JSON.parse(out) as OpencodeConfig).toEqual({
-        ...opencodeConfigOf(cmd),
-        plugins: ['/home/someone/.config/opencode/yaac-report'],
-      })
+      const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], { encoding: 'utf8' })
+      expect(JSON.parse(out) as OpencodeConfig).toEqual(opencodeConfigOf(cmd))
     })
 
     // A posture the tool does not have can still reach here off a worktree

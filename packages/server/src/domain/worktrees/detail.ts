@@ -131,5 +131,5 @@ export async function getWorktreePrompt(idOrName: string): Promise<string | unde
   // Fall back to the transcript the conversation recorded, not to a path
   // derived from the worktree id — codex's rollout name is underivable, and
   // the recorded path is the only handle on it.
-  return getAgentSessionFirstMessage(which, absoluteTranscriptPath(first), jobName)
+  return getAgentSessionFirstMessage(which, absoluteTranscriptPath(first), jobName, first?.agentSessionId)
 }

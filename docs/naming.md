@@ -40,8 +40,8 @@ names data that already exists on every user's disk.
 and `session-bind@openssh.com` in the ssh-agent protocol are other people's
 wire formats, parsed by the proxy.
 
-**Agent-facing names.** `--session-id`, the `SessionStart` hook and its
-session-starts log, pi's and opencode's session logs, and the ACP protocol's
+**Agent-facing names.** `--session-id`, the `SessionStart` hook and the
+`@yaac-session` pane option it sets, pi's and opencode's session logs, and the ACP protocol's
 `sessionId` are all the tools' vocabulary, where a session genuinely is a
 conversation. `#runtime/agents/acp-client.ts` and `acp-protocol.ts` are the two
 modules where a bare `sessionId` is an agent's session and not a worktree.

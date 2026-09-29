@@ -85,6 +85,16 @@ describe('getCodexFirstUserMessage', () => {
     expect(await getCodexFirstUserMessage(jsonlPath)).toBe('fix the login bug')
   })
 
+  it('returns the message of a completed UserMessage item, as codex 0.156.1 writes it', async () => {
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', content: [{ type: 'Text', text: 'hi' }] } } })
+    await writeEntry({
+      type: 'event_msg',
+      payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'hello' }] } },
+    })
+    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('hello')
+  })
+
   it('returns undefined when no event_msg exists', async () => {
     await writeEntry({ type: 'session_start', session_id: 'abc' })
     await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })

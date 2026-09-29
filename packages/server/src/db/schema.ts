@@ -165,18 +165,6 @@ export const worktrees = snakeCase.table('worktrees', {
    */
   lifeStartedAt: timestamp({ withTimezone: true }),
   /**
-   * How long the worktree's session-starts log was when the current life
-   * began — the boundary between what a previous pod appended and what this
-   * one has.
-   *
-   * The log is never truncated and its lines carry no life marker, so
-   * without this every fold would re-stamp the previous life's pane onto the
-   * current one. Recording the offset is what makes "appended during this
-   * life" answerable without the in-pod hook having to know which life it is
-   * in.
-   */
-  lifeLogBytes: integer().notNull().default(0),
-  /**
    * The permission posture this worktree's agents run in — a
    * `PermissionMode`, spelled per tool at launch (claude's
    * `--permission-mode`, codex's approval/sandbox pair, opencode's permission
@@ -260,10 +248,9 @@ export const worktreeGroups = snakeCase.table('worktree_groups', {
  * sessions — any session of a project can resume any of its conversations,
  * which is exactly why the link below is many-to-many.
  *
- * A `tui` conversation is discovered, not authored: the in-pod SessionStart
- * hook appends it to the worktree's session-starts log, and the registry
- * reconciler folds that into these rows. An `acp` one is authored — the server is the ACP client, so
- * `session/new` hands it the id directly and no hook is involved.
+ * Either way the registry records one from the live agent set: a `tui`
+ * conversation's tool names it on its tmux pane, and an `acp` one's id comes
+ * back from `session/new`, since the server is the ACP client.
  * `transcriptPath` is null for opencode (no host transcript) and for a
  * conversation whose transcript has since been removed.
  */

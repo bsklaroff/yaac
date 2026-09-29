@@ -192,7 +192,6 @@ describe('restartWorktree', () => {
       groupId: 'grp-1',
       deathSeen: false,
       spare: false,
-      lifeLogBytes: 0,
       permissionMode: 'bypass',
     })
     const rows = duringTeardown()

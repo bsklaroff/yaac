@@ -44,9 +44,9 @@ async function applyEvent(event: WorktreeEvent): Promise<void> {
       return
     case 'worktree-life-started':
       // Propagates, unlike most of this fan-out: a life that was not stamped
-      // leaves the fold trusting a dead pod's panes, and the create that
-      // emitted this should fail rather than run on with them.
-      await recordWorktreeLife(event.projectSlug, event.worktreeId, event.logBytes)
+      // leaves a dead pod's panes on the rows, and the create that emitted
+      // this should fail rather than run on with them.
+      await recordWorktreeLife(event.projectSlug, event.worktreeId)
       return
     case 'base-branch-resolved':
       await setWorktreeBaseBranch(event.projectSlug, event.worktreeId, event.baseBranch)

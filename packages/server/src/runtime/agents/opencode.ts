@@ -62,11 +62,16 @@ async function probeOpencode(jobName: string): Promise<OpencodeSessionRow[] | nu
 }
 
 /**
- * "This worktree's" session. With the per-worktree data dir there is only
- * ever one root (plus forks, which carry a parentID), but the newest root is
- * still picked defensively.
+ * The session `id` names, or — for an id opencode never minted, the
+ * worktree-id pin of a create whose session was never named — the newest
+ * root (subagents' sessions carry a parentID).
  */
-export function pickOpencodeSession(sessions: OpencodeSessionRow[]): OpencodeSessionRow | undefined {
+export function pickOpencodeSession(
+  sessions: OpencodeSessionRow[],
+  id?: string,
+): OpencodeSessionRow | undefined {
+  const own = sessions.find((s) => s.id === id)
+  if (own !== undefined) return own
   const roots = sessions.filter((s) => !s.parentID)
   const candidates = roots.length > 0 ? roots : sessions
   return [...candidates].sort(
@@ -82,9 +87,10 @@ export function pickOpencodeSession(sessions: OpencodeSessionRow[]): OpencodeSes
  */
 export async function getSessionOpencodeFirstUserMessage(
   jobName: string,
+  agentSessionId?: string,
 ): Promise<string | undefined> {
   const sessions = await probeOpencode(jobName)
-  return sessions ? pickOpencodeSession(sessions)?.title : undefined
+  return sessions ? pickOpencodeSession(sessions, agentSessionId)?.title : undefined
 }
 
 /**
