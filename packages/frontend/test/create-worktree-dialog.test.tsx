@@ -132,7 +132,7 @@ const entry = (id: string, extra: Partial<QueuedWorktreeEntry> = {}): QueuedWork
 beforeEach(() => {
   useUiStore.setState({
     settingsOpen: false, settingsSection: 'general', settingsFocusTool: null, settingsFocusProject: null,
-    createWorktreeDialog: null,
+    createWorktreeDialog: null, revealQueued: null,
   })
   vi.clearAllMocks()
   snapshot.mockReturnValue(project())
@@ -479,6 +479,8 @@ describe('CreateWorktreeDialog', () => {
       }, undefined))
       expect(createWorktree).not.toHaveBeenCalled()
       await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull())
+      // The sidebar opens the set it landed in.
+      expect(useUiStore.getState().revealQueued).toEqual({ id: 'q-new', parent: 'w-parent' })
     })
 
     it('re-seeds only untouched fields when Start changes', async () => {
@@ -537,6 +539,8 @@ describe('CreateWorktreeDialog', () => {
       expect(offered).toEqual(['', 'w-parent', 'q1', 'q4'])
       expect(submitButton().textContent).toBe('Save')
 
+      vi.mocked(updateQueuedWorktree)
+        .mockResolvedValueOnce(entry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q4' }))
       fireEvent.change(select('Start'), { target: { value: 'q4' } })
       fireEvent.click(submitButton())
       await waitFor(() => expect(vi.mocked(updateQueuedWorktree)).toHaveBeenCalledWith('q2', {
@@ -544,6 +548,8 @@ describe('CreateWorktreeDialog', () => {
         branch: 'release/2.x', parent: 'q4',
       }))
       expect(runQueuedWorktree).not.toHaveBeenCalled()
+      // The sidebar opens the set the server says it landed in.
+      await waitFor(() => expect(useUiStore.getState().revealQueued).toEqual({ id: 'q2', parent: 'q4' }))
     })
 
     it('offers a held parent it already waits on, and "Now" saves then runs', async () => {
@@ -559,6 +565,7 @@ describe('CreateWorktreeDialog', () => {
       await waitFor(() => expect(vi.mocked(runQueuedWorktree)).toHaveBeenCalledWith('q1'))
       // Saved as it stands, without a parent: running it is what "Now" means.
       expect(vi.mocked(updateQueuedWorktree).mock.calls[0][1]).not.toHaveProperty('parent')
+      expect(useUiStore.getState().revealQueued).toBeNull()
     })
 
     it('says so when the entry has already started', async () => {

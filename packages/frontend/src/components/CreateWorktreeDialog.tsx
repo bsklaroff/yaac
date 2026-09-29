@@ -436,15 +436,18 @@ function CreateWorktreeForm({
     const settings = { prompt: text, tool, model, mode, permissionMode, branch: branchValue }
     setBusy(true)
     setError(null)
+    // Open the sidebar set the entry lands in, as the server placed it.
+    const reveal = (e: QueuedWorktreeEntry): void =>
+      useUiStore.getState().setRevealQueued({ id: e.id, parent: queuedParentId(e) })
+    const moved = initial !== undefined && queued && start !== queuedParentId(initial)
     const op = initial === undefined
-      ? queueWorktree(projectSlug, start, settings, draft?.id)
-      : updateQueuedWorktree(initial.id, {
-        ...settings,
-        ...(queued && start !== queuedParentId(initial) ? { parent: start } : {}),
-      }).then(async () => {
-        // "Now" on a queued worktree is Save then Run now.
-        if (!queued) await runQueuedWorktree(initial.id)
-      })
+      ? queueWorktree(projectSlug, start, settings, draft?.id).then(reveal)
+      : updateQueuedWorktree(initial.id, { ...settings, ...(moved ? { parent: start } : {}) })
+        .then(async (e) => {
+          // "Now" on a queued worktree is Save then Run now.
+          if (!queued) await runQueuedWorktree(initial.id)
+          else if (moved) reveal(e)
+        })
     op.then(onClose, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setBusy(false))
   }

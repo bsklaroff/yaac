@@ -45,7 +45,7 @@ import { useInlineEdit, useInlineRename } from '#lib/useInlineRename'
 import { useOpenerFocus } from '#lib/useOpenerFocus'
 import { discardDraftWorktree } from '#lib/draftApi'
 import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
-import { clip, queuedChildren, queuedTitle } from '#lib/queued'
+import { clip, queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { patchStopped, useStoppedWorktrees } from '#lib/useStoppedWorktrees'
@@ -342,15 +342,35 @@ export function WorktreeList({
     ...held.map((h) => [h.worktreeId, { name: h.title || h.prompt || 'New worktree', kind: 'held' }] as const),
     ...queued.map((e) => [e.id, { name: queuedTitle(e), kind: 'queued' }] as const),
   ])
-  // Held here rather than in each set, so a set stays collapsed while its
-  // worktree moves between sections (stops, restarts, changes group).
-  const [collapsedQueues, setCollapsedQueues] = useState<ReadonlySet<string>>(new Set())
+  // Held here rather than in each set, so a set stays open while its
+  // worktree moves between sections (stops, restarts, changes group). Sets
+  // start collapsed; only the one the user just queued into opens itself.
+  const [expandedQueues, setExpandedQueues] = useState<ReadonlySet<string>>(new Set())
+  const setOpen = (id: string, open: boolean): void => setExpandedQueues((prev) => {
+    const next = new Set(prev)
+    if (open) next.add(id)
+    else next.delete(id)
+    return next
+  })
+  const revealQueued = useUiStore((s) => s.revealQueued)
+  useEffect(() => {
+    if (revealQueued === null) return
+    const byId = new Map(queued.map((e) => [e.id, e]))
+    const landed = byId.get(revealQueued.id)
+    // Not in the snapshot yet, or still under the parent it is moving from.
+    if (landed === undefined || queuedParentId(landed) !== revealQueued.parent) return
+    // The set is the whole chain's, so open the one its top entry nests in.
+    let top = revealQueued.id
+    for (let e = byId.get(top); e !== undefined; e = byId.get(e.parentQueuedId ?? '')) top = queuedParentId(e)
+    setExpandedQueues((prev) => prev.has(top) ? prev : new Set([...prev, top]))
+    useUiStore.getState().setRevealQueued(null)
+  }, [revealQueued, queued])
   // Forget a set once it empties, so the next one queued under that worktree
-  // starts open rather than hiding an entry the user never collapsed.
+  // starts collapsed like any other.
   const queuedParents = [...layout.queuedChildren.keys()].join('\n')
   useEffect(() => {
     const parents = new Set(queuedParents.split('\n'))
-    setCollapsedQueues((prev) => {
+    setExpandedQueues((prev) => {
       const kept = [...prev].filter((id) => parents.has(id))
       return kept.length === prev.size ? prev : new Set(kept)
     })
@@ -358,13 +378,8 @@ export function WorktreeList({
   const queueContext: QueueContextValue = {
     children: layout.queuedChildren,
     parent: (id) => names.get(id) ?? { name: '', kind: 'gone' },
-    collapsed: collapsedQueues,
-    setOpen: (id, open) => setCollapsedQueues((prev) => {
-      const next = new Set(prev)
-      if (open) next.delete(id)
-      else next.add(id)
-      return next
-    }),
+    expanded: expandedQueues,
+    setOpen,
   }
 
   // --- row drag (move a worktree between the default list and groups) ---
@@ -1303,8 +1318,8 @@ interface QueueContextValue {
   /** Queued worktrees by the id they wait on. */
   children: Map<string, QueuedWorktreeEntry[]>
   parent: (id: string) => QueueParent
-  /** Worktree ids whose queued set is collapsed. */
-  collapsed: ReadonlySet<string>
+  /** Worktree ids whose queued set is expanded. */
+  expanded: ReadonlySet<string>
   setOpen: (id: string, open: boolean) => void
 }
 
@@ -1314,7 +1329,7 @@ interface QueueContextValue {
 const QueueContext = createContext<QueueContextValue>({
   children: new Map(),
   parent: () => ({ name: '', kind: 'gone' }),
-  collapsed: new Set(),
+  expanded: new Set(),
   setOpen: () => {},
 })
 
@@ -1323,7 +1338,7 @@ const QueueContext = createContext<QueueContextValue>({
  *  always show in full. A failed launch is shown only on its own row, so the
  *  expander counts those too, or a collapsed set would hide one. */
 function QueuedSet({ parentId }: { parentId: string }): JSX.Element | null {
-  const { children, collapsed, setOpen } = useContext(QueueContext)
+  const { children, expanded, setOpen } = useContext(QueueContext)
   if (!children.has(parentId)) return null
   const entries: QueuedWorktreeEntry[] = []
   const walk = (id: string): void => {
@@ -1335,7 +1350,7 @@ function QueuedSet({ parentId }: { parentId: string }): JSX.Element | null {
   walk(parentId)
   const n = entries.length
   const failed = entries.filter((e) => e.launchError !== undefined).length
-  const open = !collapsed.has(parentId)
+  const open = expanded.has(parentId)
   return (
     <Collapsible.Root open={open} onOpenChange={(next) => setOpen(parentId, next)}>
       <Collapsible.Trigger className="mx-2 flex items-center gap-1 pl-5 pr-2 py-1 text-xs

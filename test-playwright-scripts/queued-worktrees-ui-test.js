@@ -11,8 +11,9 @@
  *  3. The queued row's own menu queues a second entry after it, which nests
  *     one step deeper (a chain).
  *  3b. The worktree's whole queued set sits behind one "2 queued worktrees"
- *     expander (the chain counted, and no expander of its own); clicking it
- *     hides both rows and clicking again brings them back.
+ *     expander (the chain counted, and no expander of its own), open because
+ *     the user just queued into it; clicking it hides both rows and clicking
+ *     again brings them back. After a reload the set starts collapsed.
  *  4. Clicking a queued row opens the dialog in edit mode; Save updates it.
  *  5. The row menu's Stop… lists the queued children ("Stop and start 1
  *     queued"), marks the chained one as waiting, and its Edit opens the
@@ -111,12 +112,11 @@ try {
     await row.getByRole('button', { name: menu }).click()
     await page.getByRole('menuitem', { name: item }).click()
   }
+  // A locator wait, not waitForFunction: the page's CSP refuses the
+  // in-page polling eval that waitForFunction falls back to.
   const submitWhenReady = async (label) => {
-    const button = page.getByRole('button', { name: label, exact: true })
-    await page.waitForFunction((l) => {
-      const b = [...document.querySelectorAll('button')].find((x) => x.textContent === l)
-      return b !== undefined && !b.disabled
-    }, label, { timeout: 15_000 })
+    const button = page.locator('button:not([disabled])', { hasText: new RegExp(`^${label}$`) })
+    await button.waitFor({ timeout: 15_000 })
     return button
   }
 
@@ -176,6 +176,11 @@ try {
   await expanders.first().click()
   check('expanding brings it back',
     await secondRow.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false))
+  await page.reload()
+  await expanders.first().waitFor({ state: 'visible', timeout: 15_000 })
+  check('a reload starts the set collapsed', !(await aside.getByText(first).isVisible()))
+  await expanders.first().click()
+  await secondRow.waitFor({ state: 'visible', timeout: 5_000 })
 
   // (4) Edit on click.
   await firstRow.getByText(first).click()

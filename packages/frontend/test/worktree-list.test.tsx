@@ -2,7 +2,7 @@
 import type { JSX } from 'react'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type {
   DraftWorktreeEntry,
   HeldWorktreeEntry,
@@ -252,6 +252,7 @@ describe('WorktreeList', () => {
 
     // Held: its row stays out, with what waits on it.
     expect(await screen.findByText('Stopped s')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '1 queued worktree' }))
     expect(screen.getByText('Step q1')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /stopped worktree/ })).toBeNull()
 
@@ -379,6 +380,7 @@ describe('WorktreeList', () => {
           queuedEntry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1', launchError: 'branch gone' }),
         ],
       })
+      fireEvent.click(screen.getByRole('button', { name: /2 queued worktrees/ }))
       const text = screen.getByRole('group', { name: 'Ungrouped worktrees' }).textContent ?? ''
       // The chain follows the row it waits on, whatever else is listed.
       expect(text.indexOf('Parent')).toBeLessThan(text.indexOf('Step q1'))
@@ -388,34 +390,35 @@ describe('WorktreeList', () => {
       expect(screen.getByText('branch gone')).toBeTruthy()
     })
 
-    it('collapses a worktree\'s whole queued set behind one count, wherever the worktree moves', () => {
+    it('collapses a worktree\'s whole queued set behind one count, open wherever the worktree moves', () => {
       const queued = [
         queuedEntry('q1'),
         queuedEntry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1' }),
         queuedEntry('q3'),
       ]
       const rerender = renderList([entry({ worktreeId: 'a', title: 'Parent' })], { queued })
-      // The count reaches through the chain, and only the top-level set has
-      // an expander — not q1, which has a chain of its own.
+      // Collapsed on load. The count reaches through the chain, and only the
+      // top-level set has an expander — not q1, which has a chain of its own.
       expect(screen.getAllByRole('button', { name: /queued worktree/ })).toHaveLength(1)
-      fireEvent.click(screen.getByRole('button', { name: '3 queued worktrees' }))
       expect(screen.queryByText('Step q1')).toBeNull()
       expect(screen.queryByText('Step q2')).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: '3 queued worktrees' }))
+      expect(screen.getByText('Step q2')).toBeTruthy()
 
-      // Filed into a group, then stopped (held): still collapsed.
+      // Filed into a group, then stopped (held): still open.
       rerender([entry({ worktreeId: 'a', title: 'Parent', groupId: 'g1' })], {
         queued,
         groups: [group()],
       })
-      expect(screen.getByRole('group', { name: group().name }).textContent).toContain('3 queued worktrees')
-      expect(screen.queryByText('Step q1')).toBeNull()
+      expect(screen.getByRole('group', { name: group().name }).textContent).toContain('Step q1')
       const held = [{ worktreeId: 'a', projectSlug: 'proj', tool: 'claude' as const, title: 'Parent',
         stoppedAt: '2026-08-10 00:00:00' }]
       rerender([], { queued, held })
       expect(screen.getByText('Parent')).toBeTruthy()
-      expect(screen.queryByText('Step q1')).toBeNull()
+      expect(screen.getByText('Step q1')).toBeTruthy()
 
-      // A failed launch shows on the expander, since its row is hidden.
+      // A failed launch shows on the expander, since its row can be hidden.
+      fireEvent.click(screen.getByRole('button', { name: '3 queued worktrees' }))
       rerender([], { queued: [{ ...queued[0], launchError: 'branch gone' }, ...queued.slice(1)], held })
       expect(screen.getByRole('button', { name: /3 queued worktrees.*1 failed/ })).toBeTruthy()
       expect(screen.queryByText('branch gone')).toBeNull()
@@ -425,14 +428,32 @@ describe('WorktreeList', () => {
       expect(screen.getByText('Step q2')).toBeTruthy()
     })
 
-    it('opens the next set queued under a worktree whose last set emptied', async () => {
-      const rerender = renderList([entry({ worktreeId: 'a', title: 'Parent' })], { queued: [queuedEntry('q1')] })
-      fireEvent.click(screen.getByRole('button', { name: '1 queued worktree' }))
+    it('opens only the set the user just queued or moved into, once the entry lands there', async () => {
+      const worktrees = [entry({ worktreeId: 'a', title: 'Parent' }), entry({ worktreeId: 'b', title: 'Other' })]
+      const other = queuedEntry('q9', { parentWorktreeId: 'b' })
+      const rerender = renderList(worktrees, { queued: [queuedEntry('q1'), other] })
+      // Queued at the end of a's chain; the snapshot hasn't caught up yet.
+      act(() => useUiStore.getState().setRevealQueued({ id: 'q2', parent: 'q1' }))
       expect(screen.queryByText('Step q1')).toBeNull()
-      rerender([entry({ worktreeId: 'a', title: 'Parent' })])
-      await waitFor(() => expect(screen.queryByRole('button', { name: /queued worktree/ })).toBeNull())
-      rerender([entry({ worktreeId: 'a', title: 'Parent' })], { queued: [queuedEntry('q5')] })
-      expect(screen.getByText('Step q5')).toBeTruthy()
+
+      const chained = queuedEntry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1' })
+      rerender(worktrees, { queued: [queuedEntry('q1'), chained, other] })
+      await waitFor(() => expect(screen.getByText('Step q2')).toBeTruthy())
+      expect(screen.getByText('Step q1')).toBeTruthy()
+      expect(screen.queryByText('Step q9')).toBeNull()
+      expect(useUiStore.getState().revealQueued).toBeNull()
+
+      // Moved to b: the snapshot still shows it under q1 when the save
+      // resolves, which must not count — only its arrival under b does.
+      fireEvent.click(screen.getByRole('button', { name: '2 queued worktrees' }))
+      act(() => useUiStore.getState().setRevealQueued({ id: 'q2', parent: 'b' }))
+      expect(screen.queryByText('Step q1')).toBeNull()
+      expect(useUiStore.getState().revealQueued).not.toBeNull()
+      rerender(worktrees, { queued: [queuedEntry('q1'), { ...chained, parentQueuedId: undefined, parentWorktreeId: 'b' },
+        other] })
+      await waitFor(() => expect(screen.getByText('Step q9')).toBeTruthy())
+      expect(screen.getByText('Step q2')).toBeTruthy()
+      expect(screen.queryByText('Step q1')).toBeNull()
     })
 
     it('keeps a held parent in its place with why it died, and puts an orphan on top', () => {
@@ -458,6 +479,7 @@ describe('WorktreeList', () => {
         queued: [queuedEntry('q1', { parentWorktreeId: 'dead' })],
         held: [{ worktreeId: 'dead', projectSlug: 'proj', tool: 'claude', groupId: 'g1', stoppedAt: '' }],
       })
+      fireEvent.click(screen.getByRole('button', { name: '1 queued worktree' }))
       expect(screen.getByRole('group', { name: 'Release' }).textContent).toContain('Step q1')
     })
 
@@ -465,6 +487,7 @@ describe('WorktreeList', () => {
       renderList([entry({ worktreeId: 'a', title: 'Parent' })], {
         queued: [queuedEntry('q1'), queuedEntry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1' })],
       })
+      fireEvent.click(screen.getByRole('button', { name: '2 queued worktrees' }))
       fireEvent.click(screen.getByText('Step q1'))
       expect(useUiStore.getState().createWorktreeDialog).toEqual({ projectSlug: 'proj', editId: 'q1' })
 
