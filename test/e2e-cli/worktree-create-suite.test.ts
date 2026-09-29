@@ -66,8 +66,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * Deliberately deferred (unchanged from the originals):
  *   - nestedContainers — covered by nested-containers.test.ts.
  *   - full opencode turn via mock LLM — `opencode api` answers from the
- *     worktree's data dir independently of any provider; a session listing
- *     proves the wiring.
+ *     worktree's data dir independently of any provider; a session
+ *     round-trip proves the wiring.
  */
 
 const execFileAsync = promisify(execFile)
@@ -1775,23 +1775,26 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
     it('boots opencode and answers a session probe from inside the container', async () => {
       // The server's opencode first-message probe
-      // (packages/server/src/runtime/agents/opencode.ts) runs `opencode api`
-      // over a private server on the worktree's data dir, from the checkout
-      // — without this test the entire opencode status pipeline is
-      // unverified by CI. Polled, which doubles as a wait-for-container-ready
-      // barrier: opencode bootstraps its worker + SQLite migrations first,
-      // so allow generous time. An empty list is fine — no user turn has
-      // been sent yet — what matters is the page shape the probe parses.
+      // (packages/server/src/runtime/agents/opencode.ts) runs `opencode api
+      // session.get` over a private server on the worktree's data dir, from
+      // the checkout — without this test the entire opencode status pipeline
+      // is unverified by CI. A titled session is created first, polled, which
+      // doubles as a wait-for-container-ready barrier: opencode bootstraps
+      // its worker + SQLite migrations first, so allow generous time. What
+      // matters is that the probe's exact command reads the title back.
       let probeOk = false
       let last = ''
       for (let i = 0; i < 60 && !probeOk; i++) {
         try {
+          const { stdout: created } = await execInJob(jobName, [
+            'sh', '-c', 'opencode api --standalone session.create -d \'{"title":"probe-me"}\'',
+          ])
+          const id = (JSON.parse(created.trim()) as { data?: { id?: string } }).data?.id ?? ''
           const { stdout } = await execInJob(jobName, [
-            'sh', '-c', 'opencode api --standalone session.list',
+            'sh', '-c', `opencode api --standalone session.get --param sessionID=${id}`,
           ])
           last = stdout
-          const parsed = JSON.parse(stdout.trim()) as { data?: unknown }
-          probeOk = Array.isArray(parsed.data)
+          probeOk = (JSON.parse(stdout.trim()) as { data?: { title?: unknown } }).data?.title === 'probe-me'
         } catch (err) {
           last = err instanceof Error ? err.message : String(err)
         }

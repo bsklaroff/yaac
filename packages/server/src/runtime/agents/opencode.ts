@@ -16,7 +16,7 @@ import type { PermissionMode } from '@yaac/shared/types'
  * First-message lookup asks opencode itself: `opencode api` over a private
  * server on the same per-worktree data dir (`--standalone`, as the TUI runs
  * — its server is a child on stdio, so there is no port to ask), from the
- * checkout, which is what scopes `session.list` to this worktree's project.
+ * checkout, which is what scopes the lookup to this worktree's project.
  * opencode titles a session off its opening prompt, and that title is what
  * the TUI's own switcher displays — using it here keeps the two views
  * consistent. It runs once per session (the capture step persists the
@@ -25,13 +25,6 @@ import type { PermissionMode } from '@yaac/shared/types'
 
 /** A private server has to come up first, which is most of the wait. */
 const PROBE_TIMEOUT_MS = 15_000
-
-interface OpencodeSessionRow {
-  id: string
-  title?: string
-  parentID?: string
-  time?: { created?: number; updated?: number }
-}
 
 /**
  * The busy footer: a `⬝⬝⬝⬝■■■■` progress strip beside `esc interrupt` (or
@@ -42,55 +35,40 @@ export const OPENCODE_BUSY_MARKERS: readonly string[] = [
   '[■⬝][■⬝][■⬝][■⬝]',
 ]
 
-async function probeOpencode(jobName: string): Promise<OpencodeSessionRow[] | null> {
-  let stdout: string
-  try {
-    ({ stdout } = await worktreeDriver().exec(
-      jobName,
-      'opencode api --standalone session.list',
-      { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },
-    ))
-  } catch {
-    return null
-  }
-  try {
-    const { data } = JSON.parse(stdout.trim()) as { data?: unknown }
-    return Array.isArray(data) ? data as OpencodeSessionRow[] : null
-  } catch {
-    return null
-  }
-}
-
-/**
- * The session `id` names, or — for an id opencode never minted, the
- * worktree-id pin of a create whose session was never named — the newest
- * root (subagents' sessions carry a parentID).
- */
-export function pickOpencodeSession(
-  sessions: OpencodeSessionRow[],
-  id?: string,
-): OpencodeSessionRow | undefined {
-  const own = sessions.find((s) => s.id === id)
-  if (own !== undefined) return own
-  const roots = sessions.filter((s) => !s.parentID)
-  const candidates = roots.length > 0 ? roots : sessions
-  return [...candidates].sort(
-    (a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0),
-  )[0]
-}
+/** opencode's own session ids, as its plugin reports them on the pane. */
+const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/
 
 /**
  * First user message for an opencode session — its title, probed once:
  * opencode keeps its history in a per-worktree sqlite DB and leaves no host
  * transcript, and the capture step persists the result on the session row,
  * which is what deleted-session listings and restarts read afterwards.
+ *
+ * Only a session opencode minted has a title to read, and it is fetched by
+ * its id. Anything else — the worktree-id pin a create records before the
+ * pane names a session — names no session, so it reads as no title rather
+ * than borrowing one out of a listing (whose page holds only the 50 most
+ * recently updated anyway). The split is on the prefix a resume splits on
+ * (`buildAgentCmd`); the full pattern is the shell-safety gate. An exec
+ * failure — `session.get` exits 1 for an id opencode lacks — or a session
+ * opencode has not titled yet reads the same way.
  */
 export async function getSessionOpencodeFirstUserMessage(
   jobName: string,
   agentSessionId?: string,
 ): Promise<string | undefined> {
-  const sessions = await probeOpencode(jobName)
-  return sessions ? pickOpencodeSession(sessions, agentSessionId)?.title : undefined
+  if (!agentSessionId?.startsWith('ses_') || !OPENCODE_SESSION_ID.test(agentSessionId)) return undefined
+  try {
+    const { stdout } = await worktreeDriver().exec(
+      jobName,
+      `opencode api --standalone session.get --param sessionID=${agentSessionId}`,
+      { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },
+    )
+    const { data } = JSON.parse(stdout.trim()) as { data?: { title?: unknown } }
+    return typeof data?.title === 'string' ? data.title : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
