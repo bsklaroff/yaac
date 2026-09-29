@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import {
-  pickOpencodeSession,
   OPENCODE_BUSY_MARKERS,
   getSessionOpencodeFirstUserMessage,
 } from '#runtime/agents/opencode'
@@ -11,71 +10,30 @@ import type { WorktreeDriver } from '#drivers/contract'
 const mockedExec = vi.fn<WorktreeDriver['exec']>()
 
 /**
- * The probe (`opencode api … session.list`) goes through the driver's
- * `exec`; the helper installs a dispatching implementation so tests control
- * it. (Busy/idle classification runs inside tmux — the markers are pinned
- * here and validated end-to-end by verify-tmux-status-format.js.)
+ * The probe (`opencode api … session.get`) goes through the driver's `exec`;
+ * the helper installs an implementation that answers for one session id and
+ * 404s (exit 1) for any other. (Busy/idle classification runs inside tmux —
+ * the markers are pinned here and validated end-to-end by
+ * verify-tmux-status-format.js.)
  */
-function mockProbeResult(result: { stdout: string; stderr: string } | Error): void {
+function mockSession(id: string, reply: { title?: string } | Error): void {
   installFakeWorktreeDriver({ exec: mockedExec })
   mockedExec.mockImplementation((_jobName: string, cmd: string) => {
-    if (cmd.startsWith('opencode api ')) {
-      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    if (cmd !== `opencode api --standalone session.get --param sessionID=${id}`) {
+      return Promise.reject(new Error('HTTP 404 Not Found'))
     }
-    return Promise.reject(new Error('unexpected non-probe exec'))
+    if (reply instanceof Error) return Promise.reject(reply)
+    // What `session.get` prints: the session, with no `title` key until
+    // opencode has titled it.
+    const data = { id, ...reply, projectID: 'p1', time: { created: 0, updated: 0 } }
+    return Promise.resolve({ stdout: JSON.stringify({ data }) + '\n', stderr: '' })
   })
-}
-
-/** What `opencode api --standalone session.list` prints: a page of sessions. */
-function sessionsStdout(
-  sessions: Array<{ id: string; title?: string; parentID?: string; updated?: number }>,
-): { stdout: string; stderr: string } {
-  const data = sessions.map((s) => ({
-    id: s.id,
-    title: s.title,
-    parentID: s.parentID,
-    projectID: 'p1',
-    time: { created: 0, updated: s.updated ?? 0 },
-    location: { directory: '/workspace' },
-  }))
-  return { stdout: JSON.stringify({ data, cursor: { previous: null, next: null } }) + '\n', stderr: '' }
 }
 
 describe('opencode-status', () => {
   beforeEach(() => {
     mockedExec.mockReset()
   })
-  describe('pickOpencodeSession', () => {
-    it('picks the most-recently-updated root session', () => {
-      const result = pickOpencodeSession([
-        { id: 's1', time: { created: 0, updated: 100 } },
-        { id: 's2', time: { created: 0, updated: 500 } },
-        { id: 's3', time: { created: 0, updated: 200 } },
-      ])
-      expect(result?.id).toBe('s2')
-    })
-
-    it('prefers root sessions (no parentID) over forks', () => {
-      const result = pickOpencodeSession([
-        { id: 'fork', parentID: 's-root', time: { created: 0, updated: 1000 } },
-        { id: 's-root', time: { created: 0, updated: 100 } },
-      ])
-      expect(result?.id).toBe('s-root')
-    })
-
-    it('falls back to any session if no roots are present', () => {
-      const result = pickOpencodeSession([
-        { id: 'fork-a', parentID: 'missing', time: { created: 0, updated: 100 } },
-        { id: 'fork-b', parentID: 'missing', time: { created: 0, updated: 500 } },
-      ])
-      expect(result?.id).toBe('fork-b')
-    })
-
-    it('returns undefined for an empty session list', () => {
-      expect(pickOpencodeSession([])).toBeUndefined()
-    })
-  })
-
   describe('OPENCODE_BUSY_MARKERS', () => {
     it('pins the tmux-ERE busy markers the status format searches for', () => {
       // These are encoded into a tmux content-search format by
@@ -91,39 +49,37 @@ describe('opencode-status', () => {
   })
 
   describe('getSessionOpencodeFirstUserMessage', () => {
-    it('returns the title of the worktree\'s session', async () => {
-      mockProbeResult(sessionsStdout([{ id: 'ses_1', title: 'Refactor auth flow', updated: 1 }]))
-      expect(await getSessionOpencodeFirstUserMessage('container')).toBe('Refactor auth flow')
+    it('returns the title of the session the row names, fetched by id', async () => {
+      // Fetched rather than picked out of `session.list`, whose page holds
+      // only the 50 most recently updated: a worktree with more still labels
+      // each conversation by its own title.
+      mockSession('ses_old', { title: 'OLIVE' })
+      expect(await getSessionOpencodeFirstUserMessage('container', 'ses_old')).toBe('OLIVE')
+      expect(mockedExec.mock.calls[0]?.[0]).toBe('container')
     })
 
-    it('returns the title of the session the row names, not the newest one', async () => {
-      // A worktree records several opencode conversations — its agent
-      // window's, and one started in a shell — and each is labelled by its own.
-      mockProbeResult(sessionsStdout([
-        { id: 'ses_old', title: 'OLIVE', updated: 1 },
-        { id: 'ses_new', title: 'NECTARINE', updated: 2 },
-      ]))
-      expect(await getSessionOpencodeFirstUserMessage('container', 'ses_old')).toBe('OLIVE')
-      // The worktree-id pin names none of them, and takes the newest.
-      expect(await getSessionOpencodeFirstUserMessage('container', 'wt-1')).toBe('NECTARINE')
+    it('never borrows another session\'s title', async () => {
+      mockSession('ses_old', { title: 'OLIVE' })
+      // An id opencode lacks: `session.get` exits 1.
+      expect(await getSessionOpencodeFirstUserMessage('container', 'ses_gone')).toBeUndefined()
+      // The worktree-id pin, and no id at all, name no opencode session.
+      expect(await getSessionOpencodeFirstUserMessage('container', 'wt-1')).toBeUndefined()
+      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
+      // A malformed `ses_` id is a named session, as a resume reads it —
+      // never the pin — and is never put on a command line.
+      expect(await getSessionOpencodeFirstUserMessage('container', 'ses_foo-bar')).toBeUndefined()
+      expect(mockedExec.mock.calls.map(([, cmd]) => cmd))
+        .toEqual(['opencode api --standalone session.get --param sessionID=ses_gone'])
     })
 
     it('returns undefined while the session has no title yet', async () => {
-      mockProbeResult(sessionsStdout([{ id: 'ses_1', updated: 1 }]))
-      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
-    })
-
-    it('returns undefined when the probe yields no session', async () => {
-      mockProbeResult(sessionsStdout([]))
-      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
-      // A reply that is not a session list at all reads the same way.
-      mockProbeResult({ stdout: '{"data":{}}', stderr: '' })
-      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
+      mockSession('ses_1', {})
+      expect(await getSessionOpencodeFirstUserMessage('container', 'ses_1')).toBeUndefined()
     })
 
     it('returns undefined when the probe fails', async () => {
-      mockProbeResult(new Error('exec failed'))
-      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
+      mockSession('ses_1', new Error('exec failed'))
+      expect(await getSessionOpencodeFirstUserMessage('container', 'ses_1')).toBeUndefined()
     })
   })
 })

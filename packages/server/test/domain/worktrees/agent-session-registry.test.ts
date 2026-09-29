@@ -160,7 +160,7 @@ describe('reconcileAgentSessions', () => {
     // opencode leaves no host transcript, so the pass carries the job name
     // down to the read.
     podExec.mockResolvedValue({
-      stdout: JSON.stringify({ data: [{ id: 'ses_1', title: 'build a thing', time: { updated: 1 } }] }),
+      stdout: JSON.stringify({ data: { id: 'ses_1', title: 'build a thing', time: { updated: 1 } } }),
       stderr: '',
     })
     live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_1', model: 'opencode/big-pickle' }])
@@ -168,6 +168,7 @@ describe('reconcileAgentSessions', () => {
 
     expect(await row('ses_1')).toMatchObject({ active: true, firstPrompt: 'build a thing', model: 'opencode/big-pickle' })
     expect(podExec.mock.calls[0]?.[0]).toBe('yaac-demo-wt-1')
+    expect(podExec.mock.calls[0]?.[1]).toBe('opencode api --standalone session.get --param sessionID=ses_1')
 
     // Read once: the row remembers the answer.
     await sweep()
