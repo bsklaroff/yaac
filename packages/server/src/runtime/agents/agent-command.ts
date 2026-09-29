@@ -343,16 +343,12 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // outright (usage, exit: a dead window), so none is invented here.
     //
     // A resume names its conversation on the pane first, as codex's does:
-    // opencode reports a session only as it creates one. A session opencode
-    // minted (`ses_…`) resumes by id; anything else is the worktree-id pin of
-    // a create whose session was never named, and continues the newest one in
-    // the per-worktree data dir.
-    const session = worktreeId.startsWith('ses_') ? `--session ${worktreeId}` : '--continue'
+    // opencode reports a session only as it creates one.
     return [
       resume ? `yaac-agent-links "" opencode ${worktreeId};` : '',
       opencodeConfigArg(mode, model),
       'opencode --standalone',
-      resume ? session : '',
+      resume ? `--session ${worktreeId}` : '',
     ].filter(Boolean).join(' ')
   }
   // claude names all five postures on one flag, so the mapping is a rename.

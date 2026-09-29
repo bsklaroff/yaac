@@ -260,8 +260,7 @@ export function opencodeConfigDir(slug: string): string {
  * other filesystem to copy it to.
  *
  * Per-worktree isolation sidesteps opencode's concurrent-write issues
- * (sst/opencode#5241) and makes `opencode --continue` deterministic, since
- * each database only ever holds its own worktree.
+ * (sst/opencode#5241), since each database only ever holds its own worktree.
  *
  * Renaming it is a migration of every stopped opencode worktree's history.
  */

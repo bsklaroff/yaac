@@ -764,6 +764,11 @@ describe('tryClaimPrewarmed', () => {
     expect(pasted).toHaveLength(1)
     expect(pasted[0].jobName).toBe('yaac-p-spare')
     expect(pasted[0].script).toContain(Buffer.from('fix the bug').toString('base64'))
+    // ...and records it as the worktree's founding ask, as a cold create does.
+    expect(appliedEvents).toContainEqual(expect.objectContaining({
+      type: 'sessions-launched',
+      sessions: [{ tool: 'claude', agentSessionId: 'spare1', firstPrompt: 'fix the bug' }],
+    }))
   })
 
   // A group deleted since the route resolved it would fail a cold create the

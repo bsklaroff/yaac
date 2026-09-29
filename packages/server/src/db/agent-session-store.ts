@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { agentSessions, worktreeAgentSessions } from './schema'
-import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH, SELF_NAMING_TOOLS } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
@@ -81,6 +81,16 @@ export interface DiscoveredAgentSession {
  * renumbering them on every tick would reshuffle a restart's window order
  * whenever an old conversation was resumed.
  *
+ * The one exception is the worktree-id pin: the conversation a create records
+ * under the worktree id, before any agent has named one. For codex and
+ * opencode that id is a stand-in (`SELF_NAMING_TOOLS`), so the first
+ * conversation of the pin's tool to be named takes over its link — ordinal 0,
+ * and what the create recorded on it (the `--prompt` ask, the launch's model,
+ * its birth) — and the pin is gone. Otherwise the worktree's founding ask
+ * would sit on a row no agent ever runs. claude and pi run under the pin
+ * itself, so the first conversation they name IS the pin, and a later
+ * `/clear` is one of its own.
+ *
  * Does NOT touch `active` — that is `setActiveAgentSessions`, which is the
  * only writer allowed to, precisely because its result must survive teardown
  * untouched.
@@ -92,87 +102,122 @@ export async function recordAgentSessions(
 ): Promise<void> {
   if (discovered.length === 0) return
   try {
-    const db = await getDb()
-    const now = new Date()
-    const existing = await db.select({
-      tool: worktreeAgentSessions.tool,
-      agentSessionId: worktreeAgentSessions.agentSessionId,
-      ordinal: worktreeAgentSessions.ordinal,
-    }).from(worktreeAgentSessions).where(linkKey(projectSlug, worktreeId))
-    const ordinalOf = new Map(existing.map((e) => [`${e.tool}/${e.agentSessionId}`, e.ordinal]))
-    let nextOrdinal = existing.reduce((max, e) => Math.max(max, e.ordinal + 1), 0)
+    // One transaction, so a pin is never gone without its successor in place.
+    await (await getDb()).transaction(async (db) => {
+      const now = new Date()
+      const existing = await db.select({
+        tool: worktreeAgentSessions.tool,
+        agentSessionId: worktreeAgentSessions.agentSessionId,
+        ordinal: worktreeAgentSessions.ordinal,
+      }).from(worktreeAgentSessions).where(linkKey(projectSlug, worktreeId))
+      const ordinalOf = new Map(existing.map((e) => [`${e.tool}/${e.agentSessionId}`, e.ordinal]))
+      let nextOrdinal = existing.reduce((max, e) => Math.max(max, e.ordinal + 1), 0)
 
-    for (const d of discovered) {
-      const seenAt = d.firstSeenMs !== undefined ? new Date(d.firstSeenMs) : now
-      // Stored exactly as reported — the sweep already speaks the column's
-      // form (project-relative, see `toProjectRelative`). Absent is not the
-      // same as empty: a conversation whose path the sweep could not express
-      // must not overwrite a good stored value, so the fill branch below
-      // omits the column entirely rather than clearing it.
-      const stored = d.transcriptPath ?? null
-      // Only ever fill in — a resumed conversation is rediscovered from a
-      // second worktree and must not lose what the first one learned. Built
-      // first because an empty `set` is an error, not a no-op: a conversation
-      // discovered with nothing but its id (the common first sighting) has to
-      // take the DO NOTHING branch.
-      const fill = {
-        ...(stored !== null ? { transcriptPath: stored } : {}),
-        ...(d.lastActiveMs !== undefined ? { lastActiveAt: new Date(d.lastActiveMs) } : {}),
-        // Overwritten, not coalesced: `/model` mid-conversation is exactly
-        // what this column is here to follow. An absent value still leaves
-        // the stored one alone — nothing reported must not read as "the
-        // model went away".
-        ...(d.model !== undefined ? { model: d.model.slice(0, MAX_MODEL_LENGTH) } : {}),
-        ...(d.firstPrompt !== undefined
-          ? {
-            // A conversation's opening message never changes, and re-reading a
-            // transcript that has since been compacted would replace it with
-            // whatever the log now starts with.
-            firstPrompt: sql`coalesce(${agentSessions.firstPrompt}, ${d.firstPrompt.slice(0, MAX_PROMPT_LENGTH)})`,
+      for (const reported of discovered) {
+        const linkId = `${reported.tool}/${reported.agentSessionId}`
+        const pinId = `${reported.tool}/${worktreeId}`
+        // Only the tool's first conversation: a pin beside a sibling of its
+        // tool predates the takeover (docs/legacy-compat-shims.md), and a
+        // later conversation must not take the first one's place.
+        const pinOrdinal = SELF_NAMING_TOOLS.includes(reported.tool) && !ordinalOf.has(linkId)
+          && !existing.some((e) => e.tool === reported.tool && e.agentSessionId !== worktreeId)
+          ? ordinalOf.get(pinId)
+          : undefined
+        let d = reported
+        if (pinOrdinal !== undefined) {
+          // What the create recorded on the pin rides into its place: its birth
+          // and launch model unless the agent reported its own, and its ask
+          // regardless — a `--prompt` is the opening message by definition,
+          // where opencode's is only a title summarizing it.
+          const [pin] = await db.delete(agentSessions).where(and(
+            eq(agentSessions.projectSlug, projectSlug),
+            eq(agentSessions.tool, reported.tool),
+            eq(agentSessions.agentSessionId, worktreeId),
+          )).returning()
+          await db.delete(worktreeAgentSessions).where(and(
+            linkKey(projectSlug, worktreeId),
+            eq(worktreeAgentSessions.tool, reported.tool),
+            eq(worktreeAgentSessions.agentSessionId, worktreeId),
+          ))
+          d = {
+            ...(pin !== undefined ? { firstSeenMs: pin.createdAt.getTime() } : {}),
+            ...(pin?.model != null ? { model: pin.model } : {}),
+            ...reported,
+            ...(pin?.firstPrompt != null ? { firstPrompt: pin.firstPrompt } : {}),
           }
-          : {}),
-      }
-      const values = {
-        projectSlug,
-        tool: d.tool,
-        agentSessionId: d.agentSessionId,
-        createdAt: seenAt,
-        mode: d.mode ?? 'tui',
-        transcriptPath: stored,
-        firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
-        lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
-        model: d.model?.slice(0, MAX_MODEL_LENGTH) ?? null,
-      }
-      const target = [
-        agentSessions.projectSlug,
-        agentSessions.tool,
-        agentSessions.agentSessionId,
-      ]
-      await (Object.keys(fill).length > 0
-        ? db.insert(agentSessions).values(values).onConflictDoUpdate({ target, set: fill })
-        : db.insert(agentSessions).values(values).onConflictDoNothing({ target }))
+          ordinalOf.delete(pinId)
+          ordinalOf.set(linkId, pinOrdinal)
+        }
+        const seenAt = d.firstSeenMs !== undefined ? new Date(d.firstSeenMs) : now
+        // Stored exactly as reported — the sweep already speaks the column's
+        // form (project-relative, see `toProjectRelative`). Absent is not the
+        // same as empty: a conversation whose path the sweep could not express
+        // must not overwrite a good stored value, so the fill branch below
+        // omits the column entirely rather than clearing it.
+        const stored = d.transcriptPath ?? null
+        // Only ever fill in — a resumed conversation is rediscovered from a
+        // second worktree and must not lose what the first one learned. Built
+        // first because an empty `set` is an error, not a no-op: a conversation
+        // discovered with nothing but its id (the common first sighting) has to
+        // take the DO NOTHING branch.
+        const fill = {
+          ...(stored !== null ? { transcriptPath: stored } : {}),
+          ...(d.lastActiveMs !== undefined ? { lastActiveAt: new Date(d.lastActiveMs) } : {}),
+          // Overwritten, not coalesced: `/model` mid-conversation is exactly
+          // what this column is here to follow. An absent value still leaves
+          // the stored one alone — nothing reported must not read as "the
+          // model went away".
+          ...(d.model !== undefined ? { model: d.model.slice(0, MAX_MODEL_LENGTH) } : {}),
+          ...(d.firstPrompt !== undefined
+            ? {
+              // A conversation's opening message never changes, and re-reading a
+              // transcript that has since been compacted would replace it with
+              // whatever the log now starts with.
+              firstPrompt: sql`coalesce(${agentSessions.firstPrompt}, ${d.firstPrompt.slice(0, MAX_PROMPT_LENGTH)})`,
+            }
+            : {}),
+        }
+        const values = {
+          projectSlug,
+          tool: d.tool,
+          agentSessionId: d.agentSessionId,
+          createdAt: seenAt,
+          mode: d.mode ?? 'tui',
+          transcriptPath: stored,
+          firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
+          lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
+          model: d.model?.slice(0, MAX_MODEL_LENGTH) ?? null,
+        }
+        const target = [
+          agentSessions.projectSlug,
+          agentSessions.tool,
+          agentSessions.agentSessionId,
+        ]
+        await (Object.keys(fill).length > 0
+          ? db.insert(agentSessions).values(values).onConflictDoUpdate({ target, set: fill })
+          : db.insert(agentSessions).values(values).onConflictDoNothing({ target }))
 
-      const linkId = `${d.tool}/${d.agentSessionId}`
-      const ordinal = ordinalOf.get(linkId) ?? nextOrdinal++
-      await db.insert(worktreeAgentSessions).values({
-        projectSlug,
-        worktreeId,
-        tool: d.tool,
-        agentSessionId: d.agentSessionId,
-        ordinal,
-        paneId: d.paneId ?? null,
-        firstSeenAt: seenAt,
-        lastSeenAt: now,
-      }).onConflictDoUpdate({
-        target: [
-          worktreeAgentSessions.projectSlug,
-          worktreeAgentSessions.worktreeId,
-          worktreeAgentSessions.tool,
-          worktreeAgentSessions.agentSessionId,
-        ],
-        set: { lastSeenAt: now, paneId: d.paneId ?? null },
-      })
-    }
+        const ordinal = ordinalOf.get(linkId) ?? nextOrdinal++
+        await db.insert(worktreeAgentSessions).values({
+          projectSlug,
+          worktreeId,
+          tool: d.tool,
+          agentSessionId: d.agentSessionId,
+          ordinal,
+          paneId: d.paneId ?? null,
+          firstSeenAt: seenAt,
+          lastSeenAt: now,
+        }).onConflictDoUpdate({
+          target: [
+            worktreeAgentSessions.projectSlug,
+            worktreeAgentSessions.worktreeId,
+            worktreeAgentSessions.tool,
+            worktreeAgentSessions.agentSessionId,
+          ],
+          set: { lastSeenAt: now, paneId: d.paneId ?? null },
+        })
+      }
+    })
   } catch {
     // Non-fatal: discovery is idempotent, so the next tick re-records.
   }

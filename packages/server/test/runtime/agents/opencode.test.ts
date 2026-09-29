@@ -65,8 +65,7 @@ describe('opencode-status', () => {
       // The worktree-id pin, and no id at all, name no opencode session.
       expect(await getSessionOpencodeFirstUserMessage('container', 'wt-1')).toBeUndefined()
       expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
-      // A malformed `ses_` id is a named session, as a resume reads it —
-      // never the pin — and is never put on a command line.
+      // Nor does a malformed `ses_` id, which is never put on a command line.
       expect(await getSessionOpencodeFirstUserMessage('container', 'ses_foo-bar')).toBeUndefined()
       expect(mockedExec.mock.calls.map(([, cmd]) => cmd))
         .toEqual(['opencode api --standalone session.get --param sessionID=ses_gone'])
