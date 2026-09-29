@@ -44,8 +44,9 @@ worktrees, its kind cluster named `yaac`). When that is the user's working
 setup and you are testing rather than setting it up, leave it alone and run
 a second instance. Check whether one already exists first
 (`env | grep ^YAAC_ ; kind get clusters`); otherwise export these **in every
-shell that runs `yaac`** — the CLI finds its server through
-`$YAAC_DATA_DIR-client/server.json`:
+shell that runs `yaac`, `pnpm frontend:dev` or `desktop:hot`** — each finds
+its server through `$YAAC_DATA_DIR-client/server.json`, so it is the data
+dir, not the port, that steers them:
 
 ```bash
 # containerless
