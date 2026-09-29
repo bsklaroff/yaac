@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode 
 import clsx from 'clsx'
 import { api } from './lib/api'
 import { stopWorktreeOptimistic } from './lib/stopWorktreeFlow'
-import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
+import { claimChord, cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
 import { getShortcutOverrides } from './lib/settingsApi'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
@@ -219,14 +219,12 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       const id = matchShortcut(state.bindings, e)
       switch (id) {
         case 'new-worktree':
-          e.preventDefault()
-          e.stopPropagation()
+          claimChord(e)
           ctx.newWorktree()
           return
         case 'delete-worktree':
           if (!ctx.selectedWorktree) return
-          e.preventDefault()
-          e.stopPropagation()
+          claimChord(e)
           setConfirmDelete(ctx.selectedWorktree)
           return
         case 'prev-worktree':
@@ -235,8 +233,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
           if (delta === null) return
           const next = resolveCycleTarget(ctx.rowIds, ctx.selectedWorktreeId ?? undefined, delta)
           if (!next) return
-          e.preventDefault()
-          e.stopPropagation()
+          claimChord(e)
           useUiStore.getState().selectWorktree(next)
           return
         }
