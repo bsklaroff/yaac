@@ -334,9 +334,9 @@ export async function deleteTestServerClusterRbac(namespace: string): Promise<vo
  * install's published origin, and what lets those verbs be exercised at all
  * rather than being told the cluster never published a server.
  *
- * The port is per worker (see `TEST_SERVER_PORT_BASE`), so files racing in
- * parallel workers cannot collide; files sharing a worker run one at a time
- * and the previous one's `stop()` has already waited out its child.
+ * The port is drawn free per test env (see `createYaacTestEnv`), so neither
+ * files racing in parallel workers nor another test rig's run on this host
+ * can collide with it.
  */
 function startForward(env: NodeJS.ProcessEnv): Promise<KubectlForward> {
   const wanted = Number.parseInt(env.YAAC_SERVER_PORT ?? '', 10)

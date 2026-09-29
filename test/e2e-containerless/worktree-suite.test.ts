@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFile, spawn } from 'node:child_process'
 import http from 'node:http'
-import net from 'node:net'
 import { promisify } from 'node:util'
 import WebSocket from 'ws'
 import fs from 'node:fs/promises'
@@ -15,6 +14,7 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import { assignTestGitCredential } from '@yaac/test-utils/api'
+import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
 import {
@@ -303,15 +303,6 @@ async function listWorktrees(): Promise<ListedWorktree[]> {
   const res = await fetch(`${origin()}/worktree/list`)
   const body = await res.json() as { worktrees: ListedWorktree[] }
   return body.worktrees
-}
-
-/** A port nothing on this host holds right now. */
-async function freePort(): Promise<number> {
-  const srv = net.createServer()
-  await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', () => resolve()))
-  const { port } = srv.address() as net.AddressInfo
-  await new Promise<void>((resolve) => srv.close(() => resolve()))
-  return port
 }
 
 /**
@@ -670,7 +661,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // way dev servers are. It is reachable from this host directly; what is
     // under test is the OTHER way to reach it, the one a client on another
     // machine has: `/forward/attach` into the driver's dial.
-    const devPort = await freePort()
+    const devPort = await freeLocalPort()
     const script = path.join(testEnv.scratchDir, 'dev-server.cjs')
     await fs.writeFile(script, `
       require('http').createServer((req, res) => res.end('hello from the worktree'))
@@ -689,7 +680,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // since binding the identity port here would fight the dev server for
     // it; an explicit bind is taken as knowing what you bind. A different
     // host port so that this one really does not.
-    const hostPort = await freePort()
+    const hostPort = await freeLocalPort()
     const forwarder = startForwardCli(
       worktreeId, '--bind', '127.0.0.1', '--port', `${String(devPort)}:${String(hostPort)}`,
     )

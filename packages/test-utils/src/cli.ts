@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { ensureDataDir, setDataDir } from '@yaac/shared/paths'
 import { registerServer } from '@yaac/shared/server-config'
@@ -9,7 +8,8 @@ import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { TEST_NAMESPACE } from '#setup'
 import { deployTestServer } from '#deployed-server'
 import { TEST_CLI_DIR, TEST_CLI_ENTRY } from '#cli-bundle'
-import { e2eMkdtemp, removeScratchTree } from '#tmp'
+import { e2eMkdtemp, removeScratchTree, testTmpBase } from '#tmp'
+import { freeLocalPort } from '#kubectl-forward'
 
 export { TEST_CLI_DIR, TEST_CLI_ENTRY }
 
@@ -19,22 +19,23 @@ const ENTRY = TEST_CLI_ENTRY
 /**
  * Cross-worker mutex so only one `yaac server run` is live at a time
  * across all vitest workers. Multiple servers hammering the shared
- * cluster API server and the podman build engine concurrently starves
- * both, so server-backed suites serialize on this lock.
+ * cluster API server concurrently starves it, so server-backed suites
+ * serialize on this lock.
+ *
+ * Scoped to the ambient data dir (the test scratch base), which is one per
+ * test rig — and so one per cluster — rather than to the host: rigs share
+ * no API server, and a host-wide lock made every rig's server-backed files
+ * wait on every other rig's, and on any worktree's containerless tiers.
+ * Nothing else a server-backed file binds may be host-wide for the same
+ * reason, which is why every host port the suites bind is drawn by
+ * `freeLocalPort` rather than fixed.
  *
  * Lock file holds the owner's PID so a crashed holder doesn't wedge
  * the suite forever. fs.open(wx) is atomic across processes.
  */
-const SERVER_LOCK_FILE = path.join(os.tmpdir(), 'yaac-test-server-mutex.lock')
-
-/**
- * Base for the per-worker server port set via `YAAC_SERVER_PORT`. Chosen well
- * clear of the real default (DEFAULT_SERVER_PORT = 8787) so the fixed-port
- * `server start`/`restart` suites never collide with a developer's own server
- * on 8787. `spawnYaacServer` passes `--port 0` and ignores this; only suites
- * that bind the default port (no `--port`) observe it.
- */
-const TEST_SERVER_PORT_BASE = 18800
+function serverLockFile(): string {
+  return path.join(testTmpBase(), 'server-mutex.lock')
+}
 
 // Process-reentrant: if this worker already owns the file lock, a
 // nested acquire just bumps a refcount. The file lock is only released
@@ -59,9 +60,11 @@ export async function acquireServerMutex(): Promise<() => Promise<void>> {
     }
   }
 
+  const lockFile = serverLockFile()
+  await fs.mkdir(path.dirname(lockFile), { recursive: true })
   for (;;) {
     try {
-      const fh = await fs.open(SERVER_LOCK_FILE, 'wx')
+      const fh = await fs.open(lockFile, 'wx')
       await fh.writeFile(String(process.pid))
       await fh.close()
       localDepth = 1
@@ -71,7 +74,7 @@ export async function acquireServerMutex(): Promise<() => Promise<void>> {
         released = true
         localDepth -= 1
         if (localDepth === 0) {
-          pendingFileUnlink = fs.unlink(SERVER_LOCK_FILE).catch(() => { /* already gone */ })
+          pendingFileUnlink = fs.unlink(lockFile).catch(() => { /* already gone */ })
           await pendingFileUnlink
           pendingFileUnlink = null
         }
@@ -80,14 +83,14 @@ export async function acquireServerMutex(): Promise<() => Promise<void>> {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
       // Existing lock — check if the holder is still alive.
       try {
-        const raw = await fs.readFile(SERVER_LOCK_FILE, 'utf8')
+        const raw = await fs.readFile(lockFile, 'utf8')
         const holderPid = parseInt(raw.trim(), 10)
         if (!Number.isNaN(holderPid)) {
           try {
             process.kill(holderPid, 0)
           } catch {
             // Holder is gone — steal the lock.
-            await fs.unlink(SERVER_LOCK_FILE).catch(() => { /* raced */ })
+            await fs.unlink(lockFile).catch(() => { /* raced */ })
             continue
           }
         }
@@ -131,11 +134,11 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   // namespace as the server subprocess.
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
-  // Per-worker default port so a fixed-port `server start`/`restart` server
-  // lands clear of 8787 — both another worker's server and any real server
-  // a developer is running locally.
-  const workerId = Number.parseInt(process.env.VITEST_WORKER_ID ?? '1', 10)
-  const serverPort = TEST_SERVER_PORT_BASE + (Number.isNaN(workerId) ? 0 : workerId)
+  // The default port a `server start`/`restart` server lands on (and, under
+  // k8s, the port this file's forward publishes its server at). Drawn free
+  // rather than fixed: clear of 8787, of another worker's env, and of the
+  // same env in another test rig on this host.
+  const serverPort = await freeLocalPort()
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
