@@ -1350,6 +1350,10 @@ export async function createWorktree(
   // replaced the image ENV wholesale), kubernetes env vars overlay the
   // image's — so no image-inspect merge step is needed.
   const env: string[] = []
+  // Which of those carry a credential — see `WorkspaceSpec.secretEnvKeys`.
+  // Named whether or not the value is a sentinel: a name is not a secret,
+  // and the list is then the same on every substrate.
+  const secretEnvKeys: string[] = []
 
   // The worktree this pod runs. Read by the zsh prompt in Dockerfile.default,
   // and — load-bearing — by a yaac started in here: its presence is what tells
@@ -1382,6 +1386,7 @@ export async function createWorktree(
       createHash('sha256').update(mamaToken).digest('hex'),
     )
     env.push(`YAAC_MAMA_TOKEN=${mamaToken}`)
+    secretEnvKeys.push('YAAC_MAMA_TOKEN')
     // Baked at launch rather than looked up per call: the tmux server holds
     // this env for its whole life, which outlives the yaac server that made
     // it. A restart on the SAME port (the default, and what a plain
@@ -1403,6 +1408,7 @@ export async function createWorktree(
   // path is handed the answer to, so it is resolved once either way.
   for (const [name, { value }] of Object.entries(projectEnv.secrets)) {
     env.push(`${name}=${mediatedEgress ? 'placeholder' : value}`)
+    secretEnvKeys.push(name)
   }
 
   // Add placeholder env vars so no tool prompts for login inside the
@@ -1420,6 +1426,7 @@ export async function createWorktree(
   const apiKeyFor = (real: string): string => mediatedEgress ? PLACEHOLDER_API_KEY : real
   if (toolAuthByTool.claude?.kind === 'api-key') {
     env.push(`ANTHROPIC_API_KEY=${apiKeyFor(toolAuthByTool.claude.apiKey)}`)
+    secretEnvKeys.push('ANTHROPIC_API_KEY')
   }
   // Claude OAuth: Claude Code reads the placeholder bundle from the mounted
   // .claude/.credentials.json, so no env var is needed.
@@ -1431,9 +1438,11 @@ export async function createWorktree(
     // provider table.
     const info = opencodeProviderInfo(toolAuthByTool.opencode.opencodeProvider)
     env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.opencode.apiKey)}`)
+    secretEnvKeys.push(info.envVar)
   }
   if (toolAuthByTool.codex?.kind === 'api-key') {
     env.push(`OPENAI_API_KEY=${apiKeyFor(toolAuthByTool.codex.apiKey)}`)
+    secretEnvKeys.push('OPENAI_API_KEY')
   }
   if (toolAuthByTool.pi?.kind === 'api-key') {
     // pi is api-key only. It reads the chosen provider's env var and sends the
@@ -1442,6 +1451,7 @@ export async function createWorktree(
     // The env var + host come from the generated provider table.
     const info = piProviderInfo(toolAuthByTool.pi.piProvider)
     env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.pi.apiKey)}`)
+    secretEnvKeys.push(info.envVar)
   }
   // Codex OAuth: Codex reads the placeholder bundle from the mounted
   // .codex/auth.json. Setting OPENAI_API_KEY would risk steering Codex
@@ -1464,6 +1474,7 @@ export async function createWorktree(
     && ghApiHostForGitHost(parsedRemote.host) !== null
     && !userWiresGithubToken) {
     env.push(`GH_TOKEN=${mediatedEgress ? PLACEHOLDER_GH_TOKEN : credential.token}`)
+    secretEnvKeys.push('GH_TOKEN')
   }
 
   // Pin opencode to the baked-in version by stopping its startup update
@@ -1642,6 +1653,7 @@ export async function createWorktree(
     prewarm: options.prewarm === true,
     ...(imageRef !== undefined ? { image: imageRef } : {}),
     env,
+    secretEnvKeys,
     mounts,
     moduleDirs,
     resources: WORKTREE_RESOURCES,

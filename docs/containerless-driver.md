@@ -529,6 +529,27 @@ it. Because recovery runs as the driver attaches — after the server is
 already answering — a client that connects in that window sees worktrees
 appear rather than being made to wait.
 
+Every command the server runs in a workspace — an exec, a dialed stream,
+the changes diff — gets the workspace's environment, never the server's own,
+whose `YAAC_*` wiring and host `HOME` would point the command at the server
+user's configuration. The server holds the whole environment in memory for a
+worktree it launched. A restart loses that copy, and tmux's own dump of its
+environment cannot stand in (it does not escape a multi-line value), so the
+marker carries the launch's own entries — the create's and the git wiring —
+and a restarted server lays them over the same floor a launch builds from.
+The credentials among them (`secretEnvKeys` on the spec: the API keys,
+`GH_TOKEN`, proxied project secrets, the `yaac-mama` bearer) are left out:
+they live encrypted in the database and in the tmux server's memory, never in
+a file, and nothing run this way after a restart sends one anywhere.
+
+The one exception is the liveness watch, which only needs the socket — but
+an attaching client's environment is not inert. tmux by default copies an
+attaching client's `SSH_AUTH_SOCK` (and a few others) into the session
+environment every later window inherits, so the launch empties
+`update-environment` in the same invocation that creates the session, before
+anything can attach. Otherwise the watch alone would hand the panes the
+host's ssh-agent in place of the worktree's.
+
 ## Ports
 
 A pod's listener is reachable from nowhere until something binds a host port

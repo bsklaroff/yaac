@@ -49,6 +49,15 @@ export interface WorkspaceMarker {
    * running.
    */
   sshAgentPid?: number
+  /**
+   * The launch's own environment entries — the caller's and the git wiring,
+   * as the launch resolved them — minus every credential, which stays in
+   * memory only (`WorkspaceSpec.secretEnvKeys`). What a restarted server lays
+   * over the floor so a command it runs in the workspace still sees the
+   * worktree's tool homes and settings (see `workspaceRunEnvironment`). Absent
+   * on a marker written before it was recorded.
+   */
+  launchEnv?: Record<string, string>
 }
 
 /** The in-memory half: the marker plus what observation has since decided. */
@@ -59,9 +68,9 @@ interface Entry {
   /** A teardown has started; it renders as terminating and is not a reaper
    *  target. */
   terminating: boolean
-  /** The workspace's process environment, kept so `exec` runs commands with
-   *  the same env the tmux server was started with. Lost on a restart, when
-   *  the tmux server holds the real copy and an exec only needs to reach it. */
+  /** The workspace's whole process environment, credentials included —
+   *  held for a workspace this server launched, and never written down, so
+   *  a restart loses it (the marker's `launchEnv` is what survives). */
   env?: NodeJS.ProcessEnv
 }
 
@@ -113,6 +122,10 @@ export function observeLiveness(
 
 export function workspaceEnv(worktreeId: string): NodeJS.ProcessEnv | undefined {
   return entries.get(worktreeId)?.env
+}
+
+export function workspaceLaunchEnv(worktreeId: string): Record<string, string> | undefined {
+  return entries.get(worktreeId)?.marker.launchEnv
 }
 
 export function tmuxPidOf(worktreeId: string): number | undefined {

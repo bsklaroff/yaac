@@ -10,11 +10,19 @@ import {
   assertSocketPathsFit,
   containerlessJobName,
   containerlessWorkspacePaths,
+  refFromJobName,
   tmuxSockDir,
   workspaceHome,
   workspaceStateDir,
 } from './paths'
-import { rememberWorkspace, sshAgentPidOf, writeMarker, type WorkspaceMarker } from './registry'
+import {
+  rememberWorkspace,
+  sshAgentPidOf,
+  workspaceEnv,
+  workspaceLaunchEnv,
+  writeMarker,
+  type WorkspaceMarker,
+} from './registry'
 import { TOOL_HOME_VARS, overriddenToolHomeVars } from './tool-homes'
 import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
@@ -103,7 +111,7 @@ export function userEnvironment(): NodeJS.ProcessEnv {
  * by the two deny lists above.
  */
 function workspaceEnvironment(
-  spec: WorkspaceSpec,
+  spec: Pick<WorkspaceSpec, 'env' | 'mounts'>,
   home: string,
   paths: { workspaceDir: string },
 ): NodeJS.ProcessEnv {
@@ -122,7 +130,66 @@ function workspaceEnvironment(
   // Seeds the tmux SERVER environment (it forks from the first client), so
   // every pane inherits it — same reason the pod's init script sets it.
   env.COLORTERM = 'truecolor'
+  // The helper scripts staged into the workspace's bin dir are only useful
+  // if the workspace can find them — the pod gets that from
+  // `/usr/local/bin` already being on PATH, and here it has to be said. The
+  // pinned agents come next, ahead of the host's own: an agent CLI the user
+  // installed is at whatever version they last updated it to, and yaac's
+  // launch flags are written against the pin (see `AGENT_PACKAGES`).
+  env.PATH = [workspaceBinDir(home), ...agentBinDirs(), env.PATH ?? ''].join(path.delimiter)
   return env
+}
+
+function gitconfigPathFor(home: string): string {
+  return path.join(home, '.gitconfig')
+}
+
+/**
+ * The environment a command the server runs in a workspace gets — `exec`,
+ * the streams it dials, the changes diff — and never the server's own: that
+ * carries the server's wiring and the host's HOME, so a command run with it
+ * reads the SERVER user's configuration instead of the worktree's.
+ *
+ * The launch's whole copy while this server holds it. After a restart, the
+ * floor a launch builds from, with the launch's own entries from the marker
+ * laid over it — everything but the credentials, which are never written
+ * down. Nothing run this way sends one anywhere: it is tmux, the local git
+ * diff, and tools reading their local session data. A workspace the
+ * registry has forgotten gets the floor alone.
+ */
+export function workspaceRunEnvironment(jobName: string): NodeJS.ProcessEnv {
+  const { projectSlug, worktreeId } = refFromJobName(jobName)
+  const held = workspaceEnv(worktreeId)
+  if (held !== undefined) return held
+  const home = workspaceHome(projectSlug, worktreeId)
+  const env = workspaceEnvironment(
+    { env: [], mounts: [] },
+    home,
+    containerlessWorkspacePaths(jobName),
+  )
+  Object.assign(env, workspaceLaunchEnv(worktreeId))
+  env.GIT_CONFIG_GLOBAL = gitconfigPathFor(home)
+  return env
+}
+
+/** The entries a launch added over the floor, credentials excluded — what
+ *  the marker carries (see `WorkspaceMarker.launchEnv`). */
+function persistableLaunchEnv(
+  env: NodeJS.ProcessEnv,
+  spec: Pick<WorkspaceSpec, 'env' | 'secretEnvKeys'>,
+  gitAuthEnv: Record<string, string>,
+): Record<string, string> {
+  const secret = new Set(spec.secretEnvKeys)
+  const keys = [
+    ...spec.env.map((e) => e.slice(0, Math.max(0, e.indexOf('=')))),
+    ...Object.keys(gitAuthEnv),
+  ]
+  const out: Record<string, string> = {}
+  for (const key of keys) {
+    const value = env[key]
+    if (key !== '' && !secret.has(key) && value !== undefined) out[key] = value
+  }
+  return out
 }
 
 /** Where a workspace's own executables go, and what is prepended to its
@@ -392,14 +459,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     serverLog(`[server] containerless ${spec.workspaceId}: ${message}`)
   }
 
-  // The helper scripts staged above are only useful if the workspace can
-  // find them — the pod gets that from `/usr/local/bin` already being on
-  // PATH, and here it has to be said. The pinned agents come next, ahead of
-  // the host's own: an agent CLI the user installed is at whatever version
-  // they last updated it to, and yaac's launch flags are written against the
-  // pin (see `AGENT_PACKAGES`).
-  env.PATH = [workspaceBinDir(home), ...agentBinDirs(), env.PATH ?? ''].join(path.delimiter)
-
   // Git identity, trust and authentication, in the workspace's OWN home —
   // the pod driver writes the same settings from its postStart hook, into a
   // home that is per-pod for exactly the same reason this one is
@@ -430,7 +489,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...gitAuth.gitconfig,
     '',
   ].join('\n')
-  const gitconfigPath = path.join(home, '.gitconfig')
+  const gitconfigPath = gitconfigPathFor(home)
   await fs.writeFile(gitconfigPath, gitconfig)
   // After the caller's entries, like HOME above: this is the driver's own
   // wiring, and a passthrough value cannot be allowed to disarm the host
@@ -458,11 +517,20 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // -x/-y are generous so the respawned agent inherits a window larger than
   // any real terminal; tmux shrinks it to the client on attach, and
   // shrink-then-render is what TUIs handle reliably.
+  //
+  // `update-environment` is emptied in the same invocation, before any other
+  // client can attach, and is not one of the cosmetic options below: by
+  // default every attach copies the attaching client's SSH_AUTH_SOCK (and a
+  // few others) into the session environment, which every later window and
+  // respawned pane inherits. The liveness watch attaches with the SERVER's
+  // environment, so it alone would hand the panes the host's ssh-agent in
+  // place of this workspace's.
   await runHost([
     'tmux', '-S', paths.tmuxSock, '-u',
     'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
     '-x', '500', '-y', '200', '-c', paths.workspaceDir,
-    'sleep infinity',
+    'sleep infinity', ';',
+    'set-option', '-g', 'update-environment', '',
   ], { cwd: paths.workspaceDir, env, timeoutMs: 30_000 })
 
   // Session UX options, one invocation — the same set the pod's init hook
@@ -507,6 +575,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // Recorded so teardown can end the agent holding this worktree's ssh
     // key. Absent for a project with no SSH remote, which starts none.
     ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
+    launchEnv: persistableLaunchEnv(env, spec, gitAuth.env),
   }
   await writeMarker(marker)
   return rememberWorkspace(marker, env)
