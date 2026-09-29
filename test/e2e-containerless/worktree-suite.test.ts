@@ -829,6 +829,15 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const creds = await mamaCreds()
     expect(creds.YAAC_MAMA_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(creds.YAAC_MAMA_TOKEN).toBeTruthy()
+    // Handed to the worktree, never written down: the marker a restarted
+    // server rebuilds the environment from carries the create's other
+    // entries but none of its credentials.
+    const marker = await fs.readFile(path.join(
+      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', worktreeId,
+      'containerless', 'workspace.json',
+    ), 'utf8')
+    expect(marker).toContain(creds.YAAC_MAMA_URL)
+    expect(marker).not.toContain(creds.YAAC_MAMA_TOKEN)
   })
 
   it('resolves its tool homes from the project, not the server user', async () => {

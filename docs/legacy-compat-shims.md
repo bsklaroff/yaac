@@ -154,3 +154,26 @@ restart as the fix.
 **How to tell it is safe to remove:** once no worktree launched before the
 mount can still be running — every such worktree has been stopped or
 restarted. Removing it then leaves the upload's behavior unchanged.
+
+## A containerless marker with no `launchEnv`
+
+`WorkspaceMarker.launchEnv` is optional, and `workspaceRunEnvironment`
+(containerless `launch.ts`) lays nothing over the floor when it is missing,
+only because a marker written before the field existed has none. The floor
+itself is not a shim: it is also the permanent answer for a workspace the
+registry has forgotten.
+
+**What it reads:** a workspace marker written before the marker carried
+`launchEnv`, recovered by a restarted server. Such a worktree's tmux server
+also predates the emptied `update-environment`; that half is deliberately not
+repaired, and a worktree restart fixes both.
+
+**What breaks silently if it goes too early:** the type stops telling the
+truth about those markers. Today's one reader tolerates a missing value
+(`Object.assign` skips `undefined`), but code added later that trusts a
+required field — reading a tool home out of it, say — would find nothing
+after a restart and fall through to the floor's `$HOME`-relative defaults.
+
+**How to tell it is safe to remove:** once no containerless worktree launched
+before the marker carried `launchEnv` can still be running — each has been
+stopped or restarted. Then make the field required.

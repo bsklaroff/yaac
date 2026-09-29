@@ -2,8 +2,8 @@ import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { buildChangesScript, parseChangesOutput } from '#drivers/shared'
 import { runHost } from './host'
-import { containerlessWorkspacePaths, refFromJobName } from './paths'
-import { workspaceEnv } from './registry'
+import { workspaceRunEnvironment } from './launch'
+import { containerlessWorkspacePaths } from './paths'
 import type { WorktreeChanges } from '@yaac/shared/types'
 
 /**
@@ -14,10 +14,7 @@ import type { WorktreeChanges } from '@yaac/shared/types'
  * The environment matters more than it looks: it carries `HOME` (the
  * per-worktree home the tool configs are symlinked into) and the agent
  * credentials, so a command run without it would read the SERVER user's
- * configuration instead of the worktree's. After a restart the table has no
- * env — the tmux server holds the real copy — and commands fall back to the
- * server's own, which is correct for the tmux invocations that make up
- * essentially all of this verb's traffic.
+ * configuration instead of the worktree's (see `workspaceRunEnvironment`).
  */
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -28,7 +25,6 @@ export async function execInWorkspace(
   cmd: string,
   opts?: { timeout?: number; maxAttempts?: number },
 ): Promise<{ stdout: string; stderr: string }> {
-  const { worktreeId } = refFromJobName(jobName)
   const paths = containerlessWorkspacePaths(jobName)
   const attempts = Math.max(1, opts?.maxAttempts ?? 1)
   let lastErr: unknown
@@ -38,9 +34,7 @@ export async function execInWorkspace(
         // The checkout may not exist yet on the very first setup command;
         // falling back keeps that a command failure rather than a spawn one.
         cwd: paths.workspaceDir,
-        ...(workspaceEnv(worktreeId) !== undefined
-          ? { env: workspaceEnv(worktreeId) as NodeJS.ProcessEnv }
-          : {}),
+        env: workspaceRunEnvironment(jobName),
         timeoutMs: opts?.timeout ?? DEFAULT_TIMEOUT_MS,
       })
     } catch (err) {
@@ -77,7 +71,7 @@ export function getWorktreeChanges(
         indexFile: `${paths.scratchDir}/yaac-changes.idx`,
         baseUnresolvedCode: CHANGES_BASE_UNRESOLVED,
       }, base, defaultBase),
-    ], { cwd: paths.workspaceDir, timeoutMs: 20_000 })
+    ], { cwd: paths.workspaceDir, env: workspaceRunEnvironment(jobName), timeoutMs: 20_000 })
     return parseChangesOutput(stdout)
   })
 }

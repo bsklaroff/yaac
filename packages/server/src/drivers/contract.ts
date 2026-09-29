@@ -345,6 +345,13 @@ export interface WorkspaceSpec {
   image?: string
   /** Caller-decided `NAME=VALUE` entries; the runtime appends its own. */
   env: string[]
+  /**
+   * The names in `env` whose values are credentials. A runtime hands them to
+   * the workspace like any other entry but never writes them anywhere of its
+   * own: a secret lives encrypted in the database and in the memory of what
+   * it was handed to, not in a runtime's durable records.
+   */
+  secretEnvKeys: string[]
   /** Caller-decided mounts; the runtime appends its own. */
   mounts: WorkspaceMount[]
   /**

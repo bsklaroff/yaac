@@ -18,7 +18,13 @@ import {
   execInWorkspace,
   getWorktreeChanges,
 } from '#drivers/containerless/exec'
-import { containerlessJobName } from '#drivers/containerless/paths'
+import { containerlessJobName, workspaceHome } from '#drivers/containerless/paths'
+import {
+  _resetRegistryForTests,
+  readMarkers,
+  restoreWorkspace,
+  writeMarker,
+} from '#drivers/containerless/registry'
 
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 const JOB = containerlessJobName('demo', UUID)
@@ -27,13 +33,19 @@ let dataDir: string
 beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-cl-exec-'))
   setDataDir(dataDir)
+  _resetRegistryForTests()
   mockRunHost.mockReset()
   mockRunHost.mockResolvedValue({ stdout: '', stderr: '' })
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+/** The environment the one host command ran with. */
+const ranWith = (): NodeJS.ProcessEnv =>
+  (mockRunHost.mock.calls[0] as [string[], { env: NodeJS.ProcessEnv }])[1].env
 
 describe('execInWorkspace', () => {
   it('runs the command in the worktree checkout, one shell pass', async () => {
@@ -43,6 +55,42 @@ describe('execInWorkspace', () => {
     // against — `sh -c <cmd>`, not a split argv.
     expect(argv).toEqual(['sh', '-c', 'tmux -S /x has-session -t yaac'])
     expect(opts.cwd).toBe(worktreeDir('demo', UUID))
+  })
+
+  it('runs with the launch\'s own entries after a restart, over the worktree floor', async () => {
+    // What a restarted server has: the marker on disk and nothing in memory.
+    await writeMarker({
+      projectSlug: 'demo', worktreeId: UUID, tool: 'opencode', mode: 'tui',
+      prewarm: false, createdAtMs: 1_000,
+      launchEnv: { CODEX_HOME: '/projects/demo/codex', PROJECT_SETTING: 'on' },
+    })
+    for (const m of await readMarkers()) restoreWorkspace(m, true, { reason: 'pod-stopped' })
+    vi.stubEnv('YAAC_SERVER_WIRING', 'server-only')
+
+    await execInWorkspace(JOB, 'opencode api --standalone session.list')
+    const env = ranWith()
+    // `opencode api` reads its data under HOME: the host's would list the
+    // host user's sessions instead of this worktree's.
+    expect(env.HOME).toBe(workspaceHome('demo', UUID))
+    expect(env).toMatchObject({ CODEX_HOME: '/projects/demo/codex', PROJECT_SETTING: 'on' })
+    expect(env.YAAC_SERVER_WIRING).toBeUndefined()
+  })
+
+  it('never falls back to the server\'s own environment', async () => {
+    // A marker from before it carried one, or no marker at all.
+    vi.stubEnv('YAAC_SERVER_WIRING', 'server-only')
+    vi.stubEnv('HOME', '/home/server-user')
+    vi.stubEnv('CODEX_HOME', '/home/server-user/.codex')
+    await execInWorkspace(JOB, 'true')
+    const env = ranWith()
+    const home = workspaceHome('demo', UUID)
+    expect(env.HOME).toBe(home)
+    expect(env.GIT_CONFIG_GLOBAL).toBe(path.join(home, '.gitconfig'))
+    expect(env.YAAC_SERVER_WIRING).toBeUndefined()
+    // A tool-home override would point the command at the host's config.
+    expect(env.CODEX_HOME).toBeUndefined()
+    // Still the user's toolchain — that is what the workspace inherits.
+    expect(env.PATH).toContain(path.join(home, '.local', 'bin'))
   })
 
   it('passes a nonzero exit through as the verdict it is', async () => {
@@ -88,6 +136,8 @@ describe('getWorktreeChanges', () => {
     // cache makes each poll incremental.
     expect(script).toContain('yaac-changes.idx')
     expect(script).toContain(`exit ${String(CHANGES_BASE_UNRESOLVED)}`)
+    // The worktree's git config, not the server user's.
+    expect(ranWith().GIT_CONFIG_GLOBAL).toBe(path.join(workspaceHome('demo', UUID), '.gitconfig'))
   })
 })
 
