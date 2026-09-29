@@ -7,20 +7,9 @@ import tailwindcss from '@tailwindcss/vite'
 // loader hands bare imports to raw Node, which cannot resolve them.
 import { resolveServerTarget } from '@yaac/shared/server-api'
 
-// Bare-path API surface proxied to the server: the slice keeps the
-// existing paths rather than a /v1 prefix.
-const apiPrefixes = ['/session', '/project', '/auth', '/shortcuts', '/prewarm', '/health', '/whoami', '/image', '/cluster']
-
 interface OutgoingLike { setHeader(name: string, value: string): void }
 interface IncomingLike { headers: Record<string, string | string[] | undefined> }
 interface ProxyLike { on(event: string, listener: (out: OutgoingLike, req: IncomingLike) => void): void }
-
-interface ProxyEntry {
-  target: string
-  changeOrigin: boolean
-  configure: (proxy: ProxyLike) => void
-  ws?: boolean
-}
 
 /**
  * The dev server proxies API + WS traffic to the server every client
@@ -30,7 +19,7 @@ interface ProxyEntry {
  * listener. Nothing selected refuses to start, with the message every
  * client prints; select or start a server, then restart the dev server.
  */
-async function serverProxy(): Promise<Record<string, ProxyEntry>> {
+async function serverProxy() {
   const target = (await resolveServerTarget()).baseUrl
   // `changeOrigin` rewrites Host to the server's; Origin has to follow it,
   // because the server admits only a request whose Origin is the origin it
@@ -48,14 +37,8 @@ async function serverProxy(): Promise<Record<string, ProxyEntry>> {
       }
     },
   }
-  const proxy: Record<string, ProxyEntry> = {}
-  for (const p of apiPrefixes) proxy[p] = sameOrigin
-  proxy['/events'] = { ...sameOrigin, ws: true }
-  proxy['/pty'] = { ...sameOrigin, ws: true }
-  // The chat pane's transport, alongside the terminal's — without it a `tui`
-  // worktree works in dev and an `acp` one silently never connects.
-  proxy['/acp'] = { ...sameOrigin, ws: true }
-  return proxy
+  // Every route the server answers, HTTP and WebSocket, is under /api.
+  return { '/api': { ...sameOrigin, ws: true } }
 }
 
 export default defineConfig(async ({ command }) => ({

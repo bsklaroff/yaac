@@ -81,10 +81,21 @@ export function buildApp(deps: ServerAppDeps) {
     registerStaticRoutes(app, frontendDir)
   }
 
+  app.route('/api', apiRoutes(isReady, deps.buildId))
   return app
+}
+
+/**
+ * Every HTTP route a client calls, mounted under `/api` (as are the
+ * WebSocket routes server-run adds) so none can collide with the SPA's
+ * paths and the dev proxy forwards one prefix. `AppType` is this sub-app:
+ * clients address routes without the prefix and `createApiClient` adds it.
+ */
+function apiRoutes(isReady: () => boolean, buildId: string) {
+  return new Hono<IdentityEnv>()
     .get('/health', (c) => c.json({
       ok: true,
-      buildId: deps.buildId,
+      buildId,
       ready: isReady(),
       // Which substrate this server runs, or null before the composition
       // root has registered one. Here as well as on the snapshot because a
@@ -105,4 +116,4 @@ export function buildApp(deps: ServerAppDeps) {
     .route('/image', imageApp)
 }
 
-export type AppType = ReturnType<typeof buildApp>
+export type AppType = ReturnType<typeof apiRoutes>

@@ -94,7 +94,7 @@ const api = async (url, init) => {
 // --- server side: the CLI and the HTTP API ---
 const yaac = (args) => execSync(`yaac ${args}`, { input: '', stdio: ['pipe', 'pipe', 'pipe'] }).toString()
 const stoppedList = async (project) =>
-  (await api(`${origin}/worktree/list-stopped?project=${project}`)).json()
+  (await api(`${origin}/api/worktree/list-stopped?project=${project}`)).json()
 const isLive = (id) => yaac('worktree list').includes(id.slice(0, 8))
 async function until(what, cond, timeoutMs = 60_000) {
   const end = Date.now() + timeoutMs
@@ -108,7 +108,7 @@ async function create(title) {
   const out = yaac(`worktree create ${PROJECT} -t pi --mode acp -g ${GROUP} -p "${title}"`)
   const id = out.match(/Worktree ([0-9a-f-]{36})/)?.[1]
   if (!id) throw new Error(`create printed no id:\n${out}`)
-  await api(`${origin}/worktree/${id}/title`, {
+  await api(`${origin}/api/worktree/${id}/title`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }),
   })
   return id

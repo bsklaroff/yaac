@@ -215,5 +215,5 @@ export function getApiClient(opts: ApiClientOptions = {}) {
         : input.url
     return serverFetch(url, init)
   }
-  return createApiClient('http://server.local/', fetchLike)
+  return createApiClient('http://server.local', fetchLike)
 }

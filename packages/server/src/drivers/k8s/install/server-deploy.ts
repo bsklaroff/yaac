@@ -453,7 +453,7 @@ export function buildServerDeploymentManifest(
               env: buildServerEnv(envOpts),
               readinessProbe: {
                 httpGet: {
-                  path: '/health',
+                  path: '/api/health',
                   port: SERVER_POD_PORT,
                   // The kubelet dials the POD IP, so its Host header is the
                   // pod IP — which the server's DNS-rebind guard rejects
@@ -638,29 +638,41 @@ async function refuseIfHostServerRunning(): Promise<void> {
 
 /**
  * Wait for the ROLLED server to answer at its published origin, and turn
- * "it never does" into the fronting's own diagnosis of why.
+ * "it never does" into a diagnosis of why.
  *
  * A Deployment that is Available while the origin refuses is not a server
  * problem: on kind it is a cluster created before the port mapping existed
  * (which cannot be converged, only recreated), on a tailnet it is this
  * machine not being able to reach the name the operator published. The
- * fronting knows which, so it supplies the text.
+ * fronting knows which, so it supplies the text. An origin that answers
+ * but never with a ready server was reached, so that text is wrong for it:
+ * the likeliest cause is a Deployment an older yaac installed, whose image
+ * predates this CLI's routes, and `yaac cluster install` rolls the current one.
  */
 async function waitForPublishedServer(origin: string, fronting: ServerFronting): Promise<void> {
   const deadline = Date.now() + fronting.publishTimeoutMs
   let last = 'no attempt made'
+  let reached = false
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(2000) })
+      const res = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(2000) })
+      reached = true
       if (res.ok) {
         const body = await res.json() as { ready?: unknown }
         if (body.ready === true) return
-        last = 'answered /health but is still initializing'
+        last = 'answered /api/health but is still initializing'
       } else last = `answered HTTP ${String(res.status)}`
     } catch (err) {
+      reached = false
       last = err instanceof Error ? err.message : String(err)
     }
     await new Promise((r) => setTimeout(r, 500))
+  }
+  if (reached) {
+    throw new Error(
+      `the server Deployment rolled out and ${origin} answers, but not as a ready server (${last}).\n`
+      + '    If an older yaac installed it, roll this bundle with `yaac cluster install`.',
+    )
   }
   throw new Error(
     `the server Deployment rolled out, but ${origin} does not answer (${last}).\n`

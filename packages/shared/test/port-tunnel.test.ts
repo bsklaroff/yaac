@@ -2,7 +2,7 @@
  * The client half of a port forward — `startForward`.
  *
  * Driven against a REAL WebSocket server standing in for yaac's
- * `/forward/attach`, because what this module is is the splice between a
+ * `/api/forward/attach`, because what this module is is the splice between a
  * TCP socket and a WebSocket: mocking either end would leave nothing under
  * test. The far end here echoes, so a byte that comes back proves the
  * whole round trip — the listener bound, the socket opened with the right
@@ -19,7 +19,7 @@ interface Upgrade {
   authorization: string | undefined
 }
 
-/** A stand-in for the server's `/forward/attach`: records what each client
+/** A stand-in for the server's `/api/forward/attach`: records what each client
  *  asked for, and echoes every binary frame back. */
 async function fakeServer(opts: {
   onSocket?: (ws: WebSocket) => void
@@ -86,7 +86,7 @@ describe('startForward', () => {
     // from the request itself, exactly as it does for the PTY.
     const [upgrade] = server.upgrades
     expect(upgrade.authorization).toBeUndefined()
-    expect(upgrade.path).toContain('/forward/attach')
+    expect(upgrade.path).toContain('/api/forward/attach')
     expect(upgrade.path).toContain('id=sess-1')
     expect(upgrade.path).toContain('port=5173')
   })
@@ -176,8 +176,8 @@ describe('startForward', () => {
     // fails for a reason that has nothing to do with this module.
     const spec = { session: 'sess-1', containerPort: 5173, hostPort: 0 }
     expect(tunnelUrl({ baseUrl: 'https://srv.example.ts.net' }, spec))
-      .toBe('wss://srv.example.ts.net/forward/attach?id=sess-1&port=5173')
+      .toBe('wss://srv.example.ts.net/api/forward/attach?id=sess-1&port=5173')
     expect(tunnelUrl({ baseUrl: 'http://127.0.0.1:8787' }, spec))
-      .toBe('ws://127.0.0.1:8787/forward/attach?id=sess-1&port=5173')
+      .toBe('ws://127.0.0.1:8787/api/forward/attach?id=sess-1&port=5173')
   })
 })

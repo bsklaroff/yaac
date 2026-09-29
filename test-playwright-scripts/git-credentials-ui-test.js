@@ -104,8 +104,8 @@ async function api(method, route, body) {
   return text ? JSON.parse(text) : null
 }
 
-const projects = async () => await api('GET', '/project/list')
-const credentials = async () => (await api('GET', '/auth/list')).gitCredentials
+const projects = async () => await api('GET', '/api/project/list')
+const credentials = async () => (await api('GET', '/api/auth/list')).gitCredentials
 
 // Setup: a project with no credential, staged on disk and recorded as is.
 const unassigned = slugOf(UNASSIGNED_URL)
@@ -113,7 +113,7 @@ if (!(await projects()).some((p) => p.slug === unassigned)) {
   const dir = path.join(dataDir, 'global', 'projects', unassigned)
   execSync(`git clone --quiet ${UNASSIGNED_URL} ${path.join(dir, 'repo')}`)
   fs.mkdirSync(path.join(dir, 'claude'), { recursive: true })
-  await api('POST', '/project/register', { slug: unassigned, remoteUrl: UNASSIGNED_URL })
+  await api('POST', '/api/project/register', { slug: unassigned, remoteUrl: UNASSIGNED_URL })
 }
 if ((await projects()).some((p) => p.slug === slugOf(ADD_URL))) {
   throw new Error(`${slugOf(ADD_URL)} is already a project — pick another ADD_URL`)

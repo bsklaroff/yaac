@@ -168,7 +168,7 @@ describe('saveWorktreeFile', () => {
     const fetchMock = stub({ path: 'a.ts', version: 'v2', size: 1 }, 200)
     expect(await saveWorktreeFile('w1', 'a.ts', 'x', 'v1')).toEqual({ path: 'a.ts', version: 'v2', size: 1 })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(new URL(url, 'http://localhost').pathname).toBe('/worktree/w1/file')
+    expect(new URL(url, 'http://localhost').pathname).toBe('/api/worktree/w1/file')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ path: 'a.ts', content: 'x', baseVersion: 'v1' })
   })

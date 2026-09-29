@@ -185,14 +185,14 @@ describe('write routes', () => {
   describe('POST /project/add', () => {
     it('rejects requests with no body', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/project/add', rawInit({ method: 'POST' }))
+      const res = await app.request('/api/project/add', rawInit({ method: 'POST' }))
       expect(res.status).toBe(400)
     })
 
     it('rejects requests missing the remoteUrl or the git credential', async () => {
       const app = buildApp({ buildId: 'test' })
       for (const body of [{ gitCredentialId: '00000000-0000-4000-8000-000000000001' }, { remoteUrl: 'x/foo' }]) {
-        const res = await app.request('/project/add', rawInit({
+        const res = await app.request('/api/project/add', rawInit({
           method: 'POST',
           body: JSON.stringify(body),
         }))
@@ -226,7 +226,7 @@ describe('write routes', () => {
   describe('PUT /project/:slug/config', () => {
     it('rejects requests with no config field', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/project/demo/config', rawInit({
+      const res = await app.request('/api/project/demo/config', rawInit({
         method: 'PUT',
         body: JSON.stringify({}),
       }))
@@ -296,7 +296,7 @@ describe('write routes', () => {
     it('surfaces a rule the proxy could not act on as VALIDATION', async () => {
       await writeProject('demo')
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/project/demo/env', rawInit({
+      const res = await app.request('/api/project/demo/env', rawInit({
         method: 'PUT',
         body: JSON.stringify({ name: 'K', value: 'v', secret: true, rule: { hosts: [] } }),
       }))
@@ -349,7 +349,7 @@ describe('write routes', () => {
         { name: 'Ada', email: 'ada@example.com\u0000' },
         { name: 'A'.repeat(257), email: 'ada@example.com' },
       ]) {
-        const res = await app.request('/config/git-identity', rawInit({
+        const res = await app.request('/api/config/git-identity', rawInit({
           method: 'PUT',
           body: JSON.stringify(body),
         }))
@@ -476,7 +476,7 @@ describe('write routes', () => {
   describe('PUT /project/:slug/dockerfile', () => {
     it('rejects requests with no content field', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/project/demo/dockerfile', rawInit({
+      const res = await app.request('/api/project/demo/dockerfile', rawInit({
         method: 'PUT',
         body: JSON.stringify({}),
       }))
@@ -577,18 +577,18 @@ describe('write routes', () => {
       const app = buildApp({ buildId: 'test' })
 
       const traverse = await app.request(
-        '/project/demo/build-files/file?path=..%2F..%2Fetc%2Fpasswd',
+        '/api/project/demo/build-files/file?path=..%2F..%2Fetc%2Fpasswd',
         rawInit(),
       )
       expect(traverse.status).toBe(400)
 
-      const reserved = await app.request('/project/demo/build-files/file', rawInit({
+      const reserved = await app.request('/api/project/demo/build-files/file', rawInit({
         method: 'PUT',
         body: JSON.stringify({ path: 'Dockerfile.yaac', content: 'FROM x\n' }),
       }))
       expect(reserved.status).toBe(400)
 
-      const both = await app.request('/project/demo/build-files/file', rawInit({
+      const both = await app.request('/api/project/demo/build-files/file', rawInit({
         method: 'PUT',
         body: JSON.stringify({ path: 'a', content: 'x', contentBase64: 'eA==' }),
       }))
@@ -625,7 +625,7 @@ describe('write routes', () => {
   describe('POST /worktree/create', () => {
     it('rejects missing project', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/create', rawInit({
+      const res = await app.request('/api/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -634,7 +634,7 @@ describe('write routes', () => {
 
     it('rejects an unknown tool with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/create', rawInit({
+      const res = await app.request('/api/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', tool: 'mystery' }),
       }))
@@ -653,7 +653,7 @@ describe('write routes', () => {
       })
       const app = buildApp({ buildId: 'test' })
       const create = async (body: Record<string, unknown>): Promise<void> => {
-        const res = await app.request('/worktree/create', rawInit({
+        const res = await app.request('/api/worktree/create', rawInit({
           method: 'POST', body: JSON.stringify({ project: 'demo', ...body }),
         }))
         await res.text() // drain the NDJSON stream so the handler finishes
@@ -689,7 +689,7 @@ describe('write routes', () => {
         return Promise.resolve({ worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
       })
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/create', rawInit({
+      const res = await app.request('/api/worktree/create', rawInit({
         method: 'POST', body: JSON.stringify({ project: 'demo', tool: 'claude', model: 'claude-opus-5-5' }),
       }))
       await res.text()
@@ -762,7 +762,7 @@ describe('write routes', () => {
 
     it('rejects an empty branch with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/create', rawInit({
+      const res = await app.request('/api/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', branch: '' }),
       }))
@@ -791,7 +791,7 @@ describe('write routes', () => {
       const app = buildApp({ buildId: 'test' })
 
       for (const project of ['demo', 'elsewhere']) {
-        const res = await app.request('/worktree/create', rawInit({
+        const res = await app.request('/api/worktree/create', rawInit({
           method: 'POST', body: JSON.stringify({ project, worktreeId: id }),
         }))
         expect(res.status, project).toBe(409)
@@ -807,7 +807,7 @@ describe('write routes', () => {
       const id = '33333333-3333-4333-8333-333333333333'
       registerProvisioning({ worktreeId: id, projectSlug: 'demo', tool: 'claude', kind: 'create' })
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/create', rawInit({
+      const res = await app.request('/api/worktree/create', rawInit({
         method: 'POST', body: JSON.stringify({ project: 'demo', worktreeId: id }),
       }))
       expect(res.status).toBe(409)
@@ -818,7 +818,7 @@ describe('write routes', () => {
 
     it('rejects a non-uuid worktreeId with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/create', rawInit({
+      const res = await app.request('/api/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', worktreeId: 'not-a-uuid' }),
       }))
@@ -847,7 +847,7 @@ describe('write routes', () => {
   describe('POST /worktree/restart', () => {
     it('rejects missing worktreeId', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/restart', rawInit({
+      const res = await app.request('/api/worktree/restart', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -856,7 +856,7 @@ describe('write routes', () => {
 
     it('answers 404, before any stream, for an id no worktree has', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/restart', rawInit({
+      const res = await app.request('/api/worktree/restart', rawInit({
         method: 'POST', body: JSON.stringify({ worktreeId: 'nope' }),
       }))
       expect(res.status).toBe(404)
@@ -925,7 +925,7 @@ describe('write routes', () => {
       await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sess-z' })
       registerProvisioning({ worktreeId: 'sess-z', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/restart', rawInit({
+      const res = await app.request('/api/worktree/restart', rawInit({
         method: 'POST', body: JSON.stringify({ worktreeId: 'sess-z' }),
       }))
       expect(res.status).toBe(409)
@@ -936,7 +936,7 @@ describe('write routes', () => {
   describe('POST /worktree/stop', () => {
     it('rejects a missing worktreeId', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/stop', rawInit({
+      const res = await app.request('/api/worktree/stop', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -1020,7 +1020,7 @@ describe('write routes', () => {
 
       // A drop onto a group another client has already deleted.
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/set-group', rawInit({
+      const res = await app.request('/api/worktree/set-group', rawInit({
         method: 'POST',
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-b', groupId: 'gone' }),
       }))
@@ -1031,7 +1031,7 @@ describe('write routes', () => {
       // Otherwise the group row lands with no member — invisible in the
       // sidebar, and so undeletable from it.
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/group/create', rawInit({
+      const res = await app.request('/api/worktree/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'nope', name: 'Release' }),
       }))
@@ -1045,7 +1045,7 @@ describe('write routes', () => {
       // sharing their first MAX_TITLE_LENGTH characters would then resolve
       // to one group.
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/group/create', rawInit({
+      const res = await app.request('/api/worktree/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({
           projectSlug: 'demo',
@@ -1059,7 +1059,7 @@ describe('write routes', () => {
 
     it('rejects a blank group name', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/worktree/group/create', rawInit({
+      const res = await app.request('/api/worktree/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-a', name: '' }),
       }))
@@ -1074,7 +1074,7 @@ describe('write routes', () => {
     const client = (): ReturnType<typeof makeTestApiClient> =>
       makeTestApiClient(buildApp({ buildId: 'test' }))
     const post = (route: string, body: unknown): Promise<Response> =>
-      Promise.resolve(buildApp({ buildId: 'test' }).request(`/worktree/queue/${route}`, rawInit({
+      Promise.resolve(buildApp({ buildId: 'test' }).request(`/api/worktree/queue/${route}`, rawInit({
         method: 'POST', body: JSON.stringify(body),
       })))
 
@@ -1137,7 +1137,7 @@ describe('write routes', () => {
   // id makes one, with an id replaces it, and the snapshot carries them.
   describe('draft worktree routes', () => {
     const post = (route: string, body: unknown): Promise<Response> =>
-      Promise.resolve(buildApp({ buildId: 'test' }).request(`/worktree/draft/${route}`, rawInit({
+      Promise.resolve(buildApp({ buildId: 'test' }).request(`/api/worktree/draft/${route}`, rawInit({
         method: 'POST', body: JSON.stringify(body),
       })))
     const settings = { prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' }
@@ -1203,7 +1203,7 @@ describe('write routes', () => {
   describe('POST /auth/clear', () => {
     it('rejects an unknown service', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/auth/clear', rawInit({
+      const res = await app.request('/api/auth/clear', rawInit({
         method: 'POST',
         body: JSON.stringify({ service: 'mystery' }),
       }))
@@ -1223,7 +1223,7 @@ describe('write routes', () => {
     it('rejects a missing name or token', async () => {
       const app = buildApp({ buildId: 'test' })
       for (const body of [{ token: 'ghp_x' }, { name: 'gh' }, { name: 'gh', token: '' }]) {
-        const res = await app.request('/auth/git/credentials', rawInit({
+        const res = await app.request('/api/auth/git/credentials', rawInit({
           method: 'POST', body: JSON.stringify(body),
         }))
         expect(res.status).toBe(400)
@@ -1399,7 +1399,7 @@ describe('write routes', () => {
 
     it('rejects an unknown tool', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/auth/gemini', rawInit({
+      const res = await app.request('/api/auth/gemini', rawInit({
         method: 'PUT',
         body: JSON.stringify({ kind: 'api-key', apiKey: 'x' }),
       }))
@@ -1470,7 +1470,7 @@ describe('write routes', () => {
 
     it('rejects starting a login for opencode', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/auth/opencode/login/start', rawInit({ method: 'POST' }))
+      const res = await app.request('/api/auth/opencode/login/start', rawInit({ method: 'POST' }))
       expect(res.status).toBe(400)
     })
 
@@ -1531,7 +1531,7 @@ describe('write routes', () => {
 
     it('rejects starting an install for opencode', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/auth/opencode/install/start', rawInit({ method: 'POST' }))
+      const res = await app.request('/api/auth/opencode/install/start', rawInit({ method: 'POST' }))
       expect(res.status).toBe(400)
     })
 
@@ -1547,7 +1547,7 @@ describe('write routes', () => {
   describe('body parsing', () => {
     it('malformed JSON maps to VALIDATION 400', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/project/add', rawInit({
+      const res = await app.request('/api/project/add', rawInit({
         method: 'POST',
         body: '{not-json',
       }))
@@ -1558,7 +1558,7 @@ describe('write routes', () => {
 
     it('array body is rejected as VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/project/add', rawInit({
+      const res = await app.request('/api/project/add', rawInit({
         method: 'POST',
         body: JSON.stringify([]),
       }))

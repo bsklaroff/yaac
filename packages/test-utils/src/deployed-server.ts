@@ -363,7 +363,7 @@ async function waitForServer(port: number, timeoutMs = 120_000): Promise<ServerL
   let last = 'no attempt made'
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`http://127.0.0.1:${String(port)}/health`, {
+      const res = await fetch(`http://127.0.0.1:${String(port)}/api/health`, {
         signal: AbortSignal.timeout(2_000),
       })
       if (res.ok) {

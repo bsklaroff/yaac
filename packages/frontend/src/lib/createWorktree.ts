@@ -66,14 +66,14 @@ export async function createWorktree(
     ...(opts.prompt ? { prompt: opts.prompt } : {}),
     ...(opts.draftId !== undefined ? { draftId: opts.draftId } : {}),
   }
-  return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
+  return await streamWorktreeOp('/api/worktree/create', body, onProgress) as CreateWorktreeResult
 }
 
 export async function restartWorktree(
   worktreeId: string,
   onProgress: (message: string) => void,
 ): Promise<{ worktreeId: string }> {
-  return await streamWorktreeOp('/worktree/restart', { worktreeId }, onProgress) as { worktreeId: string }
+  return await streamWorktreeOp('/api/worktree/restart', { worktreeId }, onProgress) as { worktreeId: string }
 }
 
 /** Dismiss a provisioning row (drops the server registry entry; used for a

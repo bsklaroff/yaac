@@ -32,7 +32,7 @@ describe('getStoppedWorktrees', () => {
     const result = await getStoppedWorktrees('my-project', 10)
 
     const url = fetchMock.mock.calls[0][0] as string
-    expect(url).toContain('/worktree/list-stopped')
+    expect(url).toContain('/api/worktree/list-stopped')
     expect(url).toContain('project=my-project')
     expect(url).toContain('limit=10')
     expect(result).toEqual(entries)

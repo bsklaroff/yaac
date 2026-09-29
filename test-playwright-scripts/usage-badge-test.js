@@ -77,10 +77,10 @@ async function main() {
 
   // The popover-open nudge endpoint (fire-and-forget on the client; data
   // arrives via the snapshot, so a 204 is all there is to see here).
-  const refreshRes = await fetch(`${base}/auth/claude/usage/refresh`, { method: 'POST' })
+  const refreshRes = await fetch(`${base}/api/auth/claude/usage/refresh`, { method: 'POST' })
   check('usage-refresh nudge endpoint answers 204', refreshRes.status === 204, `HTTP ${refreshRes.status}`)
 
-  const codeRes = await fetch(`${base}/auth/bootstrap-code`)
+  const codeRes = await fetch(`${base}/api/auth/bootstrap-code`)
   if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
   const { code } = await codeRes.json()
 

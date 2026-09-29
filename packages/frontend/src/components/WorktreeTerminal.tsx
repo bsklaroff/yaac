@@ -261,7 +261,7 @@ export function WorktreeTerminal({
         params.set('cols', String(term.cols))
         params.set('rows', String(term.rows))
       }
-      const sock = new WebSocket(`${scheme}://${window.location.host}/pty/attach?${params.toString()}`)
+      const sock = new WebSocket(`${scheme}://${window.location.host}/api/pty/attach?${params.toString()}`)
       ws = sock
       sock.binaryType = 'arraybuffer'
       let opened = false

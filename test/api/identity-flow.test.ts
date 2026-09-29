@@ -43,7 +43,7 @@ describe('identity flow (real server)', () => {
   function whoami(headers: Record<string, string>): Promise<{ status: number; body: unknown }> {
     return new Promise((resolve, reject) => {
       const req = http.request(
-        { host: '127.0.0.1', port: server.lock.port, path: '/whoami', headers },
+        { host: '127.0.0.1', port: server.lock.port, path: '/api/whoami', headers },
         (res) => {
           let raw = ''
           res.on('data', (c: Buffer) => { raw += c.toString() })
@@ -58,7 +58,7 @@ describe('identity flow (real server)', () => {
   /** The status a WebSocket upgrade to /events is answered with: 101, or the refusal. */
   function upgradeStatus(headers: Record<string, string>): Promise<number> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${String(server.lock.port)}/events`, { headers })
+      const ws = new WebSocket(`ws://127.0.0.1:${String(server.lock.port)}/api/events`, { headers })
       ws.once('upgrade', () => { ws.terminate(); resolve(101) })
       ws.once('unexpected-response', (_req, res) => { res.resume(); ws.terminate(); resolve(res.statusCode ?? 0) })
       ws.once('error', reject)

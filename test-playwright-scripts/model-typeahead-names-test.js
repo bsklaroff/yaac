@@ -51,7 +51,7 @@ const PROJECT = process.env.PROJECT
 if (!PROJECT) throw new Error('set PROJECT=<slug> to the project to open')
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 
-const tools = (await (await fetch(`${origin}/auth/list`)).json()).toolAuth.map((t) => t.tool)
+const tools = (await (await fetch(`${origin}/api/auth/list`)).json()).toolAuth.map((t) => t.tool)
 if (tools.length === 0) throw new Error('needs at least one agent credential')
 
 const { chromium } = requirePlaywright()
