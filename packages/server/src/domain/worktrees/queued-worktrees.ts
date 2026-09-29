@@ -71,7 +71,8 @@ export interface QueueRequest {
   branch?: string
   /** The launched worktree's title; blank leaves it to be auto-titled. */
   title?: string
-  /** A group id or name; null is the default list, absent the parent's. */
+  /** A group id or name — a name matching none is created; null is the
+   *  default list, absent the parent's. */
   group?: string | null
 }
 
@@ -477,7 +478,7 @@ async function resolveSettings(
   const title = normalizeTitle(request.title ?? '')
   const groupId = request.group === undefined ? parent.groupId
     : request.group === null ? undefined
-    : (await resolveGroup(projectSlug, request.group)).groupId
+    : (await resolveGroup(projectSlug, request.group, { create: true })).groupId
   return {
     prompt: request.prompt,
     tool: setup.tool,

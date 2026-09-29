@@ -66,6 +66,8 @@ export function useInlineEdit(displayed: string, commit: (next: string) => void)
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
+    // The Enter that confirms an IME candidate is the composition's, not ours.
+    if (e.nativeEvent.isComposing) return
     if (e.key === 'Enter') { e.preventDefault(); finish(e.currentTarget.value) }
     else if (e.key === 'Escape') { e.preventDefault(); cancel() }
   }

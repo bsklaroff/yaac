@@ -93,9 +93,9 @@ const queuedSettings = {
   title: z.string().max(500).optional(),
 }
 
-// The group a queued worktree launches into, by id or name; null is the
-// default list. Omitted, a queue takes its parent's and an update keeps the
-// entry's.
+// The group a queued worktree launches into, by id or name (a name matching
+// no group is created, as on a create); null is the default list. Omitted,
+// a queue takes its parent's and an update keeps the entry's.
 const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional()
 
 // The draft worktree a create or queue was made from

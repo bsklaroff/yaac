@@ -201,6 +201,15 @@ const select = (label: string): HTMLSelectElement => screen.getByLabelText<HTMLS
 const createButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^Create$|^Sign in to|^Add git/ })
 const option = (label: string, text: string): HTMLOptionElement =>
   [...select(label).options].find((o) => o.textContent?.startsWith(text))!
+const heading = (): string => screen.getByRole('heading').textContent ?? ''
+
+/** Rename through the heading's pencil, as every other rename is done. */
+function retitle(text: string): void {
+  fireEvent.click(screen.getByRole('button', { name: 'Rename worktree' }))
+  const input = screen.getByLabelText<HTMLInputElement>('Worktree title')
+  fireEvent.change(input, { target: { value: text } })
+  fireEvent.keyDown(input, { key: 'Enter' })
+}
 
 describe('CreateWorktreeDialog', () => {
   it('opens on the project\'s last agent with what it last used, and creates with all of it', async () => {
@@ -418,25 +427,56 @@ describe('CreateWorktreeDialog', () => {
       expect.objectContaining({ prompt: 'fix the flaky test' }))
   })
 
-  it('names and files a create: a typed title and a picked group ride it', async () => {
-    await openReady()
-    // No group to pick, no field.
-    expect(screen.queryByLabelText('Group')).toBeNull()
-
-    cleanup()
-    useUiStore.setState({ createWorktreeDialog: null })
+  it('names and files a create: a title off the heading and a picked or new group ride it', async () => {
     snapshot.mockReturnValue(project({}, 'k8s', { worktreeGroups: GROUPS }))
     await openReady()
-    // Now has no parent to take a group from; only this project's are offered.
+    // Now has no parent to take a group from. Only this project's groups the
+    // sidebar shows are offered: Review is unpinned with nothing in it.
     expect(select('Group').value).toBe('')
-    expect([...select('Group').options].map((o) => o.textContent)).toEqual(['None', 'Review', 'Other'])
+    expect([...select('Group').options].map((o) => o.textContent)).toEqual(['None', 'Other', '+ New group'])
     fireEvent.change(select('Group'), { target: { value: 'g-other' } })
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: '  Fix   the build ' } })
+    expect(heading()).toBe('New worktree')
+    retitle('  Fix   the build ')
+    // Enter finishes the title, not the dialog.
+    expect(createWorktree).not.toHaveBeenCalled()
+    expect(heading()).toBe('Fix the build')
+    // The Enter that confirms an IME candidate leaves the editor open.
+    fireEvent.click(screen.getByRole('button', { name: 'Rename worktree' }))
+    fireEvent.keyDown(screen.getByLabelText('Worktree title'), { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(screen.getByLabelText('Worktree title'), { key: 'Escape' })
+    expect(heading()).toBe('Fix the build')
     fireEvent.click(createButton())
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
       expect.objectContaining({ title: 'Fix the build', group: 'g-other' }))
     // The optimistic row is filed in the group from its first frame.
     expect(provision.mock.calls[0][5]).toBe('g-other')
+
+    // A group with a live member is offered; "+ New group" is a name box, and
+    // Escape in it goes back to the dropdown rather than closing the dialog.
+    cleanup()
+    useUiStore.setState({ createWorktreeDialog: null })
+    snapshot.mockReturnValue(project({}, 'k8s', {
+      worktrees: [{ ...PARENT, groupId: 'g-review' }], worktreeGroups: GROUPS,
+    }))
+    await openReady()
+    expect([...select('Group').options].map((o) => o.textContent))
+      .toEqual(['None', 'Review', 'Other', '+ New group'])
+    fireEvent.change(select('Group'), { target: { value: option('Group', '+ New group').value } })
+    fireEvent.keyDown(screen.getByLabelText('New group name'), { key: 'Escape' })
+    expect(select('Group').value).toBe('')
+    fireEvent.change(select('Group'), { target: { value: option('Group', '+ New group').value } })
+    const name = screen.getByLabelText<HTMLInputElement>('New group name')
+    expect(document.activeElement).toBe(name)
+    // A blank name is refused, not filed as None.
+    fireEvent.change(name, { target: { value: '  ' } })
+    expect(createButton().disabled).toBe(true)
+    expect(createButton().title).toBe('Name the new group')
+    fireEvent.change(name, { target: { value: ' Release  prep ' } })
+    fireEvent.click(createButton())
+    // Sent by name for the server to create; no id yet to file the row under.
+    expect(vi.mocked(createWorktree)).toHaveBeenLastCalledWith('proj', 'claude', expect.any(Function),
+      expect.any(String), expect.objectContaining({ group: 'Release prep' }))
+    expect(provision.mock.calls[1][5]).toBeUndefined()
   })
 
   it('prefills the branch input with the project default', async () => {
@@ -502,7 +542,7 @@ describe('CreateWorktreeDialog', () => {
       // A queued worktree runs unattended, so it needs something to do.
       expect(submitButton().disabled).toBe(true)
       fireEvent.change(promptInput(), { target: { value: 'follow up' } })
-      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Follow-up' } })
+      retitle('Follow-up')
       fireEvent.click(submitButton())
 
       await waitFor(() => expect(vi.mocked(queueWorktree)).toHaveBeenCalledWith('proj', 'w-parent', {
@@ -543,6 +583,32 @@ describe('CreateWorktreeDialog', () => {
       expect(select('Group').value).toBe('g-other')
     })
 
+    it('refuses a blank new group rather than moving an entry out of its own', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        worktrees: [PARENT],
+        queuedWorktrees: [entry('q1', { groupId: 'g-review' })],
+        worktreeGroups: GROUPS,
+      }))
+      await openWith({ editId: 'q1' })
+      expect(select('Group').value).toBe('g-review')
+      fireEvent.change(select('Group'), { target: { value: option('Group', '+ New group').value } })
+      const name = screen.getByLabelText('New group name')
+      fireEvent.change(name, { target: { value: '   ' } })
+      expect(submitButton().disabled).toBe(true)
+      expect(submitButton().title).toBe('Name the new group')
+      fireEvent.keyDown(name, { key: 'Enter' })
+      expect(updateQueuedWorktree).not.toHaveBeenCalled()
+
+      // × puts its own group back. Review holds only a queued entry, which
+      // the sidebar nests under its parent — still offered after moving off it.
+      fireEvent.click(screen.getByRole('button', { name: 'Pick an existing group' }))
+      expect(select('Group').value).toBe('g-review')
+      fireEvent.change(select('Group'), { target: { value: '' } })
+      expect([...select('Group').options].map((o) => o.textContent))
+        .toEqual(['None', 'Review', 'Other', '+ New group'])
+    })
+
     it('surfaces a refused queue and stays open', async () => {
       vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
@@ -571,7 +637,7 @@ describe('CreateWorktreeDialog', () => {
       await openWith({ editId: 'q2' })
 
       expect(promptInput().value).toBe('step q2')
-      expect(screen.getByLabelText<HTMLInputElement>('Title').value).toBe('Second')
+      expect(heading()).toBe('Second')
       expect(select('Group').value).toBe('g-review')
       expect(select('Start').value).toBe('q1')
       expect(modelInput().value).toBe('Sonnet 5')
@@ -587,7 +653,7 @@ describe('CreateWorktreeDialog', () => {
       fireEvent.change(select('Start'), { target: { value: 'q4' } })
       // Its own group, not the new parent's; a cleared title goes back to auto.
       expect(select('Group').value).toBe('g-review')
-      fireEvent.change(screen.getByLabelText('Title'), { target: { value: '' } })
+      retitle('')
       fireEvent.change(select('Group'), { target: { value: '' } })
       fireEvent.click(submitButton())
       await waitFor(() => expect(vi.mocked(updateQueuedWorktree)).toHaveBeenCalledWith('q2', {
@@ -643,7 +709,7 @@ describe('CreateWorktreeDialog', () => {
       }))
       await openReady()
       fireEvent.change(promptInput(), { target: { value: '  later, maybe  ' } })
-      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Someday' } })
+      retitle('Someday')
       fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
 
       // Keep editing goes back to the form, prompt and all.
@@ -738,7 +804,7 @@ describe('CreateWorktreeDialog', () => {
       mount()
       act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
       await waitFor(() => expect(createButton().disabled).toBe(false))
-      expect(screen.getByLabelText<HTMLInputElement>('Title').value).toBe('Named')
+      expect(heading()).toBe('Named')
       expect(select('Group').value).toBe('g-other')
       fireEvent.click(createButton())
       // The server drops the draft once the create succeeds, so a failed one keeps it.
@@ -774,6 +840,22 @@ describe('CreateWorktreeDialog', () => {
       await open(draft({ startAfter: 'w-parent', groupId: 'g-other' }))
       fireEvent.change(select('Start'), { target: { value: '' } })
       expect(select('Group').value).toBe('g-other')
+    })
+
+    it('keeps the prior group on a draft closed while a new one is being named', async () => {
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        draftWorktrees: [draft({ groupId: 'g-other' })], worktreeGroups: GROUPS,
+      }))
+      mount()
+      act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
+      await waitFor(() => expect(screen.getByLabelText('Group')).toBeTruthy())
+      fireEvent.change(select('Group'), { target: { value: option('Group', '+ New group').value } })
+      fireEvent.change(screen.getByLabelText('New group name'), { target: { value: 'Not yet made' } })
+      fireEvent.change(promptInput(), { target: { value: 'half an idea, and more' } })
+      closeX()
+      fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }))
+      await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+      expect(vi.mocked(saveDraftWorktree).mock.calls[0][1]).toMatchObject({ groupId: 'g-other' })
     })
 
     it('queueing from a draft names it, for the server to drop once queued', async () => {

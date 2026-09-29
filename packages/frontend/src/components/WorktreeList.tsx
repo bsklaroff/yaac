@@ -45,6 +45,7 @@ import { useInlineEdit, useInlineRename } from '#lib/useInlineRename'
 import { useOpenerFocus } from '#lib/useOpenerFocus'
 import { discardDraftWorktree } from '#lib/draftApi'
 import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
+import { shownGroups } from '#lib/groups'
 import { clip, queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
@@ -203,7 +204,7 @@ export function sidebarLayout(
   // already sorts them oldest-first): they have no place among the live rows
   // to sort into, and a row moving under the pointer while it provisions is
   // exactly what this ordering is here to avoid.
-  const sections = [...groups]
+  const sections = shownGroups(groups, [...worktrees, ...provisioning, ...shownHeld])
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.groupId.localeCompare(a.groupId))
     .map((group) => ({
       group,
@@ -212,7 +213,6 @@ export function sidebarLayout(
       held: heldRows.filter((d) => filedIn(d) === group.groupId),
       ghosts: ghosts.filter((d) => filedIn(d) === group.groupId),
     }))
-    .filter((s) => s.group.pinned || s.members.length > 0 || s.provisioning.length > 0 || s.held.length > 0)
   const defaultHeld = heldRows.filter((d) => filedIn(d) === null)
 
   const onScreen = new Set([...liveIds, ...heldIds])
