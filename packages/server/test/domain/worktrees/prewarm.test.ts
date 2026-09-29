@@ -131,7 +131,9 @@ function setup(tool: AgentTool = 'claude', o: Partial<CreateSetup> = {}): Create
 
 /** What a spare's row says its agent was launched with. */
 function launched(o: Partial<WorktreeRow> = {}): void {
-  vi.mocked(getWorktreeRow).mockResolvedValue({ permissionMode: 'bypass', mode: 'tui', ...o } as WorktreeRow)
+  vi.mocked(getWorktreeRow).mockImplementation((projectSlug, worktreeId) => Promise.resolve({
+    projectSlug, worktreeId, permissionMode: 'bypass', mode: 'tui', ...o,
+  } as WorktreeRow))
 }
 
 const appliedEvents: WorktreeEvent[] = []
@@ -239,7 +241,8 @@ describe('tryClaimPrewarmed', () => {
     expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     await flush()
     expect(mockCleanup).not.toHaveBeenCalled()
-    expect(vi.mocked(restoreSpareWorktree)).toHaveBeenCalledWith('p', 'spare1')
+    expect(vi.mocked(restoreSpareWorktree))
+      .toHaveBeenCalledWith(expect.objectContaining({ projectSlug: 'p', worktreeId: 'spare1' }))
     expect(claiming.size).toBe(0)
 
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
@@ -602,7 +605,7 @@ describe('tryClaimPrewarmed', () => {
     mockList.mockResolvedValue([spare()])
     mockRemoteBranchExists.mockResolvedValue(false)
 
-    await expect(tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'nope' }))
+    await expect(tryClaimPrewarmed('p', 'req', setup('claude', { permissionMode: 'plan' }), emit, { branch: 'nope' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockCleanup).not.toHaveBeenCalled() // pre-mutation: not tainted
@@ -614,7 +617,11 @@ describe('tryClaimPrewarmed', () => {
     // pool reaps it, the checkout goes, and the stale reaper later stamps a
     // phantom `never-started` stop whose restart resolves into nothing.
     expect(vi.mocked(claimSpareWorktree)).toHaveBeenCalledWith('p', 'spare1', expect.objectContaining({ baseBranch: 'main' }))
-    expect(vi.mocked(restoreSpareWorktree)).toHaveBeenCalledWith('p', 'spare1')
+    // Back to the launch it was warmed with, not the claim's: the next claim
+    // reads the row to decide whether the booted agent needs a respawn.
+    expect(vi.mocked(restoreSpareWorktree)).toHaveBeenCalledWith(expect.objectContaining({
+      projectSlug: 'p', worktreeId: 'spare1', permissionMode: 'bypass',
+    }))
   })
 
   it('reaps the tainted spare and falls back to cold create when the re-branch fails', async () => {

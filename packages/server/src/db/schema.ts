@@ -142,6 +142,8 @@ export const worktrees = snakeCase.table('worktrees', {
    *  on the id alone, so a second row carrying it would hand one worktree's
    *  pod another's egress rules and traffic. */
   worktreeId: text().primaryKey(),
+  /** When the worktree was handed to someone — the insert for a cold
+   *  create, the claim for a prewarmed spare (`claimSpareWorktree`). */
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** Display title — user-assigned or model-generated. */
   title: text(),
