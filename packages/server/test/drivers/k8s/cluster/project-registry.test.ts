@@ -48,9 +48,12 @@ import {
   REGISTRY_APP_LABEL,
   REGISTRY_IMAGE_DIGEST,
   REGISTRY_UPSTREAM_IMAGE,
+  ORPHAN_REGISTRY_GC_INTERVAL_MS,
+  ORPHAN_REGISTRY_MIN_AGE_MS,
   REGISTRY_GC_INTERVAL_MS,
   REGISTRY_GENERATIONS_KEPT,
   _registryGcSettledForTests,
+  _resetOrphanRegistryGcForTests,
   _resetRegistryGcForTests,
   projectRegistryName,
   projectRegistryPvcName,
@@ -64,7 +67,6 @@ import {
 } from '#drivers/k8s/substrate/kubectl'
 import { pushImageToRegistry, registryHasTag } from '#drivers/k8s/container/registry'
 import { imageExists } from '#drivers/k8s/container/runtime'
-import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -73,6 +75,10 @@ const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
 const mockPush = vi.mocked(pushImageToRegistry)
 const mockImageExists = vi.mocked(imageExists)
+
+const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+const PROJECT = { slug: 'demo', id: ID }
+const REGISTRY_SELECTOR = `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project-id=${ID}`
 
 const NODE_IP = '10.89.0.7'
 // Carries both what project-registry reads (the node name, to pin the writer
@@ -134,23 +140,12 @@ function cidrRead(args: string[]): Promise<unknown> | null {
 }
 
 describe('projectRegistryHost', () => {
-  it('is the registry svc-DNS FQDN with its port, deterministic per slug', () => {
+  it('is the svc-DNS FQDN of the registry named by the project id, with its port', () => {
     // FQDN, not the `.svc` shorthand: the proxy forwards only `.cluster.local`.
-    expect(projectRegistryHost('demo'))
-      .toMatch(/^yaac-reg-demo-[0-9a-f]{8}\.test-ns\.svc\.cluster\.local:5000$/)
-    expect(projectRegistryHost('demo')).toBe(projectRegistryHost('demo'))
-  })
-
-  it('truncates long slugs but keeps them distinct via the full-slug hash', () => {
-    const a = projectRegistryHost('a'.repeat(30) + '-one')
-    const b = projectRegistryHost('a'.repeat(30) + '-two')
-    expect(a).not.toBe(b)
-    // DNS-label cap: prefix(9) + slug(<=21) + dash(1) + hash(8) <= 39.
-    expect(a.split('.')[0].length).toBeLessThanOrEqual(39)
-  })
-
-  it('sanitizes slugs into DNS-safe names', () => {
-    expect(projectRegistryHost('My_Project!')).toMatch(/^yaac-reg-my-project-[0-9a-f]{8}\./)
+    // Named by the id alone: a project re-added under a freed slug gets a
+    // registry of its own, and no install hash is needed to keep installs
+    // sharing a namespace apart.
+    expect(projectRegistryHost(ID)).toBe(`yaac-reg-${ID}.test-ns.svc.cluster.local:5000`)
   })
 })
 
@@ -158,9 +153,9 @@ describe('projectRegistryConfDropIn', () => {
   it('renders an insecure drop-in scoped to the exact registry host', () => {
     // Scoped to the one host: a blanket `insecure = true` would apply to
     // every registry the in-pod engine talks to.
-    expect(projectRegistryConfDropIn('demo')).toBe([
+    expect(projectRegistryConfDropIn(ID)).toBe([
       '[[registry]]',
-      `location = "${projectRegistryHost('demo')}"`,
+      `location = "${projectRegistryHost(ID)}"`,
       'insecure = true',
       '',
     ].join('\n'))
@@ -174,7 +169,7 @@ describe('ensureProjectRegistry', () => {
   })
 
   it('applies PVC, Deployment, Service, and all network policies, then waits and runs the hosts-writer pod', async () => {
-    await ensureProjectRegistry('demo')
+    await ensureProjectRegistry(PROJECT)
 
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     // The claim first: the Deployment's pod must not spend the rollout wait
@@ -185,7 +180,7 @@ describe('ensureProjectRegistry', () => {
     ])
     expect(mockRetry).toHaveBeenCalledWith(
       [
-        'rollout', 'status', `deployment/${projectRegistryName('demo')}`,
+        'rollout', 'status', `deployment/${projectRegistryName(ID)}`,
         '-n', 'test-ns', '--timeout=120s',
       ],
       expect.objectContaining({ maxAttempts: 2 }),
@@ -210,7 +205,7 @@ describe('ensureProjectRegistry', () => {
     // registry labels) is out of reach.
     expect(mockRetry).toHaveBeenCalledWith([
       'delete', 'pod',
-      '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,${LABEL_NODE_WRITE}`,
+      '-l', `${REGISTRY_SELECTOR},${LABEL_NODE_WRITE}`,
       '-n', 'test-ns', '--ignore-not-found',
     ])
     // The writer pod (per-run unique name) is pre-cleaned and deleted
@@ -221,10 +216,28 @@ describe('ensureProjectRegistry', () => {
     expect(namedPodDeletes).toHaveLength(2)
     for (const args of namedPodDeletes) {
       expect(args[2]).toMatch(
-        new RegExp(`^${projectRegistryName('demo')}-hosts-0-[0-9a-f]{8}$`))
+        new RegExp(`^${projectRegistryName(ID)}-hosts-0-[0-9a-f]{8}$`))
     }
     // The ClusterIP is allocator-assigned and never deleted — no migration.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
+  })
+
+  it('names every object after the project id, within the DNS-label cap', async () => {
+    await ensureProjectRegistry(PROJECT)
+    const objects = mockApply.mock.calls
+      .map((c) => c[0] as { kind: string; metadata: { name: string; labels: Record<string, string> } })
+      .filter((m) => m.kind !== 'Pod')
+    expect(objects.map((m) => m.kind).sort()).toEqual([
+      'Deployment', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
+      'PersistentVolumeClaim', 'Service',
+    ])
+    for (const { metadata } of objects) {
+      expect(metadata.name.startsWith(`yaac-reg-${ID}`)).toBe(true)
+      expect(metadata.name.length).toBeLessThanOrEqual(63)
+      // The id is what selectors and the orphan GC key on; the slug stays
+      // for a human reading `kubectl get`.
+      expect(metadata.labels).toMatchObject({ 'yaac.project-id': ID, 'yaac.project': 'demo' })
+    }
   })
 
   it('leaves placement to the bound volume rather than pinning the Deployment', async () => {
@@ -234,7 +247,7 @@ describe('ensureProjectRegistry', () => {
     // enforces — a hand-written pin would only add a way to contradict it,
     // and would trade a self-healing degradation for a single point of
     // failure on exactly the store a node replacement destroys.
-    await ensureProjectRegistry('demo')
+    await ensureProjectRegistry(PROJECT)
 
     const deploy = mockApply.mock.calls
       .map((c) => c[0] as {
@@ -254,7 +267,7 @@ describe('ensureProjectRegistry', () => {
     expect(deploy.spec.template.spec.nodeName).toBeUndefined()
     expect(deploy.spec.template.spec.nodeSelector).toBeUndefined()
     expect(deploy.spec.template.spec.volumes[0].persistentVolumeClaim)
-      .toEqual({ claimName: projectRegistryPvcName('demo') })
+      .toEqual({ claimName: projectRegistryPvcName(ID) })
 
     // Declaring NO tolerations is what keeps a project registry off a
     // tainted sessions pool, and it is now the only thing that does: the
@@ -271,13 +284,13 @@ describe('ensureProjectRegistry', () => {
       metadata: { name: string; namespace: string; labels: Record<string, string> }
       spec: Record<string, unknown>
     }
-    expect(pvc.metadata.name).toBe(projectRegistryPvcName('demo'))
+    expect(pvc.metadata.name).toBe(projectRegistryPvcName(ID))
     expect(pvc.metadata.namespace).toBe('test-ns')
     // Carries the registry labels, which is what puts it inside
     // removeProjectRegistry's by-selector delete — the PVC IS the storage
     // reclaim now, so a claim outside that selector would leak the blobs.
     expect(pvc.metadata.labels).toMatchObject({
-      app: REGISTRY_APP_LABEL, 'yaac.project': 'demo',
+      app: REGISTRY_APP_LABEL, 'yaac.project-id': ID,
     })
     expect(pvc.spec).toEqual({
       // RWO, not RWX: replicas 1 + Recreate gives one mounter at a time by
@@ -302,8 +315,8 @@ describe('ensureProjectRegistry', () => {
       return Promise.resolve({ stdout: '', stderr: '' })
     })
 
-    const first = ensureProjectRegistry('demo')
-    const second = ensureProjectRegistry('demo')
+    const first = ensureProjectRegistry(PROJECT)
+    const second = ensureProjectRegistry(PROJECT)
     await new Promise((r) => setTimeout(r, 10))
     // The second ensure has not started while the first waits on its
     // rollout: only the first's six object applies have happened (its
@@ -327,12 +340,12 @@ describe('ensureProjectRegistry', () => {
     mockRetry.mockImplementation((args: string[]) =>
       Promise.resolve({ stdout: args[0] === 'logs' ? 'read-only file system\n' : '', stderr: '' }))
 
-    await expect(ensureProjectRegistry('demo'))
+    await expect(ensureProjectRegistry(PROJECT))
       .rejects.toThrow(/did not complete \(phase Failed\); logs: read-only file system/)
   })
 
   it('runs the registry as untrusted-free infra off its own claim', async () => {
-    await ensureProjectRegistry('demo')
+    await ensureProjectRegistry(PROJECT)
 
     const dep = appliedKind('Deployment') as {
       metadata: { name: string; namespace: string; labels: Record<string, string> }
@@ -357,14 +370,14 @@ describe('ensureProjectRegistry', () => {
         } }
       }
     }
-    expect(dep.metadata.name).toBe(projectRegistryName('demo'))
+    expect(dep.metadata.name).toBe(projectRegistryName(ID))
     expect(dep.metadata.namespace).toBe('test-ns')
     expect(dep.spec.replicas).toBe(1)
     // Recreate, not RollingUpdate: two replicas would race on one store,
     // and on a backend enforcing RWO across nodes would deadlock outright.
     expect(dep.spec.strategy).toEqual({ type: 'Recreate' })
     expect(dep.spec.selector.matchLabels)
-      .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' })
+      .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project-id': ID })
     const pod = dep.spec.template.spec
     // Trusted yaac infra: no SA token, no service links, runc (no sentry to
     // buy — it runs only the pinned upstream registry image).
@@ -382,7 +395,7 @@ describe('ensureProjectRegistry', () => {
     // slug derivation the Deployment name uses.
     expect(pod.volumes).toEqual([{
       name: 'storage',
-      persistentVolumeClaim: { claimName: projectRegistryPvcName('demo') },
+      persistentVolumeClaim: { claimName: projectRegistryPvcName(ID) },
     }])
 
     const svc = appliedKind('Service') as {
@@ -393,7 +406,7 @@ describe('ensureProjectRegistry', () => {
   })
 
   it('fences the registry to its own project: sessions in, nothing out', async () => {
-    await ensureProjectRegistry('demo')
+    await ensureProjectRegistry(PROJECT)
 
     const nps = appliedAllKind('NetworkPolicy') as unknown as Array<{
       metadata: { name: string; namespace: string }
@@ -404,11 +417,13 @@ describe('ensureProjectRegistry', () => {
         ingress?: Array<{ from?: unknown; ports?: Array<{ protocol: string; port: number }> }>
       }
     }>
-    const name = projectRegistryName('demo')
+    const name = projectRegistryName(ID)
 
-    // Only this project's sessions may egress to this project's registry.
+    // Only this project's sessions may egress to this project's registry —
+    // selected by id, so a later project of the same slug is not admitted
+    // to a registry an old one's removal left behind.
     const sessions = nps.find((m) => m.metadata.name === `${name}-sessions`)!
-    expect(sessions.spec.podSelector.matchLabels).toEqual({ 'yaac.project': 'demo' })
+    expect(sessions.spec.podSelector.matchLabels).toEqual({ 'yaac.project-id': ID })
     expect(sessions.spec.policyTypes).toEqual(['Egress'])
 
     // Ingress admits same-project sessions and the node (containerd pulls),
@@ -429,7 +444,7 @@ describe('ensureProjectRegistry', () => {
     // a project's registry up is a server-side action, so it may only look
     // the mirror tag up — a server has no container engine to pull with.
     mockHasTag.mockResolvedValue(true)
-    await ensureProjectRegistry('demo')
+    await ensureProjectRegistry(PROJECT)
     expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
     expect(mockExec).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
@@ -439,7 +454,7 @@ describe('ensureProjectRegistry', () => {
     stageLiveCluster()
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
-    await expect(ensureProjectRegistry('demo'))
+    await expect(ensureProjectRegistry(PROJECT))
       .rejects.toThrow(/Registry image .* is missing.*yaac cluster install/s)
     expect(mockExec).not.toHaveBeenCalled()
   })
@@ -453,7 +468,7 @@ describe('ensureProjectRegistry', () => {
         ? Promise.reject(new Error('timed out waiting for the condition'))
         : Promise.resolve({ stdout: '', stderr: '' })
     ))
-    await expect(ensureProjectRegistry('demo'))
+    await expect(ensureProjectRegistry(PROJECT))
       .rejects.toThrow(/get pods,pvc .* no default StorageClass/s)
   })
 
@@ -461,7 +476,7 @@ describe('ensureProjectRegistry', () => {
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
-    await expect(ensureProjectRegistry('demo')).rejects.toThrow(/missing/)
+    await expect(ensureProjectRegistry(PROJECT)).rejects.toThrow(/missing/)
     expect(mockExec).not.toHaveBeenCalled()
     vi.unstubAllEnvs()
   })
@@ -483,13 +498,13 @@ describe('removeProjectRegistry', () => {
 
   it('deletes by label selector scoped to this install and cleans the node via a pod', async () => {
     mockClusterWithPodPhase('Succeeded')
-    await removeProjectRegistry('demo')
+    await removeProjectRegistry(ID)
     // `persistentvolumeclaim` in the kinds is what reclaims the blobs — the
     // storage is no longer a directory a cleanup pod could rm. `pod` reaps
     // stray writer/cleanup pods from crashed runs.
     expect(mockRetry).toHaveBeenCalledWith([
       'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod',
-      '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
+      '-l', REGISTRY_SELECTOR,
       '-n', 'test-ns', '--ignore-not-found',
     ])
     const pod = mockApply.mock.calls
@@ -503,7 +518,7 @@ describe('removeProjectRegistry', () => {
       .find((m) => m.kind === 'Pod')!
     expect(pod.spec.nodeName).toBe('yaac-control-plane')
     const script = pod.spec.containers[0].command[2]
-    expect(script).toContain(`/host-certs/${projectRegistryHost('demo')}`)
+    expect(script).toContain(`/host-certs/${projectRegistryHost(ID)}`)
     // The hosts.toml dir is now the ONLY thing this project wrote outside
     // the API server, so the cleanup pod carries no storage mount at all.
     expect(script).not.toContain('/host-storage')
@@ -513,16 +528,16 @@ describe('removeProjectRegistry', () => {
 
   it('swallows node-side cleanup failures (cluster recreate)', async () => {
     mockClusterWithPodPhase('Failed')
-    await expect(removeProjectRegistry('demo')).resolves.toBeUndefined()
+    await expect(removeProjectRegistry(ID)).resolves.toBeUndefined()
   })
 
   it('skips the node cleanup pods when the project never had a registry', async () => {
     mockClusterWithPodPhase('Succeeded', false)
-    await removeProjectRegistry('demo')
+    await removeProjectRegistry(ID)
     // The by-selector delete still runs (reaps stray pods from crashes)...
     expect(mockRetry).toHaveBeenCalledWith([
       'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod',
-      '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
+      '-l', REGISTRY_SELECTOR,
       '-n', 'test-ns', '--ignore-not-found',
     ])
     // ...but no cleanup pod is applied and no nodes are listed: a pod that
@@ -534,50 +549,95 @@ describe('removeProjectRegistry', () => {
 })
 
 describe('gcOrphanProjectRegistries', () => {
-  let tmpDir: string
+  const LIVE = '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9'
+  const GONE = 'c9d8e7f6-a5b4-4c3d-8e2f-1a0b9c8d7e6f'
+  const NOW = Date.parse('2026-09-29T12:00:00Z')
+  const OLD = new Date(NOW - ORPHAN_REGISTRY_MIN_AGE_MS - 1).toISOString()
 
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
+  beforeEach(() => {
+    _resetOrphanRegistryGcForTests()
   })
 
-  afterEach(async () => {
-    await cleanupTempDir(tmpDir)
-  })
+  const objectDeletes = (): string[] => mockRetry.mock.calls
+    .map((c) => c[0])
+    .filter((args) => args[0] === 'delete'
+      && args[1] === 'deployment,service,networkpolicy,persistentvolumeclaim,pod')
+    .map((args) => args[3])
 
-  it('removes registries whose project dir is gone, keeps live ones', async () => {
-    await fs.mkdir(path.join(tmpDir, 'global', 'projects', 'alive'), { recursive: true })
+  function stageRegistries(items: unknown[]): void {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       const cidr = cidrRead(args)
       if (cidr) return cidr
-      if (args[1] === 'services') {
-        return Promise.resolve({
-          items: [
-            { metadata: { labels: { 'yaac.project': 'alive' } } },
-            { metadata: { labels: { 'yaac.project': 'gone' } } },
-          ],
-        })
-      }
-      if (args[1] === 'deployment,service') return Promise.resolve({ items: [{}] })
-      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
+      if (args[1] === 'deployment,service,persistentvolumeclaim') return Promise.resolve({ items })
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
       return Promise.resolve(null)
     })
+  }
 
-    await gcOrphanProjectRegistries()
+  it('removes registries no live project id owns, and those with no id, keeping the rest', async () => {
+    const labelled = (id: string, slug: string): Record<string, string> =>
+      ({ app: REGISTRY_APP_LABEL, 'yaac.project': slug, 'yaac.project-id': id })
+    stageRegistries([
+      // A live project's registry, in every kind it is made of.
+      { kind: 'Service', metadata: { name: `yaac-reg-${LIVE}`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
+      { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${LIVE}-storage`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
+      // A removed project's: the claim listed first must not lose the name
+      // its Deployment carries (it names the node-side hosts.toml dir).
+      { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${GONE}-storage`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
+      { kind: 'Deployment', metadata: { name: `yaac-reg-${GONE}`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
+      // One named before projects had ids, for the SAME slug as the live
+      // project: grouped by slug, but never with an id-labelled object.
+      { kind: 'Service', metadata: { name: 'yaac-reg-app-1a2b3c4d', labels: { app: REGISTRY_APP_LABEL, 'yaac.project': 'app' }, creationTimestamp: OLD } },
+      // Too young to judge: a project added after this pass read the
+      // live set may be standing it up right now.
+      { kind: 'Service', metadata: { name: 'yaac-reg-new', labels: labelled('5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9', 'new'), creationTimestamp: new Date(NOW - 1000).toISOString() } },
+      // An age that cannot be read is never old enough: a deletion fails
+      // closed.
+      { kind: 'Service', metadata: { name: 'yaac-reg-ageless', labels: labelled('6f7a8b9c-0d1e-4f2a-b3c4-d5e6f7a8b9c0', 'ageless') } },
+    ])
 
-    // Filter to the label-selector object deletes — the cleanup pod's own
-    // lifecycle (pre-delete + delete-after) also issues `delete pod` calls.
-    const deletes = mockRetry.mock.calls
-      .map((c) => c[0])
-      .filter((args) => args[0] === 'delete'
-        && args[1] === 'deployment,service,networkpolicy,persistentvolumeclaim,pod')
-    expect(deletes).toHaveLength(1)
-    expect(deletes[0][3]).toContain('yaac.project=gone')
+    await gcOrphanProjectRegistries(new Set([LIVE]), NOW)
+
+    expect(objectDeletes().sort()).toEqual([
+      `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project-id=${GONE}`,
+      `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project=app,!yaac.project-id`,
+    ].sort())
+    // Both had a Deployment/Service, so each gets its node-side cleanup,
+    // addressed by the name the registry actually had.
+    // An id's cleanup pods carry the id, so a stray one stranded by a crash
+    // is inside that id's removal selector; a pre-id registry's cannot.
+    const cleanups = mockApply.mock.calls
+      .map((c) => c[0] as {
+        kind: string
+        metadata: { name: string; labels: Record<string, string> }
+        spec: { containers: Array<{ command: string[] }> }
+      })
+      .filter((m) => m.kind === 'Pod' && m.metadata.name.includes('-cleanup-'))
+      .map((m) => [m.spec.containers[0].command[2], m.metadata.labels['yaac.project-id']])
+    expect(cleanups).toEqual(expect.arrayContaining([
+      [expect.stringContaining(`/host-certs/yaac-reg-${GONE}.test-ns.svc.cluster.local:5000`), GONE],
+      [expect.stringContaining('/host-certs/yaac-reg-app-1a2b3c4d.test-ns.svc.cluster.local:5000'), undefined],
+    ]))
+    // Listed across this install's registries only.
+    expect(mockGetJson).toHaveBeenCalledWith([
+      'get', 'deployment,service,persistentvolumeclaim', '-n', 'test-ns',
+      '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
+    ])
+  })
+
+  it('runs at most once per interval', async () => {
+    stageRegistries([])
+    await gcOrphanProjectRegistries(new Set(), NOW)
+    await gcOrphanProjectRegistries(new Set(), NOW + ORPHAN_REGISTRY_GC_INTERVAL_MS - 1)
+    expect(mockGetJson).toHaveBeenCalledTimes(1)
+    await gcOrphanProjectRegistries(new Set(), NOW + ORPHAN_REGISTRY_GC_INTERVAL_MS)
+    expect(mockGetJson).toHaveBeenCalledTimes(2)
   })
 
   it('tolerates an unreachable cluster', async () => {
     mockGetJson.mockRejectedValue(new Error('connection refused'))
-    await expect(gcOrphanProjectRegistries()).resolves.toBeUndefined()
+    await expect(gcOrphanProjectRegistries(new Set(), NOW)).resolves.toBeUndefined()
+    expect(objectDeletes()).toEqual([])
   })
 })
 
@@ -592,7 +652,7 @@ describe('reconcileProjectRegistryGc', () => {
       if (cidr) return cidr
       if (args[1] === 'services') {
         return Promise.resolve({ items: [{ metadata: {
-          labels: { 'yaac.project': 'demo' },
+          labels: { 'yaac.project': 'demo', 'yaac.project-id': ID },
           creationTimestamp: new Date(createdMs).toISOString(),
         } }] })
       }
@@ -616,10 +676,20 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   /** The step detaches its collect, so tests await the work it started. */
+  const LIVE = new Set([ID])
   const gcPass = async (now: number): Promise<void> => {
-    await reconcileProjectRegistryGc(now)
+    await reconcileProjectRegistryGc(LIVE, now)
     await _registryGcSettledForTests()
   }
+
+  // A dead id's registry is the orphan sweep's: a collect racing that
+  // removal would re-apply the Deployment with no PVC behind it.
+  it('never collects a registry whose project id is not live', async () => {
+    oneRegistry()
+    await reconcileProjectRegistryGc(new Set(), DUE)
+    await _registryGcSettledForTests()
+    expect(mockApply).not.toHaveBeenCalled()
+  })
 
   it('collects behind a read-only window, then restores serving mode', async () => {
     oneRegistry()
@@ -641,7 +711,7 @@ describe('reconcileProjectRegistryGc', () => {
     }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!
     // It collects the SAME claim the registry is serving from, not a copy.
     expect(pod.spec.volumes[0].persistentVolumeClaim)
-      .toEqual({ claimName: projectRegistryPvcName('demo') })
+      .toEqual({ claimName: projectRegistryPvcName(ID) })
     // RWO is node-scoped, so co-location with the registry pod is a
     // correctness requirement — stated as a REQUIRED podAffinity rather than
     // left to the bound volume to imply. On a network-attached CSI backend
@@ -654,13 +724,12 @@ describe('reconcileProjectRegistryGc', () => {
       podAffinity: {
         requiredDuringSchedulingIgnoredDuringExecution: [{
           labelSelector: {
-            // Install-scoped, not just app+project: two installs sharing a
-            // namespace can hold the same slug, and matching without the
-            // data-dir hash would let one install's collect become affine to
-            // the other's registry pod — a node its own volume is not on.
+            // Exactly the registry pod's own labels, id and install scope
+            // included.
             matchLabels: {
               app: REGISTRY_APP_LABEL,
               'yaac.project': 'demo',
+              'yaac.project-id': ID,
               [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
             },
             // Without this the term would also be satisfied by a sibling
@@ -733,7 +802,7 @@ describe('reconcileProjectRegistryGc', () => {
       const cidr = cidrRead(args)
       if (cidr) return cidr
       if (args[1] === 'services') {
-        return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo' } } }] })
+        return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo', 'yaac.project-id': ID } } }] })
       }
       // The collect pod never reaches Succeeded.
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
@@ -757,7 +826,7 @@ describe('reconcileProjectRegistryGc', () => {
     mockRetry.mockImplementation((args: string[]) =>
       args[0] === 'rollout' ? held : Promise.resolve({ stdout: '', stderr: '' }))
 
-    await reconcileProjectRegistryGc(DUE)
+    await reconcileProjectRegistryGc(LIVE, DUE)
     expect(rollouts()).not.toContain(false)
 
     release()
@@ -766,7 +835,7 @@ describe('reconcileProjectRegistryGc', () => {
 
   it('tolerates an unreachable cluster', async () => {
     mockGetJson.mockRejectedValue(new Error('connection refused'))
-    await expect(reconcileProjectRegistryGc(DUE)).resolves.toBeUndefined()
+    await expect(reconcileProjectRegistryGc(LIVE, DUE)).resolves.toBeUndefined()
   })
 })
 

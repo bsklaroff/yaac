@@ -38,7 +38,7 @@ import {
   CONTAINER_OPENCODE_DATA,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { missingCredentialError, parseGitRemote, projectRemoteUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { missingCredentialError, parseGitRemote, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -853,10 +853,15 @@ export async function createWorktree(
   // (docs/remote-hosting.md).
   const projectEnv = await resolveProjectEnv(projectSlug)
 
+  // The project's row: its remote, and the id every substrate object and
+  // node-local path of the project is named by.
+  const projectRow = await getProjectRow(projectSlug)
+  if (!projectRow) throw new ServerError('NOT_FOUND', `project ${projectSlug} not found`)
+  const { remoteUrl, id: projectId } = projectRow
+
   // The project's git credential (HTTPS token or SSH key), and its remote
   // parsed so we know the scheme and host. A project with none cannot
   // create: a worktree's agent could neither fetch nor push.
-  const remoteUrl = await projectRemoteUrl(projectSlug)
   const parsedRemote = parseGitRemote(remoteUrl)
   const credential = await resolveProjectCredential(projectSlug)
   if (!credential) throw missingCredentialError(projectSlug)
@@ -1074,7 +1079,7 @@ export async function createWorktree(
   const imageTask: Promise<string | undefined> = runtime.kind === 'containerless'
     ? Promise.resolve(undefined)
     : runtime.prepareImage({
-      projectSlug,
+      project: { slug: projectSlug, id: projectId },
       nestedContainers,
       onProgress: (m) => emit(m, options),
     })
@@ -1146,6 +1151,7 @@ export async function createWorktree(
   // preparing again per attempt.
   const substrateTask = runtime.prepareSubstrate({
     projectSlug,
+    projectId,
     workspaceId: worktreeId,
     tool,
     config,
@@ -1176,11 +1182,11 @@ export async function createWorktree(
 
     const claude = claudeDir(projectSlug)
     const codex = codexDir(projectSlug)
-    const opencodeData = opencodeDataDir(projectSlug, worktreeId)
+    const opencodeData = opencodeDataDir(projectId, worktreeId)
     const opencodeCheckpoint = opencodeCheckpointDir(projectSlug, worktreeId)
     const opencodeConfig = opencodeConfigDir(projectSlug)
     const pi = piDir(projectSlug)
-    const cachedPackages = cachedPackagesDir(projectSlug)
+    const cachedPackages = cachedPackagesDir(projectId)
 
     // The GLOBAL dirs the pod mounts, created here so they exist before
     // the Job is applied: a global mount is a subPath of the claim, and a

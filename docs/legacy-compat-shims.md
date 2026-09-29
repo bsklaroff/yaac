@@ -177,3 +177,42 @@ after a restart and fall through to the floor's `$HOME`-relative defaults.
 **How to tell it is safe to remove:** once no containerless worktree launched
 before the marker carried `launchEnv` can still be running — each has been
 stopped or restarted. Then make the field required.
+
+## Registries named before project ids
+
+`gcOrphanProjectRegistries` (`drivers/k8s/cluster/project-registry.ts`)
+has a branch for registry objects that carry `yaac.project` but no
+`yaac.project-id`, which only a server from before project ids created
+(`yaac-reg-<slug>-<hash8>`). It groups them by slug and removes them. The
+name-addressed `buildRegistryCleanupPodManifest(registryName, labels, …)`,
+and the bare install-scope labels its pods get on that branch, exist so the
+branch can remove a `hosts.toml` dir whose name no project id produces.
+
+**What it reads:** registry Deployments, Services and PVCs in this install's
+namespace with `app=yaac-registry` and no `yaac.project-id`.
+
+**What breaks silently if it goes too early:** those registries and their
+50Gi PVCs leak for good. The id sweep never sees them, because it selects on
+an id they do not have.
+
+**How to tell it is safe to remove:** `kubectl get deploy,svc,pvc -n <ns> -l
+'app=yaac-registry,!yaac.project-id'` is empty on every install. The first
+pass after an upgrade removes them, so a release later is ample. The cleanup
+pod builder can then take a project id again.
+
+## Workspaces started before project ids
+
+The containerless `reapNodeLocal` (`drivers/containerless/teardown.ts`) keeps
+any node-local tree named for a running workspace's project **slug**, as well
+as those named for a live project id.
+
+**What it reads:** the slugs of the workspaces this server has running.
+
+**What breaks silently if it goes too early:** a workspace started before
+the upgrade has its pnpm store (`pnpm_config_store_dir` →
+`node-local/projects/<slug>/.cached-packages/pnpm-store`) `rm -rf`'d under
+it. Installs in it then refetch every package, or fail partway.
+
+**How to tell it is safe to remove:** no containerless workspace started
+before project ids is still running. Every one has been stopped or restarted
+since the upgrade, which re-points its store at `projects/<id>/`.

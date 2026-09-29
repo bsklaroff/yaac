@@ -12,6 +12,7 @@ import {
 } from '@yaac/shared/tool-auth'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
+import { projectSlugFor } from '@yaac/shared/project-slug'
 
 /**
  * Validate a git remote URL. Accepts the two `parseGitRemote` forms:
@@ -49,9 +50,12 @@ export interface AddProjectResult {
  */
 export async function addProject(remoteUrl: string, gitCredentialId: string): Promise<AddProjectResult> {
   const parsed = validateGitRemoteUrl(remoteUrl)
-  // The slug is baked into image tags (yaac-user-<slug>:<hash>), which Docker/
-  // Podman require to be all-lowercase. URL case is preserved everywhere else.
-  const slug = (parsed.path.split('/').pop() as string).toLowerCase()
+  const slug = projectSlugFor(parsed.path)
+  if (!slug) throw new ServerError('VALIDATION', `no project name can be derived from "${parsed.path}"`)
+  // Named in a refusal when it is not the repo name itself (`c++` → `c`),
+  // or "c already exists" would answer an add of something else.
+  const repoName = parsed.path.split('/').pop() as string
+  const named = repoName.toLowerCase() === slug ? `Project "${slug}"` : `"${repoName}" derives project name "${slug}", which`
   const dir = projectDir(slug)
 
   await ensureDataDir()
@@ -61,11 +65,11 @@ export async function addProject(remoteUrl: string, gitCredentialId: string): Pr
   // directory check stays as a second guard: a clone into an occupied dir
   // would fail confusingly.
   if (await getProjectRow(slug)) {
-    throw new ServerError('CONFLICT', `Project "${slug}" already exists`)
+    throw new ServerError('CONFLICT', `${named} already exists`)
   }
   try {
     await fs.access(dir)
-    throw new ServerError('CONFLICT', `Project "${slug}" already exists at ${dir}`)
+    throw new ServerError('CONFLICT', `${named} already exists at ${dir}`)
   } catch (err) {
     if (err instanceof ServerError) throw err
     // doesn't exist — good

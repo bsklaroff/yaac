@@ -880,12 +880,16 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // NODE-LOCAL — the host's `node-local/` folder, which on this driver is
     // just a sibling of `global/`: the checkout and the tool homes are
     // global, the store is not, and that is the whole of the tier split
-    // here (docs/containerless-driver.md "Storage").
-    const nodeLocalProject = path.join(testEnv.dataDir, 'node-local', 'projects', SLUG)
-    const store = path.join(nodeLocalProject, '.cached-packages', 'pnpm-store')
-    for (const key of ['pnpm_config_store_dir', 'npm_config_store_dir']) {
-      expect(env[key], key).toBe(store)
-    }
+    // here (docs/containerless-driver.md "Storage"). Keyed by the project's
+    // id rather than its slug (docs/worktree-storage.md "The node-local
+    // tree"), which only the server knows — so it is read back off the path.
+    const projectsRoot = path.join(testEnv.dataDir, 'node-local', 'projects')
+    const store = env.pnpm_config_store_dir ?? ''
+    const projectId = path.relative(projectsRoot, store).split(path.sep)[0]
+    expect(projectId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    const nodeLocalProject = path.join(projectsRoot, projectId)
+    expect(store).toBe(path.join(nodeLocalProject, '.cached-packages', 'pnpm-store'))
+    expect(env.npm_config_store_dir).toBe(store)
     // The driver made the store's directory as it linked it; nothing else
     // of this project's is node-local on a host (opencode's data is the
     // global checkpoint itself, opened directly).

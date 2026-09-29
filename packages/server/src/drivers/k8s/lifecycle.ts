@@ -10,7 +10,6 @@ import {
   buildServerIngressNpManifest,
   ensureMainRegistry,
   ensureNamespace,
-  gcOrphanProjectRegistries,
   nodeIpBlocks,
 } from '#drivers/k8s/cluster'
 import {
@@ -207,11 +206,6 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
   cache.start()
   events.start()
   setActiveClusterCache(cache)
-
-  // Remove per-project push registries whose project dir is gone —
-  // catches `project remove` runs that raced an unavailable cluster.
-  void gcOrphanProjectRegistries()
-    .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
 
   sinks.attached()
 }

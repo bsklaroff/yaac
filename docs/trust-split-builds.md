@@ -36,6 +36,12 @@ exclusively to the yaac-shipped Dockerfiles, regardless of file content.
 Untrusted layers build against their prebuilt, registry-resident parent,
 so the sandbox only ever executes the untrusted suffix of a chain.
 
+The untrusted layers live in repos of their project's own, named by its
+immutable id — `yaac-proj-<id>` and `yaac-user-<id>` — never beside the
+trusted chain or another project's, so a project re-added under a freed
+slug resolves none of the old one's tags. The main registry's GC removes a
+project repo whose id no live project holds.
+
 **The server builds no trusted layer.** It resolves each one from the
 in-cluster registry by content-hash tag, and a missing tag is an
 actionable "run `yaac cluster install`" rather than a build trigger. That
@@ -164,7 +170,7 @@ The registry holds two things per untrusted build:
   build restore the instruction-prefix caching that a persistent host
   store would give: an edited `Dockerfile.yaac` re-runs only its changed
   steps, in any fresh pod. Cache repos are **per project**
-  (`yaac-buildcache-<slug>`): cache entries are consumed by key with no
+  (`yaac-buildcache-<id>`, by project id): cache entries are consumed by key with no
   provenance check, so per-project scoping confines a poisoned entry to
   the project whose image the attacker already controls — but only against
   a build that stays in its own cache repo, not against one that writes
@@ -317,7 +323,7 @@ upstream packages). Nothing network-level closes this: the ingress
 lock above pins *which pods* may be callers, not *what a legitimate caller
 may write*. The reachable blast radius is the whole store — the
 yaac-shipped `base`/`tools`/`nestable` content-hash tags, other projects'
-final images, and any project's `yaac-buildcache-<slug>` repo.
+final images, and any project's `yaac-buildcache-<id>` repo.
 
 Two consequences worth stating plainly:
 

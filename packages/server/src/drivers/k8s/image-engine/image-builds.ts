@@ -19,6 +19,7 @@ import { notifyWorktreeListChanged } from '#notify'
 import { stripAnsi } from '@yaac/shared/ansi'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { ImageBuildEntry, ImageLayerName } from '@yaac/shared/types'
+import type { ProjectRef } from '#drivers/contract'
 
 export type ImageBuildReason = 'session' | 'prewarm'
 
@@ -27,7 +28,8 @@ interface BuildRecord {
   tag: string
   layer: ImageLayerName | 'push' | 'proxy' | 'netd'
   action: 'build' | 'push'
-  projectSlugs: string[]
+  /** The projects waiting on it — what a retry rebuilds. */
+  projects: ProjectRef[]
   reason: ImageBuildReason
   status: 'running' | 'succeeded' | 'failed'
   stepCurrent?: number
@@ -89,8 +91,8 @@ export function registerImageBuild(input: {
   layer: ImageLayerName | 'push' | 'proxy' | 'netd'
   action: 'build' | 'push'
   /** Omitted for shared infrastructure builds with no owning project (the
-   *  proxy sidecar), which register with an empty `projectSlugs`. */
-  projectSlug?: string
+   *  proxy sidecar), which register with no projects. */
+  project?: ProjectRef
   reason: ImageBuildReason
 }): string {
   for (const [id, e] of entries) {
@@ -104,7 +106,7 @@ export function registerImageBuild(input: {
     tag: input.tag,
     layer: input.layer,
     action: input.action,
-    projectSlugs: input.projectSlug ? [input.projectSlug] : [],
+    projects: input.project ? [input.project] : [],
     reason: input.reason,
     status: 'running',
     log: '',
@@ -116,11 +118,12 @@ export function registerImageBuild(input: {
 }
 
 /** A joiner coalescing onto an in-flight build records its project. No-op
- *  (and no broadcast) when the slug is already attached or the id is gone. */
-export function attachImageBuildProject(id: string, projectSlug: string): void {
+ *  (and no broadcast) when the project is already attached or the id is
+ *  gone. */
+export function attachImageBuildProject(id: string, project: ProjectRef): void {
   const e = entries.get(id)
-  if (!e || e.projectSlugs.includes(projectSlug)) return
-  e.projectSlugs.push(projectSlug)
+  if (!e || e.projects.some((p) => p.id === project.id)) return
+  e.projects.push(project)
   notifyWorktreeListChanged()
 }
 
@@ -194,7 +197,7 @@ function project(e: BuildRecord): ImageBuildEntry {
     tag: e.tag,
     layer: e.layer,
     action: e.action,
-    projectSlugs: [...e.projectSlugs],
+    projectSlugs: e.projects.map((p) => p.slug),
     reason: e.reason,
     status: e.status,
     ...(e.stepCurrent !== undefined ? { stepCurrent: e.stepCurrent } : {}),
@@ -215,11 +218,16 @@ export function listImageBuilds(): ImageBuildEntry[] {
     .map(project)
 }
 
-/** Projected view of a single entry (dismissed or not) — used by the retry
- *  path to read a build's target (owning project slugs, or none for infra). */
+/** Projected view of a single entry (dismissed or not). */
 export function getImageBuild(id: string): ImageBuildEntry | undefined {
   const e = entries.get(id)
   return e ? project(e) : undefined
+}
+
+/** The projects a build stands for — none for infra, or an unknown id —
+ *  which is what the retry path rebuilds. */
+export function imageBuildProjects(id: string): ProjectRef[] {
+  return [...entries.get(id)?.projects ?? []]
 }
 
 /** The accumulated log tail for one entry, or undefined if unknown. */

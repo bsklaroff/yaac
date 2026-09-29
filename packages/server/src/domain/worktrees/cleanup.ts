@@ -7,6 +7,7 @@ import { inFlightWorktreeIds, listProvisioning } from './provisioning'
 import {
   applyWorktreeEvent,
   deleteSpareWorktreeRow,
+  listProjectRows,
   listProjectWorktreeIds,
 } from '#db'
 import {
@@ -16,9 +17,9 @@ import {
   markWorktreeTerminating,
 } from '#runtime/status'
 import {
+  getProjectsDir,
   globalProjectPath,
   opencodeCheckpointDir,
-  projectsRoots,
   repoDir,
   worktreeDir,
   worktreeStateDir,
@@ -426,10 +427,11 @@ async function gcOrphanSpares(
  * The orphan sweep: what a worktree that no longer exists left behind, on
  * both tiers. The GLOBAL half — dead spares' checkouts and `sessions/<id>`
  * dirs — is walked here, on the server's own
- * filesystem. The NODE-LOCAL half — opencode working copies — is handed
- * to the runtime (`reapNodeLocal`) with the
- * same live set, because on a cluster those bytes are on whichever node
- * the worktree ran on. Runs every pass; the global walk is a readdir per
+ * filesystem. The NODE-LOCAL half — opencode working copies, and whole
+ * project trees no live project owns — is handed to the runtime
+ * (`reapNodeLocal`) with the same live set plus the live project ids,
+ * because on a cluster those bytes are on whichever node the worktree ran
+ * on. Runs every pass; the global walk is a readdir per
  * project and the runtime throttles its own half.
  */
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
@@ -462,29 +464,30 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
     return
   }
 
-  // Slugs from BOTH roots: a project whose global half is already gone can
-  // still have a node-local tree to sweep, and enumerating only the global
-  // root would never generate its slug.
-  const slugLists = await Promise.all(
-    projectsRoots().map((root) => fs.readdir(root).catch((): string[] => [])),
-  )
-  const projectSlugs = [...new Set(slugLists.flat())]
-  if (!projectSlugs.length) return
-
-  // The node-local half, per slug: a create the process is still
-  // provisioning is spared the same way its global dirs are — its id is
-  // added to the live set, since no listing can vouch for it yet.
-  const running = new Map<string, Set<string>>()
-  for (const slug of projectSlugs) running.set(slug, new Set(liveWorktreeIds))
-  for (const { worktreeId, projectSlug, error } of listProvisioning()) {
-    if (error !== undefined) continue
-    const ids = running.get(projectSlug) ?? new Set<string>()
-    ids.add(worktreeId)
-    running.set(projectSlug, ids)
+  // The node-local half: keyed by project ID there, so the live projects
+  // are read from rows — and an unreadable list skips the half rather than
+  // handing down an empty one, which would collect every project's tree. A
+  // create the process is still provisioning is spared the same way its
+  // global dirs are: its id joins the live set, since no listing can vouch
+  // for it yet.
+  const liveProjectIds = await listProjectRows()
+    .then((rows) => new Set(rows.map((r) => r.id)))
+    .catch((err: unknown) => {
+      console.warn(`Orphan node-local GC: failed to list projects: ${String(err)}`)
+      return null
+    })
+  if (liveProjectIds) {
+    const worktreeIds = new Set(liveWorktreeIds)
+    for (const { worktreeId, error } of listProvisioning()) {
+      if (error === undefined) worktreeIds.add(worktreeId)
+    }
+    await worktreeDriver().reapNodeLocal({ projectIds: liveProjectIds, worktreeIds })
+      .catch((err: unknown) => {
+        console.warn(`Orphan node-local GC failed: ${String(err)}`)
+      })
   }
-  await worktreeDriver().reapNodeLocal(running).catch((err: unknown) => {
-    console.warn(`Orphan node-local GC failed: ${String(err)}`)
-  })
+
+  const projectSlugs = await fs.readdir(getProjectsDir()).catch((): string[] => [])
 
   for (const slug of projectSlugs) {
     await gcOrphanSpares(slug, liveWorktreeIds, sweepStartedAtMs)

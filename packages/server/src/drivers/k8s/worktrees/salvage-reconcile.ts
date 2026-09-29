@@ -55,7 +55,7 @@ export async function reconcileImageSalvage(
 
   const live = new Set<string>()
   for (const p of pods) {
-    if (!p.running || !p.worktreeId || !p.projectSlug || isPrewarmed(p)) continue
+    if (!p.running || !p.worktreeId || !p.projectId || isPrewarmed(p)) continue
     if (!isNested(p)) continue
     if (p.terminating || isTerminating(p.worktreeId)) continue
     live.add(p.worktreeId)
@@ -64,7 +64,7 @@ export async function reconcileImageSalvage(
     lastAttemptMs.set(p.worktreeId, nowMs)
     void salvageWorktreeImages({
       jobName: p.jobName,
-      projectSlug: p.projectSlug,
+      project: { slug: p.projectSlug, id: p.projectId },
       worktreeId: p.worktreeId,
     }).catch(() => { /* logged inside; teardown salvage retries */ })
   }

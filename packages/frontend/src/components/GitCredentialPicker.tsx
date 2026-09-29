@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { addHttpsCredential, generateSshKey } from '#lib/settingsApi'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
+import { projectSlugFor } from '@yaac/shared/project-slug'
 
 export type GitCredentialKind = 'https' | 'ssh'
 
@@ -15,8 +16,8 @@ export function remoteKind(remoteUrl: string): GitCredentialKind {
   return SCP_RE.test(remoteUrl) ? 'ssh' : 'https'
 }
 
-/** The project slug the server derives from a remote — its last path
- *  segment, `.git` dropped, lowercased — or '' while it does not parse. */
+/** The project slug the server derives from a remote (`projectSlugFor`
+ *  over its path, `.git` dropped), or '' while it does not parse. */
 export function remoteSlug(remoteUrl: string): string {
   let repoPath = SCP_RE.exec(remoteUrl)?.[2]
   if (repoPath === undefined) {
@@ -26,7 +27,7 @@ export function remoteSlug(remoteUrl: string): string {
       return ''
     }
   }
-  return (repoPath.replace(/\/$/, '').replace(/\.git$/, '').split('/').pop() ?? '').toLowerCase()
+  return projectSlugFor(repoPath.replace(/\/$/, '').replace(/\.git$/, ''))
 }
 
 /** `<project>-token` / `<project>-key` (`git-…` with no project), suffixed

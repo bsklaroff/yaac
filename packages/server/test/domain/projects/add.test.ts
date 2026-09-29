@@ -65,7 +65,7 @@ describe('addProject', () => {
 
     const { project, knownHostsEntry } = await addProject('https://github.com/acme/Widgets.git', id)
 
-    // The slug is baked into image tags, which podman requires lowercase.
+    // The slug is stamped on the project's pods as a label value.
     expect(project.slug).toBe('widgets')
     expect(project.remoteUrl).toBe('https://github.com/acme/Widgets.git')
     expect(Date.parse(project.addedAt)).not.toBeNaN()
@@ -93,6 +93,27 @@ describe('addProject', () => {
     const credential = { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY }
     expect(mockClone).toHaveBeenCalledWith('git@git.example.com:group/sub/Repo.git', repoDir('repo'), credential)
     expect(await resolveProjectCredential('repo')).toEqual(credential)
+  })
+
+  // A label value is `[a-z0-9._-]`, alphanumeric at both ends, at most 63
+  // characters: a name outside that would break every label write, so it
+  // is made into one rather than refused.
+  it('derives a slug that is a valid label value from any repo name', async () => {
+    const long = `${'a'.repeat(70)}`
+    const cases: Array<[string, string]> = [
+      ['https://github.com/acme/C++Lib.git', 'c--lib'],
+      ['https://github.com/acme/.dotfiles_.git', 'dotfiles'],
+      ['https://github.com/acme/a%20b.git', 'a-20b'],
+      [`https://github.com/acme/${long}.git`, 'a'.repeat(63)],
+    ]
+    for (const [url, slug] of cases) {
+      expect((await addProject(url, token)).project.slug).toBe(slug)
+    }
+    // A name that collides only after derivation is refused naming both.
+    await expect(addProject('https://github.com/acme/c++lib!.git', token)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: '"c++lib!" derives project name "c--lib", which already exists',
+    })
   })
 
   it('refuses a credential of the wrong kind, or none that exists, before cloning', async () => {

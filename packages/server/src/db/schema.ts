@@ -50,6 +50,15 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
  */
 export const projects = snakeCase.table('projects', {
   slug: text().primaryKey(),
+  /**
+   * The project's identity outside the data dir, minted at insert and never
+   * changed or reused: every per-project object the substrate holds (the
+   * push registry, the registry repos, the node-local tree) is named by it,
+   * so a project re-added under a freed slug cannot inherit an old one's
+   * objects whether or not their removal succeeded. The slug stays the key
+   * for rows and the data dir, which are removed reliably.
+   */
+  id: uuid().notNull().unique().defaultRandom(),
   remoteUrl: text().notNull(),
   addedAt: text().notNull(),
   /**

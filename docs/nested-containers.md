@@ -129,8 +129,8 @@ of the 12GiB sentry graphroot spent on layers it did not build. Concurrent
 worktrees on a node share one copy of the bytes.
 
 `store-writer.ts` owns it. A **generation** is a complete store under
-`<node-local root>/shared-images/<project>/gen-<stamp>/` — on the node,
-that is `/var/lib/yaac/node/<install hash>/shared-images/<project>/…`, the
+`<node-local root>/shared-images/<project id>/gen-<stamp>/` — on the node,
+that is `/var/lib/yaac/node/<install hash>/shared-images/<project id>/…`, the
 install's node-local tree, which is what the writer and cleanup pods mount
 (docs/server-in-cluster.md "Storage is two claims") — written by a
 node-side pod and made publishable only by the `.yaac-store-done` marker
@@ -412,15 +412,28 @@ this registry.
   cross-worktree image cache.
 - **Per project, not shared**, because `registry:2` has no path ACLs: a
   shared writable registry would let one project overwrite another's tags.
+  Within a project it is a shared namespace by design: any worktree of the
+  project can push a name (an upstream one like `postgres:16` included)
+  that every later nested worktree of the project resolves locally.
+- **Named by the project's immutable id** (`yaac-reg-<id>`, and its PVC,
+  policies and one-shot pods after it), as is the node-local image store
+  (`shared-images/<id>`). A project re-added under a freed slug therefore
+  gets an empty registry and store of its own, whether or not the old
+  one's removal succeeded — its catalog is never inherited.
 - Three policies: a worktrees→registry allow k8s NetworkPolicy (podSelector
-  requires the project label *and* a `yaac.worktree-id`, keeping it off the
-  registry pod itself), a deny-all egress k8s NetworkPolicy on the registry
-  pod, and a NetworkPolicy ingress lock confining the registry pod's
-  ingress to same-project worktrees plus the host/remote-node entities.
+  requires the pod's `yaac.project-id` label *and* a `yaac.worktree-id`,
+  keeping it off the registry pod itself), a deny-all egress k8s
+  NetworkPolicy on the registry pod, and a NetworkPolicy ingress lock
+  confining the registry pod's ingress to same-project worktrees plus the
+  host/remote-node entities.
 - Node containerd reaches it via a `hosts.toml` under
   `/etc/containerd/certs.d/` (see Service addressing below).
 - Lifecycle: created from worktree-create for a `nestedContainers`
-  worktree, removed on project removal, orphan-GC'd at server start.
+  worktree, removed on project removal. The `orphan-registry-gc` reconcile
+  step removes any of this install's registries whose `yaac.project-id` no
+  live project holds, or that carry no id at all — every removal that
+  failed, collected by id rather than by anything the removal left
+  behind.
 
 ### Service addressing
 

@@ -25,6 +25,7 @@ import {
   destroyProjectSubstrate,
   destroyWorkspace,
   detachedTeardownCommand,
+  reapNodeLocal,
 } from '#drivers/containerless/teardown'
 import { containerlessJobName, containerlessWorkspacePaths } from '#drivers/containerless/paths'
 import {
@@ -196,19 +197,78 @@ describe('destroyWorkspace ssh-agent', () => {
   })
 })
 
+const DEMO = { slug: 'demo', id: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' }
+const KEEPER_ID = '1f2e3d4c-5b6a-4978-8a6b-5c4d3e2f1a0b'
+
 describe('destroyProjectSubstrate', () => {
-  it('removes the project\'s node-local tree and image store on this host', async () => {
-    const tree = nodeLocalProjectPath('demo')
-    const store = imageStoreDir('demo')
+  it('removes the project\'s node-local tree and image store on this host, by id', async () => {
+    const tree = nodeLocalProjectPath(DEMO.id)
+    const store = imageStoreDir(DEMO.id)
     await fsp.mkdir(path.join(tree, '.cached-packages', 'pnpm-store'), { recursive: true })
     await fsp.mkdir(path.join(store, 'gen-1'), { recursive: true })
-    await fsp.mkdir(nodeLocalProjectPath('keeper'), { recursive: true })
+    await fsp.mkdir(nodeLocalProjectPath(KEEPER_ID), { recursive: true })
 
-    await destroyProjectSubstrate('demo')
+    await destroyProjectSubstrate(DEMO)
 
     await expect(fsp.access(tree)).rejects.toThrow()
     await expect(fsp.access(store)).rejects.toThrow()
-    await expect(fsp.access(nodeLocalProjectPath('keeper'))).resolves.toBeUndefined()
+    await expect(fsp.access(nodeLocalProjectPath(KEEPER_ID))).resolves.toBeUndefined()
+  })
+})
+
+describe('reapNodeLocal', () => {
+  const STALE = new Date(Date.now() - 3_600_000)
+  async function seed(dir: string): Promise<string> {
+    await fsp.mkdir(path.join(dir, 'x'), { recursive: true })
+    await fsp.utimes(dir, STALE, STALE)
+    return dir
+  }
+
+  // Keyed on ids, so a failed removal and a tree named by slug before ids
+  // are both collected — except the slug a running workspace still uses,
+  // and a tree written since the sweep began.
+  it('removes node-local trees no live project id owns, sparing a running workspace\'s', async () => {
+    const live = await seed(nodeLocalProjectPath(DEMO.id))
+    const liveStore = await seed(imageStoreDir(DEMO.id))
+    const removed = await seed(nodeLocalProjectPath(KEEPER_ID))
+    const removedStore = await seed(imageStoreDir(KEEPER_ID))
+    const legacy = await seed(nodeLocalProjectPath('other'))
+    const inUse = await seed(nodeLocalProjectPath('demo'))
+    const fresh = nodeLocalProjectPath('staging')
+    await fsp.mkdir(fresh, { recursive: true })
+    registered()
+
+    await reapNodeLocal({ projectIds: new Set([DEMO.id]), worktreeIds: new Set([UUID]) })
+
+    for (const dir of [live, liveStore, inUse, fresh]) {
+      await expect(fsp.access(dir)).resolves.toBeUndefined()
+    }
+    for (const dir of [removed, removedStore, legacy]) {
+      await expect(fsp.access(dir)).rejects.toThrow()
+    }
+  })
+
+  // A link is never followed: not an entry that is one, and not a root that
+  // is one (a relocated cache dir, a mis-pointed root) — either would delete
+  // whatever it points at.
+  it('never follows a link, at an entry or at a root', async () => {
+    const victims = await fsp.mkdtemp(path.join(os.tmpdir(), 'yaac-reap-victim-'))
+    try {
+      const entryVictim = await seed(path.join(victims, 'entry-target'))
+      const rootVictim = await seed(path.join(victims, 'root-target', 'not-an-id'))
+      await fsp.mkdir(path.dirname(nodeLocalProjectPath('x')), { recursive: true })
+      await fsp.symlink(entryVictim, nodeLocalProjectPath('linked'))
+      await fsp.rm(path.dirname(imageStoreDir('x')), { recursive: true, force: true })
+      await fsp.symlink(path.dirname(rootVictim), path.dirname(imageStoreDir('x')))
+
+      await reapNodeLocal({ projectIds: new Set(), worktreeIds: new Set() })
+
+      for (const dir of [entryVictim, rootVictim]) {
+        await expect(fsp.access(path.join(dir, 'x'))).resolves.toBeUndefined()
+      }
+    } finally {
+      await fsp.rm(victims, { recursive: true, force: true })
+    }
   })
 })
 

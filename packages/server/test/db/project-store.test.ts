@@ -33,6 +33,7 @@ describe('recordProject', () => {
 
     expect(await getProjectRow('app')).toEqual({
       slug: 'app',
+      id: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) as string,
       remoteUrl: 'https://x/app.git',
       addedAt: '2026-01-01',
       createDefaults: {},
@@ -65,6 +66,22 @@ describe('recordProject', () => {
     expect(await getProjectRow('app')).toMatchObject({
       remoteUrl: 'https://y/app.git', addedAt: '2026-01-01',
     })
+  })
+
+  // The id names the project's substrate objects, so it must never follow
+  // the slug: re-recording keeps it, and a project re-added under a freed
+  // slug gets one of its own rather than inheriting the old one's objects.
+  it('mints an id that survives a re-record and is never reused by a re-add', async () => {
+    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    const first = (await getProjectRow('app'))?.id
+    await recordProject({ slug: 'app', remoteUrl: 'https://y/app.git', addedAt: '2026-01-01' })
+    expect((await getProjectRow('app'))?.id).toBe(first)
+
+    await deleteProjectRow('app')
+    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-02-01' })
+    const second = (await getProjectRow('app'))?.id
+    expect(second).toBeDefined()
+    expect(second).not.toBe(first)
   })
 
   // The project list is a snapshot input, and this is its only INSERT — so
@@ -118,7 +135,15 @@ describe('listProjectRows', () => {
     expect(await listProjectRows()).toEqual([])
     await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
     expect(await listProjectRows()).toEqual([
-      { slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01', createDefaults: {}, gitCredentialId: null, knownHostsEntry: null },
+      {
+        slug: 'app',
+        id: (await getProjectRow('app'))?.id,
+        remoteUrl: 'https://x/app.git',
+        addedAt: '2026-01-01',
+        createDefaults: {},
+        gitCredentialId: null,
+        knownHostsEntry: null,
+      },
     ])
   })
 })

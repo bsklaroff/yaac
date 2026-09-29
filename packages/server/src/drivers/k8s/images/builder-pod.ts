@@ -144,14 +144,16 @@ export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
  * attacker already controls. `Dockerfile.user` layers cache into the repo
  * of the project being built.
  *
+ * Named by the project's immutable id, so a project re-added under a freed
+ * slug never reads the old one's entries as cache hits.
+ *
  * The confinement is over WHERE THIS BUILD READS AND WRITES, not a
  * boundary: the registry is unauthenticated with no path ACLs, so a
  * hostile RUN step can push to another project's cache repo by hand. See
  * the open risk in docs/trust-split-builds.md.
  */
-export function buildCacheRepo(projectSlug: string): string {
-  const slug = projectSlug.toLowerCase().replace(/[^a-z0-9._-]/g, '-')
-  return `yaac-buildcache-${slug}`
+export function buildCacheRepo(projectId: string): string {
+  return `yaac-buildcache-${projectId}`
 }
 
 /** Builder pod name: hash of the first layer tag + entropy, so concurrent
@@ -657,7 +659,7 @@ async function runLayerBuild(
     ['podman', ...builderBuildArgs(layer, {
       dockerfileRel: plan.dockerfileRel,
       clusterHost,
-      cacheRepo: buildCacheRepo(ctx.projectSlug),
+      cacheRepo: buildCacheRepo(ctx.project.id),
     })],
     { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
   )

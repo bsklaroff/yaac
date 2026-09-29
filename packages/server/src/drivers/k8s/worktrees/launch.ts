@@ -5,6 +5,7 @@ import {
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   LABEL_TOOL,
   buildPodJobManifest,
   dataDirHash,
@@ -68,6 +69,9 @@ import type {
  * travels on the spec and comes back here to be narrowed.
  */
 interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
+  /** The project's id, which the pod is labelled with: its registry's
+   *  NetworkPolicies select the project's pods by it. */
+  projectId: string
   /** Live proxy Service ClusterIP — the pod's resolver and egress target. */
   proxyHost: string
   /** The per-worktree token streamd's handshake requires. */
@@ -113,7 +117,8 @@ function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
 export async function prepareWorkspaceSubstrate(
   intent: SubstrateIntent,
 ): Promise<WorkspaceSubstrate> {
-  const { projectSlug, workspaceId, config } = intent
+  const { projectSlug, projectId, workspaceId, config } = intent
+  const project = { slug: projectSlug, id: projectId }
   const emit = (m: string): void => intent.onProgress?.(m)
 
   // The proxy is always required — it injects GitHub / Claude / Codex
@@ -130,7 +135,7 @@ export async function prepareWorkspaceSubstrate(
   const storeMounts: PodMount[] = []
   if (projectRegistry) {
     emit('Ensuring project registry...')
-    await ensureProjectRegistry(projectSlug)
+    await ensureProjectRegistry(project)
 
     // The node-local image store: the read-only containers/storage lower
     // this pod mounts at /var/lib/shared-images, so the project's warm
@@ -144,9 +149,9 @@ export async function prepareWorkspaceSubstrate(
     // of minutes whose product this pod could not adopt anyway (its mount
     // is already chosen); what it buys is the generation the NEXT workspace
     // of the project mounts.
-    const storeMount = await nodeImageStoreMount(projectSlug)
+    const storeMount = await nodeImageStoreMount(projectId)
     if (storeMount) storeMounts.push(storeMount)
-    void ensureNodeImageStore(projectSlug)
+    void ensureNodeImageStore(project)
   }
 
   // Egress: the workspace pod's outbound 443/80 is redirected to the proxy
@@ -189,6 +194,7 @@ export async function prepareWorkspaceSubstrate(
 
   const receipt: K8sWorkspaceSubstrate = {
     kind: 'workspace-substrate',
+    projectId,
     proxyHost,
     streamToken,
     storeMounts,
@@ -283,7 +289,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // script (sudo) before the engine starts. Base64 keeps the TOML free of
     // env-value quoting concerns. Every nested workspace needs it: the
     // registry is plain HTTP, and the image cache pushes/pulls through it.
-    const conf = Buffer.from(projectRegistryConfDropIn(spec.projectSlug), 'utf8')
+    const conf = Buffer.from(projectRegistryConfDropIn(substrate.projectId), 'utf8')
       .toString('base64')
     env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
   }
@@ -303,6 +309,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   const labels: Record<string, string> = {
     [LABEL_PROJECT]: spec.projectSlug,
+    [LABEL_PROJECT_ID]: substrate.projectId,
     ...worktreeIdLabels(spec.workspaceId),
     [LABEL_DATA_DIR_HASH]: dataDirHash(),
     [LABEL_TOOL]: spec.tool,

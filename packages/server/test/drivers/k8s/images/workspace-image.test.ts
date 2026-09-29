@@ -12,6 +12,8 @@ vi.mock('#drivers/k8s/images/build-coordinator', () => ({
 
 import { prepareWorkspaceImage } from '#drivers/k8s/images/workspace-image'
 
+const DEMO = { slug: 'demo', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockEnsureImage.mockResolvedValue('yaac-demo:abc123')
@@ -22,22 +24,22 @@ describe('prepareWorkspaceImage', () => {
   it('answers with the PUSHED ref, not the local one the build produced', async () => {
     // The cluster pulls through the registry, so the local tag would name
     // an image the node cannot resolve.
-    const ref = await prepareWorkspaceImage({ projectSlug: 'demo', nestedContainers: false })
+    const ref = await prepareWorkspaceImage({ project: DEMO, nestedContainers: false })
 
     expect(ref).toBe('localhost:5000/yaac-demo:abc123')
     expect(mockPushImageShared).toHaveBeenCalledWith(
       'yaac-demo:abc123',
-      { projectSlug: 'demo', reason: 'session' },
+      { project: DEMO, reason: 'session' },
     )
     expect(mockEnsureImage.mock.invocationCallOrder[0])
       .toBeLessThan(mockPushImageShared.mock.invocationCallOrder[0])
   })
 
   it('builds the nestable chain when the workspace runs its own engine', async () => {
-    await prepareWorkspaceImage({ projectSlug: 'demo', nestedContainers: true })
+    await prepareWorkspaceImage({ project: DEMO, nestedContainers: true })
 
     expect(mockEnsureImage).toHaveBeenCalledWith(
-      'demo', undefined, false, true, expect.objectContaining({ reason: 'session' }),
+      DEMO, undefined, false, true, expect.objectContaining({ reason: 'session' }),
     )
   })
 
@@ -45,7 +47,7 @@ describe('prepareWorkspaceImage', () => {
     // A build is the longest step a create has, and the layer messages come
     // from deep inside it — the caller owns the narration either way.
     mockEnsureImage.mockImplementation((
-      _slug: string, _prefix: unknown, _prebuilt: unknown, _nested: unknown,
+      _project: unknown, _prefix: unknown, _prebuilt: unknown, _nested: unknown,
       opts: { onLayerStart: (i: number, total: number, layer: string) => void },
     ) => {
       opts.onLayerStart(1, 2, 'base')
@@ -54,7 +56,7 @@ describe('prepareWorkspaceImage', () => {
     const messages: string[] = []
 
     await prepareWorkspaceImage({
-      projectSlug: 'demo',
+      project: DEMO,
       nestedContainers: false,
       onProgress: (m) => messages.push(m),
     })

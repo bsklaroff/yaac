@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
 import {
   LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   LABEL_WORKTREE_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
@@ -15,9 +15,8 @@ import { createKeyedMutex } from '#lib/keyed-mutex'
 import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
 import { registryHasTag, registryRef } from '#drivers/k8s/container'
 import { nodeIpBlocks } from './cluster-cidrs'
-import { installScopedName } from './proxy-manifests'
-import { projectDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
+import type { ProjectRef } from '#drivers/contract'
 
 /** `app` label value shared by every per-project registry pod. */
 export const REGISTRY_APP_LABEL = 'yaac-registry'
@@ -55,14 +54,16 @@ export const REGISTRY_UPSTREAM_IMAGE = `docker.io/library/registry@${REGISTRY_IM
 export const REGISTRY_MIRROR_TAG = `yaac-registry2:${REGISTRY_IMAGE_DIGEST.slice(7, 19)}`
 
 /**
- * Deployment/Service name for a project's registry:
- * `yaac-reg-<safeSlug≤21>-<hash8>`. The hash spans the data dir + the
- * full slug, so truncated slugs stay unique and coexisting installs
- * sharing a namespace cannot collide. Total length stays well under the
- * 63-char DNS-label cap.
+ * Deployment/Service name for a project's registry: `yaac-reg-<id>`.
+ * Named by the project's immutable id, so a project re-added under a freed
+ * slug gets a registry of its own even when the old one's removal failed,
+ * and no install hash is needed — an id cannot collide across installs
+ * sharing a namespace. At 45 characters every derived name (`-storage`,
+ * `-sessions`, …) stays within the 63-character DNS-label cap; the
+ * one-shot pods' longer names are subdomains, capped at 253.
  */
-export function projectRegistryName(projectSlug: string): string {
-  return installScopedName('yaac-reg', projectSlug)
+export function projectRegistryName(projectId: string): string {
+  return `yaac-reg-${projectId}`
 }
 
 /**
@@ -73,26 +74,29 @@ export function projectRegistryName(projectSlug: string): string {
  * to the remote resolver — a DNS-exfil channel). The node's containerd matches
  * it via the hosts.toml this module writes (it never DNS-resolves it).
  */
-export function projectRegistryHostname(projectSlug: string): string {
-  return `${projectRegistryName(projectSlug)}.${k8sNamespace()}.svc.cluster.local`
+export function projectRegistryHostname(projectId: string): string {
+  return registryHostnameOf(projectRegistryName(projectId))
+}
+
+function registryHostnameOf(registryName: string): string {
+  return `${registryName}.${k8sNamespace()}.svc.cluster.local`
 }
 
 /** `projectRegistryHostname` with the registry port (the image-ref host). */
-export function projectRegistryHost(projectSlug: string): string {
-  return `${projectRegistryHostname(projectSlug)}:${PROJECT_REGISTRY_PORT}`
+export function projectRegistryHost(projectId: string): string {
+  return `${projectRegistryHostname(projectId)}:${PROJECT_REGISTRY_PORT}`
 }
 
 /**
  * PVC backing this project's registry storage. Per project, and named off
- * `projectRegistryName` so it inherits that name's install scoping and its
- * DNS-label budget (prefix + slug≤21 + hash8 + `-storage` stays well under
- * 63 chars). Growth is bounded by reconcileProjectRegistryGc, which
+ * `projectRegistryName` so it inherits that name's uniqueness and its
+ * DNS-label budget. Growth is bounded by reconcileProjectRegistryGc, which
  * reclaims the blobs behind manifests no tag points at; live tags are never
  * collected, so a project that keeps minting NEW tags (content-hash image
  * chains) still grows until it is removed.
  */
-export function projectRegistryPvcName(projectSlug: string): string {
-  return `${projectRegistryName(projectSlug)}-storage`
+export function projectRegistryPvcName(projectId: string): string {
+  return `${projectRegistryName(projectId)}-storage`
 }
 
 /**
@@ -118,34 +122,46 @@ export const PROJECT_REGISTRY_STORAGE_SIZE = '50Gi'
  * shared nestable layer). Scoped to the exact registry host — every
  * other registry keeps full TLS verification.
  */
-export function projectRegistryConfDropIn(projectSlug: string): string {
+export function projectRegistryConfDropIn(projectId: string): string {
   return [
     '[[registry]]',
-    `location = "${projectRegistryHost(projectSlug)}"`,
+    `location = "${projectRegistryHost(projectId)}"`,
     'insecure = true',
     '',
   ].join('\n')
 }
 
-function registryLabels(projectSlug: string): Record<string, string> {
+/**
+ * Every registry object carries the project id — what its selectors, its
+ * NetworkPolicies and the orphan GC key on — and the slug, for a human
+ * reading `kubectl get`.
+ */
+function registryLabels(project: ProjectRef): Record<string, string> {
   return {
     app: REGISTRY_APP_LABEL,
-    [LABEL_PROJECT]: projectSlug,
+    [LABEL_PROJECT]: project.slug,
+    [LABEL_PROJECT_ID]: project.id,
     [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
   }
 }
 
+/** What selects one project's registry pod, and nothing else of it. */
+function registryPodSelector(projectId: string): Record<string, string> {
+  return { app: REGISTRY_APP_LABEL, [LABEL_PROJECT_ID]: projectId }
+}
+
+/** kubectl label selector matching every registry object of this install. */
+function installRegistrySelector(): string {
+  return `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`
+}
+
 /**
  * kubectl label selector matching every registry object of this project
- * scoped to this install (coexisting installs sharing a namespace never
- * touch each other's registries).
+ * scoped to this install (the orphan GC must never see another install's
+ * registries, whose projects are not in its live set).
  */
-function registrySelector(projectSlug: string): string {
-  return [
-    `app=${REGISTRY_APP_LABEL}`,
-    `${LABEL_PROJECT}=${projectSlug}`,
-    `${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
-  ].join(',')
+function registrySelector(projectId: string): string {
+  return `${installRegistrySelector()},${LABEL_PROJECT_ID}=${projectId}`
 }
 
 /**
@@ -163,14 +179,14 @@ function registrySelector(projectSlug: string): string {
  * `docker push`ed here under a name yaac never mints is not regenerable and
  * goes with it.
  */
-export function buildProjectRegistryPvcManifest(projectSlug: string): Record<string, unknown> {
+export function buildProjectRegistryPvcManifest(project: ProjectRef): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'PersistentVolumeClaim',
     metadata: {
-      name: projectRegistryPvcName(projectSlug),
+      name: projectRegistryPvcName(project.id),
       namespace: k8sNamespace(),
-      labels: registryLabels(projectSlug),
+      labels: registryLabels(project),
     },
     spec: {
       accessModes: ['ReadWriteOnce'],
@@ -203,26 +219,24 @@ export function buildProjectRegistryPvcManifest(projectSlug: string): Record<str
  * just its first placement.
  */
 export function buildProjectRegistryDeploymentManifest(
-  projectSlug: string,
+  project: ProjectRef,
   imageRef: string,
   opts: { readOnly?: boolean } = {},
 ): Record<string, unknown> {
-  const name = projectRegistryName(projectSlug)
-  const selector = { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug }
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: {
-      name,
+      name: projectRegistryName(project.id),
       namespace: k8sNamespace(),
-      labels: registryLabels(projectSlug),
+      labels: registryLabels(project),
     },
     spec: {
       replicas: 1,
       strategy: { type: 'Recreate' },
-      selector: { matchLabels: selector },
+      selector: { matchLabels: registryPodSelector(project.id) },
       template: {
-        metadata: { labels: registryLabels(projectSlug) },
+        metadata: { labels: registryLabels(project) },
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
@@ -267,7 +281,7 @@ export function buildProjectRegistryDeploymentManifest(
           volumes: [
             {
               name: 'storage',
-              persistentVolumeClaim: { claimName: projectRegistryPvcName(projectSlug) },
+              persistentVolumeClaim: { claimName: projectRegistryPvcName(project.id) },
             },
           ],
         },
@@ -276,22 +290,21 @@ export function buildProjectRegistryDeploymentManifest(
   }
 }
 
-export function buildProjectRegistryServiceManifest(projectSlug: string): Record<string, unknown> {
-  const name = projectRegistryName(projectSlug)
+export function buildProjectRegistryServiceManifest(project: ProjectRef): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'Service',
     metadata: {
-      name,
+      name: projectRegistryName(project.id),
       namespace: k8sNamespace(),
-      labels: registryLabels(projectSlug),
+      labels: registryLabels(project),
     },
     spec: {
       type: 'ClusterIP',
       // Allocator-assigned (no longer pinned): worktrees resolve the live
       // ClusterIP through the proxy's split-horizon DNS, and the node's
       // hosts.toml is rewritten with the live IP on every ensure.
-      selector: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
+      selector: registryPodSelector(project.id),
       // port == targetPort: the network policies list the post-translation
       // port; a remap would diverge.
       ports: [{
@@ -317,29 +330,25 @@ export function buildProjectRegistryServiceManifest(projectSlug: string): Record
  * itself (it carries the project label too).
  */
 export function buildRegistryWorktreesNetworkPolicyManifest(
-  projectSlug: string,
+  project: ProjectRef,
 ): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
     metadata: {
-      name: `${projectRegistryName(projectSlug)}-sessions`,
+      name: `${projectRegistryName(project.id)}-sessions`,
       namespace: k8sNamespace(),
-      labels: registryLabels(projectSlug),
+      labels: registryLabels(project),
     },
     spec: {
       podSelector: {
-        matchLabels: { [LABEL_PROJECT]: projectSlug },
+        matchLabels: { [LABEL_PROJECT_ID]: project.id },
         matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
       },
       policyTypes: ['Egress'],
       egress: [
         {
-          to: [{
-            podSelector: {
-              matchLabels: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
-            },
-          }],
+          to: [{ podSelector: { matchLabels: registryPodSelector(project.id) } }],
           ports: [{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }],
         },
       ],
@@ -361,7 +370,7 @@ export function buildRegistryWorktreesNetworkPolicyManifest(
  * (NetworkPolicy has no selector for the host network namespace).
  */
 export function buildRegistryIngressNetworkPolicyManifest(
-  projectSlug: string,
+  project: ProjectRef,
   nodeCidrs: string[],
 ): Record<string, unknown> {
   const registryPort = { protocol: 'TCP', port: PROJECT_REGISTRY_PORT }
@@ -369,20 +378,18 @@ export function buildRegistryIngressNetworkPolicyManifest(
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
     metadata: {
-      name: `${projectRegistryName(projectSlug)}-ingress`,
+      name: `${projectRegistryName(project.id)}-ingress`,
       namespace: k8sNamespace(),
-      labels: registryLabels(projectSlug),
+      labels: registryLabels(project),
     },
     spec: {
-      podSelector: {
-        matchLabels: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
-      },
+      podSelector: { matchLabels: registryPodSelector(project.id) },
       policyTypes: ['Ingress'],
       ingress: [
         {
           from: [{
             podSelector: {
-              matchLabels: { [LABEL_PROJECT]: projectSlug },
+              matchLabels: { [LABEL_PROJECT_ID]: project.id },
               matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
             },
           }],
@@ -404,20 +411,18 @@ export function buildRegistryIngressNetworkPolicyManifest(
  * buildRegistryIngressNetworkPolicyManifest.
  */
 export function buildRegistryEgressNetworkPolicyManifest(
-  projectSlug: string,
+  project: ProjectRef,
 ): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
     metadata: {
-      name: `${projectRegistryName(projectSlug)}-egress`,
+      name: `${projectRegistryName(project.id)}-egress`,
       namespace: k8sNamespace(),
-      labels: registryLabels(projectSlug),
+      labels: registryLabels(project),
     },
     spec: {
-      podSelector: {
-        matchLabels: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
-      },
+      podSelector: { matchLabels: registryPodSelector(project.id) },
       policyTypes: ['Egress'],
       egress: [],
     },
@@ -453,7 +458,7 @@ export function buildRegistryEgressNetworkPolicyManifest(
  * the only node satisfying the term is one no taint blocked anyway.
  */
 function buildNodeWritePodManifest(
-  projectSlug: string,
+  labels: Record<string, string>,
   kind: 'hosts' | 'cleanup' | 'gc',
   name: string,
   nodeName: string | null,
@@ -469,7 +474,7 @@ function buildNodeWritePodManifest(
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { ...registryLabels(projectSlug), [LABEL_NODE_WRITE]: kind },
+      labels: { ...labels, [LABEL_NODE_WRITE]: kind },
     },
     spec: {
       ...(nodeName ? { nodeName } : {}),
@@ -509,7 +514,7 @@ function buildNodeWritePodManifest(
  * old `mkdir -p`), so the pod can affect no other registry's mapping.
  */
 export function buildRegistryHostsWriterPodManifest(
-  projectSlug: string,
+  project: ProjectRef,
   imageRef: string,
   nodeName: string,
   vip: string,
@@ -518,16 +523,16 @@ export function buildRegistryHostsWriterPodManifest(
 ): Record<string, unknown> {
   const content = `[host."http://${vip}:${PROJECT_REGISTRY_PORT}"]`
   return buildNodeWritePodManifest(
-    projectSlug,
+    registryLabels(project),
     'hosts',
-    `${projectRegistryName(projectSlug)}-hosts-${nodeIndex}-${runId}`,
+    `${projectRegistryName(project.id)}-hosts-${nodeIndex}-${runId}`,
     nodeName,
     imageRef,
     `printf '%s\\n' '${content}' > /host-certs/hosts.toml`,
     [{
       name: 'certs',
       hostPath: {
-        path: `/etc/containerd/certs.d/${projectRegistryHost(projectSlug)}`,
+        path: `/etc/containerd/certs.d/${projectRegistryHost(project.id)}`,
         type: 'DirectoryOrCreate',
       },
     }],
@@ -546,21 +551,29 @@ export function buildRegistryHostsWriterPodManifest(
  * `removeProjectRegistry`'s by-selector delete takes with everything else.
  * A `hosts.toml` mapping is the only thing this project ever wrote outside
  * the API server.
+ *
+ * Addressed by the registry's NAME and labelled by the caller, because the
+ * orphan GC also removes registries that predate project ids, whose names
+ * no id produces and whose objects carry no id label
+ * (docs/legacy-compat-shims.md, "Registries named before project ids").
+ * An id-named registry's pods carry `registryLabels`' id, so a stray one
+ * stranded by a crash is inside the next removal's selector.
  */
 export function buildRegistryCleanupPodManifest(
-  projectSlug: string,
+  registryName: string,
+  labels: Record<string, string>,
   imageRef: string,
   nodeName: string,
   nodeIndex: number,
   runId: string,
 ): Record<string, unknown> {
   return buildNodeWritePodManifest(
-    projectSlug,
+    labels,
     'cleanup',
-    `${projectRegistryName(projectSlug)}-cleanup-${nodeIndex}-${runId}`,
+    `${registryName}-cleanup-${nodeIndex}-${runId}`,
     nodeName,
     imageRef,
-    `rm -rf '/host-certs/${projectRegistryHost(projectSlug)}'`,
+    `rm -rf '/host-certs/${registryHostnameOf(registryName)}:${PROJECT_REGISTRY_PORT}'`,
     [{
       name: 'certs',
       hostPath: { path: '/etc/containerd/certs.d', type: 'DirectoryOrCreate' },
@@ -692,14 +705,14 @@ export function buildRegistryRetentionScript(opts: {
  * garbage it could not otherwise see.
  */
 export function buildRegistryGcPodManifest(
-  projectSlug: string,
+  project: ProjectRef,
   imageRef: string,
   runId: string,
 ): Record<string, unknown> {
   return buildNodeWritePodManifest(
-    projectSlug,
+    registryLabels(project),
     'gc',
-    `${projectRegistryName(projectSlug)}-gc-${runId}`,
+    `${projectRegistryName(project.id)}-gc-${runId}`,
     null,
     imageRef,
     // Retention first: it untags the generations the collect then reclaims.
@@ -707,26 +720,20 @@ export function buildRegistryGcPodManifest(
     + `/bin/registry garbage-collect --delete-untagged=true ${GC_CONFIG_PATH}`,
     [{
       name: 'storage',
-      persistentVolumeClaim: { claimName: projectRegistryPvcName(projectSlug) },
+      persistentVolumeClaim: { claimName: projectRegistryPvcName(project.id) },
     }],
     [{ name: 'storage', mountPath: GC_STORAGE_PATH }],
     {
       podAffinity: {
         requiredDuringSchedulingIgnoredDuringExecution: [{
-          // `registryLabels` rather than a hand-listed app+project pair, so
-          // the install scope travels with it: two installs sharing a
-          // namespace can hold the same project slug, and matching without
-          // the data-dir hash would let one install's collect become affine
-          // to the OTHER's registry pod — a node its own volume is not on,
-          // which is precisely the Multi-Attach stall this exists to
-          // prevent. The pod template stamps exactly these three.
+          // `registryLabels`, which the pod template stamps exactly.
           //
           // The node-write marker must be ABSENT, or the term would also be
           // satisfied by a sibling one-shot pod (a hosts writer, another
           // run's collect) — all of which carry the same registry labels and
           // none of which implies the volume is on that node.
           labelSelector: {
-            matchLabels: registryLabels(projectSlug),
+            matchLabels: registryLabels(project),
             matchExpressions: [{ key: LABEL_NODE_WRITE, operator: 'DoesNotExist' }],
           },
           topologyKey: 'kubernetes.io/hostname',
@@ -791,29 +798,29 @@ async function runNodeWritePod(manifest: Record<string, unknown>): Promise<void>
  * containerd hosts.toml below, and the hostNetwork'd image-store builder —
  * has to read it fresh rather than remember one.
  */
-export async function projectRegistryClusterIp(projectSlug: string): Promise<string | null> {
+export async function projectRegistryClusterIp(projectId: string): Promise<string | null> {
   const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', projectRegistryName(projectSlug), '-n', k8sNamespace(),
+    'get', 'service', projectRegistryName(projectId), '-n', k8sNamespace(),
   ]).catch(() => null)
   return svc?.spec?.clusterIP ?? null
 }
 
-export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<void> {
-  const vip = await projectRegistryClusterIp(projectSlug)
-  if (!vip) throw new Error(`project registry Service ${projectRegistryName(projectSlug)} has no ClusterIP yet`)
+export async function writeNodeRegistryHostsToml(project: ProjectRef): Promise<void> {
+  const vip = await projectRegistryClusterIp(project.id)
+  if (!vip) throw new Error(`project registry Service ${projectRegistryName(project.id)} has no ClusterIP yet`)
   // Reap stray writer/cleanup pods left by crashed runs (a daemon killed
   // mid-poll never reaches runPodToCompletion's cleanup delete, and the
   // per-run name suffix means no later namesake delete collects them).
   // The node-write marker keeps the registry Deployment's pod out of the
   // selector's reach.
   await kubectlWithRetry([
-    'delete', 'pod', '-l', `${registrySelector(projectSlug)},${LABEL_NODE_WRITE}`,
+    'delete', 'pod', '-l', `${registrySelector(project.id)},${LABEL_NODE_WRITE}`,
     '-n', k8sNamespace(), '--ignore-not-found',
   ])
   const imageRef = registryRef(REGISTRY_MIRROR_TAG)
   const runId = crypto.randomBytes(4).toString('hex')
   for (const [i, node] of (await listNodeNames()).entries()) {
-    await runNodeWritePod(buildRegistryHostsWriterPodManifest(projectSlug, imageRef, node, vip, i, runId))
+    await runNodeWritePod(buildRegistryHostsWriterPodManifest(project, imageRef, node, vip, i, runId))
   }
 }
 
@@ -836,20 +843,20 @@ const registryEnsureMutex = createKeyedMutex()
  * the queued caller's turn is quick; different projects still ensure in
  * parallel.
  */
-export async function ensureProjectRegistry(projectSlug: string): Promise<void> {
-  await registryEnsureMutex(projectSlug, async () => {
-    const name = projectRegistryName(projectSlug)
+export async function ensureProjectRegistry(project: ProjectRef): Promise<void> {
+  await registryEnsureMutex(project.id, async () => {
+    const name = projectRegistryName(project.id)
     const ns = k8sNamespace()
     const imageRef = await ensureRegistryImage()
 
     // The claim first, so the Deployment's pod never spends the rollout
     // wait Pending on a volume that does not exist yet.
-    await kubectlApply(buildProjectRegistryPvcManifest(projectSlug))
-    await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef))
-    await kubectlApply(buildProjectRegistryServiceManifest(projectSlug))
-    await kubectlApply(buildRegistryWorktreesNetworkPolicyManifest(projectSlug))
-    await kubectlApply(buildRegistryIngressNetworkPolicyManifest(projectSlug, await nodeIpBlocks()))
-    await kubectlApply(buildRegistryEgressNetworkPolicyManifest(projectSlug))
+    await kubectlApply(buildProjectRegistryPvcManifest(project))
+    await kubectlApply(buildProjectRegistryDeploymentManifest(project, imageRef))
+    await kubectlApply(buildProjectRegistryServiceManifest(project))
+    await kubectlApply(buildRegistryWorktreesNetworkPolicyManifest(project))
+    await kubectlApply(buildRegistryIngressNetworkPolicyManifest(project, await nodeIpBlocks()))
+    await kubectlApply(buildRegistryEgressNetworkPolicyManifest(project))
     try {
       await kubectlWithRetry([
         'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
@@ -862,12 +869,12 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
       // be named alongside the pods for the diagnosis to be one command.
       throw new Error(
         `${err instanceof Error ? err.message : String(err)}\n`
-        + `Inspect with \`kubectl -n ${ns} get pods,pvc -l ${registrySelector(projectSlug)}\` — `
+        + `Inspect with \`kubectl -n ${ns} get pods,pvc -l ${registrySelector(project.id)}\` — `
         + 'a Pending PVC means the cluster has no default StorageClass to bind '
         + 'it, or the provisioner refused the request.',
       )
     }
-    await writeNodeRegistryHostsToml(projectSlug)
+    await writeNodeRegistryHostsToml(project)
   })
 }
 
@@ -879,9 +886,8 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
  * delete each other's registries; `pod` is in the kinds so stray
  * writer/cleanup pods from crashed runs are reaped.
  */
-export async function removeProjectRegistry(projectSlug: string): Promise<void> {
-  const selector = registrySelector(projectSlug)
-
+export async function removeProjectRegistry(projectId: string): Promise<void> {
+  const selector = registrySelector(projectId)
   // Node-side residue exists only if the registry itself ever did (the
   // hosts.toml dir is written by the hosts writer). Probe before deleting
   // and skip the cleanup pods for registry-less projects: their cleanup pod
@@ -892,7 +898,32 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
     'get', 'deployment,service', '-l', selector, '-n', k8sNamespace(),
   ])
   const hadRegistry = (existing?.items?.length ?? 0) > 0
+  await removeRegistry(
+    selector,
+    hadRegistry ? projectRegistryName(projectId) : null,
+    registryIdLabels(projectId),
+  )
+}
 
+/** The labels an id's registry objects are selected by (`registrySelector`). */
+function registryIdLabels(projectId: string): Record<string, string> {
+  return {
+    app: REGISTRY_APP_LABEL,
+    [LABEL_PROJECT_ID]: projectId,
+    [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
+  }
+}
+
+/**
+ * Delete every registry object `selector` matches, then — when `name` says
+ * a Deployment or Service existed — the hosts.toml dir its writer left on
+ * each node.
+ */
+async function removeRegistry(
+  selector: string,
+  name: string | null,
+  cleanupLabels: Record<string, string>,
+): Promise<void> {
   // The PVC goes with the rest. Deleting it while the Deployment's pod
   // still holds it is fine — pvc-protection keeps it Terminating until the
   // last mounter is gone, and that mounter is being deleted in this same
@@ -901,14 +932,14 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
     'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod', '-l', selector,
     '-n', k8sNamespace(), '--ignore-not-found',
   ])
-  if (!hadRegistry) return
+  if (!name) return
 
   const imageRef = registryRef(REGISTRY_MIRROR_TAG)
   const runId = crypto.randomBytes(4).toString('hex')
   for (const [i, node] of (await listNodeNames()).entries()) {
     // Best-effort: the cluster may be recreated or unreachable, in which
     // case the hosts.toml went with the node it was written on.
-    await runNodeWritePod(buildRegistryCleanupPodManifest(projectSlug, imageRef, node, i, runId))
+    await runNodeWritePod(buildRegistryCleanupPodManifest(name, cleanupLabels, imageRef, node, i, runId))
       .catch(() => { /* node-side residue is harmless */ })
   }
 }
@@ -927,7 +958,7 @@ export const REGISTRY_GC_INTERVAL_MS = 6 * 60 * 60_000
 /** Deadline for the collect run itself — it walks every blob in the store. */
 export const REGISTRY_GC_TIMEOUT_MS = 10 * 60_000
 
-/** Last collect per project — module state, so a server restart just
+/** Last collect per project id — module state, so a server restart just
  *  means a registry that is already older than the interval is eligible
  *  again on the next resync pass. */
 const lastRegistryGcMs = new Map<string, number>()
@@ -942,7 +973,7 @@ const lastRegistryGcMs = new Map<string, number>()
  * something is rebuilt through it, and a registry younger than the
  * interval cannot have accrued a window's worth however busy it has been.
  * Without that baseline the throttle measures this process's uptime
- * instead, and an unseen slug is eligible immediately — which puts a
+ * instead, and an unseen project is eligible immediately — which puts a
  * maintenance window (two `Recreate` rollouts, a few seconds of connection
  * refusals each) on the registry a worktree create JUST stood up, at the
  * one moment the new worktree is pushing and pulling through it hardest.
@@ -953,8 +984,8 @@ const lastRegistryGcMs = new Map<string, number>()
  * A Service with no parseable creationTimestamp (nothing a real API server
  * returns) falls back to "eligible", the pre-baseline behavior.
  */
-function gcBaselineMs(projectSlug: string, creationTimestamp?: string): number {
-  const collected = lastRegistryGcMs.get(projectSlug)
+function gcBaselineMs(projectId: string, creationTimestamp?: string): number {
+  const collected = lastRegistryGcMs.get(projectId)
   if (collected !== undefined) return collected
   const created = Date.parse(creationTimestamp ?? '')
   return Number.isNaN(created) ? 0 : created
@@ -999,28 +1030,36 @@ export function _registryGcSettledForTests(): Promise<void> {
  * rollouts plus a pod run — minutes — and reconcile steps run
  * sequentially, so awaiting it here would stall every later step and every
  * later tick behind it (the same reason the image-salvage step detaches).
+ *
+ * Only a live project's registry is collected. A dead one is the orphan
+ * sweep's to remove, and a collect racing that removal would re-apply the
+ * Deployment in its `finally`, standing it back up with no PVC behind it.
  */
-export async function reconcileProjectRegistryGc(now = Date.now()): Promise<void> {
+export async function reconcileProjectRegistryGc(
+  liveProjectIds: ReadonlySet<string>,
+  now = Date.now(),
+): Promise<void> {
   if (inFlightCollect) return
   let services: RawServiceList | null
   try {
     services = await kubectlGetJson<RawServiceList>([
-      'get', 'services', '-n', k8sNamespace(),
-      '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
+      'get', 'services', '-n', k8sNamespace(), '-l', installRegistrySelector(),
     ])
   } catch (err) {
     console.warn(`Registry GC: failed to list registries: ${(err as Error).message}`)
     return
   }
   for (const item of services?.items ?? []) {
-    const slug = item.metadata.labels?.[LABEL_PROJECT]
-    if (!slug) continue
-    if (now - gcBaselineMs(slug, item.metadata.creationTimestamp)
+    const labels = item.metadata.labels ?? {}
+    const id = labels[LABEL_PROJECT_ID]
+    if (!id || !liveProjectIds.has(id)) continue
+    if (now - gcBaselineMs(id, item.metadata.creationTimestamp)
       < REGISTRY_GC_INTERVAL_MS) continue
-    lastRegistryGcMs.set(slug, now)
-    inFlightCollect = collectProjectRegistry(slug)
+    lastRegistryGcMs.set(id, now)
+    const project = { slug: labels[LABEL_PROJECT] ?? id, id }
+    inFlightCollect = collectProjectRegistry(project)
       .catch((err: unknown) => {
-        console.warn(`Registry GC for ${slug} failed: ${String(err)}`)
+        console.warn(`Registry GC for ${project.slug} failed: ${String(err)}`)
       })
       .finally(() => { inFlightCollect = null })
     return
@@ -1034,14 +1073,14 @@ export async function reconcileProjectRegistryGc(now = Date.now()): Promise<void
  * rollouts plus REGISTRY_GC_TIMEOUT_MS. At the 6h cadence that is rare,
  * but it is where the latency comes from.
  */
-async function collectProjectRegistry(projectSlug: string): Promise<void> {
-  await registryEnsureMutex(projectSlug, async () => {
-    const name = projectRegistryName(projectSlug)
+async function collectProjectRegistry(project: ProjectRef): Promise<void> {
+  await registryEnsureMutex(project.id, async () => {
+    const name = projectRegistryName(project.id)
     const ns = k8sNamespace()
     const imageRef = registryRef(REGISTRY_MIRROR_TAG)
     const roll = async (readOnly: boolean): Promise<void> => {
       await kubectlApply(
-        buildProjectRegistryDeploymentManifest(projectSlug, imageRef, { readOnly }))
+        buildProjectRegistryDeploymentManifest(project, imageRef, { readOnly }))
       await kubectlWithRetry([
         'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
       ], { timeout: 130_000, maxAttempts: 2 })
@@ -1055,51 +1094,113 @@ async function collectProjectRegistry(projectSlug: string): Promise<void> {
       // guarantees the claim exists by here.
       const runId = crypto.randomBytes(4).toString('hex')
       const { phase, logs } = await runPodToCompletion(
-        buildRegistryGcPodManifest(projectSlug, imageRef, runId),
+        buildRegistryGcPodManifest(project, imageRef, runId),
         { timeoutMs: REGISTRY_GC_TIMEOUT_MS, pollMs: 1000 },
       )
       if (phase !== 'Succeeded') {
         throw new Error(`collect pod did not complete (phase ${phase})`
           + (logs.trim() ? `; logs: ${logs.trim()}` : ''))
       }
-      serverLog(`[server] registry gc: project=${projectSlug} ${logs.trim().split('\n').pop() ?? ''}`)
+      serverLog(`[server] registry gc: project=${project.slug} ${logs.trim().split('\n').pop() ?? ''}`)
     } finally {
       // Unconditional: a failed collect must never strand the registry in
       // maintenance mode, where every salvage push would answer 405.
       await roll(false).catch((err: unknown) => {
-        console.warn(`Registry GC: failed to restore ${projectSlug} to serving: ${String(err)}`)
+        console.warn(`Registry GC: failed to restore ${project.slug} to serving: ${String(err)}`)
       })
     }
   })
 }
 
 /**
- * Server-startup sweep: remove registries whose project no longer exists
- * locally. Catches `yaac project remove` runs that raced a dead cluster,
- * plus hand-deleted project dirs. Scoped to this install via the
- * registry GC label.
+ * How old a registry object must be before the orphan sweep may take it. A
+ * pass reads the live project set once, at its start, so a project added
+ * after that read whose first nested worktree stands its registry up
+ * within the same pass would otherwise look like an orphan.
  */
-export async function gcOrphanProjectRegistries(): Promise<void> {
-  let services: RawServiceList | null
+export const ORPHAN_REGISTRY_MIN_AGE_MS = 10 * 60_000
+
+/** How often the orphan sweep runs per server life. */
+export const ORPHAN_REGISTRY_GC_INTERVAL_MS = 60 * 60_000
+
+let lastOrphanGcMs: number | undefined
+
+/** Test hook: forget the orphan sweep's throttle. */
+export function _resetOrphanRegistryGcForTests(): void {
+  lastOrphanGcMs = undefined
+}
+
+interface RawRegistryObjectList {
+  items: Array<{
+    kind: string
+    metadata: { name: string; labels?: Record<string, string>; creationTimestamp?: string }
+  }>
+}
+
+/**
+ * Remove this install's registries that belong to no live project: those
+ * whose `yaac.project-id` is not in `liveProjectIds`, and those with no id
+ * at all, which predate project ids and so belong to nothing. Keyed on the
+ * id rather than on anything a removal leaves behind, so it collects every
+ * removal that failed (a cluster unreachable at `project remove`) as well
+ * as the slug-named registries an upgrade leaves — permanent, not a shim.
+ *
+ * Listed across the object kinds a registry is made of, so one whose ensure
+ * died before its Service was applied still goes. An object with no id is
+ * grouped with its siblings by slug, excluding every id-labelled object:
+ * a live project of the same slug holds a registry of its own.
+ */
+export async function gcOrphanProjectRegistries(
+  liveProjectIds: ReadonlySet<string>,
+  now = Date.now(),
+): Promise<void> {
+  if (lastOrphanGcMs !== undefined && now - lastOrphanGcMs < ORPHAN_REGISTRY_GC_INTERVAL_MS) return
+  lastOrphanGcMs = now
+  let list: RawRegistryObjectList | null
   try {
-    services = await kubectlGetJson<RawServiceList>([
-      'get', 'services', '-n', k8sNamespace(),
-      '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
+    list = await kubectlGetJson<RawRegistryObjectList>([
+      'get', 'deployment,service,persistentvolumeclaim', '-n', k8sNamespace(),
+      '-l', installRegistrySelector(),
     ])
   } catch (err) {
     console.warn(`Orphan registry GC: failed to list registries: ${(err as Error).message}`)
     return
   }
-  for (const item of services?.items ?? []) {
-    const slug = item.metadata.labels?.[LABEL_PROJECT]
-    if (!slug) continue
-    const exists = await fs.access(projectDir(slug)).then(() => true).catch(() => false)
-    if (exists) continue
+  // selector → the Deployment/Service name, when one exists (it names the
+  // node-side hosts.toml dir the cleanup pods remove), and the labels those
+  // pods carry.
+  const orphans = new Map<string, { name: string | null; labels: Record<string, string> }>()
+  for (const { kind, metadata } of list?.items ?? []) {
+    const labels = metadata.labels ?? {}
+    const id = labels[LABEL_PROJECT_ID]
+    if (id !== undefined && liveProjectIds.has(id)) continue
+    // Fails closed: an object whose age cannot be read is never old enough.
+    const created = Date.parse(metadata.creationTimestamp ?? '')
+    if (Number.isNaN(created) || now - created < ORPHAN_REGISTRY_MIN_AGE_MS) continue
+    const slug = labels[LABEL_PROJECT]
+    const target = id !== undefined
+      ? { selector: registrySelector(id), labels: registryIdLabels(id) }
+      // A registry named before project ids: legacy-compat
+      // (docs/legacy-compat-shims.md, "Registries named before project ids").
+      : slug !== undefined
+        ? {
+          selector: `${installRegistrySelector()},${LABEL_PROJECT}=${slug},!${LABEL_PROJECT_ID}`,
+          labels: { app: REGISTRY_APP_LABEL, [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash() },
+        }
+        : null
+    if (!target) continue
+    const name = kind === 'PersistentVolumeClaim' ? null : metadata.name
+    orphans.set(target.selector, {
+      name: orphans.get(target.selector)?.name ?? name,
+      labels: target.labels,
+    })
+  }
+  for (const [selector, { name, labels }] of orphans) {
     try {
-      await removeProjectRegistry(slug)
-      console.log(`Removed orphan project registry for ${slug}`)
+      await removeRegistry(selector, name, labels)
+      console.log(`Removed orphan project registry (${selector})`)
     } catch (err) {
-      console.warn(`Orphan registry GC: failed to remove ${slug}: ${(err as Error).message}`)
+      console.warn(`Orphan registry GC: failed to remove ${selector}: ${(err as Error).message}`)
     }
   }
 }

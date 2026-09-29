@@ -3,6 +3,7 @@ import { projectRegistryHost } from '#drivers/k8s/cluster'
 import { shellQuote } from '#lib/shell'
 import { ensureNodeImageStore } from './store-writer'
 import { serverLog } from '#log'
+import type { ProjectRef } from '#drivers/contract'
 
 /**
  * The PUSH half of the cross-worktree image cache for nested worktrees: a
@@ -689,7 +690,7 @@ export interface SalvageOptions {
  */
 export async function salvageWorktreeImages(params: {
   jobName: string
-  projectSlug: string
+  project: ProjectRef
   worktreeId: string
   opts?: SalvageOptions
 }): Promise<boolean> {
@@ -705,12 +706,12 @@ export async function salvageWorktreeImages(params: {
 
 async function salvageWorktreeImagesUncoalesced(params: {
   jobName: string
-  projectSlug: string
+  project: ProjectRef
   worktreeId: string
   opts?: SalvageOptions
 }): Promise<boolean> {
-  const { jobName, projectSlug, worktreeId, opts } = params
-  const registryHost = projectRegistryHost(projectSlug)
+  const { jobName, project, worktreeId, opts } = params
+  const registryHost = projectRegistryHost(project.id)
 
   let report: SurveyReport
   try {
@@ -789,6 +790,6 @@ async function salvageWorktreeImagesUncoalesced(params: {
   // The relative import back into the folder's other half is call-time
   // only (store-writer reads this module's ranking fragment to decide what
   // to pull), which is what keeps the two-way edge harmless.
-  if (pushed > 0) void ensureNodeImageStore(projectSlug, { force: true })
+  if (pushed > 0) void ensureNodeImageStore(project, { force: true })
   return true
 }

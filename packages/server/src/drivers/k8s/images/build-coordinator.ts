@@ -12,13 +12,14 @@
  * server-side, so module-level maps are sufficient mutual exclusion (same
  * argument as the prewarm pool's in-flight counters). Winners own the
  * build-registry entry lifecycle (register → ingest log → finish/fail);
- * joiners only attach their project slug and await the shared promise.
+ * joiners only attach their project and await the shared promise.
  */
 import { engineForLayer } from './build-engine'
 import { BuilderPodLease } from './builder-pod'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
+import type { ProjectRef } from '#drivers/contract'
 import {
   attachImageBuildProject,
   failImageBuild,
@@ -31,7 +32,7 @@ import {
 } from '#drivers/k8s/image-engine'
 
 interface BuildContext {
-  projectSlug: string
+  project: ProjectRef
   reason: ImageBuildReason
   /**
    * Builder-pod lease for trust-split untrusted layers, owned by the
@@ -80,13 +81,13 @@ export function forgetVerifiedTags(): void {
 /**
  * Build one layer, coalescing with any in-flight build of the same tag.
  * The winner creates the build-registry entry and owns its lifecycle;
- * joiners attach their project slug and share the outcome (including a
+ * joiners attach their project and share the outcome (including a
  * failure, which rejects every waiter).
  */
 export function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<void> {
   const existing = inflightBuilds.get(layer.tag)
   if (existing) {
-    attachImageBuildProject(existing.id, ctx.projectSlug)
+    attachImageBuildProject(existing.id, ctx.project)
     return existing.promise
   }
 
@@ -94,7 +95,7 @@ export function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<
     tag: layer.tag,
     layer: layer.name,
     action: 'build',
-    projectSlug: ctx.projectSlug,
+    project: ctx.project,
     reason: ctx.reason,
   })
   const promise = runBuild(id, layer, ctx)
@@ -112,7 +113,7 @@ async function runBuild(
   try {
     serverLog(`[build] starting ${layer.tag}`)
     await engineForLayer(layer.name).build(layer, {
-      projectSlug: ctx.projectSlug,
+      project: ctx.project,
       lease: ctx.lease,
       onLog: (line) => ingestImageBuildLine(id, line),
     })
@@ -135,7 +136,7 @@ async function runBuild(
  */
 export async function pushImageShared(
   tag: string,
-  ctx: { projectSlug: string; reason: ImageBuildReason },
+  ctx: { project: ProjectRef; reason: ImageBuildReason },
   opts: { compressionFormat?: 'zstd' | 'gzip' } = {},
 ): Promise<string> {
   const existing = inflightPushes.get(tag)
@@ -155,7 +156,7 @@ export async function pushImageShared(
     tag,
     layer: 'push',
     action: 'push',
-    projectSlug: ctx.projectSlug,
+    project: ctx.project,
     reason: ctx.reason,
   })
   const promise = pushImageToRegistry(tag, {
@@ -192,11 +193,11 @@ export interface EnsureImageOpts {
  *   Included whenever the canonical base is in use.
  * Layer 1b (optional): yaac-nestable (Dockerfile.nestable — in-pod rootless
  *   podman + docker CLI/compose), only when `nestedContainers` is set.
- * Layer 2: yaac-base from Dockerfile.yaac — when present:
+ * Layer 2: yaac-proj-<id> from Dockerfile.yaac — when present:
  *   - layered on Dockerfile.tools / Dockerfile.nestable (when Dockerfile.yaac
  *     uses `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}`)
  *   - or standalone (replaces the canonical base + tools + nestable)
- * Layer 3 (optional): yaac-user-<slug> (~/.yaac/Dockerfile.user, builds on top)
+ * Layer 3 (optional): yaac-user-<id> (~/.yaac/Dockerfile.user, builds on top)
  *
  * Missing layers build through the single-flight coordinator, so concurrent
  * callers (simultaneous creates, the background prewarm sweep) never run
@@ -213,14 +214,14 @@ export interface EnsureImageOpts {
  *   `nestedContainers` config, passed by createWorktree).
  */
 export async function ensureImage(
-  projectSlug: string,
+  project: ProjectRef,
   imagePrefix?: string,
   requirePrebuilt = false,
   nestedContainers = false,
   opts: EnsureImageOpts = {},
 ): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(project, prefix, nestedContainers)
   const reason = opts.reason ?? 'session'
 
   // One builder pod per request, shared by adjacent untrusted layers.
@@ -249,7 +250,7 @@ export async function ensureImage(
       }
 
       opts.onLayerStart?.(i + 1, layers.length, layer.name)
-      await buildLayerShared(layer, { projectSlug, reason, lease })
+      await buildLayerShared(layer, { project, reason, lease })
     }
   } finally {
     await lease.release()

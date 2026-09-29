@@ -53,6 +53,9 @@ const mockGetJson = vi.mocked(kubectlGetJson)
 const mockKubectl = vi.mocked(kubectlWithRetry)
 
 const DAY_MS = 24 * 60 * 60_000
+const DEMO = { slug: 'demo', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
+const USER = `yaac-user-${DEMO.id}`
+const CACHE = `yaac-buildcache-${DEMO.id}`
 const hex = (c: string): string => c.repeat(16)
 const ref = (tag: string): string => `${registryHost()}/${tag}`
 
@@ -69,7 +72,8 @@ async function pushTag(repoTag: string, ageDays: number): Promise<void> {
   const link = path.join(tagDir, 'current/link')
   await fs.writeFile(link, 'sha256:0')
   const when = new Date(Date.now() - ageDays * DAY_MS)
-  for (const p of [link, path.join(tagDir, 'current'), tagDir]) await fs.utimes(p, when, when)
+  const repoDir = path.join(reposDir(), repo)
+  for (const p of [link, path.join(tagDir, 'current'), tagDir, repoDir]) await fs.utimes(p, when, when)
 }
 
 /** Every `repo:tag` the registry still holds. */
@@ -166,7 +170,7 @@ function stage(f: Fixture = {}): void {
 
 /** Drive one reconcile and wait out the detached pass it starts. */
 async function runPass(nowMs?: number): Promise<void> {
-  await reconcileMainRegistryGc(['demo'], () => Promise.resolve({}), nowMs)
+  await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}), nowMs)
   await _mainRegistryGcSettledForTests()
 }
 
@@ -198,13 +202,13 @@ afterEach(async () => {
 
 describe('reconcileMainRegistryGc', () => {
   it('retires what nothing live names, keeps every live and recent tag, then collects', async () => {
-    const { layers } = await resolveImageChain('demo', 'yaac')
+    const { layers } = await resolveImageChain(DEMO, 'yaac')
     const [wantedBase, wantedTools] = layers.map((l) => l.tag)
     for (const [tag, age] of [
       // A project image: one generation a running pod names, two newest kept.
-      [`yaac-user-demo:${hex('1')}`, 40], [`yaac-user-demo:${hex('2')}`, 30],
-      [`yaac-user-demo:${hex('3')}`, 20], [`yaac-user-demo:${hex('4')}`, 10],
-      [`yaac-user-demo:${hex('5')}`, 1],
+      [`${USER}:${hex('1')}`, 40], [`${USER}:${hex('2')}`, 30],
+      [`${USER}:${hex('3')}`, 20], [`${USER}:${hex('4')}`, 10],
+      [`${USER}:${hex('5')}`, 1],
       // The project's current chain, older than two newer builds elsewhere.
       [wantedBase, 50], [`yaac-base:${hex('b')}`, 60],
       [`yaac-base:${hex('c')}`, 5], [`yaac-base:${hex('d')}`, 4], [wantedTools, 50],
@@ -221,9 +225,9 @@ describe('reconcileMainRegistryGc', () => {
       ['podman-stable:v5.5', 300],
       [`myapp:${hex('7')}`, 300],
       // Step cache: retired once no build has written it for the cache TTL.
-      [`yaac-buildcache-demo:${'a'.repeat(64)}`, 30], [`yaac-buildcache-demo:${'b'.repeat(64)}`, 1],
+      [`${CACHE}:${'a'.repeat(64)}`, 30], [`${CACHE}:${'b'.repeat(64)}`, 1],
     ] as const) await pushTag(tag, age)
-    stage({ pods: [ref(`yaac-user-demo:${hex('2')}`)], scaledToZero: [ref(`yaac-server:${hex('e')}`)] })
+    stage({ pods: [ref(`${USER}:${hex('2')}`)], scaledToZero: [ref(`yaac-server:${hex('e')}`)] })
 
     await runPass()
 
@@ -232,11 +236,11 @@ describe('reconcileMainRegistryGc', () => {
       `myapp:${hex('7')}`,
       'podman-stable:v5.5',
       `yaac-base:${hex('c')}`, `yaac-base:${hex('d')}`,
-      `yaac-buildcache-demo:${'b'.repeat(64)}`,
+      `${CACHE}:${'b'.repeat(64)}`,
       'yaac-registry2:0123456789ab',
       `yaac-server:${hex('0')}`, `yaac-server:${hex('e')}`, `yaac-server:${hex('f')}`,
       `yaac-test-base:${hex('8')}`, `yaac-test-base:${hex('9')}`, `yaac-test-base:${hex('a')}`,
-      `yaac-user-demo:${hex('2')}`, `yaac-user-demo:${hex('4')}`, `yaac-user-demo:${hex('5')}`,
+      `${USER}:${hex('2')}`, `${USER}:${hex('4')}`, `${USER}:${hex('5')}`,
       wantedBase, wantedTools,
     ].sort())
     // Untagging alone frees no disk: the registry only drops blobs when the
@@ -250,10 +254,49 @@ describe('reconcileMainRegistryGc', () => {
     expect(logged('retired 4 stale tag(s) and collected their blobs')).toBe(true)
   })
 
+  it('untags whole project repos no live project holds, unless a workload still names one', async () => {
+    const gone = '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e'
+    const stillRunning = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
+    const justAdded = 'd2e3f4a5-b6c7-4d8e-9f0a-b1c2d3e4f5a6'
+    for (const tag of [
+      // The live project's own repos.
+      `yaac-proj-${DEMO.id}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
+      // A removed project's repos, whatever removal did or did not manage.
+      `yaac-proj-${gone}:${hex('1')}`, `yaac-user-${gone}:${hex('1')}`,
+      `yaac-buildcache-${gone}:${'a'.repeat(64)}`,
+      // Named before projects had ids: no live id is `demo`.
+      `yaac-user-demo:${hex('1')}`, `yaac-buildcache-demo:${'a'.repeat(64)}`,
+      // Removed, but a pod has not stopped pulling its image yet.
+      `yaac-proj-${stillRunning}:${hex('1')}`,
+      // The e2e suite's, and yaac's own chain: never this sweep's.
+      `yaac-test-user-${gone}:${hex('1')}`, `yaac-test-proj-${gone}:${hex('1')}`,
+      `yaac-tools:${hex('1')}`,
+      // A project added after the pass read the live set, pushing now.
+      `yaac-proj-${justAdded}:${hex('1')}`,
+    ]) await pushTag(tag, 1)
+    const now = new Date()
+    await fs.utimes(path.join(reposDir(), `yaac-proj-${justAdded}`), now, now)
+    stage({ pods: [ref(`yaac-proj-${stillRunning}:${hex('1')}`)] })
+
+    await runPass()
+
+    expect(await survivors()).toEqual([
+      `yaac-proj-${DEMO.id}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
+      `yaac-proj-${stillRunning}:${hex('1')}`,
+      `yaac-test-user-${gone}:${hex('1')}`, `yaac-test-proj-${gone}:${hex('1')}`,
+      `yaac-tools:${hex('1')}`,
+      `yaac-proj-${justAdded}:${hex('1')}`,
+    ].sort())
+    // Untagged whole repos free nothing until the collect reclaims their
+    // blobs, so the pass goes on to collect exactly as for retired tags.
+    expect(collected()).toBe(true)
+    expect(logged('retired 5 stale tag(s) and collected their blobs')).toBe(true)
+  })
+
   it('retires no generation while any project\'s chain cannot be resolved', async () => {
     for (const [tag, age] of [
       [`yaac-tools:${hex('a')}`, 30], [`yaac-tools:${hex('9')}`, 20], [`yaac-tools:${hex('8')}`, 10],
-      [`yaac-buildcache-demo:${'a'.repeat(64)}`, 30],
+      [`${CACHE}:${'a'.repeat(64)}`, 30],
     ] as const) await pushTag(tag, age)
     // A Dockerfile.user mid-edit, not yet layered: every project's chain
     // fails to resolve at once, and with it every project's protection.
@@ -272,27 +315,27 @@ describe('reconcileMainRegistryGc', () => {
 
   it('drops each node\'s copy of what the registry retired, and nothing it still serves or a pod names', async () => {
     for (const [tag, age] of [
-      [`yaac-user-demo:${hex('1')}`, 40], [`yaac-user-demo:${hex('2')}`, 30], [`yaac-user-demo:${hex('3')}`, 20],
-      [`yaac-user-demo:${hex('4')}`, 10], [`yaac-user-demo:${hex('5')}`, 1],
+      [`${USER}:${hex('1')}`, 40], [`${USER}:${hex('2')}`, 30], [`${USER}:${hex('3')}`, 20],
+      [`${USER}:${hex('4')}`, 10], [`${USER}:${hex('5')}`, 1],
     ] as const) await pushTag(tag, age)
     const gone = `yaac-old:${hex('6')}`
     stage({
-      pods: [ref(`yaac-user-demo:${hex('1')}`), ref(`yaac-server:${hex('c')}`)],
+      pods: [ref(`${USER}:${hex('1')}`), ref(`yaac-server:${hex('c')}`)],
       nodes: [
         { name: 'n1', images: [
           // Retired this pass, plus its digest name — one image, one removal.
-          [ref(`yaac-user-demo:${hex('3')}`), `${registryHost()}/yaac-user-demo@sha256:${'3'.repeat(64)}`],
+          [ref(`${USER}:${hex('3')}`), `${registryHost()}/${USER}@sha256:${'3'.repeat(64)}`],
           [ref(gone)],
           // Retired from the registry but still running: kept.
-          [ref(`yaac-user-demo:${hex('1')}`)],
+          [ref(`${USER}:${hex('1')}`)],
           [ref(`yaac-server:${hex('c')}`)],
           // Still in the registry, so warm for the next create.
-          [ref(`yaac-user-demo:${hex('5')}`)],
+          [ref(`${USER}:${hex('5')}`)],
           // Not a yaac generation: a mirror, and the node's own images.
           [ref('podman-stable:v5.5')],
           ['docker.io/kindest/local-path-helper:v20241212'],
         ] },
-        { name: 'n2', images: [[ref(`yaac-user-demo:${hex('5')}`)]] },
+        { name: 'n2', images: [[ref(`${USER}:${hex('5')}`)]] },
       ],
     })
 
@@ -300,7 +343,7 @@ describe('reconcileMainRegistryGc', () => {
 
     const pods = prunePods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1'])
-    expect(prunedRefs(pods[0])).toEqual([ref(`yaac-user-demo:${hex('3')}`), ref(gone)])
+    expect(prunedRefs(pods[0])).toEqual([ref(`${USER}:${hex('3')}`), ref(gone)])
     // The node's own crictl, reached through PID 1's mount namespace, with
     // a timeout a multi-GB delete fits in (crictl's default is 2s).
     expect(pods[0].spec.containers[0].command[2]).toContain('nsenter -t 1 -m -- crictl -t 10m rmi')
@@ -437,10 +480,10 @@ describe('reconcileMainRegistryGc', () => {
     // Reconcile passes are serialized, so this must return while the
     // collect is still running — and a tick arriving meanwhile must not
     // start a second pass.
-    await reconcileMainRegistryGc(['demo'], () => Promise.resolve({}))
+    await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
     await reachedCollect
     const before = execs.length
-    await reconcileMainRegistryGc(['demo'], () => Promise.resolve({}), MAIN_REGISTRY_GC_INTERVAL_MS * 200)
+    await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}), MAIN_REGISTRY_GC_INTERVAL_MS * 200)
     expect(execs).toHaveLength(before)
 
     release()
