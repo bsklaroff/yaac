@@ -1,6 +1,7 @@
 // The public interface of the images feature: the half of image handling that
 // needs a cluster — sandboxed builder pods, the in-cluster registry promoter,
-// the prewarm sweep and the build-cache GC. The host-side half (podman build,
+// the prewarm sweep and the main registry's GC (which also collects the nodes'
+// image stores). The host-side half (podman build,
 // content-hash tags, the build-row registry, host GC) is #drivers/k8s/image-engine
 // and sits BELOW #drivers/k8s/cluster, which builds netd's image before there is
 // a cluster to build it in.
@@ -16,7 +17,6 @@
 // directly by their own tests, which may reach inside, and transitively
 // through the entry points below.
 
-export { reconcileBuildCacheGc } from './build-cache-gc'
 export { ensureImage } from './build-coordinator'
 export { reconcileBuilderPodGc } from './builder-pod'
 export { reconcileImagePrewarm, retryImageBuild } from './image-prewarm'
@@ -29,3 +29,4 @@ export {
   removeNodeLocalProject,
 } from './store-writer'
 export { reapNodeLocal } from './node-local-sweep'
+export { reconcileMainRegistryGc } from './main-registry-gc'

@@ -1,18 +1,31 @@
 /**
- * Registry GC for the trust-split step-cache repos (docs/trust-split-builds.md).
+ * GC of the main registry (`#drivers/k8s/cluster` main-registry.ts), the
+ * install's one image bus. Two kinds of tag accumulate in it forever
+ * unless something retires them, and each pass retires both:
  *
- * Every builder-pod build pushes one cache image per Dockerfile step into
- * `yaac-buildcache-<slug>`, tagged by cache key. An edited Dockerfile mints
- * fresh keys and leaves the old ones behind forever: nothing in the
- * registry expires, so the repo grows a tag (and its layer blobs) per step
- * per edit for the life of the install.
+ * - **Step-cache entries** (docs/trust-split-builds.md). Every builder-pod
+ *   build pushes one cache image per Dockerfile step into
+ *   `yaac-buildcache-<slug>`, tagged by cache key, and an edited Dockerfile
+ *   mints fresh keys. Retired once no build has written them for
+ *   BUILD_CACHE_TTL: `--cache-ttl` already makes those reads misses, so
+ *   retirement costs no cache hit. The age signal is the tag link's mtime
+ *   rather than the image's created timestamp, because a cache HIT
+ *   re-pushes the entry and refreshes the link: retention is last-used,
+ *   not first-built.
+ * - **Content-hash generations** of every yaac-built repo (`yaac-base`,
+ *   `yaac-tools`, `yaac-user-<slug>`, proxy, netd, the server; not the e2e
+ *   suite's `yaac-test-*`). Each source change pushes a new tag and leaves
+ *   the old one tagged. Retired by the per-project registries' retention
+ *   pass (`buildRegistryRetentionScript`), handed the live set
+ *   (`readLiveImages`) as tags it must never touch: every generation a pod
+ *   or workload template names in ANY namespace, and every layer of every
+ *   project's current chain. Past that, the newest
+ *   MAIN_REGISTRY_GENERATIONS_KEPT per repo stay as rollback. Mirrors carry
+ *   no content-hash tag and are never candidates.
  *
- * Policy: retire cache tags no build has written for BUILD_CACHE_TTL.
- * `--cache-ttl` already makes those reads misses, so retirement costs no
- * cache hit — it only stops paying for entries podman refuses to use. The
- * age signal is the tag link's mtime rather than the image's created
- * timestamp, because a cache HIT re-pushes the entry and refreshes the
- * link: retention is last-used, not first-built.
+ * The same pass then drops the nodes' unpacked copies of whatever the
+ * registry no longer holds (node-image-gc.ts), which is where most of the
+ * bytes are.
  *
  * Untagging is a `rm -rf` of the tag directory in the registry's own
  * storage, and blobs are reclaimed by the registry binary's
@@ -62,14 +75,40 @@
  *   would retry it: the tags this pass retired are already gone, so a
  *   later sweep finds nothing to retire and would never reach the restart.
  */
-import { mainRegistryExec, restartMainRegistry } from '#drivers/k8s/cluster'
+import {
+  buildRegistryRetentionScript,
+  mainRegistryExec,
+  restartMainRegistry,
+} from '#drivers/k8s/cluster'
+import { kubectlGetJson } from '#drivers/k8s/substrate'
+import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { testEnv } from '@yaac/shared/env'
+import type { YaacConfig } from '@yaac/shared/types'
 import { serverLog } from '#log'
 import { BUILD_CACHE_TTL } from './builder-pod'
-import { imageWorkInFlight } from './build-coordinator'
+import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
+import { pruneNodeImages, registryGeneration } from './node-image-gc'
 
 /** Min interval between sweeps — hygiene work, like the host image GC. */
-export const BUILD_CACHE_GC_INTERVAL_MS = 6 * 60 * 60 * 1000
+export const MAIN_REGISTRY_GC_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Content-hash generations kept per repo beyond the live set: current plus
+ * one rollback, the host engine's policy. Far below the project
+ * registries' 8 because the live set here is KNOWN rather than guessed —
+ * every generation a workload or a project's chain names is protected
+ * outright, so the count only decides how much history is kept warm.
+ */
+const MAIN_REGISTRY_GENERATIONS_KEPT = 2
+
+/**
+ * The e2e suite's repos, which this pass never retires. A run resolves
+ * them by tag from its global setup through its last file — long stretches
+ * in which no pod names them and no namespace marks the run — and a run on
+ * an older checkout uses generations the newest-two rule would not keep.
+ * They are the suite's to retire (docs/plans/storage-gc-gaps.md).
+ */
+const TEST_IMAGE_REPOS = 'yaac-test-*'
 
 /**
  * Retention in whole days, derived from the read-side `--cache-ttl` so the
@@ -182,8 +221,8 @@ export function buildCacheSweepScript(days = buildCacheRetainDays()): string {
   ].join('\n')
 }
 
-export interface BuildCacheGcResult {
-  /** Cache keys untagged this sweep. */
+interface MainRegistryGcResult {
+  /** Cache keys and `repo:tag` generations untagged this sweep. */
   retired: string[]
   /** True when live push activity made the sweep stand down. */
   busy: boolean
@@ -234,12 +273,92 @@ async function collectMarkerPresent(): Promise<boolean> {
   return stdout.includes('MARKED')
 }
 
+/** What the retention pass must not retire, gathered before it runs. */
+interface LiveImages {
+  /** `repo:tag` of every generation a pod or workload names, any namespace. */
+  inUse: Set<string>
+  /**
+   * `repo:tag` of every layer of every project's current chain, or null
+   * when some project's chain could not be resolved — which makes the whole
+   * generation half stand down (see `readLiveImages`).
+   */
+  wanted: Set<string> | null
+}
+
+interface RawWorkloadList {
+  items: Array<{ spec?: PodSpecImages & { template?: { spec?: PodSpecImages } } }>
+}
+interface PodSpecImages {
+  containers?: Array<{ image?: string }>
+  initContainers?: Array<{ image?: string }>
+}
+
 /**
- * One GC pass over the registry's step-cache repos: finish any restart a
- * previous pass owed, untag what aged out and, if the registry is quiet
- * enough to make it safe, collect the unreferenced blobs and restart.
+ * Every generation a pod or a workload template names, in any namespace.
+ * Templates as well as pods, because a Deployment scaled to zero
+ * (`yaac server stop`) names an image no pod does, and scaling it back up
+ * must still find it; ReplicaSets too, because `kubectl rollout undo`
+ * brings an older one's template back. Fails closed: an unreadable list
+ * throws, and the pass stops before retiring anything.
  */
-export async function gcRegistryBuildCache(): Promise<BuildCacheGcResult> {
+async function readInUse(): Promise<Set<string>> {
+  const workloads = await kubectlGetJson<RawWorkloadList>([
+    'get', 'pods,deployments,replicasets,daemonsets,jobs', '--all-namespaces',
+  ])
+  const inUse = new Set<string>()
+  for (const { spec } of workloads?.items ?? []) {
+    for (const s of [spec, spec?.template?.spec]) {
+      for (const { image } of [...s?.containers ?? [], ...s?.initContainers ?? []]) {
+        const generation = image ? registryGeneration(image) : null
+        if (generation) inUse.add(generation)
+      }
+    }
+  }
+  return inUse
+}
+
+/**
+ * Read the live set. The chains are the prewarm sweep's view of what each
+ * project wants warm: a project with no running worktree still has a
+ * current image, and retiring it would cost a rebuild on the next create —
+ * in a builder pod, for the untrusted layers.
+ *
+ * A chain that cannot be resolved fails CLOSED for the whole pass, not
+ * just that project: a project's `Dockerfile.yaac` layer lives in the
+ * shared `yaac-base` repo beside every other project's, so the newest-two
+ * rule is no cushion for any one of them, and the likeliest cause — a
+ * non-layered `Dockerfile.user` mid-edit — fails EVERY project's chain at
+ * once.
+ */
+async function readLiveImages(
+  projectSlugs: string[],
+  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+): Promise<LiveImages> {
+  const inUse = await readInUse()
+  let wanted: Set<string> | null = new Set<string>()
+  const prefix = testEnv.imagePrefix ?? 'yaac'
+  for (const slug of projectSlugs) {
+    try {
+      const nested = (await projectConfig(slug))?.nestedContainers === true
+      const { layers, finalTag } = await resolveImageChain(slug, prefix, nested)
+      for (const tag of [...layers.map((l) => l.tag), finalTag]) wanted.add(tag)
+    } catch (err) {
+      serverLog(`[main-registry-gc] ${slug}: cannot resolve its image chain, `
+        + `so no image generation is retired this pass: ${String(err)}`)
+      wanted = null
+      break
+    }
+  }
+  return { inUse, wanted }
+}
+
+/**
+ * One GC pass over the registry: finish any restart a previous pass owed,
+ * untag aged-out step-cache entries and superseded generations and, if the
+ * registry is quiet enough to make it safe, collect the unreferenced blobs
+ * and restart.
+ */
+async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
   // Ahead of the busy probe on purpose, so this can bounce the registry
   // under a live push: serving stale descriptors is the worse state, and
   // an interrupted push is harmless — it never lands its manifest, so
@@ -247,7 +366,7 @@ export async function gcRegistryBuildCache(): Promise<BuildCacheGcResult> {
   // for whatever was in flight, on a pass that only happens after a
   // restart was already lost.
   if (await collectMarkerPresent()) {
-    serverLog('[build-cache-gc] a previous collect went unfinished, restarting the registry')
+    serverLog('[main-registry-gc] a previous collect went unfinished, restarting the registry')
     await restartRegistry()
   }
 
@@ -255,15 +374,28 @@ export async function gcRegistryBuildCache(): Promise<BuildCacheGcResult> {
     return { retired: [], busy: true, collected: false, restored: true }
   }
 
-  const stdout = await mainRegistryExec(
-    ['sh', '-c', buildCacheSweepScript()],
-    SWEEP_TIMEOUT_MS,
-  )
+  let stdout = await mainRegistryExec(['sh', '-c', buildCacheSweepScript()], SWEEP_TIMEOUT_MS)
+  if (live.wanted) {
+    stdout += `\n${await mainRegistryExec(['sh', '-c', buildRegistryRetentionScript({
+      keep: MAIN_REGISTRY_GENERATIONS_KEPT,
+      protect: [...live.inUse, ...live.wanted],
+      skip: [TEST_IMAGE_REPOS],
+    })], SWEEP_TIMEOUT_MS)}`
+  }
   const retired = stdout.split('\n')
     .map((l) => l.trim())
     .filter((l) => l.startsWith('RETIRED '))
     .map((l) => l.slice('RETIRED '.length))
   if (retired.length === 0) return { retired, busy: false, collected: false, restored: true }
+  // This server remembers which tags it has seen in the registry; a retired
+  // one must be looked up again, or a create that resolves back to it
+  // (a reverted Dockerfile edit) would hand a pod a ref that 404s. That
+  // covers creates that START after the retirement. One that resolved
+  // such a tag between the live-set read and the retention — a revert to
+  // a generation at least three back, landing within those seconds — can
+  // still have it retired under it; its pod fails to pull, and the next
+  // create rebuilds the image.
+  forgetVerifiedTags()
 
   // Re-read the push signals: the untag above took time, and the first
   // read is only as good as the instant it happened. Standing down here
@@ -288,7 +420,7 @@ export async function gcRegistryBuildCache(): Promise<BuildCacheGcResult> {
     // precisely the state the restart exists to clear.
     restored = await restartRegistry().then(() => true).catch((err: unknown) => {
       serverLog(
-        '[build-cache-gc] the registry could not be restarted after a collect '
+        '[main-registry-gc] the registry could not be restarted after a collect '
         + `and may resolve re-pushed digests to missing blobs until it is: ${String(err)}`,
       )
       return false
@@ -304,13 +436,13 @@ let lastSweepMs = 0
 let inFlightPass: Promise<void> | null = null
 
 /** Test hook: reset the sweep throttle and forget any in-flight pass. */
-export function _resetBuildCacheGcForTests(): void {
+export function _resetMainRegistryGcForTests(): void {
   lastSweepMs = 0
   inFlightPass = null
 }
 
 /** Test hook: await the detached pass this reconcile started. */
-export function _buildCacheGcSettledForTests(): Promise<void> {
+export function _mainRegistryGcSettledForTests(): Promise<void> {
   return inFlightPass ?? Promise.resolve()
 }
 
@@ -324,31 +456,44 @@ export function _buildCacheGcSettledForTests(): Promise<void> {
 function sweepDue(nowMs: number): boolean {
   if (testEnv.k8sNamespace !== 'yaac') return false
   if (inFlightPass) return false
-  return nowMs - lastSweepMs >= BUILD_CACHE_GC_INTERVAL_MS
+  return nowMs - lastSweepMs >= MAIN_REGISTRY_GC_INTERVAL_MS
 }
 
 /**
- * Reconcile step. DETACHED, for the same reason `reconcileProjectRegistryGc`
- * detaches: a pass that collects is minutes of exec plus a restart, and
- * reconcile passes are serialized, so awaiting it here would stall every
- * later step and every later tick behind it.
+ * Reconcile step: the registry pass, then the nodes' copies of what it
+ * retired (node-image-gc.ts) — this pass's retirements and any an earlier
+ * one left on a node. The node half runs even when the registry stood
+ * down, since it only follows what the registry already dropped.
+ *
+ * DETACHED, for the same reason `reconcileProjectRegistryGc` detaches: a
+ * pass that collects is minutes of exec plus a restart, and reconcile
+ * passes are serialized, so awaiting it here would stall every later step
+ * and every later tick behind it.
  */
-export function reconcileBuildCacheGc(nowMs: number = Date.now()): Promise<void> {
+export function reconcileMainRegistryGc(
+  projectSlugs: string[],
+  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+  nowMs: number = Date.now(),
+): Promise<void> {
   if (!sweepDue(nowMs)) return Promise.resolve()
   lastSweepMs = nowMs
-  inFlightPass = gcRegistryBuildCache()
-    .then(({ retired, busy, collected, restored }) => {
-      if (busy) {
-        serverLog('[build-cache-gc] registry has pushes in flight, leaving the collect for later')
-      } else if (collected && restored) {
-        serverLog(`[build-cache-gc] retired ${retired.length} stale step-cache tag(s) and collected their blobs`)
-      }
-    })
+  inFlightPass = (async () => {
+    const live = await readLiveImages(projectSlugs, projectConfig)
+    const { retired, busy, collected, restored } = await gcMainRegistry(live)
+    if (busy) {
+      serverLog('[main-registry-gc] registry has pushes in flight, leaving the collect for later')
+    } else if (collected && restored) {
+      serverLog(`[main-registry-gc] retired ${retired.length} stale tag(s) and collected their blobs`)
+    }
+    // Re-read: the snapshot above predates the retention, a collect of up
+    // to ten minutes, and the restart.
+    await pruneNodeImages(await readInUse())
+  })()
     .catch((err: unknown) => {
       // Not always a bug: an install whose cluster is down, or whose
       // registry Deployment has not been stood up yet, has nothing to exec
       // into. Log and let the next sweep try again.
-      serverLog(`[build-cache-gc] sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+      serverLog(`[main-registry-gc] sweep failed: ${err instanceof Error ? err.message : String(err)}`)
     })
     .finally(() => { inFlightPass = null })
   return Promise.resolve()

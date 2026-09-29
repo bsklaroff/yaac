@@ -359,7 +359,7 @@ it is a migration with no payoff.
      removes any `projects/<x>` or `shared-images/<x>` whose `x` is not in
      it, except a path any live pod mounts. That set is already read from
      pod specs.
-   - The main-registry build-cache GC (`images/build-cache-gc.ts`), which
+   - The main-registry GC (`images/main-registry-gc.ts`), which
      already works on the registry's storage from a pod, also deletes
      `yaac-{user,proj,buildcache}-<x>` repo dirs whose `x` is not a live
      id, before its `garbage-collect`.

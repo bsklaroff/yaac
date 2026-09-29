@@ -52,6 +52,7 @@ export {
   PROJECT_REGISTRY_PORT,
   REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
+  buildRegistryRetentionScript,
   ensureProjectRegistry,
   gcOrphanProjectRegistries,
   projectRegistryClusterIp,

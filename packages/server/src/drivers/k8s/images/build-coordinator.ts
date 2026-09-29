@@ -59,12 +59,22 @@ const pushedTags = new Set<string>()
 
 /**
  * True while this server is building or pushing an image. Every build ends
- * in registry writes (its step cache, then its product), so the build-cache
+ * in registry writes (its step cache, then its product), so the main registry
  * collect stands down on it — the one pusher class the registry's own
  * filesystem signals see late.
  */
 export function imageWorkInFlight(): boolean {
   return inflightBuilds.size > 0 || inflightPushes.size > 0
+}
+
+/**
+ * Forget which tags were verified present. The main registry's GC calls
+ * this after it retires tags: a verified tag that has since been retired
+ * would otherwise be handed to a pod as a ref that 404s.
+ */
+export function forgetVerifiedTags(): void {
+  realizedTags.clear()
+  pushedTags.clear()
 }
 
 /**

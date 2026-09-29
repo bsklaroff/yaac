@@ -1,0 +1,467 @@
+/**
+ * The main registry's GC, through its one barrel entry. The registry pod is
+ * faked by a temp directory laid out the way registry:2 stores it: every
+ * `kubectl exec` into it runs for real against that tree (with the storage
+ * root rewritten), except the collect itself, which is only recorded. So
+ * the assertions land on which tags survive, not on what a script says.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+
+const run = promisify(execFile)
+
+vi.mock('#drivers/k8s/substrate/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
+  k8sNamespace: vi.fn(() => 'yaac'),
+  dataDirHash: vi.fn(() => 'ddh16'),
+  kubectlApply: vi.fn().mockResolvedValue(undefined),
+  kubectlGetJson: vi.fn(),
+  kubectlWithRetry: vi.fn(),
+  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+}))
+vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof registryModule>()),
+  registryTagState: vi.fn(),
+}))
+const mockServerLog = vi.hoisted(() => vi.fn())
+vi.mock('#log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
+
+import { reconcileMainRegistryGc } from '#drivers/k8s/images'
+// Setup values and state-reset/settle hooks, not units under test: the pass
+// is throttled and detached, and the live chain is spoken in the tags the
+// server itself resolves.
+import {
+  MAIN_REGISTRY_GC_INTERVAL_MS,
+  _mainRegistryGcSettledForTests,
+  _resetMainRegistryGcForTests,
+} from '#drivers/k8s/images/main-registry-gc'
+import { resolveImageChain } from '#drivers/k8s/image-engine'
+import { registryHost, registryTagState } from '#drivers/k8s/container/registry'
+import { REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster'
+import { USER_DOCKERFILE, userBuildDir } from '#lib/build-dirs'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
+import type * as registryModule from '#drivers/k8s/container/registry'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+
+const mockApply = vi.mocked(kubectlApply)
+const mockGetJson = vi.mocked(kubectlGetJson)
+const mockKubectl = vi.mocked(kubectlWithRetry)
+
+const DAY_MS = 24 * 60 * 60_000
+const hex = (c: string): string => c.repeat(16)
+const ref = (tag: string): string => `${registryHost()}/${tag}`
+
+let dataDir: string
+/** Stands in for the registry pod's `/var/lib/registry`. */
+let storage: string
+const reposDir = (): string => path.join(storage, 'docker/registry/v2/repositories')
+
+/** Put `repo:tag` in the registry, last written `ageDays` ago. */
+async function pushTag(repoTag: string, ageDays: number): Promise<void> {
+  const [repo, tag] = repoTag.split(':')
+  const tagDir = path.join(reposDir(), repo, '_manifests/tags', tag)
+  await fs.mkdir(path.join(tagDir, 'current'), { recursive: true })
+  const link = path.join(tagDir, 'current/link')
+  await fs.writeFile(link, 'sha256:0')
+  const when = new Date(Date.now() - ageDays * DAY_MS)
+  for (const p of [link, path.join(tagDir, 'current'), tagDir]) await fs.utimes(p, when, when)
+}
+
+/** Every `repo:tag` the registry still holds. */
+async function survivors(): Promise<string[]> {
+  const { stdout } = await run('find', [reposDir(), '-path', '*/_manifests/tags/*', '-prune', '-type', 'd'])
+  return stdout.split('\n').filter(Boolean).map((p) => {
+    const rel = path.relative(reposDir(), p)
+    const [repo, tag] = rel.split('/_manifests/tags/')
+    return `${repo}:${tag}`
+  }).sort()
+}
+
+/** A push landing in the registry right now. */
+async function startUpload(): Promise<void> {
+  const dir = path.join(reposDir(), 'yaac-tools/_uploads/u1')
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, 'data'), '')
+}
+
+interface Fixture {
+  /** Images named by pods and workload templates, as full refs. */
+  pods?: string[]
+  scaledToZero?: string[]
+  nodes?: Array<{ name: string; images: string[][] }>
+  /** Called with each in-registry argv before it runs. */
+  beforeExec?: (argv: string[]) => Promise<void> | void
+  collect?: () => Promise<void>
+  restart?: () => Promise<void>
+}
+
+/** Every argv the pass ran inside the registry pod. */
+let execs: string[][]
+const collected = (): boolean => execs.some((a) => a.includes('garbage-collect'))
+const restarted = (): boolean => mockKubectl.mock.calls.some(([a]) => a[0] === 'rollout' && a[1] === 'restart')
+const logged = (needle: string): boolean =>
+  mockServerLog.mock.calls.some((call) => String(call[0]).includes(needle))
+interface PodManifest {
+  metadata: { name: string }
+  spec: {
+    nodeName: string
+    hostPID: boolean
+    tolerations: unknown[]
+    containers: Array<{ image: string; command: string[]; securityContext: unknown }>
+  }
+}
+const prunePods = (): PodManifest[] => mockApply.mock.calls
+  .map((c) => c[0] as unknown as PodManifest)
+  .filter((m) => m.metadata.name.startsWith('yaac-node-image-gc-'))
+const prunedRefs = (pod: PodManifest): string[] => {
+  const command = pod.spec.containers[0].command
+  return command.slice(command.indexOf('--') + 1)
+}
+
+function stage(f: Fixture = {}): void {
+  const templ = (image: string): unknown => ({ metadata: {}, spec: { template: { spec: { containers: [{ image }] } } } })
+  mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+    if (args[1] === 'pods,deployments,replicasets,daemonsets,jobs') {
+      return Promise.resolve({ items: [
+        ...(f.pods ?? []).map((image) => ({ metadata: { namespace: 'other' }, spec: { containers: [{ image }] } })),
+        ...(f.scaledToZero ?? []).map(templ),
+      ] })
+    }
+    if (args[1] === 'nodes') {
+      return Promise.resolve({ items: (f.nodes ?? []).map(({ name, images }) => ({
+        metadata: { name },
+        status: { images: images.map((names) => ({ names })) },
+      })) })
+    }
+    if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
+    return Promise.resolve(null)
+  })
+  mockKubectl.mockImplementation(async (args: string[]) => {
+    if (args[0] === 'exec') {
+      const argv = args.slice(args.indexOf('--') + 1)
+      execs.push(argv)
+      await f.beforeExec?.(argv)
+      if (argv.includes('garbage-collect')) {
+        await f.collect?.()
+        return { stdout: '', stderr: '' }
+      }
+      const real = argv.map((a) => a.replaceAll('/var/lib/registry', storage))
+      const { stdout } = await run(real[0], real.slice(1))
+      return { stdout, stderr: '' }
+    }
+    if (args[0] === 'rollout' && args[1] === 'restart') await f.restart?.()
+    // The node's crictl, as the prune pod's log reports it.
+    if (args[0] === 'logs') {
+      const pod = prunePods().find((p) => p.metadata.name === args[1])
+      return { stdout: (pod ? prunedRefs(pod) : []).map((r) => `removed ${r}\n`).join(''), stderr: '' }
+    }
+    return { stdout: '', stderr: '' }
+  })
+}
+
+/** Drive one reconcile and wait out the detached pass it starts. */
+async function runPass(nowMs?: number): Promise<void> {
+  await reconcileMainRegistryGc(['demo'], () => Promise.resolve({}), nowMs)
+  await _mainRegistryGcSettledForTests()
+}
+
+beforeEach(async () => {
+  dataDir = await createTempDataDir()
+  storage = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-registry-'))
+  execs = []
+  mockApply.mockReset().mockResolvedValue(undefined)
+  mockGetJson.mockReset()
+  mockKubectl.mockReset()
+  mockServerLog.mockReset()
+  // The registry answers from the fake tree, so "retired" means gone from it.
+  vi.mocked(registryTagState).mockReset().mockImplementation(async (repoTag: string) => {
+    const [repo, tag] = repoTag.split(':')
+    return fs.access(path.join(reposDir(), repo, '_manifests/tags', tag))
+      .then(() => 'present' as const, () => 'absent' as const)
+  })
+  _resetMainRegistryGcForTests()
+  // The shared test setup isolates YAAC_K8S_NAMESPACE; the reconcile is
+  // gated to the default install, so opt in unless a test says otherwise.
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac')
+})
+
+afterEach(async () => {
+  vi.unstubAllEnvs()
+  await cleanupTempDir(dataDir)
+  await fs.rm(storage, { recursive: true, force: true })
+})
+
+describe('reconcileMainRegistryGc', () => {
+  it('retires what nothing live names, keeps every live and recent tag, then collects', async () => {
+    const { layers } = await resolveImageChain('demo', 'yaac')
+    const [wantedBase, wantedTools] = layers.map((l) => l.tag)
+    for (const [tag, age] of [
+      // A project image: one generation a running pod names, two newest kept.
+      [`yaac-user-demo:${hex('1')}`, 40], [`yaac-user-demo:${hex('2')}`, 30],
+      [`yaac-user-demo:${hex('3')}`, 20], [`yaac-user-demo:${hex('4')}`, 10],
+      [`yaac-user-demo:${hex('5')}`, 1],
+      // The project's current chain, older than two newer builds elsewhere.
+      [wantedBase, 50], [`yaac-base:${hex('b')}`, 60],
+      [`yaac-base:${hex('c')}`, 5], [`yaac-base:${hex('d')}`, 4], [wantedTools, 50],
+      // A stopped server: its Deployment is scaled to zero, so only the
+      // template still names the image `yaac server start` will need.
+      [`yaac-server:${hex('e')}`, 90], [`yaac-server:${hex('f')}`, 3], [`yaac-server:${hex('0')}`, 2],
+      // The e2e suite's images: a run resolves them by tag from its global
+      // setup through its last file, with long stretches where no pod or
+      // namespace marks it, so they are the suite's to retire.
+      [`yaac-test-base:${hex('a')}`, 30], [`yaac-test-base:${hex('9')}`, 20], [`yaac-test-base:${hex('8')}`, 10],
+      // Never candidates: mirrors carry no content-hash tag, and a repo
+      // yaac did not build is not yaac's to retire.
+      ['yaac-registry2:0123456789ab', 300], ['envoyproxy/envoy:1.34-45d37d848802', 300],
+      ['podman-stable:v5.5', 300],
+      [`myapp:${hex('7')}`, 300],
+      // Step cache: retired once no build has written it for the cache TTL.
+      [`yaac-buildcache-demo:${'a'.repeat(64)}`, 30], [`yaac-buildcache-demo:${'b'.repeat(64)}`, 1],
+    ] as const) await pushTag(tag, age)
+    stage({ pods: [ref(`yaac-user-demo:${hex('2')}`)], scaledToZero: [ref(`yaac-server:${hex('e')}`)] })
+
+    await runPass()
+
+    expect(await survivors()).toEqual([
+      'envoyproxy/envoy:1.34-45d37d848802',
+      `myapp:${hex('7')}`,
+      'podman-stable:v5.5',
+      `yaac-base:${hex('c')}`, `yaac-base:${hex('d')}`,
+      `yaac-buildcache-demo:${'b'.repeat(64)}`,
+      'yaac-registry2:0123456789ab',
+      `yaac-server:${hex('0')}`, `yaac-server:${hex('e')}`, `yaac-server:${hex('f')}`,
+      `yaac-test-base:${hex('8')}`, `yaac-test-base:${hex('9')}`, `yaac-test-base:${hex('a')}`,
+      `yaac-user-demo:${hex('2')}`, `yaac-user-demo:${hex('4')}`, `yaac-user-demo:${hex('5')}`,
+      wantedBase, wantedTools,
+    ].sort())
+    // Untagging alone frees no disk: the registry only drops blobs when the
+    // collect runs, and only the restart clears the in-memory blob
+    // descriptors that would otherwise make a re-push of a collected digest
+    // write a link with no blob behind it. The collect is bounded inside
+    // the container too — killing the exec client would leave it deleting
+    // blobs under the restart.
+    expect(execs.find((a) => a.includes('garbage-collect'))?.[0]).toBe('timeout')
+    expect(restarted()).toBe(true)
+    expect(logged('retired 4 stale tag(s) and collected their blobs')).toBe(true)
+  })
+
+  it('retires no generation while any project\'s chain cannot be resolved', async () => {
+    for (const [tag, age] of [
+      [`yaac-tools:${hex('a')}`, 30], [`yaac-tools:${hex('9')}`, 20], [`yaac-tools:${hex('8')}`, 10],
+      [`yaac-buildcache-demo:${'a'.repeat(64)}`, 30],
+    ] as const) await pushTag(tag, age)
+    // A Dockerfile.user mid-edit, not yet layered: every project's chain
+    // fails to resolve at once, and with it every project's protection.
+    await fs.mkdir(userBuildDir(), { recursive: true })
+    await fs.writeFile(path.join(userBuildDir(), USER_DOCKERFILE), 'FROM ubuntu\n')
+    stage()
+
+    await runPass()
+
+    // The step cache does not depend on the chains, so it is still swept.
+    expect(await survivors()).toEqual([
+      `yaac-tools:${hex('8')}`, `yaac-tools:${hex('9')}`, `yaac-tools:${hex('a')}`,
+    ])
+    expect(logged('no image generation is retired this pass')).toBe(true)
+  })
+
+  it('drops each node\'s copy of what the registry retired, and nothing it still serves or a pod names', async () => {
+    for (const [tag, age] of [
+      [`yaac-user-demo:${hex('1')}`, 40], [`yaac-user-demo:${hex('2')}`, 30], [`yaac-user-demo:${hex('3')}`, 20],
+      [`yaac-user-demo:${hex('4')}`, 10], [`yaac-user-demo:${hex('5')}`, 1],
+    ] as const) await pushTag(tag, age)
+    const gone = `yaac-old:${hex('6')}`
+    stage({
+      pods: [ref(`yaac-user-demo:${hex('1')}`), ref(`yaac-server:${hex('c')}`)],
+      nodes: [
+        { name: 'n1', images: [
+          // Retired this pass, plus its digest name — one image, one removal.
+          [ref(`yaac-user-demo:${hex('3')}`), `${registryHost()}/yaac-user-demo@sha256:${'3'.repeat(64)}`],
+          [ref(gone)],
+          // Retired from the registry but still running: kept.
+          [ref(`yaac-user-demo:${hex('1')}`)],
+          [ref(`yaac-server:${hex('c')}`)],
+          // Still in the registry, so warm for the next create.
+          [ref(`yaac-user-demo:${hex('5')}`)],
+          // Not a yaac generation: a mirror, and the node's own images.
+          [ref('podman-stable:v5.5')],
+          ['docker.io/kindest/local-path-helper:v20241212'],
+        ] },
+        { name: 'n2', images: [[ref(`yaac-user-demo:${hex('5')}`)]] },
+      ],
+    })
+
+    await runPass()
+
+    const pods = prunePods()
+    expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1'])
+    expect(prunedRefs(pods[0])).toEqual([ref(`yaac-user-demo:${hex('3')}`), ref(gone)])
+    // The node's own crictl, reached through PID 1's mount namespace, with
+    // a timeout a multi-GB delete fits in (crictl's default is 2s).
+    expect(pods[0].spec.containers[0].command[2]).toContain('nsenter -t 1 -m -- crictl -t 10m rmi')
+    expect(pods[0].spec.hostPID).toBe(true)
+    // Node root runs a digest ref, never a registry tag: every tag in the
+    // main registry is writable by a builder pod.
+    expect(pods[0].spec.containers[0].image).toBe(REGISTRY_UPSTREAM_IMAGE)
+    expect(pods[0].spec.containers[0].image).toMatch(/@sha256:[0-9a-f]{64}$/)
+    expect(pods[0].spec.containers[0].securityContext).toEqual({ privileged: true, runAsUser: 0 })
+    expect(pods[0].spec.tolerations).toEqual([{ operator: 'Exists' }])
+    expect(logged('n1: removed 2 of 2 retired image(s)')).toBe(true)
+  })
+
+  it('keeps a node\'s image unless the registry answers that it is gone', async () => {
+    stage({ nodes: [{ name: 'n1', images: [[ref(`yaac-old:${hex('6')}`)], [ref(`yaac-slow:${hex('7')}`)]] }] })
+    // A registry that is restarting, slow, or unroutable says nothing about
+    // retirement; only its 404 does.
+    vi.mocked(registryTagState).mockImplementation((repoTag: string) =>
+      Promise.resolve(repoTag.startsWith('yaac-old:') ? 'absent' : 'unknown'))
+
+    await runPass()
+
+    expect(prunePods().flatMap(prunedRefs)).toEqual([ref(`yaac-old:${hex('6')}`)])
+  })
+
+  it('restarts the registry even when the collect fails part-way through', async () => {
+    await pushTag(`yaac-tools:${hex('a')}`, 30)
+    await pushTag(`yaac-tools:${hex('9')}`, 20)
+    await pushTag(`yaac-tools:${hex('8')}`, 10)
+    stage({ collect: () => Promise.reject(new Error('collect timed out')) })
+
+    await runPass()
+
+    // A collect that threw may have deleted blobs already, so this is the
+    // case the restart matters most for — and nothing else would retry it,
+    // since the tags it retired are gone and a later sweep finds none.
+    expect(restarted()).toBe(true)
+    expect(logged('collect timed out')).toBe(true)
+    expect(logged('collected their blobs')).toBe(false)
+  })
+
+  it('leaves the collect marker for the next sweep when the restart fails, and finishes it first', async () => {
+    await pushTag(`yaac-tools:${hex('a')}`, 30)
+    await pushTag(`yaac-tools:${hex('9')}`, 20)
+    await pushTag(`yaac-tools:${hex('8')}`, 10)
+    stage({ restart: () => Promise.reject(new Error('rollout failed')) })
+
+    await runPass()
+
+    // Marker cleared only after a restart succeeds, so the registry cannot
+    // be left serving stale descriptors with nothing scheduled to fix it.
+    const marker = path.join(storage, '.yaac-collect-started')
+    await expect(fs.access(marker)).resolves.toBeUndefined()
+    expect(logged('could not be restarted')).toBe(true)
+
+    // The marker outlives the process that wrote it, so a server killed
+    // mid-collect still gets its restart on the next pass — even one that
+    // then stands down for a live push.
+    await startUpload()
+    mockKubectl.mockClear()
+    stage()
+    await runPass(Date.now() + MAIN_REGISTRY_GC_INTERVAL_MS)
+    expect(restarted()).toBe(true)
+    await expect(fs.access(marker)).rejects.toThrow()
+    expect(logged('previous collect went unfinished')).toBe(true)
+  })
+
+  it('stands down while a push is in flight rather than untagging under it', async () => {
+    await pushTag(`yaac-tools:${hex('a')}`, 30)
+    await pushTag(`yaac-tools:${hex('9')}`, 20)
+    await pushTag(`yaac-tools:${hex('8')}`, 10)
+    await startUpload()
+    stage()
+
+    await runPass()
+
+    expect(await survivors()).toContain(`yaac-tools:${hex('a')}`)
+    expect(collected()).toBe(false)
+    expect(restarted()).toBe(false)
+    expect(logged('pushes in flight')).toBe(true)
+  })
+
+  it('re-checks for pushes after the untag and skips only the collect', async () => {
+    await pushTag(`yaac-tools:${hex('a')}`, 30)
+    await pushTag(`yaac-tools:${hex('9')}`, 20)
+    await pushTag(`yaac-tools:${hex('8')}`, 10)
+    // A push starts while the retention pass runs.
+    stage({ beforeExec: (argv) => argv[2]?.includes('retired-generations') ? startUpload() : undefined })
+
+    await runPass()
+
+    // Standing down here is free: the tags are untagged either way, and
+    // nothing was deleted, so no restart is owed.
+    expect(await survivors()).not.toContain(`yaac-tools:${hex('a')}`)
+    expect(collected()).toBe(false)
+    expect(restarted()).toBe(false)
+  })
+
+  it('leaves the registry alone when nothing aged out', async () => {
+    await pushTag(`yaac-tools:${hex('a')}`, 30)
+    stage()
+
+    await runPass()
+
+    // A pass that found no work must never bounce the registry.
+    expect(collected()).toBe(false)
+    expect(restarted()).toBe(false)
+    expect(mockServerLog).not.toHaveBeenCalled()
+  })
+
+  it('sweeps immediately, then throttles to the interval', async () => {
+    stage()
+    const t0 = MAIN_REGISTRY_GC_INTERVAL_MS * 100
+    const probes = (): number => execs.filter((a) => a[2]?.includes('_uploads')).length
+
+    await runPass(t0)
+    await runPass(t0 + MAIN_REGISTRY_GC_INTERVAL_MS - 1)
+    expect(probes()).toBe(1)
+
+    await runPass(t0 + MAIN_REGISTRY_GC_INTERVAL_MS)
+    expect(probes()).toBe(2)
+  })
+
+  it('detaches the pass so a collect cannot stall the reconcile tick', async () => {
+    await pushTag(`yaac-tools:${hex('a')}`, 30)
+    await pushTag(`yaac-tools:${hex('9')}`, 20)
+    await pushTag(`yaac-tools:${hex('8')}`, 10)
+    let release = (): void => {}
+    let collectStarted = (): void => {}
+    const collecting = new Promise<void>((resolve) => { release = resolve })
+    const reachedCollect = new Promise<void>((resolve) => { collectStarted = resolve })
+    stage({ collect: () => { collectStarted(); return collecting } })
+
+    // Reconcile passes are serialized, so this must return while the
+    // collect is still running — and a tick arriving meanwhile must not
+    // start a second pass.
+    await reconcileMainRegistryGc(['demo'], () => Promise.resolve({}))
+    await reachedCollect
+    const before = execs.length
+    await reconcileMainRegistryGc(['demo'], () => Promise.resolve({}), MAIN_REGISTRY_GC_INTERVAL_MS * 200)
+    expect(execs).toHaveLength(before)
+
+    release()
+    await _mainRegistryGcSettledForTests()
+    expect(restarted()).toBe(true)
+  })
+
+  it('is a no-op on test-isolated installs', async () => {
+    vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
+    stage()
+    await runPass()
+    expect(mockKubectl).not.toHaveBeenCalled()
+    expect(mockGetJson).not.toHaveBeenCalled()
+  })
+
+  it('logs and moves on when there is no registry to sweep', async () => {
+    stage()
+    mockKubectl.mockRejectedValue(new Error('deployments.apps "yaac-registry" not found'))
+
+    await expect(runPass()).resolves.toBeUndefined()
+
+    expect(logged('not found')).toBe(true)
+  })
+})
