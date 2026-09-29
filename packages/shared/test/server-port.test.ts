@@ -12,8 +12,7 @@ const inUse = (): Error => Object.assign(new Error('in use'), { code: 'EADDRINUS
 
 describe('DEFAULT_SERVER_PORT', () => {
   it('is a fixed, well-known loopback port', () => {
-    // A stable default is the whole point — pin it so a change is deliberate
-    // and the Vite dev-server fallback (vite.config.ts) stays in sync.
+    // A stable default is the whole point — pin it so a change is deliberate.
     expect(DEFAULT_SERVER_PORT).toBe(8787)
   })
 })

@@ -13,14 +13,14 @@ cd "$(dirname "$0")/.."
 # dist/, so dist/frontend is irrelevant here).
 pnpm exec tsup || exit 1
 
-# Ensure the shared server is up so Vite reads its real port from the lock.
-# Best-effort and idempotent: `server start` no-ops if already running, and a
-# live-but-version-skewed server still leaves a correct lock for Vite to read.
+# Ensure the shared server is up. Vite's proxy finds it through server.json,
+# which `yaac server start` (or `yaac cluster install`) already registered.
+# Best-effort: a skewed server fails the start but keeps its selection.
 yaac server start || true
 
-# Vite serves the SPA with HMR and proxies the API + WS back to the server (it
-# reads the same ~/.yaac/.server.lock). Start it first and wait, so the window
-# has something to load when the boot flow finishes.
+# Vite serves the SPA with HMR and proxies the API + WS back to the server (the
+# same server.json selection the window resolves). Start it first and wait, so
+# the window has something to load when the boot flow finishes.
 pnpm --filter @yaac/frontend dev >/tmp/yaac-hot-vite.log 2>&1 &
 VITE=$!
 trap 'kill "$VITE" 2>/dev/null' EXIT

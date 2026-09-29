@@ -77,7 +77,8 @@ the SPA's sign-in cards still say what to run by hand.
 **`desktop:dev`** loads the SPA the resolved server serves, so frontend edits
 need a rebuild. **`desktop:hot`** (`scripts/dev-hot.sh`) instead points the
 window at the Vite dev server for live frontend HMR: it ensures the shared
-server is up (so Vite reads its real port from the lock), starts Vite on
+server is up (and registered in `server.json`, which is where Vite's proxy
+finds it), starts Vite on
 `:1420`, then launches Electron with
 `YAAC_DESKTOP_RENDERER_URL=http://localhost:1420/`. Only the *renderer*
 hot-reloads — main-process (`src/*.ts`) changes still need a restart.
@@ -95,7 +96,7 @@ and one through `tailscale serve` as the tailnet user it stamps.
 - **`desktop:hot`:** `<base>` is `http://localhost:1420`, so the SPA loads from
   Vite. All API/WS calls are relative (`/whoami`, `/session`, `/events`,
   `/pty`), so they hit Vite same-origin and its proxy forwards them to the
-  server it read from the lock, exactly like the browser `pnpm frontend:dev`
+  server selected in `server.json`, exactly like the browser `pnpm frontend:dev`
   flow.
 
 Plain `pnpm frontend:dev` (browser, no shell) is the same picture minus the
