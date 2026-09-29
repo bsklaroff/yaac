@@ -98,8 +98,9 @@ Queueing never records the project's create defaults — settings inherited
 from a parent are not a choice the user made for the project.
 
 The **group** is decided when the entry is queued, like every other
-setting: the parent's unless the request names one (by id or name) or
-`null` for the default list. Moving the parent afterwards leaves the entry
+setting: the parent's unless the request names one (by id, or by name — a
+name matching no group creates it, as a create's does) or `null` for the
+default list. Moving the parent afterwards leaves the entry
 where it was filed; deleting its group returns it to the default list. A
 **title** is the user's own and never inherited; the worktree it launches
 carries it from the moment its row exists, so the title sweep never
@@ -163,11 +164,14 @@ stands in for it.
   shows entries indented under their parents.
 - **Webapp.** One create dialog (Alt+N, a row's `…` menu, a queued row) with
   a **Start** field: `Now`, or after a live worktree or queued entry stops.
-  Its optional **Title** turns off auto-titling for what it creates, and its
-  **Group** (shown once the project has groups) follows the Start parent's
-  until it is picked. Queued rows nest under their parent in the sidebar,
-  each worktree's whole set (chains included) behind one collapsible "n
-  queued worktrees" expander. Sets start collapsed; the one exception is the
-  set the user just queued or moved an entry into from the dialog, which
-  opens so the result shows. The stop dialog lists a worktree's children so
+  A title set with the pencil beside its heading turns off auto-titling for
+  what it creates, and its **Group** follows the Start parent's until it is
+  picked. The Group lists the groups the sidebar shows (pinned, or holding a
+  live, starting or held worktree), those a queued entry will launch into,
+  and "+ New group", which swaps the dropdown for a name box; the create or
+  queue brings that group into being. Queued rows nest under their parent
+  in the sidebar, each worktree's whole set (chains included) behind one
+  collapsible "n queued worktrees" expander. Sets start collapsed; the one
+  exception is the set the user just queued or moved an entry into from the
+  dialog, which opens so the result shows. The stop dialog lists a worktree's children so
   they can be edited or discarded before they start.

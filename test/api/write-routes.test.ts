@@ -1098,7 +1098,13 @@ describe('write routes', () => {
         json: { id: queued.id, prompt: 'follow up, edited' },
       })).json()
       expect(edited).toMatchObject({ prompt: 'follow up, edited', title: 'Named', groupId })
-      expect((await post('update', { id: queued.id, group: 'no such group' })).status).toBe(404)
+      // A group named but not yet made is created, as a create's is.
+      const refiled = await (await client().worktree.queue.update.$post({
+        json: { id: queued.id, group: 'fresh group' },
+      })).json()
+      expect(refiled.groupId).not.toBe(groupId)
+      expect(await listWorktreeGroups('demo')).toContainEqual(
+        expect.objectContaining({ groupId: refiled.groupId, name: 'fresh group' }))
 
       // A launch still in flight: a second Run now loses the claim.
       let finish!: () => void
@@ -1113,7 +1119,12 @@ describe('write routes', () => {
 
       await vi.waitFor(() => { expect(mockCreateWorktree).toHaveBeenCalledTimes(1) })
       expect(mockCreateWorktree.mock.calls[0][1]).toMatchObject({
-        worktreeId, initialPrompt: 'follow up, edited', branch: 'main', permissionMode: 'plan', title: 'Named', groupId,
+        worktreeId,
+        initialPrompt: 'follow up, edited',
+        branch: 'main',
+        permissionMode: 'plan',
+        title: 'Named',
+        groupId: refiled.groupId,
       })
       finish()
       // The entry became the worktree; there is nothing left to run.

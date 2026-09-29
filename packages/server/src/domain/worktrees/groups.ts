@@ -50,7 +50,8 @@ export interface ResolvedGroup {
  * so no renderer has to echo what was typed or look the name up again.
  *
  * `create` is for the callers that are naming a group rather than picking
- * one (`--group` on a create, `yaac-mama create --group`): the group is
+ * one (`--group` on a create, `yaac-mama create --group`, a queue or queue
+ * update — the create dialog's "+ New group"): the group is
  * theirs to bring into being, and demanding they create it first would make
  * every such call two round trips and a race.
  */

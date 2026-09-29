@@ -92,13 +92,15 @@ export function useCreateWorktree(): (
     prompt?: string
     title?: string
     groupId?: string
+    /** A group to create and file it under, by name. */
+    newGroup?: string
     draftId?: string
   },
   branch?: string,
 ) => void {
   const provision = useProvisionWorktree()
   return useCallback((projectSlug, tool, setup, branch) => {
-    const { model, modelName, permissionMode, mode, prompt, title, groupId, draftId } = setup
+    const { model, modelName, permissionMode, mode, prompt, title, groupId, newGroup, draftId } = setup
     provision(projectSlug, tool, 'create', randomUUID(),
       (sid, onProgress) =>
         createWorktree(projectSlug, tool, onProgress, sid, {
@@ -110,7 +112,7 @@ export function useCreateWorktree(): (
           mode,
           ...(prompt ? { prompt } : {}),
           ...(title ? { title } : {}),
-          ...(groupId !== undefined ? { group: groupId } : {}),
+          ...((groupId ?? newGroup) !== undefined ? { group: groupId ?? newGroup } : {}),
           ...(draftId !== undefined ? { draftId } : {}),
         }),
       groupId,
