@@ -22,7 +22,6 @@ import { startWorktree } from './start'
 import { agentPermissionMode } from './spawn-policy'
 import { modelDisplayName } from '#domain/auth'
 import { getDefaultBranch } from '#domain/git'
-import { resolveProjectConfig } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorktree,
@@ -488,21 +487,10 @@ async function resolveSettings(
     model: setup.model,
     mode: setup.mode,
     permissionMode: setup.permissionMode,
-    branch: request.branch ?? parent.branch ?? await referenceBranch(projectSlug),
+    branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectSlug)),
     ...(title !== '' ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
   }
-}
-
-/**
- * The branch a create in this project forks from when it names none — what a
- * create still in flight without a row resolves to, and the answer for a
- * worktree parent whose row predates recording `baseBranch` at creation (see
- * docs/legacy-compat-shims.md).
- */
-async function referenceBranch(projectSlug: string): Promise<string> {
-  return (await resolveProjectConfig(projectSlug))?.referenceBranch
-    ?? await getDefaultBranch(repoDir(projectSlug))
 }
 
 /** Wire entries, flagging the ones whose parent worktree is gone. */

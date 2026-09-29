@@ -60,17 +60,12 @@ describe('Typeahead', () => {
     expect(onSelect).toHaveBeenCalledWith('claude-opus-5-5')
   })
 
-  it('offers typed text no item matches exactly as a free entry', () => {
-    const { onSelect } = field({
-      query: 'claude-next',
-      freeEntry: (text) => ({ value: text, label: `Use "${text}"` }),
-    })
-    fireEvent.click(screen.getByText('Use "claude-next"'))
-    expect(onSelect).toHaveBeenCalledWith('claude-next')
-    cleanup()
-    // Not when it already is an item.
-    field({ query: 'claude-opus-5-5', freeEntry: (text) => ({ value: text, label: `Use "${text}"` }) })
-    expect(screen.queryByText('Use "claude-opus-5-5"')).toBeNull()
+  it('offers only items: a search matching nothing says so, and Enter picks nothing', () => {
+    const { onSelect } = field({ query: 'claude-next', autoHighlight: true })
+    expect(screen.getByText('No matches')).toBeTruthy()
+    expect(screen.queryByRole('list')).toBeNull()
+    fireEvent.keyDown(screen.getByLabelText('Model'), { key: 'Enter' })
+    expect(onSelect).not.toHaveBeenCalled()
   })
 
   it('renders the icon and tag slots', () => {

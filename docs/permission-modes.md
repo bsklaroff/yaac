@@ -292,6 +292,13 @@ in `@yaac/shared/types` is the one function both ends answer "what would an
 untouched create run" with, so the form never shows one thing and launches
 another.
 
+The branch, too, has no server-side rung: the project row remembers the one
+it was last created from (`projects.lastBranch`, recorded only when a create
+names one), and only the create dialog reads it — opening on it while
+origin still lists it, else on the remote's default branch. A create naming
+no branch takes the remote's default, so the CLI and the spare pool never
+depend on what the webapp last picked.
+
 The resolved answer is recorded on `worktrees.permissionMode`, because a
 worktree outlives the request that made it: a restart must relaunch its
 agents in the posture they were in, not the way today's default would. The

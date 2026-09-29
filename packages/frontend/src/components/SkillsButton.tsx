@@ -122,7 +122,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tool, setTool] = useState<AgentTool>('claude')
-  // null = untouched: use the project's resolved default branch.
+  // null = untouched: use origin's default branch.
   const [branch, setBranch] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
@@ -145,7 +145,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
     return () => { cancelled = true }
   }, [open, projectSlug, queryClient])
 
-  const defaultBranch = branchData ? branchData.referenceBranch ?? branchData.defaultBranch : undefined
+  const defaultBranch = branchData?.defaultBranch
   const effectiveBranch = branch ?? defaultBranch
 
   const { data, isLoading } = useQuery({

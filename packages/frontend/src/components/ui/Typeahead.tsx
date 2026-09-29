@@ -11,10 +11,8 @@ export interface TypeaheadItem {
 
 /**
  * A bordered text input over a filtered suggestion list — the branch pickers
- * and the create form's model field. Purely presentational: the parent owns
- * the `query` text, the items, and what a selection does. `trailing` /
- * `belowInput` are slots for caller-specific chrome (e.g. the new-worktree
- * "pin as default" button and its error line).
+ * and the create form's model and branch fields. Purely presentational: the
+ * parent owns the `query` text, the items, and what a selection does.
  *
  * Filters on label and value alike, so a model is found by its name ("opus")
  * or its id ("claude-opus"). ↑/↓ move a highlight through the rows and Enter
@@ -22,9 +20,10 @@ export interface TypeaheadItem {
  * highlighted is left to bubble, which is how the create form submits from
  * inside the field. `autoHighlight` highlights the first row as soon as the
  * user types, for a field whose typed text is a search rather than a value.
- * `freeEntry` adds a last row for text no item matches exactly (the model
- * field's "use this id"). Escape with the list open calls `onDismiss` and
- * goes no further, so a dialog around the field is not closed by it.
+ * Only items can be picked — typed text is never a value of its own — so a
+ * search matching nothing says so. Escape with the list open calls
+ * `onDismiss` and goes no further, so a dialog around the field is not
+ * closed by it.
  */
 export function Typeahead({
   items,
@@ -39,11 +38,8 @@ export function Typeahead({
   icon,
   tag,
   autoHighlight = false,
-  freeEntry,
   onBlur,
   onDismiss,
-  trailing,
-  belowInput,
 }: {
   items: readonly TypeaheadItem[]
   /** Text shown in the input (parent-controlled). */
@@ -64,30 +60,29 @@ export function Typeahead({
   /** A trailing tag for a row (e.g. "default"). */
   tag?: (item: TypeaheadItem) => ReactNode
   autoHighlight?: boolean
-  freeEntry?: (query: string) => TypeaheadItem | null
   /** Focus left the input — rows never take it (see their onMouseDown), so
    *  this is the user moving on, not picking. */
   onBlur?: () => void
   /** Escape was pressed with the list open — close it. */
   onDismiss?: () => void
-  /** Accessory rendered to the right of the input box. */
-  trailing?: ReactNode
-  /** Node rendered between the input row and the suggestion list. */
-  belowInput?: ReactNode
 }): JSX.Element {
   const [highlight, setHighlight] = useState(-1)
   const needle = query.trim().toLowerCase()
-  const matched = items
+  const rows = items
     .filter((i) => i.label.toLowerCase().includes(needle) || i.value.toLowerCase().includes(needle))
     .slice(0, limit)
-  const free = needle !== '' && !items.some((i) => i.value === query.trim())
-    ? freeEntry?.(query.trim()) ?? null
-    : null
-  const rows = free !== null ? [...matched, free] : matched
   const shown = showList && rows.length > 0
   const active = shown && highlight < rows.length ? highlight : -1
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
+    // The list is open even when nothing matches, so Escape still abandons
+    // the search rather than reaching the dialog.
+    if (e.key === 'Escape' && showList && onDismiss !== undefined) {
+      e.preventDefault()
+      e.stopPropagation()
+      onDismiss()
+      return
+    }
     if (!shown) return
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
@@ -98,16 +93,12 @@ export function Typeahead({
       e.preventDefault()
       e.stopPropagation()
       onSelect(rows[active].value)
-    } else if (e.key === 'Escape' && onDismiss !== undefined) {
-      e.preventDefault()
-      e.stopPropagation()
-      onDismiss()
     }
   }
 
   return (
     <>
-      <div className={clsx('flex items-center gap-1', className)}>
+      <div className={clsx('flex items-center', className)}>
         <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-border bg-surface-1 px-2 py-1">
           {icon?.({ size: 12, className: 'shrink-0 text-text-faint' })}
           <input
@@ -125,9 +116,10 @@ export function Typeahead({
               placeholder:text-text-faint"
           />
         </div>
-        {trailing}
       </div>
-      {belowInput}
+      {showList && rows.length === 0 && needle !== '' && (
+        <div className="px-2 py-1 text-[11px] text-text-faint">No matches</div>
+      )}
       {shown && (
         <ul className="max-h-48 overflow-y-auto pb-1">
           {rows.map((item, i) => (

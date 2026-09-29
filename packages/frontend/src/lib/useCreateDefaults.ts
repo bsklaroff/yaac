@@ -33,6 +33,8 @@ export interface CreateDefaults {
   hasGitCredential: boolean
   /** The agent this project was last created with, else claude. */
   lastTool: AgentTool
+  /** The branch this project was last created from, if a create named one. */
+  lastBranch?: string
   /** The agents with a stored credential; only these can create. */
   configured: ReadonlySet<AgentTool>
   /** What an untouched create for `tool` would run — the same resolution the
@@ -55,6 +57,7 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
     ready: driver !== undefined && driver !== null && auth !== undefined,
     hasGitCredential: (project?.gitCredential ?? null) !== null,
     lastTool: project?.lastTool ?? 'claude',
+    ...(project?.lastBranch !== undefined ? { lastBranch: project.lastBranch } : {}),
     configured: configuredTools(auth),
     forTool: (tool) => {
       const summary = auth?.toolAuth.find((t) => t.tool === tool)

@@ -286,8 +286,7 @@ yaac worktree <command>
   create [options] <project>  Create a new worktree for a project
     -t, --tool <tool>         Agent tool to use (claude, codex, opencode, or pi)
     -b, --branch <branch>     Reference branch for the worktree (defaults to
-                              the project's referenceBranch config, else the
-                              remote default branch)
+                              the remote default branch)
   list [options] [project]    List running worktrees
     -s, --stopped             List stopped worktrees (checkouts are kept)
   stop <worktree-id>          Stop a worktree: tear down its container,
@@ -439,8 +438,7 @@ Example `yaac-config.json` with all options:
   },
   "initCommands": ["pnpm install"],
   "addAllowedUrls": ["internal.corp.example.com", "*.mycdn.example.com"],
-  "hideInitPane": false,
-  "referenceBranch": "develop"
+  "hideInitPane": false
 }
 ```
 
@@ -462,7 +460,6 @@ Example `yaac-config.json` with all options:
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since worktrees require these to function.
 - **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the worktree exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers](#nested-containers).
 - **npmCache** — whether the project's worktrees use the install's npm cache (k8s only; default `true`). With `false`, a worktree's pnpm stays on npmjs through the egress proxy, and the cache is not even reachable from its pod. A project's own `.npmrc` `registry=` already takes precedence over the cache either way. See [Worktree storage](docs/worktree-storage.md#package-installs).
-- **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new worktree worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac worktree create --branch <branch>`, or the branch typeahead in the webapp's new-worktree popover (which can also pin a new default). Changing it affects new worktrees only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
 
 A project's **environment variables and secrets** are not in this file: they
 are stored with the project and edited in the webapp under Settings → Project

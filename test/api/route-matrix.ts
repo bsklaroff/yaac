@@ -79,7 +79,6 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:slug/env', request: '/api/project/nope/env', body: { name: 'A', value: '1' }, k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:slug/env/:id', request: '/api/project/nope/env/abc', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:slug/branches', request: '/api/project/nope/branches', k8s: MISSING, containerless: MISSING },
-  { method: 'PUT', path: '/api/project/:slug/reference-branch', request: '/api/project/nope/reference-branch', body: { branch: 'main' }, k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:slug/skills', request: '/api/project/nope/skills', k8s: OK_OR_MISSING, containerless: OK_OR_MISSING },
   { method: 'GET', path: '/api/project/:slug/skills/body', request: '/api/project/nope/skills/body?path=x', k8s: [200, 400, 404], containerless: [200, 400, 404] },
 

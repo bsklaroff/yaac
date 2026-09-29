@@ -149,7 +149,7 @@ describe('queueWorktree', () => {
     expect(early).toMatchObject({ tool: 'opencode', permissionMode: 'bypass', branch: 'main' })
     expect(early.model).not.toBe('')
 
-    // No recorded base: the project's reference branch, stored concretely.
+    // No recorded base: origin's default branch, stored concretely.
     await worktree('old', { baseBranch: null })
     const fromOld = await queueWorktree('proj', { parent: 'old', prompt: 'x' }, 'user')
     expect(fromOld.branch).toMatch(/^(main|master)$/)

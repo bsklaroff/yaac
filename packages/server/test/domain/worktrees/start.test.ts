@@ -65,7 +65,9 @@ describe('startWorktree', () => {
     }))
     // No spare was looked for, and nothing was remembered for the project.
     expect(list).not.toHaveBeenCalled()
-    expect((await getProjectRow('proj'))?.lastTool).toBeUndefined()
+    const project = await getProjectRow('proj')
+    expect(project?.lastTool).toBeUndefined()
+    expect(project?.lastBranch).toBeUndefined()
   })
 
   it('remembers what a person named, and looks for a spare before creating', async () => {
@@ -77,6 +79,7 @@ describe('startWorktree', () => {
       worktreeId: 'wt-2',
       tool: 'codex',
       permissionMode: 'accept-edits',
+      branch: 'develop',
       rememberDefaults: true,
       claimSpare: true,
     }, () => {})
@@ -84,6 +87,7 @@ describe('startWorktree', () => {
     expect(list).toHaveBeenCalled()
     expect(await getProjectRow('proj')).toMatchObject({
       lastTool: 'codex',
+      lastBranch: 'develop',
       createDefaults: { codex: { permissionMode: 'accept-edits' } },
     })
     expect(mockCreate).toHaveBeenCalledTimes(1)

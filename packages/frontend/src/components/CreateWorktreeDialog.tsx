@@ -3,13 +3,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertDialog } from '@base-ui/react/alert-dialog'
 import { Dialog } from '@base-ui/react/dialog'
 import clsx from 'clsx'
-import { CloseIcon, PinIcon, RenameIcon, TOOL_LABEL } from '#lib/icons'
+import { CloseIcon, RenameIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { Modal } from '#components/ui/Modal'
 import { Typeahead } from '#components/ui/Typeahead'
 import { saveDraftWorktree } from '#lib/draftApi'
 import { shownGroups } from '#lib/groups'
-import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type ProjectBranches } from '#lib/projectApi'
+import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
 import { queueWorktree, runQueuedWorktree, updateQueuedWorktree } from '#lib/queueApi'
 import { clip, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
@@ -19,7 +19,6 @@ import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore, type CreateWorktreeDialogOpts } from '#lib/store'
 import {
   AGENT_TOOLS,
-  MODEL_RE,
   PERMISSION_MODE_COPY,
   supportedPermissionModes,
   toolSupportsPermissionMode,
@@ -284,10 +283,11 @@ function CreateWorktreeForm({
   // dialog's own focus handling.
   const naming = newGroup !== null
   useEffect(() => { if (naming) newGroupRef.current?.focus() }, [naming])
-  // null = untouched: the input shows (and a submit uses) the seeded branch.
-  const [branchInput, setBranchInput] = useState<string | null>(from?.branch ?? null)
-  const [pinPending, setPinPending] = useState(false)
-  const [pinError, setPinError] = useState<string | null>(null)
+  // undefined = untouched: the field shows (and a submit uses) the seeded
+  // branch. An edit or a draft starts with its own.
+  const [branchPick, setBranchPick] = useState<string | undefined>(from?.branch)
+  // null = not editing: the branch field shows the chosen branch.
+  const [branchQuery, setBranchQuery] = useState<string | null>(null)
   // What was picked in THIS dialog; anything unpicked shows the seed. An
   // edit or a draft starts with every field picked — they are its own.
   const [toolPick, setToolPick] = useState<AgentTool | undefined>(from?.tool)
@@ -384,9 +384,8 @@ function CreateWorktreeForm({
   // Only once the snapshot has said so — before it lands nothing creates anyway.
   const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
-  const branchesKey = projectBranchesKey(projectSlug)
-  const { data: branchData } = useQuery({
-    queryKey: branchesKey,
+  const { data: branchData, isError: branchesFailed } = useQuery({
+    queryKey: projectBranchesKey(projectSlug),
     queryFn: () => getProjectBranches(projectSlug),
   })
 
@@ -416,11 +415,19 @@ function CreateWorktreeForm({
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`
   }, [prompt, promptRef])
 
-  // The branch an untouched create uses: the project default for "Now", the
-  // parent's own for a queued one.
-  const defaultResolved = branchData ? branchData.referenceBranch ?? branchData.defaultBranch : null
-  const branchValue = (branchInput ?? seed?.branch ?? defaultResolved ?? '').trim()
-  const isDefault = branchValue === (defaultResolved ?? '')
+  // The branch an untouched submit uses: the parent's own for a queued one,
+  // else the one this project was last created from — while origin still has
+  // it — else origin's default. Until the list says whether origin has it,
+  // the remembered branch is shown but cannot be sent; a list that fails to
+  // load drops it, leaving the server to take origin's default.
+  const defaultBranch = branchData?.defaultBranch
+  const lastBranch = defaults.lastBranch !== undefined && !branchesFailed
+    && (branchData === undefined || branchData.branches.includes(defaults.lastBranch))
+    ? defaults.lastBranch
+    : undefined
+  const branchValue = branchPick ?? seed?.branch ?? lastBranch ?? defaultBranch ?? ''
+  const branchUnverified = branchData === undefined && lastBranch !== undefined
+    && branchPick === undefined && seed?.branch === undefined
 
   // What a dismissal would lose: a typed prompt on a create — never an edit
   // of a queued entry, which has its own Save — unless it is the reopened
@@ -452,13 +459,15 @@ function CreateWorktreeForm({
   }, [unsaved])
 
   // Why the submit cannot run right now, or null when it can. Mid-edit model
-  // text blocks it: it is a search, not a pick, and submitting the previous
-  // model instead would not be what the field shows. A queued worktree
+  // or branch text blocks it: it is a search, not a pick, and submitting the
+  // previous one instead would not be what the field shows. A queued worktree
   // stores every setting concrete, so it needs a model and a branch too — and
   // a prompt, since nobody is watching it start.
   const storesEntry = queued || initial !== undefined
   const blocked = !defaults.ready ? 'Loading…'
     : modelQuery !== null ? 'Pick a model from the list'
+    : branchQuery !== null ? 'Pick a branch from the list'
+    : branchUnverified ? 'Loading branches…'
     : !toolSupportsPermissionMode(tool, permissionMode, mode) ? 'Pick a permission mode this UI offers'
     : storesEntry && prompt.trim() === '' ? 'A queued worktree needs a prompt'
     : storesEntry && model === '' ? 'Pick a model'
@@ -505,7 +514,7 @@ function CreateWorktreeForm({
         ...(titleText !== '' ? { title: titleText } : {}),
         ...(newGroup !== null ? { newGroup: newGroupName } : groupId !== null ? { groupId } : {}),
         ...(draft !== undefined ? { draftId: draft.id } : {}),
-      }, branchValue && !isDefault ? branchValue : undefined)
+      }, branchValue !== '' ? branchValue : undefined)
       return
     }
     const settings = {
@@ -537,7 +546,7 @@ function CreateWorktreeForm({
   }
 
   // Enter anywhere in the dialog submits — except on a button, which has its
-  // own Enter (the pin, a suggestion row, the submit itself), and Shift+Enter
+  // own Enter (a suggestion row, the submit itself), and Shift+Enter
   // in the prompt, which is a newline. A highlighted suggestion takes Enter
   // before it gets here (see Typeahead).
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
@@ -545,22 +554,6 @@ function CreateWorktreeForm({
     if (e.shiftKey && e.target instanceof HTMLTextAreaElement) return
     e.preventDefault()
     submit()
-  }
-
-  const pinAsDefault = (): void => {
-    if (!branchValue || pinPending) return
-    setPinPending(true)
-    setPinError(null)
-    setProjectReferenceBranch(projectSlug, branchValue)
-      .then((referenceBranch) => {
-        queryClient.setQueryData(branchesKey, (prev: ProjectBranches | undefined) =>
-          prev ? { ...prev, referenceBranch } : prev)
-        if (!queued) setBranchInput(null) // the input now shows the new default
-      })
-      .catch((err: unknown) => {
-        setPinError(err instanceof Error ? err.message : String(err))
-      })
-      .finally(() => setPinPending(false))
   }
 
   const pickModel = (id: string): void => {
@@ -713,43 +706,22 @@ function CreateWorktreeForm({
           <div className="min-w-0 flex-1">
             <BranchPicker
               branches={branchData?.branches ?? []}
-              defaultBranch={branchData?.defaultBranch}
-              query={branchInput ?? seed?.branch ?? defaultResolved ?? ''}
-              onQueryChange={(q) => { setBranchInput(q); setPinError(null) }}
-              onSelect={(b) => setBranchInput(b)}
-              showList={branchInput !== null && branchInput !== from?.branch}
-              // Escape abandons the search, not the dialog and its prompt.
-              onDismiss={() => setBranchInput(null)}
-              placeholder={branchData ? defaultResolved ?? '' : 'loading branches…'}
-              ariaLabel="Reference branch"
-              trailing={
-                <button
-                  type="button"
-                  title={isDefault ? 'This is the project default' : `Set ${branchValue} as the project default`}
-                  aria-label="Set as default branch"
-                  disabled={isDefault || !branchValue || pinPending}
-                  onClick={pinAsDefault}
-                  className={clsx(
-                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-md outline-none transition',
-                    isDefault || !branchValue
-                      ? 'text-text-faint/50'
-                      : 'text-text-dim hover:bg-surface-3 hover:text-accent',
-                  )}
-                >
-                  <PinIcon size={12} />
-                </button>
-              }
-              belowInput={
-                <>
-                  {queued && (
-                    <div className="px-1 pb-1 pt-0.5 text-[11px] text-text-faint">latest from origin when it starts</div>
-                  )}
-                  {pinError && <div className="px-1 pb-1 pt-0.5 text-[11px] text-[#d65858]">{pinError}</div>}
-                </>
-              }
+              defaultBranch={defaultBranch}
+              query={branchQuery ?? branchValue}
+              onQueryChange={setBranchQuery}
+              onSelect={(b) => { setBranchPick(b); setBranchQuery(null) }}
+              showList={branchQuery !== null}
+              placeholder={branchData ? '' : branchesFailed ? 'origin\'s default branch' : 'loading branches…'}
+              ariaLabel="Base branch"
+              autoHighlight
+              onBlur={() => setBranchQuery(null)}
+              onDismiss={() => setBranchQuery(null)}
             />
           </div>
         </Row>
+        {queued && (
+          <div className="-mt-1 mb-1 pl-[92px] text-[11px] text-text-faint">latest from origin when it starts</div>
+        )}
 
         <Row label="Agent">
           <select
@@ -791,9 +763,6 @@ function CreateWorktreeForm({
                   showList={modelQuery !== null}
                   ariaLabel="Model"
                   autoHighlight
-                  freeEntry={(text) => MODEL_RE.test(text)
-                    ? { value: text, label: `Use "${text}" as a model id` }
-                    : null}
                   tag={(item) => item.value === base.defaultModel && <span>default</span>}
                   onBlur={() => setModelQuery(null)}
                   onDismiss={() => setModelQuery(null)}

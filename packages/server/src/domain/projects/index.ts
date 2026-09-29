@@ -65,6 +65,5 @@ export {
   addPortForwardToProjectConfig,
   readProjectConfigRaw,
   removeProjectConfig,
-  setProjectReferenceBranch,
   writeProjectConfig,
 } from './local-config'

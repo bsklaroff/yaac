@@ -71,6 +71,12 @@ export const projects = snakeCase.table('projects', {
    */
   lastTool: text(),
   /**
+   * The reference branch this project was last created from, when the
+   * create named one — what the create form opens on. Only the form reads
+   * it: a create naming no branch takes the remote's default.
+   */
+  lastBranch: text(),
+  /**
    * The git credential this project's git authenticates with — one per
    * project, while a credential may serve many (docs/git-credentials.md).
    * Null until one is assigned, and a project without one cannot create

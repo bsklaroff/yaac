@@ -26,6 +26,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     // The create form's memory, so it opens on what an untouched create
     // would run (see `resolveToolCreateDefaults`).
     ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),
+    ...(meta.lastBranch !== undefined ? { lastBranch: meta.lastBranch } : {}),
     createDefaults: meta.createDefaults,
     gitCredential: credentials.get(meta.slug) ?? null,
   }))

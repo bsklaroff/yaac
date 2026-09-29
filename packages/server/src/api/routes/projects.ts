@@ -16,7 +16,6 @@ import {
   removeProjectEnvVar,
   resolveProjectConfigWithSource,
   setProjectEnvVar,
-  setProjectReferenceBranch,
   writeProjectConfig,
   writeProjectDockerfile,
   resolveProjectEnv,
@@ -25,8 +24,6 @@ import { removeProject } from '#domain/worktrees'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
-import { remoteBranchExists } from '#domain/git'
-import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { requireDriverFeature } from '#http'
@@ -171,26 +168,6 @@ export const projectApp = new Hono()
       await assertProjectExists(slug)
       const refresh = c.req.valid('query').refresh === '1'
       return c.json(await getProjectBranches(slug, { refresh }))
-    },
-  )
-  // Set (or clear, with null) the project's default reference branch —
-  // the picker's "set as default". Existence-checked against the local
-  // remote-tracking refs so a typo'd default fails here, not at the next
-  // worktree create.
-  .put(
-    '/:slug/reference-branch',
-    zv('json', z.object({ branch: z.string().min(1).nullable() })),
-    async (c) => {
-      const slug = c.req.param('slug')
-      const { branch } = c.req.valid('json')
-      // Unknown project must surface as NOT_FOUND, not a bogus "branch not
-      // found" from probing a repo dir that isn't there.
-      await assertProjectExists(slug)
-      if (branch !== null && !(await remoteBranchExists(repoDir(slug), branch))) {
-        throw new ServerError('VALIDATION', `branch "${branch}" not found on origin.`)
-      }
-      const config = await setProjectReferenceBranch(slug, branch)
-      return c.json({ referenceBranch: config.referenceBranch ?? null })
     },
   )
   // Personal + plugin + project SKILL.md files a project's agent can use, for

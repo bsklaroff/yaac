@@ -427,16 +427,24 @@ describe('addWorktree', () => {
 })
 
 describe('fetchOrigin', () => {
-  it('updates remote refs', async () => {
+  it('updates remote refs, and prunes the ones origin deleted', async () => {
+    await git(sourceRepo, ['branch', 'merged-and-gone'])
     const cloneDir = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, cloneDir, null)
+    expect(await remoteBranchExists(cloneDir, 'merged-and-gone')).toBe(true)
     await commitToSource('new-file.txt', 'second commit')
+    await git(sourceRepo, ['branch', '-D', 'merged-and-gone'])
 
     await fetchOrigin(cloneDir, sourceRepo, null)
 
     // origin/<default> has the new commit even though the local branch hasn't moved
     const defaultBranch = await getDefaultBranch(cloneDir)
     expect(await subjectAt(cloneDir, `origin/${defaultBranch}`)).toBe('second commit')
+    // The deleted branch is gone, while the symbolic origin/HEAD that
+    // getDefaultBranch reads survives the prune.
+    expect(await remoteBranchExists(cloneDir, 'merged-and-gone')).toBe(false)
+    expect((await git(cloneDir, ['symbolic-ref', 'refs/remotes/origin/HEAD'])).trim())
+      .toBe(`refs/remotes/origin/${defaultBranch}`)
   })
 
   it('fetches from the URL it is given, whatever the clone says its origin is', async () => {

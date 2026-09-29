@@ -281,24 +281,6 @@ describe('resolveProjectConfig', () => {
       }
     })
   })
-
-  describe('referenceBranch', () => {
-    it('round-trips plain and slashed branch names', async () => {
-      expect(await roundTrip({ referenceBranch: 'develop' })).toEqual({ referenceBranch: 'develop' })
-      expect(await roundTrip({ referenceBranch: 'release/2.x' }))
-        .toEqual({ referenceBranch: 'release/2.x' })
-    })
-
-    it('rejects non-strings, an origin/ prefix, whitespace, and unsafe names', async () => {
-      await expect(roundTrip({ referenceBranch: 5 })).rejects.toThrow(/non-empty string/)
-      await expect(roundTrip({ referenceBranch: '' })).rejects.toThrow(/non-empty string/)
-      await expect(roundTrip({ referenceBranch: 'origin/develop' }))
-        .rejects.toThrow(/drop the "origin\/" prefix/)
-      await expect(roundTrip({ referenceBranch: 'my branch' })).rejects.toThrow(/whitespace/)
-      await expect(roundTrip({ referenceBranch: '-flag' })).rejects.toThrow(/not a valid branch name/)
-      await expect(roundTrip({ referenceBranch: 'a..b' })).rejects.toThrow(/not a valid branch name/)
-    })
-  })
 })
 
 describe('resolveEphemeralModulesPaths', () => {

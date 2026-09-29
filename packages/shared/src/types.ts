@@ -660,13 +660,6 @@ export interface YaacConfig {
    * disables the feature.
    */
   ephemeralModulesPaths?: string[]
-  /**
-   * Default reference branch for new worktrees: the branch on `origin`
-   * (written without the `origin/` prefix, e.g. "develop") that fresh
-   * worktree worktrees are created from and set upstream to. A per-create
-   * `branch` option overrides it. Unset → the remote's default branch.
-   */
-  referenceBranch?: string
 }
 
 /**
@@ -1241,6 +1234,10 @@ export interface ProjectSummary {
   /** The agent this project was last created with; absent until the first
    *  create, when `claude` answers. What the create form opens on. */
   lastTool?: AgentTool
+  /** The branch this project was last created from, when that create named
+   *  one. What the create form's Branch opens on (while origin still has
+   *  it); a create naming no branch does not use it. */
+  lastBranch?: string
   /** Per agent, what it was last created with here — the create form's
    *  memory, resolved against its fallbacks by `resolveToolCreateDefaults`
    *  so the form shows what the server would run. */

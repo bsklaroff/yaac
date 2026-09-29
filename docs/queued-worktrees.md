@@ -80,7 +80,7 @@ A tool other than the parent's takes that tool's create defaults
 cannot supply is refused rather than stored empty.
 
 `baseBranch` is recorded with the worktree row at creation — every input
-(`options.branch ?? config.referenceBranch ?? getDefaultBranch`) is a local
+(`options.branch ?? getDefaultBranch`) is a local
 read — so a parent that is still provisioning supplies its branch. The
 `base-branch-resolved` event survives only for a claimed spare's re-branch.
 `id=$(yaac-mama create …); yaac-mama queue --parent-worktree "$id" …` can arrive
