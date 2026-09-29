@@ -24,7 +24,6 @@ import {
   MoreIcon,
   PinIcon,
   QueuedIcon,
-  RenameIcon,
   RestartIcon,
 } from '#lib/icons'
 import { agentLabel, worktreeModel } from '#lib/agentLabel'
@@ -156,8 +155,8 @@ function heldAsStopped(h: HeldWorktreeEntry): StoppedWorktreeEntry {
  *
  * A group is shown when it is pinned, holds at least one live worktree, or has
  * one provisioning into it, and a shown group lists ALL its members: live ones
- * as ordinary rows, stopped ones as ghost rows with a restart action, folded
- * behind a count at the foot of the section so they don't crowd it. So an
+ * as ordinary rows, stopped ones as ghost rows with a restart action, hidden
+ * at the foot of the section until asked for so they don't crowd it. So an
  * unpinned group whose worktrees have all stopped simply disappears — its row
  * survives on the server, and restarting a member brings the whole section
  * back — while pinning keeps it on screen as somewhere to restart into.
@@ -172,7 +171,7 @@ function heldAsStopped(h: HeldWorktreeEntry): StoppedWorktreeEntry {
  * is the exception: it keeps a stopped row in its normal place, the default
  * list included, and holds its group on screen as a live member would, so
  * what is queued under it stays visible until it has run or been discarded —
- * which is also why it is never folded away with the ghosts.
+ * which is also why it is never hidden with the ghosts.
  * Each queued worktree nests under the row it waits on; one whose parent has
  * no row here goes to the top of the list (`orphans`).
  */
@@ -630,11 +629,15 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorktreeEntry }): JSX.E
 
 /**
  * One named group: a collapsible section holding its live rows, its held
- * rows, and then its ghost rows behind their own expander, and a
- * whole-section drop zone. The header carries the same
- * overlay actions a worktree row does — rename inline, pin (keep the section
- * when nothing in it is live), and delete, which needs no confirmation
- * because it only releases the worktrees back to the default list.
+ * rows, and then its ghost rows, and a whole-section drop zone. The header
+ * counts live members against all of them, and its `…` menu renames inline,
+ * pins (keep the section when nothing in it is live), shows or hides the
+ * ghost rows, and deletes, which needs no confirmation because it only
+ * releases the worktrees back to the default list.
+ *
+ * Ghost rows start hidden and come back hidden whenever the section remounts.
+ * A section with nothing but ghosts has nothing else to expand to, so there
+ * its caret and the menu item are one toggle.
  */
 function GroupSection({
   section,
@@ -656,6 +659,15 @@ function GroupSection({
 }): JSX.Element {
   const { group, provisioning, members, held, ghosts } = section
   const [open, setOpen] = useState(true)
+  const [showStopped, setShowStopped] = useState(false)
+  const onlyGhosts = provisioning.length + members.length + held.length === 0
+  const expanded = onlyGhosts ? showStopped : open
+  // A failed provisioning row is on screen, but nothing is running behind it.
+  const active = provisioning.filter((p) => !p.error).length + members.length
+  const total = provisioning.length + members.length + held.length + ghosts.length
+  // An unread death is flagged on the header, or hidden ghosts would hide
+  // which group it happened in.
+  const died = ghosts.filter(isUnseenDeath).length
   const {
     editing,
     seed,
@@ -668,6 +680,17 @@ function GroupSection({
       .catch((e: unknown) => console.error('group rename failed', e))
   })
 
+  // In the all-stopped case the caret writes both, so the section keeps its
+  // state when a live row (a restart, say) hands the caret back to `open`.
+  const toggleExpanded = (next: boolean): void => {
+    if (onlyGhosts) setShowStopped(next)
+    setOpen(next)
+  }
+  const toggleStopped = (): void => {
+    // Showing them opens the section too, or the pick would do nothing visible.
+    if (!showStopped) setOpen(true)
+    setShowStopped(!showStopped)
+  }
   const togglePinned = (): void => {
     void setWorktreeGroupPinned(group.projectSlug, group.groupId, !group.pinned)
       .catch((e: unknown) => console.error('group pin failed', e))
@@ -684,7 +707,7 @@ function GroupSection({
       aria-label={group.name}
       className={clsx('py-1', dropTarget && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
     >
-      <Collapsible.Root open={open} onOpenChange={setOpen}>
+      <Collapsible.Root open={expanded} onOpenChange={toggleExpanded}>
         <div className="group relative">
           {editing ? (
             <div className="px-3 py-1">
@@ -703,52 +726,30 @@ function GroupSection({
           ) : (
             <>
               <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
-                text-text-faint outline-none transition hover:text-text-dim group-hover:pr-20">
-                <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
+                text-text-faint outline-none transition hover:text-text-dim group-hover:pr-9 max-md:pr-11">
+                <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', expanded && 'rotate-90')} />
                 {/* Pinned is a property of the group, not a hover action's
                     state, so it stays visible next to the name. */}
                 {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
                 <span className="truncate">{group.name}</span>
-                <span className="text-text-faint/70">
-                  {provisioning.length + members.length + held.length + ghosts.length}
-                </span>
+                <span className="text-text-faint/70">({active}/{total})</span>
+                {died > 0 && <span className="text-[#d65858]">· {died} died</span>}
               </Collapsible.Trigger>
 
-              {/* Overlaid as siblings (the trigger is itself a button) and
-                  pointer-inert until hover, exactly like the row actions. */}
-              <button
-                onClick={startRename}
-                title="Rename group"
-                aria-label="Rename group"
-                className="absolute right-14 top-0.5 flex h-5 w-5 items-center justify-center rounded text-text-faint
-                  opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-                  group-hover:pointer-events-auto group-hover:opacity-100
-                  max-md:right-16 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-              >
-                <RenameIcon size={12} />
-              </button>
-              <button
-                onClick={togglePinned}
-                title={group.pinned ? 'Unpin group' : 'Pin group (keep it when nothing is running)'}
-                aria-label={group.pinned ? 'Unpin group' : 'Pin group'}
-                className="absolute right-8 top-0.5 flex h-5 w-5 items-center justify-center rounded text-text-faint
-                  opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-                  group-hover:pointer-events-auto group-hover:opacity-100
-                  max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-              >
-                <PinIcon size={12} className={clsx(group.pinned && 'rotate-45')} />
-              </button>
-              <button
-                onClick={remove}
-                title="Delete group (its worktrees move back to the list above)"
-                aria-label="Delete group"
-                className="absolute right-2 top-0.5 flex h-5 w-5 items-center justify-center rounded text-text-faint
-                  opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-                  group-hover:pointer-events-auto group-hover:opacity-100
-                  max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-              >
-                <CloseIcon size={13} />
-              </button>
+              {/* A sibling of the trigger, which is itself a button. */}
+              <RowMenu
+                label="Group actions"
+                position="right-2 top-0.5"
+                items={[
+                  { label: 'Rename', onSelect: startRename },
+                  { label: group.pinned ? 'Unpin' : 'Pin', onSelect: togglePinned },
+                  ...(ghosts.length > 0
+                    ? [{ label: showStopped ? 'Hide stopped worktrees' : 'Show stopped worktrees', onSelect: toggleStopped }]
+                    : []),
+                  'separator',
+                  { label: 'Delete group', onSelect: remove },
+                ]}
+              />
             </>
           )}
         </div>
@@ -774,35 +775,10 @@ function GroupSection({
               <QueuedSet parentId={d.worktreeId} />
             </Fragment>
           ))}
-          {ghosts.length > 0 && <StoppedSet ghosts={ghosts} />}
+          {showStopped && ghosts.map((d) => <DeletedWorktreeRow key={d.worktreeId} entry={d} />)}
         </Collapsible.Panel>
       </Collapsible.Root>
     </div>
-  )
-}
-
-/** A group's stopped members, folded behind a count at the foot of the
- *  section — closed by default, so a long-lived group stays as short as its
- *  live rows. It comes back closed whenever it remounts: the group collapsed,
- *  dropped off screen, or ran out of stopped members. A death the user has
- *  not read yet is counted on the trigger, as `QueuedSet` counts a failed
- *  launch, or a closed fold would hide which group it happened in. */
-function StoppedSet({ ghosts }: { ghosts: StoppedWorktreeEntry[] }): JSX.Element {
-  const [open, setOpen] = useState(false)
-  const n = ghosts.length
-  const died = ghosts.filter(isUnseenDeath).length
-  return (
-    <Collapsible.Root open={open} onOpenChange={setOpen}>
-      <Collapsible.Trigger className="mx-2 flex items-center gap-1 px-2.5 py-1 text-xs
-        text-text-faint outline-none transition hover:text-text-dim">
-        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-        {n} stopped worktree{n === 1 ? '' : 's'}
-        {died > 0 && <span className="text-[#d65858]">· {died} died</span>}
-      </Collapsible.Trigger>
-      <Collapsible.Panel>
-        {ghosts.map((d) => <DeletedWorktreeRow key={d.worktreeId} entry={d} />)}
-      </Collapsible.Panel>
-    </Collapsible.Root>
   )
 }
 
@@ -1569,7 +1545,12 @@ const MENU_ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2
  * pointer pick, whose `…` would otherwise stay pinned on a row the pointer
  * has left.
  */
-function RowMenu({ label, items }: { label: string; items: RowMenuItem[] }): JSX.Element {
+function RowMenu({ label, items, position = 'right-2 top-2' }: {
+  label: string
+  items: RowMenuItem[]
+  /** Where the trigger sits in its row — a group header is shorter. */
+  position?: string
+}): JSX.Element {
   const trigger = useRef<HTMLButtonElement>(null)
   // Kept until the next open: the popup reads it for `finalFocus` as it
   // unmounts, after the item has already run.
@@ -1591,12 +1572,12 @@ function RowMenu({ label, items }: { label: string; items: RowMenuItem[] }): JSX
         ref={trigger}
         title={label}
         aria-label={label}
-        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+        className={clsx(position, `absolute flex h-5 w-5 items-center justify-center rounded text-text-faint
           opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
           group-hover:pointer-events-auto group-hover:opacity-100
           focus-visible:pointer-events-auto focus-visible:opacity-100
           data-[popup-open]:pointer-events-auto data-[popup-open]:opacity-100 data-[popup-open]:bg-surface-3
-          max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+          max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100`)}
       >
         <MoreIcon size={14} />
       </Menu.Trigger>
