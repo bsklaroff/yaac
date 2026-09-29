@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { JSX } from 'react'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
@@ -119,31 +120,37 @@ const queuedEntry = (id: string, over: Partial<QueuedWorktreeEntry> = {}): Queue
   ...over,
 })
 
+interface ListOpts {
+  groups?: WorktreeGroupSummary[]
+  projectSlug?: string | null
+  provisioning?: ProvisioningWorktreeEntry[]
+  queued?: QueuedWorktreeEntry[]
+  held?: HeldWorktreeEntry[]
+  drafts?: DraftWorktreeEntry[]
+}
+
+/** Render the list; the returned function re-renders the same instance with
+ *  new props, as a fresh snapshot would. */
 function renderList(
   worktrees: WorktreeListEntry[],
-  opts: {
-    groups?: WorktreeGroupSummary[]
-    projectSlug?: string | null
-    provisioning?: ProvisioningWorktreeEntry[]
-    queued?: QueuedWorktreeEntry[]
-    held?: HeldWorktreeEntry[]
-    drafts?: DraftWorktreeEntry[]
-  } = {},
-): void {
+  opts: ListOpts = {},
+): (worktrees: WorktreeListEntry[], opts?: ListOpts) => void {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  const element = (w: WorktreeListEntry[], o: ListOpts): JSX.Element => (
     <QueryClientProvider client={client}>
       <WorktreeList
-        projectSlug={opts.projectSlug === undefined ? 'proj' : opts.projectSlug}
-        worktrees={worktrees}
-        groups={opts.groups ?? []}
-        provisioning={opts.provisioning ?? []}
-        queued={opts.queued ?? []}
-        held={opts.held ?? []}
-        drafts={opts.drafts ?? []}
+        projectSlug={o.projectSlug === undefined ? 'proj' : o.projectSlug}
+        worktrees={w}
+        groups={o.groups ?? []}
+        provisioning={o.provisioning ?? []}
+        queued={o.queued ?? []}
+        held={o.held ?? []}
+        drafts={o.drafts ?? []}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+  const { rerender } = render(element(worktrees, opts))
+  return (w, o = {}) => rerender(element(w, o))
 }
 
 /** Pick an item from a row's `…` menu; the item runs once the menu closes. */
@@ -324,6 +331,53 @@ describe('WorktreeList', () => {
       expect(screen.getByText('branch gone')).toBeTruthy()
     })
 
+    it('collapses a worktree\'s whole queued set behind one count, wherever the worktree moves', () => {
+      const queued = [
+        queuedEntry('q1'),
+        queuedEntry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1' }),
+        queuedEntry('q3'),
+      ]
+      const rerender = renderList([entry({ worktreeId: 'a', title: 'Parent' })], { queued })
+      // The count reaches through the chain, and only the top-level set has
+      // an expander — not q1, which has a chain of its own.
+      expect(screen.getAllByRole('button', { name: /queued worktree/ })).toHaveLength(1)
+      fireEvent.click(screen.getByRole('button', { name: '3 queued worktrees' }))
+      expect(screen.queryByText('Step q1')).toBeNull()
+      expect(screen.queryByText('Step q2')).toBeNull()
+
+      // Filed into a group, then stopped (held): still collapsed.
+      rerender([entry({ worktreeId: 'a', title: 'Parent', groupId: 'g1' })], {
+        queued,
+        groups: [group()],
+      })
+      expect(screen.getByRole('group', { name: group().name }).textContent).toContain('3 queued worktrees')
+      expect(screen.queryByText('Step q1')).toBeNull()
+      const held = [{ worktreeId: 'a', projectSlug: 'proj', tool: 'claude' as const, title: 'Parent',
+        stoppedAt: '2026-08-10 00:00:00' }]
+      rerender([], { queued, held })
+      expect(screen.getByText('Parent')).toBeTruthy()
+      expect(screen.queryByText('Step q1')).toBeNull()
+
+      // A failed launch shows on the expander, since its row is hidden.
+      rerender([], { queued: [{ ...queued[0], launchError: 'branch gone' }, ...queued.slice(1)], held })
+      expect(screen.getByRole('button', { name: /3 queued worktrees.*1 failed/ })).toBeTruthy()
+      expect(screen.queryByText('branch gone')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: /3 queued worktrees/ }))
+      expect(screen.getByText('branch gone')).toBeTruthy()
+      expect(screen.getByText('Step q2')).toBeTruthy()
+    })
+
+    it('opens the next set queued under a worktree whose last set emptied', async () => {
+      const rerender = renderList([entry({ worktreeId: 'a', title: 'Parent' })], { queued: [queuedEntry('q1')] })
+      fireEvent.click(screen.getByRole('button', { name: '1 queued worktree' }))
+      expect(screen.queryByText('Step q1')).toBeNull()
+      rerender([entry({ worktreeId: 'a', title: 'Parent' })])
+      await waitFor(() => expect(screen.queryByRole('button', { name: /queued worktree/ })).toBeNull())
+      rerender([entry({ worktreeId: 'a', title: 'Parent' })], { queued: [queuedEntry('q5')] })
+      expect(screen.getByText('Step q5')).toBeTruthy()
+    })
+
     it('keeps a held parent in its place with why it died, and puts an orphan on top', () => {
       renderList([], {
         queued: [
@@ -467,8 +521,9 @@ describe('WorktreeList', () => {
   })
 
   describe('group header actions', () => {
-    const renderGrouped = (): void =>
+    const renderGrouped = (): void => {
       renderList([entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
+    }
 
     it('pins, deletes, and renames the group inline', async () => {
       renderGrouped()
