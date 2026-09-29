@@ -118,8 +118,8 @@ export function onStreamHealthLost(fn: () => void): void {
 
 /**
  * Register the handler fired when a worktree's *set* of live conversations
- * changes — one appeared, one went, one finally learned its id, or one
- * switched model or permission mode (which is how a `/model` or a Shift+Tab
+ * changes — one appeared, one went, one learned its id (a new conversation
+ * on a pane, too), or one switched model or permission mode (which is how a `/model` or a Shift+Tab
  * reaches the row: pushed, not polled out of a transcript). Separate from the
  * snapshot notification on purpose: that one fires on every turn boundary,
  * and its consumer only pushes a snapshot. This one drives a reconcile pass,
@@ -189,10 +189,9 @@ export function readAgentStatus(
 
 /**
  * Every conversation the watcher currently sees running, or undefined when it
- * has not enumerated them yet. The agent-session registry joins this with each
- * mode's own history (the hook's pane pointers for `tui`, the recorded rows
- * for `acp`) to decide which conversations are active — and skips the update
- * entirely on undefined.
+ * has not enumerated them yet. The agent-session registry records every one
+ * that names its conversation, and those alone are active — and it skips the
+ * update entirely on undefined.
  */
 export function liveAgents(slug: string, worktreeId: string): LiveAgent[] | undefined {
   return store.get(key(slug, worktreeId))?.liveAgents
@@ -276,7 +275,7 @@ export function setLiveAgents(slug: string, worktreeId: string, agents: LiveAgen
     || previous.length !== agents.length
     || agents.some((a) => !previous.some((p) =>
       p.handle === a.handle && p.agentSessionId === a.agentSessionId && p.model === a.model
-      && p.reportedMode === a.reportedMode))
+      && p.reportedMode === a.reportedMode && p.transcriptPath === a.transcriptPath))
   e.liveAgents = agents
   for (const handle of [...e.agents.keys()]) if (!next.has(handle)) e.agents.delete(handle)
   e.updatedAtMs = Date.now()

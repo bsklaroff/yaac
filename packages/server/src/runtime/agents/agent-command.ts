@@ -14,7 +14,6 @@ import {
 } from '@yaac/shared/types'
 import { doubleQuoted, envJsonAssignment, shellEscape } from '#lib/shell'
 import { CODEX_TITLE_ITEMS, codexLaunchConfig } from './codex'
-import { OPENCODE_REPORT_PLUGIN } from './agent-reporters'
 
 /**
  * Every `tmux` invocation this file authors routes through this prefix so
@@ -208,8 +207,7 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
 
 /**
  * The `OPENCODE_CONFIG_CONTENT` assignment for the launch command: the
- * posture and yaac's model-reporting plugin, plus the model when one was
- * asked for (`provider/model`; omitted,
+ * posture, plus the model when one was asked for (`provider/model`; omitted,
  * opencode uses the model persisted in the shared config, or its own
  * default).
  *
@@ -222,9 +220,6 @@ export function opencodeConfigArg(mode: PermissionMode, model: string | undefine
   const config = {
     ...OPENCODE_POSTURE[postureFor('opencode', mode)],
     ...(model === undefined ? {} : { model }),
-    // The model reporter (see `ensureAgentReporters`). `$HOME` is left for the
-    // launch shell to expand, which the double quotes allow.
-    plugins: [OPENCODE_REPORT_PLUGIN],
   }
   return envJsonAssignment('OPENCODE_CONFIG_CONTENT', config)
 }
@@ -257,18 +252,19 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // binds it to whichever command runs.
     //
     // The title items are how a `/model` reaches yaac (see
-    // `CODEX_TITLE_ITEMS`); the rest is its session hook and the folder
-    // trust that, with the hook-trust bypass, keeps codex from opening any
+    // `CODEX_TITLE_ITEMS`); the rest is the update check and folder trust
+    // that, with the hook-trust bypass (its hooks are in its home's
+    // hooks.json, `ensureAgentReporters`), keeps codex from opening any
     // startup screen (`codexLaunchConfig`). Each is TOML, double-quoted for
     // the same reason `envJsonAssignment` is.
     const config = [
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
       ...codexLaunchConfig(spec.paths?.repoGitDir),
     ]
-    // A resume records its own conversation on the pane before codex starts:
+    // A resume names its own conversation on the pane before codex starts:
     // codex fires no SessionStart for a resumed conversation until its next
-    // turn, and without a sighting this life the conversation reads inactive,
-    // so a second restart before any prompt would not bring it back.
+    // turn, and a conversation no pane names reads inactive, so a second
+    // restart before any prompt would not bring it back.
     //
     // `-C` names the workspace outright rather than leaving codex to take the
     // pane's cwd: a resume whose cwd differs from the one the conversation
@@ -342,14 +338,21 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // spawn and leave running. The server is what reads the config, so a
     // child inheriting this process's env is what makes the posture and
     // model per-worktree, and nothing outlives the window to carry a stale
-    // one into the next launch. --continue resumes the one session in the
-    // per-worktree data dir. The TUI takes no model or agent flag — both
+    // one into the next launch. The TUI takes no model or agent flag — both
     // ride in the config (`opencodeConfigArg`) — and refuses an unknown one
     // outright (usage, exit: a dead window), so none is invented here.
+    //
+    // A resume names its conversation on the pane first, as codex's does:
+    // opencode reports a session only as it creates one. A session opencode
+    // minted (`ses_…`) resumes by id; anything else is the worktree-id pin of
+    // a create whose session was never named, and continues the newest one in
+    // the per-worktree data dir.
+    const session = worktreeId.startsWith('ses_') ? `--session ${worktreeId}` : '--continue'
     return [
+      resume ? `yaac-agent-links "" opencode ${worktreeId};` : '',
       opencodeConfigArg(mode, model),
       'opencode --standalone',
-      resume ? '--continue' : '',
+      resume ? session : '',
     ].filter(Boolean).join(' ')
   }
   // claude names all five postures on one flag, so the mapping is a rename.
@@ -383,12 +386,11 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // title still reaches tmux — the escape is written to the pty either way,
   // so `#{pane_title}` is set exactly as before.
   //
-  // Only `TMUX` is dropped. `TMUX_PANE` stays, because the agent-links hook
-  // reads it to record which pane a conversation started in
-  // (worktree-bin/yaac-agent-links) — dropping it would silently cost
-  // conversation discovery. And the value itself survives as `YAAC_TMUX`,
-  // which is how the model hook finds the server to set its pane option on
-  // (worktree-bin/yaac-agent-report) without claude seeing a multiplexer.
+  // Only `TMUX` is dropped. `TMUX_PANE` stays, because the hooks set their
+  // pane options on it (worktree-bin/yaac-agent-links, yaac-agent-report) —
+  // dropping it would silently cost every conversation's record. And the
+  // value itself survives as `YAAC_TMUX`, which is how they find the server
+  // to set those options on without claude seeing a multiplexer.
   //
   // What claude gives up, largest first:
   //  - Agent teams lose the tmux pane backend. Claude picks it by the same

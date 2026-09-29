@@ -144,7 +144,7 @@ speak alone.
   listing, project teardown — plus the prewarm pool, spawn policy and its
   proxy drain, the discovery sweeps, prompt capture, the provisioning
   registry, the stale reaper, and what a worktree keeps on disk: checkout
-  seeding and the in-pod hook's session-starts log), `projects/` (a project
+  seeding), `projects/` (a project
   whole — which exist, from rows, and what each one holds on disk: the
   clone's branches, the two config layers, git credentials, dockerfiles and
   build files, plus the image-build retry, which hands the runtime the

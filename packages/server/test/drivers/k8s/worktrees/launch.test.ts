@@ -74,11 +74,11 @@ import path from 'node:path'
 import { setDataDir } from '@yaac/shared/paths'
 import {
   cachedPackagesDir,
+  claudeDir,
   imageStoreDir,
   projectDir,
   secretKeyPath,
   worktreeDir,
-  worktreeSessionStartsPath,
 } from '@yaac/shared/project-paths'
 
 // Mount sources are resolved from the tier a path lives under, so the
@@ -440,8 +440,8 @@ describe('launchWorkspace', () => {
       mounts: [
         { source: { kind: 'hostPath', path: worktreeDir('proj', 's1') }, mountPath: '/workspace' },
         {
-          source: { kind: 'hostPath', path: worktreeSessionStartsPath('proj', 's1'), type: 'File' },
-          mountPath: '/home/yaac/.yaac/session-starts.jsonl',
+          source: { kind: 'hostPath', path: path.join(claudeDir('proj'), 'settings.json'), type: 'File' },
+          mountPath: '/home/yaac/.claude/settings.json',
         },
         { source: { kind: 'hostPath', path: cachedPackagesDir('proj') }, mountPath: '/home/yaac/.cached-packages' },
         {
@@ -459,7 +459,7 @@ describe('launchWorkspace', () => {
     // GLOBAL: subPaths of the one claim, a File included.
     expect(volume(byMount['/workspace'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
     expect(byMount['/workspace'].subPath).toBe('projects/proj/worktrees/s1')
-    expect(byMount['/home/yaac/.yaac/session-starts.jsonl'].subPath).toBe('projects/proj/meta/s1.session-starts.jsonl')
+    expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe('projects/proj/claude/settings.json')
     // NODE-LOCAL: the pod's own node tree.
     expect(volume(byMount['/home/yaac/.cached-packages'].name)?.hostPath)
       .toEqual({ path: `${NODE_ROOT}/projects/proj/.cached-packages`, type: 'DirectoryOrCreate' })

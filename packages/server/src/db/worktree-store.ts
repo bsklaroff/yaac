@@ -65,9 +65,6 @@ export interface WorktreeRow {
   spare: boolean
   /** When the pod currently hosting it came up, if one is. */
   lifeStartedAt?: Date
-  /** The session-starts log's length when that life began — the boundary the
-   *  discovery fold reads to tell this life's panes from a dead pod's. */
-  lifeLogBytes: number
   /** The permission posture its agents run under, as last reported — what a
    *  restart relaunches in and what `yaac-mama create` caps a sibling at. */
   permissionMode: PermissionMode
@@ -116,7 +113,6 @@ function toRow(r: Row): WorktreeRow {
     deathSeen: r.deathSeen,
     spare: r.spare,
     ...(r.lifeStartedAt !== null ? { lifeStartedAt: r.lifeStartedAt } : {}),
-    lifeLogBytes: r.lifeLogBytes,
     permissionMode: r.permissionMode as PermissionMode,
     ...(r.model !== null ? { model: r.model } : {}),
     ...(r.mode !== null ? { mode: r.mode as AgentMode } : {}),
@@ -257,33 +253,27 @@ export async function restoreSpareWorktree(
  * handle the previous one left behind — in one transaction, because the two
  * are the same fact.
  *
- * A **life** is one pod. tmux pane ids restart at `%0`, so a pane id the
- * last life recorded would name a pane *this* life owns: a dead conversation
- * would report as live on another conversation's pane, and the wrongly-active
- * set is what freezes at teardown for the next restart to resume. Clearing
- * the pane ids as the life is stamped is what makes that impossible, and
- * doing it atomically is what stops a crash between the two halves from
- * leaving stale handles against a fresh life.
- *
- * `logBytes` is the session-starts log's length right now — before this pod
- * has appended anything, so everything already in it belongs to a previous
- * life. The fold reads it back to tell the two apart, because the log is
- * never truncated and its lines carry no life marker.
+ * A **life** is one pod. Handles restart with it — tmux pane ids at `%0`,
+ * acpd sockets at the tool's name — so a handle the last life recorded would
+ * name one *this* life owns, and the ACP driver re-addresses a conversation
+ * by its recorded handle (`recordedConversationHandles`). Clearing them as
+ * the life is stamped is what makes that impossible, and doing it atomically
+ * is what stops a crash between the two halves from leaving stale handles
+ * against a fresh life.
  *
  * Propagates its failures. Every other write here is best-effort, but a life
- * that was not stamped means the fold trusts a dead pod's panes, which is
+ * that was not stamped leaves a dead pod's panes on the rows, which is
  * exactly the corruption this exists to prevent — the create should fail
  * instead.
  */
 export async function recordWorktreeLife(
   projectSlug: string,
   worktreeId: string,
-  logBytes: number,
 ): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
     await tx.update(worktrees)
-      .set({ lifeStartedAt: new Date(), lifeLogBytes: logBytes })
+      .set({ lifeStartedAt: new Date() })
       .where(key(projectSlug, worktreeId))
     await tx.update(worktreeAgentSessions)
       .set({ paneId: null })

@@ -21,11 +21,8 @@ import {
   projectsRoots,
   repoDir,
   worktreeDir,
-  worktreeMetaDir,
-  worktreeSessionStartsPath,
   worktreeStateDir,
 } from '@yaac/shared/project-paths'
-import { deleteSessionStartsLog } from './session-starts'
 import { shellQuote } from '#lib/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
 import type { TeardownTarget } from '#drivers/contract'
@@ -89,8 +86,7 @@ async function checkoutEphemeralPaths(projectSlug: string, worktreeId: string): 
 /**
  * Remove everything on disk that belongs to one worktree, in one call.
  *
- * The counterpart to a create: the checkout, git's admin dir for it, the
- * in-pod hook's session-starts log, and the
+ * The counterpart to a create: the checkout, git's admin dir for it, and the
  * per-worktree opencode database. Every one of them is keyed by the worktree
  * id, which is what makes this a single function rather than a list each
  * caller has to remember — the opencode checkpoint included, which is
@@ -140,7 +136,6 @@ export async function deleteWorktreeState(
     fs.rm(path.join(adminDir, 'locked'), { force: true })
       .then(() => fs.rm(adminDir, { recursive: true, force: true })),
     fs.rm(opencodeCheckpointDir(projectSlug, worktreeId), { recursive: true, force: true }),
-    deleteSessionStartsLog(projectSlug, worktreeId),
   ].map((p) => p.then(() => true, (err: unknown) => {
     serverLog(`[server] delete worktree state ${projectSlug}/${worktreeId}: ${String(err)}`)
     return false
@@ -381,12 +376,8 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
   }
 }
 
-/** Suffix of the in-pod hook's log, as `worktreeSessionStartsPath` names it. */
-const SESSION_STARTS_SUFFIX = '.session-starts.jsonl'
-
 /**
- * Collect the worktree state of prewarmed spares whose pod is gone, and the
- * session-starts logs of worktrees that no longer exist.
+ * Collect the worktree state of prewarmed spares whose pod is gone.
  *
  * The reap path removes a spare's state with its pod, but only while it is
  * running: its plan is derived from live pods, so a spare whose pod died out
@@ -405,9 +396,8 @@ async function gcOrphanSpares(
   sweepStartedAtMs: number,
 ): Promise<void> {
   const rows = await listProjectWorktreeIds(slug).catch(() => undefined)
-  // A failed read must not reap: every id would look rowless to the log
-  // sweep below and like nothing at all to the spare sweep, and guessing
-  // here deletes checkouts.
+  // A failed read must not reap: every id would look like nothing at all to
+  // the spare sweep, and guessing here deletes checkouts.
   if (rows === undefined) return
   for (const [sid, spare] of rows) {
     if (!spare || liveWorktreeIds.has(sid)) continue
@@ -420,30 +410,12 @@ async function gcOrphanSpares(
     await deleteSpareWorktreeRow(slug, sid).catch(() => { /* next sweep */ })
     console.log(`Removed orphan prewarmed spare ${slug}/${sid}`)
   }
-
-  // A log whose worktree has no row is a delete that got half way: the row
-  // and the log go together, so a survivor answers to nothing and nothing
-  // else will ever name it again.
-  let entries: string[] = []
-  try {
-    entries = await fs.readdir(worktreeMetaDir(slug))
-  } catch {
-    return // no meta dir → nothing to sweep
-  }
-  for (const name of entries) {
-    if (!name.endsWith(SESSION_STARTS_SUFFIX)) continue
-    const sid = name.slice(0, -SESSION_STARTS_SUFFIX.length)
-    if (liveWorktreeIds.has(sid) || rows.has(sid)) continue
-    const log = worktreeSessionStartsPath(slug, sid)
-    if (await inUseBySweep(log, sid, sweepStartedAtMs)) continue
-    await fs.rm(log, { force: true }).catch(() => { /* next sweep */ })
-  }
 }
 
 /**
  * The orphan sweep: what a worktree that no longer exists left behind, on
- * both tiers. The GLOBAL half — dead spares' checkouts, session-starts
- * logs and `sessions/<id>` dirs — is walked here, on the server's own
+ * both tiers. The GLOBAL half — dead spares' checkouts and `sessions/<id>`
+ * dirs — is walked here, on the server's own
  * filesystem. The NODE-LOCAL half — opencode working copies — is handed
  * to the runtime (`reapNodeLocal`) with the
  * same live set, because on a cluster those bytes are on whichever node

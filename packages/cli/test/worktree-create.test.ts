@@ -21,18 +21,11 @@ vi.mock('node:fs/promises', () => ({
     readdir: vi.fn().mockResolvedValue([]),
     cp: vi.fn().mockResolvedValue(undefined),
     copyFile: vi.fn().mockResolvedValue(undefined),
-    // The worktree metadata document: create writes it whole (tmp + rename)
-    // and stamps a life, which measures the session-starts log first. Nothing
-    // exists in this fake filesystem, so `stat` rejects like `readFile` — a
-    // fresh worktree's log length is zero either way.
-    //
-    // Inline implementations rather than `.mockResolvedValue()`: `mockReset`
-    // restores the function `vi.fn` was constructed with but strips anything
-    // configured afterwards, so these survive the `resetAllMocks` in each
-    // suite's beforeEach without having to be re-primed in all three.
-    stat: vi.fn(() => Promise.reject(new Error('missing'))),
+    // Inline rather than `.mockResolvedValue()`: `mockReset` restores the
+    // function `vi.fn` was constructed with but strips anything configured
+    // afterwards, so this survives the `resetAllMocks` in each suite's
+    // beforeEach without having to be re-primed in all three.
     rename: vi.fn(() => Promise.resolve()),
-    appendFile: vi.fn(() => Promise.resolve()),
   },
 }))
 
@@ -146,10 +139,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   worktreeDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/worktrees/${worktreeId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
-  // The log the in-pod hook appends its session starts to — create
-  // pre-creates it so the pod's `File` mount resolves on the first attempt.
-  worktreeSessionStartsPath: vi.fn(
-    (slug: string, wt: string) => `/tmp/${slug}/meta/${wt}.session-starts.jsonl`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
   worktreeStateDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),
   credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
@@ -1190,8 +1179,8 @@ describe('createWorktree', () => {
 })
 
 describe('buildAgentCmd', () => {
-  // codex's line without its `-c` settings (its title items, session hook
-  // and folder trust), which the server's agent-command test pins exactly.
+  // codex's line without its `-c` settings (its title items and folder
+  // trust), which the server's agent-command test pins exactly.
   const bare = (cmd: string): string => cmd.replace(/ -c "(?:[^"\\]|\\.)*"/g, '')
 
   it('returns the codex respawn command unchanged', () => {
@@ -1200,7 +1189,7 @@ describe('buildAgentCmd', () => {
     const resume = buildAgentCmd({
       tool: 'codex', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
-    // A resume records its conversation on the pane before codex starts.
+    // A resume names its conversation on the pane before codex starts.
     expect(bare(resume)).toBe(
       'yaac-agent-links "$CODEX_HOME" codex sid-abc; codex --dangerously-bypass-hook-trust --yolo resume sid-abc',
     )

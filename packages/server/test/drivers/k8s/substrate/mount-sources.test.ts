@@ -14,7 +14,6 @@ import {
   cachedPackagesDir,
   claudeDir,
   imageStoreDir,
-  worktreeSessionStartsPath,
 } from '@yaac/shared/project-paths'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 
@@ -39,13 +38,13 @@ describe('resolveMountSource', () => {
   it('turns a global File into a subPath to that file, keeping readOnly', () => {
     setDataDir('/data/yaac')
     const m: PodMount = {
-      source: { kind: 'hostPath', path: worktreeSessionStartsPath('demo', 'w1'), type: 'File' },
-      mountPath: '/home/yaac/.yaac/session-starts.jsonl',
+      source: { kind: 'hostPath', path: path.join(claudeDir('demo'), 'settings.json'), type: 'File' },
+      mountPath: '/home/yaac/.claude/settings.json',
       readOnly: true,
     }
     expect(resolveMountSource(m)).toEqual({
-      source: { kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/meta/w1.session-starts.jsonl' },
-      mountPath: '/home/yaac/.yaac/session-starts.jsonl',
+      source: { kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/claude/settings.json' },
+      mountPath: '/home/yaac/.claude/settings.json',
       readOnly: true,
     })
   })
@@ -121,7 +120,7 @@ describe('nodeLocalDirsOf', () => {
       { source: { kind: 'hostPath', path: cachedPackagesDir('demo') }, mountPath: '/home/yaac/.cached-packages' },
       { source: { kind: 'hostPath', path: path.join(cachedPackagesDir('demo'), 'modules', 'w1', 'node_modules') }, mountPath: '/workspace/node_modules' },
       { source: { kind: 'hostPath', path: cachedPackagesDir('demo') }, mountPath: '/twice' },
-      { source: { kind: 'hostPath', path: worktreeSessionStartsPath('demo', 'w1'), type: 'File' }, mountPath: '/f' },
+      { source: { kind: 'hostPath', path: path.join(claudeDir('demo'), 'settings.json'), type: 'File' }, mountPath: '/f' },
       // A store generation: a node-side writer's, mounted read-only.
       { source: { kind: 'hostPath', path: path.join(imageStoreDir('demo'), 'gen-1'), type: 'DirectoryOrCreate' }, mountPath: '/var/lib/shared-images', readOnly: true },
       { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },

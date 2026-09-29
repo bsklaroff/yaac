@@ -555,9 +555,9 @@ Grouped by what goes wrong today. "Follows" means plain path I/O.
 
 | Group | Calls | Today | Change |
 |---|---|---|---|
-| **Seeding writes into `claude/`** | `seedClaudeSettings`, `seedClaudeJson`, `adoptLegacyClaudeJson` (`domain/worktrees/seed.ts`); `ensureClaudeHooks` (`runtime/agents/claude.ts`) | `readFile` then a plain `writeFile` follow links. A planted `settings.json` link makes every create rewrite the target; a target that is not JSON is replaced by a small object, so the database file or another project's config can be clobbered. `ensureClaudeHooks` reads through the link and renames its output over it, copying the target's content into the pod's view. | `openRoot(claudeDir, sandboxLinkPolicy())`, `readFile` with a 1 MiB cap, `writeAtomic`. A link or FIFO in place of the file reads as missing, and the write replaces the link, never its target. |
+| **Seeding writes into `claude/`** | `seedClaudeSettings`, `seedClaudeJson`, `adoptLegacyClaudeJson` (`domain/worktrees/seed.ts`); `mergeHooks` in `ensureAgentReporters` (`runtime/agents/agent-reporters.ts`), for claude's `settings.json` and codex's `hooks.json` | `readFile` then a plain `writeFile` follow links. A planted `settings.json` link makes every create rewrite the target; a target that is not JSON is replaced by a small object, so the database file or another project's config can be clobbered. `mergeHooks` reads through the link and renames its output over it, copying the target's content into the pod's view. | `openRoot(claudeDir, sandboxLinkPolicy())`, `readFile` with a 1 MiB cap, `writeAtomic`. A link or FIFO in place of the file reads as missing, and the write replaces the link, never its target. |
 | **Transcript and log readers** | `findClaudeTranscript`, `listPiJsonlFiles`, `transcriptLastActiveMs` (`runtime/agents/transcripts.ts`); `scanJsonlForward` (`jsonl.ts`); `readAcpLog*`, `tailAcpLog`, `readAcpFirstPrompt` (`acp-log.ts`); `readClaudeTranscriptAsAcp`; `getAgentSessionTranscript` (`domain/worktrees/transcript.ts`); the discovery sweep, `stopped-list` and `detail` readers | Follow links, so a conversation view can render another project's transcript. Plain `open(… 'r')` blocks on a FIFO: a few planted FIFOs exhaust libuv's four-thread pool and stall every fs call in the server. The forward scan is unbounded. | Readers take a `FileHandle` from the tool's own root (`claude/`, `codex/`, `pi/`, `acp/<wt>/`), never `projectDir`. `transcript.ts`'s 64 MiB cap moves into the `open` / `readFile` call, where the stat-then-read race cannot bypass it. |
-| **Recorded transcript paths** | `resolveProjectPath` / `toProjectRelative` (`runtime/agents/transcripts.ts`) | Confined only to `projectDir`, by text. A hook line can name `known_hosts`, `repo/.git/config` or another worktree's files. | Resolve against the recording tool's own root, and refuse otherwise. Stored `agent_sessions.transcriptPath` values are project-relative and already live under a tool home, so existing rows stay valid. |
+| **Recorded transcript paths** | `resolveProjectPath` / `toProjectRelative` (`runtime/agents/transcripts.ts`) | Confined only to `projectDir`, by text. A pane-reported path can name `known_hosts`, `repo/.git/config` or another worktree's files. | Resolve against the recording tool's own root, and refuse otherwise. Stored `agent_sessions.transcriptPath` values are project-relative and already live under a tool home, so existing rows stay valid. |
 | **Skills discovery** | `subdirs`, `fsReader`, the plugin readers (`domain/skills/discover.ts`); `reconcileSharedSkillRoots` (`domain/skills/builtin.ts`) | `SKILL.md` is read through links (a link named `SKILL.md` exposes any server file through the skills API). Linked subdirs are accepted on purpose. The root `mkdir` / `rm` follows links. | Under a mediated runtime, `no-links` roots per tool skills dir and plugin dir, and `SKILL.md` capped at 256 KiB. Under containerless, `inside` rooted at the project dir: its skill links point into the install and the history dirs, and it has no boundary to defend. `reconcileSharedSkillRoots`'s per-entry `lstat` / `rm` / `symlink` run through the pinned root. |
 | **Checkout housekeeping** | `mkdirMountTarget` (`seed.ts`); `checkoutEphemeralPaths` (`domain/worktrees/cleanup.ts`) | Bespoke realpath-after-mkdir; a check-then-use race. | `openRoot(checkout, 'inside').mkdirp` / `.removeTree`. `mkdirMountTarget` is deleted. |
 | **Whole-tree deletes** | `deleteWorktreeState`, `project-purge.ts` | Node's `rm -rf` does not follow links. Both run with no live pod (`podGone` gate; project purge follows teardown). | No change. Add an assertion comment naming the `podGone` precondition. |
@@ -567,13 +567,12 @@ Not in scope, because the sandbox cannot write it:
 
 - `worktreeStateDir` staging (builtin skills and the worktree bin) is
   server-written and mounted read-only.
-- The session-starts log is a `File` mount inside a server-only `meta/`,
-  so the pod cannot swap the inode. Its *contents* are covered by 3.4.
 - `drivers/k8s/worktrees/changes.ts` runs git inside the pod.
 
 ### 3.4 Ids that come from the sandbox
 
-- **Session-starts `id`** is `z.string().min(1)` and is later joined into
+- **A pane-reported conversation `id`** (`parsePaneSession`) is held to
+  `[A-Za-z0-9._-]+` with no length bound, and is later joined into
   `acp/<wt>/${id}.jsonl` and `claude/projects/*/${id}.jsonl`.
 - **`adoptLog`** (`runtime/agents/acp-driver.ts`) renames to the ACP
   agent's reply `sessionId`, unchecked.
@@ -592,7 +591,7 @@ the file of the barrel function each path runs through:
 - `getAgentSessionTranscript` with a linked transcript (not found) and a
   FIFO (not found, returns promptly);
 - skills listing with a linked `SKILL.md`;
-- session-starts ingestion with an id containing `../`.
+- a pane-reported id containing `../`.
 
 ---
 

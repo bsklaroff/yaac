@@ -75,7 +75,6 @@ export {
   toProjectRelative,
   transcriptLastActiveMs,
 } from './transcripts'
-export { ensureClaudeHooks } from './claude'
 // codex is the one tool whose posture is read off its disk rather than pushed
 // on its pane, so a caller following it has to know it is codex anyway.
 export { getCodexPermissionMode } from './codex'

@@ -9,7 +9,7 @@ its **mode**, and there are two:
 | Server sees | tmux control-mode notifications | `session/update` notifications |
 | Browser sees | PTY bytes in xterm.js | structured messages in a chat pane |
 | Status from | pane titles / rendered content | prompt-turn boundaries |
-| Conversation ids from | the in-pod hook's session-starts log | `session/new`'s reply |
+| Conversation ids from | a pane option the tool's reporter sets | `session/new`'s reply |
 
 Mode is orthogonal to `AgentTool`: it selects the protocol, not which agent
 runs. Every tool has an adapter, and which one is the shared `ACP_ADAPTERS`
@@ -268,10 +268,11 @@ ACP mode adds exactly one column: `agent_sessions.mode`. A restart has to bring
 a conversation back the way it was started, and nothing else on disk says which
 that was.
 
-It *removes* more than it adds. A `tui` conversation is discovered — an in-pod
-hook appends a sighting and the reconciler joins recorded handles against the live
-pane set. An `acp` conversation is authored: `session/new` hands the server the
-id directly. No hook, no worktree-starts log, no join.
+Recording works the same for both: the live agent set names each running
+conversation, and the registry records exactly those as active
+(docs/worktree-storage.md). Only where the id comes from differs — a `tui`
+conversation's tool names it on its pane through a hook or plugin, while
+`session/new` hands an `acp` one's to the server directly.
 
 The row's display fields come from the record too, and for the same reason the
 transcript does: it is the one source that answers for every tool. Under ACP

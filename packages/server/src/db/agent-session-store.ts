@@ -427,14 +427,12 @@ export async function getAgentSessionsFor(
  *
  * As in `recordAgentSessions`: an unexpressible path is simply absent, and
  * leaves the column alone rather than clearing what an earlier pass recorded.
- * `model` is the one value here that legitimately *changes* — a `/model` is a
- * new answer to the same question — so it overwrites where the others fill.
  */
 export async function setAgentSessionCapture(
   projectSlug: string,
   tool: AgentTool,
   agentSessionId: string,
-  capture: { firstPrompt?: string; transcriptPath?: string; model?: string },
+  capture: { firstPrompt?: string; transcriptPath?: string },
 ): Promise<void> {
   const values = {
     ...(capture.firstPrompt !== undefined
@@ -443,7 +441,6 @@ export async function setAgentSessionCapture(
     ...(capture.transcriptPath !== undefined
       ? { transcriptPath: capture.transcriptPath }
       : {}),
-    ...(capture.model !== undefined ? { model: capture.model.slice(0, MAX_MODEL_LENGTH) } : {}),
   }
   if (Object.keys(values).length === 0) return
   try {

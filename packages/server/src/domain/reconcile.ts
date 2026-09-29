@@ -97,14 +97,13 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     ...runtime.prePool,
     ...pool,
     // Which agent sessions each worktree holds, which are live, and what
-    // each opened with — the in-pod hook's session-starts log folded into
-    // rows and read back (or, under `acp`, the handshake), crossed with the
-    // watcher's live agent set. The
-    // opening message rides along because the sweep has just resolved the
-    // transcript it would be read from; title generation runs after this
-    // step for that reason. `live-agents` is here and nowhere else: it is
-    // the only step that reads the watcher's live set, and it is what turns
-    // a fresh ACP handshake into a conversation row within a debounce
+    // each opened with — the conversations the watcher's live agent set
+    // names, each pane's or acpd socket's own. The opening message rides
+    // along because the pass has just resolved the transcript it would be
+    // read from; title generation runs after this step for that reason.
+    // `live-agents` is here and nowhere else: it is the only step that reads
+    // the watcher's live set, and it is what turns a new conversation — a
+    // pane naming one, an ACP handshake — into a row within a debounce
     // instead of within a resync.
     { name: 'agent-sessions', triggers: ['workspaces', 'live-agents'],
       run: (ctx) => reconcileAgentSessions(ctx.snapshot()) },

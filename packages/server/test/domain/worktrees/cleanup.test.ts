@@ -47,7 +47,6 @@ import {
   projectConfigDir,
   setDataDir,
   worktreeDir,
-  worktreeSessionStartsPath,
   worktreeStateDir,
 } from '@yaac/shared/project-paths'
 import type { WorktreeEvent } from '#db'
@@ -627,18 +626,10 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(deadTmux)).rejects.toThrow()
   })
 
-  // A stopped worktree keeps its row and its session-starts log for a
-  // restart, so the sweep must tell it from a log whose row is gone — and a
-  // dead spare (flagged row, no pod) from a stopped worktree, since only the
-  // spare's checkout is disposable. All from one read of the project's rows.
-  it('keeps the logs of worktrees with a row, and collects rowless logs and dead spares', async () => {
-    const log = async (sid: string): Promise<string> => {
-      const p = worktreeSessionStartsPath('proj-a', sid)
-      await fs.mkdir(path.dirname(p), { recursive: true })
-      await fs.writeFile(p, '{}\n')
-      await fs.utimes(p, STALE, STALE)
-      return p
-    }
+  // A dead spare (flagged row, no pod) must be told from a stopped worktree,
+  // since only the spare's checkout is disposable — from one read of the
+  // project's rows.
+  it('collects a dead spare, and keeps a stopped worktree', async () => {
     await recordWorktreeCreated({ projectSlug: 'proj-a', worktreeId: 'stopped-1' })
     await recordWorktreeCreated({ projectSlug: 'proj-a', worktreeId: 'spare-1', spare: true })
     // Both checkouts stale, so only the spare flag stands between the
@@ -650,20 +641,13 @@ describe('gcOrphanEphemeralModuleDirs', () => {
       await fs.utimes(dir, STALE, STALE)
       return dir
     }))
-    const [liveLog, stoppedLog, spareLog, rowlessLog] = await Promise.all(
-      ['live-1', 'stopped-1', 'spare-1', 'gone-1'].map(log),
-    )
     seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
 
     try {
       await gcOrphanEphemeralModuleDirs()
 
-      for (const kept of [liveLog, stoppedLog, stoppedCheckout]) {
-        await expect(fs.access(kept)).resolves.toBeUndefined()
-      }
-      for (const gone of [rowlessLog, spareLog, spareCheckout]) {
-        await expect(fs.access(gone)).rejects.toThrow()
-      }
+      await expect(fs.access(stoppedCheckout)).resolves.toBeUndefined()
+      await expect(fs.access(spareCheckout)).rejects.toThrow()
       expect([...(await listProjectWorktreeIds('proj-a')).keys()]).toEqual(['stopped-1'])
     } finally {
       await closeDb()

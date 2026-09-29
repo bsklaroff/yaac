@@ -1,6 +1,5 @@
 import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktreeDetached } from './cleanup'
-import { reconcileBeforeTeardown } from './agent-session-registry'
 import { startQueuedChildren } from './queued-worktrees'
 import { harvestToolCredentials } from '#domain/auth'
 import { serverLog } from '#log'
@@ -42,9 +41,6 @@ export async function stopWorktree(idOrName: string): Promise<StoppedWorktreeInf
   // because a credential could not be read.
   await harvestToolCredentials({ slug: target.projectSlug })
     .catch((err: unknown) => serverLog(`[server] credential harvest on stop failed: ${String(err)}`))
-
-  // What a later restart resumes is the active set the rows hold now.
-  await reconcileBeforeTeardown(target.workspaceId)
 
   await cleanupWorktreeDetached({
     jobName: target.unitName,

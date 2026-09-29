@@ -45,8 +45,9 @@ goes through them, and they are the only writers.
   with the first agent session — a worktree with no conversation could name
   neither its tool nor its label, so create records the one it is about to
   launch rather than waiting for discovery to notice it. (Discovery only ever
-  adds to that; for opencode, which no hook ever fires for, it never fires at
-  all.) Before the Job in `createWorktree`, so no pod can exist without a
+  adds to that — and for codex and opencode, which mint their own ids, the
+  one create recorded is a stand-in until the agent names its own.) Before
+  the Job in `createWorktree`, so no pod can exist without a
   row — which matters because a rowless pod is invisible to every path that
   reads recorded state. A create that fails afterwards rolls its row back; a
   *restart* that fails re-marks the row stopped instead, since that row
@@ -123,85 +124,96 @@ the current process are exempt via the provisioning registry.
 
 ## Agent worktrees
 
-A worktree's agent sessions are *discovered*, not authored, and what discovery
-finds goes straight into rows: the sweep reports a `sessions-discovered` /
-`sessions-active` event and `applyWorktreeEvent` decides which rows it lands in
-(docs/layered-server.md).
+A worktree's agent sessions are *reported*, not authored: every running agent
+names the conversation it holds, the status watcher carries that on its live
+agent set, and the registry turns the set into rows by reporting
+`sessions-discovered` / `sessions-active` events, which `applyWorktreeEvent`
+lands (docs/layered-server.md). One path serves both modes — the modes differ
+only in where an agent's conversation id comes from.
 
-Discovery has one input the host cannot see for itself, and it is the only file
-in this story. Every tool with a host-mounted home runs a `SessionStart` hook
-(`worktree-bin/yaac-agent-links`, staged per worktree onto the workspace's PATH
-like the other worktree-bin scripts) which appends **one JSON line per firing**
-to `global/projects/<slug>/meta/<worktreeId>.session-starts.jsonl`, reached from the
-workspace at `$HOME/.yaac/session-starts.jsonl` — a mount under the k8s driver,
-a symlink under containerless. Writing through `$HOME` rather than an absolute
-path is what lets one script and one registered command serve both substrates,
-since the settings file registering it is shared by a whole project:
+Under `acp` the server is the ACP client, so `session/new` hands it the id.
+Under `tui` the tool's own reporter puts it on its tmux pane, as the pane option
+`@yaac-session` (`<tool>|<id>|<project-relative transcript>`), through
+`worktree-bin/yaac-agent-links`, staged per worktree onto the workspace's PATH
+like the other worktree-bin scripts. The status watcher subscribes to that
+option over control mode on **every** pane of the worktree's tmux server — an
+agent window or a shell the user opened — so tmux pushes each change the
+moment it is set, and a conversation started by hand in a new terminal is
+recorded like any other. The subscription format strips anything unprintable
+and bounds the length, and the driver drops an id outside a shell-safe charset
+and a path that is absolute or climbs out of the project (`parsePaneSession`):
+anything in the workspace can set the option, and a restart interpolates the
+id into a launch command.
 
-```jsonc
-{"id":"<agentSessionId>","tool":"claude","pane":"3","path":"claude/projects/-workspace/….jsonl"}
-```
+Every tool reports, from its project-shared home (`ensureAgentReporters`), so a
+hand-run one does too:
+- claude from its `SessionStart` hook (settings.json), which fires on
+  `startup`, `resume`, `clear` and `compact` — exactly the events that change
+  which conversation a pane is in.
+- codex from the same hook in `hooks.json` in its home. yaac's launch passes
+  `--dangerously-bypass-hook-trust`; a codex started by hand asks once whether
+  to trust the hooks and remembers the answer in the project's `config.toml`.
+  codex fires `SessionStart` at a conversation's first turn rather than at
+  startup, and again, on the same pane, for the throwaway session it titles a
+  conversation in — which has no rollout and an id `codex resume` refuses, so
+  a codex report without a rollout is dropped. A resumed conversation fires
+  nothing until its next turn, so a resume launch names it on the pane itself.
+- pi from an extension, on `session_start` (startup, resume, `/new`), with its
+  log.
+- opencode from a plugin, on a top-level `session.created` — opencode creates a
+  session lazily at its first prompt, and a subagent's carries a `parentID`.
+  A `/new` announces no end for the session it replaces, so the plugin ends
+  that one itself. A resumed session announces nothing, so a resume launch
+  names it too, and resumes by id (`--session`). The plugin runs in the
+  server behind a TUI, which is the pane's own only under `--standalone`
+  (as yaac launches it): a plain `opencode` joins a background service
+  shared by every such TUI, which keeps the env of whichever pane started it
+  and outlives each one. The plugin reports nothing there, so a conversation
+  started by hand is recorded from `opencode --standalone`, not a plain
+  `opencode`.
 
-The hook fires on `startup`, `resume`, `clear` and `compact` — exactly the
-events that change which conversation a pane is in — and it is the only witness
-of a user-started one, because it alone sees `TMUX_PANE` beside the tool's
-session id. `/clear` and a hand-typed `claude --resume` are invisible from
-outside the pod.
+Each ends its conversation too (claude's and codex's `SessionEnd`, pi's
+`session_shutdown`, the plugin's dispose), which clears the option once the
+agent quits — what matters in a shell the pane outlives. (Verified against claude 2.1.282, codex-cli 0.156.1,
+pi 0.84.4 and @opencode/cli 2.0.12.)
 
-claude registers the hook in its settings.json. codex is launched with it, as
-a `-c` setting, and with `--dangerously-bypass-hook-trust` so it runs without
-a trust prompt (`codexLaunchConfig`), the same way on both substrates. Two codex
-behaviors shape what the script records (both verified against codex-cli
-0.156.1):
-- codex fires `SessionStart` again, on the same pane, for the throwaway session
-  it generates a conversation's title in. That session has no rollout and an
-  id `codex resume` refuses, so a codex firing without a rollout is dropped;
-  recorded, it would take the pane from the real conversation.
-- A resumed conversation fires nothing until its next turn. So a codex launch
-  that resumes one first runs the script with the conversation's id, recording
-  it on the new pane. Otherwise it would read inactive, and a second restart
-  before any prompt would not bring it back.
+A conversation is **active** exactly when a live agent names it. A pane option
+dies with its pane and a new pod's tmux starts with none, so nothing can
+mistake a previous pod's conversation for a live one; a new conversation is a
+change to the live set, which dirties the reconcile tick. When the watcher has
+not enumerated panes yet the active set is left untouched, so a stream gap
+never reads as "every agent exited". And discovery only ever adds rows: a
+`/clear` leaves the old conversation recorded, inactive, beside the new one.
 
-**The pod appends and the server folds**, and that asymmetry is the whole
-design. The log is append-only and never renamed, which is what makes mounting
-it as a subPath-to-file of the global claim safe — kubelet bind-mounts the
-file, so a rename would replace the inode the mount pins, and the pod would
-go on writing to a file nobody reads. It also has to exist before the Job is
-applied: a subPath that is missing is created as a root-owned directory. Two writers doing two
-read-modify-writes would lose one side's write, and coordinating them would mean
-a lock held across a hostPath mount from inside a gVisor sandbox. So nothing
-crosses the boundary but appended lines; the database is server-local and
-single-writer (PGlite), which the pod could not reach even if it wanted to.
+What a pane option cannot give is history no server was there for: it holds
+only the pane's current conversation, so one that starts and is replaced
+entirely while no server runs never becomes a row (a restart still resumes the
+right one — the one on the pane). tmux also pushes a subscription change at
+most once a second, so two `/clear`s inside a second record only the second,
+and a conversation begun or `/clear`ed within about a second of a stop is not
+the one a restart resumes: the stop marks the worktree terminating at once,
+and no pass visits it after that.
 
-Nothing truncates the log. Sightings are idempotent — a conversation id maps to
-one handle — so re-folding the whole file every tick is correct, and it avoids
-the drain/append race a truncation would introduce.
-
-A conversation is **active** in a worktree when its link row names a pane *and*
-the status watcher can currently see that pane. Neither source answers alone: a
-recorded handle outlives the pane that wrote it, and the watcher knows nothing
-about which conversation is loaded. When the watcher has not enumerated handles
-yet the active set is left untouched, so a stream gap never reads as "every
-agent exited".
+An agent can run another inside its own pane (a `claude -p` from its Bash
+tool), which inherits the pane and reports on it. So reports nest: a start
+saves the conversation it displaces, and an end — honored only for the
+conversation the pane names — hands the pane back. One level deep; and a
+nested agent that dies without ending leaves the pane on its conversation
+until the parent's next start (a `/clear`, a resume).
 
 Handles are scoped to a **life** — one pod, stamped on the worktree row at each
 create. `recordWorktreeLife` sets `lifeStartedAt` and NULLs every recorded
-`paneId` in one transaction, because those are the same fact: tmux pane ids
-restart at `%0`, so a handle the previous life recorded would name a pane *this*
-life owns. Doing it atomically is what stops a crash between the two halves from
-leaving a dead pod's handles against a fresh life.
-
-The log needs the same boundary, since it is never truncated and its lines carry
-no life marker. `lifeLogBytes` records how long it was when the life began: a
-line below that offset still proves its conversation exists and still names its
-transcript, but its pane belongs to a pod that is gone — so the fold keeps the
-conversation and drops the handle.
+`paneId` in one transaction, because handles restart with the pod (tmux pane
+ids at `%0`, acpd sockets at the tool's name) and the ACP driver re-addresses a
+conversation by its recorded handle. The life is also what separates a
+reported permission mode this pod made from one a previous pod left behind.
 
 `active` is frozen at teardown and never recomputed while a worktree is stopped.
-That freeze is the whole contract: a restart brings back exactly the worktrees
-that were live when the worktree stopped, each in its own tmux window, in the
-order they were first opened (`agentWindowName` — the first keeps the bare tool
-name so every existing `yaac:<tool>` target still resolves).
+That freeze is the whole contract: a restart brings back exactly the
+conversations that were live when the worktree stopped, each in its own tmux
+window, in the order they were first recorded (`agentWindowName` — the first
+keeps the bare tool name so every existing `yaac:<tool>` target still
+resolves). A conversation started in a shell comes back in an agent window.
 
 A conversation's row also carries two display facts, so no display path has
 to parse a transcript: its opening message and the **model** it is running.
@@ -215,52 +227,42 @@ the stored value alone.
 
 The model is pushed by the agent rather than read, so a switch lands the moment
 it happens instead of on the next reply. Under `acp` the adapter reports it (see
-docs/agent-modes.md). Under `tui` each agent pane carries it as a tmux pane
-option, `@yaac-model`, which the status watcher subscribes to over control mode
-exactly as it does to the pane's status — through a format that strips
-anything unprintable and bounds the length, because anything in the workspace
-can set the option and tmux would otherwise pass a newline straight into the
-control stream. The tools set it through `worktree-bin/yaac-agent-report`:
+docs/agent-modes.md). Under `tui` each agent pane carries it as a second pane
+option, `@yaac-model`, which the status watcher subscribes to on agent windows
+the same way. The tools set it through `worktree-bin/yaac-agent-report`:
 
 - claude from its `PostModelSwitch` hook, on any switch, and its `SessionStart`
   hook, which names the model on an interactive startup — but not on the CLI
   `--resume` a restart relaunches with, so a restarted claude pane reports
   nothing until its first `/model`.
-- pi from an extension, on every switch and every session start.
-- opencode from a plugin. Its TUI keeps a `/models` pick to itself until the
+- pi from its extension, on every switch and every session start.
+- opencode from its plugin. Its TUI keeps a `/models` pick to itself until the
   next prompt is submitted, so that is when a switch is reported; the plugin
-  also reports the model each step runs on, which is what covers a restart's
-  `--continue` (reported at its first turn).
+  also reports the model each step runs on, which is what covers a resumed
+  session (reported at its first turn).
 - codex runs nothing on a switch but retitles its pane (yaac launches it with
   the model among its title items), so its subscription cuts the model out of
   the title and maps codex's display name back to the slug — through the
   catalog codex caches in its home, else by the catalogs' spelling rule.
 
 The same script, subscription and plugin carry the permission mode the agent
-is in, as a second pane option (`@yaac-permission-mode`) — what that means for
+is in, as a third pane option (`@yaac-permission-mode`) — what that means for
 the worktree's row is docs/permission-modes.md's "Following the agent".
-
-`ensureAgentReporters` writes the pi extension and opencode plugin into the
-project's tool homes; claude's hooks are registered beside its discovery hook.
-A pushed model belongs to the pane, so it is written to whichever conversation
-owns the pane now — the last one the worktree's session-starts log saw start
-there — which is what makes a `/clear` hand the new conversation its
-predecessor's model.
+A pushed model belongs to the pane, and so to the conversation the pane names
+in the same live agent — which is what makes a `/clear` hand the new
+conversation its predecessor's model.
 
 Whenever no push arrives, the row keeps its last stored value — the launch seed
 or the last report. It is null only for a conversation launched without a model
-that has never reported. A conversation already running when this reporting was
-deployed has none of the hooks, extensions or title items, so its row stays at
-its last value until the worktree restarts, and is re-seeded then.
+that has never reported.
 
 opencode is the exception throughout: it keeps history in a per-worktree sqlite
-DB (`opencode-data/`) and leaves no host transcript, so no hook fires for it,
-and its first message comes from an `opencode api` probe while the worktree
-runs. A
-data dir written by the 1.x line holds its history as JSON under `storage/`
-instead, which opencode 2 has no importer for: such a worktree resumes into a
-fresh, empty session (with an error toast from its own `--continue` lookup),
-and the JSON stays on disk untouched.
+DB (`opencode-data/`) and leaves no host transcript, so its first message comes
+from an `opencode api` probe while the worktree runs. A data dir written by the
+1.x line holds its history as JSON under `storage/` instead, which opencode 2
+has no importer for: such a worktree resumes into a fresh, empty session (with
+an error toast from its own `--continue` lookup), and the JSON stays on disk
+untouched.
 
 ### opencode
 
@@ -291,14 +293,10 @@ for a backup plus a copy (`PRE_STOP_GRACE_SECONDS`) rather than the few
 seconds a bare SIGTERM needs. Under `containerless` the checkpoint directory
 is the working copy itself, and none of this runs.
 
-`acp` needs none of this. The server *is* the ACP client, so `session/new` hands
-it the id directly and the live set carries it — the mode replaces a whole
-discovery mechanism with a return value.
-
 ## Transcript paths
 
 Every transcript path is stored **relative to the project directory** — in the
-session-starts log, in the event that reports it, and in
+pane option that names it, in the event that reports it, and in
 `agent_sessions.transcriptPath`. Absolute appears nowhere.
 
 One form rather than three. An absolute path carries the data dir, so it pins a
@@ -311,8 +309,8 @@ processes.
 
 Project-relative rather than tool-home-relative because it needs no tool: every
 tool home is `<projectDir>/<tool>`, so the tool segment is simply the first
-component, and nothing has to know which home a path came out of. The hook is
-handed its home and that home's name (`yaac-agent-links "$HOME/.claude"
+component, and nothing has to know which home a path came out of. The reporter
+is handed its home and that home's name (`yaac-agent-links "$HOME/.claude"
 claude`), so producing the form stays parameter expansion with no interpreter.
 It tries the home's physical path as well, since a workspace may reach its tool
 home through a link and a tool that resolves its own paths then reports the
@@ -320,10 +318,11 @@ transcript under the target.
 
 `toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
 are the only place the two forms meet. Disk code works in absolute paths
-internally — it stats transcripts and hands them to parsers — and converts at
-the last moment before an event, in `toReported`. The conversion is also
-applied at the *last write* before the column, because the on-demand
-founding-ask capture is fed by a reader that has already resolved a path.
+internally — it stats transcripts and hands them to parsers — while a path
+reaches an event already project-relative, as the pane named it. The
+conversion is applied at the *last write* before the column only where the
+on-demand founding-ask capture is fed by a reader that has already resolved a
+path.
 
 Decoding funnels through `toLinkRow`, the single projection every server-side
 reader comes through. That is where the shared-filesystem assumption between
@@ -331,11 +330,11 @@ the halves still lives: the stopped listing stats a transcript for
 last-activity and the detail route parses one for a founding ask, both against
 files on disk.
 
-The worktree-starts log is the one input yaac does not write, so it is the one
-place a path is *validated* rather than converted: it is an RW mount in a
-sandboxed pod, and absolute paths are refused there — everything downstream
-takes the value at face value and would happily stat and parse whatever it
-named.
+A pane's `@yaac-session` is the one input yaac does not write, so it is the
+one place a path is *validated* rather than converted: anything in the
+workspace can set it, and `parsePaneSession` refuses a path that is absolute
+or climbs out of the project — everything downstream takes the value at face
+value and would happily stat and parse whatever it named.
 
 The transcripts themselves are deliberately left where each tool writes them,
 in the project-shared tool home. Recording the path is what makes them findable,

@@ -44,7 +44,7 @@ export async function captureFirstPrompt(
   const key = `${projectSlug}/${tool}/${agentSessionId}`
   const cached = known.get(key)
   if (cached !== undefined) return cached
-  const prompt = await getAgentSessionFirstMessage(tool, transcriptPath, jobName)
+  const prompt = await getAgentSessionFirstMessage(tool, transcriptPath, jobName, agentSessionId)
     .catch(() => undefined)
   if (prompt === undefined) return undefined
   // Stored at the length it will be recorded at, so the copy re-reported on

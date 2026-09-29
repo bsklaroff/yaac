@@ -96,6 +96,18 @@ describe('opencode-status', () => {
       expect(await getSessionOpencodeFirstUserMessage('container')).toBe('Refactor auth flow')
     })
 
+    it('returns the title of the session the row names, not the newest one', async () => {
+      // A worktree records several opencode conversations — its agent
+      // window's, and one started in a shell — and each is labelled by its own.
+      mockProbeResult(sessionsStdout([
+        { id: 'ses_old', title: 'OLIVE', updated: 1 },
+        { id: 'ses_new', title: 'NECTARINE', updated: 2 },
+      ]))
+      expect(await getSessionOpencodeFirstUserMessage('container', 'ses_old')).toBe('OLIVE')
+      // The worktree-id pin names none of them, and takes the newest.
+      expect(await getSessionOpencodeFirstUserMessage('container', 'wt-1')).toBe('NECTARINE')
+    })
+
     it('returns undefined while the session has no title yet', async () => {
       mockProbeResult(sessionsStdout([{ id: 'ses_1', updated: 1 }]))
       expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
@@ -103,6 +115,9 @@ describe('opencode-status', () => {
 
     it('returns undefined when the probe yields no session', async () => {
       mockProbeResult(sessionsStdout([]))
+      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
+      // A reply that is not a session list at all reads the same way.
+      mockProbeResult({ stdout: '{"data":{}}', stderr: '' })
       expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
     })
 

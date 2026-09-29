@@ -99,9 +99,9 @@ const CAN_RUN_PORTS = CAN_RUN
  * codex home, per worktree, which is what the restart case reads. Launched
  * with `--model sick` it cannot run at all.
  *
- * It calls the hook script itself rather than reading it out of the `-c`
- * settings it is launched with; that those reach a real codex trusted is the
- * launch command's unit test.
+ * It calls the hook script itself rather than reading it out of the
+ * hooks.json yaac writes into its home; that a real codex runs those is
+ * verified against the pinned binary (see `ensureAgentReporters`).
  */
 const FAKE_CODEX = [
   '#!/bin/sh',
@@ -685,34 +685,44 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     }
   }, 60_000)
 
-  it('wires the agent-session discovery hook all the way to the worktree log', async () => {
+  it('records a conversation started by hand in a new terminal, through the registered hook', async () => {
     // The whole chain, because every link of it is substrate-specific and
     // each fails silently on its own: the command registered in the shared
-    // settings.json, the script staged onto the workspace's PATH, and the
-    // `$HOME`-relative log reaching this worktree's own file. Registering a
-    // command naming an in-image path is what made claude print a
-    // SessionStart hook error on every start here.
-    const settings = JSON.parse(await fs.readFile(
-      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
-    )) as { hooks?: { SessionStart?: Array<{ hooks?: Array<{ command?: string }> }> } }
-    const commands = settings.hooks?.SessionStart
-      ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? []) ?? []
-    const command = commands.find((c) => c?.includes('yaac-agent-links'))
+    // settings.json, the script staged onto the workspace's PATH, the pane
+    // option it sets on the worktree's own tmux server, and the watcher's
+    // subscription on a pane that is no agent window. Registering a command
+    // naming an in-image path is what made claude print a SessionStart hook
+    // error on every start here.
+    const project = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
+    const commandsIn = async (file: string, event: string): Promise<string[]> => {
+      const { hooks } = JSON.parse(await fs.readFile(file, 'utf8')) as
+        { hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }
+      return hooks?.[event]?.flatMap((m) => m.hooks?.map((h) => h.command ?? '') ?? []) ?? []
+    }
+    const command = (await commandsIn(path.join(project, 'claude', 'settings.json'), 'SessionStart'))
+      .find((c) => c.includes('yaac-agent-links'))
     expect(command).toBe('yaac-agent-links "$HOME/.claude" claude')
+    // codex reads the same script from its own home, so a codex started by
+    // hand is recorded too.
+    expect(await commandsIn(path.join(project, 'codex', 'hooks.json'), 'SessionStart'))
+      .toEqual(['yaac-agent-links "$CODEX_HOME" codex'])
 
-    const home = path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', worktreeId, 'containerless', 'home',
-    )
+    const home = path.join(project, 'sessions', worktreeId, 'containerless', 'home')
     const binDir = path.join(home, '.local', 'bin')
     await expect(fs.access(path.join(binDir, 'yaac-agent-links'), fs.constants.X_OK))
       .resolves.toBeUndefined()
 
+    // A new terminal, as the webapp's New Shell opens one, and a transcript
+    // under the tool home the workspace reaches through its link.
+    const pane = (await tmux(worktreeId, 'new-window', '-d', '-n', 'shell-e2e', '-t', 'yaac', '-P', '-F', '#{pane_id}')).trim()
+    await fs.mkdir(path.join(project, 'claude', 'projects', '-e2e'), { recursive: true })
+    await fs.writeFile(path.join(project, 'claude', 'projects', '-e2e', 'e2e-conv.jsonl'), `${JSON.stringify({
+      type: 'user', message: { role: 'user', content: 'asked from a shell' },
+    })}\n`)
+
     // Run the REGISTERED command, unedited, through `sh -c` with the
-    // workspace's own PATH and HOME — which is exactly how claude runs it, and
-    // the only form that exercises the link the bug was about: resolving a
-    // bare name rather than an absolute path that does not exist here. Then
-    // read the line back out of the worktree's real log, which the workspace
-    // reaches only through the link this driver put in its private home.
+    // workspace's own PATH and HOME and that pane's tmux environment — which
+    // is exactly how a claude started there runs it.
     await new Promise<void>((resolve, reject) => {
       const child = execFile(
         'sh', ['-c', command ?? ''],
@@ -721,27 +731,29 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
             ...process.env,
             HOME: home,
             PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
-            TMUX_PANE: '%7',
+            TMUX: `${sockFor(worktreeId)},0,0`,
+            TMUX_PANE: pane,
           },
         },
         (err) => (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve()),
       )
       child.stdin?.end(JSON.stringify({
         session_id: 'e2e-conv',
-        transcript_path: path.join(home, '.claude', 'projects', 'e2e-conv.jsonl'),
+        transcript_path: path.join(home, '.claude', 'projects', '-e2e', 'e2e-conv.jsonl'),
       }))
     })
 
-    const log = await fs.readFile(path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'meta', `${worktreeId}.session-starts.jsonl`,
-    ), 'utf8')
-    const line = log.trim().split('\n').map((l) => JSON.parse(l) as {
-      id: string; tool: string; pane: string; path: string
-    }).find((l) => l.id === 'e2e-conv')
-    expect(line).toEqual({
-      id: 'e2e-conv', tool: 'claude', pane: '7',
-      path: path.join('claude', 'projects', 'e2e-conv.jsonl'),
-    })
+    const conv = async () => (await listWorktrees())
+      .find((w) => w.worktreeId === worktreeId)?.agentSessions.find((s) => s.agentSessionId === 'e2e-conv')
+    await vi.waitFor(async () => {
+      expect(await conv()).toMatchObject({ tool: 'claude', active: true, prompt: 'asked from a shell' })
+    }, { timeout: 30_000, interval: 250 })
+
+    // The terminal closes: the conversation stays recorded, no longer live.
+    await tmux(worktreeId, 'kill-pane', '-t', pane)
+    await vi.waitFor(async () => {
+      expect(await conv()).toMatchObject({ active: false })
+    }, { timeout: 30_000, interval: 250 })
   })
 
   /**
@@ -1358,21 +1370,18 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     }
 
     const prompted = await createWorktreeWith('codex', '--prompt', 'hello')
-    // The first turn has reported the conversation once the hook has written
-    // it. Restarted straight away — inside the resync, which a hook's
-    // sighting does not trigger — so it is the restart's own sweep that has
-    // to fold it.
-    const log = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'meta', `${prompted}.session-starts.jsonl`)
+    // The first turn names the conversation on its pane, and that push is
+    // what records it — then restarted straight away.
     let thread = ''
     await vi.waitFor(async () => {
-      thread = /"id":"(thread-\d+)"/.exec(await fs.readFile(log, 'utf8').catch(() => ''))?.[1] ?? ''
+      thread = (await codexSessions(prompted)).find((s) => s.agentSessionId.startsWith('thread-'))?.agentSessionId ?? ''
       expect(thread).not.toBe('')
     }, { timeout: 30_000, interval: 250 })
 
-    // Twice with no turn between. The first restart's resume reports nothing
-    // itself, so the conversation has to be on its new pane — live, which is
-    // what gives it a status — for the second restart to bring it back. Its
-    // title session, reported after it on the same pane, must not be.
+    // Twice with no turn between. codex's resume reports nothing itself, so
+    // the launch has to name the conversation on its new pane — live, which
+    // is what gives it a status — for the second restart to bring it back.
+    // Its title session, reported after it on the same pane, must not be.
     for (const n of [2, 3]) {
       await restart(prompted)
       await vi.waitFor(async () => {
@@ -1922,9 +1931,9 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
         childWorktree = latest().worktrees.find((w) => w.prompt === 'hello')?.worktreeId
         expect(childWorktree).toBeDefined()
       }, { timeout: 60_000, interval: 250 })
-      const log = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'meta', `${childWorktree}.session-starts.jsonl`)
-      await vi.waitFor(async () => {
-        expect(await fs.readFile(log, 'utf8').catch(() => '')).toMatch(/"id":"thread-\d+"/)
+      await vi.waitFor(() => {
+        const sessions = latest().worktrees.find((w) => w.worktreeId === childWorktree)?.agentSessions ?? []
+        expect(sessions.some((a) => /^thread-\d+$/.test(a.agentSessionId))).toBe(true)
       }, { timeout: 30_000, interval: 250 })
       const launches = await fs.readFile(
         path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `launches-${childWorktree}`), 'utf8',

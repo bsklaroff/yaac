@@ -3,14 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-import {
-  CLAUDE_HOOK_COMMAND,
-  CLAUDE_REPORT_HOOK_COMMAND,
-  classifyClaudeTitle,
-  ensureClaudeHooks,
-  getFirstUserMessage,
-} from '#runtime/agents/claude'
-import { seedClaudeSettings } from '#domain/worktrees/seed'
+import { classifyClaudeTitle, getFirstUserMessage } from '#runtime/agents/claude'
 
 // Title fixtures below reproduce states observed against a live Claude
 // Code session inside a session pod: a running turn animates a spinner
@@ -133,6 +126,12 @@ describe('getFirstUserMessage', () => {
     expect(await getFirstUserMessage(jsonlPath)).toBe('refactor the API')
   })
 
+  it('skips a user entry with no text block, such as a tool result', async () => {
+    await writeEntry({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] } })
+    await writeEntry({ type: 'user', message: { role: 'user', content: 'the real ask' } })
+    expect(await getFirstUserMessage(jsonlPath)).toBe('the real ask')
+  })
+
   it('returns undefined when no user messages exist', async () => {
     await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
     await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
@@ -206,97 +205,5 @@ describe('getFirstUserMessage', () => {
       message: { role: 'user', content: '<command-name>/clear</command-name>' },
     })
     expect(await getFirstUserMessage(jsonlPath)).toBeUndefined()
-  })
-})
-
-describe('ensureClaudeHooks', () => {
-  let dir: string
-  let settingsPath: string
-
-  beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claude-hooks-'))
-    settingsPath = path.join(dir, 'settings.json')
-  })
-
-  afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true })
-  })
-
-  interface HookEntry { type?: string; command?: string; timeout?: number }
-  interface HookMatcher { matcher?: string; hooks?: HookEntry[] }
-  interface Settings {
-    hooks?: Record<string, HookMatcher[] | undefined>
-    [key: string]: unknown
-  }
-
-  async function read(): Promise<Settings> {
-    return JSON.parse(await fs.readFile(settingsPath, 'utf8')) as Settings
-  }
-
-  const hook = (command: string): HookMatcher =>
-    ({ matcher: '*', hooks: [{ type: 'command', command, timeout: 10 }] })
-
-  it('registers the discovery and report hooks alongside the settings create.ts seeds', async () => {
-    // The real ordering: seedClaudeSettings owns the file first, then the hook
-    // is merged in. Both keys have to survive.
-    await seedClaudeSettings(settingsPath)
-    await ensureClaudeHooks(settingsPath)
-
-    const settings = await read()
-    expect(settings.skipDangerousModePermissionPrompt).toBe(true)
-    expect(settings.cleanupPeriodDays).toBe(36500)
-    expect(settings.hooks?.SessionStart).toEqual([hook(CLAUDE_HOOK_COMMAND), hook(CLAUDE_REPORT_HOOK_COMMAND)])
-    // The model reporter also runs on the switch itself, which claude fires
-    // the moment `/model` lands, before anything answers as the new model.
-    expect(settings.hooks?.PostModelSwitch).toEqual([hook(CLAUDE_REPORT_HOOK_COMMAND)])
-    // And on the two events that carry the permission mode when a change
-    // takes hold — claude has no event for the change itself.
-    expect(settings.hooks?.UserPromptSubmit).toEqual([hook(CLAUDE_REPORT_HOOK_COMMAND)])
-    expect(settings.hooks?.Stop).toEqual([hook(CLAUDE_REPORT_HOOK_COMMAND)])
-    // Bare name and `$HOME`, because this file is shared by a whole project
-    // and read by worktrees of either substrate: the staged script sits at
-    // /usr/local/bin in a pod and under the workspace's own home on a host,
-    // and no absolute form of either names it correctly in both.
-    expect(CLAUDE_HOOK_COMMAND).toBe('yaac-agent-links "$HOME/.claude" claude')
-    // Guarded: the file is hot-reloaded by claudes whose staged bin may
-    // predate the script, and an absent one must not surface as a hook error.
-    expect(CLAUDE_REPORT_HOOK_COMMAND)
-      .toBe('command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true')
-  })
-
-  it('is idempotent across the session creates that re-run it', async () => {
-    await ensureClaudeHooks(settingsPath)
-    const first = await fs.readFile(settingsPath, 'utf8')
-    await ensureClaudeHooks(settingsPath)
-    await ensureClaudeHooks(settingsPath)
-    expect(await fs.readFile(settingsPath, 'utf8')).toBe(first)
-    expect((await read()).hooks?.SessionStart).toHaveLength(2)
-    expect((await read()).hooks?.PostModelSwitch).toHaveLength(1)
-  })
-
-  it("preserves the user's own hooks, including their own SessionStart entries", async () => {
-    await fs.writeFile(settingsPath, JSON.stringify({
-      theme: 'dark',
-      hooks: {
-        SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'mine.sh' }] }],
-        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'audit.sh' }] }],
-      },
-    }))
-
-    await ensureClaudeHooks(settingsPath)
-
-    const settings = await read()
-    expect(settings.theme).toBe('dark')
-    expect(settings.hooks?.PreToolUse).toHaveLength(1)
-    expect(settings.hooks?.SessionStart?.map((m) => m.hooks?.[0]?.command))
-      .toEqual(['mine.sh', CLAUDE_HOOK_COMMAND, CLAUDE_REPORT_HOOK_COMMAND])
-  })
-
-  it('starts fresh from a malformed settings file rather than propagating it', async () => {
-    // claude ignores unparseable settings anyway, and create.ts re-seeds the
-    // two keys it cares about on every session.
-    await fs.writeFile(settingsPath, '{ not json')
-    await ensureClaudeHooks(settingsPath)
-    expect((await read()).hooks?.SessionStart).toHaveLength(2)
   })
 })

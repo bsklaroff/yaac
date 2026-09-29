@@ -1,89 +1,96 @@
 #!/bin/sh
-# yaac agent-session discovery hook, shared by every tool that has a
-# SessionStart hook and a host-mounted home. $1 is that home
-# (~/.claude, ~/.codex); $2 is that home's name under the project
-# directory (claude, codex, pi). The hook payload is on stdin.
+# yaac agent-session reporter: names the conversation an agent is running on
+# its tmux pane, as the pane option @yaac-session, where the server's status
+# watcher is subscribed over tmux control mode — the same transport
+# yaac-agent-report uses for the model and permission mode. tmux pushes the
+# value the moment it is set, and it dies with the pane, so the server always
+# knows which conversation each live pane holds.
 #
-# Staged per worktree like every other worktree-bin script: read-only File
-# mount at /usr/local/bin/yaac-agent-links under the k8s driver, a symlink in
-# the workspace's own bin dir under containerless. Both drivers put that dir
-# on the agent's PATH, which is why the tools invoke it by bare name — no
-# absolute path names it in both worlds. It is deliberately NOT copied into
-# the mounted tool homes, which a session can rewrite.
+# $1 is the tool's home (~/.claude, $CODEX_HOME, ~/.pi) and $2 the tool, which
+# is also that home's name under the project directory. With no more
+# arguments the conversation is read from a hook payload on stdin: claude's
+# and codex's SessionStart names it, their SessionEnd ends it. A third
+# argument is the conversation id in hand and $4 its transcript, or `--end`
+# when it ended: pi's extension and opencode's plugin pass them, and codex's
+# and opencode's resume launches pass the id, since neither announces a
+# resumed conversation before its next turn.
 #
-# Appends ONE JSON line per firing to "$HOME"/.yaac/session-starts.jsonl,
-# which the host mounts (or symlinks) and the herd folds into the worktree's
-# metadata document. Append-only and never renamed, which is what makes it
-# safe to share with a host-side writer: a single-line append needs no lock,
-# where the document itself is rewritten whole and so is never mounted in
-# here at all.
+# Reports nest, because an agent can run another inside its own pane (a
+# `claude -p` from a Bash tool), which inherits the pane. A start saves the
+# conversation it displaces in @yaac-session-under, and an end — honored
+# only for the conversation the pane names — puts that one back, so the pane
+# ends up naming its own agent's conversation again, or nothing once that
+# quits too (the pane — a shell, say — outlives it). One level deep: an agent
+# nested in a nested one hands the pane back to its parent, not further.
 #
-# The transcript is recorded RELATIVE TO THE PROJECT DIRECTORY, because the
-# payload's path is the workspace's own (/home/yaac/.claude/... in a pod,
-# <workspace home>/.claude/... on a host) and the herd reads the same file
-# through the shared project dir, where that prefix does not exist. Swapping
-# the home for its project-relative name is the whole translation, so it
-# stays parameter expansion — no interpreter, and nothing to escape.
+# The value is `<tool>|<id>|<transcript>`, the transcript RELATIVE TO THE
+# PROJECT DIRECTORY, because the payload's path is the workspace's own
+# (/home/yaac/.claude/... in a pod, <workspace home>/.claude/... on a host) and
+# the server reads the same file through the shared project dir, where that
+# prefix does not exist. Swapping the home for its project-relative name is
+# the whole translation.
 #
-# Fires on startup/resume/clear/compact, so /clear and `claude --resume` are
-# what add sessions and repoint a pane. Always exits 0: a broken write must
-# never take the agent down with it.
+# Staged per worktree: read-only File mount at /usr/local/bin under the k8s
+# driver, a symlink in the workspace's own bin dir under containerless. Both
+# put it on the agent's PATH, which is why it is invoked by bare name.
 #
-# $3, when given, is a conversation the launch itself is resuming, and no
-# payload is read: codex fires no SessionStart for a resumed conversation
-# until its next turn, so its launch command records it on the pane first.
+# Prints NOTHING (claude hands a hook's stdout to the model) and always exits
+# 0: a broken report must never take the agent down with it.
 HOME_DIR="$1"
-HOME_NAME="$2"
-[ -n "$HOME_DIR" ] || exit 0
-[ -n "$HOME_NAME" ] || exit 0
-[ -n "${HOME:-}" ] || exit 0
-if [ -n "${3:-}" ]; then
+TOOL="$2"
+END=''
+[ -n "$TOOL" ] || exit 0
+if [ $# -ge 3 ]; then
   SID="$3"
-  TRANSCRIPT=''
+  TRANSCRIPT="${4:-}"
+  [ "$TRANSCRIPT" != --end ] || { END=1; TRANSCRIPT=''; }
 else
   INPUT=$(cat)
-  TRANSCRIPT=$(echo "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  SID=$(echo "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  TRANSCRIPT=$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  SID=$(printf '%s' "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   # codex also fires SessionStart, on the same pane, for the throwaway
   # session it generates a conversation's title in: one with no rollout, whose
   # id `codex resume` refuses (codex-cli 0.156.1). Its own conversations
-  # always name their rollout, so a codex sighting without one is dropped —
-  # recorded, it would take the pane from the real conversation.
-  [ "$HOME_NAME" != codex ] || [ -n "$TRANSCRIPT" ] || exit 0
-  # codex names its rollout files after the session; if a tool ever omits
-  # session_id from the payload the transcript basename still identifies it.
-  [ -n "$SID" ] || SID=$(basename "${TRANSCRIPT:-}" .jsonl)
+  # always name their rollout, so a codex report without one is dropped —
+  # kept, it would take the pane from the real conversation.
+  [ "$TOOL" != codex ] || [ -n "$TRANSCRIPT" ] || exit 0
+  printf '%s' "$INPUT" | grep -q '"hook_event_name"[[:space:]]*:[[:space:]]*"SessionEnd"' && END=1
 fi
 [ -n "$SID" ] || exit 0
+[ -n "$HOME_DIR" ] || TRANSCRIPT=''
+[ -n "${TMUX_PANE:-}" ] || exit 0
+# claude runs with $TMUX hidden and the value kept as $YAAC_TMUX (see
+# buildAgentCmd); $TMUX is `<socket>,<pid>,<session>`.
+SERVER="${TMUX:-${YAAC_TMUX:-}}"
+[ -n "$SERVER" ] || exit 0
+pane() { tmux -S "${SERVER%%,*}" "$@" 2>/dev/null; }
+CURRENT=$(pane show-options -pqv -t "$TMUX_PANE" @yaac-session)
+if [ -n "$END" ]; then
+  case "$CURRENT" in "$TOOL|$SID|"*) ;; *) exit 0 ;; esac
+  pane set-option -p -t "$TMUX_PANE" @yaac-session \
+    "$(pane show-options -pqv -t "$TMUX_PANE" @yaac-session-under)" >/dev/null
+  pane set-option -pu -t "$TMUX_PANE" @yaac-session-under >/dev/null
+  exit 0
+fi
 # The home may be reached through a symlink — under containerless the tool
 # home in the workspace's private HOME is a link to the project's shared one —
 # and a tool that resolves its own paths then reports a transcript under the
-# physical directory instead. Try both, so the project-relative form is found
-# either way. `pwd -P` rather than `readlink -f`, which macOS lacked until
-# recently and this driver runs there; it also covers macOS's own /var ->
-# /private/var aliasing of a data dir.
+# physical directory instead. Try both. `pwd -P` rather than `readlink -f`,
+# which macOS lacked until recently and this driver runs there; it also
+# covers macOS's own /var -> /private/var aliasing of a data dir.
 PHYS=$(cd "$HOME_DIR" 2>/dev/null && pwd -P)
-# A path outside this home has no project-relative form we can express, and
-# one the payload omitted has none yet. Either way the field is empty rather
-# than a path that resolves nowhere — the session is still real.
+# A path outside this home has no project-relative form, and one the payload
+# omitted has none yet. Either way it is left empty — the conversation is
+# still real.
 case "$TRANSCRIPT" in
-  "$HOME_DIR"/*) REL="$HOME_NAME/${TRANSCRIPT#"$HOME_DIR"/}" ;;
-  "${PHYS:-$HOME_DIR}"/*) REL="$HOME_NAME/${TRANSCRIPT#"${PHYS:-$HOME_DIR}"/}" ;;
+  "") REL='' ;;
+  "$HOME_DIR"/*) REL="$TOOL/${TRANSCRIPT#"$HOME_DIR"/}" ;;
+  "${PHYS:-$HOME_DIR}"/*) REL="$TOOL/${TRANSCRIPT#"${PHYS:-$HOME_DIR}"/}" ;;
   *) REL='' ;;
 esac
-# The line has to be valid JSON or the reader drops it, silently — this hook
-# cannot report a failure. A backslash or a quote in a path is legal on every
-# filesystem yaac runs on, so escape both rather than emit something that
-# parses nowhere. The extraction above does NOT decode the payload's own JSON
-# escapes (sed, not a parser), so such a path may still come out mangled; what
-# this buys is that the SESSION is still recorded rather than the whole line
-# being lost.
-esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
-# tmux exports TMUX_PANE into every pane, and hooks inherit the agent's env,
-# so this is how a session is attributed to the pane running it. Strip the
-# leading '%' so the value is a plain token.
-mkdir -p "$HOME"/.yaac || exit 0
-printf '{"id":"%s","tool":"%s","pane":"%s","path":"%s"}\n' \
-  "$(esc "$SID")" "$HOME_NAME" "${TMUX_PANE#%}" "$(esc "$REL")" \
-  >> "$HOME"/.yaac/session-starts.jsonl
+case "$CURRENT" in
+  ""|"$TOOL|$SID|"*) ;;
+  *) pane set-option -p -t "$TMUX_PANE" @yaac-session-under "$CURRENT" >/dev/null ;;
+esac
+pane set-option -p -t "$TMUX_PANE" @yaac-session "$TOOL|$SID|$REL" >/dev/null
 exit 0

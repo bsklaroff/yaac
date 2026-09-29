@@ -76,6 +76,12 @@ class FakeStream implements StreamChild {
   }
 }
 
+/** Wait for the driver to send `cmd`, then answer it empty, as tmux does. */
+async function answer(stream: FakeStream, cmd: string): Promise<void> {
+  await vi.waitFor(() => expect(stream.writes.join('')).toContain(cmd))
+  stream.feed('%begin 1 1 1\n%end 1 1 1\n')
+}
+
 const session: DrivenWorktree = {
   slug: 'demo',
   worktreeId: 'wt-1',
@@ -327,22 +333,19 @@ describe('agentDriver', () => {
     // tmux's unsolicited attach banner, then the pane enumeration reply.
     stream.feed('%begin 1 100 0\n%end 1 100 0\n%session-changed $0 yaac\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
-    stream.feed('%begin 1 101 1\n%7 claude\n%end 1 101 1\n')
-    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'status-7:%7:#{pane_title}'"))
-    stream.feed('%begin 1 102 1\n%end 1 102 1\n')
-    // A second subscription per pane follows what its tool reports: the model
-    // option claude's hooks set the moment `/model` lands, and the permission
-    // mode they set as a change takes hold — each filtered and bounded by tmux
-    // itself, since anything in the workspace can set them and tmux would
-    // otherwise pass a newline straight into this stream.
-    await vi.waitFor(() => expect(stream.writes.join('')).toContain(
-      "refresh-client -B 'report-7:%7:#{=128;s/[^ -~]//:@yaac-model}|#{=32;s/[^A-Za-z-]//:@yaac-permission-mode}'",
-    ))
-    stream.feed('%begin 1 103 1\n%end 1 103 1\n')
+    stream.feed('%begin 1 101 1\n%7\tclaude\t\n%end 1 101 1\n')
+    await answer(stream, "refresh-client -B 'session-7:%7:#{=1024;s/[^ -~]//:@yaac-session}'")
+    await answer(stream, "refresh-client -B 'status-7:%7:#{pane_title}'")
+    // Another subscription per agent pane follows what its tool reports: the
+    // model option claude's hooks set the moment `/model` lands, and the
+    // permission mode they set as a change takes hold — each filtered and
+    // bounded by tmux itself, since anything in the workspace can set them and
+    // tmux would otherwise pass a newline straight into this stream.
+    await answer(stream,
+      "refresh-client -B 'report-7:%7:#{=128;s/[^ -~]//:@yaac-model}|#{=32;s/[^A-Za-z-]//:@yaac-permission-mode}'")
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
-    // The conversation's handle is its pane id; which conversation sits on it
-    // is the hook's session-starts log to answer, not this driver's.
+    // The conversation's handle is its pane id; it names no conversation yet.
     expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] })
     expect(seen.some((o) => o.kind === 'command-channel' && o.send !== null)).toBe(true)
 
@@ -380,6 +383,70 @@ describe('agentDriver', () => {
     expect(agentSets().length).toBe(before + 3)
   })
 
+  it('follows the conversation each pane names, in an agent window or a shell', async () => {
+    const stream = new FakeStream()
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+      dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
+    }))
+    stream.feed('%begin 1 100 0\n%end 1 100 0\n')
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
+    // The agent window, already naming its conversation, and a scratch
+    // shell: the shell gets the session subscription alone — no status and no
+    // posture of its own.
+    stream.feed('%begin 1 101 1\n%7\tclaude\tclaude|conv-a|claude/projects/-workspace/conv-a.jsonl\n'
+      + '%9\tNew Shell\t\n%end 1 101 1\n')
+    expect(stream.writes.join('')).toContain(
+      "list-panes -s -F '#{pane_id}\t#{window_name}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+    await answer(stream, "refresh-client -B 'session-7:")
+    await answer(stream, "refresh-client -B 'status-7:")
+    await answer(stream, "refresh-client -B 'report-7:")
+    await answer(stream, "refresh-client -B 'session-9:%9:")
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
+    expect(stream.writes.join('')).not.toContain("'status-9:")
+    const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
+    const latest = (): unknown => agentSets().at(-1)
+    const push = (pane: string, value: string): void =>
+      stream.feed(`%subscription-changed session-${pane} $0 @0 0 %${pane} : ${value}\n`)
+
+    // Read with the listing, so the very first live set already names it: one
+    // published before the subscription's first push would name nothing, and
+    // read as every agent having exited.
+    expect(agentSets()).toEqual([{
+      kind: 'live-agents',
+      agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' }],
+    }])
+
+    // codex, run by hand in the shell, names its own conversation there — a
+    // live conversation all the same.
+    push('9', 'codex|thread-1|codex/sessions/rollout-thread-1.jsonl')
+    await vi.waitFor(() => expect(latest()).toEqual({
+      kind: 'live-agents',
+      agents: [
+        { handle: '%7', tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' },
+        { handle: '%9', tool: 'codex', agentSessionId: 'thread-1', transcriptPath: 'codex/sessions/rollout-thread-1.jsonl' },
+      ],
+    }))
+
+    // The shell's codex quit; the agent window names only its own tool's
+    // conversation (a respawned pane keeps a retooled spare's old option), and
+    // a value no reporter could have written is no conversation at all.
+    push('9', '')
+    push('7', 'pi|pi-1|')
+    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
+    push('7', 'claude|conv-b|/etc/passwd')
+    await vi.waitFor(() => expect(latest()).toEqual({
+      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-b' }],
+    }))
+    push('7', 'claude|$(rm -rf ~)|')
+    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
+    // A restart puts the id on a launch command as a bare word, where a
+    // leading dash would be a flag.
+    push('7', 'claude|conv-c|')
+    push('7', 'claude|--dangerously-skip-permissions|')
+    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
+  })
+
   it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
     // codex can run nothing on a model switch, but it retitles the pane: the
     // format cuts the model's display name out of the title, and codex's own
@@ -391,11 +458,10 @@ describe('agentDriver', () => {
     }))
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
-    stream.feed('%begin 1 101 1\n%2 codex\n%end 1 101 1\n')
-    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'status-2:"))
-    stream.feed('%begin 1 102 1\n%end 1 102 1\n')
-    await vi.waitFor(() => expect(stream.writes.join('')).toContain("refresh-client -B 'report-2:%2:#{?#{m/r: [|] ,"))
-    stream.feed('%begin 1 103 1\n%end 1 103 1\n')
+    stream.feed('%begin 1 101 1\n%2\tcodex\t\n%end 1 101 1\n')
+    await answer(stream, "refresh-client -B 'session-2:")
+    await answer(stream, "refresh-client -B 'status-2:")
+    await answer(stream, "refresh-client -B 'report-2:%2:#{?#{m/r: [|] ,")
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
 
     // No cache — api-key auth and a failed fetch never write one — but the
