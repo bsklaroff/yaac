@@ -100,7 +100,9 @@ Build flow, per layer tag `T` with parent tag `P`:
    build exactly. A standalone `Dockerfile.yaac` has no yaac parent — its
    upstream `FROM` is pulled over pod egress.
 3. Stream the build context in as a tar over `exec -i`, honoring
-   `.containerignore` exactly like `contextHash()`. Then `podman build
+   `.containerignore` exactly like `contextHash()`, and write the layer's
+   registry write grant (see "The write gate") as an authfile over stdin.
+   Then `podman build
    --isolation chroot` with per-project `--cache-from`/`--cache-to` and a
    `--cache-ttl` bound — otherwise identical CLI semantics to a host build.
    Chroot isolation is required: buildah's default OCI isolation breaks
@@ -139,29 +141,31 @@ from the pod's own status (`builderPodBlockReason`).
 
 The registry is an in-cluster `registry:2` Deployment behind a normal
 ClusterIP Service, mirroring the per-project registries' topology (blobs on
-a node hostPath, a containerd `hosts.toml` per node holding the live
-ClusterIP so the node can resolve a name cluster DNS never serves it). It
-sits in the *default* install namespace rather than the per-run one, so
-concurrent e2e namespaces share one image store.
+an RWO claim, a containerd `hosts.toml` per node holding the live ClusterIP
+so the node can resolve a name cluster DNS never serves it). It sits in the
+*default* install namespace rather than the per-run one, so concurrent e2e
+namespaces share one image store. Writes pass a gate in front of it (see
+"The write gate" below).
 
-Its ingress is locked to its two caller classes: the node (an `ipBlock` —
-containerd pulls, the kubelet probe, and the server's port-forward all
+Its ingress is locked to its three caller classes: the node (an `ipBlock` —
+containerd pulls, the kubelet probe, and a host process's port-forward all
 arrive from the host netns, which plain NetworkPolicy cannot name any other
-way) and `yaac.role=builder` pods in any namespace. See the open risk below
-for what that lock does and does not buy.
+way), `yaac.role=builder` pods in any namespace, and the server's own pods.
+The lock pins *which pods* may be callers, not *what a caller may write*;
+the gate does that.
 
 Every party addresses it the same way — by its Service FQDN
 (`yaac-registry.<default-ns>.svc.cluster.local:5000`), which is the prefix
 every yaac image ref carries. Builder pods pull parents from it and push
-products back; worktree pods pull final images from it unchanged. The one
-exception is the yaac SERVER, which is a host process with no route into
-the pod network: it reaches the registry over a long-lived `kubectl
-port-forward` (the same mechanism the stream relay uses) and pushes through
-that loopback port. Blob storage is keyed by repository path, so the bytes a
-push puts there are exactly what a node later pulls by the cluster ref. The
-existing `registryHasTag()` HEAD, over the same forward, stays the
-server-side skip check, so the common path (tag already present) never
-creates a pod.
+products back; worktree pods pull final images from it unchanged; the
+in-cluster server dials the same name for its HEADs. The one exception is a
+host process — `yaac cluster install`, `cluster check`, the e2e global setup
+— which has no route into the pod network: it reaches the registry over a
+long-lived `kubectl port-forward` and pushes through that loopback port.
+Blob storage is keyed by repository path, so the bytes a push puts there are
+exactly what a node later pulls by the cluster ref. `registryHasTag()`, a
+HEAD, stays the server-side skip check, so the common path (tag already
+present) never creates a pod.
 
 The registry holds two things per untrusted build:
 
@@ -172,10 +176,9 @@ The registry holds two things per untrusted build:
   steps, in any fresh pod. Cache repos are **per project**
   (`yaac-buildcache-<id>`, by project id): cache entries are consumed by key with no
   provenance check, so per-project scoping confines a poisoned entry to
-  the project whose image the attacker already controls — but only against
-  a build that stays in its own cache repo, not against one that writes
-  another project's directly (see the open risk below). `--cache-ttl`
-  bounds reads.
+  the project whose image the attacker already controls. The build's write
+  grant names only its own project's cache repo, so the scoping holds
+  against a hostile `RUN` step too. `--cache-ttl` bounds reads.
 
 ### Collecting the step cache
 
@@ -313,37 +316,81 @@ reattach to, and the next prewarm sweep re-derives what is missing.
   `Dockerfile.yaac`/`Dockerfile.user` errors with a pointer to `yaac cluster
   check` when there isn't one.
 
-## Open risk: builder-origin writes to the shared registry
+## The write gate
 
 Builder pods are the untrusted principal here, and they must be able to
-push — so **an attacker-authored `RUN` step can write any `repo:tag` in the
-shared registry**. It is unauthenticated `registry:2` with mutable tags and
-no path ACLs, and the builder's egress is necessarily open (builds fetch
-upstream packages). Nothing network-level closes this: the ingress
-lock above pins *which pods* may be callers, not *what a legitimate caller
-may write*. The reachable blast radius is the whole store — the
-yaac-shipped `base`/`tools`/`nestable` content-hash tags, other projects'
-final images, and any project's `yaac-buildcache-<id>` repo.
+push — so the registry cannot tell a hostile `RUN` step from the build it
+runs in by network position. What it checks instead is a **grant**. The
+registry pod runs `registry:2` on its loopback (`127.0.0.1:5001`) and an
+Envoy container on the Service port, whose Lua filter (the cluster
+folder's `registry-gate.ts`) is the only way in:
 
-Two consequences worth stating plainly:
+- `GET` and `HEAD` pass untouched, so node containerd, the kubelet, every
+  pull and every `registryHasTag()` stay anonymous.
+- Every other method needs a grant, presented as a Basic credential: a
+  payload `v1|<expiry>|<scope>` and an RSA-SHA256 signature over it. The
+  gate verifies it against the public key rendered into its ConfigMap,
+  checks the expiry, and requires the repository in the path to be in the
+  scope — `*`, or an exact list of repo names. The repository is read the
+  way distribution routes it, as everything before a write route's tail
+  (`/manifests/<ref>`, `/blobs/uploads/<id>`), since `blobs` is a legal
+  name component; a write of any other shape names no repo and is refused. A bad or missing grant is
+  `401`, an out-of-scope repo `403`. A cross-repo mount is checked against
+  its destination only; the source is readable anyway.
+- `DELETE` is refused for every grant: this registry never deletes over the
+  API (its GC works on storage).
+- A bare `/v2/` without credentials is answered `401` with a Basic
+  challenge. podman (containers/image) attaches the credentials it holds
+  only to a registry that asked for them; containerd never requests `/v2/`
+  itself, and an anonymous podman pull then sends an empty credential that
+  a read never checks.
+- A script error refuses the request: Envoy's Lua filter otherwise passes a
+  request whose script raised, so the gate runs under `pcall`. The script
+  runs for real in the unit suite, under fengari with a stub `handle`.
+- Paths reach the filter normalized — dot segments resolved, slashes
+  merged, escaped slashes rejected — so the repo it checks is the repo the
+  registry writes.
 
-- The per-project scoping of cache repos confines a poisoned entry only
-  against a build that stays inside its own cache. It is **not** a boundary
-  against a builder that writes another project's cache repo directly,
-  which it can.
-- An overwritten tag is consumed: a builder pod pulls its parent fresh on
-  every build (no local store to shield it), and node containerd re-pulls
-  a tag once the image GC (docs/image-gc.md) has dropped the node's copy.
-- The one yaac pod whose compromise is node root, the image GC's privileged
-  `hostPID` node pruner, is outside this radius only because it runs a
-  digest ref (the upstream `registry:2`), not a registry tag. Any yaac
-  infra pod that names a tag here trusts every builder that ever ran, so a
-  privileged one must never do so.
+The key is one RSA-2048 keypair per cluster, the Secret
+`yaac-registry-grant-key`, created by whichever caller needs it first (in
+practice `ensureMainRegistry` on install) with a `create` so two racing
+creators converge on one key. It sits in a namespace of its own,
+`yaac-registry-keys`, not the registry's: that is also the default install
+namespace, where the egress proxy's Role reads every Secret, and the proxy
+parses untrusted traffic. So only cluster-wide readers reach it — the host
+CLI by its kubeconfig and the in-cluster server by its ClusterRole — and
+nothing mounts or copies it. The gate holds only the public half:
+compromising the registry pod mints nothing, and that pod was already all
+of the registry.
 
-Closing this needs authentication or path scoping — a push-side proxy that
-mints per-build, repo-scoped credentials is the obvious shape. Until then
-the containment that does hold is the sentry around the `RUN` step itself
-and the trust split that keeps yaac-shipped layers off that path.
+Two kinds of grant are minted (`#drivers/k8s/container`, registry-grant.ts):
+
+- **Admin (`*`)**, one hour, for every host push (`pushImageToRegistry`,
+  as a private temp `--authfile`, never argv, where any local `ps` would
+  read it): install's builtin images and mirrors, `cluster
+  check`'s probe image, the e2e global setup. Those are the trusted
+  writers; the in-cluster server pushes nothing itself.
+- **Per layer**, for a builder pod: the layer's own repo and the project's
+  `yaac-buildcache-<id>`, valid until the pod's own deadline plus a minute.
+  It is written into the pod as an authfile over exec stdin before each
+  layer's build, and `podman build` (for `--cache-to`) and `podman push`
+  are given `--authfile`. The build's `RUN` steps may be able to read it
+  — a root chroot is not a boundary — and that is accepted: it writes only
+  repos that project's own Dockerfiles already control.
+
+What this buys: the trusted chain (`yaac-base`/`yaac-tools`/`yaac-nestable`),
+every digest-pinned mirror (including the images that privileged and node
+pods boot), the proxy, netd, the server image, and every other project's
+images and step cache are out of a builder's reach. The digest in a mirror
+tag's name is still a label nothing checks; it is the gate that keeps the
+bytes under it the ones install pushed.
+
+A registry rolled by an install that predates the gate accepts anonymous
+writes while answering every read, so `cluster check`'s registry step
+starts an anonymous upload and fails when it is not refused. Re-running
+`yaac cluster install` rolls the Deployment (`Recreate`, so pulls fail for
+the seconds that takes); the template carries a hash of the gate config, so
+a new key or gate rolls it too.
 
 ## Security hardening
 

@@ -12,15 +12,17 @@
  * `hosts.toml` written by one-shot pods that hostPath-mount the node's
  * `certs.d` directory.
  *
- * Three things differ from a project registry, all for the same reason —
+ * Four things differ from a project registry, all for the same reason —
  * this one is install-wide infrastructure, not a per-project store:
  *
  *  - It lives in the DEFAULT namespace (`REGISTRY_NAMESPACE`), not
  *    `k8sNamespace()`, so per-run e2e namespaces keep sharing one image
  *    store.
- *  - Its image is the UPSTREAM digest ref, not the local mirror tag: the
- *    registry cannot be the source of its own image, and the same goes for
- *    the node-write pods that wire it up.
+ *  - Its images are UPSTREAM digest refs, not local mirror tags: the
+ *    registry cannot be the source of its own pod's images, and the same
+ *    goes for the node-write pods that wire it up.
+ *  - Writes need a grant (below); a project registry is written from
+ *    inside its project's sandboxes by design.
  *  - Its ingress lock admits a different caller set: node CIDRs (containerd
  *    pulls and the kubelet probe, plus the server's port-forward, which
  *    arrives from the node) and builder pods in ANY namespace, rather than
@@ -30,15 +32,12 @@
  *    listener range. Note the world-deny policy is NOT what stops them: it
  *    explicitly excludes worktree-labeled pods.
  *
- * On the lock's limits, so the rationale is not read as more than it is:
- * builder pods are the UNTRUSTED principal of the trust split — an
+ * The lock pins the caller set; it cannot say WHAT a caller may write.
+ * Builder pods are the UNTRUSTED principal of the trust split — an
  * attacker-authored `RUN` step runs inside one — and they must be able to
- * push, so no network policy can stop a builder-origin write to an
- * arbitrary repo:tag in an unauthenticated registry:2. What the lock buys
- * is the same thing the project registries' does: it pins the caller set so
- * a future egress loosening cannot silently widen it. Closing the
- * builder-origin write surface needs auth or path scoping; the open risk is
- * written up in docs/trust-split-builds.md.
+ * push. What confines their writes is the write gate in front of the
+ * registry (registry-gate.ts): reads stay anonymous, and every write needs a
+ * signed grant scoped to the repositories it may touch.
  *
  * The server reaches it through a `kubectl port-forward`, not by any host
  * networking assumption — see `#drivers/k8s/container`'s registry module for
@@ -86,10 +85,17 @@ import {
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
   invalidateRegistryEndpoint,
+  registryGrantPublicKey,
   registryHost,
   registryReachable,
 } from '#drivers/k8s/container'
 import { LABEL_REGISTRY_DATA_DIR_HASH, REGISTRY_UPSTREAM_IMAGE } from './project-registry'
+import { ENVOY_UPSTREAM_IMAGE } from './netd'
+import {
+  REGISTRY_BACKEND_PORT,
+  REGISTRY_GATE_CONFIG_DIR,
+  registryGateBootstrap,
+} from './registry-gate'
 import { serverLog } from '#log'
 
 /** `app` label on every object of the main registry. Distinct from the
@@ -163,21 +169,50 @@ export function buildMainRegistryPvcManifest(): Record<string, unknown> {
   }
 }
 
+/** Name of the write gate's ConfigMap (and of its container in the pod). */
+const REGISTRY_GATE_NAME = `${REGISTRY_SERVICE_NAME}-gate`
+
+/** The gate's Envoy bootstrap, rendered around the grant key's public half. */
+export function buildMainRegistryGateConfigMapManifest(publicKeyDer: Buffer): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: REGISTRY_GATE_NAME,
+      namespace: REGISTRY_NAMESPACE,
+      labels: mainRegistryLabels(),
+    },
+    data: { 'bootstrap.json': registryGateBootstrap(REGISTRY_SERVICE_PORT, publicKeyDer) },
+  }
+}
+
 /**
- * The registry Deployment. Trusted infra like the proxy and the project
- * registries, so no `runtimeClassName` — it runs on runc; the sentry buys
- * no containment for a yaac-pinned upstream and its CPU cost starves the
- * node. `Recreate`, because a rolling overlap would put two pods on one
- * store — and on a backend that enforces RWO across nodes it would simply
- * deadlock, the new pod waiting for a volume the old pod still holds.
+ * The registry Deployment: `registry:2` on the pod's loopback, and the
+ * write gate (registry-gate.ts) in front of it on the Service port. Trusted
+ * infra like the proxy and the project registries, so no `runtimeClassName`
+ * — it runs on runc; the sentry buys no containment for a yaac-pinned
+ * upstream and its CPU cost starves the node. `Recreate`, because a rolling
+ * overlap would put two pods on one store — and on a backend that enforces
+ * RWO across nodes it would simply deadlock, the new pod waiting for a
+ * volume the old pod still holds.
  *
- * The image is the digest-pinned UPSTREAM ref rather than the local mirror
- * tag every other yaac pod uses: this registry cannot pull its own image
- * from itself. The node fetches it once (~25MB) and `IfNotPresent` keeps
+ * Both images are digest-pinned UPSTREAM refs rather than the local mirror
+ * tags every other yaac pod uses: this registry cannot pull its own pod's
+ * images from itself. The node fetches them once and `IfNotPresent` keeps
  * every later rollout offline.
+ *
+ * The template carries a hash of the gate config, so a changed key or
+ * gate rolls the pod — Envoy reads its bootstrap once, at start.
+ *
+ * Readiness is probed through the gate, so it covers both containers. The
+ * probe carries an empty Basic credential because the gate challenges a
+ * bare `/v2/` (that challenge is what makes podman send its grant).
  */
-export function buildMainRegistryDeploymentManifest(): Record<string, unknown> {
+export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Record<string, unknown> {
   const selector = { app: MAIN_REGISTRY_APP_LABEL }
+  const gateConfigHash = crypto.createHash('sha256')
+    .update(registryGateBootstrap(REGISTRY_SERVICE_PORT, publicKeyDer))
+    .digest('hex').slice(0, 16)
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -191,7 +226,10 @@ export function buildMainRegistryDeploymentManifest(): Record<string, unknown> {
       strategy: { type: 'Recreate' },
       selector: { matchLabels: selector },
       template: {
-        metadata: { labels: mainRegistryLabels() },
+        metadata: {
+          labels: mainRegistryLabels(),
+          annotations: { 'yaac.registry-gate-config': gateConfigHash },
+        },
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
@@ -203,19 +241,38 @@ export function buildMainRegistryDeploymentManifest(): Record<string, unknown> {
               name: 'registry',
               image: REGISTRY_UPSTREAM_IMAGE,
               imagePullPolicy: 'IfNotPresent',
+              env: [{ name: 'REGISTRY_HTTP_ADDR', value: `127.0.0.1:${String(REGISTRY_BACKEND_PORT)}` }],
+              volumeMounts: [{ name: 'storage', mountPath: '/var/lib/registry' }],
+            },
+            {
+              name: 'gate',
+              image: ENVOY_UPSTREAM_IMAGE,
+              imagePullPolicy: 'IfNotPresent',
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 101,
+                runAsGroup: 101,
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ['ALL'] },
+              },
+              command: ['envoy', '-c', `${REGISTRY_GATE_CONFIG_DIR}/bootstrap.json`, '--log-level', 'warn'],
               ports: [{ containerPort: REGISTRY_SERVICE_PORT }],
               readinessProbe: {
-                httpGet: { path: '/v2/', port: REGISTRY_SERVICE_PORT },
+                httpGet: {
+                  path: '/v2/',
+                  port: REGISTRY_SERVICE_PORT,
+                  httpHeaders: [{ name: 'Authorization', value: 'Basic Og==' }],
+                },
                 periodSeconds: 2,
                 failureThreshold: 30,
               },
-              volumeMounts: [{ name: 'storage', mountPath: '/var/lib/registry' }],
+              volumeMounts: [{ name: 'gate-config', mountPath: REGISTRY_GATE_CONFIG_DIR, readOnly: true }],
             },
           ],
-          volumes: [{
-            name: 'storage',
-            persistentVolumeClaim: { claimName: mainRegistryPvcName() },
-          }],
+          volumes: [
+            { name: 'storage', persistentVolumeClaim: { claimName: mainRegistryPvcName() } },
+            { name: 'gate-config', configMap: { name: REGISTRY_GATE_NAME } },
+          ],
         },
       },
     },
@@ -272,9 +329,10 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
  *    reports the image as unbuilt. Selected across namespaces for the same
  *    reason builders are: an e2e run puts its server in a per-run one.
  *
- * Worktree pods are deliberately absent. This does NOT stop a builder-origin
- * write (see the module header) — it stops everything that is not a builder
- * or the node from becoming a caller by accident.
+ * Worktree pods are deliberately absent. This does NOT confine what a
+ * builder writes — the write gate does (see the module header) — it stops
+ * everything that is not a builder or the node from becoming a caller by
+ * accident.
  *
  * The node half is rendered from `nodeIpBlocks()` at ensure time, so it
  * goes STALE if node addresses move under it (a VM restart is the usual
@@ -437,7 +495,7 @@ export async function writeNodeMainRegistryHostsToml(): Promise<void> {
 }
 
 /** How long a fresh registry rollout may take, including the node's
- *  one-time upstream pull of the pinned registry:2. */
+ *  one-time upstream pull of the pinned registry:2 and Envoy. */
 const ROLLOUT_TIMEOUT_MS = 300_000
 
 /** A healthy rollout takes seconds; past this, the pod netns is checked for
@@ -573,7 +631,11 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   // rollout wait below would spend that time looking like a scheduling
   // failure.
   await kubectlApply(buildMainRegistryPvcManifest())
-  await kubectlApply(buildMainRegistryDeploymentManifest())
+  // The grant key is created on first use, here on a fresh cluster; the
+  // gate's config holds only its public half.
+  const publicKeyDer = await registryGrantPublicKey()
+  await kubectlApply(buildMainRegistryGateConfigMapManifest(publicKeyDer))
+  await kubectlApply(buildMainRegistryDeploymentManifest(publicKeyDer))
   await kubectlApply(buildMainRegistryServiceManifest())
   await kubectlApply(buildMainRegistryIngressNetworkPolicyManifest(await nodeIpBlocks()))
   const rolledOut = await waitForRegistryRollout(ROLLOUT_STALL_MS).then(() => true, () => false)
@@ -592,7 +654,7 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
         + `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods,pvc `
         + `-l app=${MAIN_REGISTRY_APP_LABEL}\` — Pending means the node had no `
         + 'room, ImagePullBackOff means it could not fetch the pinned '
-        + 'registry:2 from upstream, and a Pending PVC means the cluster has '
+        + 'registry:2 or Envoy from upstream, and a Pending PVC means the cluster has '
         + 'no default StorageClass to bind it.',
       )
     }
@@ -624,7 +686,7 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
  */
 export async function mainRegistryExec(argv: string[], timeoutMs: number): Promise<string> {
   const { stdout } = await kubectlWithRetry(
-    ['exec', '-n', REGISTRY_NAMESPACE, `deploy/${REGISTRY_SERVICE_NAME}`, '--', ...argv],
+    ['exec', '-n', REGISTRY_NAMESPACE, `deploy/${REGISTRY_SERVICE_NAME}`, '-c', 'registry', '--', ...argv],
     { timeout: timeoutMs, maxAttempts: 1 },
   )
   return stdout

@@ -225,7 +225,12 @@ older one. There are two reasons:
    PVC (`yaac-registry-storage-<install-hash>`, install-keyed so coexisting
    installs never share a store), which binds through the cluster's *default*
    StorageClass — a cluster with none leaves the registry pod Pending. They
-   die with the cluster and cost only re-pushes.
+   die with the cluster and cost only re-pushes. Reads are anonymous; a
+   write needs a grant signed by the cluster's registry key, which an Envoy
+   gate in the registry's own pod checks (docs/trust-split-builds.md "The
+   write gate"). Install creates the key, as the Secret
+   `yaac-registry-grant-key` in its own `yaac-registry-keys` namespace, on
+   its first run against a cluster.
 
    An install upgrading from the older node-hostPath store converts on its
    next server start and comes up on a **fresh, empty claim**: nothing

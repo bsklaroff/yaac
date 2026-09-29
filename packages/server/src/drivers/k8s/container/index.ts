@@ -5,7 +5,7 @@
 // from reaching past this file. Modules in here import each other by relative
 // path, which is why they are unaffected by that rule.
 //
-// Four modules. runtime.ts is the host side of the split runtime: the
+// Five modules. runtime.ts is the host side of the split runtime: the
 // CONTAINER_HOST lever that points every podman call at the rootful engine,
 // and the two image-store queries the image and cluster features make. The
 // engine itself is now install-time only — `yaac cluster install` builds and
@@ -15,6 +15,9 @@
 // has (the cluster ref every image name carries, and the port-forwarded
 // endpoint this process pushes and HEADs through) plus the push itself. The
 // registry workload lives in the cluster and is owned by `#drivers/k8s/cluster`.
+// registry-grant.ts holds the registry's write-grant key and mints grants
+// from it: an admin grant for every host push, a repo-scoped authfile for a
+// builder pod, and the public half the registry's write gate verifies with.
 // host-procs.ts owns every long-running podman child (`build` / `push`) —
 // all of them install-time now: it runs them, and it makes an interrupted
 // install's orphans die before the next one starts, which is where duplicate
@@ -45,6 +48,7 @@ export {
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
 } from './registry'
+export { registryAuthFile, registryGrantPublicKey } from './registry-grant'
 export {
   ensureRootfulPodmanHost,
   execFileAsync,

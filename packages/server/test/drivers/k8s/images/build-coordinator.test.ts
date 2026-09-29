@@ -18,6 +18,7 @@
  * generators are covered by the argument sets these tests drive rather than
  * by tests of their own.
  */
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -38,6 +39,7 @@ import type * as mainRegistryModule from '#drivers/k8s/cluster/main-registry'
  * idle build timeout.
  */
 type FakeStream = EventEmitter & {
+  write: (chunk: unknown) => boolean
   pipe: ReturnType<typeof vi.fn>
   setEncoding: ReturnType<typeof vi.fn>
   end: ReturnType<typeof vi.fn>
@@ -61,7 +63,7 @@ interface HeldChild {
 }
 /** Fictional pids: the process.kill spy never lets one reach the OS. */
 const FAKE_PID_BASE = 990_001
-const spawned = vi.hoisted(() => [] as Array<{ file: string; args: string[] }>)
+const spawned = vi.hoisted(() => [] as Array<{ file: string; args: string[]; stdin: string }>)
 const held = vi.hoisted(() => [] as HeldChild[])
 /** Group pid (negative) -> what the held fake child does when signalled. */
 const killers = vi.hoisted(() => new Map<number, (signal: string) => void>())
@@ -83,7 +85,7 @@ const readListFile = vi.hoisted(() => (listFile: string): string[] => {
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof childProcessModule>()
   const fakeStream = (): FakeStream => Object.assign(new EventEmitter(), {
-    pipe: vi.fn(), setEncoding: vi.fn(), end: vi.fn(), destroy: vi.fn(),
+    write: () => true, pipe: vi.fn(), setEncoding: vi.fn(), end: vi.fn(), destroy: vi.fn(),
   })
   return {
     ...actual,
@@ -98,7 +100,9 @@ vi.mock('node:child_process', async (importOriginal) => {
       if (file === 'tar' && args.includes('-T')) {
         tarLists.push(readListFile(args[args.indexOf('-T') + 1]))
       }
-      spawned.push({ file, args })
+      const entry = { file, args, stdin: '' }
+      spawned.push(entry)
+      child.stdin.write = (chunk: unknown) => { entry.stdin += String(chunk); return true }
       if (spawnState.hold?.(file, args)) {
         const signals: string[] = []
         killers.set(-child.pid, (signal) => {
@@ -199,6 +203,7 @@ import { clearAllImageBuildsForTests, listImageBuilds } from '#drivers/k8s/image
 // Bounds and layout constants: expected values, not units under test.
 import {
   BUILDER_ACTIVE_DEADLINE_SECONDS,
+  BUILDER_AUTHFILE,
   BUILDER_BUILD_IDLE_TIMEOUT_MS,
   BUILDER_CONTEXT_DIR,
   BUILDER_GRAPHROOT_SIZELIMIT_BYTES,
@@ -210,6 +215,7 @@ import {
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
 import { egressAllButServerFront } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
+import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
 import type { ImageLayerName } from '@yaac/shared/types'
 
 const mockBuildImage = vi.mocked(buildImage)
@@ -219,6 +225,29 @@ const mockPush = vi.mocked(pushImageToRegistry)
 const mockHasTag = vi.mocked(registryHasTag)
 
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
+
+/** The cluster's registry grant key, served as its Secret. */
+const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+const GRANT_SECRET = {
+  data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
+}
+
+/**
+ * The grant an authfile hands a builder pod, verified the way the
+ * registry's write gate does: its scope, or null for a bad signature.
+ */
+function grantScopeOf(authFile: string): { repos: string[]; expiry: number } | null {
+  const { auths } = JSON.parse(authFile) as { auths: Record<string, { auth: string }> }
+  const basic = Buffer.from(auths[CLUSTER_HOST].auth, 'base64').toString()
+  const password = basic.slice(basic.indexOf(':') + 1)
+  const dot = password.lastIndexOf('.')
+  const payload = password.slice(0, dot)
+  if (!crypto.verify('sha256', Buffer.from(payload), GRANT_KEY, Buffer.from(password.slice(dot + 1), 'base64url'))) {
+    return null
+  }
+  const [, expiry, scope] = payload.split('|')
+  return { repos: scope.split(','), expiry: Number(expiry) }
+}
 const PROJ = { slug: 'proj', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
 const PROJ_A = { slug: 'proj-a', id: '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e' }
 const PROJ_B = { slug: 'proj-b', id: 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5' }
@@ -247,7 +276,7 @@ async function makeContext(files: Record<string, string>): Promise<string> {
 async function podLayer(over: Partial<ImageLayer> = {}, files?: Record<string, string>): Promise<ImageLayer> {
   const dir = await makeContext(files ?? { 'Dockerfile.yaac': LAYERED_DOCKERFILE })
   return {
-    tag: 'yaac-base:p1',
+    tag: `yaac-proj-${PROJ.id}:p1`,
     name: 'project',
     dockerfile: path.join(dir, 'Dockerfile.yaac'),
     context: dir,
@@ -353,6 +382,9 @@ beforeEach(() => {
   mockKubectlApply.mockResolvedValue(undefined)
   mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
   mockKubectlGetJson.mockResolvedValue(null)
+  mockKubectlGetJson.mockImplementation((args: string[]) =>
+    Promise.resolve(args[1] === 'secret' ? GRANT_SECRET : null))
+  _resetRegistryGrantKeyForTests()
 })
 
 afterEach(async () => {
@@ -589,9 +621,9 @@ describe('ensureImage', () => {
     // there the server would take it for its owner.
     expect(np.spec.egress).toEqual(egressAllButServerFront(['10.89.0.7/32']))
 
-    // storage.conf bootstrap, parent pull, extract, build, push — in order.
+    // storage.conf bootstrap, parent pull, extract, grant, build, push — in order.
     const remote = remoteCommands()
-    expect(remote).toHaveLength(5)
+    expect(remote).toHaveLength(6)
     // Native overlay: the stock image forces fuse-overlayfs, broken on runsc.
     expect(remote[0][2]).toContain('driver = "overlay"')
     expect(remote[0][2]).not.toContain('fuse-overlayfs')
@@ -602,17 +634,29 @@ describe('ensureImage', () => {
     expect(remote[1][2]).toContain(`podman tag ${CLUSTER_HOST}/${tools.tag} ${tools.tag}`)
     expect(remote[1][2]).toContain(`if podman image exists ${tools.tag}; then exit 0; fi`)
     expect(remote[2][2]).toContain(`tar -xf - -C ${BUILDER_CONTEXT_DIR}`)
+    // The registry write grant arrives over stdin, never argv, and covers
+    // exactly the product's repo and the project's step-cache repo — the
+    // registry's gate refuses the pod a write to anything else.
+    expect(remote[3][2]).toBe(`umask 077 && cat > ${BUILDER_AUTHFILE}`)
+    const grantExec = spawned.filter((s) => s.file === 'kubectl')[3]
+    const grant = grantScopeOf(grantExec.stdin)
+    expect(grant?.repos).toEqual([`yaac-proj-${PROJ.id}`, `yaac-buildcache-${PROJ.id}`])
+    // Valid for as long as the pod itself can live, and not much longer.
+    expect(grant!.expiry - Date.now() / 1000).toBeGreaterThan(BUILDER_ACTIVE_DEADLINE_SECONDS)
+    expect(grant!.expiry - Date.now() / 1000).toBeLessThan(BUILDER_ACTIVE_DEADLINE_SECONDS + 120)
+    expect(grantExec.args.join(' ')).not.toContain(grantExec.stdin)
     // Build: chroot isolation, per-project registry step cache.
-    expect(remote[3].slice(0, 4)).toEqual(['podman', 'build', '--isolation', 'chroot'])
-    expect(remote[3]).toContain(project.tag)
+    expect(remote[4].slice(0, 4)).toEqual(['podman', 'build', '--isolation', 'chroot'])
+    expect(remote[4]).toContain(project.tag)
     const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-${PROJ.id}`
-    expect(remote[3].join(' '))
+    expect(remote[4].join(' '))
       .toContain(`--cache-from ${cacheRef} --cache-to ${cacheRef} --cache-ttl 168h`)
-    expect(remote[3].join(' ')).toContain(`-f ${BUILDER_CONTEXT_DIR}/Dockerfile.yaac`)
-    expect(remote[3].join(' ')).toContain(`--build-arg BASE_IMAGE=${tools.tag}`)
-    expect(remote[3].at(-1)).toBe(BUILDER_CONTEXT_DIR)
-    expect(remote[4].slice(0, 3)).toEqual(['podman', 'push', '--tls-verify=false'])
-    expect(remote[4]).toContain(`${CLUSTER_HOST}/${project.tag}`)
+    expect(remote[4].join(' ')).toContain(`--authfile ${BUILDER_AUTHFILE}`)
+    expect(remote[4].join(' ')).toContain(`-f ${BUILDER_CONTEXT_DIR}/Dockerfile.yaac`)
+    expect(remote[4].join(' ')).toContain(`--build-arg BASE_IMAGE=${tools.tag}`)
+    expect(remote[4].at(-1)).toBe(BUILDER_CONTEXT_DIR)
+    expect(remote[5].slice(0, 5)).toEqual(['podman', 'push', '--tls-verify=false', '--authfile', BUILDER_AUTHFILE])
+    expect(remote[5]).toContain(`${CLUSTER_HOST}/${project.tag}`)
 
     // Context honors .containerignore exactly like contextHash().
     expect(tarLists[0]).toEqual(expect.arrayContaining(['keep.txt', '.containerignore', 'Dockerfile.yaac']))
@@ -645,7 +689,7 @@ describe('ensureImage', () => {
     // entries as cache hits.
     chain([await podLayer({ buildArgs: undefined })])
     await ensureImage({ slug: 'demo', id: PROJ_B.id })
-    const build = remoteCommands()[2].join(' ')
+    const build = remoteCommands()[3].join(' ')
     expect(build).toContain(`${CLUSTER_HOST}/yaac-buildcache-${PROJ_B.id}`)
     expect(build).not.toContain('buildcache-demo')
   })
@@ -653,7 +697,7 @@ describe('ensureImage', () => {
   it('reuses one builder pod across adjacent untrusted layers and deletes it once', async () => {
     const first = await podLayer({ buildArgs: undefined })
     const second = await podLayer({
-      tag: 'yaac-user-proj:u1', name: 'user', buildArgs: { BASE_IMAGE: first.tag },
+      tag: `yaac-user-${PROJ.id}:u1`, name: 'user', buildArgs: { BASE_IMAGE: first.tag },
     })
     chain([first, second])
 
@@ -662,6 +706,15 @@ describe('ensureImage', () => {
     expect(mockKubectlApply.mock.calls
       .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
     expect(deleteCalls()).toHaveLength(1)
+    // A shared pod still gets a fresh grant per layer, each naming only the
+    // repo that layer publishes to.
+    const grants = spawned
+      .filter((s) => s.file === 'kubectl' && s.args.at(-1)?.includes(BUILDER_AUTHFILE) && s.args.at(-1)?.startsWith('umask'))
+      .map((s) => grantScopeOf(s.stdin)?.repos)
+    expect(grants).toEqual([
+      [`yaac-proj-${PROJ.id}`, `yaac-buildcache-${PROJ.id}`],
+      [`yaac-user-${PROJ.id}`, `yaac-buildcache-${PROJ.id}`],
+    ])
   })
 
   it('consults the registry for untrusted tags, never the host store', async () => {
