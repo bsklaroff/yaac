@@ -1,6 +1,7 @@
 import type { JSX, ReactNode, RefObject } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
+import { useOpenerFocus } from '#lib/useOpenerFocus'
 
 /**
  * A centered modal: dimmed backdrop, a rounded card that scales in and out,
@@ -25,6 +26,7 @@ export function Modal({
   initialFocus?: RefObject<HTMLElement | null>
   children: ReactNode
 }): JSX.Element {
+  const finalFocus = useOpenerFocus(open)
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -32,6 +34,7 @@ export function Modal({
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
         <Dialog.Popup
           {...(initialFocus !== undefined ? { initialFocus } : {})}
+          finalFocus={finalFocus}
           className={clsx(
             'fixed left-1/2 top-1/2 max-h-[calc(100vh-4rem)] max-w-[calc(100vw-2rem)] -translate-x-1/2',
             '-translate-y-1/2 overflow-hidden rounded-xl border border-hairline bg-surface text-text',

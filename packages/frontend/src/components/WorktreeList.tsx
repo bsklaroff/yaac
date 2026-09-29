@@ -43,6 +43,7 @@ import {
   setWorktreeGroupPinned,
 } from '#lib/groupApi'
 import { useInlineEdit, useInlineRename } from '#lib/useInlineRename'
+import { useOpenerFocus } from '#lib/useOpenerFocus'
 import { discardDraftWorktree } from '#lib/draftApi'
 import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
 import { clip, queuedChildren, queuedTitle } from '#lib/queued'
@@ -1038,6 +1039,7 @@ function GroupDialog({
 }): JSX.Element {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const finalFocus = useOpenerFocus(open)
 
   const run = async (op: Promise<unknown>, failure: string): Promise<void> => {
     setBusy(true)
@@ -1077,7 +1079,7 @@ function GroupDialog({
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <Dialog.Popup className="fixed left-1/2 top-1/2 w-[380px] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2
+        <Dialog.Popup finalFocus={finalFocus} className="fixed left-1/2 top-1/2 w-[380px] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2
           rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none
           transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
           data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
@@ -1512,20 +1514,32 @@ const MENU_ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2
  *
  * A picked item runs once the menu has finished closing, and the menu then
  * leaves focus where the item put it: a rename's input, or a dialog it
- * opened, rather than taking it back to the trigger.
+ * opened, rather than taking it back to the trigger. What the item sees
+ * focused first is where such a dialog returns focus: the trigger after a
+ * keyboard pick, so a keyboard user keeps their place, and nothing after a
+ * pointer pick, whose `…` would otherwise stay pinned on a row the pointer
+ * has left.
  */
 function RowMenu({ label, items }: { label: string; items: RowMenuItem[] }): JSX.Element {
+  const trigger = useRef<HTMLButtonElement>(null)
+  // Kept until the next open: the popup reads it for `finalFocus` as it
+  // unmounts, after the item has already run.
   const picked = useRef<(() => void) | null>(null)
+  // The input that last acted in the popup. Not the click's `detail`: a
+  // press-drag-release pick is a pointer gesture that clicks programmatically.
+  const byKey = useRef(false)
   return (
     <Menu.Root
+      onOpenChange={(open) => { if (open) picked.current = null }}
       onOpenChangeComplete={(open) => {
         if (open || picked.current === null) return
-        const run = picked.current
-        picked.current = null
-        run()
+        if (byKey.current) trigger.current?.focus()
+        else if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+        picked.current()
       }}
     >
       <Menu.Trigger
+        ref={trigger}
         title={label}
         aria-label={label}
         className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
@@ -1539,7 +1553,12 @@ function RowMenu({ label, items }: { label: string; items: RowMenuItem[] }): JSX
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align="end" sideOffset={4}>
-          <Menu.Popup finalFocus={() => picked.current === null} className={MENU_POPUP}>
+          <Menu.Popup
+            finalFocus={() => picked.current === null}
+            onKeyDown={() => { byKey.current = true }}
+            onPointerUp={() => { byKey.current = false }}
+            className={MENU_POPUP}
+          >
             {items.map((item, i) => item === 'separator'
               ? <Menu.Separator key={`sep-${i}`} className="my-1 h-px bg-border" />
               : (
