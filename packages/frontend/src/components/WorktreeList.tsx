@@ -1504,7 +1504,7 @@ function DraftsSection({ drafts }: { drafts: DraftWorktreeEntry[] }): JSX.Elemen
 function DraftWorktreeRow({ draft }: { draft: DraftWorktreeEntry }): JSX.Element {
   const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
-  const name = draft.title ?? queuedTitle(draft)
+  const name = draft.title ?? draft.generatedTitle ?? queuedTitle(draft)
   const open = (): void => openCreateWorktree({ projectSlug: draft.projectSlug, draftId: draft.id, focus: 'prompt' })
 
   return (

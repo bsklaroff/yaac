@@ -44,6 +44,10 @@ export interface CreateWorktreeOptions {
   permissionMode?: PermissionMode
   /** The agent's opening message, typed into it once it is up. */
   prompt?: string
+  /** The worktree's title, which turns off auto-titling it. */
+  title?: string
+  /** The sidebar group to file it under, by id. */
+  group?: string
   /** The draft this create is made from, deleted once it has succeeded. */
   draftId?: string
 }
@@ -64,6 +68,8 @@ export async function createWorktree(
     ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
     ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
     ...(opts.prompt ? { prompt: opts.prompt } : {}),
+    ...(opts.title ? { title: opts.title } : {}),
+    ...(opts.group !== undefined ? { group: opts.group } : {}),
     ...(opts.draftId !== undefined ? { draftId: opts.draftId } : {}),
   }
   return await streamWorktreeOp('/api/worktree/create', body, onProgress) as CreateWorktreeResult

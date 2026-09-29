@@ -89,7 +89,14 @@ const queuedSettings = {
   mode: z.enum(AGENT_MODES).optional(),
   permissionMode: z.enum(PERMISSION_MODES).optional(),
   branch: z.string().min(1).max(255).optional(),
+  // The user's title for the worktree; blank leaves it to be auto-titled.
+  title: z.string().max(500).optional(),
 }
+
+// The group a queued worktree launches into, by id or name; null is the
+// default list. Omitted, a queue takes its parent's and an update keeps the
+// entry's.
+const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional()
 
 // The draft worktree a create or queue was made from
 // (docs/draft-worktrees.md). It is deleted once the create or queue has
@@ -152,6 +159,8 @@ export const worktreeApp = new Hono()
       // matching no group is created. Resolved before anything is
       // provisioned, so a typo'd group is not a half-built worktree.
       group: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
+      // The user's title; blank (or omitted) leaves it to be auto-titled.
+      title: z.string().max(500).optional(),
       draftId,
     })),
     async (c) => {
@@ -189,6 +198,7 @@ export const worktreeApp = new Hono()
           ...(body.mode !== undefined ? { mode: body.mode } : {}),
           ...(body.branch !== undefined ? { branch: body.branch } : {}),
           ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
+          ...(body.title !== undefined ? { title: body.title } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
           // A person asked for this; it becomes the project's next defaults,
           // from any client.
@@ -280,6 +290,7 @@ export const worktreeApp = new Hono()
       // A worktree id or a queued entry's id (or a unique prefix of either).
       parent: z.string().min(1),
       ...queuedSettings,
+      group: queuedGroup,
       draftId,
     })),
     async (c) => {
@@ -296,6 +307,7 @@ export const worktreeApp = new Hono()
       parent: z.string().min(1).optional(),
       ...queuedSettings,
       prompt: queuedSettings.prompt.optional(),
+      group: queuedGroup,
     })),
     async (c) => {
       const { id, ...patch } = c.req.valid('json')
@@ -328,6 +340,7 @@ export const worktreeApp = new Hono()
       mode: queuedSettings.mode.unwrap(),
       permissionMode: queuedSettings.permissionMode.unwrap(),
       startAfter: z.string().min(1).optional(),
+      groupId: z.string().min(1).optional(),
     })),
     async (c) => {
       const { id, project, ...settings } = c.req.valid('json')

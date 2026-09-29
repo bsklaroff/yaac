@@ -26,6 +26,7 @@ import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { ACP_ADAPTERS, AGENT_TOOLS, toolSupportsPermissionMode } from '@yaac/shared/types'
+import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type { AgentSessionEntry, AgentTool, ServerSnapshot } from '@yaac/shared/types'
 
@@ -294,6 +295,8 @@ function sockFor(id: string): string {
 interface ListedWorktree {
   worktreeId: string
   status: string
+  title?: string
+  groupId?: string
   forwardedPorts: Array<{ containerPort: number; hostPort: number }>
   agentSessions: AgentSessionEntry[]
 }
@@ -1222,6 +1225,31 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       await fs.writeFile(configPath, configBefore)
       await fs.rm(attributesPath, { force: true })
       if (id !== undefined) await runYaac(serverEnv, 'worktree', 'stop', id)
+    }
+  }, 120_000)
+
+  // The webapp's create dialog: a title of the user's own, and a group, both
+  // on the row before its founding prompt is — so the title sweep never
+  // replaces it.
+  it('creates a worktree titled and filed as the create dialog asks', async () => {
+    const res = await fetch(`${origin()}/api/worktree/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project: SLUG, tool: 'claude', prompt: 'a founding ask', title: 'Dialog title', group: 'dialog-group',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const { worktreeId: id } = await consumeNdjsonStream<{ worktreeId: string }>(res, () => {})
+    try {
+      const groups = await (await fetch(`${origin()}/api/worktree/group/list?project=${SLUG}`)).json() as {
+        groups: Array<{ groupId: string; name: string }>
+      }
+      const group = groups.groups.find((g) => g.name === 'dialog-group')
+      expect((await listWorktrees()).find((w) => w.worktreeId === id))
+        .toMatchObject({ title: 'Dialog title', groupId: group?.groupId })
+    } finally {
+      await runYaac(serverEnv, 'worktree', 'stop', id)
     }
   }, 120_000)
 

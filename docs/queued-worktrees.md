@@ -2,7 +2,8 @@
 
 A **queued worktree** (an *entry*) is a worktree create request saved for
 later: a prompt plus the full create settings — tool, model, UI mode,
-permission mode, reference branch — attached to a **parent**. It runs when
+permission mode, reference branch, and optionally a title and a sidebar
+group — attached to a **parent**. It runs when
 the parent stops *naturally*: a user stop from the webapp or `yaac worktree
 stop`, or an agent's `yaac-mama stop`. It does not run when the parent dies
 (OOM, crash, eviction, the agent exiting); it waits under the parent until
@@ -68,10 +69,10 @@ default from the parent:
 
 - A **worktree** parent supplies its first conversation's tool, mode and
   *current* model (which follows a `/model` switch), its row's permission
-  mode, and its **reference branch** (`worktrees.baseBranch`, the branch it
-  forked from — not its own `agent/<id>` branch). A parent still
+  mode and group, and its **reference branch** (`worktrees.baseBranch`, the
+  branch it forked from — not its own `agent/<id>` branch). A parent still
   provisioning has no conversation yet, so its provisioning row names the
-  tool.
+  tool and group.
 - An **entry** parent supplies its stored settings.
 
 A tool other than the parent's takes that tool's create defaults
@@ -96,8 +97,13 @@ origin's latest tip of its branch.
 Queueing never records the project's create defaults — settings inherited
 from a parent are not a choice the user made for the project.
 
-A child is filed into its parent's group **at launch**, as the parent's
-group is then: the nearest worktree above it in the chain.
+The **group** is decided when the entry is queued, like every other
+setting: the parent's unless the request names one (by id or name) or
+`null` for the default list. Moving the parent afterwards leaves the entry
+where it was filed; deleting its group returns it to the default list. A
+**title** is the user's own and never inherited; the worktree it launches
+carries it from the moment its row exists, so the title sweep never
+replaces it. Without one, that worktree is auto-titled as any other.
 
 ## Launching
 
@@ -157,9 +163,11 @@ stands in for it.
   shows entries indented under their parents.
 - **Webapp.** One create dialog (Alt+N, a row's `…` menu, a queued row) with
   a **Start** field: `Now`, or after a live worktree or queued entry stops.
-  Queued rows nest under their parent in the sidebar, each worktree's whole
-  set (chains included) behind one collapsible "n queued worktrees"
-  expander. Sets start collapsed; the one exception is the set the user just
-  queued or moved an entry into from the dialog, which opens so the result
-  shows. The stop dialog lists a worktree's children so they can be
-  edited or discarded before they start.
+  Its optional **Title** turns off auto-titling for what it creates, and its
+  **Group** (shown once the project has groups) follows the Start parent's
+  until it is picked. Queued rows nest under their parent in the sidebar,
+  each worktree's whole set (chains included) behind one collapsible "n
+  queued worktrees" expander. Sets start collapsed; the one exception is the
+  set the user just queued or moved an entry into from the dialog, which
+  opens so the result shows. The stop dialog lists a worktree's children so
+  they can be edited or discarded before they start.

@@ -14,7 +14,7 @@ import type { AgentMode, AgentTool, DraftWorktreeSettings, PermissionMode } from
 export interface DraftWorktreeRow extends DraftWorktreeSettings {
   id: string
   projectSlug: string
-  title?: string
+  generatedTitle?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -33,6 +33,8 @@ function toRow(r: Row): DraftWorktreeRow {
     ...(r.branch !== null ? { branch: r.branch } : {}),
     ...(r.startAfter !== null ? { startAfter: r.startAfter } : {}),
     ...(r.title !== null ? { title: r.title } : {}),
+    ...(r.groupId !== null ? { groupId: r.groupId } : {}),
+    ...(r.generatedTitle !== null ? { generatedTitle: r.generatedTitle } : {}),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   }
@@ -49,6 +51,8 @@ function columns(s: DraftWorktreeSettings): Omit<typeof draftWorktrees.$inferIns
     model: s.model ?? null,
     branch: s.branch ?? null,
     startAfter: s.startAfter ?? null,
+    title: s.title ?? null,
+    groupId: s.groupId ?? null,
   }
 }
 
@@ -84,7 +88,7 @@ export async function updateDraftWorktree(
       .set({
         ...columns(settings),
         updatedAt: new Date(),
-        ...(prev.prompt !== settings.prompt ? { title: null } : {}),
+        ...(prev.prompt !== settings.prompt ? { generatedTitle: null } : {}),
       })
       .where(eq(draftWorktrees.id, id))
       .returning()
@@ -109,15 +113,21 @@ export async function listDraftWorktreeRows(): Promise<DraftWorktreeRow[]> {
 }
 
 /**
- * Record a generated title — only while the draft is untitled and still
- * holds the prompt it was generated from, so an edit that lands while the
- * model runs is not labelled with a summary of what it replaced.
+ * Record a generated title — only while the draft is untitled, by the user
+ * or the model, and still holds the prompt it was generated from, so an edit
+ * that lands while the model runs is not labelled with a summary of what it
+ * replaced.
  */
 export async function setDraftWorktreeTitle(id: string, prompt: string, title: string): Promise<void> {
   const db = await getDb()
   const rows = await db.update(draftWorktrees)
-    .set({ title })
-    .where(and(eq(draftWorktrees.id, id), eq(draftWorktrees.prompt, prompt), isNull(draftWorktrees.title)))
+    .set({ generatedTitle: title })
+    .where(and(
+      eq(draftWorktrees.id, id),
+      eq(draftWorktrees.prompt, prompt),
+      isNull(draftWorktrees.title),
+      isNull(draftWorktrees.generatedTitle),
+    ))
     .returning({ id: draftWorktrees.id })
   if (rows.length > 0) notifyWorktreeListChanged()
 }

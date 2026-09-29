@@ -36,13 +36,15 @@ export interface QueuedWorktreeRow {
   mode: AgentMode
   permissionMode: PermissionMode
   branch: string
+  title?: string
+  groupId?: string
   releasedAt?: Date
   launchWorktreeId?: string
   launchError?: string
 }
 
-/** The stored settings of an entry — what an insert takes and an update may
- *  replace. */
+/** The stored settings of an entry — what an insert takes and an update
+ *  replaces. An absent title or group is stored as none. */
 export interface QueuedWorktreeSettings {
   prompt: string
   tool: AgentTool
@@ -50,6 +52,8 @@ export interface QueuedWorktreeSettings {
   mode: AgentMode
   permissionMode: PermissionMode
   branch: string
+  title?: string
+  groupId?: string
 }
 
 type Row = typeof queuedWorktrees.$inferSelect
@@ -67,6 +71,8 @@ function toRow(r: Row): QueuedWorktreeRow {
     mode: r.mode as AgentMode,
     permissionMode: r.permissionMode as PermissionMode,
     branch: r.branch,
+    ...(r.title !== null ? { title: r.title } : {}),
+    ...(r.groupId !== null ? { groupId: r.groupId } : {}),
     ...(r.releasedAt !== null ? { releasedAt: r.releasedAt } : {}),
     ...(r.launchWorktreeId !== null ? { launchWorktreeId: r.launchWorktreeId } : {}),
     ...(r.launchError !== null ? { launchError: r.launchError } : {}),
@@ -80,6 +86,11 @@ function parentColumns(parent: QueuedParent): { parentWorktreeId: string | null;
     : { parentWorktreeId: null, parentQueuedId: parent.parentQueuedId }
 }
 
+/** Every settings column, an absent title or group as null. */
+function settingsColumns(s: QueuedWorktreeSettings): Omit<typeof queuedWorktrees.$inferInsert, 'projectSlug'> {
+  return { ...s, title: s.title ?? null, groupId: s.groupId ?? null }
+}
+
 /** Not mid-launch — the guard on every edit. */
 const notLaunching = isNull(queuedWorktrees.launchWorktreeId)
 
@@ -90,16 +101,16 @@ export async function insertQueuedWorktree(
 ): Promise<QueuedWorktreeRow> {
   const db = await getDb()
   const [row] = await db.insert(queuedWorktrees)
-    .values({ projectSlug, ...parentColumns(parent), ...settings })
+    .values({ projectSlug, ...parentColumns(parent), ...settingsColumns(settings) })
     .returning()
   notifyWorktreeListChanged()
   return toRow(row)
 }
 
 /**
- * Replace an entry's settings and, when given, its parent. Answers the
- * updated entry, or undefined when there is none to update — it is gone, or
- * mid-launch.
+ * Replace an entry's settings — all of them — and, when given, its parent.
+ * Answers the updated entry, or undefined when there is none to update — it
+ * is gone, or mid-launch.
  *
  * A new parent that is the entry itself or sits below it would close a cycle
  * that never runs, and is refused (VALIDATION). The walk goes up from the new
@@ -110,7 +121,7 @@ export async function insertQueuedWorktree(
  */
 export async function updateQueuedWorktree(
   id: string,
-  patch: Partial<QueuedWorktreeSettings> & { parent?: QueuedParent },
+  patch: QueuedWorktreeSettings & { parent?: QueuedParent },
 ): Promise<QueuedWorktreeRow | undefined> {
   const { parent, ...settings } = patch
   const db = await getDb()
@@ -125,7 +136,7 @@ export async function updateQueuedWorktree(
       }
     }
     return await tx.update(queuedWorktrees)
-      .set({ ...settings, ...(parent !== undefined ? parentColumns(parent) : {}) })
+      .set({ ...settingsColumns(settings), ...(parent !== undefined ? parentColumns(parent) : {}) })
       .where(and(eq(queuedWorktrees.id, id), notLaunching))
       .returning()
   })

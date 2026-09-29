@@ -35,7 +35,14 @@ import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#db'
 import { claimProvisioning } from './provisioning'
 import { rebranchSpare, retoolSpare } from './spare-pool'
-import { claimSpareWorktree, getGitIdentity, getWorktreeRow, restoreSpareWorktree, setWorktreeGroup } from '#db'
+import {
+  claimSpareWorktree,
+  getGitIdentity,
+  getWorktreeRow,
+  restoreSpareWorktree,
+  setWorktreeGroup,
+  setWorktreeTitle,
+} from '#db'
 import type { WorktreeRow } from '#db'
 import { handOverAgent, type CreateSetup, type WorktreeCreateResult } from './create'
 import { parkAcpLaunchModel } from '#runtime/agents'
@@ -268,8 +275,8 @@ export async function tryClaimPrewarmed(
   setup: CreateSetup,
   emit: (message: string) => void,
   /** What the create asked for beyond the agent: the reference branch, the
-   *  opening message, and the sidebar group to file the worktree under. */
-  request: { branch?: string; prompt?: string; groupId?: string } = {},
+   *  opening message, the title, and the sidebar group to file it under. */
+  request: { branch?: string; prompt?: string; title?: string; groupId?: string } = {},
 ): Promise<WorktreeCreateResult | undefined> {
   const { tool } = setup
   const { branch } = request
@@ -543,6 +550,9 @@ export async function tryClaimPrewarmed(
         )
       })
     }
+    // Before the prompt is handed over, so the title sweep never sees it
+    // untitled.
+    if (request.title !== undefined) await setWorktreeTitle(projectSlug, claimedId, request.title)
 
     emit('Using prewarmed session...')
     // An acp spare's adapter has been waiting with no client: the watcher the

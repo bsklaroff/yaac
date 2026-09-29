@@ -26,13 +26,14 @@ leave-page prompt.
 
 ## What a draft holds
 
-Every field as the dialog showed it — prompt, agent, model, UI mode,
-permission mode, reference branch, and the **Start** field — so reopening it
-puts back what was on screen. Model and branch are absent when the dialog had
+Every field as the dialog showed it — prompt, title, agent, model, UI mode,
+permission mode, reference branch, group, and the **Start** field — so
+reopening it puts back what was on screen. Model and branch are absent when the dialog had
 not resolved them yet (catalog or branch list still loading); reopening then
 takes the default, as a fresh open does. Start is the id of the worktree or
 queued entry the create would have waited on, not a live reference: a parent
-that is gone by the time the draft reopens leaves it starting now.
+that is gone by the time the draft reopens leaves it starting now. Deleting
+the draft's group clears it.
 
 Creating or queueing from a reopened draft discards it. The create and queue
 requests name the draft (`draftId`), and the server deletes it once the
@@ -41,14 +42,17 @@ its prompt.
 
 ## Titles
 
-The title sweep (`reconcileGeneratedTitles`) titles drafts as it does live
-worktrees: a prompt long enough to need summarizing gets one model attempt,
-written to the draft's own `title`. Changing the prompt clears the title, and
-the attempt is keyed on the prompt as well as the draft, so the new prompt
-gets its own. The write is conditional on the draft still holding the prompt
-it was generated from. The sweep runs on the reconciler's resync, so a newly
-saved draft is titled within about a minute; until then the sidebar shows the
-prompt's first line.
+A title typed in the dialog is the draft's `title`, and the worktree or
+entry created from it carries it. Without one, the title sweep
+(`reconcileGeneratedTitles`) titles drafts as it does live worktrees: a
+prompt long enough to need summarizing gets one model attempt, written to
+the draft's `generatedTitle`, which is shown but never carried into what is
+created — that worktree is titled from its own prompt. Changing the prompt
+clears the generated title, and the attempt is keyed on the prompt as well
+as the draft, so the new prompt gets its own. The write is conditional on
+the draft still holding the prompt it was generated from. The sweep runs on
+the reconciler's resync, so a newly saved draft is titled within about a
+minute; until then the sidebar shows the prompt's first line.
 
 ## Surfaces
 

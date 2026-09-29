@@ -1084,15 +1084,21 @@ describe('write routes', () => {
     })
 
     it('queues, edits and runs one — once', async () => {
-      const queued = await (await client().worktree.queue.create.$post({
-        json: { project: 'demo', parent: 'parent', prompt: 'follow up', tool: 'claude' },
+      const { groupId } = await (await client().worktree.group.create.$post({
+        json: { projectSlug: 'demo', name: 'review' },
       })).json()
-      expect(queued).toMatchObject({ parentWorktreeId: 'parent', branch: 'main', permissionMode: 'plan' })
+      const queued = await (await client().worktree.queue.create.$post({
+        json: { project: 'demo', parent: 'parent', prompt: 'follow up', tool: 'claude', title: 'Named', group: 'review' },
+      })).json()
+      expect(queued).toMatchObject({
+        parentWorktreeId: 'parent', branch: 'main', permissionMode: 'plan', title: 'Named', groupId,
+      })
 
       const edited = await (await client().worktree.queue.update.$post({
         json: { id: queued.id, prompt: 'follow up, edited' },
       })).json()
-      expect(edited.prompt).toBe('follow up, edited')
+      expect(edited).toMatchObject({ prompt: 'follow up, edited', title: 'Named', groupId })
+      expect((await post('update', { id: queued.id, group: 'no such group' })).status).toBe(404)
 
       // A launch still in flight: a second Run now loses the claim.
       let finish!: () => void
@@ -1107,7 +1113,7 @@ describe('write routes', () => {
 
       await vi.waitFor(() => { expect(mockCreateWorktree).toHaveBeenCalledTimes(1) })
       expect(mockCreateWorktree.mock.calls[0][1]).toMatchObject({
-        worktreeId, initialPrompt: 'follow up, edited', branch: 'main', permissionMode: 'plan',
+        worktreeId, initialPrompt: 'follow up, edited', branch: 'main', permissionMode: 'plan', title: 'Named', groupId,
       })
       finish()
       // The entry became the worktree; there is nothing left to run.

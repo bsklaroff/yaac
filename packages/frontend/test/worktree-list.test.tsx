@@ -520,11 +520,17 @@ describe('WorktreeList', () => {
 
       cleanup()
       renderList([entry({ title: 'Live' })], {
-        drafts: [draft('d1'), draft('d2', { title: 'Generated title' })],
+        drafts: [
+          draft('d1'),
+          draft('d2', { generatedTitle: 'Generated title' }),
+          draft('d3', { title: 'Mine', generatedTitle: 'Not shown' }),
+        ],
       })
       const section = screen.getByRole('group', { name: 'Drafts' })
-      // Newest first; a generated title wins over the prompt's first line.
-      expect(section.textContent).toMatch(/Generated title.*Idea d1/)
+      // Newest first; the user's title, else a generated one, wins over the
+      // prompt's first line.
+      expect(section.textContent).toMatch(/Mine.*Generated title.*Idea d1/)
+      expect(section.textContent).not.toMatch(/Not shown/)
       const all = document.body.textContent ?? ''
       expect(all.indexOf('Idea d1')).toBeLessThan(all.indexOf('Live'))
 

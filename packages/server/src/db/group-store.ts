@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { getDb } from './client'
-import { worktreeGroups, worktrees } from './schema'
+import { draftWorktrees, queuedWorktrees, worktreeGroups, worktrees } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
 import { ServerError } from '@yaac/shared/errors'
 import { normalizeTitle } from '@yaac/shared/titles'
@@ -114,7 +114,8 @@ export async function setWorktreeGroupPinned(
 
 /**
  * Delete a group and return its worktrees to the default list — live and
- * stopped alike, in one transaction with the row's removal. Releasing them is
+ * stopped alike, and the queued and draft ones that would have been filed
+ * there — in one transaction with the row's removal. Releasing them is
  * what makes the delete safe to offer without a confirmation: nothing is torn
  * down, and every worktree stays exactly where it can be found.
  */
@@ -126,6 +127,10 @@ export async function deleteWorktreeGroup(
   await db.transaction(async (tx) => {
     await tx.update(worktrees).set({ groupId: null })
       .where(and(eq(worktrees.projectSlug, projectSlug), eq(worktrees.groupId, groupId)))
+    await tx.update(queuedWorktrees).set({ groupId: null })
+      .where(and(eq(queuedWorktrees.projectSlug, projectSlug), eq(queuedWorktrees.groupId, groupId)))
+    await tx.update(draftWorktrees).set({ groupId: null })
+      .where(and(eq(draftWorktrees.projectSlug, projectSlug), eq(draftWorktrees.groupId, groupId)))
     await tx.delete(worktreeGroups).where(key(projectSlug, groupId))
   })
   notifyWorktreeListChanged()

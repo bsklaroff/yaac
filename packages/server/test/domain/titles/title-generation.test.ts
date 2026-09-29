@@ -360,18 +360,19 @@ describe('reconcileGeneratedTitles', () => {
   })
 
   // A draft is titled from its prompt, straight into its own row, and gets
-  // one fresh attempt per prompt it is saved with.
+  // one fresh attempt per prompt it is saved with — unless the user titled it.
   it('titles a draft worktree, and again once its prompt is edited', async () => {
     await seedCache()
     const draft = await insertDraftWorktree('p', {
       prompt: PROMPT, tool: 'claude', mode: 'tui', permissionMode: 'manual',
     })
     await insertDraftWorktree('p', { prompt: 'short enough', tool: 'claude', mode: 'tui', permissionMode: 'manual' })
+    await insertDraftWorktree('p', { prompt: PROMPT, tool: 'claude', mode: 'tui', permissionMode: 'manual', title: 'Mine' })
     await reconcileGeneratedTitles()
     await flush()
     expect(inferences()).toHaveLength(1)
     const titleOf = async (): Promise<string | undefined> =>
-      (await listDraftWorktreeRows()).find((d) => d.id === draft.id)?.title
+      (await listDraftWorktreeRows()).find((d) => d.id === draft.id)?.generatedTitle
     expect(await titleOf()).toBe(TITLE)
 
     const edited = `${PROMPT}, and document the widget registry`

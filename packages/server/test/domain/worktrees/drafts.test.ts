@@ -26,8 +26,12 @@ describe('saveDraftWorktree', () => {
     expect(saved).toMatchObject({ projectSlug: 'proj', ...SETTINGS })
     expect(saved.createdAt).toMatch(STAMP)
 
-    const replaced = await saveDraftWorktree('proj', { ...SETTINGS, prompt: 'a better idea', branch: 'dev' }, saved.id)
-    expect(replaced).toMatchObject({ id: saved.id, prompt: 'a better idea', branch: 'dev' })
+    const replaced = await saveDraftWorktree('proj', {
+      ...SETTINGS, prompt: 'a better idea', branch: 'dev', title: '  My   idea ', groupId: 'g1',
+    }, saved.id)
+    expect(replaced).toMatchObject({ id: saved.id, prompt: 'a better idea', branch: 'dev', title: 'My idea', groupId: 'g1' })
+    // A blank title is none, leaving the draft to be auto-titled.
+    expect(await saveDraftWorktree('proj', { ...SETTINGS, title: ' ' }, saved.id)).not.toHaveProperty('title')
 
     await expect(saveDraftWorktree('nope', SETTINGS)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await expect(saveDraftWorktree('proj', SETTINGS, 'gone')).rejects.toMatchObject({ code: 'NOT_FOUND' })

@@ -38,7 +38,7 @@ describe('insertDraftWorktree', () => {
   it('stores every field it is given, and nothing for the ones it is not', async () => {
     const full = await insertDraftWorktree('proj', SETTINGS)
     expect(full).toMatchObject({ projectSlug: 'proj', ...SETTINGS })
-    expect(full.title).toBeUndefined()
+    expect(full.generatedTitle).toBeUndefined()
     const bare = await insertDraftWorktree('proj', { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' })
     expect(bare).not.toHaveProperty('model')
     expect(bare).not.toHaveProperty('branch')
@@ -48,20 +48,20 @@ describe('insertDraftWorktree', () => {
 })
 
 describe('updateDraftWorktree', () => {
-  it('replaces the whole draft, keeping its title only while the prompt stands', async () => {
+  it('replaces the whole draft, keeping its generated title only while the prompt stands', async () => {
     const { id } = await insertDraftWorktree('proj', SETTINGS)
     await setDraftWorktreeTitle(id, 'an idea', 'An idea')
 
     // Same prompt: the title still describes it. A field left out is cleared.
     const { startAfter: _, ...now } = SETTINGS
     const same = await updateDraftWorktree('proj', id, now)
-    expect(same).toMatchObject({ title: 'An idea', prompt: 'an idea' })
+    expect(same).toMatchObject({ generatedTitle: 'An idea', prompt: 'an idea' })
     expect(same).not.toHaveProperty('startAfter')
     expect(same!.updatedAt.getTime()).toBeGreaterThanOrEqual(same!.createdAt.getTime())
 
-    const edited = await updateDraftWorktree('proj', id, { ...now, prompt: 'a different idea' })
-    expect(edited).not.toHaveProperty('title')
-    expect(edited?.prompt).toBe('a different idea')
+    const edited = await updateDraftWorktree('proj', id, { ...now, prompt: 'a different idea', title: 'Mine' })
+    expect(edited).not.toHaveProperty('generatedTitle')
+    expect(edited).toMatchObject({ prompt: 'a different idea', title: 'Mine' })
 
     // Gone, never a draft id at all, or another project's: nothing to
     // update, and no push.
@@ -80,11 +80,16 @@ describe('setDraftWorktreeTitle', () => {
     // The prompt moved on while the model ran: a summary of the old one is dropped.
     await updateDraftWorktree('proj', id, { ...SETTINGS, prompt: 'edited meanwhile' })
     await setDraftWorktreeTitle(id, 'an idea', 'Stale title')
-    expect((await listDraftWorktreeRows())[0].title).toBeUndefined()
+    expect((await listDraftWorktreeRows())[0].generatedTitle).toBeUndefined()
 
     await setDraftWorktreeTitle(id, 'edited meanwhile', 'Fresh title')
     await setDraftWorktreeTitle(id, 'edited meanwhile', 'Second title')
-    expect((await listDraftWorktreeRows())[0].title).toBe('Fresh title')
+    expect((await listDraftWorktreeRows())[0].generatedTitle).toBe('Fresh title')
+
+    // Titled by the user, it is never given a generated one.
+    const named = await insertDraftWorktree('proj', { ...SETTINGS, title: 'Mine' })
+    await setDraftWorktreeTitle(named.id, SETTINGS.prompt, 'Generated')
+    expect((await listDraftWorktreeRows()).find((d) => d.id === named.id)).not.toHaveProperty('generatedTitle')
   })
 })
 

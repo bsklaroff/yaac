@@ -17,6 +17,10 @@ export interface QueuedSettings {
   mode: AgentMode
   permissionMode: PermissionMode
   branch: string
+  /** Blank leaves the launched worktree to be auto-titled. */
+  title: string
+  /** A group id, or null for the default list. */
+  group: string | null
 }
 
 /** Queue a worktree to start when `parent` (a worktree or entry id) stops.

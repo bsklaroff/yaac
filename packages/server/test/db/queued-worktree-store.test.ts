@@ -35,10 +35,11 @@ describe('queued worktree store', () => {
     await cleanupTempDir(tmpDir)
   })
 
+  const settings = {
+    prompt: 'next', tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'bypass', branch: 'main',
+  } as const
   const queue = (parent: QueuedParent, prompt = 'next', projectSlug = 'proj'): Promise<QueuedWorktreeRow> =>
-    insertQueuedWorktree(projectSlug, parent, {
-      prompt, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'bypass', branch: 'main',
-    })
+    insertQueuedWorktree(projectSlug, parent, { ...settings, prompt })
 
   const parentOf = async (id: string): Promise<QueuedParent | undefined> => {
     const row = await getQueuedWorktreeRow(id)
@@ -56,10 +57,17 @@ describe('queued worktree store', () => {
     expect(child.parentWorktreeId).toBeUndefined()
 
     // Re-parented onto a worktree, the entry column clears.
-    await updateQueuedWorktree(child.id, { parent: { parentWorktreeId: 'wt-b' }, prompt: 'edited' })
+    await updateQueuedWorktree(child.id, {
+      ...settings, parent: { parentWorktreeId: 'wt-b' }, prompt: 'edited', title: 'Named', groupId: 'g1',
+    })
     const moved = await getQueuedWorktreeRow(child.id)
-    expect(moved).toMatchObject({ parentWorktreeId: 'wt-b', prompt: 'edited' })
+    expect(moved).toMatchObject({ parentWorktreeId: 'wt-b', prompt: 'edited', title: 'Named', groupId: 'g1' })
     expect(moved?.parentQueuedId).toBeUndefined()
+
+    // An update replaces every setting: a title or group it leaves out is none.
+    await updateQueuedWorktree(child.id, settings)
+    expect(await getQueuedWorktreeRow(child.id)).not.toHaveProperty('title')
+    expect(await getQueuedWorktreeRow(child.id)).not.toHaveProperty('groupId')
   })
 
   it('claims a launch once, re-pointing its children at the worktree it becomes', async () => {
@@ -73,7 +81,7 @@ describe('queued worktree store', () => {
     expect(await parentOf(child.id)).toEqual({ parentWorktreeId: 'wt-new' })
 
     // Mid-launch, nothing edits, removes or re-releases it.
-    expect(await updateQueuedWorktree(top.id, { prompt: 'x' })).toBeUndefined()
+    expect(await updateQueuedWorktree(top.id, { ...settings, prompt: 'x' })).toBeUndefined()
     expect(await deleteQueuedWorktree(top.id)).toBe(false)
     expect(await releaseQueuedWorktree(top.id)).toBeUndefined()
 
@@ -86,7 +94,7 @@ describe('queued worktree store', () => {
 
     // A child that ended up on the entry anyway follows it to the worktree.
     const late = await queue({ parentWorktreeId: 'wt-a' })
-    await updateQueuedWorktree(late.id, { parent: { parentQueuedId: top.id } })
+    await updateQueuedWorktree(late.id, { ...settings, parent: { parentQueuedId: top.id } })
     await finishQueuedLaunch(top.id, 'wt-new')
     expect(await getQueuedWorktreeRow(top.id)).toBeUndefined()
     expect(await parentOf(child.id)).toEqual({ parentWorktreeId: 'wt-new' })

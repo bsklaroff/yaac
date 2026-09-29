@@ -297,6 +297,7 @@ export function inFlightCreate(worktreeId: string): {
   tool: AgentTool
   model?: string
   branch?: string
+  groupId?: string
 } | undefined {
   const e = entries.get(worktreeId)
   if (e === undefined || e.kind !== 'create' || e.error !== undefined || e.claimedId !== undefined) {
@@ -307,6 +308,7 @@ export function inFlightCreate(worktreeId: string): {
     tool: e.tool,
     ...(e.model !== undefined ? { model: e.model } : {}),
     ...(e.branch !== undefined ? { branch: e.branch } : {}),
+    ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
   }
 }
 

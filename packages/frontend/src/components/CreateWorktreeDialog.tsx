@@ -23,6 +23,7 @@ import {
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
+import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import type {
   AgentMode,
   AgentTool,
@@ -63,6 +64,7 @@ interface Seed {
   mode?: AgentMode
   permissionMode?: PermissionMode
   branch?: string
+  groupId?: string
 }
 
 interface StartOption {
@@ -83,17 +85,27 @@ function worktreeSeed(w: WorktreeListEntry): Seed {
     ...(first?.model !== undefined ? { model: first.model } : {}),
     ...(w.permissionMode !== undefined ? { permissionMode: w.permissionMode } : {}),
     ...(w.baseBranch !== undefined ? { branch: w.baseBranch } : {}),
+    ...(w.groupId !== undefined ? { groupId: w.groupId } : {}),
   }
 }
 
 function entrySeed(e: QueuedWorktreeEntry): Seed {
-  return { tool: e.tool, model: e.model, mode: e.mode, permissionMode: e.permissionMode, branch: e.branch }
+  return {
+    tool: e.tool,
+    model: e.model,
+    mode: e.mode,
+    permissionMode: e.permissionMode,
+    branch: e.branch,
+    ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
+  }
 }
 
 const worktreeName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New worktree', 40)
 
-const DRAFT_FIELDS = ['prompt', 'tool', 'mode', 'permissionMode', 'model', 'branch', 'startAfter'] as const satisfies
+const DRAFT_FIELDS = [
+  'prompt', 'tool', 'mode', 'permissionMode', 'model', 'branch', 'startAfter', 'title', 'groupId',
+] as const satisfies
   readonly (keyof DraftWorktreeSettings)[]
 
 /** A close that would lose a typed prompt, held while the user decides
@@ -128,8 +140,10 @@ async function keepDraft(pending: PendingDraft): Promise<void> {
  * the project's create memory (`useCreateDefaults`); for a parent it is that
  * parent's own settings, with the branch being the one it forked from —
  * fetched fresh from origin when the queued worktree starts. Changing Start
- * re-seeds only the fields not touched here; changing the agent reloads the
- * rest from its own memory, as the create form always has.
+ * re-seeds only the fields not touched here — the Group too, which follows
+ * the parent's — and changing the agent reloads the rest from its own
+ * memory, as the create form always has. A Title typed here is the
+ * worktree's (and a draft's) from the start, so neither is auto-titled.
  *
  * Enter anywhere but on a button submits, and Shift+Enter in the prompt is a
  * newline, like the chat composer — so Alt+N, type, Enter is a create with
@@ -236,8 +250,24 @@ function CreateWorktreeForm({
   })
 
   const [prompt, setPrompt] = useState(from?.prompt ?? '')
+  const [title, setTitle] = useState(from?.title ?? '')
   const [start, setStart] = useState(initial !== undefined ? queuedParentId(initial)
     : draft !== undefined ? draftStart : opts.parent ?? '')
+  // undefined = untouched: the field shows (and a submit uses) the seeded
+  // group; null is the default list. An entry's group is its own, but a
+  // draft's that is just what its Start would seed was never picked, so it
+  // keeps following Start.
+  const [groupPick, setGroupPick] = useState<string | null | undefined>(() => {
+    if (initial !== undefined) return initial.groupId ?? null
+    if (draft === undefined) return undefined
+    const seeded = draftStart === '' ? undefined : [
+      ...(snapshot?.worktrees ?? []).map((w) => ({ id: w.worktreeId, groupId: w.groupId })),
+      ...(snapshot?.heldWorktrees ?? []).map((h) => ({ id: h.worktreeId, groupId: h.groupId })),
+      ...(snapshot?.provisioning ?? []).map((p) => ({ id: p.worktreeId, groupId: p.groupId })),
+      ...entries.map((e) => ({ id: e.id, groupId: e.groupId })),
+    ].find((c) => c.id === draftStart)?.groupId
+    return draft.groupId === seeded ? undefined : draft.groupId ?? null
+  })
   // null = untouched: the input shows (and a submit uses) the seeded branch.
   const [branchInput, setBranchInput] = useState<string | null>(from?.branch ?? null)
   const [pinPending, setPinPending] = useState(false)
@@ -289,11 +319,22 @@ function CreateWorktreeForm({
       label: held !== undefined ? `After “${worktreeName(held)}” stops (stopped)`
         : provisioning !== undefined ? 'After the new worktree stops'
         : 'Its current parent (gone)',
-      ...(held !== undefined ? { seed: { tool: held.tool } } : {}),
+      ...(held !== undefined
+        ? { seed: { tool: held.tool, ...(held.groupId !== undefined ? { groupId: held.groupId } : {}) } }
+        : provisioning?.groupId !== undefined ? { seed: { groupId: provisioning.groupId } }
+        : {}),
     })
   }
   const seed = options.find((o) => o.value === start)?.seed
   const queued = start !== ''
+
+  const groups = (snapshot?.worktreeGroups ?? [])
+    .filter((g) => g.projectSlug === projectSlug)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  // A group deleted since it was seeded or picked is the default list.
+  const wantedGroup = groupPick !== undefined ? groupPick : seed?.groupId ?? null
+  const groupId = groups.some((g) => g.groupId === wantedGroup) ? wantedGroup : null
+  const titleText = normalizeTitle(title)
 
   const tool = toolPick ?? seed?.tool ?? defaults.lastTool
   const base = defaults.forTool(tool)
@@ -364,6 +405,8 @@ function CreateWorktreeForm({
     ...(model !== '' ? { model } : {}),
     ...(branchValue !== '' ? { branch: branchValue } : {}),
     ...(start !== '' ? { startAfter: start } : {}),
+    ...(titleText !== '' ? { title: titleText } : {}),
+    ...(groupId !== null ? { groupId } : {}),
   }
   const unsaved = opts.editId === undefined && text !== '' && (draft === undefined
     || DRAFT_FIELDS.some((k) => current[k] !== draft[k]))
@@ -429,11 +472,15 @@ function CreateWorktreeForm({
         permissionMode,
         mode,
         ...(text !== '' ? { prompt: text } : {}),
+        ...(titleText !== '' ? { title: titleText } : {}),
+        ...(groupId !== null ? { groupId } : {}),
         ...(draft !== undefined ? { draftId: draft.id } : {}),
       }, branchValue && !isDefault ? branchValue : undefined)
       return
     }
-    const settings = { prompt: text, tool, model, mode, permissionMode, branch: branchValue }
+    const settings = {
+      prompt: text, tool, model, mode, permissionMode, branch: branchValue, title: titleText, group: groupId,
+    }
     setBusy(true)
     setError(null)
     // Open the sidebar set the entry lands in, as the server placed it.
@@ -484,7 +531,7 @@ function CreateWorktreeForm({
     setModelQuery(null)
   }
 
-  const title = initial !== undefined ? 'Edit queued worktree' : 'New worktree'
+  const heading = initial !== undefined ? 'Edit queued worktree' : 'New worktree'
   const submitLabel = needsGitAuth ? 'Add git authentication…'
     : !signedIn ? `Sign in to ${TOOL_LABEL[tool]}…`
     : initial !== undefined ? 'Save'
@@ -512,7 +559,7 @@ function CreateWorktreeForm({
   return (
     <div ref={rootRef} tabIndex={-1} onKeyDown={onKeyDown} className="flex min-h-0 flex-1 flex-col outline-none">
       <div className="flex shrink-0 items-center justify-between px-4 pb-1 pt-3">
-        <Dialog.Title className="text-sm font-semibold">{title}</Dialog.Title>
+        <Dialog.Title className="text-sm font-semibold">{heading}</Dialog.Title>
         <Dialog.Close
           aria-label="Close"
           className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
@@ -536,6 +583,18 @@ function CreateWorktreeForm({
           />
         </div>
 
+        <Row label="Title">
+          <input
+            aria-label="Title"
+            value={title}
+            maxLength={MAX_TITLE_LENGTH}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Generated from the prompt"
+            className="h-[26px] min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs text-text
+              outline-none placeholder:text-text-faint focus:border-border-strong"
+          />
+        </Row>
+
         <Row label="Start">
           <select
             aria-label="Start"
@@ -546,6 +605,20 @@ function CreateWorktreeForm({
             {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </Row>
+
+        {groups.length > 0 && (
+          <Row label="Group">
+            <select
+              aria-label="Group"
+              value={groupId ?? ''}
+              onChange={(e) => setGroupPick(e.target.value === '' ? null : e.target.value)}
+              className={SELECT}
+            >
+              <option value="">None</option>
+              {groups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
+            </select>
+          </Row>
+        )}
 
         <div className="mb-1">
           <BranchPicker
