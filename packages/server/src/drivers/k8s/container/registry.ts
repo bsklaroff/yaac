@@ -1,7 +1,11 @@
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import { invalidatePortForward, resolvePortForward } from '#drivers/k8s/substrate'
 import { runTrackedPodman } from './host-procs'
+import { registryAuthFile } from './registry-grant'
 import { usesRootfulPodman } from './runtime'
 
 /**
@@ -232,6 +236,11 @@ export async function registryTagState(tag: string): Promise<'present' | 'absent
  * this runs podman, which on macOS is in the machine VM and cannot see the
  * host loopback the server itself HEADs through.
  *
+ * Every push carries an admin grant: this runs only for the trusted
+ * writers (install, the e2e setup, `cluster check`), and the registry's
+ * write gate refuses a write without one. An hour covers any one push. It
+ * travels in a private temp authfile, not argv, which any local user reads.
+ *
  * `compressionFormat: 'zstd'` is used for trusted-layer pushes feeding
  * builder-pod parent pulls: zstd layers cut a pod's empty-graphroot parent
  * pull from 65.6s to 40.4s (measured, docs/trust-split-builds.md) at
@@ -248,18 +257,28 @@ export async function pushImageToRegistry(
   const ref = registryRef(localTag)
   if (await registryHasTag(localTag)) return ref
 
-  const target = `${await podmanRegistryEndpoint()}/${localTag}`
+  const engineEndpoint = await podmanRegistryEndpoint()
+  const target = `${engineEndpoint}/${localTag}`
   const compressionArgs = opts.compressionFormat
     ? ['--compression-format', opts.compressionFormat]
     : []
-  serverLog(`[registry] pushing ${localTag} -> ${ref}`)
-  // Tracked like the builds: an orphaned push holds the image-store lock
-  // against the next server's first build.
-  await runTrackedPodman(['push', '--tls-verify=false', ...compressionArgs, localTag, target], {
-    tag: localTag,
-    logPrefix: `[push ${localTag}] `,
-    onLog: opts.onLog,
-    timeoutMs: 600_000,
-  })
+  const authDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-push-auth-'))
+  const authFile = path.join(authDir, 'auth.json')
+  try {
+    await fs.writeFile(authFile, await registryAuthFile(engineEndpoint, '*', 3600), { mode: 0o600 })
+    serverLog(`[registry] pushing ${localTag} -> ${ref}`)
+    // Tracked like the builds: an orphaned push holds the image-store lock
+    // against the next server's first build.
+    await runTrackedPodman([
+      'push', '--tls-verify=false', '--authfile', authFile, ...compressionArgs, localTag, target,
+    ], {
+      tag: localTag,
+      logPrefix: `[push ${localTag}] `,
+      onLog: opts.onLog,
+      timeoutMs: 600_000,
+    })
+  } finally {
+    await fs.rm(authDir, { recursive: true, force: true })
+  }
   return ref
 }

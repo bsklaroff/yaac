@@ -75,10 +75,10 @@ interface RawNodeList {
  *
  * Its image is the digest-pinned UPSTREAM registry:2 (busybox, so it
  * carries nsenter), never a tag in the main registry. A pod this powerful
- * is node root, and every mutable tag in that registry is writable by a
- * builder pod (docs/trust-split-builds.md "Open risk"); a digest ref is
- * not something an overwritten tag can redirect. The main registry's
- * hosts writer runs the same ref on every node, so it is already there.
+ * is node root, and a digest ref is not something an overwritten tag can
+ * redirect — whatever the registry's write gate lets through, or whoever
+ * holds an admin grant. The main registry's hosts writer runs the same ref
+ * on every node, so it is already there.
  */
 function buildNodeImageGcPodManifest(params: {
   nodeName: string
