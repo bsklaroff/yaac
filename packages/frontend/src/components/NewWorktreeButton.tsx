@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import type { JSX, MouseEvent } from 'react'
 import { AddIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 
@@ -7,12 +7,19 @@ import { useUiStore } from '#lib/store'
  * (`CreateWorktreeDialog`, mounted once in App) with the prompt focused, the
  * same as Alt+N. `cta` is the labeled variant for empty states — the same
  * dialog behind a bigger target.
+ *
+ * The button gives up focus before opening, so the dialog records no opener
+ * (`useOpenerFocus`) and closing it leaves focus alone rather than parking a
+ * focus ring on the +.
  */
 export function NewWorktreeButton(
   { projectSlug, variant = 'icon' }: { projectSlug: string; variant?: 'icon' | 'cta' },
 ): JSX.Element {
   const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
-  const open = (): void => openCreateWorktree({ projectSlug, focus: 'prompt' })
+  const open = (e: MouseEvent<HTMLButtonElement>): void => {
+    e.currentTarget.blur()
+    openCreateWorktree({ projectSlug, focus: 'prompt' })
+  }
   return variant === 'cta' ? (
     <button
       type="button"
