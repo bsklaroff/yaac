@@ -733,6 +733,12 @@ interface UiState {
   createWorktreeDialog: CreateWorktreeDialogOpts | null
   openCreateWorktree: (opts: CreateWorktreeDialogOpts) => void
   closeCreateWorktree: () => void
+  /** A queued entry the user just queued or moved from the create dialog,
+   *  and the id it now waits on. The sidebar opens the set it landed in —
+   *  sets otherwise start collapsed — once the snapshot shows it under that
+   *  parent (not, mid-move, under the one it left), then clears it. */
+  revealQueued: { id: string; parent: string } | null
+  setRevealQueued: (reveal: { id: string; parent: string } | null) => void
   /** Whether the full-screen deleted-worktrees view is open. Opened from the
    *  sidebar header; scoped to the active project when rendered. */
   stoppedOverlayOpen: boolean
@@ -877,6 +883,8 @@ export const useUiStore = create<UiState>((set) => ({
   createWorktreeDialog: null,
   openCreateWorktree: (opts) => set({ createWorktreeDialog: opts }),
   closeCreateWorktree: () => set({ createWorktreeDialog: null }),
+  revealQueued: null,
+  setRevealQueued: (reveal) => set({ revealQueued: reveal }),
   stoppedOverlayOpen: false,
   stoppedOverlayFocus: null,
   openStoppedOverlay: (worktreeId) => set({

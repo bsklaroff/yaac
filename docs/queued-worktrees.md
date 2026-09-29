@@ -159,5 +159,7 @@ stands in for it.
   a **Start** field: `Now`, or after a live worktree or queued entry stops.
   Queued rows nest under their parent in the sidebar, each worktree's whole
   set (chains included) behind one collapsible "n queued worktrees"
-  expander; the stop dialog lists a worktree's children so they can be
+  expander. Sets start collapsed; the one exception is the set the user just
+  queued or moved an entry into from the dialog, which opens so the result
+  shows. The stop dialog lists a worktree's children so they can be
   edited or discarded before they start.
