@@ -207,14 +207,6 @@ vi.mock('@yaac/server/domain/git', () => ({
   writeKnownHostsFile: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof gitModule>))
 
-vi.mock('@yaac/shared/git', async (importOriginal) => {
-  const actual = await importOriginal<typeof sharedGitModule>()
-  return {
-    ...actual,
-    getGitUserConfig: vi.fn().mockResolvedValue({ name: 'Test User', email: 'test@example.com' }),
-  }
-})
-
 // NOT mocked: declaring a forward is in-memory bookkeeping, so the real
 // allocator runs and what it answers is the honest assertion.
 vi.mock('@yaac/server/drivers/k8s/forwarders/port-forwarders', async (importOriginal) => ({
@@ -1392,7 +1384,6 @@ describe('resolveInitWindows', () => {
 })
 
 import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
-import type * as sharedGitModule from '@yaac/shared/git'
 import type * as imageBuilderModule from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import type * as buildCoordinatorModule from '@yaac/server/drivers/k8s/images/build-coordinator'
 import type * as kubectlModule from '@yaac/server/drivers/k8s/substrate/kubectl'
@@ -1410,24 +1401,12 @@ import type * as cleanupModule from '@yaac/server/domain/worktrees/cleanup'
 // worktreeCreate posts to the streaming /worktree/create route via the `api`
 // singleton; the leaf resolves to a raw streaming Response (the client only
 // unwraps JSON routes), which `consumeNdjsonStream` reads.
-const { mockPost, mockQuestion } = vi.hoisted(() => ({
+const { mockPost } = vi.hoisted(() => ({
   mockPost: vi.fn(),
-  mockQuestion: vi.fn(),
 }))
 vi.mock('#commands/api', () => ({
   api: { worktree: { create: { $post: mockPost } } },
 }))
-
-// The identity is a server setting; the shim's job before a create is to
-// seed it from this machine and prompt only when neither side has one.
-vi.mock('@yaac/shared/git-identity-seed', () => ({
-  seedGitIdentityFromShell: vi.fn(),
-}))
-vi.mock('node:readline/promises', () => ({
-  default: { createInterface: () => ({ question: mockQuestion, close: vi.fn() }) },
-}))
-
-import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
 
 function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Uint8Array> } {
   const enc = new TextEncoder()
@@ -1453,7 +1432,6 @@ describe('worktreeCreate (CLI shim)', () => {
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(seedGitIdentityFromShell).mockResolvedValue({ name: 'Test', email: 't@x.io' })
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockPost.mockResolvedValue(streamingResponse([
       JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
@@ -1482,24 +1460,9 @@ describe('worktreeCreate (CLI shim)', () => {
         tool: undefined,
       }) as unknown,
     }))
-    // The identity does not ride the request: it is a server setting, which
-    // this seeds from the local git config before asking for a worktree.
-    expect(seedGitIdentityFromShell).toHaveBeenCalled()
+    // The identity does not ride the request: it is a server setting.
     const [{ json }] = mockPost.mock.calls[0] as [{ json: Record<string, unknown> }]
     expect(json.gitUser).toBeUndefined()
-  })
-
-  it('refuses to create when neither the server nor this machine has an identity', async () => {
-    // Failing here, where a prompt can fix it, rather than inside the server
-    // where nothing can.
-    vi.mocked(seedGitIdentityFromShell).mockResolvedValue(null)
-    mockQuestion.mockResolvedValue('')
-
-    await worktreeCreate('demo', {})
-
-    expect(mockPost).not.toHaveBeenCalled()
-    expect(process.exitCode).toBe(1)
-    process.exitCode = 0
   })
 
   it('forwards an explicit --tool unchanged', async () => {

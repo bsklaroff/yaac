@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ensureGitIdentity } from '#commands/git-identity'
 import { api } from '#commands/api'
 import { attachWorktreePty } from '#commands/ws-terminal'
 import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
@@ -38,8 +37,7 @@ interface WorktreeCreateResult {
 }
 
 /**
- * CLI entry point for `yaac worktree create`. Prompts for git identity
- * when the global config is missing, then hands provisioning off to
+ * CLI entry point for `yaac worktree create`. Hands provisioning off to
  * the server via `POST /worktree/create`. The server owns the git worktree,
  * Job, and port forwarders for the worktree's lifetime; the CLI just
  * attaches the user's terminal to the resulting tmux session.
@@ -65,14 +63,6 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
       process.exitCode = 1
       return
     }
-  }
-
-  // Make sure the server has an identity to commit under, seeding it from
-  // this machine's git config — so a create fails here, where a prompt can
-  // fix it, rather than inside the server where nothing can.
-  if (!await ensureGitIdentity()) {
-    process.exitCode = 1
-    return
   }
 
   // Each choice is sent only when explicit. The server resolves what is

@@ -70,12 +70,12 @@ import {
 } from '#runtime/agents'
 import {
   applyWorktreeEvent,
+  getGitIdentity,
   getProjectRow,
   listActiveAgentSessions,
   setWorktreeGroup,
   setWorktreeMamaTokenHash,
 } from '#db'
-import { gitIdentityMissingMessage, resolveGitIdentity } from './git-identity'
 import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
@@ -200,10 +200,6 @@ export interface WorktreeCreateOptions {
    * `worktree create`. Set by the prewarm reconciler; never by a user create.
    */
   prewarm?: boolean
-  /**
-   * Git identity to use inside the container. The CLI resolves this
-   * up-front (prompting when missing) and passes it in.
-   */
   /**
    * Initial prompt typed into the agent's tmux pane once the agent window
    * is up (pasted + submitted, not passed on the agent's command line).
@@ -677,13 +673,6 @@ async function reportCreateFailed(
 }
 
 /**
- * Server-side implementation of `/worktree/create`. Provisions the
- * worktree, proxy rules, kubernetes Job, and port forwarders — all
- * long-lived resources that the server owns for the worktree's
- * lifetime. The CLI only prompts for git identity and then attaches
- * the user's terminal to the resulting tmux session.
- */
-/**
  * The posture a create actually launches in, given what it was asked for.
  *
  * What the request named, else `defaultPermissionMode` for this driver and
@@ -838,12 +827,17 @@ export async function createWorktree(
 
   await runtime.ensureRuntimeReachable()
 
-  // Which identity this checkout commits under. The chain and its rationale
-  // live in `./git-identity`, because a claimed prewarmed spare must reach the
-  // same answer without coming through here.
-  const gitUser = await resolveGitIdentity()
+  // Which identity this checkout commits under: the server's setting (see
+  // `getGitIdentity`). The webapp is named first because it is the remedy
+  // every client has.
+  const gitUser = await getGitIdentity()
   if (!gitUser) {
-    throw new ServerError('VALIDATION', gitIdentityMissingMessage)
+    throw new ServerError(
+      'VALIDATION',
+      'No git identity is set on this server, so a worktree would commit as nobody. '
+      + 'Set one in Settings \u2192 General, or with '
+      + '`yaac config git-identity --name <name> --email <email>`.',
+    )
   }
 
   const repo = repoDir(projectSlug)

@@ -33,6 +33,7 @@ import { authList } from '#commands/auth-list'
 // to a running server. Every static import here is on the critical path of
 // *every* invocation, so keep the expensive ones dynamic.
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
+import { configGitIdentity } from '#commands/config-git-identity'
 import { authFake } from '#commands/auth-fake'
 import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-token'
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
@@ -460,7 +461,7 @@ worktree
 
 const config = program
   .command('config')
-  .description('Edit per-machine project configuration files')
+  .description('Edit project configuration files and server settings')
   .configureHelp({ formatHelp: nestedHelp })
 
 config
@@ -479,6 +480,13 @@ config
   .command('edit-user-dockerfile')
   .description('Open the global ~/.yaac/server-local/build/Dockerfile.user in $EDITOR')
   .action(configEditUserDockerfile)
+
+config
+  .command('git-identity')
+  .description('Show the git identity worktrees commit under, or set it with --name and --email')
+  .option('--name <name>', 'Git user.name to set')
+  .option('--email <email>', 'Git user.email to set')
+  .action(configGitIdentity)
 
 // Top-level, not under `worktree`: with no session named it forwards for
 // every running one, which is the resident-forwarder shape the desktop

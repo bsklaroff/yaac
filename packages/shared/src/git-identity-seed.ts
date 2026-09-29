@@ -7,14 +7,16 @@ import { getApiClient } from './server-api'
  *
  * The identity a worktree commits under is a server setting, because a value
  * only a host shell can set is a value a remote user cannot (see
- * `#domain/worktrees`'s `resolveGitIdentity`). But nobody wants to type their
+ * the server's `getGitIdentity`). But nobody wants to type their
  * own name into a settings page the first time they use yaac, and the answer
  * is already sitting in their `git config` — on THEIR machine, which is
- * exactly where the CLI and the auth server run.
+ * exactly where the auth server runs.
  *
- * So both seed it: whichever runs first fills the setting in, and after that
- * this is one cheap GET. It never overwrites — an identity the user set in
- * the webapp is a deliberate answer, and a second laptop with a different
+ * So the auth server seeds it when it starts — under the desktop app,
+ * `yaac auth server start`, or a Claude/Codex browser sign-in — and after
+ * that this is one cheap GET. A user who never starts it sets the identity
+ * with `yaac config git-identity`. It never overwrites — an identity the
+ * user set is a deliberate answer, and a second laptop with a different
  * `git config` must not silently take it over.
  */
 export async function seedGitIdentityFromShell(): Promise<

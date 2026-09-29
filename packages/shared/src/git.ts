@@ -43,12 +43,8 @@ function shellQuoteArg(s: string): string {
 
 /**
  * Read the user's global git identity. Returns `null` if either
- * `user.name` or `user.email` is unset, or if `git` itself fails.
- *
- * Lives in shared because both the CLI (which prompts when missing
- * and forwards the resolved pair to the server) and the server
- * (which falls back to the global config during non-interactive
- * worktree creation) need it.
+ * `user.name` or `user.email` is unset, or if `git` itself fails —
+ * the answer `seedGitIdentityFromShell` hands the server.
  */
 export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
   const read = async (key: string): Promise<string> =>

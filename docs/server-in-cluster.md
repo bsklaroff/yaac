@@ -523,9 +523,11 @@ the object's delta rather than a sweep of tool homes.
 - **The git identity is a server setting, not a host's.** Worktrees commit
   under an identity kept in the database — which the pod already mounts —
   rather than one install snapshots off whichever machine it ran on. The
-  `yaac` CLI and the auth server seed it from your own machine's git config
-  the first time either talks to the server, and Settings → General edits
-  it, so changing your name needs no re-install and no shell on the host. A
+  auth server seeds it from your own machine's git config when it starts
+  (under the desktop app, `yaac auth server start`, or a Claude/Codex browser
+  sign-in — `yaac cluster install` does not start it), and Settings →
+  General or `yaac config git-identity` edits it, so changing your name
+  needs no re-install and no shell on the host. A
   server that has none refuses to create a worktree and says where to set
   one. A prewarmed spare bakes its identity in at warm time, so a claim
   re-keys the checkout it hands over; the pool is never left committing
