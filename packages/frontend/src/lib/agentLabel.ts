@@ -1,5 +1,5 @@
 import { TOOL_LABEL } from '#lib/icons'
-import type { AgentSessionEntry, AgentTool, WorktreeListEntry } from '@yaac/shared/types'
+import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 
 /**
  * How a worktree's agent is named wherever it is named: the tool, and the
@@ -58,16 +58,20 @@ export function agentLabel(
 }
 
 /**
- * The model a whole worktree is running, for the one line the sidebar has to
- * say it on. A live conversation is the honest answer, so those are preferred
- * over history; among several, the earliest is the worktree's primary agent
+ * The model a whole worktree is running, for the one line a row has to say it
+ * on. A live conversation is the honest answer, so those are preferred over
+ * history; among several, the earliest is the worktree's primary agent
  * (ordinal 0 is the window a restart brings up first).
  *
  * A worktree whose live conversations have not reported a model yet still
  * shows one from its history rather than nothing: the transcript it came from
- * is the same one the live agent is appending to.
+ * is the same one the live agent is appending to. On a stopped worktree the
+ * same rule names the model its primary conversation last answered as — not
+ * necessarily what a restart resumes with, which is up to each tool.
  */
-export function worktreeModel(worktree: WorktreeListEntry): AgentSessionEntry | undefined {
+export function worktreeModel(
+  worktree: { agentSessions: AgentSessionEntry[] },
+): AgentSessionEntry | undefined {
   const byOrdinal = [...worktree.agentSessions].sort((a, b) => a.ordinal - b.ordinal)
   const named = (s: AgentSessionEntry): boolean => s.model !== undefined
   return byOrdinal.find((s) => s.active && named(s)) ?? byOrdinal.find(named)

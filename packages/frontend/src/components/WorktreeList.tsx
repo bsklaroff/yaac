@@ -26,7 +26,6 @@ import {
   QueuedIcon,
   RenameIcon,
   RestartIcon,
-  TOOL_LABEL,
 } from '#lib/icons'
 import { agentLabel, worktreeModel } from '#lib/agentLabel'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
@@ -902,7 +901,7 @@ function WorktreeRow({
           </span>
           <span className="flex items-center gap-2 text-xs text-text-faint">
             <span className="truncate">stopping…</span>
-            <span className="ml-auto shrink-0">{TOOL_LABEL[worktree.tool]}</span>
+            <span className="ml-auto shrink-0">{agentLabel(worktree.tool, worktreeModel(worktree))}</span>
           </span>
         </div>
       </div>
@@ -1251,7 +1250,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
           <span className="truncate">{deletedLine}</span>
-          <span className="ml-auto shrink-0">{TOOL_LABEL[entry.tool]}</span>
+          <span className="ml-auto shrink-0">{agentLabel(entry.tool, worktreeModel(entry))}</span>
         </span>
       </button>
 

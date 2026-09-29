@@ -112,13 +112,15 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
       ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
     }
     if (w.phase === 'terminating') {
-      // A distinct, non-interactive placeholder: no agents, no ports, and a
-      // forced `running` so no attention badge fires on a row on its way out.
+      // A distinct, non-interactive placeholder: no ports, and a forced
+      // `running` so no attention badge fires on a row on its way out. Its
+      // conversations go out without live status, only so the row can keep
+      // naming the model they last answered as.
       return {
         ...base,
         status: 'running',
         stopping: true,
-        agentSessions: [],
+        agentSessions: links.map((l) => toAgentSessionEntry(l)),
         blockedHosts: [],
         forwardedPorts: [],
         unforwardedPorts: [],

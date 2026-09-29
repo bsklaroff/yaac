@@ -50,9 +50,9 @@ export function stopWorktreeOptimistic(worktree: WorktreeListEntry, rowIds: stri
       // A user stop, never an abnormal death, so `seen` is moot — but the
       // type requires it and isUnseenDeath keys off deathReason anyway.
       seen: false,
-      // The conversations come back with the stopped listing's next refetch;
-      // the optimistic row only needs enough to render.
-      agentSessions: [],
+      // Carried so the row names its model before the stopped listing's
+      // next refetch; the live-only status fields are never read there.
+      agentSessions: worktree.agentSessions,
       // Carry the group so a stopped member ghosts into its sidebar group
       // without waiting for the stopped list to refetch.
       groupId: worktree.groupId,
