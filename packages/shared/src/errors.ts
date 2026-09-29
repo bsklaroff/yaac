@@ -1,6 +1,6 @@
 /**
  * Uniform error taxonomy the server returns on every non-2xx response.
- * The fetch adapter reads `BAD_BEARER` to drive its retry logic; all other codes surface as plain `Error` messages.
+ * Every code surfaces as the message of a `ServerError`.
  */
 export type ErrorCode =
   | 'NOT_FOUND'
@@ -8,7 +8,6 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'RUNTIME_UNAVAILABLE'
   | 'AUTH_AGENT_DISCONNECTED'
-  | 'BAD_BEARER'
   | 'UNAUTHENTICATED'
   | 'BAD_HOST'
   | 'NOT_SUPPORTED'
@@ -41,7 +40,6 @@ export function defaultStatus(code: ErrorCode): number {
     case 'CONFLICT': return 409
     case 'RUNTIME_UNAVAILABLE': return 503
     case 'AUTH_AGENT_DISCONNECTED': return 503
-    case 'BAD_BEARER': return 401
     case 'UNAUTHENTICATED': return 401
     case 'BAD_HOST': return 403
     // 501: the request is well-formed and the route exists, but THIS server

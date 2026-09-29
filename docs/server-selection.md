@@ -2,9 +2,10 @@
 
 Every client on a machine — the CLI, the desktop shell, the auth daemon —
 reaches its yaac server the same way, whatever substrate that server runs on
-and wherever it is: an **origin plus a durable token**, recorded in
-`~/.yaac-client/server.json`. There is no local case, no lock to read, and no
-client that starts a server.
+and wherever it is: an **origin**, recorded in `~/.yaac-client/server.json`.
+There is no local case, no lock to read, no credential, and no client that
+starts a server. Who the caller is, the server derives from the request
+(docs/remote-hosting.md "Security model").
 
 ```
 yaac server start ──(containerless)──┐
@@ -12,7 +13,7 @@ yaac server start ──(containerless)──┐
 yaac cluster install ──(k8s)─────────┘            │
                                                   ▼
                              ~/.yaac-client/server.json
-                       { url, token, enabled, saved, driver }
+                          { url, enabled, saved, driver }
                                                   │ the only thing they read
                     CLI ─ desktop ─ auth daemon ─ test fixtures
 ```
@@ -24,7 +25,7 @@ Under `k8s` the server is a pod (docs/server-in-cluster.md): its lock belongs
 to the pod's uid, and the port in it is the one it binds *inside* the pod, so
 `127.0.0.1:<that>` on the host is some unrelated listener — quite possibly
 another yaac, which would answer and be believed. Reaching that server means
-reaching the published origin with a token.
+reaching the published origin.
 
 Once that is true for one substrate it may as well be true for both, and being
 true for both is worth more than the shortcut: a containerless server
@@ -35,30 +36,10 @@ row, and a bug in one substrate's path cannot hide behind the other's.
 ## The registration
 
 `registerServer(origin, driver)` in `@yaac/shared/server-config` is the one
-bootstrap in the system, and both commands that stand a server up call it:
+registration in the system, and both commands that stand a server up call it:
 `yaac server start` for the host process it spawned, `yaac cluster install` for
-the Deployment it applied.
-
-1. If `server.json` already saves a token for `origin` and that token still
-   authenticates, keep it. A routine `yaac server start` must not invalidate
-   the token every other client on this machine is holding.
-2. Otherwise read the server lock and, with its per-boot secret as the bearer,
-   revoke-then-create the durable token `local-client`. Revoke-then-create
-   because a token's value only leaves the server at creation, so a stale one
-   cannot be recovered, only replaced.
-3. Write the origin, the token and the driver in one atomic write.
-
-The bootstrap works because the lock is on the **shared** data dir: a host
-server writes it directly, and a pod writes it into the hostPath it mounts, so
-either way the host can read the secret that authenticates as the server
-itself. The token it buys is durable because the lock secret is per boot — a
-config holding the old secret would be answered `BAD_BEARER` by the server's
-own replacement.
-
-A failed mint degrades to an empty token, which is correct on a
-credential-optional install (`isCredentialOptional` keys on configuration, not
-on the bind address) and a printed warning on one that requires a credential,
-where an empty token is a lockout.
+the Deployment it applied. It selects the origin, keeps every other saved
+server, and records the driver, in one atomic write.
 
 `yaac server run` registers nothing. It is the server process — bind, write
 the lock, serve — and it is what `start` spawns detached, what the server
@@ -71,12 +52,12 @@ adopted by running `start` against it.
 ## What `server.json` holds
 
 ```json
-{ "url": "http://127.0.0.1:8787", "token": "…", "enabled": true,
-  "saved": [ { "url": "…", "token": "…" } ], "driver": "containerless" }
+{ "url": "http://127.0.0.1:8787", "enabled": true,
+  "saved": [ { "url": "…" } ], "driver": "containerless" }
 ```
 
-`url`/`token` are the selected server; `enabled` deselects it without losing
-the token; `saved` remembers every server ever configured so a client can
+`url` is the selected server; `enabled` deselects it without forgetting it;
+`saved` remembers every server ever configured so a client can
 switch back without re-entering one. The machine has one selection at a time —
 `saved` is history, not contexts.
 
@@ -101,7 +82,7 @@ client then says so:
 ```
 No yaac server selected.
     Start one on this machine with `yaac server start` (or `yaac cluster install` on a k8s install),
-    or point at one with `yaac remote set <url> --token <token>`.
+    or point at one with `yaac remote set <url>`.
 ```
 
 All three commands are named because which one applies is a property of the
@@ -127,17 +108,18 @@ server they can reach serves them its own matching SPA.
 
 ## The desktop shell
 
-The shell is a client like any other. It resolves `server.json`, mints a
-one-time exchange token, and loads `<origin>/?token=…`; it never reads a lock
-and never starts a server (see packages/desktop/README.md).
+The shell is a client like any other. It resolves `server.json`, probes
+`/whoami` — which is both the reachability check and the question of whether
+the server will say who this device is — and loads the origin; it never reads
+a lock and never starts a server (see packages/desktop/README.md).
 
-When no server is reachable — nothing selected, or the selected one refused the
-mint — the window shows a **picker** instead of an error dialog, because with
+When no server is reachable — nothing selected, or the selected one is down or
+refused to identify this device — the window shows a **picker** instead of an error dialog, because with
 no server there is no SPA to render a settings pane and a dialog over a blank
 window leaves nothing to click. The picker is shell-owned, rendered as an HTML
 string on a `data:` URL exactly like the boot splash, so it needs no renderer
 bundle: it states the failure verbatim, lists every saved origin with a Connect
-button, and takes a new origin plus token. Its buttons drive the same preload
+button, and takes a new origin. Its buttons drive the same preload
 bridge the SPA's Settings → Server section uses, so both paths land on the same
 re-validated main-process handlers.
 

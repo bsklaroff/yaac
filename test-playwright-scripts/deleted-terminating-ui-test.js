@@ -88,7 +88,7 @@ const check = (label, cond) => { console.log(`${cond ? '✅' : '❌'} ${label}`)
 const browser = await chromium.launch({ executablePath: process.env.PW_CHROME })
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 
-await page.route('**/auth/web-session', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
+await page.route('**/whoami', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'local' }) }))
 await page.route('**/cluster/check', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, results: [] }) }))
 await page.route('**/session/list-deleted**', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DELETED) }))
 await page.routeWebSocket('**/events', (ws) => { ws.onMessage(() => {}); ws.send(JSON.stringify({ type: 'snapshot', data: SNAPSHOT })) })

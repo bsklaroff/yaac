@@ -3,7 +3,7 @@ import { eventsWsUrl, startEventsMonitor, type EventsSocket } from '#events'
 import type { ServerTarget } from '@yaac/shared/server-api'
 
 const target = (port: number): ServerTarget =>
-  ({ baseUrl: `http://127.0.0.1:${port}`, secret: `secret-${port}` })
+  ({ baseUrl: `http://127.0.0.1:${port}` })
 
 /** A scriptable fake socket that records its callbacks for the test to fire. */
 class FakeSocket implements EventsSocket {
@@ -31,13 +31,13 @@ describe('startEventsMonitor', () => {
   /** Wire a monitor around a queue of fake sockets, recording each open. */
   function harness(targets: ServerTarget[] = [target(8787)]) {
     const sockets: FakeSocket[] = []
-    const opens: { url: string; bearer: string }[] = []
+    const opens: string[] = []
     const snapshots: unknown[] = []
     let call = 0
     const monitor = startEventsMonitor({
       resolveTarget: () => Promise.resolve(targets[Math.min(call++, targets.length - 1)]),
-      openSocket: (url, bearer) => {
-        opens.push({ url, bearer })
+      openSocket: (url) => {
+        opens.push(url)
         const s = new FakeSocket()
         sockets.push(s)
         return s
@@ -51,7 +51,7 @@ describe('startEventsMonitor', () => {
   it('connects with the resolved target and forwards snapshot frames', async () => {
     const h = harness()
     await vi.runOnlyPendingTimersAsync()
-    expect(h.opens).toEqual([{ url: 'ws://127.0.0.1:8787/events', bearer: 'secret-8787' }])
+    expect(h.opens).toEqual(['ws://127.0.0.1:8787/events'])
     h.sockets[0].message?.(JSON.stringify({ type: 'snapshot', data: { worktrees: [] } }))
     expect(h.snapshots).toHaveLength(1)
   })
@@ -64,13 +64,13 @@ describe('startEventsMonitor', () => {
     expect(h.snapshots).toHaveLength(0)
   })
 
-  it('re-resolves the target on every reconnect (secret rotation heals)', async () => {
+  it('re-resolves the target on every reconnect (a re-pointed machine follows)', async () => {
     const h = harness([target(8787), target(9999)])
     await vi.runOnlyPendingTimersAsync()
     h.sockets[0].closeCb?.()
     await vi.advanceTimersByTimeAsync(100)
     expect(h.opens).toHaveLength(2)
-    expect(h.opens[1]).toEqual({ url: 'ws://127.0.0.1:9999/events', bearer: 'secret-9999' })
+    expect(h.opens[1]).toBe('ws://127.0.0.1:9999/events')
   })
 
   it('schedules only one reconnect when close fires twice (error + close)', async () => {

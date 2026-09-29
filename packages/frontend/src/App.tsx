@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { readExchangeToken, postWebSession, stripTokenFromUrl } from './lib/webSession'
+import { api } from './lib/api'
 import { stopWorktreeOptimistic } from './lib/stopWorktreeFlow'
 import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
 import { getShortcutOverrides } from './lib/settingsApi'
@@ -13,7 +13,6 @@ import {
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { WorktreeView } from './components/WorktreeView'
-import { ConnectSplash } from './components/ConnectSplash'
 import { MobileScreenLayer } from './components/mobile/MobileScreenLayer'
 import { ProjectsScreen } from './components/mobile/ProjectsScreen'
 import { WorktreesScreen } from './components/mobile/WorktreesScreen'
@@ -26,47 +25,27 @@ import { CreateWorktreeDialog } from './components/CreateWorktreeDialog'
 import { StopWorktreeDialog } from './components/StopWorktreeDialog'
 import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
 
-type AuthState = 'checking' | 'authed' | 'needs-token'
-
-/** Hit a protected endpoint to see if the worktree cookie is still good. This
- *  bootstrap probe stays on a raw fetch: the route is unauthenticated-adjacent
- *  and not part of the typed RPC surface, and any failure (401 or server down)
- *  should show the splash rather than a blank screen. */
-async function probeAuth(): Promise<boolean> {
-  try {
-    const res = await fetch('/auth/web-session', {
-      credentials: 'same-origin',
-      headers: { Accept: 'application/json' },
-    })
-    return res.ok
-  } catch {
-    return false
-  }
-}
+/** `unidentified` carries the server's own account of why it would not say
+ *  who this device is (a tagged device or Funnel, or a name reached without
+ *  tailscale serve) — or why it could not be asked. */
+type AuthState = { kind: 'checking' } | { kind: 'ok' } | { kind: 'unidentified'; message: string }
 
 function App(): JSX.Element {
-  const [auth, setAuth] = useState<AuthState>('checking')
+  const [auth, setAuth] = useState<AuthState>({ kind: 'checking' })
 
   useEffect(() => {
     let cancelled = false
-    void (async () => {
-      const token = readExchangeToken()
-      if (token) {
-        const ok = await postWebSession(token)
-        stripTokenFromUrl()
-        if (ok) {
-          if (!cancelled) setAuth('authed')
-          return
-        }
-      }
-      const authed = await probeAuth()
-      if (!cancelled) setAuth(authed ? 'authed' : 'needs-token')
-    })()
+    api.whoami.$get().then(
+      () => { if (!cancelled) setAuth({ kind: 'ok' }) },
+      (err: unknown) => {
+        if (!cancelled) setAuth({ kind: 'unidentified', message: err instanceof Error ? err.message : String(err) })
+      },
+    )
     return () => { cancelled = true }
   }, [])
 
   // Hooks must run unconditionally; the WS only connects once authed.
-  const { connected } = useEvents(auth === 'authed')
+  const { connected } = useEvents(auth.kind === 'ok')
   const snapshot = useSnapshot()
 
   // Chime the moment a worktree flips to waiting (it needs input) — the audible
@@ -88,17 +67,25 @@ function App(): JSX.Element {
   }, [snapshot, soundEnabled, selectedWorktreeId])
 
   let content: JSX.Element
-  if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>
-  else if (auth === 'needs-token') content = <ConnectSplash onAuthed={() => setAuth('authed')} />
-  else content = <Workspace snapshot={snapshot} connected={connected} />
+  if (auth.kind === 'checking') content = <FullScreen>Loading…</FullScreen>
+  else if (auth.kind === 'unidentified') {
+    content = (
+      <FullScreen>
+        <div className="max-w-md px-8">
+          <h1 className="text-lg font-semibold text-text">This server will not say who you are</h1>
+          <p className="mt-3 text-sm text-text-dim">{auth.message}</p>
+        </div>
+      </FullScreen>
+    )
+  } else content = <Workspace snapshot={snapshot} connected={connected} />
 
   // In Electron the title bar is hidden and the traffic lights float over the
-  // UI. The full-screen states (loading/connect) reserve a thin draggable
+  // UI. The full-screen states (loading/unidentified) reserve a thin draggable
   // strip for the lights; the workspace instead pulls its own top row (rail /
   // sidebar header / worktree bar) up level with them, so that band isn't dead
   // space — it carries its own drag regions and light clearance.
   // A browser tab gets neither, so it always renders content flush.
-  const isWorkspace = auth === 'authed'
+  const isWorkspace = auth.kind === 'ok'
   return (
     <div className="flex h-full flex-col bg-shell">
       {isElectron() && !isWorkspace && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}

@@ -226,7 +226,7 @@ describe('yaac server start on a k8s install', () => {
     const clientRoot = `${testEnv.dataDir}-client`
     await fs.mkdir(clientRoot, { recursive: true })
     await fs.writeFile(path.join(clientRoot, 'server.json'), JSON.stringify({
-      url: '', token: '', enabled: false, saved: [], driver: 'k8s',
+      url: '', enabled: false, saved: [], driver: 'k8s',
     }), { mode: 0o600 })
 
     const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'start')
@@ -256,6 +256,43 @@ describe('yaac server start on a k8s install', () => {
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/unknown option/i)
+  })
+})
+
+describe('yaac server run refuses what the identity rule cannot defend', () => {
+  let testEnv: YaacTestEnv
+
+  beforeEach(async () => {
+    testEnv = await createYaacTestEnv()
+  })
+
+  afterEach(async () => {
+    await killServerByLock()
+    await testEnv.cleanup()
+  })
+
+  it('a bind beyond loopback, where anyone could claim to be this machine', async () => {
+    // Loopback is the owner (docs/remote-hosting.md), so a bind on any
+    // other address hands that to whoever reaches it and sends a loopback
+    // Host. Only the in-cluster pod binds wide, behind its ingress policy.
+    const { exitCode, stderr } = await runYaac(
+      { ...testEnv.env, YAAC_BIND_ADDR: '0.0.0.0' }, 'server', 'run',
+    )
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/YAAC_BIND_ADDR=0\.0\.0\.0 would expose the server.*tailscale serve/s)
+    expect(await readLock()).toBeNull()
+  })
+
+  it('YAAC_REQUIRE_AUTH, which asked for a gate that no longer exists', async () => {
+    // The one silent failure the token removal could cause: a host shared
+    // with other OS users, serving them all as its owner. Refused instead
+    // (docs/legacy-compat-shims.md).
+    const { exitCode, stderr } = await runYaac(
+      { ...testEnv.env, YAAC_REQUIRE_AUTH: '1' }, 'server', 'run',
+    )
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/YAAC_REQUIRE_AUTH is set.*not a supported shared deployment/s)
+    expect(await readLock()).toBeNull()
   })
 })
 

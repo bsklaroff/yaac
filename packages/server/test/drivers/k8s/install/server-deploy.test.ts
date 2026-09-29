@@ -92,8 +92,9 @@ interface Manifest {
     replicas?: number
     strategy?: unknown
     type?: string
-    loadBalancerClass?: string
-    allocateLoadBalancerNodePorts?: boolean
+    ingressClassName?: string
+    defaultBackend?: unknown
+    tls?: unknown
     podSelector?: unknown
     policyTypes?: string[]
     ingress?: unknown
@@ -125,18 +126,18 @@ interface PodSpec {
 }
 
 /**
- * A tailnet-fronted Service as the apiserver reports it once the operator
- * has published — what `get service` answers after `publishedAfter` reads.
+ * The tailnet fronting's Ingress as the apiserver reports it once the
+ * operator has published — what `get ingress` answers after
+ * `publishedAfter` reads.
  */
-function tailnetService(hostname: string, publishedAfter = 0): (args: string[]) => unknown {
+function tailnetIngress(hostname: string, publishedAfter = 0): (args: string[]) => unknown {
   let reads = 0
   return (args: string[]) => {
-    if (!args.includes('service')) return null
+    if (!args.includes('ingress')) return null
     reads += 1
     return {
-      metadata: { annotations: { 'tailscale.com/hostname': 'yaac' } },
-      spec: { type: 'LoadBalancer', loadBalancerClass: 'tailscale' },
-      status: reads > publishedAfter ? { loadBalancer: { ingress: [{ ip: '100.64.0.9', hostname }] } } : {},
+      spec: { ingressClassName: 'tailscale', tls: [{ hosts: ['yaac'] }] },
+      status: reads > publishedAfter ? { loadBalancer: { ingress: [{ hostname, ports: [{ port: 443 }] }] } } : {},
     }
   }
 }
@@ -234,9 +235,9 @@ describe('deployServerWorkload', () => {
     expect(order('ClusterRoleBinding')).toBeLessThan(order('Deployment'))
     expect(order('NetworkPolicy')).toBeLessThan(order('Service'))
     // And the Service before the Deployment: the origin it publishes is an
-    // input to the Deployment's environment. The forwarder comes last —
-    // on a converging install the Service apply is what releases the old
-    // NodePort on the node before the forwarder binds it.
+    // input to the Deployment's environment. The forwarder comes after the
+    // Service — on a converging install the Service apply is what releases
+    // the old NodePort on the node before the forwarder binds it.
     expect(order('Service')).toBeLessThan(order('Deployment'))
     const frontOrder = (mockApply.mock.calls as Array<[Manifest]>)
       .findIndex(([m]) => m.kind === 'Deployment' && (m.metadata as { name: string }).name === SERVER_FRONT_APP_NAME)
@@ -355,25 +356,20 @@ describe('deployServerWorkload', () => {
     // These belong to the DEPLOYMENT, not to a shell: there is no shell in
     // a pod to export them in afterwards, and `yaac server restart` only
     // rolls the pods the Deployment already describes. So a re-run of
-    // `yaac cluster install` is how a tailnet-fronted server gets them,
-    // and the install log says so when they turn the credential gate on.
+    // `yaac cluster install` is how a tailnet-fronted server gets them.
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    vi.stubEnv('YAAC_TRUST_PROXY', '1')
     vi.stubEnv('YAAC_FORWARD_BIND', '100.64.0.7')
-    const log = vi.fn()
 
-    await deploy({ log })
+    await deploy({ log: vi.fn() })
 
     const env = Object.fromEntries(
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
     )
     expect(env.YAAC_ALLOWED_HOSTS).toBe('srv.tailnet.ts.net')
-    expect(env.YAAC_TRUST_PROXY).toBe('1')
     // The forwarded-port chips are rendered from the SNAPSHOT, which the
     // pod composes — so a tailnet bind address that stayed on the host
     // would leave every chip linking at the viewer's own loopback.
     expect(env.YAAC_FORWARD_BIND).toBe('100.64.0.7')
-    expect(log.mock.calls.flat().join('\n')).toMatch(/REQUIRE a credential/)
   })
 
   it('leaves the loopback defaults off the pod entirely', async () => {
@@ -381,7 +377,6 @@ describe('deployServerWorkload', () => {
 
     const names = deployedPodSpec().containers[0].env.map((e) => e.name)
     expect(names).not.toContain('YAAC_ALLOWED_HOSTS')
-    expect(names).not.toContain('YAAC_TRUST_PROXY')
     // Absent rather than the literal default: `env.forwardBind` answers
     // `127.0.0.1` for an unset var, so passing it through unconditionally
     // would pin a value nobody chose into every ordinary install.
@@ -411,9 +406,9 @@ describe('deployServerWorkload', () => {
 
     // The node addresses and the fronting, and nothing else. A worktree
     // pod dialing the Service or pod IP presents a POD source address,
-    // which no rule names, and is dropped. On a credential-optional local
-    // install that is the entire wall, which is why cluster check probes
-    // it. The kind fronting adds no peer: its forwarder is host-networked,
+    // which no rule names, and is dropped. A pod that got through could
+    // claim a loopback Host and be the owner, so that is the entire wall,
+    // which is why cluster check probes it. The kind fronting adds no peer: its forwarder is host-networked,
     // so its dial is already one of the node addresses.
     const [nodeHalf, frontHalf] = applied('NetworkPolicy')
     expect(nodeHalf.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
@@ -431,6 +426,9 @@ describe('deployServerWorkload', () => {
     expect(svc.spec?.type).toBe('ClusterIP')
     expect(svc.spec?.ports?.[0]).toMatchObject({ port: SERVER_POD_PORT, targetPort: SERVER_POD_PORT })
     expect(svc.spec?.ports?.[0]?.nodePort).toBeUndefined()
+    // A tailnet install's Ingress is retired, or it would go on recording
+    // the tailnet fronting for `server start` to wait on.
+    expect(retried()).toContain(`delete ingress ${SERVER_APP_NAME} -n test-ns --ignore-not-found`)
 
     // The forwarder: a hostNetwork Envoy on the control-plane node — where
     // the kind port mapping delivers — binding the mapped port and dialing
@@ -455,26 +453,31 @@ describe('deployServerWorkload', () => {
   })
 
   it('publishes through the tailnet when told to', async () => {
-    const svc = tailnetService('yaac.tail1234.ts.net', 1)
+    const ingress = tailnetIngress('yaac.tail1234.ts.net', 1)
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
       args.includes('nodes')
         ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-        : claimRead(args) ?? svc(args),
+        : claimRead(args) ?? ingress(args),
     ))
     const log = vi.fn()
 
     const origin = await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log })
 
-    // The operator's LoadBalancer Service, and no NodePort on the side —
-    // that would publish the API on every node address of a pool behind
-    // nothing but the policy.
+    // A ClusterIP behind the operator's TLS Ingress, named for the server
+    // so the proxy pod's labels name it too — never an L4 exposure, which
+    // would hand the pod whatever headers a tailnet device sent. No kind
+    // forwarder, and a kind install's forwarder is retired.
     const [service] = applied('Service')
-    expect(service.spec?.type).toBe('LoadBalancer')
-    expect(service.spec?.loadBalancerClass).toBe('tailscale')
-    expect(service.spec?.allocateLoadBalancerNodePorts).toBe(false)
-    expect((service.metadata as { annotations: Record<string, string> }).annotations)
-      .toEqual({ 'tailscale.com/hostname': 'yaac' })
+    expect(service.spec?.type).toBe('ClusterIP')
+    const [ing] = applied('Ingress')
+    expect((ing.metadata as { name: string }).name).toBe(SERVER_APP_NAME)
+    expect(ing.spec).toEqual({
+      ingressClassName: 'tailscale',
+      defaultBackend: { service: { name: SERVER_APP_NAME, port: { number: SERVER_POD_PORT } } },
+      tls: [{ hosts: ['yaac'] }],
+    })
     expect(applied('ConfigMap')).toHaveLength(0)
+    expect(retried()).toContain(`delete deployment ${SERVER_FRONT_APP_NAME} -n test-ns --ignore-not-found`)
 
     // The fronting half of the wall selects the operator's proxy pod for
     // this Service, in the operator's namespace; the node half is as ever.
@@ -494,17 +497,14 @@ describe('deployServerWorkload', () => {
       ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
     }])
 
-    // The origin is what the operator published, read off the Service
-    // AFTER it was applied and BEFORE the Deployment was rendered — the
-    // Deployment has to admit that name, which is what requires a
-    // credential, since the tailnet is the trust boundary now rather than
-    // this loopback. Not TRUST_PROXY: an L4 exposure sanitizes no header,
-    // so trusting X-Forwarded-* would hand them to any tailnet client.
-    expect(origin).toBe('http://yaac.tail1234.ts.net')
+    // The origin is the https name the operator published, read off the
+    // Ingress AFTER it was applied and BEFORE the Deployment was rendered —
+    // the Deployment has to admit that name, which puts every request
+    // through the identity rule, since the tailnet is the trust boundary
+    // now rather than this loopback.
+    expect(origin).toBe('https://yaac.tail1234.ts.net')
     const env = Object.fromEntries(deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]))
     expect(env.YAAC_ALLOWED_HOSTS).toBe('yaac.tail1234.ts.net')
-    expect(env.YAAC_TRUST_PROXY).toBeUndefined()
-    expect(log.mock.calls.flat().join('\n')).toMatch(/REQUIRE a credential/)
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([u]) => (u as string).startsWith(origin))).toBe(true)
     expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true, driver: 'k8s' })
   })
@@ -517,7 +517,7 @@ describe('deployServerWorkload', () => {
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
       args.includes('nodes')
         ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-        : claimRead(args) ?? tailnetService('yaac.tail1234.ts.net')(args),
+        : claimRead(args) ?? tailnetIngress('yaac.tail1234.ts.net')(args),
     ))
 
     await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
@@ -534,7 +534,7 @@ describe('deployServerWorkload', () => {
       mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
         args.includes('nodes')
           ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-          : claimRead(args) ?? tailnetService('never', Number.MAX_SAFE_INTEGER)(args),
+          : claimRead(args) ?? tailnetIngress('never', Number.MAX_SAFE_INTEGER)(args),
       ))
       let settled = false
       const pending = deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
@@ -548,9 +548,9 @@ describe('deployServerWorkload', () => {
         await vi.advanceTimersByTimeAsync(1_000)
       }
       await verdict
-      // The Service is there for the operator to act on; nothing that
+      // The Ingress is there for the operator to act on; nothing that
       // needs the origin was applied.
-      expect(applied('Service')).toHaveLength(1)
+      expect(applied('Ingress')).toHaveLength(1)
       expect(applied('Deployment')).toHaveLength(0)
     } finally {
       vi.useRealTimers()
@@ -576,36 +576,23 @@ describe('deployServerWorkload', () => {
     expect(rules.every((r) => !r.resources.includes('*'))).toBe(true)
   })
 
-  it('mints the durable token with the lock the pod holds, never the host\'s', async () => {
-    // The lock is the server's file. On kind the host could still read it;
-    // on a cloud cluster the data dir is not on this machine at all, and a
-    // mint that silently fails there is a lockout on an install that
-    // requires a credential. One path for both: ask the pod.
-    mockWithRetry.mockImplementation((args: string[]) => Promise.resolve(
-      args[0] === 'exec' && args.join(' ').includes('.server.lock')
-        ? { stdout: JSON.stringify({
-          pid: 1, port: 8787, secret: 'podsecret', startedAt: 1, buildId: 'b',
-          instance: 'i', host: 'yaac-server-abc', heartbeatAt: 1,
-        }), stderr: '' }
-        : { stdout: '', stderr: '' },
-    ))
-    const seen: Array<{ url: string; auth: string | undefined; method: string }> = []
-    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
-      const headers = init?.headers as Record<string, string> | undefined
-      seen.push({ url: String(url), auth: headers?.authorization, method: init?.method ?? 'GET' })
-      if (String(url).endsWith('/tokens') && init?.method === 'POST') {
-        return Promise.resolve(new Response(JSON.stringify({ token: 'minted-by-pod' }), { status: 200 }))
-      }
-      return Promise.resolve(new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }))
-    }))
+  it('warns, having registered, when the server will not identify this machine', async () => {
+    // Under the tailnet fronting there is no loopback path, so this
+    // machine's CLI goes through the identity rule like any device — and a
+    // tagged device has no user to be. Said at install, not on the next
+    // command.
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(String(url).endsWith('/whoami')
+      ? new Response(JSON.stringify({
+        error: { code: 'UNAUTHENTICATED', message: 'tailscale serve sent no user identity' },
+      }), { status: 401 })
+      : new Response(JSON.stringify({ ok: true, buildId: 'b', ready: true }), { status: 200 }))))
+    const log = vi.fn()
 
-    await deploy({ log: vi.fn() })
+    const origin = await deploy({ log })
 
-    const execCall = (mockWithRetry.mock.calls as Array<[string[]]>)
-      .map(([a]) => a).find((a) => a[0] === 'exec')
-    expect(execCall).toContain(`deployment/${SERVER_APP_NAME}`)
-    expect(seen.find((s) => s.method === 'POST')?.auth).toBe('Bearer podsecret')
-    expect((await readServerConfig())?.token).toBe('minted-by-pod')
+    expect(log.mock.calls.flat().join('\n'))
+      .toMatch(/WARNING: .*refused to identify this device: tailscale serve sent no user identity/)
+    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true, driver: 'k8s' })
   })
 
   it('stops the pod that is there before it deploys', async () => {
@@ -642,7 +629,7 @@ describe('deployServerWorkload', () => {
     // on one database, and the published-origin probe would be answered by
     // the very server being replaced. So it is refused here, on the host.
     await writeLock({
-      pid: process.pid, port: 8787, secret: 's', startedAt: Date.now(), buildId: 'b',
+      pid: process.pid, port: 8787, startedAt: Date.now(), buildId: 'b',
       instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
     })
     // /health answers, which with this process's own live pid is the whole
@@ -663,7 +650,7 @@ describe('deployServerWorkload', () => {
     // lock names another host, and rolling it IS what install does; the
     // Deployment's Recreate strategy sequences that.
     await writeLock({
-      pid: 1, port: 8787, secret: 's', startedAt: Date.now(), buildId: 'b',
+      pid: 1, port: 8787, startedAt: Date.now(), buildId: 'b',
       instance: 'abc', host: 'yaac-server-77d4f', heartbeatAt: Date.now(),
     })
 
@@ -675,7 +662,7 @@ describe('deployServerWorkload', () => {
     // would make a crashed server permanently un-upgradable.
     const DEAD_PORT = 1
     await writeLock({
-      pid: process.pid, port: DEAD_PORT, secret: 's', startedAt: Date.now(), buildId: 'b',
+      pid: process.pid, port: DEAD_PORT, startedAt: Date.now(), buildId: 'b',
       instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
     })
     // Nothing answers on the lock's port, which for a same-host lock is
@@ -715,24 +702,22 @@ describe('serverDeploymentExists', () => {
 describe('startClusterServer', () => {
   it('scales the Deployment back up rather than spawning anything, and answers the origin', async () => {
     vi.stubEnv('YAAC_SERVER_PORT', '9123')
-    // The live Service is the record of the fronting: a ClusterIP (or a
-    // NodePort from an install not yet re-converged, or none at all — the
-    // e2e harness) is the kind fronting, so the origin is the loopback one.
-    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args.includes('service') ? { spec: { type: 'ClusterIP' } } : null,
-    ))
+    // The live Ingress is the record of the fronting: none at all (every
+    // kind install, and the e2e harness) is the kind fronting, so the
+    // origin is the loopback one.
+    mockGetJson.mockResolvedValue(null)
     await expect(startClusterServer()).resolves.toBe('http://127.0.0.1:9123')
     const calls = retried()
     expect(calls.some((c) => c.includes('scale') && c.includes('--replicas=1'))).toBe(true)
     expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
   })
 
-  it('waits on the tailnet origin when that is what the live Service records', async () => {
+  it('waits on the tailnet origin when that is what the live Ingress records', async () => {
     mockGetJson.mockImplementation((args: string[]) =>
-      Promise.resolve(tailnetService('yaac.tail1234.ts.net')(args)))
-    await expect(startClusterServer()).resolves.toBe('http://yaac.tail1234.ts.net')
+      Promise.resolve(tailnetIngress('yaac.tail1234.ts.net')(args)))
+    await expect(startClusterServer()).resolves.toBe('https://yaac.tail1234.ts.net')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([u]) =>
-      (u as string).startsWith('http://yaac.tail1234.ts.net'))).toBe(true)
+      (u as string).startsWith('https://yaac.tail1234.ts.net'))).toBe(true)
   })
 
   it('turns a rolled-out Deployment that never answers into the fix for it', async () => {

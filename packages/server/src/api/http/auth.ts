@@ -1,9 +1,10 @@
-import type { Context, MiddlewareHandler } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import { serverLog } from '#log'
+import type { IdentityEnv } from './web-auth'
 
-// Bearer/cookie auth lives in `./web-auth` (one gate accepts either
-// credential), and the Host/Origin/Sec-Fetch-Site guards with it. This
-// module keeps the CORS preflight refusal and the request log.
+// The identity gate lives in `./web-auth`, and the Host/Origin/Sec-Fetch-Site
+// guards with it. This module keeps the CORS preflight refusal and the
+// request log.
 
 /**
  * Browser `fetch` is not allowed to talk to the server cross-origin: refuse
@@ -17,12 +18,18 @@ export function denyBrowserCors(): MiddlewareHandler {
   }
 }
 
-/** Log path + status + duration. Never log request/response bodies. */
-export function requestLogger(): MiddlewareHandler {
-  return async (c: Context, next) => {
+/**
+ * Log path + status + duration, and the tailnet user a request came from —
+ * the audit trail of which person did what. Never log request/response
+ * bodies.
+ */
+export function requestLogger(): MiddlewareHandler<IdentityEnv> {
+  return async (c, next) => {
     const t0 = Date.now()
     await next()
     const dur = Date.now() - t0
-    serverLog(`[server] ${c.req.method} ${c.req.path} ${c.res.status} ${dur}ms`)
+    const who = c.get('principal') as IdentityEnv['Variables']['principal'] | undefined
+    const as = who?.kind === 'tailnet' ? ` ${who.login}` : ''
+    serverLog(`[server] ${c.req.method} ${c.req.path} ${c.res.status} ${dur}ms${as}`)
   }
 }

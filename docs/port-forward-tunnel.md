@@ -40,8 +40,8 @@ server binds, and reserving anything in its name would take it away.
 
 **A client binds.** `startForward` in `@yaac/shared` listens on the host
 port and opens one WebSocket per accepted TCP connection to
-`GET /forward/attach?id=<workspace>&port=<container port>`, authenticated
-by the same bearer every other WS carries. The server splices that socket
+`GET /forward/attach?id=<workspace>&port=<container port>`, identified
+the same way as every other WS (docs/remote-hosting.md). The server splices that socket
 to a `dialPort` stream into the workspace (`attachPortTunnel`) — under k8s,
 a `tcp` stream through the pod's streamd, exactly the relay every other
 byte rides (docs/stream-relay.md).

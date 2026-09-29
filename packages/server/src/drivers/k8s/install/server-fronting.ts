@@ -5,15 +5,16 @@
  * how its Service is reached from outside the cluster, and every such
  * difference is rendered here as a manifest set rather than branched on in
  * the driver (docs/plans/cloud-k8s.md "Two backends, one driver"). A
- * fronting answers five questions install asks in order: what Service to
- * apply, what else must exist for it to be reachable, which peers its
- * ingress policy must admit, what origin it published, and what the
- * Deployment's environment must say about that origin.
+ * fronting answers the questions install asks in order: what to apply for
+ * the origin to answer (and what the other fronting left behind), which
+ * peers its ingress policy must admit, what origin it published, what the
+ * Deployment's environment must say about that origin, and how long that
+ * origin may take to answer.
  *
- * The LIVE Service is the record of which fronting an install chose:
- * `frontingOfService` reads it back so that `yaac server start|restart`
- * can wait on the right origin with no new state on disk, and so that a
- * later install mode selects a fronting by passing one value here.
+ * The LIVE cluster is the record of which fronting an install chose: a
+ * `tailscale`-class Ingress named for the server is the tailnet fronting,
+ * and `frontingOfIngress` reads it back so that `yaac server
+ * start|restart` can wait on the right origin with no new state on disk.
  *
  * Install-only, like the rest of this folder.
  */
@@ -39,19 +40,25 @@ import { ClusterInstallError } from './arg-guards'
 /** What the Deployment's environment must state for a published origin. */
 export interface RemoteHosting {
   allowedHosts: string[]
-  trustProxy: boolean
 }
+
+/** A `kubectl delete` target: resource kind and name, in the install namespace. */
+export type FrontingObject = [kind: string, name: string]
 
 export interface ServerFronting {
   kind: 'kind' | 'tailnet'
-  /** The Service, in the shape this fronting needs. */
-  serviceManifest(): Record<string, unknown>
   /**
-   * Anything else that has to exist for the origin to answer — the kind
-   * forwarder's ConfigMap and Deployment. Applied after the Service; every
+   * Everything that has to exist for the origin to answer, the server's
+   * Service first. Applied in order before the origin is resolved; every
    * Deployment among them is rolled out before the origin is probed.
    */
-  extraManifests(): Record<string, unknown>[]
+  manifests(): Record<string, unknown>[]
+  /**
+   * The OTHER fronting's objects, deleted on apply so a re-install that
+   * switches fronting leaves nothing of the old one behind — above all no
+   * Ingress that would make `frontingOfIngress` answer the wrong way.
+   */
+  retired(): FrontingObject[]
   /**
    * NetworkPolicy `from` peers that deliver fronted traffic to the server
    * pod. The node addresses are NOT listed here: they are admitted
@@ -65,8 +72,28 @@ export interface ServerFronting {
   resolveOrigin(): Promise<string>
   /** What the Deployment's env must state for that origin. */
   remoteHosting(origin: string): RemoteHosting
+  /** How long the rolled server gets to answer at that origin. */
+  publishTimeoutMs: number
   /** Diagnosis for "rolled out, but the origin never answered". */
   unreachableDiagnosis(origin: string): string
+}
+
+/** The server's Service: a ClusterIP under every fronting. */
+function serverServiceManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: {
+      name: SERVER_APP_NAME,
+      namespace: k8sNamespace(),
+      labels: { app: SERVER_APP_NAME },
+    },
+    spec: {
+      type: 'ClusterIP',
+      selector: { app: SERVER_APP_NAME },
+      ports: [{ name: 'api', port: SERVER_POD_PORT, targetPort: SERVER_POD_PORT }],
+    },
+  }
 }
 
 /**
@@ -92,27 +119,16 @@ export function kindFronting(): ServerFronting {
   const origin = `http://127.0.0.1:${String(resolveServerPort())}`
   return {
     kind: 'kind',
-    serviceManifest: () => ({
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: {
-        name: SERVER_APP_NAME,
-        namespace: k8sNamespace(),
-        labels: { app: SERVER_APP_NAME },
-      },
-      spec: {
-        type: 'ClusterIP',
-        selector: { app: SERVER_APP_NAME },
-        ports: [{ name: 'api', port: SERVER_POD_PORT, targetPort: SERVER_POD_PORT }],
-      },
-    }),
-    extraManifests: () => [
+    manifests: () => [
+      serverServiceManifest(),
       buildServerFrontConfigMapManifest(),
       buildServerFrontDeploymentManifest(registryRef(ENVOY_MIRROR_TAG)),
     ],
+    retired: () => [['ingress', SERVER_APP_NAME]],
     ingressPeers: () => [],
     resolveOrigin: () => Promise.resolve(origin),
-    remoteHosting: () => ({ allowedHosts: [], trustProxy: false }),
+    remoteHosting: () => ({ allowedHosts: [] }),
+    publishTimeoutMs: 60_000,
     unreachableDiagnosis: () =>
       'This is what a cluster created before the server was published looks '
       + 'like: the mapped port has no host end, and kind writes port mappings '
@@ -125,61 +141,58 @@ export function kindFronting(): ServerFronting {
   }
 }
 
-/** The Service's `loadBalancerClass` value that names the Tailscale operator. */
-const TAILSCALE_LB_CLASS = 'tailscale'
-/** Annotation the operator reads the device name from — and we read it back from. */
-const TAILSCALE_HOSTNAME_ANNOTATION = 'tailscale.com/hostname'
+/** The IngressClass the Tailscale operator serves. */
+const TAILSCALE_INGRESS_CLASS = 'tailscale'
 /** The device name a yaac server publishes as. */
 export const TAILNET_HOSTNAME = 'yaac'
 
-/** What `kubectl get service -o json` answers, as far as a fronting reads it. */
-interface RawService {
-  metadata?: { annotations?: Record<string, string> }
-  spec?: { loadBalancerClass?: string }
-  status?: { loadBalancer?: { ingress?: Array<{ hostname?: string; ip?: string }> } }
+/** What `kubectl get ingress -o json` answers, as far as a fronting reads it. */
+interface RawIngress {
+  spec?: { ingressClassName?: string; tls?: Array<{ hosts?: string[] }> }
+  status?: { loadBalancer?: { ingress?: Array<{ hostname?: string }> } }
 }
 
-/** How long the operator gets to publish a hostname into the Service status. */
+/** How long the operator gets to publish a hostname into the Ingress status. */
 const TAILNET_PUBLISH_TIMEOUT_MS = 120_000
 
 /**
- * The tailnet fronting: the Tailscale Kubernetes operator's LoadBalancer
- * Service, which gives the server a tailnet-only MagicDNS name and nothing
- * else (docs/plans/cloud-k8s.md "The tailnet is the only way onto a cloud
- * server"). No public LoadBalancer, no NodePort on the side —
- * `allocateLoadBalancerNodePorts: false`, since a LoadBalancer Service
- * allocates one by default and that would publish the API on every node
- * address of a pool behind nothing but the policy.
+ * The tailnet fronting: the server's ClusterIP Service behind the
+ * Tailscale Kubernetes operator's `tailscale`-class Ingress, which gives
+ * the server a tailnet-only MagicDNS name with a TLS certificate and
+ * nothing else — no public LoadBalancer, no NodePort, no DNS to manage.
  *
- * The operator runs a proxy pod per exposed Service in its own namespace,
- * labelled with the Service it fronts, and SNATs tailnet traffic to that
- * pod's address on the way in — which is why the ingress peer is a pod
- * selector rather than an address. The origin is whatever MagicDNS name
- * the operator publishes into the Service status; the server is told to
- * admit it and to require a credential, because the tailnet is the trust
- * boundary now and not this machine's loopback.
+ * An Ingress rather than the operator's L4 LoadBalancer Service, for two
+ * reasons. An `http://` origin is not a secure context, and the webapp
+ * quietly loses clipboard writes and the pickers there. And the Ingress
+ * proxy IS `tailscale serve`: it terminates TLS, strips client-supplied
+ * identity and forwarding headers and stamps its own, where an L4
+ * exposure hands the pod whatever a tailnet device chose to send
+ * (docs/remote-hosting.md).
+ *
+ * The operator runs a proxy pod per Ingress in its own namespace, labelled
+ * with the Ingress it fronts, and dials the Service from that pod — which
+ * is why the ingress peer is a pod selector rather than an address, and
+ * why the Ingress carries the server's name. The origin is the `https://`
+ * name the operator publishes into the Ingress status.
  */
 export function tailnetFronting(opts: { hostname: string }): ServerFronting {
   return {
     kind: 'tailnet',
-    serviceManifest: () => ({
-      apiVersion: 'v1',
-      kind: 'Service',
+    manifests: () => [serverServiceManifest(), {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'Ingress',
       metadata: {
         name: SERVER_APP_NAME,
         namespace: k8sNamespace(),
         labels: { app: SERVER_APP_NAME },
-        annotations: { [TAILSCALE_HOSTNAME_ANNOTATION]: opts.hostname },
       },
       spec: {
-        type: 'LoadBalancer',
-        loadBalancerClass: TAILSCALE_LB_CLASS,
-        allocateLoadBalancerNodePorts: false,
-        selector: { app: SERVER_APP_NAME },
-        ports: [{ name: 'api', port: SERVER_POD_PORT, targetPort: SERVER_POD_PORT }],
+        ingressClassName: TAILSCALE_INGRESS_CLASS,
+        defaultBackend: { service: { name: SERVER_APP_NAME, port: { number: SERVER_POD_PORT } } },
+        tls: [{ hosts: [opts.hostname] }],
       },
-    }),
-    extraManifests: () => [],
+    }],
+    retired: () => [['deployment', SERVER_FRONT_APP_NAME], ['configmap', SERVER_FRONT_APP_NAME]],
     ingressPeers: () => [{
       namespaceSelector: {
         matchLabels: { 'kubernetes.io/metadata.name': TAILSCALE_OPERATOR_NAMESPACE },
@@ -194,17 +207,17 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
     resolveOrigin: async () => {
       const deadline = Date.now() + TAILNET_PUBLISH_TIMEOUT_MS
       for (;;) {
-        const svc = await kubectlGetJson<RawService>([
-          'get', 'service', SERVER_APP_NAME, '-n', k8sNamespace(),
+        const ing = await kubectlGetJson<RawIngress>([
+          'get', 'ingress', SERVER_APP_NAME, '-n', k8sNamespace(),
         ])
-        const hostname = svc?.status?.loadBalancer?.ingress?.find((i) => i.hostname)?.hostname
-        if (hostname) return `http://${hostname}`
+        const hostname = ing?.status?.loadBalancer?.ingress?.find((i) => i.hostname)?.hostname
+        if (hostname) return `https://${hostname}`
         if (Date.now() >= deadline) {
           throw new ClusterInstallError(
             'The Tailscale operator did not publish a hostname for the server '
-            + `Service within ${String(TAILNET_PUBLISH_TIMEOUT_MS / 1000)}s.\n`
+            + `Ingress within ${String(TAILNET_PUBLISH_TIMEOUT_MS / 1000)}s.\n`
             + `    Inspect it: kubectl -n ${TAILSCALE_OPERATOR_NAMESPACE} get deploy operator; `
-            + `kubectl -n ${k8sNamespace()} describe service ${SERVER_APP_NAME}; `
+            + `kubectl -n ${k8sNamespace()} describe ingress ${SERVER_APP_NAME}; `
             + `kubectl -n ${TAILSCALE_OPERATOR_NAMESPACE} get pods -l `
             + `${TAILSCALE_PARENT_RESOURCE_LABEL}=${SERVER_APP_NAME}\n`
             + '    The usual causes are the operator\'s OAuth client lacking the '
@@ -214,32 +227,32 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
         await new Promise((r) => setTimeout(r, 1000))
       }
     },
-    // The published name alone is what admits the tailnet and requires
-    // a credential. NOT `trustProxy`: the operator's Service is an L4
-    // exposure that sanitizes no header, so trusting `X-Forwarded-*` here
-    // would let any tailnet client forge them. The TLS-terminating form of
-    // this fronting is where that flag belongs.
-    remoteHosting: (origin) => ({ allowedHosts: [new URL(origin).hostname], trustProxy: false }),
+    // The published name is what admits the tailnet — and, being no
+    // loopback name, what puts every request through the identity rule.
+    remoteHosting: (origin) => ({ allowedHosts: [new URL(origin).hostname] }),
+    // The first HTTPS request to a new name is what makes the operator's
+    // proxy fetch its certificate, which takes a while.
+    publishTimeoutMs: 180_000,
     unreachableDiagnosis: (origin) =>
-      `The operator published ${origin}, but this machine cannot reach it. `
-      + 'It has to be on the same tailnet (`tailscale status`), and the tailnet\'s '
-      + 'ACLs have to admit it to the server\'s device.',
+      `The operator published ${origin}, but this machine cannot reach it over HTTPS.\n`
+      + '    Check, in order: that HTTPS certificates are enabled for the tailnet (the '
+      + 'admin console\'s DNS page — nothing in the cluster can read that setting); '
+      + 'that MagicDNS is on and this machine is on the same tailnet (`tailscale status`); '
+      + 'and that the tailnet\'s ACLs admit this machine to the server\'s device.',
   }
 }
 
 /**
- * Which fronting installed the Service this install runs. A Service of the
- * tailnet class is the tailnet fronting; anything else — a ClusterIP, a
- * NodePort from an install not yet re-converged, or no Service at all (the
- * e2e harness reaches its server by port-forward) — is the kind fronting,
- * by the general rule rather than by a special case.
+ * Which fronting an install's live Ingress records. A `tailscale`-class
+ * Ingress named for the server is the tailnet fronting, published under
+ * the device name its TLS host asks for; anything else — no Ingress at
+ * all, which is what every kind install and the e2e harness have — is the
+ * kind fronting, by the general rule rather than by a special case.
  */
-export function frontingOfService(svc: Record<string, unknown> | null): ServerFronting {
-  const raw = svc as RawService | null
-  if (raw?.spec?.loadBalancerClass === TAILSCALE_LB_CLASS) {
-    return tailnetFronting({
-      hostname: raw.metadata?.annotations?.[TAILSCALE_HOSTNAME_ANNOTATION] ?? TAILNET_HOSTNAME,
-    })
+export function frontingOfIngress(ingress: Record<string, unknown> | null): ServerFronting {
+  const raw = ingress as RawIngress | null
+  if (raw?.spec?.ingressClassName === TAILSCALE_INGRESS_CLASS) {
+    return tailnetFronting({ hostname: raw.spec.tls?.[0]?.hosts?.[0] ?? TAILNET_HOSTNAME })
   }
   return kindFronting()
 }

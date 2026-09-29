@@ -149,9 +149,8 @@ const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
 // Raw-request helper for the edge-case tests that intentionally send
 // payloads the RPC client's type layer would reject (missing fields,
 // malformed JSON, out-of-enum values).
-function withAuth(init: RequestInit = {}): RequestInit {
+function rawInit(init: RequestInit = {}): RequestInit {
   const headers = new Headers(init.headers ?? {})
-  headers.set('authorization', 'Bearer shh')
   if (init.body !== undefined) headers.set('content-type', 'application/json')
   return { ...init, headers }
 }
@@ -183,15 +182,15 @@ describe('write routes', () => {
 
   describe('POST /project/add', () => {
     it('rejects requests with no body', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/project/add', withAuth({ method: 'POST' }))
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/project/add', rawInit({ method: 'POST' }))
       expect(res.status).toBe(400)
     })
 
     it('rejects requests missing the remoteUrl or the git credential', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const app = buildApp({ buildId: 'test' })
       for (const body of [{ gitCredentialId: '00000000-0000-4000-8000-000000000001' }, { remoteUrl: 'x/foo' }]) {
-        const res = await app.request('/project/add', withAuth({
+        const res = await app.request('/project/add', rawInit({
           method: 'POST',
           body: JSON.stringify(body),
         }))
@@ -204,7 +203,7 @@ describe('write routes', () => {
         project: { slug: 'foo', remoteUrl: 'https://github.com/x/foo', addedAt: 'now' },
         knownHostsEntry: null,
       })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const id = '00000000-0000-4000-8000-000000000001'
       const res = await client.project.add.$post({ json: { remoteUrl: 'x/foo', gitCredentialId: id } })
       expect(res.status).toBe(200)
@@ -215,7 +214,7 @@ describe('write routes', () => {
   describe('DELETE /project/:slug', () => {
     it('delegates to removeProject and returns 204', async () => {
       mockRemoveProject.mockResolvedValue(undefined)
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].$delete({ param: { slug: 'demo' } })
       expect(res.status).toBe(204)
       expect(mockRemoveProject).toHaveBeenCalledWith('demo')
@@ -224,8 +223,8 @@ describe('write routes', () => {
 
   describe('PUT /project/:slug/config', () => {
     it('rejects requests with no config field', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/project/demo/config', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/project/demo/config', rawInit({
         method: 'PUT',
         body: JSON.stringify({}),
       }))
@@ -234,7 +233,7 @@ describe('write routes', () => {
 
     it('writes the config and returns it', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].config.$put({
         param: { slug: 'demo' },
         json: { config: { initCommands: ['pnpm install'] } },
@@ -252,13 +251,13 @@ describe('write routes', () => {
   describe('DELETE /project/:slug/config', () => {
     it('returns 204 when the project exists', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].config.$delete({ param: { slug: 'demo' } })
       expect(res.status).toBe(204)
     })
 
     it('returns 404 for an unknown project', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].config.$delete({ param: { slug: 'nope' } })
       expect(res.status).toBe(404)
     })
@@ -267,7 +266,7 @@ describe('write routes', () => {
   describe('project env routes', () => {
     it('round-trips a plain variable and never gives a secret back', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
 
       await client.project[':slug'].env.$put({
         param: { slug: 'demo' },
@@ -294,8 +293,8 @@ describe('write routes', () => {
 
     it('surfaces a rule the proxy could not act on as VALIDATION', async () => {
       await writeProject('demo')
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/project/demo/env', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/project/demo/env', rawInit({
         method: 'PUT',
         body: JSON.stringify({ name: 'K', value: 'v', secret: true, rule: { hosts: [] } }),
       }))
@@ -304,7 +303,7 @@ describe('write routes', () => {
 
     it('deletes by id, and 404s for one the project does not have', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const saved = await (await client.project[':slug'].env.$put({
         param: { slug: 'demo' },
         json: { name: 'A', value: '1' },
@@ -325,7 +324,7 @@ describe('write routes', () => {
 
   describe('GET/PUT /config/git-identity', () => {
     it('is null until set, then round-trips', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       expect((await (await client.config['git-identity'].$get()).json()).identity).toBeNull()
 
       const saved = await (await client.config['git-identity'].$put({
@@ -339,7 +338,7 @@ describe('write routes', () => {
     it('refuses a half-identity, a non-address, a control character or an overlong value', async () => {
       // Committing as a name with no email is not a lesser identity — git
       // refuses it — so neither is this.
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const app = buildApp({ buildId: 'test' })
       for (const body of [
         { name: 'Ada', email: '' },
         { name: '   ', email: 'ada@example.com' },
@@ -348,7 +347,7 @@ describe('write routes', () => {
         { name: 'Ada', email: 'ada@example.com\u0000' },
         { name: 'A'.repeat(257), email: 'ada@example.com' },
       ]) {
-        const res = await app.request('/config/git-identity', withAuth({
+        const res = await app.request('/config/git-identity', rawInit({
           method: 'PUT',
           body: JSON.stringify(body),
         }))
@@ -384,7 +383,7 @@ describe('write routes', () => {
 
     it('GET /project/:slug/branches lists branches with the default and reference branch', async () => {
       await writeProjectWithRepo('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({ param: { slug: 'demo' }, query: {} })
       expect(res.status).toBe(200)
       const body = await res.json() as BranchesBody
@@ -397,7 +396,7 @@ describe('write routes', () => {
     it('GET /project/:slug/branches?refresh=1 fetches new branches first', async () => {
       const sourceRepo = await writeProjectWithRepo('demo')
       await git(sourceRepo, ['branch', 'feature/late'])
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({
         param: { slug: 'demo' },
         query: { refresh: '1' },
@@ -407,14 +406,14 @@ describe('write routes', () => {
     })
 
     it('GET returns 404 for an unknown project', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({ param: { slug: 'nope' }, query: {} })
       expect(res.status).toBe(404)
     })
 
     it('PUT /project/:slug/reference-branch sets, reflects in GET, and clears with null', async () => {
       await writeProjectWithRepo('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
 
       const set = await client.project[':slug']['reference-branch'].$put({
         param: { slug: 'demo' },
@@ -436,7 +435,7 @@ describe('write routes', () => {
 
     it('PUT rejects a branch that does not exist on origin', async () => {
       await writeProjectWithRepo('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug']['reference-branch'].$put({
         param: { slug: 'demo' },
         json: { branch: 'no-such-branch' },
@@ -447,7 +446,7 @@ describe('write routes', () => {
     })
 
     it('PUT returns 404 for an unknown project', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug']['reference-branch'].$put({
         param: { slug: 'nope' },
         json: { branch: 'develop' },
@@ -459,14 +458,14 @@ describe('write routes', () => {
   describe('GET /project/:slug/dockerfile', () => {
     it('returns empty content when the project has none', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'demo' } })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content: '' })
     })
 
     it('returns 404 for an unknown project', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'nope' } })
       expect(res.status).toBe(404)
     })
@@ -474,8 +473,8 @@ describe('write routes', () => {
 
   describe('PUT /project/:slug/dockerfile', () => {
     it('rejects requests with no content field', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/project/demo/dockerfile', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/project/demo/dockerfile', rawInit({
         method: 'PUT',
         body: JSON.stringify({}),
       }))
@@ -484,7 +483,7 @@ describe('write routes', () => {
 
     it('writes the Dockerfile and returns it', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].dockerfile.$put({
         param: { slug: 'demo' },
         json: { content: 'FROM ubuntu:24.04\n' },
@@ -501,14 +500,14 @@ describe('write routes', () => {
 
   describe('GET/PUT /config/user-dockerfile', () => {
     it('returns empty content when unset', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.config['user-dockerfile'].$get()
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content: '' })
     })
 
     it('writes a layered user Dockerfile and returns it', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const content = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
       const res = await client.config['user-dockerfile'].$put({ json: { content } })
       expect(res.status).toBe(200)
@@ -516,7 +515,7 @@ describe('write routes', () => {
     })
 
     it('rejects a non-layered user Dockerfile with 400', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.config['user-dockerfile'].$put({
         json: { content: 'FROM ubuntu:24.04\n' },
       })
@@ -527,7 +526,7 @@ describe('write routes', () => {
   describe('project build files', () => {
     it('round-trips save → list → read → delete', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const bf = client.project[':slug']['build-files']
 
       const put = await bf.file.$put({
@@ -555,7 +554,7 @@ describe('write routes', () => {
 
     it('stores a base64 upload and reads it back as binary', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const bf = client.project[':slug']['build-files']
       const bytes = Buffer.from([0, 1, 2, 3])
 
@@ -573,21 +572,21 @@ describe('write routes', () => {
 
     it('rejects traversal, reserved names, and ambiguous bodies with 400', async () => {
       await writeProject('demo')
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const app = buildApp({ buildId: 'test' })
 
       const traverse = await app.request(
         '/project/demo/build-files/file?path=..%2F..%2Fetc%2Fpasswd',
-        withAuth(),
+        rawInit(),
       )
       expect(traverse.status).toBe(400)
 
-      const reserved = await app.request('/project/demo/build-files/file', withAuth({
+      const reserved = await app.request('/project/demo/build-files/file', rawInit({
         method: 'PUT',
         body: JSON.stringify({ path: 'Dockerfile.yaac', content: 'FROM x\n' }),
       }))
       expect(reserved.status).toBe(400)
 
-      const both = await app.request('/project/demo/build-files/file', withAuth({
+      const both = await app.request('/project/demo/build-files/file', rawInit({
         method: 'PUT',
         body: JSON.stringify({ path: 'a', content: 'x', contentBase64: 'eA==' }),
       }))
@@ -596,7 +595,7 @@ describe('write routes', () => {
 
     it('returns 404 for an unknown project or missing file', async () => {
       await writeProject('demo')
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const bf = client.project[':slug']['build-files']
       expect((await bf.$get({ param: { slug: 'nope' } })).status).toBe(404)
       expect((await bf.file.$get({ param: { slug: 'demo' }, query: { path: 'nope' } })).status).toBe(404)
@@ -605,7 +604,7 @@ describe('write routes', () => {
 
   describe('user build files', () => {
     it('round-trips against the user build dir', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const bf = client.config['user-build-files']
 
       const put = await bf.file.$put({ json: { path: 'gitconfig', content: '[user]\n' } })
@@ -623,8 +622,8 @@ describe('write routes', () => {
 
   describe('POST /worktree/create', () => {
     it('rejects missing project', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -632,8 +631,8 @@ describe('write routes', () => {
     })
 
     it('rejects an unknown tool with VALIDATION', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', tool: 'mystery' }),
       }))
@@ -650,9 +649,9 @@ describe('write routes', () => {
       mockCreateWorktree.mockResolvedValue({
         worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const app = buildApp({ buildId: 'test' })
       const create = async (body: Record<string, unknown>): Promise<void> => {
-        const res = await app.request('/worktree/create', withAuth({
+        const res = await app.request('/worktree/create', rawInit({
           method: 'POST', body: JSON.stringify({ project: 'demo', ...body }),
         }))
         await res.text() // drain the NDJSON stream so the handler finishes
@@ -687,8 +686,8 @@ describe('write routes', () => {
         rowModel = listProvisioning().find((p) => p.worktreeId === opts.worktreeId)
         return Promise.resolve({ worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
       })
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/create', rawInit({
         method: 'POST', body: JSON.stringify({ project: 'demo', tool: 'claude', model: 'claude-opus-5-5' }),
       }))
       await res.text()
@@ -707,7 +706,7 @@ describe('write routes', () => {
           mode: 'tui' as const,
         })
       })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.create.$post({
         json: {
           project: 'demo',
@@ -739,7 +738,7 @@ describe('write routes', () => {
 
     it('emits a terminal error event when createWorktree throws', async () => {
       mockCreateWorktree.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.create.$post({ json: { project: 'demo' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
@@ -752,7 +751,7 @@ describe('write routes', () => {
       mockCreateWorktree.mockResolvedValue({
         worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.create.$post({ json: { project: 'demo', branch: 'dev' } })
       expect(res.status).toBe(200)
       await res.text()
@@ -760,8 +759,8 @@ describe('write routes', () => {
     })
 
     it('rejects an empty branch with VALIDATION', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', branch: '' }),
       }))
@@ -773,7 +772,7 @@ describe('write routes', () => {
         worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const id = '11111111-1111-4111-8111-111111111111'
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.create.$post({ json: { project: 'demo', worktreeId: id } })
       expect(res.status).toBe(200)
       await res.text()
@@ -781,8 +780,8 @@ describe('write routes', () => {
     })
 
     it('rejects a non-uuid worktreeId with VALIDATION', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', worktreeId: 'not-a-uuid' }),
       }))
@@ -795,14 +794,14 @@ describe('write routes', () => {
   describe('POST /worktree/provisioning/:id/dismiss', () => {
     it('removes the registry entry and returns 204', async () => {
       registerProvisioning({ worktreeId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
       expect(res.status).toBe(204)
       expect(listProvisioning().some((p) => p.worktreeId === 'dz-1')).toBe(false)
     })
 
     it('is idempotent for an unknown id', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.provisioning[':id'].dismiss.$post({ param: { id: 'nope' } })
       expect(res.status).toBe(204)
     })
@@ -810,8 +809,8 @@ describe('write routes', () => {
 
   describe('POST /worktree/restart', () => {
     it('rejects missing worktreeId', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/restart', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/restart', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -830,7 +829,7 @@ describe('write routes', () => {
           mode: 'tui' as const,
         })
       })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.restart.$post({
         json: {
           worktreeId: 'sess-x',
@@ -861,7 +860,7 @@ describe('write routes', () => {
 
     it('emits a terminal error event when restartWorktree throws', async () => {
       mockRestartSession.mockRejectedValue(new ServerError('NOT_FOUND', 'missing'))
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.restart.$post({ json: { worktreeId: 'nope' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
@@ -873,8 +872,8 @@ describe('write routes', () => {
 
   describe('POST /worktree/stop', () => {
     it('rejects a missing worktreeId', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/stop', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/stop', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -887,7 +886,7 @@ describe('write routes', () => {
         projectSlug: 'demo',
         jobName: 'yaac-demo-sess-x',
       })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.worktree.stop.$post({ json: { worktreeId: 'sess-x' } })
       expect(res.status).toBe(200)
       expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
@@ -900,7 +899,7 @@ describe('write routes', () => {
   // where nothing lists it.
   describe('worktree group routes', () => {
     const client = (): ReturnType<typeof makeTestApiClient> =>
-      makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      makeTestApiClient(buildApp({ buildId: 'test' }))
 
     const seed = async (...worktreeIds: string[]): Promise<void> => {
       for (const worktreeId of worktreeIds) {
@@ -957,8 +956,8 @@ describe('write routes', () => {
       expect((await getProjectWorktreeRows('demo')).get('sess-b')?.groupId).toBeUndefined()
 
       // A drop onto a group another client has already deleted.
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/set-group', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/set-group', rawInit({
         method: 'POST',
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-b', groupId: 'gone' }),
       }))
@@ -968,8 +967,8 @@ describe('write routes', () => {
     it('404s a group created around a worktree that is not there', async () => {
       // Otherwise the group row lands with no member — invisible in the
       // sidebar, and so undeletable from it.
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/group/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'nope', name: 'Release' }),
       }))
@@ -982,8 +981,8 @@ describe('write routes', () => {
       // would truncate it on the way to the table — and two distinct names
       // sharing their first MAX_TITLE_LENGTH characters would then resolve
       // to one group.
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/group/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({
           projectSlug: 'demo',
@@ -996,8 +995,8 @@ describe('write routes', () => {
     })
 
     it('rejects a blank group name', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/worktree/group/create', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/worktree/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-a', name: '' }),
       }))
@@ -1010,9 +1009,9 @@ describe('write routes', () => {
   // real is everything that decides what it runs and when.
   describe('queued worktree routes', () => {
     const client = (): ReturnType<typeof makeTestApiClient> =>
-      makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      makeTestApiClient(buildApp({ buildId: 'test' }))
     const post = (route: string, body: unknown): Promise<Response> =>
-      Promise.resolve(buildApp({ secret: 'shh', buildId: 'test' }).request(`/worktree/queue/${route}`, withAuth({
+      Promise.resolve(buildApp({ buildId: 'test' }).request(`/worktree/queue/${route}`, rawInit({
         method: 'POST', body: JSON.stringify(body),
       })))
 
@@ -1073,8 +1072,8 @@ describe('write routes', () => {
 
   describe('POST /auth/clear', () => {
     it('rejects an unknown service', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/clear', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/auth/clear', rawInit({
         method: 'POST',
         body: JSON.stringify({ service: 'mystery' }),
       }))
@@ -1083,7 +1082,7 @@ describe('write routes', () => {
 
     it('clears claude credentials when service=claude', async () => {
       await saveClaudeOAuthBundle(SAMPLE_BUNDLE)
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth.clear.$post({ json: { service: 'claude' } })
       expect(res.status).toBe(204)
       expect(await loadClaudeCredentialsFile()).toBeNull()
@@ -1092,9 +1091,9 @@ describe('write routes', () => {
 
   describe('POST /auth/git/credentials', () => {
     it('rejects a missing name or token', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const app = buildApp({ buildId: 'test' })
       for (const body of [{ token: 'ghp_x' }, { name: 'gh' }, { name: 'gh', token: '' }]) {
-        const res = await app.request('/auth/git/credentials', withAuth({
+        const res = await app.request('/auth/git/credentials', rawInit({
           method: 'POST', body: JSON.stringify(body),
         }))
         expect(res.status).toBe(400)
@@ -1104,7 +1103,7 @@ describe('write routes', () => {
     it('stores a named token without pushing — no project uses it yet — and refuses a taken name', async () => {
       const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
-        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials.$post({ json: { name: 'gh', token: 'ghp_new' } })
         expect(res.status).toBe(200)
         const { id } = await res.json()
@@ -1123,7 +1122,7 @@ describe('write routes', () => {
 
   describe('POST /auth/git/ssh-keys', () => {
     it('generates a named key, answers the public half, and leaves no private material behind', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth.git['ssh-keys'].$post({ json: { name: 'deploy' } })
       expect(res.status).toBe(200)
       const body = await res.json()
@@ -1140,7 +1139,7 @@ describe('write routes', () => {
     })
 
     it('rejects a blank name', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth.git['ssh-keys'].$post({ json: { name: '  ' } })
       expect(res.status).toBe(400)
     })
@@ -1149,7 +1148,7 @@ describe('write routes', () => {
   describe('PATCH /auth/git/credentials/:id', () => {
     it('renames a credential, and 404s an unknown id', async () => {
       const { id } = await addHttpsCredential({ name: 'old', token: 'ghp_x' })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth.git.credentials[':id'].$patch({ param: { id }, json: { name: 'new' } })
       expect(res.status).toBe(204)
       expect((await listCredentialSummaries()).map((c) => c.name)).toEqual(['new'])
@@ -1168,7 +1167,7 @@ describe('write routes', () => {
       await assignProjectCredential('web', a.id)
       const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
-        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id: a.id } })
         expect(res.status).toBe(204)
         expect(await listCredentialSummaries()).toEqual([])
@@ -1184,7 +1183,7 @@ describe('write routes', () => {
       const { id } = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
       const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockRejectedValue(new Error('apiserver down'))
       try {
-        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id } })
         expect(res.status).toBe(503)
         expect(await res.text()).toMatch(/deleted, but the egress proxy could not be updated.*apiserver down/)
@@ -1195,7 +1194,7 @@ describe('write routes', () => {
     })
 
     it('returns 404 for an unknown id, and 400 for a malformed one', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       expect((await client.auth.git.credentials[':id'].$delete({
         param: { id: '00000000-0000-4000-8000-000000000000' },
       })).status).toBe(404)
@@ -1210,7 +1209,7 @@ describe('write routes', () => {
       await assignProjectCredential('web', id)
       const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
-        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].replace.$post({ param: { id }, json: { token: 'ghp_fresh' } })
         expect(res.status).toBe(200)
         const body = await res.json()
@@ -1230,7 +1229,7 @@ describe('write routes', () => {
       const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
       const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
-        const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+        const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.project[':slug']['git-credential'].$put({
           param: { slug: 'web' }, json: { credentialId: id },
         })
@@ -1246,7 +1245,7 @@ describe('write routes', () => {
     it('404s an unknown project or credential', async () => {
       await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
       const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       expect((await client.project[':slug']['git-credential'].$put({
         param: { slug: 'nope' }, json: { credentialId: id },
       })).status).toBe(404)
@@ -1258,7 +1257,7 @@ describe('write routes', () => {
 
   describe('PUT /auth/:tool', () => {
     it('persists a claude api-key payload', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth[':tool'].$put({
         param: { tool: 'claude' },
         json: { kind: 'api-key', apiKey: 'sk-ant-api03-new' },
@@ -1269,8 +1268,8 @@ describe('write routes', () => {
     })
 
     it('rejects an unknown tool', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/gemini', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/auth/gemini', rawInit({
         method: 'PUT',
         body: JSON.stringify({ kind: 'api-key', apiKey: 'x' }),
       }))
@@ -1278,7 +1277,7 @@ describe('write routes', () => {
     })
 
     it('rejects api-key payloads with empty apiKey', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth[':tool'].$put({
         param: { tool: 'claude' },
         json: { kind: 'api-key', apiKey: '' },
@@ -1306,7 +1305,7 @@ describe('write routes', () => {
 
     it('returns AUTH_AGENT_DISCONNECTED (503) when no auth server is connected', async () => {
       teardownAgent() // drop the loopback agent for this case
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
       expect(res.status).toBe(503)
       const body = await res.json() as unknown as { error: { code: string; message: string } }
@@ -1316,7 +1315,7 @@ describe('write routes', () => {
     })
 
     it('reports agent connectivity on GET /auth/agent', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const connectedRes = await client.auth.agent.$get()
       expect(await connectedRes.json()).toEqual({ connected: true })
       teardownAgent()
@@ -1326,7 +1325,7 @@ describe('write routes', () => {
     })
 
     it('start → poll → success over the wire', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'codex' } })
       if (!startRes.ok) throw new Error('login start failed')
       const started = await startRes.json()
@@ -1340,14 +1339,14 @@ describe('write routes', () => {
     })
 
     it('rejects starting a login for opencode', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/opencode/login/start', withAuth({ method: 'POST' }))
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/auth/opencode/login/start', rawInit({ method: 'POST' }))
       expect(res.status).toBe(400)
     })
 
     it('rejects non-code input as VALIDATION through the route', async () => {
       process.env.FAKE_LOGIN_MODE = 'need-input'
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
       if (!startRes.ok) throw new Error('login start failed')
       const started = await startRes.json()
@@ -1362,7 +1361,7 @@ describe('write routes', () => {
     })
 
     it('404s polling or feeding input to an unknown session; cancel is a no-op 204', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const get = await client.auth.login[':id'].$get({ param: { id: 'nope' } })
       expect(get.status).toBe(404)
       const input = await client.auth.login[':id'].input.$post({ param: { id: 'nope' }, json: { text: 'x' } })
@@ -1387,7 +1386,7 @@ describe('write routes', () => {
     })
 
     it('start → poll → success over the wire', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const startRes = await client.auth[':tool'].install.start.$post({ param: { tool: 'claude' } })
       if (!startRes.ok) throw new Error('install start failed')
       const started = await startRes.json()
@@ -1401,13 +1400,13 @@ describe('write routes', () => {
     })
 
     it('rejects starting an install for opencode', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/opencode/install/start', withAuth({ method: 'POST' }))
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/auth/opencode/install/start', rawInit({ method: 'POST' }))
       expect(res.status).toBe(400)
     })
 
     it('404s polling an unknown install; cancel is a no-op 204', async () => {
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const get = await client.auth.install[':id'].$get({ param: { id: 'nope' } })
       expect(get.status).toBe(404)
       const cancel = await client.auth.install[':id'].cancel.$post({ param: { id: 'nope' } })
@@ -1417,8 +1416,8 @@ describe('write routes', () => {
 
   describe('body parsing', () => {
     it('malformed JSON maps to VALIDATION 400', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/project/add', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/project/add', rawInit({
         method: 'POST',
         body: '{not-json',
       }))
@@ -1428,8 +1427,8 @@ describe('write routes', () => {
     })
 
     it('array body is rejected as VALIDATION', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/project/add', withAuth({
+      const app = buildApp({ buildId: 'test' })
+      const res = await app.request('/project/add', rawInit({
         method: 'POST',
         body: JSON.stringify([]),
       }))

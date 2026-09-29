@@ -54,7 +54,7 @@ describe('server lock', () => {
     })
 
     it('returns the parsed lock when valid', async () => {
-      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
       await fs.writeFile(serverLockPath(), JSON.stringify(lock))
       expect(await readLock()).toEqual(lock)
     })
@@ -62,7 +62,7 @@ describe('server lock', () => {
 
   describe('writeLock', () => {
     it('writes the lock with mode 0600', async () => {
-      const lock: ServerLock = { pid: 1, port: 2, secret: 'shh', startedAt: 3, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
       await writeLock(lock)
       const stat = await fs.stat(serverLockPath())
       // Bottom 9 bits of mode are the rwxrwxrwx triplet.
@@ -71,15 +71,15 @@ describe('server lock', () => {
     })
 
     it('overwrites an existing lock atomically', async () => {
-      await writeLock({ pid: 1, port: 2, secret: 'a', startedAt: 3, buildId: 'b1', ...LEASE })
-      await writeLock({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2', ...LEASE })
-      expect(await readLock()).toEqual({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2', ...LEASE })
+      await writeLock({ pid: 1, port: 2, startedAt: 3, buildId: 'b1', ...LEASE })
+      await writeLock({ pid: 9, port: 8, startedAt: 7, buildId: 'b2', ...LEASE })
+      expect(await readLock()).toEqual({ pid: 9, port: 8, startedAt: 7, buildId: 'b2', ...LEASE })
     })
   })
 
   describe('removeLock', () => {
     it('unlinks the lock', async () => {
-      await writeLock({ pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE })
+      await writeLock({ pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE })
       await removeLock()
       expect(await readLock()).toBeNull()
     })
@@ -89,7 +89,7 @@ describe('server lock', () => {
     })
 
     it('unlinks when the expected holder matches', async () => {
-      const lock: ServerLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 42, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
       await writeLock(lock)
       await removeLock(LEASE.instance)
       expect(await readLock()).toBeNull()
@@ -99,7 +99,7 @@ describe('server lock', () => {
       // Two servers of one install can genuinely both be pid 1 (each pod's
       // pid namespace hands out the same low numbers), so the holder is the
       // instance: a successor's lock survives its predecessor's late cleanup.
-      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
       await writeLock(lock)
       await removeLock('predecessor')
       expect(await readLock()).toEqual(lock)
@@ -111,7 +111,7 @@ describe('server lock', () => {
   })
 
   describe('isServerLock', () => {
-    const full: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
+    const full: ServerLock = { pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
 
     it('accepts a complete lock', () => {
       expect(isServerLock(full)).toBe(true)
@@ -131,7 +131,7 @@ describe('server lock', () => {
 
   describe('parseServerLock', () => {
     it('parses a valid lock', () => {
-      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
       expect(parseServerLock(JSON.stringify(lock))).toEqual(lock)
     })
 
@@ -143,13 +143,13 @@ describe('server lock', () => {
 
   describe('isLockLive', () => {
     it('returns false for a dead pid', async () => {
-      const lock: ServerLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 999_999, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockLive(lock)).toBe(false)
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
       // Use the test runner pid (definitely alive) with an unbound port.
-      const lock: ServerLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: process.pid, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockLive(lock)).toBe(false)
     })
 
@@ -166,7 +166,7 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        const lock: ServerLock = { pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+        const lock: ServerLock = { pid: process.pid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE }
         expect(await isLockLive(lock)).toBe(true)
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -179,7 +179,7 @@ describe('server lock', () => {
       // one bound INSIDE the pod — so `127.0.0.1:<that>` on this machine is
       // an unrelated listener, quite possibly another yaac.
       const fresh: ServerLock = {
-        pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b',
+        pid: 1, port: 1, startedAt: 0, buildId: 'b',
         instance: 'i', host: 'yaac-server-abc123', heartbeatAt: Date.now(),
       }
       expect(await isLockLive(fresh)).toBe(true)
@@ -190,7 +190,7 @@ describe('server lock', () => {
 
   describe('isSameHostLock', () => {
     it('is this host only when the lock names it', () => {
-      const lock: ServerLock = { pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 1, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(isSameHostLock(lock)).toBe(true)
       expect(isSameHostLock({ ...lock, host: 'some-pod' })).toBe(false)
     })
@@ -198,7 +198,7 @@ describe('server lock', () => {
 
   describe('isLeaseFresh', () => {
     it('is the cross-host liveness signal, bounded by four missed renewals', () => {
-      const base: ServerLock = { pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+      const base: ServerLock = { pid: 1, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() })).toBe(true)
       expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() - LEASE_STALE_MS + 500 })).toBe(true)
       expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() - LEASE_STALE_MS - 1 })).toBe(false)
@@ -222,7 +222,7 @@ describe('server lock', () => {
     it('moves the heartbeat forward while we hold the lock', async () => {
       const lease = newLeaseFields()
       const lock: ServerLock = {
-        pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...lease,
+        pid: process.pid, port: 1, startedAt: 0, buildId: 'b', ...lease,
         heartbeatAt: Date.now() - 10_000,
       }
       await writeLock(lock)
@@ -236,7 +236,7 @@ describe('server lock', () => {
       // and on hostPath storage the lease IS PGlite's single-writer guard,
       // so the caller has to act on the false rather than retry.
       await writeLock({
-        pid: 2, port: 1, secret: 's', startedAt: 0, buildId: 'b',
+        pid: 2, port: 1, startedAt: 0, buildId: 'b',
         instance: 'successor', host: 'other-pod', heartbeatAt: Date.now(),
       })
       expect(await renewLease('predecessor')).toBe(false)
@@ -267,19 +267,19 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        await run({ pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b', ...LEASE })
+        await run({ pid: process.pid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE })
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
     }
 
     it('returns false for a dead pid without probing', async () => {
-      const lock: ServerLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: 999_999, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockReady(lock)).toBe(false)
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
-      const lock: ServerLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: process.pid, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockReady(lock)).toBe(false)
     })
 
@@ -308,7 +308,6 @@ describe('server lock', () => {
     const mkLock = (overrides: Partial<ServerLock> = {}): ServerLock => ({
       pid: process.pid,
       port: 1,
-      secret: 's',
       startedAt: Date.now(),
       buildId: 'b',
       ...newLeaseFields(),
@@ -333,9 +332,9 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        const held = mkLock({ port: addr.port, pid: process.pid, secret: 'held' })
+        const held = mkLock({ port: addr.port, pid: process.pid })
         await writeLock(held)
-        const result = await acquireLock(mkLock({ secret: 'other' }))
+        const result = await acquireLock(mkLock())
         expect(result).toEqual({ acquired: false, existing: held })
         // The existing lock file must not be overwritten.
         expect(await readLock()).toEqual(held)
@@ -345,8 +344,8 @@ describe('server lock', () => {
     })
 
     it('reclaims a stale lock (dead pid) and acquires', async () => {
-      await writeLock(mkLock({ pid: 999_999, secret: 'stale' }))
-      const fresh = mkLock({ secret: 'fresh' })
+      await writeLock(mkLock({ pid: 999_999 }))
+      const fresh = mkLock()
       const result = await acquireLock(fresh)
       expect(result).toEqual({ acquired: true })
       expect(await readLock()).toEqual(fresh)
@@ -354,7 +353,7 @@ describe('server lock', () => {
 
     it('reclaims an unparseable lock file and acquires', async () => {
       await fs.writeFile(serverLockPath(), 'not json')
-      const fresh = mkLock({ secret: 'fresh' })
+      const fresh = mkLock()
       const result = await acquireLock(fresh)
       expect(result).toEqual({ acquired: true })
       expect(await readLock()).toEqual(fresh)
@@ -376,7 +375,7 @@ describe('server lock', () => {
       try {
         const results = await Promise.all(
           Array.from({ length: 16 }, (_, i) =>
-            acquireLock(mkLock({ port: addr.port, secret: `s${i}`, startedAt: 1000 + i }))),
+            acquireLock(mkLock({ port: addr.port, startedAt: 1000 + i }))),
         )
         const winners = results.filter((r) => r.acquired)
         expect(winners).toHaveLength(1)

@@ -16,12 +16,12 @@ contextBridge.exposeInMainWorld('yaacWindow', {
 })
 
 // The server picker (Settings → Server, rendered only when this bridge
-// exists). Selections and results are plain JSON — origins only, never
-// tokens; the main process re-validates every payload (#server-switch).
+// exists). Selections and results are plain JSON — origins only; the main
+// process re-validates every payload (#server-switch).
 contextBridge.exposeInMainWorld('yaacServer', {
   targets: () => ipcRenderer.invoke('server:targets'),
   switchTo: (selection: unknown) => ipcRenderer.invoke('server:switch', selection),
-  addRemote: (url: string, token: string) => ipcRenderer.invoke('server:add-remote', url, token),
+  addRemote: (url: string) => ipcRenderer.invoke('server:add-remote', url),
   // Re-run the boot flow against whatever `server.json` says NOW. The
   // picker is a static page, so this is how it notices a server that was
   // started from a terminal after the window landed on it.

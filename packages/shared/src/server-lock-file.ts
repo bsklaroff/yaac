@@ -13,7 +13,6 @@ import os from 'node:os'
 export interface ServerLock {
   pid: number
   port: number
-  secret: string
   startedAt: number
   buildId: string
   /**
@@ -59,7 +58,6 @@ export function isServerLock(value: unknown): value is ServerLock {
   return (
     typeof v.pid === 'number'
     && typeof v.port === 'number'
-    && typeof v.secret === 'string'
     && typeof v.startedAt === 'number'
     && typeof v.buildId === 'string'
     && typeof v.instance === 'string'
@@ -111,10 +109,7 @@ export async function isLockLive(lock: ServerLock): Promise<boolean> {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 500)
     try {
-      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, {
-        headers: { authorization: `Bearer ${lock.secret}` },
-        signal: ctl.signal,
-      })
+      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, { signal: ctl.signal })
       return res.ok
     } finally {
       clearTimeout(timer)
@@ -146,10 +141,7 @@ export async function isLockReady(lock: ServerLock): Promise<boolean> {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 500)
     try {
-      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, {
-        headers: { authorization: `Bearer ${lock.secret}` },
-        signal: ctl.signal,
-      })
+      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, { signal: ctl.signal })
       if (!res.ok) return false
       const body = await res.json() as { ready?: unknown }
       return body.ready === true

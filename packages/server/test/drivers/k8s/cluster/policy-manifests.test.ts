@@ -12,6 +12,7 @@ import {
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorktreeEgressNpManifest,
+  egressAllButServerFront,
 } from '#drivers/k8s/cluster'
 import {
   EGRESS_WORLD_DENY_NAME,
@@ -20,6 +21,7 @@ import {
   PROXY_INGRESS_NP_NAME,
   SERVER_APP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
+  SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
   SERVER_POD_PORT,
   WORKTREE_EGRESS_NP_NAME,
@@ -32,12 +34,13 @@ interface Spec {
   egress?: unknown[]
 }
 
-// Five builders leave this folder. The image feature re-applies the
+// Six builders leave this folder. The image feature re-applies the
 // install-wide world-deny after a builder pod exits; two more are what
 // `cluster check`'s egress gate renders to decide what it should be able to
 // prove; and the server's ingress wall is two objects — a node half the
 // server itself re-renders at attach, and a fronting half only install
-// applies. Every other manifest here is internal and asserted where it is
+// applies — plus the egress shape builder pods share with the proxy.
+// Every other manifest here is internal and asserted where it is
 // applied — the session/proxy set through `ensureProxyResources`.
 //
 // What these cases pin is the ipBlock plumbing, because that is the half
@@ -166,5 +169,34 @@ describe('buildServerFrontIngressNpManifest', () => {
     // a fronting switched on re-install overwrites the old peer.
     const none = buildServerFrontIngressNpManifest([]) as unknown as { spec: IngressSpec }
     expect(none.spec.ingress).toEqual([])
+  })
+})
+
+describe('egressAllButServerFront', () => {
+  // A builder's RUN step or a proxy upstream that reached the kind
+  // fronting's node port would reach the server as the node — its owner.
+  // So: every destination but node addresses, and node addresses on every
+  // port but that one.
+  const rules = egressAllButServerFront(['10.89.0.2/32', '192.168.1.1/32']) as Array<{
+    to: Array<{ ipBlock: { cidr: string; except?: string[] } }>
+    ports?: Array<{ protocol: string; port: number; endPort: number }>
+  }>
+
+  it('reaches everything off the nodes, on every port', () => {
+    const [world] = rules
+    expect(world.ports).toBeUndefined()
+    expect(world.to).toContainEqual({ ipBlock: { cidr: '0.0.0.0/0', except: ['10.89.0.2/32', '192.168.1.1/32'] } })
+  })
+
+  it('reaches the nodes on every port but the fronting\'s', () => {
+    const [, nodes] = rules
+    expect(nodes.to.map((p) => p.ipBlock.cidr)).toEqual(['10.89.0.2/32', '192.168.1.1/32'])
+    const tcp = (nodes.ports ?? []).filter((p) => p.protocol === 'TCP')
+    const covers = (port: number): boolean => tcp.some((p) => p.port <= port && port <= p.endPort)
+    expect(covers(SERVER_FRONT_PORT)).toBe(false)
+    for (const port of [1, 22, 10250, SERVER_FRONT_PORT - 1, SERVER_FRONT_PORT + 1, 65535]) {
+      expect(covers(port), String(port)).toBe(true)
+    }
+    expect(nodes.ports).toContainEqual({ protocol: 'UDP', port: 1, endPort: 65535 })
   })
 })

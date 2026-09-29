@@ -62,6 +62,25 @@ once `SELECT count(*) FROM worktrees WHERE base_branch IS NULL AND NOT spare`
 is 0 on the installs we support (they have deleted those worktrees or their
 projects).
 
+## The `YAAC_REQUIRE_AUTH` refusal
+
+`refuseUnsupportedExposure` in `server-run.ts` refuses to start a server
+while `YAAC_REQUIRE_AUTH` is set (`env.requireAuthSet`), with a message that
+a host shared with other OS users is not a supported shared deployment.
+The variable once forced a credential gate on at loopback — the protection a
+host shared with other OS users had, since they can reach its loopback but
+not read its 0700 data dir. There is no such gate any more: at loopback a
+caller is the owner (docs/remote-hosting.md).
+
+**What it reads:** the environment variable, and nothing else.
+
+**What breaks silently if it goes too early:** a host that set it to keep
+other OS users out starts serving every one of them as its owner, with no
+gate and no sign of it.
+
+**How to tell it is safe to remove:** a release or two after the one that
+removed tokens, once nobody who set it can still be upgrading from before.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

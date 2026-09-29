@@ -25,8 +25,7 @@
  *
  * Drives the Vite dev server (`pnpm frontend:dev`, port 1420), which serves
  * live source and proxies /auth,/project,/events,... to the running yaac
- * server. A one-time token is minted over the server's API using the lock
- * secret and exchanged for the session cookie.
+ * server. Loopback needs no credential.
  *
  * Run: node test-playwright-scripts/mobile-three-screens-test.js
  * (set SCREENSHOT_DIR to capture each screen; defaults to /tmp/yaac-shots).
@@ -37,7 +36,6 @@
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
@@ -55,17 +53,6 @@ function requirePlaywright() {
   }
 }
 
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
-}
-
 let failures = 0
 function check(name, cond, detail = '') {
   const mark = cond ? 'PASS' : 'FAIL'
@@ -76,16 +63,6 @@ function check(name, cond, detail = '') {
 const APP_URL = process.env.APP_URL ?? 'http://localhost:1420'
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const PHONE = { width: 390, height: 844 }
-
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
 
 /** Measure every stacked screen layer: which is visible, and how big its box
  *  is (a hidden-but-mounted layer must still measure full-viewport). */
@@ -111,16 +88,13 @@ function layerReport() {
 
 fs.mkdirSync(SHOTS, { recursive: true })
 const { chromium } = requirePlaywright()
-const lock = readServerLock()
 const browser = await chromium.launch()
 try {
   const ctx = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true })
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  const token = await mintToken(lock)
-  await page.goto(`${APP_URL}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='))
+  await page.goto(`${APP_URL}/`)
   // Model a genuine cold load: no persisted screen *and* a bare URL. Both
   // matter — persistSelection mirrors the selection into the query string on
   // every change, and with nothing persisted a `?worktree=` reads as a shared

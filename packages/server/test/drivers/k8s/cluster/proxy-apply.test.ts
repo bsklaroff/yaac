@@ -79,7 +79,9 @@ import {
   POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
+  PROXY_EGRESS_NP_NAME,
   PROXY_INGRESS_NP_NAME,
+  SERVER_FRONT_PORT,
   PROXY_PORT,
   PROXY_SA_NAME,
   RELAY_PORT,
@@ -289,8 +291,9 @@ describe('ensureProxyResources', () => {
       // cannot patch.
       'Secret', 'Secret', 'ConfigMap',
       'Deployment', 'Service',
-      // Session egress, session ingress lock, proxy ingress, world-deny.
-      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
+      // Session egress, session ingress lock, proxy ingress and egress,
+      // world-deny.
+      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
       // netd: SA, ClusterRole, ClusterRoleBinding, Role, RoleBinding, DaemonSet.
       'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Role', 'RoleBinding',
       'DaemonSet',
@@ -486,6 +489,15 @@ describe('ensureProxyResources', () => {
     expect(agentIngress).toHaveLength(1)
     expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKTREE_ID)
     expect(JSON.stringify(agentIngress[0].from)).not.toContain(NODE_IP)
+
+    // Proxy egress: its upstream dials reach the nodes on every port but
+    // the kind fronting's, where a transparent CONNECT would reach the
+    // server as the node — its owner.
+    const proxyEgress = specOf(byName(PROXY_EGRESS_NP_NAME)) as { egress: Rule[] }
+    const toNodes = proxyEgress.egress.find((r) => r.ports && JSON.stringify(r.to).includes(NODE_IP))
+    expect(toNodes?.ports?.length).toBeGreaterThan(0)
+    expect((toNodes?.ports ?? []).some((p) =>
+      p.protocol === 'TCP' && p.port <= SERVER_FRONT_PORT && SERVER_FRONT_PORT <= (p.endPort ?? p.port))).toBe(false)
 
     // World default-deny over everything that is not the proxy, a session,
     // or a builder.

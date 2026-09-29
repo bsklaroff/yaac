@@ -7,7 +7,7 @@
  * "local server" row, since a server on this machine is registered like any
  * other (docs/server-selection.md) — Connect routes the right selection
  * through `switchTo` and shows "Reconnecting…", a failing switch renders its
- * error inline, and the add form passes url+token to `addRemote`. Drives the
+ * error inline, and the add form passes the url to `addRemote`. Drives the
  * running yaac server's webapp in real Chromium.
  *
  * Run: node test-playwright-scripts/server-settings-desktop-test.js
@@ -45,22 +45,10 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running?')
 }
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 const SHOTS = '/tmp/yaac-shots'
 
 async function openApp(page, lock) {
-  const token = await mintToken(lock)
-  await page.goto(`http://127.0.0.1:${lock.port}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`http://127.0.0.1:${lock.port}/`)
   await page.locator('[title="Settings"]').first().click()
   await page.locator('button', { hasText: 'General' }).first().waitFor()
 }
@@ -102,8 +90,8 @@ async function main() {
           ? Promise.resolve({ ok: false, error: 'cannot reach http://127.0.0.1:8787 (scripted failure)' })
           : Promise.resolve({ ok: true })
       },
-      addRemote: (url, tok) => {
-        window.__bridgeCalls.push(['addRemote', url, tok])
+      addRemote: (url) => {
+        window.__bridgeCalls.push(['addRemote', url])
         return Promise.resolve({ ok: true })
       },
     }
@@ -148,12 +136,11 @@ async function main() {
   await openApp(page2, lock)
   await page2.locator('button', { hasText: 'Server' }).first().click()
   await page2.getByPlaceholder('https://host.ts.net').fill('https://gamma.ts.net')
-  await page2.getByPlaceholder('token').fill('tok-123')
-  await page2.getByPlaceholder('token').press('Enter')
+  await page2.getByPlaceholder('https://host.ts.net').press('Enter')
   await page2.getByText('Reconnecting…').waitFor()
   const addCalls = await page2.evaluate(() => window.__bridgeCalls.filter((c) => c[0] === 'addRemote'))
   check(
-    JSON.stringify(addCalls) === JSON.stringify([['addRemote', 'https://gamma.ts.net', 'tok-123']]),
+    JSON.stringify(addCalls) === JSON.stringify([['addRemote', 'https://gamma.ts.net']]),
     `addRemote received the form values (got ${JSON.stringify(addCalls)})`,
   )
   await page2.screenshot({ path: path.join(SHOTS, 'server-settings-add-remote.png') })

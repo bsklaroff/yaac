@@ -1,12 +1,12 @@
 /*
  * Verifies the light/dark theming and the first-run cluster gate ported from
  * the electron-planning branch:
- *  1. Landing authed (token → cookie) renders the workspace dark by default
+ *  1. Landing on the loopback origin renders the workspace dark by default
  *     (html[data-theme=system], dark --color-base background), with the
  *     sidebar as a floating card and its compact empty state.
  *  2. Settings → Theme → Light flips html[data-theme] to 'light' live, the
  *     shell recolors (near-white base), and yaac.theme.v1 persists it; a
- *     cookie-only reload comes back already light (no-flash inline script).
+ *     plain reload comes back already light (no-flash inline script).
  *  3. The sidebar's Hide toggle collapses it and the session bar grows the
  *     Show-sidebar reopen affordance (only visible while collapsed).
  *  4. When GET /cluster/check reports not-ok (true in a nested yaac session,
@@ -17,7 +17,7 @@
  * Run: node test-playwright-scripts/theme-and-cluster-gate-test.js
  * (set SCREENSHOT_DIR to capture dark/light/gate states)
  * Needs a running server serving the built SPA (`yaac server start` with
- * dist/frontend present); reads port/secret from $YAAC_DATA_DIR/.server.lock
+ * dist/frontend present); reads port from $YAAC_DATA_DIR/.server.lock
  * (or ~/.yaac). (playwright is resolved from the global npm root; browsers
  * live under /opt/playwright-browsers)
  */
@@ -48,25 +48,15 @@ const shot = async (page, name) => {
 
 const fail = (msg) => { throw new Error(`FAIL: ${msg}`) }
 
-async function mintToken() {
-  const res = await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${lock.secret}` },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) fail(`mint: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH,
 })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } })
 
-  // 1. Land authed, default (system) theme on a dark-preferring browser.
+  // 1. Land on the app, default (system) theme on a dark-preferring browser.
   await page.emulateMedia({ colorScheme: 'dark' })
-  await page.goto(`${origin}/?token=${await mintToken()}`)
+  await page.goto(`${origin}/`)
   await page.getByText('No project selected').waitFor({ timeout: 15000 })
   const theme0 = await page.evaluate(() => document.documentElement.dataset.theme)
   if (theme0 !== 'system') fail(`expected data-theme=system on first visit, got ${theme0}`)
@@ -92,7 +82,7 @@ try {
   if (lightBg !== 'rgb(252, 252, 251)') fail(`light --color-base body bg, got ${lightBg}`) // #fcfcfb
   await shot(page, '2-light-workspace.png')
 
-  // Cookie-only reload lands already-light (pre-paint inline script).
+  // A plain reload lands already-light (pre-paint inline script).
   await page.goto(origin)
   await page.getByText('No project selected').waitFor({ timeout: 15000 })
   const theme2 = await page.evaluate(() => document.documentElement.dataset.theme)

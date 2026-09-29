@@ -14,7 +14,7 @@
  * (set SCREENSHOT_DIR to capture the workspace and changes-pane states)
  * Needs a running server serving the built SPA (`yaac server start` with
  * dist/frontend present) and at least one running session for step 3;
- * reads port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
+ * reads port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
  */
@@ -45,24 +45,13 @@ const shot = async (page, name) => {
 
 const fail = (msg) => { throw new Error(`FAIL: ${msg}`) }
 
-async function mintToken() {
-  const res = await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${lock.secret}` },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) fail(`mint: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 async function main() {
-  const token = await mintToken()
   const browser = await chromium.launch()
   // The theme default is 'system'; force dark so the lifted dark palette is
   // what's under test (headless Chromium otherwise reports light).
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
   try {
-    await page.goto(`${origin}/?token=${token}`)
+    await page.goto(`${origin}/`)
     await page.waitForSelector('main', { timeout: 15000 })
     // Wait for the first WS snapshot to hydrate the rail (project chips).
     await page.waitForSelector('button[title="yaac"]', { timeout: 15000 }).catch(() => {})

@@ -1352,12 +1352,13 @@ export async function createWorktree(
 
   // The worktree this pod runs. Read by the zsh prompt in Dockerfile.default,
   // and — load-bearing — by a yaac started in here: its presence is what tells
-  // that inner server nothing outside the machine can address it, so it needs
-  // no client credential (see isCredentialOptional). Pushed first, and the
-  // project's own variables are applied after it and win, so a project with a
-  // `YAAC_WORKTREE_ID` set to empty puts the credential gate back on inside
-  // its own worktrees. That is the explicit-clear semantics working as
-  // written, not a hole — but it is the one setting that unstamps this.
+  // that inner server it is reached through the outer install's forward, so
+  // an unproxied request to it is local whatever Host it names (see
+  // `identify`). Pushed first, and the project's own variables are applied
+  // after it and win, so a project with a `YAAC_WORKTREE_ID` set to empty
+  // puts the strict rule back on inside its own worktrees. That is the
+  // explicit-clear semantics working as written, not a hole — but it is the
+  // one setting that unstamps this.
   env.push(`YAAC_WORKTREE_ID=${worktreeId}`)
 
   // How this workspace's `yaac-mama` reaches the server, where it has to

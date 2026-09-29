@@ -181,7 +181,7 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
     // command), and a sibling bring-up is the most expensive thing in this
     // file. `--permission-mode plan` sits under the caller's own posture (the
     // k8s default, bypass), and the args pass the proxy's shape checks.
-    const sub = collectSnapshots(server!.lock.port, server!.lock.secret)
+    const sub = collectSnapshots(server!.lock.port)
     await sub.opened
 
     const PROMPT = 'hello from spawn e2e'

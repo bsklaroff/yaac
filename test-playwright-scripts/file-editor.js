@@ -83,8 +83,7 @@ async function eventually(fn, timeoutMs = 5000) {
 async function main() {
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
-  const { worktrees } = await (await fetch(`${origin}/worktree/list`, { headers: auth })).json()
+  const { worktrees } = await (await fetch(`${origin}/worktree/list`)).json()
   const wt = worktrees.find((w) => w.worktreeId.startsWith(worktreeId))
   if (!wt) throw new Error(`no running worktree ${worktreeId}`)
   const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'worktrees', wt.worktreeId)
@@ -96,17 +95,11 @@ async function main() {
   fs.writeFileSync(path.join(checkout, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
   fs.rmSync(path.join(checkout, 'pwdir'), { recursive: true, force: true })
 
-  const token = await (await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })).json().then((b) => b.token).catch(() => undefined)
-
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 } })
   const puts = []
   page.on('request', (req) => { if (req.method() === 'PUT' && req.url().includes('/file')) puts.push(req.postData()) })
-  const query = new URLSearchParams({ project: wt.projectSlug, worktree: wt.worktreeId, ...(token ? { token } : {}) })
+  const query = new URLSearchParams({ project: wt.projectSlug, worktree: wt.worktreeId })
   await page.goto(`${origin}/?${query}`)
   await page.waitForSelector('[aria-label="Browse files"]', { timeout: 20000 })
   await page.locator('.xterm').first().click()

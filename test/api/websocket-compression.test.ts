@@ -31,7 +31,7 @@ import {
 function upgrade(
   port: number,
   path: string,
-  secret: string,
+  host = `127.0.0.1:${String(port)}`,
 ): Promise<http.IncomingHttpHeaders> {
   return new Promise((resolve, reject) => {
     const req = http.request({
@@ -39,7 +39,7 @@ function upgrade(
       port,
       path,
       headers: {
-        authorization: `Bearer ${secret}`,
+        host,
         connection: 'Upgrade',
         upgrade: 'websocket',
         'sec-websocket-version': '13',
@@ -63,15 +63,19 @@ function upgrade(
   })
 }
 
+const TAILNET_HOST = 'srv.tailnet.ts.net'
+
 describe('WebSocket compression', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
 
   // One server for the file: both cases are a single upgrade against an
-  // otherwise untouched server, and neither mutates any state.
+  // otherwise untouched server, and neither mutates any state. It admits a
+  // tailnet name, so the refusal below is the identity gate's rather than
+  // the Host guard's.
   beforeAll(async () => {
     testEnv = await createYaacTestEnv()
-    server = await spawnYaacServer(testEnv.env)
+    server = await spawnYaacServer({ ...testEnv.env, YAAC_ALLOWED_HOSTS: TAILNET_HOST })
   })
 
   afterAll(async () => {
@@ -86,16 +90,17 @@ describe('WebSocket compression', () => {
     // after the upgrade here (no such worktree), which is fine — the
     // handshake, and so the negotiation, has already happened by then.
     for (const path of ['/events', '/pty/attach?id=nonexistent']) {
-      const headers = await upgrade(server.lock.port, path, server.lock.secret)
+      const headers = await upgrade(server.lock.port, path)
       expect(headers['sec-websocket-extensions'], path).toMatch(/permessage-deflate/)
     }
   })
 
-  it('still refuses an unauthenticated upgrade', async () => {
+  it('still refuses an unidentified upgrade', async () => {
     // Compression is negotiated by the same `ws` server for every route, so
-    // it must not have become a way to reach one without a credential: the
-    // auth middleware runs on the upgrade request like any other.
-    await expect(upgrade(server.lock.port, '/events', 'not-the-secret'))
+    // it must not have become a way to reach one unidentified: the identity
+    // gate runs on the upgrade request like any other — here a tailnet name
+    // reached without tailscale serve.
+    await expect(upgrade(server.lock.port, '/events', TAILNET_HOST))
       .rejects.toThrow(/no upgrade: HTTP 401/)
   })
 })

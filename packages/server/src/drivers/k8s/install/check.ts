@@ -26,6 +26,7 @@ import {
   SERVER_APP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_INGRESS_NP_NAME,
+  PROXY_EGRESS_NP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   SERVER_POD_PORT,
   RUNTIME_CLASS_GVISOR,
@@ -1785,11 +1786,11 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_REGISTRY_OPEN || echo NP_REGISTRY_LOCKED'
       : ''
 
-    // Fourth leg, same pod: the SERVER. On a local install the API is
-    // credential-optional and the server pod binds 0.0.0.0, so its ingress
+    // Fourth leg, same pod: the SERVER. A request naming a loopback Host is
+    // its owner and the server pod binds 0.0.0.0, so its ingress
     // NetworkPolicies — the node addresses, plus whatever fronts its
     // Service, and nothing pod-shaped — are the entire wall between an
-    // untrusted worktree and an unauthenticated control plane
+    // untrusted worktree and the owner's control plane
     // (docs/server-in-cluster.md). That makes it exactly the kind of
     // property to PROVE on every install rather than assume was applied,
     // like the apiserver and forgery-lock denials above. Absent Service →
@@ -1876,9 +1877,9 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
     if (logs.includes('NP_SERVER_OPEN')) {
       return {
         name: 'egress', status: 'fail',
-        detail: 'a session-labeled pod reached the yaac server directly — on a '
-          + 'local install its API is credential-optional, so any session could '
-          + 'drive the control plane that manages every other one',
+        detail: 'a session-labeled pod reached the yaac server directly — '
+          + 'claiming a loopback Host makes it the server\'s owner, so any session '
+          + 'could drive the control plane that manages every other one',
         fix: `The ${SERVER_INGRESS_NP_NAME} and ${SERVER_FRONT_INGRESS_NP_NAME} `
           + 'NetworkPolicies must admit the server port from the node addresses '
           + 'and the fronting alone, so a pod dialing the Service or pod IP is '
@@ -1894,6 +1895,18 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           + 'ports from the node CIDRs only, and the session-egress policy '
           + 'must admit nothing but the netd listener range. Restart the '
           + 'yaac server so ensureProxyResources re-applies both.',
+      }
+    }
+    // The proxy dials whatever a worktree's allowlist names, so without its
+    // egress policy a `*` worktree reaches the kind fronting's node port
+    // through it and is the server's owner — a path no probe from a
+    // session pod can take directly, so the policy's presence is asserted.
+    if (proxyIp && !await kubectlGetJson(['get', 'networkpolicy', PROXY_EGRESS_NP_NAME, '-n', ns])) {
+      return {
+        name: 'egress', status: 'fail',
+        detail: `the egress proxy has no ${PROXY_EGRESS_NP_NAME} NetworkPolicy — a session whose `
+          + 'allowlist admits any host could reach the server through it as its owner',
+        fix: 'Restart the yaac server (`yaac server restart`), which applies it on start.',
       }
     }
     if (logs.includes('NP_BLOCKED')) {

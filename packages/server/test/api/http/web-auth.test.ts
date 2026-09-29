@@ -1,245 +1,133 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import {
-  cookieOrBearerAuth,
-  createTokenStore,
   fetchSiteCheck,
   hostHeaderCheck,
-  isCredentialOptional,
+  identify,
   originHeaderCheck,
-  sessionCookieName,
+  type IdentityEnv,
 } from '#http'
-// Setup value, not a unit under test: the cookie name is `<base>_<hash>`, so
-// asserting the shape means naming the same base the module does.
-import { SESSION_COOKIE_BASE } from '#api/http/web-auth'
-import { getDataDir, setDataDir } from '@yaac/shared/paths'
+import { asTailnet } from '@yaac/test-utils/api'
 
 /**
- * A gate over the paths that decide the public/gated split: the SPA shell and
- * its assets, the health probe, both methods of the token→cookie exchange,
- * and an ordinary API route.
+ * The identity gate over the paths that decide the public/identified split
+ * — the SPA shell and its assets, the health probe, and an ordinary API
+ * route — with a `/whoami` that reports what the gate decided.
  */
-function appWithAuth(): { app: Hono; tokens: ReturnType<typeof createTokenStore> } {
-  const tokens = createTokenStore()
-  const app = new Hono()
-  app.use('*', cookieOrBearerAuth('shh', tokens))
+function appWithIdentity(): Hono<IdentityEnv> {
+  const app = new Hono<IdentityEnv>()
+  app.use('*', identify())
   app.get('/health', (c) => c.text('ok'))
   app.get('/', (c) => c.text('shell'))
   app.get('/assets/*', (c) => c.text('asset'))
-  app.post('/auth/web-session', (c) => c.text('exchanged'))
-  app.get('/auth/web-session', (c) => c.text('probe ok'))
-  app.get('/worktree/list', (c) => c.text('protected ok'))
-  return { app, tokens }
+  app.get('/whoami', (c) => c.json(c.get('principal')))
+  return app
 }
 
-/** A fresh web-session secret, minted the way the exchange route does. */
-function mintSession(tokens: ReturnType<typeof createTokenStore>): string {
-  return tokens.consumeExchange(tokens.mintExchangeToken().token) as string
+async function refusal(res: Response): Promise<string> {
+  expect(res.status).toBe(401)
+  const body = await res.json() as { error: { code: string; message: string } }
+  expect(body.error.code).toBe('UNAUTHENTICATED')
+  return body.error.message
 }
 
-describe('cookieOrBearerAuth', () => {
-  // Most of these assert the credential gate itself, so force it on (a
-  // loopback test server is credential-optional by default); the bypass cases
-  // clear it again.
-  beforeEach(() => vi.stubEnv('YAAC_REQUIRE_AUTH', '1'))
+describe('identify', () => {
   afterEach(() => vi.unstubAllEnvs())
 
-  it('lets the shell, its assets, health and the POST exchange through with no credential', async () => {
-    const { app } = appWithAuth()
-    expect((await app.request('/health')).status).toBe(200)
-    expect((await app.request('/')).status).toBe(200)
-    expect((await app.request('/assets/index-abc.js')).status).toBe(200)
-    expect((await app.request('/auth/web-session', { method: 'POST' })).status).toBe(200)
-  })
-
-  it('gates API paths and the GET web-session probe', async () => {
-    const { app } = appWithAuth()
-    for (const path of ['/worktree/list', '/auth/web-session']) {
-      const res = await app.request(path)
-      expect(res.status).toBe(401)
-      const body = await res.json() as { error: { code: string } }
-      expect(body.error.code).toBe('UNAUTHENTICATED')
+  it('lets the shell, its assets and health through with no identity at all', async () => {
+    // Public so an unidentified browser can load the app and be told why.
+    const app = appWithIdentity()
+    const bare = { host: 'srv.tailnet.ts.net' }
+    for (const path of ['/health', '/', '/assets/index-abc.js']) {
+      expect((await app.request(path, { headers: bare })).status).toBe(200)
     }
+    expect((await app.request('/whoami', { headers: bare })).status).toBe(401)
   })
 
-  it('accepts a correct bearer, case-insensitively', async () => {
-    const { app } = appWithAuth()
-    const a = await app.request('/worktree/list', {
-      headers: { authorization: 'Bearer shh' },
-    })
-    expect(a.status).toBe(200)
-    const b = await app.request('/worktree/list', {
-      headers: { authorization: 'bearer shh' },
-    })
-    expect(b.status).toBe(200)
-  })
+  // Every row of the identity rule, under a top-level server and then under
+  // one inside a worktree — which differ in exactly one row.
+  for (const worktree of [false, true]) {
+    describe(worktree ? 'inside a worktree' : 'top-level', () => {
+      const setup = (): Hono<IdentityEnv> => {
+        if (worktree) vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
+        return appWithIdentity()
+      }
 
-  it('rejects a wrong bearer with BAD_BEARER (drives the CLI re-resolve retry)', async () => {
-    const { app } = appWithAuth()
-    // Both shapes the constant-time compare has to handle: a same-length
-    // near-miss and a length mismatch (which it must reject, not throw on).
-    for (const bearer of ['shX', 'a-much-longer-guess']) {
-      const res = await app.request('/worktree/list', {
-        headers: { authorization: `Bearer ${bearer}` },
+      it('an unproxied request to loopback is local', async () => {
+        const app = setup()
+        for (const host of ['127.0.0.1:8787', 'localhost']) {
+          const res = await app.request('/whoami', { headers: { host } })
+          expect(await res.json()).toEqual({ kind: 'local' })
+        }
       })
-      expect(res.status).toBe(401)
-      const body = await res.json() as { error: { code: string } }
-      expect(body.error.code).toBe('BAD_BEARER')
-    }
-  })
 
-  it('accepts a durable token bearer', async () => {
-    const { app, tokens } = appWithAuth()
-    const entry = tokens.create('laptop')
-
-    const ok = await app.request('/worktree/list', {
-      headers: { authorization: `Bearer ${entry.token}` },
-    })
-    expect(ok.status).toBe(200)
-  })
-
-  it('rejects a one-time token or a web session presented as a bearer', async () => {
-    const { app, tokens } = appWithAuth()
-    for (const bearer of [tokens.mintExchangeToken().token, mintSession(tokens)]) {
-      const res = await app.request('/worktree/list', {
-        headers: { authorization: `Bearer ${bearer}` },
+      it('a request serve stamped with a user is that tailnet user', async () => {
+        const res = await setup().request('/whoami', {
+          headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net'),
+        })
+        expect(await res.json()).toEqual({ kind: 'tailnet', login: 'alice@example.com', name: 'alice' })
       })
-      expect(res.status).toBe(401)
-      const body = await res.json() as { error: { code: string } }
-      expect(body.error.code).toBe('BAD_BEARER')
-    }
-  })
 
-  it('lets a valid cookie override a stale bearer', async () => {
-    const { app, tokens } = appWithAuth()
-    const sid = mintSession(tokens)
-    const res = await app.request('/worktree/list', {
-      headers: {
-        authorization: 'Bearer stale',
-        cookie: `${sessionCookieName()}=${sid}`,
-      },
+      it('a proxied request with no user is refused, naming tagged devices and Funnel', async () => {
+        const res = await setup().request('/whoami', { headers: asTailnet(null, 'srv.tailnet.ts.net') })
+        expect(await refusal(res)).toMatch(/no user identity.*tagged device.*Funnel/s)
+      })
+
+      it('proxying is recognized by any identity header, and forged loopback Hosts do not matter', async () => {
+        // A local process sending only a user header, or a proxied request
+        // naming loopback: either way the request is judged as proxied.
+        const app = setup()
+        const named = await app.request('/whoami', {
+          headers: { host: '127.0.0.1', 'tailscale-user-login': 'bob@x' },
+        })
+        expect(await named.json()).toMatchObject({ kind: 'tailnet', login: 'bob@x' })
+        const nameless = await app.request('/whoami', {
+          headers: { host: '127.0.0.1', 'tailscale-user-name': 'Bob' },
+        })
+        expect(nameless.status).toBe(401)
+      })
+
+      it(worktree
+        ? 'an unproxied request to another name is local — the outer install\'s forward'
+        : 'an unproxied request to another name is refused, failing closed', async () => {
+        const res = await setup().request('/whoami', { headers: { host: 'srv.tailnet.ts.net:9787' } })
+        if (worktree) expect(await res.json()).toEqual({ kind: 'local' })
+        else expect(await refusal(res)).toMatch(/reached as srv\.tailnet\.ts\.net without tailscale serve/)
+      })
     })
-    expect(res.status).toBe(200)
-  })
+  }
 
-  it('accepts a valid session cookie and rejects an invalid one', async () => {
-    const { app, tokens } = appWithAuth()
-    const sid = mintSession(tokens)
-    expect(sid.length).toBeGreaterThan(0)
-
-    const ok = await app.request('/worktree/list', {
-      headers: { cookie: `${sessionCookieName()}=${sid}` },
-    })
-    expect(ok.status).toBe(200)
-
-    const bad = await app.request('/worktree/list', {
-      headers: { cookie: `${sessionCookieName()}=bogus` },
-    })
-    expect(bad.status).toBe(401)
-  })
-
-  it('rejects a durable token presented as a cookie', async () => {
-    const { app, tokens } = appWithAuth()
-    const entry = tokens.create('laptop')
-    const res = await app.request('/worktree/list', {
-      headers: { cookie: `${sessionCookieName()}=${entry.token}` },
-    })
+  it('ignores an empty YAAC_WORKTREE_ID', async () => {
+    vi.stubEnv('YAAC_WORKTREE_ID', '')
+    const res = await appWithIdentity().request('/whoami', { headers: { host: 'srv.tailnet.ts.net' } })
     expect(res.status).toBe(401)
   })
 
-  it('skips the gate entirely on a loopback-only deployment', async () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    const { app } = appWithAuth()
-    expect((await app.request('/worktree/list')).status).toBe(200)
-    // Not even a wrong bearer is rejected — the gate is not consulted at all.
-    const wrong = await app.request('/worktree/list', {
-      headers: { authorization: 'Bearer nope' },
+  it('decodes a non-ASCII identity serve sent as an RFC 2047 encoded word', async () => {
+    const res = await appWithIdentity().request('/whoami', {
+      headers: {
+        ...asTailnet('jose@example.com', 'srv.tailnet.ts.net'),
+        'tailscale-user-name': '=?utf-8?q?Jos=C3=A9_Garc=C3=ADa?=',
+      },
     })
-    expect(wrong.status).toBe(200)
+    expect(await res.json()).toMatchObject({ name: 'José García' })
   })
 
-  it('re-enforces the gate once remote hosting is configured', async () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    expect((await appWithAuth().app.request('/worktree/list')).status).toBe(401)
-  })
-
-  it('bypasses a yaac-in-a-worktree despite inherited remote-host env', async () => {
-    // yaac-in-yaac: allowedHosts/trustProxy picked up from the outer install,
-    // but reachability is via the outer's (tailnet-gated) port-forward.
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    vi.stubEnv('YAAC_TRUST_PROXY', '1')
-    vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
-    expect((await appWithAuth().app.request('/worktree/list')).status).toBe(200)
-  })
-})
-
-describe('isCredentialOptional', () => {
-  // The suite defaults to YAAC_REQUIRE_AUTH=1; clear it to see the underlying
-  // posture. YAAC_WORKTREE_ID is stripped by vitest-setup, so a run inside a
-  // worktree starts from the same posture as one on a developer host.
-  afterEach(() => vi.unstubAllEnvs())
-
-  it('is true for a pure loopback deployment', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    expect(isCredentialOptional()).toBe(true)
-  })
-
-  it('is false once remote hosting is configured (outside a worktree)', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    expect(isCredentialOptional()).toBe(false)
-    // Either half of the remote-hosting posture is enough on its own.
-    vi.unstubAllEnvs()
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_TRUST_PROXY', '1')
-    expect(isCredentialOptional()).toBe(false)
-  })
-
-  it('is true inside any worktree, even with inherited remote-host env', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    vi.stubEnv('YAAC_TRUST_PROXY', '1')
-    vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
-    expect(isCredentialOptional()).toBe(true)
-  })
-
-  it('ignores an empty YAAC_WORKTREE_ID', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    vi.stubEnv('YAAC_WORKTREE_ID', '')
-    expect(isCredentialOptional()).toBe(false)
-  })
-
-  it('is false whenever YAAC_REQUIRE_AUTH forces the gate on', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
-    vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
-    expect(isCredentialOptional()).toBe(false)
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    expect(isCredentialOptional()).toBe(false)
-  })
-})
-
-describe('sessionCookieName', () => {
-  const original = getDataDir()
-  afterEach(() => setDataDir(original))
-
-  it('derives yaac_session_<hash> from the data dir', () => {
-    setDataDir('/home/ben/.yaac')
-    expect(sessionCookieName()).toMatch(new RegExp(`^${SESSION_COOKIE_BASE}_[0-9a-f]{8}$`))
-  })
-
-  it('is stable for a given data dir', () => {
-    setDataDir('/some/data/dir')
-    expect(sessionCookieName()).toBe(sessionCookieName())
-  })
-
-  it('gives co-hosted servers distinct names (the shared-host collision fix)', () => {
-    setDataDir('/home/ben/.yaac')
-    const outer = sessionCookieName()
-    setDataDir('/home/ben/.yaac/projects/yaac/sessions/abc/nested-yaac')
-    expect(sessionCookieName()).not.toBe(outer)
+  it('decodes a value split across several encoded words, and drops control characters', async () => {
+    // Past one word's length the encoder splits the value into several,
+    // space-separated; and whatever the encoding, the decoded text goes into
+    // every log line, so a CR/LF or ESC in it must not survive.
+    const res = await appWithIdentity().request('/whoami', {
+      headers: {
+        host: 'srv.tailnet.ts.net',
+        'x-forwarded-for': '100.64.0.7',
+        'tailscale-user-login': '=?utf-8?q?mallory=0D=0A=1B[31m@example.com?=',
+        'tailscale-user-name': '=?utf-8?q?Zo=C3=AB_=C3=85ngstr=C3=B6m-?= =?utf-8?q?=C3=98resund_=C5=81ukasiewicz?=',
+      },
+    })
+    expect(await res.json()).toEqual({
+      kind: 'tailnet', login: 'mallory[31m@example.com', name: 'Zoë Ångström-Øresund Łukasiewicz',
+    })
   })
 })
 
@@ -304,11 +192,38 @@ describe('originHeaderCheck', () => {
     expect(empty.status).toBe(200)
   })
 
-  it('allows a loopback Origin on any port (the SPA and the Vite dev proxy)', async () => {
-    const res = await appWithOriginCheck().request('/x', {
-      headers: { origin: 'http://localhost:5173' },
-    })
-    expect(res.status).toBe(200)
+  it('allows exactly the origin the request was sent to', async () => {
+    // The SPA's own requests: same scheme, host and port — at loopback, and
+    // at a tailnet name behind serve, where Host is preserved, serve says
+    // the scheme, and the port is the default one either side may leave out.
+    const app = appWithOriginCheck()
+    const same: Array<Record<string, string>> = [
+      { host: '127.0.0.1:8787', origin: 'http://127.0.0.1:8787' },
+      { host: 'localhost:8787', origin: 'http://LOCALHOST:8787' },
+      { host: 'srv.tailnet.ts.net', origin: 'https://srv.tailnet.ts.net', 'x-forwarded-proto': 'https' },
+      { host: 'srv.tailnet.ts.net:443', origin: 'https://srv.tailnet.ts.net', 'x-forwarded-proto': 'https' },
+    ]
+    for (const headers of same) {
+      expect((await app.request('/x', { headers })).status, JSON.stringify(headers)).toBe(200)
+    }
+  })
+
+  it('rejects a page on the same hostname at another port — a forwarded dev server', async () => {
+    // What `yaac forward` and the desktop preview put on the server's own
+    // hostname, running untrusted repo code.
+    const app = appWithOriginCheck()
+    const forwarded: Array<Record<string, string>> = [
+      { host: '127.0.0.1:8787', origin: 'http://127.0.0.1:19500' },
+      { host: '127.0.0.1:8787', origin: 'http://localhost:8787' },
+      { host: 'srv.tailnet.ts.net', origin: 'http://srv.tailnet.ts.net:19500', 'x-forwarded-proto': 'https' },
+      // Same host and default port, the other scheme: a forward on :80.
+      { host: 'srv.tailnet.ts.net', origin: 'http://srv.tailnet.ts.net', 'x-forwarded-proto': 'https' },
+      // And an https page reaching the plain listener directly.
+      { host: '127.0.0.1:8787', origin: 'https://127.0.0.1:8787' },
+    ]
+    for (const headers of forwarded) {
+      expect((await app.request('/x', { headers })).status, JSON.stringify(headers)).toBe(403)
+    }
   })
 
   it('rejects a website Origin with BAD_ORIGIN', async () => {
@@ -322,28 +237,13 @@ describe('originHeaderCheck', () => {
 
   it('fails closed on an opaque, host-less or unparseable Origin', async () => {
     // 'null' (opaque origin) and garbage don't parse; a non-http scheme parses
-    // but carries no host, which is not a host the allowlist can ever admit.
+    // but carries no host, which is never the request's own.
     for (const origin of ['null', 'not a url', 'foo:bar']) {
       const res = await appWithOriginCheck().request('/x', { headers: { origin } })
       expect(res.status).toBe(403)
     }
   })
 
-  it('admits an Origin from YAAC_ALLOWED_HOSTS (read per request)', async () => {
-    const app = appWithOriginCheck()
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    try {
-      const ok = await app.request('/x', { headers: { origin: 'https://srv.tailnet.ts.net' } })
-      expect(ok.status).toBe(200)
-      const other = await app.request('/x', { headers: { origin: 'https://evil.com' } })
-      expect(other.status).toBe(403)
-      // Loopback stays allowed regardless of the list.
-      const local = await app.request('/x', { headers: { origin: 'http://localhost' } })
-      expect(local.status).toBe(200)
-    } finally {
-      vi.unstubAllEnvs()
-    }
-  })
 })
 
 describe('fetchSiteCheck', () => {

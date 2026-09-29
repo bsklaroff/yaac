@@ -13,7 +13,6 @@ import {
 import { getApiClient, resolveServerTarget } from '@yaac/shared/server-api'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
-import { maskToken } from '@yaac/shared/mask'
 
 /**
  * `yaac auth server` lifecycle. The auth server is a pure outbound
@@ -65,9 +64,9 @@ export async function runAuthDaemon(): Promise<void> {
   }
 
   await writeAuthDaemonLock({ pid: process.pid, baseUrl: target.baseUrl, startedAt: Date.now() })
-  log(`lock=${authDaemonLockPath()} target=${target.baseUrl} token=${maskToken(target.secret)}`)
+  log(`lock=${authDaemonLockPath()} target=${target.baseUrl}`)
 
-  const connection = connectAuthAgent({ baseUrl: target.baseUrl, secret: target.secret, log })
+  const connection = connectAuthAgent({ baseUrl: target.baseUrl, log })
 
   const shutdown = (signal: string): void => {
     log(`${signal} — shutting down`)
@@ -146,10 +145,7 @@ export async function statusAuthDaemon(): Promise<void> {
   // The authoritative "connected" signal lives on the main server.
   try {
     const target = await resolveServerTarget()
-    const res = await fetch(`${target.baseUrl}/auth/agent`, {
-      headers: { authorization: `Bearer ${target.secret}` },
-      signal: AbortSignal.timeout(3000),
-    })
+    const res = await fetch(`${target.baseUrl}/auth/agent`, { signal: AbortSignal.timeout(3000) })
     const { connected } = await res.json() as { connected: boolean }
     console.log(`connected:   ${connected ? 'yes' : 'no'}`)
   } catch {

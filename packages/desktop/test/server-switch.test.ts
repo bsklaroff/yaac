@@ -10,11 +10,10 @@ import type { ServerConfig } from '@yaac/shared/server-config'
 
 const CFG: ServerConfig = {
   url: 'https://a.ts.net',
-  token: 'ta',
   enabled: true,
   saved: [
-    { url: 'https://a.ts.net', token: 'ta' },
-    { url: 'https://b.ts.net', token: 'tb' },
+    { url: 'https://a.ts.net' },
+    { url: 'https://b.ts.net' },
   ],
 }
 
@@ -27,11 +26,10 @@ function makeDeps(cfg: ServerConfig | null): ServerSwitchDeps & {
     writeServerConfig: vi.fn().mockResolvedValue(undefined),
     // The real withServerSelected is pure — use it verbatim via a thin copy
     // of its contract to keep assertions on what gets persisted.
-    select: (existing, url, token) => ({
+    select: (existing, url) => ({
       url,
-      token,
       enabled: true,
-      saved: [{ url, token }, ...(existing?.saved ?? []).filter((s) => s.url !== url)],
+      saved: [{ url }, ...(existing?.saved ?? []).filter((s) => s.url !== url)],
       ...(existing?.driver ? { driver: existing.driver } : {}),
     }),
     probeServer: vi.fn().mockResolvedValue({ buildId: 'b' }),
@@ -77,20 +75,20 @@ describe('getServerTargets', () => {
 
   it('reports nothing selected for the cleared-but-driver-kept config', async () => {
     const cleared: ServerConfig = {
-      url: '', token: '', enabled: false, saved: [], driver: 'k8s',
+      url: '', enabled: false, saved: [], driver: 'k8s',
     }
     expect(await getServerTargets(makeDeps(cleared))).toEqual({ current: null, saved: [] })
   })
 })
 
 describe('applyServerSwitch', () => {
-  it('probes a saved server with its saved token, then selects it', async () => {
+  it('probes a saved server, then selects it', async () => {
     const deps = makeDeps({ ...CFG, enabled: false })
     expect(await applyServerSwitch({ url: 'https://b.ts.net' }, deps)).toEqual({ ok: true })
-    expect(deps.probeServer).toHaveBeenCalledWith('https://b.ts.net', 'tb')
+    expect(deps.probeServer).toHaveBeenCalledWith('https://b.ts.net')
     const written = deps.writeServerConfig.mock.calls[0][0] as ServerConfig
-    expect(written).toMatchObject({ url: 'https://b.ts.net', token: 'tb', enabled: true })
-    expect(written.saved).toContainEqual({ url: 'https://a.ts.net', token: 'ta' })
+    expect(written).toMatchObject({ url: 'https://b.ts.net', enabled: true })
+    expect(written.saved).toContainEqual({ url: 'https://a.ts.net' })
   })
 
   it('re-selecting the already-selected server is a real retry, not a no-op', async () => {
@@ -98,7 +96,7 @@ describe('applyServerSwitch', () => {
     // already names this origin and the window still needs to land on it.
     const deps = makeDeps(CFG)
     expect(await applyServerSwitch({ url: 'https://a.ts.net' }, deps)).toEqual({ ok: true })
-    expect(deps.probeServer).toHaveBeenCalledWith('https://a.ts.net', 'ta')
+    expect(deps.probeServer).toHaveBeenCalledWith('https://a.ts.net')
     expect(deps.writeServerConfig).toHaveBeenCalledTimes(1)
   })
 
@@ -129,18 +127,17 @@ describe('applyServerSwitch', () => {
 describe('addServerRemote', () => {
   it('normalizes, probes, and selects the new server', async () => {
     const deps = makeDeps(CFG)
-    expect(await addServerRemote('https://c.ts.net/', 'tc', deps)).toEqual({ ok: true })
-    expect(deps.probeServer).toHaveBeenCalledWith('https://c.ts.net', 'tc')
+    expect(await addServerRemote('https://c.ts.net/', deps)).toEqual({ ok: true })
+    expect(deps.probeServer).toHaveBeenCalledWith('https://c.ts.net')
     expect(deps.writeServerConfig).toHaveBeenCalledWith(expect.objectContaining({
       url: 'https://c.ts.net',
-      token: 'tc',
       enabled: true,
     }))
   })
 
   it('accepts a loopback origin — a server on this machine is not special', async () => {
     const deps = makeDeps(null)
-    expect(await addServerRemote('http://127.0.0.1:8787', 'tok', deps)).toEqual({ ok: true })
+    expect(await addServerRemote('http://127.0.0.1:8787', deps)).toEqual({ ok: true })
     expect(deps.writeServerConfig).toHaveBeenCalledWith(expect.objectContaining({
       url: 'http://127.0.0.1:8787',
     }))
@@ -148,16 +145,16 @@ describe('addServerRemote', () => {
 
   it('rejects a non-origin URL before any probe', async () => {
     const deps = makeDeps(null)
-    const outcome = await addServerRemote('https://c.ts.net/path', 'tc', deps)
+    const outcome = await addServerRemote('https://c.ts.net/path', deps)
     expect(outcome).toEqual({ ok: false, error: expect.stringMatching(/bare origin/) as string })
     expect(deps.probeServer).not.toHaveBeenCalled()
   })
 
   it('a failed probe surfaces its message without persisting', async () => {
     const deps = makeDeps(null)
-    deps.probeServer.mockRejectedValue(new Error('token rejected by https://c.ts.net'))
-    expect(await addServerRemote('https://c.ts.net', 'bad', deps))
-      .toEqual({ ok: false, error: 'token rejected by https://c.ts.net' })
+    deps.probeServer.mockRejectedValue(new Error('https://c.ts.net refused to identify this device'))
+    expect(await addServerRemote('https://c.ts.net', deps))
+      .toEqual({ ok: false, error: 'https://c.ts.net refused to identify this device' })
     expect(deps.writeServerConfig).not.toHaveBeenCalled()
   })
 })

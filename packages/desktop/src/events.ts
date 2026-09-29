@@ -4,12 +4,11 @@ import { parseSnapshotMessage } from '#attention'
 
 /**
  * Long-lived `/events` subscription for the tray/badge/notification signal.
- * The main process is a bearer client (the renderer's cookie never leaves the
- * window), so it opens the WS with the target's secret and re-resolves the
- * target on every (re)connect — the WS analog of createServerFetch's
- * BAD_BEARER re-resolve: a server restart rotates port+secret, and the next
- * reconnect picks the fresh lock up. Deps are injected so the loop
- * unit-tests without sockets or timers wired to a real server.
+ * The main process opens the WS itself — the server identifies it from the
+ * request like any client — and re-resolves the target on every
+ * (re)connect, so a server the machine was re-pointed at since is the one
+ * the next reconnect lands on. Deps are injected so the loop unit-tests
+ * without sockets or timers wired to a real server.
  */
 
 /** The `/events` WS endpoint for a server origin (http→ws, https→wss). */
@@ -32,7 +31,7 @@ export interface EventsSocket {
 export interface EventsMonitorDeps {
   /** Fresh target per connection attempt (resolveServerTarget). */
   resolveTarget(): Promise<ServerTarget>
-  openSocket(url: string, bearer: string): EventsSocket
+  openSocket(url: string): EventsSocket
   onSnapshot(snapshot: ServerSnapshot): void
   /** Delay before reconnecting after a drop or failed resolve. */
   reconnectDelayMs?: number
@@ -64,7 +63,7 @@ export function startEventsMonitor(deps: EventsMonitorDeps): { stop: () => void 
     }
     if (stopped) return
     let over = false // onClose can follow an error close; reconnect once
-    const s = deps.openSocket(eventsWsUrl(target.baseUrl), target.secret)
+    const s = deps.openSocket(eventsWsUrl(target.baseUrl))
     socket = s
     s.onMessage((data) => {
       const snapshot = parseSnapshotMessage(data)

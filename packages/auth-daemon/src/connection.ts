@@ -59,7 +59,6 @@ export interface AuthAgentConnection {
 
 export function connectAuthAgent(opts: {
   baseUrl: string
-  secret: string
   log: (line: string) => void
 }): AuthAgentConnection {
   let stopped = false
@@ -134,9 +133,7 @@ export function connectAuthAgent(opts: {
   const connect = (): void => {
     if (stopped) return
     const wsUrl = `${opts.baseUrl.replace(/^http/, 'ws')}/agent/auth`
-    const sock = new WebSocket(wsUrl, {
-      headers: { authorization: `Bearer ${opts.secret}` },
-    })
+    const sock = new WebSocket(wsUrl)
     ws = sock
 
     // Flips true on every pong; the next heartbeat tick reads it to decide

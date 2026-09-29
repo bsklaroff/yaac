@@ -19,8 +19,8 @@
  * The label lands on the next reconcile sweep rather than with the reply, so
  * this waits for it (up to ~2 resync ticks) instead of asserting immediately.
  *
- * Drives the app the server itself serves (`dist/`), reading the port + lock
- * secret from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
+ * Drives the app the server itself serves (`dist/`), reading the port
+ * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
  *
  * Needs a running `yaac server` with a live ACP-mode worktree of the selected
@@ -99,22 +99,10 @@ const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const lock = readServerLock()
 const origin = `http://127.0.0.1:${lock.port}`
 
-async function mintToken() {
-  const res = await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 /** The live ACP worktree to drive: the one named, else the first the server
  *  reports whose primary conversation is acp-mode. */
 async function pickWorktree() {
-  const res = await fetch(`${origin}/worktree/list`, {
-    headers: { authorization: `Bearer ${lock.secret}` },
-  })
+  const res = await fetch(`${origin}/worktree/list`)
   if (!res.ok) throw new Error(`worktree list failed: HTTP ${res.status}`)
   const { worktrees } = await res.json()
   const acp = worktrees.filter((w) => w.agentSessions.some((a) => a.mode === 'acp' && a.active))
@@ -166,11 +154,9 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
-  const token = await mintToken()
   await page.goto(
-    `${origin}/?project=${worktree.projectSlug}&worktree=${worktree.worktreeId}&token=${token}`,
+    `${origin}/?project=${worktree.projectSlug}&worktree=${worktree.worktreeId}`,
   )
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
   await page.locator('textarea[placeholder]').first().waitFor({ state: 'visible', timeout: 30_000 })
   await page.waitForTimeout(2000)
 

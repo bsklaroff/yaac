@@ -36,10 +36,12 @@
 
 export {
   buildEgressWorldDenyNpManifest,
+  buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorktreeEgressNpManifest,
+  egressAllButServerFront,
 } from './policy-manifests'
 export {
   nodeIpBlocks,

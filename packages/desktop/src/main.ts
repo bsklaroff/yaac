@@ -1,6 +1,6 @@
 /**
  * Entry: wire Electron to the boot flow. Untested glue — the logic lives in
- * the sibling modules (#flow, #mint, #server-process, #messages, #attention,
+ * the sibling modules (#flow, #server-process, #messages, #attention,
  * #events, #tray-icon, #menu, #theme-bg, #window-state).
  *
  * The shell is a client of whatever server `server.json` names — it never
@@ -8,7 +8,7 @@
  * shell only, and the server keeps running (it was never ours to stop).
  * With no server reachable the window shows the picker (`#connect-page`)
  * rather than an error dialog over nothing. While in the tray it follows
- * the `/events` stream as a bearer client to surface waiting worktrees
+ * the `/events` stream to surface waiting worktrees
  * (dock badge, tray status, notifications). Each window
  * open also ensures the auth-daemon best-effort — and
  * like the server, Quit leaves it running (machine-scoped, shared with the
@@ -28,10 +28,9 @@ import { env } from '@yaac/shared/env'
 import { AttentionMonitor, badgeText, notificationFor, type WaitingWorktree } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
-import { runFlow } from '#flow'
+import { probeIdentity, runFlow } from '#flow'
 import { connectPageUrl } from '#connect-page'
 import { appMenuTemplate } from '#menu'
-import { mintWebToken } from '#mint'
 import { splashUrl, type LaunchError } from '#messages'
 import { ensureAuthDaemonRunning, resolveYaacCommand } from '#server-process'
 import {
@@ -65,7 +64,7 @@ let attention = new AttentionMonitor()
 // happened OUTSIDE it, and only re-running the flow can notice.
 let onConnectPage = false
 
-// The one place a target comes from, shared by the flow, the mint, the
+// The one place a target comes from, shared by the flow, the
 // events socket and the forwarder: `server.json`, like every other client.
 const resolveTarget = resolveServerTarget
 
@@ -143,11 +142,10 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 /**
- * Run the resolve → mint flow and land the window on the authed URL, or on
- * the picker when there is no server to land on. Re-run in full whenever
- * the window must be (re)created: the exchange token is single-use, so each
- * landing needs a fresh mint, and re-running also picks up a server that
- * came back while the shell sat in the tray.
+ * Run the resolve → identify flow and land the window on the server's
+ * origin, or on the picker when there is no server that will take this
+ * device. Re-run in full whenever the window must be (re)created, which
+ * also picks up a server that came back while the shell sat in the tray.
  */
 async function openWindow(): Promise<boolean> {
   if (!win || win.isDestroyed()) win = await createWindow()
@@ -162,7 +160,7 @@ async function openWindow(): Promise<boolean> {
       ),
       hydratePath: app.isPackaged,
     }),
-    mintToken: mintWebToken,
+    probeIdentity: () => probeIdentity(),
     onStatus: (text) => {
       void w.loadURL(splashUrl(text)).catch(() => { /* superseded by the next load */ })
     },
@@ -257,9 +255,9 @@ function applyAttention(waitingCount: number, toNotify: WaitingWorktree[]): void
   }
 }
 
-/** Adapt `ws` (which can send the bearer header; native WebSocket can't) to #events. */
-function openEventsSocket(url: string, bearer: string): EventsSocket {
-  const socket = new WebSocket(url, { headers: { authorization: `Bearer ${bearer}` } })
+/** Adapt `ws` to #events. */
+function openEventsSocket(url: string): EventsSocket {
+  const socket = new WebSocket(url)
   const rawToString = (data: Buffer | ArrayBuffer | Buffer[]): string => {
     if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
     return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
@@ -296,10 +294,10 @@ function startEvents(): void {
 /**
  * After a server switch: clear the badge/tray, seed a fresh attention
  * monitor (the new server's ongoing waits deserve the same launch
- * silence), and re-run the boot flow so the window lands authed on the new
+ * silence), and re-run the boot flow so the window lands on the new
  * origin. `openWindow` restarts the events socket on success and shows the
  * picker again on failure, so a switch to a server that dies between the
- * probe and the mint lands somewhere useful.
+ * probe and the landing ends somewhere useful.
  */
 function relandOnNewServer(): void {
   attention = new AttentionMonitor()
@@ -331,11 +329,9 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
-ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => {
-  if (typeof url !== 'string' || typeof token !== 'string') {
-    return { ok: false, error: 'invalid arguments' }
-  }
-  const outcome = await addServerRemote(url, token, serverSwitchDeps)
+ipcMain.handle('server:add-remote', async (_e, url: unknown) => {
+  if (typeof url !== 'string') return { ok: false, error: 'invalid arguments' }
+  const outcome = await addServerRemote(url, serverSwitchDeps)
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })

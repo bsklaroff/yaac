@@ -3,17 +3,15 @@
  * run-yaac web-app driver.
  *
  * Drives the yaac web app (the React SPA the `yaac` server serves) in a real
- * headless Chromium via Playwright, doing the one-time-token -> session-cookie
- * auth handshake the desktop app does. Use it to screenshot the app or to
+ * headless Chromium via Playwright. Use it to screenshot the app or to
  * evaluate arbitrary JS against the live DOM — the same handle the committed
  * test-playwright-scripts/*.js use, generalized into a reusable CLI.
  *
  * It talks to whatever server this install's clients are registered with: it
- * reads the selected origin and durable token from `server.json`
- * (`<data dir>-client/`, either substrate), mints a one-time token over
- * POST /tokens, and loads the origin with it; the server exchanges that token
- * for the HttpOnly cookie and drops the ?token= from the URL. Set
- * YAAC_DATA_DIR to drive a different install.
+ * reads the selected origin from `server.json` (`<data dir>-client/`, either
+ * substrate) and loads it. There is no credential: a loopback origin is this
+ * machine's owner, and a tailnet one identifies the device by its tailnet
+ * user. Set YAAC_DATA_DIR to drive a different install.
  *
  * Playwright is resolved from the global npm root (with a bare require
  * fallback); Chromium binaries live under /opt/playwright-browsers.
@@ -24,7 +22,7 @@
  *   node driver.mjs open                  just load the app and report the resolved URL/title
  *
  * Flags (any command):
- *   --goto <path>       route to load after auth (default "/")
+ *   --goto <path>       route to load (default "/")
  *   --click <selector>  click this element after load (e.g. an aria-label match)
  *   --wait <selector>   extra selector to wait for before acting
  *   --settle <ms>       pause after load for pushed /events to populate (default 3000)
@@ -86,21 +84,10 @@ function readSelectedServer() {
   return cfg
 }
 
-async function mintToken({ url, token }) {
-  const res = await fetch(`${url}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status} ${await res.text()}`)
-  return (await res.json()).token
-}
-
 const { positional, flags } = parseArgs(process.argv.slice(2))
 const cmd = positional[0] ?? 'open'
 const server = readSelectedServer()
 const target = new URL(flags.goto ?? '/', server.url)
-target.searchParams.set('token', await mintToken(server))
 const settleMs = flags.settle !== undefined ? Number(flags.settle) : 3000
 
 const { chromium } = requirePlaywright()
@@ -112,8 +99,6 @@ try {
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
   await page.goto(target.href)
-  // The server strips ?token= after setting the cookie.
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
   // The seeded env has a single project -> auto-selected; wait for the sidebar.
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
   if (flags.click) await page.locator(flags.click).first().click({ timeout: 15_000 })

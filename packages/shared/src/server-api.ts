@@ -2,25 +2,22 @@ import { readBuildId } from '#build-id'
 import { testEnv } from '#env'
 import { readServerConfig } from '#server-config'
 import { createApiClient, type FetchLike } from '#api-core'
-import type { ServerErrorBody } from '#errors'
 
 /**
- * Where a request goes. Every client resolves the same two things — an
- * origin and a bearer — whether the server is a host process on this
- * machine, a pod of this machine's cluster, or a server across the
- * network. There is no local case (see `resolveServerTarget`).
+ * Where a request goes. Every client resolves the same one thing — an
+ * origin — whether the server is a host process on this machine, a pod of
+ * this machine's cluster, or a server across the network. There is no
+ * local case (see `resolveServerTarget`), and no credential: the server
+ * derives who is calling from the request itself.
  */
 export interface ServerTarget {
   /** Origin (no trailing slash), e.g. http://127.0.0.1:8787. */
   baseUrl: string
-  /** Bearer: the durable token this machine holds for the server. */
-  secret: string
 }
 
 export interface ApiClientOptions {
   /**
-   * Injected for tests. Resolves the server target (base URL + bearer)
-   * to use for requests.
+   * Injected for tests. Resolves the server target to use for requests.
    */
   resolveTarget?: () => Promise<ServerTarget>
   fetchImpl?: typeof fetch
@@ -35,10 +32,11 @@ export interface ApiClientOptions {
 
 /**
  * Returns a fetch-shaped function that targets the resolved server:
- * lazily resolves + caches the target, injects the bearer header, and
- * handles BAD_BEARER retry. Input paths may be a bare
- * pathname or a full URL — only the path+search are used; the host is
- * always the resolved target. Consumed by `getApiClient`.
+ * lazily resolves + caches the target and warns once on build skew. Input
+ * paths may be a bare pathname or a full URL — only the path+search are
+ * used; the host is always the resolved target. A 401 is the server
+ * refusing to identify this device, and its message says why, so it goes
+ * back to the caller like any other error body. Consumed by `getApiClient`.
  */
 export function createServerFetch(
   opts: ApiClientOptions = {},
@@ -57,23 +55,21 @@ export function createServerFetch(
   let buildSkewChecked = false
 
   return async (input, init = {}) => {
-    let active = target ?? (target = await resolveTarget())
-    const pathAndSearch = extractPathAndSearch(input)
-    const send = async (): Promise<Response> => {
-      try {
-        return await fetchImpl(`${active.baseUrl}${pathAndSearch}`, withAuth(init, active.secret))
-      } catch (err) {
-        // A transport failure against a configured target is the ordinary
-        // "the server is not up" case once the server is a Deployment
-        // (docs/server-in-cluster.md): the origin is fixed and always
-        // resolvable, so nothing upstream can turn it into the lock
-        // resolution's "not running" message. Undici's bare `fetch failed`
-        // is what that would otherwise surface as.
-        throw new Error(unreachableServerMessage(active.baseUrl, err))
-      }
+    const active = target ?? (target = await resolveTarget())
+    const headers = new Headers(init.headers ?? {})
+    headers.set('accept', 'application/json')
+    let res: Response
+    try {
+      res = await fetchImpl(`${active.baseUrl}${extractPathAndSearch(input)}`, { ...init, headers })
+    } catch (err) {
+      // A transport failure against a configured target is the ordinary
+      // "the server is not up" case once the server is a Deployment
+      // (docs/server-in-cluster.md): the origin is fixed and always
+      // resolvable, so nothing upstream can turn it into the lock
+      // resolution's "not running" message. Undici's bare `fetch failed`
+      // is what that would otherwise surface as.
+      throw new Error(unreachableServerMessage(active.baseUrl, err))
     }
-
-    let res = await send()
     if (warnOnBuildSkew && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
       buildSkewChecked = true
       const cliBuildId = await readBuildId().catch(() => null)
@@ -81,29 +77,6 @@ export function createServerFetch(
         ? describeBuildSkew(res.headers.get('x-yaac-build-id'), cliBuildId, active.baseUrl)
         : null
       if (skew) console.error(skew)
-    }
-    if (res.status !== 401) return res
-
-    const body = await peekErrorBody(res)
-    if (body?.error.code === 'BAD_BEARER') {
-      const refreshed = await resolveTarget()
-      if (refreshed.secret !== active.secret || refreshed.baseUrl !== active.baseUrl) {
-        // A `yaac server start` or `yaac cluster install` may have
-        // re-registered this machine since the client cached its target.
-        target = refreshed
-        active = refreshed
-        res = await send()
-      } else {
-        // Nothing changed on disk, so the configured token is genuinely
-        // the wrong one. Say how to replace it for either kind of server.
-        throw new Error(
-          `the yaac server at ${active.baseUrl} rejected the token.\n`
-          + '    For a server on this machine, re-register it: `yaac server start` '
-          + '(or `yaac cluster install`).\n'
-          + '    For one elsewhere, mint a token there (`yaac auth token create '
-          + `<name>\`) and run: yaac remote set ${active.baseUrl} --token <token>`,
-        )
-      }
     }
     return res
   }
@@ -127,23 +100,6 @@ function extractPathAndSearch(input: string): string {
   if (input.startsWith('/')) return input
   const url = new URL(input)
   return `${url.pathname}${url.search}`
-}
-
-function withAuth(init: RequestInit, secret: string): RequestInit {
-  const headers = new Headers(init.headers ?? {})
-  headers.set('authorization', `Bearer ${secret}`)
-  headers.set('accept', 'application/json')
-  return { ...init, headers }
-}
-
-async function peekErrorBody(res: Response): Promise<ServerErrorBody | null> {
-  try {
-    // `Response.json()` consumes the body — clone so the fall-through
-    // error path can still read it.
-    return await res.clone().json() as ServerErrorBody
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -191,12 +147,11 @@ export function isLoopbackOrigin(origin: string): boolean {
 /**
  * Resolve the server every request goes to. Two steps, no local case:
  *
- * 1. `YAAC_SERVER_URL` + `YAAC_SERVER_SECRET` — the test injection hook:
- *    tests boot an in-process server and point the CLI at it without
- *    writing any config. Production never sets these. Above `server.json`
- *    so a test data dir carrying one can't hijack a hermetic run.
- * 2. The **selected** entry of `~/.yaac-client/server.json`, authenticated
- *    by its durable token.
+ * 1. `YAAC_SERVER_URL` — the test injection hook: tests boot an in-process
+ *    server and point the CLI at it without writing any config. Production
+ *    never sets it. Above `server.json` so a test data dir carrying one
+ *    can't hijack a hermetic run.
+ * 2. The **selected** entry of `~/.yaac-client/server.json`.
  *
  * A server on this machine is in that file like any other: `yaac server
  * start` registers the host server it spawns, `yaac cluster install` the
@@ -206,15 +161,10 @@ export function isLoopbackOrigin(origin: string): boolean {
  */
 export async function resolveServerTarget(): Promise<ServerTarget> {
   const envUrl = testEnv.serverUrlOverride
-  const envSecret = testEnv.serverSecretOverride
-  if (envUrl && envSecret) {
-    return { baseUrl: envUrl.replace(/\/+$/, ''), secret: envSecret }
-  }
+  if (envUrl) return { baseUrl: envUrl.replace(/\/+$/, '') }
 
   const cfg = await readServerConfig()
-  if (cfg?.enabled && cfg.url !== '') {
-    return { baseUrl: cfg.url, secret: cfg.token }
-  }
+  if (cfg?.enabled && cfg.url !== '') return { baseUrl: cfg.url }
   throw new Error(NO_SERVER_SELECTED)
 }
 
@@ -228,7 +178,7 @@ export const NO_SERVER_SELECTED =
   'No yaac server selected.\n'
   + '    Start one on this machine with `yaac server start` (or `yaac cluster '
   + 'install` on a k8s install),\n'
-  + '    or point at one with `yaac remote set <url> --token <token>`.'
+  + '    or point at one with `yaac remote set <url>`.'
 
 /**
  * Print the error's message and exit 1. Calls `process.exit` —
@@ -244,8 +194,8 @@ export function exitOnApiError(err: unknown): never {
  * Typed Hono API client for the server. Built by the shared `createApiClient`
  * (so a non-2xx rejects with a `ServerError` and a success resolves to its
  * unwrapped body — callers never check `res.ok` or call `res.json()`), over a
- * fetch from `createServerFetch` (so lock resolution and BAD_BEARER retry
- * logic are shared). Synchronous — the target resolves
+ * fetch from `createServerFetch` (so target resolution and the build-skew
+ * warning are shared). Synchronous — the target resolves
  * lazily on the first request — so callers can hold the result as a singleton.
  *
  * Usage:

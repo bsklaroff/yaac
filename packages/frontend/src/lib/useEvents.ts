@@ -7,8 +7,8 @@ export const SNAPSHOT_KEY = ['snapshot'] as const
 
 /**
  * Subscribe to the server's `/events` WebSocket and hydrate the React
- * Query cache from each `snapshot` frame. Same-origin, so the worktree
- * cookie rides the upgrade automatically. Reconnects with exponential
+ * Query cache from each `snapshot` frame. Same-origin, and identified like
+ * any other request to the server. Reconnects with exponential
  * backoff (500ms → 10s cap). Returns whether the socket is connected.
  */
 export function useEvents(enabled: boolean): { connected: boolean } {

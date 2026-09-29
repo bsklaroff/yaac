@@ -59,10 +59,9 @@ const OK_OR_MISSING = [200, 404]
  * The differences are exactly the features a host has no answer for.
  */
 export const ROUTE_MATRIX: RouteCase[] = [
-  // ── health and session ────────────────────────────────────────────────
+  // ── health and identity ───────────────────────────────────────────────
   { method: 'GET', path: '/health', k8s: 200, containerless: 200 },
-  { method: 'GET', path: '/auth/web-session', k8s: 204, containerless: 204 },
-  { method: 'POST', path: '/auth/web-session', body: {}, k8s: [200, 400, 401], containerless: [200, 400, 401] },
+  { method: 'GET', path: '/whoami', k8s: 200, containerless: 200 },
 
   // ── projects ──────────────────────────────────────────────────────────
   { method: 'GET', path: '/project/list', k8s: 200, containerless: 200 },
@@ -133,8 +132,8 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // The in-worktree command channel. Only the runtime whose workspaces can
   // dial the server has it: a pod speaks to the egress proxy instead, and
   // holds no token to present here. 401 rather than a refusal on
-  // containerless because the matrix asks with no bearer, which is exactly
-  // what an unknown caller looks like.
+  // containerless because the matrix asks with no worktree bearer, which is
+  // exactly what an unknown caller looks like.
   { method: 'POST', path: '/worktree/mama', body: { command: 'list' },
     why: 'a pod reaches yaac-mama through the egress proxy, not the server',
     k8s: UNSUPPORTED, containerless: 401 },
@@ -189,13 +188,10 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/worktree/:id/forward-port', request: '/worktree/nope/forward-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
   { method: 'POST', path: '/worktree/:id/dismiss-port', request: '/worktree/nope/dismiss-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
 
-  // ── shortcuts, tokens ─────────────────────────────────────────────────
+  // ── shortcuts ─────────────────────────────────────────────────────────
   { method: 'GET', path: '/shortcuts/get', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/shortcuts/set', body: { commandId: 'x', chord: null }, k8s: [200, 204, 400], containerless: [200, 204, 400] },
   { method: 'POST', path: '/shortcuts/reset', body: {}, k8s: [200, 204], containerless: [200, 204] },
-  { method: 'GET', path: '/tokens', k8s: 200, containerless: 200 },
-  { method: 'POST', path: '/tokens', body: { name: 'n' }, k8s: [200, 201, 400], containerless: [200, 201, 400] },
-  { method: 'DELETE', path: '/tokens/:name', request: '/tokens/nope', k8s: [200, 204, 404], containerless: [200, 204, 404] },
 
   // ── auth: entirely driver-neutral, credentials are the server's ───────
   { method: 'GET', path: '/auth/list', k8s: 200, containerless: 200 },
@@ -226,7 +222,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
  * mode a hand-maintained list always eventually has.
  */
 export function assertMatrixCoversEveryRoute(): void {
-  const app = buildApp({ secret: 'shh', buildId: 'matrix' })
+  const app = buildApp({ buildId: 'matrix' })
   const registered = new Set(
     (app.routes as Array<{ method: string; path: string }>)
       // `ALL` entries are middleware (auth, CORS, the feature guard on the

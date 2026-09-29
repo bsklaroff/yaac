@@ -23,7 +23,7 @@ import {
  * because this substrate has no such feature.
  */
 
-const app = (): ReturnType<typeof buildApp> => buildApp({ secret: 'shh', buildId: 'matrix' })
+const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'matrix' })
 
 async function request(route: RouteCase): Promise<Response> {
   const path = route.request ?? route.path

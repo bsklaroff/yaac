@@ -1,4 +1,3 @@
-import crypto from 'node:crypto'
 import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
@@ -10,8 +9,7 @@ import {
   runtimeMediatesEgress,
   syncToolCredentialsThrottled,
 } from '#domain/auth'
-import { createTokenStore, isCredentialOptional } from '#http'
-import { closeDb, listProjectRows, loadTokens, openDb, saveTokens } from '#db'
+import { closeDb, listProjectRows, openDb } from '#db'
 import { clearGitScratch, startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
@@ -158,6 +156,44 @@ function bindServer(
 }
 
 /**
+ * Refuse the two exposures the identity rule cannot defend
+ * (docs/remote-hosting.md), before anything is bound or opened.
+ *
+ * A request that did not pass through `tailscale serve` and names a
+ * loopback Host is taken to be this machine's owner, so every path onto
+ * the bind has to be either loopback or `serve`. A bind on any other
+ * address is a path that is neither — anyone who can reach it sends
+ * `Host: 127.0.0.1`. The pod is the one exception: its bind is walled by
+ * the ingress policy, which admits only the node and the fronting.
+ *
+ * `YAAC_REQUIRE_AUTH` asked for a credential gate on a loopback that
+ * other OS users share, and there is no such gate: under this model
+ * loopback is the owner. Starting anyway would serve those users with no
+ * gate and no sign of it, so it is refused (docs/legacy-compat-shims.md).
+ */
+function refuseUnsupportedExposure(): void {
+  const bind = env.bindAddr
+  if (!env.inCluster && bind !== '127.0.0.1' && bind !== 'localhost') {
+    throw new Error(
+      `YAAC_BIND_ADDR=${bind} would expose the server beyond this machine's loopback, `
+      + 'where anything that reaches it is taken for this machine\'s owner. '
+      + 'Bind loopback and reach it from elsewhere through `tailscale serve` '
+      + '(docs/remote-hosting.md).',
+    )
+  }
+  if (env.requireAuthSet) {
+    throw new Error(
+      'YAAC_REQUIRE_AUTH is set, and yaac no longer has a credential gate to '
+      + 'require: a request at this machine\'s loopback is its owner. A host '
+      + 'shared with other OS users is not a supported shared deployment — '
+      + 'serve it over the tailnet with `tailscale serve` and let each person '
+      + 'reach it by its ts.net name (docs/remote-hosting.md). Unset '
+      + 'YAAC_REQUIRE_AUTH to start.',
+    )
+  }
+}
+
+/**
  * Entry point for `yaac server run` — the foreground HTTP server.
  *
  * - If another server is already live, print its handshake and exit 0
@@ -169,6 +205,7 @@ function bindServer(
  *   port is recorded in the lock.
  */
 export async function runServer(opts: ServerRunOptions): Promise<void> {
+  refuseUnsupportedExposure()
   // Which runtime this process runs is the composition root's one call to
   // make, and it is made before anything can ask for one: every mediator
   // reaches the substrate through the registered driver, so an unregistered
@@ -213,18 +250,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     return
   }
 
-  const secret = crypto.randomBytes(32).toString('hex')
-  // Tokens survive restarts by design: durable ones are what remote CLIs
-  // hold instead of the per-boot lock secret, and persisted web sessions
-  // mean a restart (e.g. a rebuild) doesn't log every browser out. The
-  // store starts empty here and is restored from the DB post-acquireLock —
-  // the DB must not be opened before the single-writer lock is held.
-  const tokens = createTokenStore({
-    onChanged: (entries) => {
-      saveTokens(entries).catch((err: unknown) =>
-        serverLog(`[server] failed to persist tokens: ${String(err)}`))
-    },
-  })
   const hub = new EventHub()
   // Flipped true once the post-lock DB init below finishes. Surfaced on
   // `/health` as `ready` so `yaac server start` waits for genuine readiness
@@ -247,12 +272,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       (err: unknown) => serverLog(`[server] plan-usage refresh failed: ${String(err)}`),
     )
   }, 5 * 60_000)
-  const app = buildApp({ secret, buildId, tokens, isReady: () => ready })
+  const app = buildApp({ buildId, isReady: () => ready })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
   // return type stays the plain Hono app the CLI's typed RPC client infers
-  // from. Auth runs as normal middleware on the upgrade — the cookie
-  // travels with it, no token in the URL.
+  // from. The identity gate runs as normal middleware on the upgrade.
   // Keep the object rather than destructuring: injectWebSocket is a
   // method that relies on `this`, so calling a detached reference later
   // would break it (and trips eslint's unbound-method rule).
@@ -518,7 +542,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // stays the source of truth.
   const lease = newLeaseFields()
   const outcome = await acquireLock({
-    pid: process.pid, port, secret, startedAt: Date.now(), buildId, ...lease,
+    pid: process.pid, port, startedAt: Date.now(), buildId, ...lease,
   })
   if (!outcome.acquired) {
     serverLog(`[server] already running pid=${outcome.existing.pid} port=${outcome.existing.port}`)
@@ -548,14 +572,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }, LEASE_HEARTBEAT_MS)
   leaseTimer.unref?.()
   // Open the DB only now that the lock is held (it is the single-writer
-  // guard for PGlite), and restore the persisted tokens into the store built
-  // empty above — both before the start banner below mints its exchange
-  // token, whose onChanged persist rewrites the full token table from the
-  // in-memory set. A failure here means tokens would silently not persist,
-  // so fail the start rather than run half-alive.
+  // guard for PGlite), and fail the start rather than run half-alive.
   try {
     await openDb()
-    tokens.restoreTokens(await loadTokens())
   } catch (err) {
     serverLog(`[server] db init failed: ${String(err)}`)
     await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -576,11 +595,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on ${env.bindAddr}:${port} lock=${serverLockPath()}`)
-  // Start banner for the webapp. A loopback-only / nested server needs no
-  // credential, so print a bare URL; otherwise carry a one-time exchange
-  // token (single-use, time-bounded; the desktop app mints fresh ones).
-  const openQuery = isCredentialOptional() ? '' : `?token=${tokens.mintExchangeToken().token}`
-  serverLog(`[server] open http://127.0.0.1:${port}/${openQuery}`)
+  serverLog(`[server] open http://127.0.0.1:${port}/`)
 
   // Register signal handlers BEFORE the async startup steps below. Node's
   // default SIGTERM/SIGINT action is to terminate immediately, bypassing

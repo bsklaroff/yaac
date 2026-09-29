@@ -4,12 +4,11 @@ import path from 'node:path'
 import os from 'node:os'
 import {
   clearServerConfig,
-  mintLocalClientToken,
+  IdentityRejectedError,
   normalizeServerUrl,
   probeServer,
   readServerConfig,
   registerServer,
-  TokenRejectedError,
   serverConfigPath,
   withServerSelected,
   writeServerConfig,
@@ -33,9 +32,8 @@ describe('server config store', () => {
   it('round-trips the config at mode 0600', async () => {
     const cfg = {
       url: 'https://srv.ts.net',
-      token: 't0k',
       enabled: true,
-      saved: [{ url: 'https://srv.ts.net', token: 't0k' }],
+      saved: [{ url: 'https://srv.ts.net' }],
     }
     await writeServerConfig(cfg)
     expect(await readServerConfig()).toEqual(cfg)
@@ -46,7 +44,7 @@ describe('server config store', () => {
   it('returns null when absent, cleared, or malformed', async () => {
     expect(await readServerConfig()).toBeNull()
 
-    await writeServerConfig({ url: 'https://x', token: 't', enabled: false, saved: [] })
+    await writeServerConfig({ url: 'https://x', enabled: false, saved: [] })
     await clearServerConfig()
     expect(await readServerConfig()).toBeNull()
     await clearServerConfig() // idempotent
@@ -58,55 +56,46 @@ describe('server config store', () => {
   })
 
   it('folds the active remote into saved and drops malformed saved entries', async () => {
-    // A file written before `saved` existed.
     await fs.mkdir(clientLocalRoot(), { recursive: true })
-    await fs.writeFile(serverConfigPath(), JSON.stringify({
-      url: 'https://old.ts.net', token: 'tok', enabled: true,
-    }))
-    expect((await readServerConfig())?.saved).toEqual([{ url: 'https://old.ts.net', token: 'tok' }])
+    await fs.writeFile(serverConfigPath(), JSON.stringify({ url: 'https://old.ts.net', enabled: true }))
+    expect((await readServerConfig())?.saved).toEqual([{ url: 'https://old.ts.net' }])
 
     await fs.writeFile(serverConfigPath(), JSON.stringify({
       url: 'https://a.ts.net',
-      token: 'ta',
       enabled: false,
-      saved: [{ url: 'https://b.ts.net', token: 'tb' }, { url: 'https://c.ts.net' }, 'junk'],
+      saved: [{ url: 'https://b.ts.net' }, { host: 'c' }, 'junk'],
     }))
     expect((await readServerConfig())?.saved).toEqual([
-      { url: 'https://a.ts.net', token: 'ta' },
-      { url: 'https://b.ts.net', token: 'tb' },
+      { url: 'https://a.ts.net' },
+      { url: 'https://b.ts.net' },
     ])
+  })
+
+  it('reads a file that still carries tokens, and the next write drops them', async () => {
+    // What every install wrote before identity replaced tokens: nothing
+    // needs converting, the field is simply no longer read.
+    await fs.mkdir(clientLocalRoot(), { recursive: true })
+    await fs.writeFile(serverConfigPath(), JSON.stringify({
+      url: 'https://a.ts.net', token: 'ta', enabled: true,
+      saved: [{ url: 'https://a.ts.net', token: 'ta' }], driver: 'k8s',
+    }))
+    const cfg = await readServerConfig()
+    expect(cfg).toEqual({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }], driver: 'k8s' })
+    await writeServerConfig(cfg!)
+    expect(await fs.readFile(serverConfigPath(), 'utf8')).not.toContain('token')
   })
 
   it('keeps the install driver when the servers are forgotten', async () => {
     // `driver` shares this file, and losing it would stop a k8s install
     // refusing a host `yaac server start` — two writers on one data dir.
     await writeServerConfig({
-      url: 'https://a.ts.net', token: 't', enabled: true, saved: [], driver: 'k8s',
+      url: 'https://a.ts.net', enabled: true, saved: [], driver: 'k8s',
     })
     await clearServerConfig()
     expect(await readServerConfig()).toMatchObject({ driver: 'k8s', enabled: false, saved: [] })
     expect(await recordedDriver()).toBe('k8s')
     // With nothing selected, the empty url is not offered as a server.
     expect((await readServerConfig())?.saved).toEqual([])
-  })
-})
-
-describe('probeServer rejection', () => {
-  afterEach(() => vi.unstubAllGlobals())
-
-  it('marks a 401 as a rejection, and everything else as an ordinary failure', async () => {
-    const json = (body: unknown, status = 200): Response =>
-      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
-
-    vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(json({ ok: true, buildId: 'b' }))
-      .mockResolvedValueOnce(json({}, 401)))
-    await expect(probeServer('https://srv.ts.net', 'bad')).rejects.toBeInstanceOf(TokenRejectedError)
-
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
-    const unreachable = await probeServer('https://srv.ts.net', 't').catch((e: unknown) => e)
-    expect(unreachable).toBeInstanceOf(Error)
-    expect(unreachable).not.toBeInstanceOf(TokenRejectedError)
   })
 })
 
@@ -129,7 +118,7 @@ describe('recordedDriver', () => {
 
   it('reads the field written beside the origin', async () => {
     await writeServerConfig({
-      url: 'http://127.0.0.1:8787', token: 't', enabled: true, saved: [],
+      url: 'http://127.0.0.1:8787', enabled: true, saved: [],
       driver: 'containerless',
     })
     expect(await recordedDriver()).toBe('containerless')
@@ -149,138 +138,37 @@ describe('registerServer', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  const ORIGIN = 'http://127.0.0.1:8787'
-
-  it('mints a durable token, selects the origin, and records the driver', async () => {
-    const mint = vi.fn().mockResolvedValue('minted')
-    await registerServer(ORIGIN, 'containerless', { mint, probe: vi.fn() })
-    expect(mint).toHaveBeenCalledWith(ORIGIN)
-    expect(await readServerConfig()).toMatchObject({
-      url: ORIGIN, token: 'minted', enabled: true, driver: 'containerless',
+  it('selects the origin and records the driver, keeping the other saved servers', async () => {
+    await writeServerConfig({ url: 'https://srv.ts.net', enabled: false, saved: [], driver: 'containerless' })
+    await registerServer('http://127.0.0.1:8787', 'k8s')
+    expect(await readServerConfig()).toEqual({
+      url: 'http://127.0.0.1:8787',
+      enabled: true,
+      saved: [{ url: 'http://127.0.0.1:8787' }, { url: 'https://srv.ts.net' }],
+      driver: 'k8s',
     })
-  })
-
-  it('reuses a saved token that still authenticates, rather than rotating it', async () => {
-    // A routine `yaac server start` must not invalidate the token every
-    // other client on this machine is already holding.
-    await writeServerConfig({
-      url: ORIGIN, token: 'existing', enabled: false, saved: [{ url: ORIGIN, token: 'existing' }],
-    })
-    const mint = vi.fn().mockResolvedValue('fresh')
-    const probe = vi.fn().mockResolvedValue({ buildId: 'b' })
-    await registerServer(ORIGIN, 'containerless', { mint, probe })
-    expect(probe).toHaveBeenCalledWith(ORIGIN, 'existing')
-    expect(mint).not.toHaveBeenCalled()
-    expect(await readServerConfig()).toMatchObject({ token: 'existing', enabled: true })
-  })
-
-  it('mints again only when the server REJECTED the saved token', async () => {
-    await writeServerConfig({
-      url: ORIGIN, token: 'stale', enabled: true, saved: [{ url: ORIGIN, token: 'stale' }],
-    })
-    const mint = vi.fn().mockResolvedValue('fresh')
-    const probe = vi.fn().mockRejectedValue(new TokenRejectedError('token rejected'))
-    await registerServer(ORIGIN, 'containerless', { mint, probe })
-    expect(mint).toHaveBeenCalledOnce()
-    expect(await readServerConfig()).toMatchObject({ token: 'fresh' })
-  })
-
-  it('keeps a token it could not VERIFY, rather than replacing a good one with nothing', async () => {
-    // The dangerous case: an unreachable or slow server fails the probe,
-    // then fails the mint too — and writing that empty result would delete
-    // a credential still valid on the server, locking this machine out of
-    // a credential-requiring install until some later command succeeds.
-    await writeServerConfig({
-      url: ORIGIN, token: 'good', enabled: false, saved: [{ url: ORIGIN, token: 'good' }],
-    })
-    const mint = vi.fn().mockResolvedValue('')
-    const probe = vi.fn().mockRejectedValue(new Error(`cannot reach ${ORIGIN}: timeout`))
-    const log = vi.fn()
-    await registerServer(ORIGIN, 'containerless', { mint, probe, log, credentialRequired: true })
-
-    expect(mint).not.toHaveBeenCalled()
-    expect(await readServerConfig()).toMatchObject({
-      url: ORIGIN, token: 'good', enabled: true, driver: 'containerless',
-    })
-    expect(String(log.mock.calls[0][0])).toMatch(/could not verify/)
-  })
-
-  it('treats a 5xx or unhealthy server as unverified, not as a rejection', async () => {
-    await writeServerConfig({
-      url: ORIGIN, token: 'good', enabled: true, saved: [{ url: ORIGIN, token: 'good' }],
-    })
-    const mint = vi.fn().mockResolvedValue('fresh')
-    for (const err of [
-      new Error(`${ORIGIN}/health returned HTTP 503`),
-      new Error(`token check against ${ORIGIN} failed (HTTP 502)`),
-    ]) {
-      await registerServer(ORIGIN, 'containerless', {
-        mint, probe: vi.fn().mockRejectedValue(err),
-      })
-      expect(await readServerConfig()).toMatchObject({ token: 'good' })
-    }
-    expect(mint).not.toHaveBeenCalled()
-  })
-
-  it('keeps other saved servers and re-registers the driver on a switch of substrate', async () => {
-    await writeServerConfig({
-      url: 'https://elsewhere.ts.net', token: 'te', enabled: true,
-      saved: [{ url: 'https://elsewhere.ts.net', token: 'te' }],
-    })
-    await registerServer(ORIGIN, 'k8s', { mint: () => Promise.resolve('m'), probe: vi.fn() })
-    const cfg = await readServerConfig()
-    expect(cfg?.saved).toContainEqual({ url: 'https://elsewhere.ts.net', token: 'te' })
-    expect(cfg).toMatchObject({ url: ORIGIN, driver: 'k8s' })
-  })
-
-  it('an empty token is written silently on a credential-optional install', async () => {
-    // Nothing checks it there, and refusing to write would leave the
-    // machine pointed at no server at all.
-    const log = vi.fn()
-    await registerServer(ORIGIN, 'containerless', {
-      mint: () => Promise.resolve(''), probe: vi.fn(), log,
-    })
-    expect(log).not.toHaveBeenCalled()
-    expect(await readServerConfig()).toMatchObject({ url: ORIGIN, token: '' })
-  })
-
-  it('an empty token on a credential-REQUIRING install is a named lockout', async () => {
-    const log = vi.fn()
-    await registerServer(ORIGIN, 'containerless', {
-      mint: () => Promise.resolve(''), probe: vi.fn(), log, credentialRequired: true,
-    })
-    expect(String(log.mock.calls[0][0])).toMatch(/WARNING.*yaac auth token create/s)
   })
 })
 
 describe('withServerSelected', () => {
   it('starts a fresh config from null', () => {
-    expect(withServerSelected(null, 'https://a.ts.net', 'ta')).toEqual({
+    expect(withServerSelected(null, 'https://a.ts.net')).toEqual({
       url: 'https://a.ts.net',
-      token: 'ta',
       enabled: true,
-      saved: [{ url: 'https://a.ts.net', token: 'ta' }],
+      saved: [{ url: 'https://a.ts.net' }],
     })
   })
 
-  it('keeps other saved remotes and replaces the token of a re-set one', () => {
+  it('keeps other saved remotes and moves a re-set one to the front', () => {
     const existing = {
       url: 'https://a.ts.net',
-      token: 'ta',
       enabled: false,
-      saved: [
-        { url: 'https://a.ts.net', token: 'ta' },
-        { url: 'https://b.ts.net', token: 'tb' },
-      ],
+      saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }],
     }
-    expect(withServerSelected(existing, 'https://b.ts.net', 'tb2')).toEqual({
+    expect(withServerSelected(existing, 'https://b.ts.net')).toEqual({
       url: 'https://b.ts.net',
-      token: 'tb2',
       enabled: true,
-      saved: [
-        { url: 'https://b.ts.net', token: 'tb2' },
-        { url: 'https://a.ts.net', token: 'ta' },
-      ],
+      saved: [{ url: 'https://b.ts.net' }, { url: 'https://a.ts.net' }],
     })
   })
 })
@@ -291,31 +179,40 @@ describe('probeServer', () => {
 
   afterEach(() => vi.unstubAllGlobals())
 
-  it('checks /health then the token, and returns the build id', async () => {
+  it('checks /health then /whoami, and returns the build id and who this device is', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'b1' }))
-      .mockResolvedValueOnce(jsonResponse({ tokens: [] }))
+      .mockResolvedValueOnce(jsonResponse({ kind: 'tailnet', login: 'bob@x', name: 'Bob' }))
     vi.stubGlobal('fetch', fetchMock)
 
-    expect(await probeServer('https://srv.ts.net', 'tok')).toEqual({ buildId: 'b1' })
-    expect(fetchMock.mock.calls[0][0]).toBe('https://srv.ts.net/health')
-    const tokenCall = fetchMock.mock.calls[1] as [string, RequestInit]
-    expect(tokenCall[0]).toBe('https://srv.ts.net/tokens')
-    expect(new Headers(tokenCall[1].headers).get('authorization')).toBe('Bearer tok')
+    expect(await probeServer('https://srv.ts.net')).toEqual({
+      buildId: 'b1', principal: { kind: 'tailnet', login: 'bob@x', name: 'Bob' },
+    })
+    expect(fetchMock.mock.calls.map(([u]) => u as string))
+      .toEqual(['https://srv.ts.net/health', 'https://srv.ts.net/whoami'])
   })
 
-  it('throws prescriptively on unreachable, unhealthy, or rejected-token servers', async () => {
+  it('throws prescriptively on unreachable or unhealthy servers', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
-    await expect(probeServer('https://down.ts.net', 't')).rejects.toThrow(/cannot reach/)
+    const unreachable = await probeServer('https://down.ts.net').catch((e: unknown) => e)
+    expect(String(unreachable)).toMatch(/cannot reach/)
+    expect(unreachable).not.toBeInstanceOf(IdentityRejectedError)
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse({}, 500)))
-    await expect(probeServer('https://srv.ts.net', 't')).rejects.toThrow(/HTTP 500/)
+    await expect(probeServer('https://srv.ts.net')).rejects.toThrow(/HTTP 500/)
+  })
 
+  it('names a refused identity, in the server\'s words', async () => {
+    // A tagged device reaching a server through tailscale serve: the fix is
+    // on the tailnet, and the server's message is what says so.
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'b' }))
-      .mockResolvedValueOnce(jsonResponse({}, 401)))
-    await expect(probeServer('https://srv.ts.net', 'bad'))
-      .rejects.toThrow(/token rejected.*yaac auth token create/s)
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: 'UNAUTHENTICATED', message: 'a tagged device, or Funnel' },
+      }, 401)))
+    const err = await probeServer('https://srv.ts.net').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(IdentityRejectedError)
+    expect(String(err)).toMatch(/refused to identify this device: a tagged device, or Funnel/)
   })
 })
 
@@ -331,36 +228,5 @@ describe('normalizeServerUrl', () => {
     expect(() => normalizeServerUrl('https://srv.ts.net/api')).toThrow(/bare origin/)
     expect(() => normalizeServerUrl('https://srv.ts.net/?x=1')).toThrow(/bare origin/)
     expect(() => normalizeServerUrl('not a url')).toThrow(/invalid server URL/)
-  })
-})
-
-describe('mintLocalClientToken', () => {
-  it('authenticates the mint with the lock reader it is handed', async () => {
-    // The lock is the server's file, and only sometimes this machine's:
-    // install reads an in-cluster server's through the pod. Whatever the
-    // reader answers is the bearer for the revoke-then-create.
-    const seen: Array<{ method: string; auth: string | undefined }> = []
-    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
-      const headers = init?.headers as Record<string, string> | undefined
-      seen.push({ method: init?.method ?? 'GET', auth: headers?.authorization })
-      return Promise.resolve(new Response(
-        JSON.stringify(init?.method === 'POST' ? { token: 'durable' } : {}), { status: 200 },
-      ))
-    }))
-    const origin = 'http://127.0.0.1:8787'
-    try {
-      const token = await mintLocalClientToken(origin, () => Promise.resolve({
-        pid: 1, port: 8787, secret: 'from-the-pod', startedAt: 1, buildId: 'b',
-        instance: 'i', host: 'yaac-server-abc', heartbeatAt: 1,
-      }))
-      expect(token).toBe('durable')
-      expect(seen.every((s) => s.auth === 'Bearer from-the-pod')).toBe(true)
-      expect(seen.filter((s) => s.method === 'DELETE')).toHaveLength(1)
-      // No lock to read is no mint — an empty token, which a
-      // credential-optional install is fine with.
-      expect(await mintLocalClientToken(origin, () => Promise.resolve(null))).toBe('')
-    } finally {
-      vi.unstubAllGlobals()
-    }
   })
 })

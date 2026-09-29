@@ -76,7 +76,7 @@ async function collect(
  * relative to `PACKAGE_ROOT` which in bundled builds is `dist/`.
  *
  * Honors `YAAC_BUILD_ID` as a test-injection override (matches the
- * `YAAC_SERVER_URL` / `YAAC_SERVER_SECRET` pattern used elsewhere) so
+ * `YAAC_SERVER_URL` pattern used elsewhere) so
  * that tests running directly from source — where no `dist/.build-id`
  * exists — can still exercise the server startup path. Production
  * never sets this var.

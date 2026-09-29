@@ -19,7 +19,7 @@ import {
   resolveServerImageTag,
 } from '@yaac/server/drivers/k8s/install/server-deploy'
 import { readLock } from '@yaac/shared/lock'
-import { readServerConfig, registerServer } from '@yaac/shared/server-config'
+import { registerServer } from '@yaac/shared/server-config'
 import type { ServerLock } from '@yaac/shared/server-lock-file'
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
 import { ensureTestStorageClaims } from '#storage-claims'
@@ -36,8 +36,8 @@ const execFileAsync = promisify(execFile)
  * There is no host-process k8s server to spawn any more, so this is what
  * `spawnYaacServer` resolves to for every suite that is not containerless.
  * It answers the same `{ lock, stop }` the host spawn did, and that is the
- * whole seam: a test file asks for a server, gets a loopback origin and a
- * bearer, and never learns which side of the cluster boundary it is on.
+ * whole seam: a test file asks for a server, gets a loopback origin, and
+ * never learns which side of the cluster boundary it is on.
  *
  * Three things the host process got for free have to be handed to a pod:
  *
@@ -151,13 +151,7 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   // `server.json`, which is the only thing `resolveServerTarget` reads —
   // and has to be, because the lock on this shared data dir was written by
   // a pod.
-  //
-  // A DURABLE token, minted the same way install mints one, and for the same
-  // reason: the lock secret is per BOOT, so the moment a file restarts its
-  // server (`yaac server restart`, or a stop-then-start) every later command
-  // would be answered BAD_BEARER by the pod that replaced it. A durable
-  // token lives in the database, which is on the data dir both pods share.
-  await bootstrapRemote(forward.origin)
+  await registerServer(forward.origin, 'k8s')
 
   return {
     lock: { ...lock, port: forward.port },
@@ -166,27 +160,6 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
       logs?.kill()
       await deleteDeployment()
     },
-  }
-}
-
-/**
- * Register this file's server the way `yaac cluster install` registers a
- * real one — the whole of "the CLI can find this server".
- *
- * The empty-token degradation that is right in production (a
- * credential-optional install needs none) is a hard failure here: these
- * suites run auth-on, so a tokenless config means every CLI call in the
- * file is answered BAD_BEARER the first time the server rolls.
- */
-async function bootstrapRemote(origin: string): Promise<void> {
-  await registerServer(origin, 'k8s')
-  const cfg = await readServerConfig()
-  if (cfg?.token === undefined || cfg.token === '') {
-    throw new Error(
-      `could not mint a durable token against ${origin}: the test server is up `
-      + 'but would not issue one, so every CLI call in this file would be '
-      + 'answered BAD_BEARER the first time the server rolls.',
-    )
   }
 }
 

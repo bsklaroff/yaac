@@ -35,7 +35,6 @@ import { authList } from '#commands/auth-list'
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { configGitIdentity } from '#commands/config-git-identity'
 import { authFake } from '#commands/auth-fake'
-import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-token'
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
 import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@yaac/auth-daemon/run'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
@@ -294,7 +293,7 @@ cluster
   .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the kind node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
   .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
   .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
-  .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1; the server then requires a credential')
+  .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user')
   .action(async (options: { nodes?: string; adoptCni?: boolean; tailnet?: boolean }) => {
     if (await rejectClusterOnContainerless()) return
     if (rejectClusterArgs('install', options)) return
@@ -509,9 +508,8 @@ const remote = program
 
 remote
   .command('set')
-  .description('Configure and enable the remote server (verifies reachability and the token)')
+  .description('Configure and enable the remote server (verifies it is reachable and identifies this device)')
   .argument('<url>', 'Server origin, e.g. https://srv.tailnet.ts.net')
-  .requiredOption('--token <token>', 'Durable token minted on the server (yaac auth token create)')
   .action(remoteSet)
 
 remote
@@ -591,27 +589,5 @@ authDaemon
   .command('status')
   .description('Show whether the auth server is running and connected')
   .action(statusAuthDaemon)
-
-const authToken = auth
-  .command('token')
-  .description('Manage durable access tokens for remote clients')
-  .configureHelp({ formatHelp: nestedHelp })
-
-authToken
-  .command('create')
-  .description('Mint a token (printed once) for a remote client to authenticate with')
-  .argument('<name>', 'Device name for the token (e.g. laptop)')
-  .action(authTokenCreate)
-
-authToken
-  .command('list')
-  .description('List tokens (masked)')
-  .action(authTokenList)
-
-authToken
-  .command('revoke')
-  .description('Revoke a token by name')
-  .argument('<name>', 'Device name of the token to revoke')
-  .action(authTokenRevoke)
 
 program.parseAsync().catch(exitOnApiError)

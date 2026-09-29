@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { denyBrowserCors, requestLogger } from '@yaac/server/http/auth'
+import { identify, type IdentityEnv } from '@yaac/server/http'
+import { asTailnet } from '@yaac/test-utils/api'
 
 function buildTestApp(): Hono {
   const app = new Hono()
@@ -9,8 +11,8 @@ function buildTestApp(): Hono {
   return app
 }
 
-// Bearer + cookie auth moved to `@yaac/server/web-auth`; see
-// test/unit/server/web-auth.test.ts for that coverage.
+// The identity gate lives in `@yaac/server/http/web-auth`; see
+// packages/server/test/api/http/web-auth.test.ts for that coverage.
 
 describe('denyBrowserCors', () => {
   it('responds 405 to preflight (OPTIONS) requests', async () => {
@@ -41,5 +43,24 @@ describe('requestLogger', () => {
     expect(logged).toContain('/echo')
     expect(logged).toContain('200')
     expect(logged).not.toContain('super-secret-value')
+  })
+
+  it('names the tailnet user a request came from, and nobody for a local one', async () => {
+    // The audit trail of which person did what, now that no token name
+    // identifies a device.
+    const app = new Hono<IdentityEnv>()
+    app.use('*', requestLogger())
+    app.use('*', identify())
+    app.get('/x', (c) => c.text('ok'))
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    try {
+      await app.request('/x', { headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net') })
+      await app.request('/x')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    const [tailnet, local] = consoleErrorSpy.mock.calls.map((c) => String(c[0]))
+    expect(tailnet).toMatch(/GET \/x 200 \d+ms alice@example\.com$/)
+    expect(local).toMatch(/GET \/x 200 \d+ms$/)
   })
 })

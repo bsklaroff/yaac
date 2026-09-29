@@ -10,18 +10,21 @@ SERVER (on the tailnet)
   kind cluster ← kubectl ← yaac server (127.0.0.1:8787 — bind unchanged)
   tailscale serve https → 127.0.0.1:8787   (TLS, tailnet-only, never Funnel)
 
-USER MACHINE (laptop, also on the tailnet)
-  yaac CLI  ── RPC + terminal WebSockets (durable token) ─►  server
-  browser   ── https://srv.<tailnet>.ts.net (session cookie)
+USER MACHINE (laptop, also on the tailnet, logged in as a tailnet user)
+  yaac CLI  ── RPC + terminal WebSockets ─►  server   (serve stamps who)
+  browser   ── https://srv.<tailnet>.ts.net
   yaac auth server ── outbound WS ─► server   (runs Claude/Codex sign-ins
                                                locally, ships the bundle back)
 
 PHONE — browser only: full webapp, but no tool sign-in (needs the CLI).
 ```
 
-The local case is the same topology with `baseUrl` pointing at
-`127.0.0.1` — nothing in the CLI or webapp assumes the server is on the
-same machine.
+No client holds a credential. The server asks who is calling, not whether a
+credential is valid, and the answer is derived from the request (see
+"Security model"): at this machine's loopback the caller is **local**, and
+through `tailscale serve` it is the **tailnet user** serve says it is. The
+local case is the same topology with `baseUrl` pointing at `127.0.0.1` —
+nothing in the CLI or webapp assumes the server is on the same machine.
 
 ## Server setup
 
@@ -36,48 +39,50 @@ yaac cluster install && yaac cluster check     # k8s installs only
 tailscale up
 tailscale serve --bg https / http://127.0.0.1:8787
 
-# 3. Tell the server to admit its tailnet hostname and trust the proxy's
-#    TLS signal:
+# 3. Tell the server to admit its tailnet hostname:
 export YAAC_ALLOWED_HOSTS=srv.<tailnet>.ts.net
-export YAAC_TRUST_PROXY=1
 
-# 4. Hand them to the server — which differs by placement (see below):
+# 4. Hand it to the server — which differs by placement (see below):
 yaac server restart                            # containerless
 yaac cluster install                           # k8s
-
-# 5. Mint a durable token for each client device (printed exactly once):
-yaac auth token create laptop
 ```
 
-Where those two variables LIVE is the one thing the two placements do not
-share. Under `containerless` they are the server process's environment, so
-they belong in a systemd unit or shell profile — a detached restart does not
+5. **Decide who on the tailnet may use it.** Anyone whose device can reach
+   the server's device through `serve` is a full-access user of it — the
+   trust boundary is the tailnet. On a tailnet that is yours alone there is
+   nothing to do. On a shared one, add an ACL grant that lets only the
+   intended users reach the server's device (or its tag) on port 443; that
+   grant is the whole of the access list.
+
+Where `YAAC_ALLOWED_HOSTS` LIVES is the one thing the two placements do not
+share. Under `containerless` it is the server process's environment, so it
+belongs in a systemd unit or shell profile — a detached restart does not
 inherit an interactive `export`. Under `k8s` there is no shell in a pod to
-export them in, so the Deployment carries them, read from the shell that
-runs `yaac cluster install` (`buildServerEnv`); the export has to be live
-for that command, and `yaac server restart` — a rollout of the Deployment as
-it already stands — will not pick up a new value. Install is idempotent, so
+export it in, so the Deployment carries it, read from the shell that runs
+`yaac cluster install` (`buildServerEnv`); the export has to be live for
+that command, and `yaac server restart` — a rollout of the Deployment as it
+already stands — will not pick up a new value. Install is idempotent, so
 re-running it against the cluster it already made is the supported way to
-change the posture; it prints a note that the server now REQUIRES a
-credential and writes the durable token it mints into `server.json`, which
-is what keeps the CLI on that same machine working.
+change it. Setting it is what opts a server into remote access, and remote
+access is identity-only: every request to that name has to come through
+`serve`.
 
 Under `k8s` there is a second way onto the tailnet that needs no
-`tailscale serve` and no exported variables: `yaac cluster install
+`tailscale serve` and no exported variable: `yaac cluster install
 --tailnet` publishes the server through the Tailscale Kubernetes operator
-(a `loadBalancerClass: tailscale` Service — docs/server-in-cluster.md
-"Reachability"), sets `YAAC_ALLOWED_HOSTS` on the Deployment itself from
-the name the operator publishes, and registers
-`http://yaac.<tailnet>.ts.net`.
-Install it once (`helm upgrade --install tailscale-operator
-tailscale/tailscale-operator --namespace=tailscale --create-namespace
---set-string oauth.clientId=… --set-string oauth.clientSecret=…`) and
-`--tailnet` refuses, naming that command, until it is there. The trade
-against `tailscale serve`: the operator path is an L4 exposure, encrypted
-by WireGuard but with no TLS termination, so the browser origin is
-`http://`, the session cookie is not `Secure`, and `YAAC_TRUST_PROXY`
-stays unset (an L4 proxy sanitizes no `X-Forwarded-*` header); `serve`
-gives HTTPS.
+(a `tailscale`-class Ingress — docs/server-in-cluster.md "Reachability"),
+sets `YAAC_ALLOWED_HOSTS` on the Deployment itself from the name the
+operator publishes, and registers `https://yaac.<tailnet>.ts.net`. The
+operator's Ingress proxy is `tailscale serve` running in the cluster: it
+terminates TLS with the tailnet's certificate and stamps the caller's
+identity exactly as a host `serve` does. Install the operator once (`helm
+upgrade --install tailscale-operator tailscale/tailscale-operator
+--namespace=tailscale --create-namespace --set-string oauth.clientId=…
+--set-string oauth.clientSecret=…`), with HTTPS certificates enabled for
+the tailnet, and `--tailnet` refuses, naming that command, until it is
+there. Under this fronting there is no loopback path, so the machine that
+ran install reaches its server through the Ingress like any other device —
+it has to be logged in as a tailnet user, and install warns when it is not.
 
 Optional — make forwarded dev-server ports reachable from other tailnet
 devices. The server offers the mappings but binds nothing
@@ -94,13 +99,13 @@ yaac forward --bind <the server's tailnet IP>        # holds the listeners
 With both, a worktree's forwarded port `19500` is
 `http://srv.<tailnet>.ts.net:19500/` from any tailnet device, and the
 webapp's port chips link there automatically. Two caveats: the port is
-reachable by any tailnet device (not yaac-token-gated), and it is only
-reachable while `yaac forward` runs — give it a systemd unit beside the
-server's.
+reachable by any tailnet device (it does not pass through `serve`, so no
+identity gates it), and it is only reachable while `yaac forward` runs —
+give it a systemd unit beside the server's.
 
 A client device can hold the listeners instead, and get `localhost:19500`
 of its own: `yaac forward` on a laptop pointed at the remote (`yaac remote
-set`) tunnels over the same authenticated WebSocket, so nothing but the
+set`) tunnels over the same identified WebSocket, so nothing but the
 server's HTTPS port has to be reachable. That is also what the desktop app
 does automatically once it is attached to the remote, and it is what its
 preview pane loads. Both work against either placement: under
@@ -111,23 +116,26 @@ pod (docs/port-forward-tunnel.md).
 ## Client setup
 
 ```sh
-yaac remote set https://srv.<tailnet>.ts.net --token <token-from-step-4>
-yaac worktree list                   # talks to the server
+yaac remote set https://srv.<tailnet>.ts.net   # prints who the server says you are
+yaac worktree list                             # talks to the server
 ```
 
-`yaac remote off` deselects it without forgetting the token, and `yaac
-remote on` selects it again; `yaac remote status` shows what is configured.
-With nothing selected a client reaches no server at all — including a server
-on this very machine, which is in the same list and selected the same way
-(docs/server-selection.md). A revoked or rotated token (`yaac auth token
-revoke laptop` on the server) fails with instructions to re-run `yaac remote
-set`.
+`yaac remote off` deselects it without forgetting it, and `yaac remote on`
+selects it again; `yaac remote status` shows what is configured. With
+nothing selected a client reaches no server at all — including a server on
+this very machine, which is in the same list and selected the same way
+(docs/server-selection.md).
 
-On the phone: open the server's origin and paste a token minted for it
-(`yaac auth token create phone`) into the connect screen. Unlike a one-time
-exchange token, this one stays a valid API bearer after the exchange, so
-revoke it (`yaac auth token revoke phone`) once the phone no longer needs
-it.
+The device has to be logged in to the tailnet as a user. A **tagged**
+device (one enrolled under an ACL tag rather than a person) carries no user,
+so `serve` stamps no identity on its requests and the server refuses them,
+saying so — as does `yaac remote set`. Funnel traffic is refused the same
+way.
+
+On the phone: open the server's origin. There is nothing to paste.
+
+A lost device is revoked by removing it from the tailnet in the Tailscale
+admin console; nothing on the server needs to change.
 
 ## What works remotely
 
@@ -182,58 +190,99 @@ Semantics to keep in mind:
 ## Security model
 
 - **Trust boundary = the tailnet.** Only enrolled devices can reach the
-  `*.ts.net` name; WireGuard encrypts the wire and Serve adds real TLS
-  (so the session cookie is `Secure`). Never use `tailscale funnel`.
-- **Remote access is opt-in.** Without `YAAC_ALLOWED_HOSTS` /
-  `YAAC_TRUST_PROXY` and a `tailscale serve`, the server binds loopback only
-  and no client credential is required (see below).
-- **A loopback-only server requires no credential.** When neither
-  `YAAC_ALLOWED_HOSTS` nor `YAAC_TRUST_PROXY` is set, the deployment is
-  local-only and the bearer/cookie check is skipped — a browser or CLI on the
-  same machine talks to it with no token, which is what makes local testing
-  frictionless. What still defends it against a malicious website you visit is
-  three browser-enforced, JS-unforgeable guards on every request *including*
-  WebSocket upgrades: the `Host` header must be loopback (DNS-rebind defense),
-  and the `Origin` host and `Sec-Fetch-Site` must not be cross-site (CSRF /
-  resource-isolation defense — the cookie is no longer carrying that load).
-  A local *process* is trusted (it can already reach loopback). Set
-  `YAAC_REQUIRE_AUTH=1` to force the credential back on — for a shared machine,
-  or to exercise the auth path. Configuring remote hosting (either var above)
-  re-enables the credential automatically.
-- **A yaac running inside a worktree (`YAAC_WORKTREE_ID`) also skips the
-  credential**, even when it picks up the outer install's
-  `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY` through a project environment
-  variable of the same name. Those are ambient env, not a remote-fronting of the inner
-  server — nothing outside the machine addresses it unmediated. Under `k8s`
-  that is literal: the inner server is reachable only through the outer
-  server's port-forward, already tailnet-gated like any forwarded port (and
-  never token-gated). Under `containerless` the worktree is a host process and the
-  inner server binds the host's own loopback, so any local process or user can
-  reach it; the conclusion holds for the reason the bullet above gives — a
-  local process is already trusted, and an unsandboxed worktree agent can read
-  the outer install's data dir regardless, so the token never defended against
-  it. The worktree id is what marks this, and `createWorktree` stamps it on
-  every worktree under both drivers.
-  `YAAC_REQUIRE_AUTH=1` forces it on if you want the inner server
-  independently gated.
-- **Beware a fronted server started from inside a worktree.** Because the
-  signal is the mere presence of `YAAC_WORKTREE_ID`, a server you deliberately
-  front by this doc's own setup silently drops the token gate if you start it
-  from a shell inside a worktree — and a yaac-dev worktree is exactly that
-  shell. The tailnet boundary and the three browser guards still hold, so this
-  is not an open door, but per-device token revocation no longer applies to it.
-  Set `YAAC_REQUIRE_AUTH=1` on any server you front deliberately.
-- **Tokens are durable and revocable** per device: a lost laptop is
-  `yaac auth token revoke laptop` on the server — no restart, no effect on
-  other clients or browser worktrees. Browser worktrees are tokens too
-  (`kind: web` in `yaac auth token list`), so a leaked cookie is revoked
-  the same way.
-- Credentials always travel over the authenticated RPC channel (`PUT
+  `*.ts.net` name; WireGuard encrypts the wire and Serve adds real TLS.
+  Never use `tailscale funnel`. Which tailnet users may reach the server is
+  the tailnet's ACLs (step 5 above); every user who can is a full-access
+  user of it.
+- **Who a request is from is derived from the request** (`identify()` in the
+  server's http layer), after the Host, Origin and Sec-Fetch-Site guards:
+
+  | The request | Is |
+  |---|---|
+  | carries `X-Forwarded-For` or a `Tailscale-User-*` header, with `Tailscale-User-Login` | that tailnet user |
+  | carries them without `Tailscale-User-Login` | refused: a tagged device or Funnel |
+  | carries neither, and names a loopback `Host` | local |
+  | carries neither, and names any other `Host` | refused — or local, inside a worktree (below) |
+
+  `/health`, `/` and `/assets/*` are exempt, so an unidentified browser can
+  still load the app and be told why. `GET /whoami` answers what the server
+  decided; the webapp and `yaac remote set` show it, and the request log
+  names the tailnet user on every line.
+- **It fails closed.** There is no setting that says "this server is
+  fronted" to leave off by mistake. A name other than loopback can only be
+  admitted by `YAAC_ALLOWED_HOSTS`, and any request to such a name has to
+  carry serve's identity — so a front that is not `serve` (an nginx that
+  sets no identity, an L4 exposure, Funnel) is refused rather than trusted.
+- **Every path onto the bind is loopback or `serve`.** A request that did
+  not pass through serve and names a loopback Host is the owner, so no other
+  path may exist: a host server refuses to start on a non-loopback
+  `YAAC_BIND_ADDR`, and the in-cluster server's ingress NetworkPolicy
+  admits only the nodes and the fronting's proxy, with the pods that may
+  dial node addresses kept off the kind forwarder's port — which makes
+  those policies load-bearing for authentication (docs/server-in-cluster.md
+  "The ingress policy is the wall"). A local
+  process can forge any of these headers and gains nothing: it is the owner
+  already, able to read the data dir and hold the lock. For the same reason
+  a host shared with other OS users is not a supported shared deployment —
+  they would be local too. Serve it over the tailnet and let each person
+  reach it by its ts.net name; a server started with `YAAC_REQUIRE_AUTH`
+  set refuses to start and says so.
+- **A browser's identity is ambient**, at loopback as over the tailnet: any
+  request it makes carries it. What defends it against a malicious website
+  is three browser-enforced, JS-unforgeable guards on every request
+  *including* WebSocket upgrades: the `Host` must be loopback or allowed
+  (DNS-rebind defense), the `Origin` must be exactly the origin the request
+  was sent to — scheme, host and port — and `Sec-Fetch-Site` must not be
+  cross-site. The port is what keeps out the pages that share the server's
+  hostname: a worktree's forwarded dev server at `127.0.0.1:<port>` or
+  `srv.<tailnet>.ts.net:19500`, and the desktop preview pane, all run
+  untrusted repo code. The `OPTIONS` refusal keeps a cross-origin page from
+  adding a custom header such as a forged `Tailscale-User-Login` or
+  `X-Forwarded-Proto`, since that needs a preflight.
+- **A yaac running inside a worktree (`YAAC_WORKTREE_ID`) takes an unproxied
+  request as local whatever Host it names.** It inherits the outer
+  install's `YAAC_ALLOWED_HOSTS`, and it is reached as
+  `srv.<tailnet>.ts.net:<port>` through the outer install's forward — a
+  direct path with no serve on it, which the strict rule would refuse.
+  Serve-proxied traffic to it is still identified, and still refused without
+  a user. So a server deliberately fronted from a shell inside a worktree
+  loses only the fail-closed guard against fronts that are not `serve`.
+- Credentials always travel over the identified RPC channel (`PUT
   /auth/:tool`), never through the relay socket or the browser.
+
+### What `tailscale serve` does, which the rule rests on
+
+Observed against tailscale 1.102, from a user-owned device and from a tagged
+one, on plain requests and WebSocket upgrades alike:
+
+- From a user-owned device it sets `Tailscale-User-Login` (the login, e.g.
+  an email address) and `Tailscale-User-Name` (the display name), plus
+  `Tailscale-User-Profile-Pic`. Client-supplied copies are replaced, and
+  from a tagged device they are stripped with nothing put back.
+- It sets `X-Forwarded-For` to the device's tailnet address on every request
+  it proxies, tagged or not, replacing a client-supplied one, and
+  `X-Forwarded-Proto: https` for the TLS it terminated — which the Origin
+  guard reads as the scheme the browser used, so without it every browser
+  mutation and WebSocket over the tailnet would be refused.
+- It preserves the client's `Host` — a forged `Host: 127.0.0.1` arrives as
+  sent, but with the forwarding headers beside it, so the server judges it
+  proxied and never local.
+- A node's request to its own ts.net name goes through serve like any
+  other.
+
+The server also decodes an RFC 2047 encoded word (`=?utf-8?q?…?=`), the
+form a non-ASCII display name would take in a header. The Tailscale
+Kubernetes operator's `tailscale`-class Ingress proxy (operator 1.102) is
+the same serve code and was observed to behave identically: a user-owned
+device is identified, a tagged one is not, and forged identity, forwarding
+and `Host` headers are handled as above.
 
 ## Not yet covered
 
 - **Reboot durability** (systemd unit for the server, cluster restart on
   boot) — run `yaac cluster install && yaac server start` after a
   server reboot for now.
-- Multi-user access.
+- Per-user access: every identified user has full access
+  (docs/plans/multi-user-deployment.md).
+- Tagged devices as callers: resolving a tagged device's address to its
+  node through the tailscaled socket (`whois`) would admit it.

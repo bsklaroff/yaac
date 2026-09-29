@@ -51,16 +51,6 @@ const ns = process.env.YAAC_K8S_NAMESPACE || 'yaac'
 const lock = readLock()
 const origin = `http://127.0.0.1:${lock.port}`
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-async function mintToken() {
-  const r = await fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (r.status !== 201) throw new Error(`token mint HTTP ${r.status}`)
-  return (await r.json()).token
-}
-
 const podsNow = () => sh(`kubectl get pods -n ${ns} -o name`).split('\n').filter((l) => l.includes('yaac-yaac'))
 
 async function main() {
@@ -86,9 +76,7 @@ async function main() {
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
     await ctx.addInitScript(() => { try { localStorage.setItem('yaac.viewmode.v1', 'tiles') } catch {} })
     const page = await ctx.newPage()
-    const token = await mintToken()
-    await page.goto(`${origin}/?token=${token}&project=${proj}&session=${sid}`)
-    await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15000 })
+    await page.goto(`${origin}/?project=${proj}&session=${sid}`)
     // Split ASAP so the width shrink hits while the agent is still cold-booting.
     await sleep(300)
     await page.evaluate(async (id) => { await fetch(`/session/${id}/terminals`, { method: 'POST' }) }, sid)

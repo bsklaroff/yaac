@@ -13,7 +13,7 @@ vi.mock('#port-tunnel', () => ({ startForward }))
 import { createForwardSet, serverNeedsForwarder } from '#port-tunnel-set'
 import type { ForwardSpec } from '#port-tunnel'
 
-const TARGET = { baseUrl: 'http://127.0.0.1:8787', secret: 's' }
+const TARGET = { baseUrl: 'http://127.0.0.1:8787' }
 
 function spec(session: string, containerPort: number, hostPort = containerPort): ForwardSpec {
   return { session, containerPort, hostPort }

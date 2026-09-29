@@ -56,21 +56,15 @@ already are it.
 - `tailscale serve` injects spoof-stripped `Tailscale-User-Login` /
   `Tailscale-User-Name` headers on proxied tailnet requests (Funnel traffic
   gets none) — identity with no login UI, no OAuth, no password store.
-- The server today has no identity model: `cookieOrBearerAuth` in
-  `packages/server/src/api/http/web-auth.ts` resolves "credential valid?"
-  from the lock secret, `isValidToken` or `isValidSession` — all boolean —
-  and writes nothing onto the request. Nothing user-shaped exists in the
-  schema; the one non-server identity axis is per-worktree, not per-user
+- The server already identifies every caller (docs/remote-hosting.md
+  "Security model"): `identify()` in `packages/server/src/api/http/web-auth.ts`
+  resolves a `Principal` — `local`, or the `tailnet` user `tailscale serve`
+  stamped — and stores it on the request, where `GET /whoami` and the
+  request log read it. Nothing user-shaped exists in the schema yet; the one
+  non-server identity axis is per-worktree, not per-user
   (`worktrees.mamaTokenHash`, the bearer a containerless worktree presents to
   `POST /worktree/mama`). That absence is an asset — there is no wrong model
   to migrate off.
-- The credential gate already has exactly two shapes, and tokens are a
-  third thing layered on both: `isCredentialOptional` trusts every local
-  process on a loopback-only install, and a fronted install
-  (`YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`) trusts what `tailscale serve`
-  forwards. Durable tokens, one-time exchange tokens and web sessions exist
-  because the middleware throws identity away; once it keeps it, nothing
-  they buy is left.
 - Observed facts enter db through one door (`applyWorktreeEvent`), and
   the substrate has no users in it. So principals annotate **intent**, never
   observation — the event union, the runtime contract, and everything under
@@ -114,85 +108,29 @@ SHARED HOST                   ▼
 No gateway process, no routing, no per-user provisioning: `tailscale serve`
 fronts the one server (a pod, per docs/server-in-cluster.md, published at a
 host loopback origin), and the server itself terminates identity. Deployment
-env such as `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY` reaches the pod by
-re-running `yaac cluster install`, which is how `YAAC_IDENTITY` below arrives
-too.
+env such as `YAAC_ALLOWED_HOSTS` reaches the pod by re-running `yaac cluster
+install`.
 
 ### Identity terminates in `api/http`: loopback or tailscale, no tokens
 
-The auth middleware stops asking "is this credential valid?" and answers
-"who is this?" instead — and there are only two answers, so the token
-machinery goes. A request is either **local** (it reached the bind without
-passing through `tailscale serve`) or **proxied** (it carries serve's
-`X-Forwarded-For`), and each resolves a `Principal` its own way:
+Shipped; docs/remote-hosting.md "Security model" is the reference. Three
+refinements of what this section first proposed:
 
-- **Proxied**: the identity is the tailnet's. The cheap form reads the
-  spoof-stripped `Tailscale-User-Login` header; the robust form asks
-  tailscaled's LocalAPI `whois` about the forwarded address, which returns
-  the node and its user. `whois` is the one to build on: it covers tagged
-  devices (which carry no user header) by naming the node, and it gives
-  **device** identity — which is what per-device token revocation was for.
-  Revoking a lost laptop becomes removing it from the tailnet, in the one
-  console that already governs who can reach the server at all. A proxied
-  request that resolves to no user — Funnel traffic, a tagged node with no
-  owner — is **refused**, never mistaken for local.
-- **Local**: the built-in owner principal, on the standing reasoning of
-  docs/remote-hosting.md — a local process can already reach loopback, read
-  the data dir and hold the lock, so a credential never defended against
-  it. What still defends a local browser against a malicious site is the
-  three browser-enforced guards (`Host`, `Origin`, `Sec-Fetch-Site`), which
-  stay.
+- **No `YAAC_IDENTITY` knob.** The rule is derived from the request: a
+  request `tailscale serve` forwarded is identified by the user it stamps,
+  and one it did not forward is local only when it names a loopback `Host`.
+  A knob could be left off on a fronted server; the Host rule fails closed.
+- **No `tailscale-only` mode.** The fronting that would need it — the
+  in-cluster tailnet Ingress — never presents a loopback Host.
+- **The nested-server relaxation stays, narrowed.** Inside a worktree an
+  unproxied request is local whatever its Host, because an inner server is
+  reached as `srv.<tailnet>:<port>` through the outer install's forward;
+  serve-proxied traffic to it is still identified.
 
-One env knob, `YAAC_IDENTITY=tailscale` (read in
-`packages/shared/src/env.ts`, propagated into the server Deployment like
-`YAAC_TRUST_PROXY`, which it absorbs), turns the proxied resolution on. A
-second value, `YAAC_IDENTITY=tailscale-only`, refuses local requests too, so
-even a client on the server's own machine addresses the ts.net name and is
-identified by it — this is the shared-OS-user host that `YAAC_REQUIRE_AUTH`
-covers today, now stated as a property of identity rather than a gate.
-Unset means a local-only install: every request is local, one implicit
-owner. **Single-user is the degenerate case of multi-user, not a fork** —
-local installs run the same code with one implicit principal, so nothing
-about local development or the existing e2e topology changes.
-
-Under `k8s` "local" needs one more sentence. The server is a pod that binds
-`0.0.0.0` and never sees a `127.0.0.1` peer; a request from the host arrives
-through the kind port-mapping with a node-side source address. So local is
-defined as *not proxied by serve*, never as a peer address, and the pod's
-ingress NetworkPolicy — which keeps every worktree pod off the server
-(docs/server-in-cluster.md) — is load-bearing for authentication, not
-hygiene: a pod that could reach the bind would be "local". `whois` from
-inside the pod means hostPath-mounting the tailscaled socket into the
-server Deployment; the header form needs nothing.
-
-What this deletes, all of it single-user simplification that can ship
-before any tenancy:
-
-- The `tokens` table, the token store and its per-kind FIFO caps, the
-  `/tokens` routes, and `yaac auth token create|list|revoke`.
-- The one-time exchange token, the `?token=` bootstrap, the session cookie
-  and web sessions. A browser on the tailnet is identified on every
-  request; a local browser is covered by the loopback guards.
-- The lock-secret bearer and the mint in `registerServer`
-  (docs/server-selection.md): the lock secret exists so a client can
-  authenticate *as the server* to mint itself a durable token. With no
-  tokens, `server.json` is an origin and a driver, and the `BAD_BEARER`
-  re-read-and-retry goes with it.
-- `YAAC_REQUIRE_AUTH`, `YAAC_TRUST_PROXY` (folded into `YAAC_IDENTITY`), the
-  `YAAC_WORKTREE_ID` credential skip (a nested server is only ever reached at
-  loopback, which is local by definition), and the "beware a fronted server
-  started from inside a worktree" caveat — which exists only because a token
-  gate can silently drop.
-
-What stays: the per-worktree mama bearer (`worktrees.mamaTokenHash`) and
-the proxy's relay secret are worktree *attribution*, not user auth, and a
-worktree pod cannot carry a tailnet identity.
-
-What it costs: remote hosting is tailscale-only, which is the documented
-stance already (trust boundary is the tailnet; never Funnel) — a
-non-tailscale remote deployment is not supported rather than
-token-supported. And every remote client, CLI and desktop app included,
-addresses the ts.net origin, which `yaac remote set <url>` already does.
+Tagged devices carry no user and are refused until the `whois` form — the
+tailscaled socket mounted into the server, resolving the forwarded address
+to a node — admits them as node principals. That is also what "revoke a
+device" rests on in phase 3.
 
 ### Principals flow down as arguments
 
@@ -580,15 +518,14 @@ docs/plans/isolation-groundwork.md workstream 1.
   `native`, and caps viewer tmux sessions per worktree. For v1, owner-only
   PTY plus the read-only transcript pane is the safe subset; a live TUI
   viewer is a §2 "observable sessions" item, not free.
-- **`/forward/attach` is a bearer-gated tunnel to any worktree's
+- **`/forward/attach` is an identity-gated tunnel to any worktree's
   listeners, and a nested yaac serves its full API to whoever holds it.**
-  The tunnel is authenticated, but with no principal every authenticated
-  user can splice into every worktree's forwarded ports. A nested yaac
-  treats every request as local (today via the `YAAC_WORKTREE_ID` skip in
-  `isCredentialOptional`; under the identity section, because it is only
-  ever reached at loopback); docs/remote-hosting.md argues this is fine
-  because the inner server is reachable only through the outer server's
-  tunnel — which holds exactly as long as the tunnel is owner-gated.
+  The tunnel is identified, but every identified user can splice into
+  every worktree's forwarded ports. A nested yaac treats every unproxied
+  request as local (the `YAAC_WORKTREE_ID` relaxation in `identify()`);
+  docs/remote-hosting.md argues this is fine because the inner server is
+  reached only through the outer server's tunnel — which holds exactly as
+  long as the tunnel is owner-gated.
   Disposition: `/forward/attach` authorizes `act` on the worktree, which
   closes both. A delegated tunnel (handoff, later) hands over the inner
   control plane with it, which is the trust class handoff means anyway —
@@ -759,18 +696,8 @@ processes, no new arrows:
    ids for everything named outside the data dir, and main-registry write
    grants. None of it needs a `Principal`; all of it is required before
    any owner check is meaningful.
-1. **Identity without tokens — ship as a single-user simplification.**
-   The middleware resolves local vs. proxied and returns a principal (the
-   signature the whole plan hangs off); `YAAC_IDENTITY` replaces
-   `YAAC_TRUST_PROXY` and `YAAC_REQUIRE_AUTH`; the `tokens` table, store,
-   routes and CLI commands, the exchange/cookie flow, the lock-secret mint
-   in `registerServer` and the `YAAC_WORKTREE_ID` skip are deleted;
-   `server.json` drops its token; docs/remote-hosting.md and
-   docs/server-selection.md are rewritten to the two-answer model. Every
-   local install behaves exactly as before, since local was already
-   credential-free; a fronted install goes from "token or header" to
-   "header". The `whois` form, and the tailscaled socket mount it needs in
-   the server pod, can follow the header form.
+1. **Identity without tokens — shipped** (see "Identity terminates in
+   `api/http`" above). The `whois` form follows.
 2. **Principal plumbing, no behavior change.** The `Principal` type,
    `domain/access` with the `read`/`act`/`write`/`admin` action verbs
    (sealed, tested per convention), domain verb signatures take the
@@ -799,27 +726,19 @@ processes, no new arrows:
    each as rows + policy + UI on the standing structure.
 
 Testing per repo conventions: `domain/access` gets its barrel-function
-tests; the api project covers principal resolution (proxied header,
-proxied-without-identity refused, local default, `tailscale-only`) and
-write-denial for non-owners in both matrix columns — the header form needs
+tests; the api project already covers principal resolution
+(`identity-flow`), and gains write-denial for non-owners in both matrix columns — the header form needs
 no tailscale, only request headers, and `whois` gets a stubbed LocalAPI;
-the token commands' e2e-cli tests and the 401-gate api tests are deleted
-with what they cover; the transcript route's existing api coverage gains
+the transcript route's existing api coverage gains
 the cross-owner read case; any new CLI surface gets its e2e test. The
 existing e2e topology is untouched by phases 0–2 and gains a
 second-principal case in phase 3.
 
 ## Open questions
 
-- **Header vs. `whois` ordering**: the header form ships first because it
-  needs nothing in the pod; decide whether `whois` (device identity, tagged
-  nodes, and the tailscaled socket mount in the server Deployment) lands
-  with phase 1 or waits for the first request that needs device identity.
-  Lean: with phase 1 — "revoke a device" has to have an answer the day
-  tokens are gone.
-- **Serve on self-requests**: whether `tailscale serve` adds identity
-  headers to a node's requests to its own ts.net name. `tailscale-only`
-  mode depends on it; verify on a real node before documenting the mode.
+- **When `whois` lands**: it admits tagged devices and gives device
+  identity; decide whether it waits for phase 3 or for the first install
+  whose client is a tagged node.
 - **Attach-write semantics for handoff** (phase 4): whether write-attach
   is exclusive (owner or delegate) or advisory — decide when presence
   lands, not before.

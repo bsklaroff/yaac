@@ -5,7 +5,7 @@ import { buildApp } from '#main/server'
 describe('GET /health', () => {
   it('reports ok, the buildId, and the driver', async () => {
     installFakeWorktreeDriver()
-    const app = buildApp({ secret: 'shh', buildId: 'bid-1' })
+    const app = buildApp({ buildId: 'bid-1' })
     const res = await app.request('/health')
     expect(res.status).toBe(200)
     expect(await res.json())
@@ -16,14 +16,14 @@ describe('GET /health', () => {
     // /health is what a caller probes before it knows anything about the
     // server, including whether its substrate came up — so it must answer
     // during the window before the composition root has registered one.
-    const app = buildApp({ secret: 'shh', buildId: 'b' })
+    const app = buildApp({ buildId: 'b' })
     const res = await app.request('/health')
     expect(res.status).toBe(200)
     expect((await res.json() as { driver: string | null }).driver).toBeNull()
   })
 
   it('defaults ready to true when no isReady is injected (in-process tests)', async () => {
-    const app = buildApp({ secret: 'shh', buildId: 'b' })
+    const app = buildApp({ buildId: 'b' })
     const res = await app.request('/health')
     expect((await res.json() as { ready: boolean }).ready).toBe(true)
   })
@@ -32,7 +32,7 @@ describe('GET /health', () => {
     // The runServer wiring passes `() => ready`, a flag flipped true only
     // after DB init — so /health must call it per request, not cache it.
     let ready = false
-    const app = buildApp({ secret: 'shh', buildId: 'b', isReady: () => ready })
+    const app = buildApp({ buildId: 'b', isReady: () => ready })
 
     const before = await app.request('/health')
     expect((await before.json() as { ready: boolean }).ready).toBe(false)

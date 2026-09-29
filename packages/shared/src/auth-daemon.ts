@@ -126,12 +126,9 @@ export async function spawnAuthDaemonDetached(opts: SpawnAuthDaemonOptions = {})
 }
 
 /** Is the main server currently seeing a connected auth agent? */
-async function agentConnected(baseUrl: string, secret: string): Promise<boolean> {
+async function agentConnected(baseUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/auth/agent`, {
-      headers: { authorization: `Bearer ${secret}` },
-      signal: AbortSignal.timeout(3000),
-    })
+    const res = await fetch(`${baseUrl}/auth/agent`, { signal: AbortSignal.timeout(3000) })
     if (!res.ok) return false
     const body = await res.json() as { connected?: boolean }
     return body.connected === true
@@ -167,7 +164,7 @@ export interface EnsureAuthDaemonOptions extends EnsureAuthDaemonSpawnedOptions 
  */
 export async function ensureAuthDaemonSpawned(
   opts: EnsureAuthDaemonSpawnedOptions = {},
-): Promise<{ baseUrl: string; secret: string }> {
+): Promise<ServerTarget> {
   const target = opts.target ?? await resolveServerTarget()
 
   const lock = await readAuthDaemonLock()
@@ -182,7 +179,7 @@ export async function ensureAuthDaemonSpawned(
   if (!live || lock?.baseUrl !== target.baseUrl) {
     await spawnAuthDaemonDetached(opts)
   }
-  return { baseUrl: target.baseUrl, secret: target.secret }
+  return { baseUrl: target.baseUrl }
 }
 
 /**
@@ -203,7 +200,7 @@ export async function ensureAuthDaemon(
   const pollIntervalMs = opts.pollIntervalMs ?? 250
   const deadline = Date.now() + connectTimeoutMs
   while (Date.now() < deadline) {
-    if (await agentConnected(target.baseUrl, target.secret)) return
+    if (await agentConnected(target.baseUrl)) return
     await new Promise((r) => setTimeout(r, pollIntervalMs))
   }
   throw new Error(

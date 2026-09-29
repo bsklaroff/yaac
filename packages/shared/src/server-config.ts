@@ -1,32 +1,30 @@
 import fs from 'node:fs/promises'
 import { clientLocalPath, ensureClientLocalRoot } from '#paths'
-import { readLock } from '#lock'
-import type { ServerLock } from '#server-lock-file'
-import type { DriverKind } from '#types'
+import type { DriverKind, Principal } from '#types'
 
 /**
  * Which yaac server this machine's clients talk to, and what kind of
  * install this data dir is (`~/.yaac-client/server.json`, 0600).
  *
- * `url` / `token` are the selected server and `enabled` is the switch that
- * deselects it without losing the token; `saved` remembers every server
- * ever configured so clients (the desktop shell's picker, `yaac remote
- * on`) can switch back without re-entering one. The machine has one
- * selection at a time — `saved` is history, not contexts.
+ * `url` is the selected server and `enabled` is the switch that deselects
+ * it without forgetting it; `saved` remembers every server ever configured
+ * so clients (the desktop shell's picker, `yaac remote on`) can switch
+ * back without re-entering one. The machine has one selection at a time —
+ * `saved` is history, not contexts.
  *
  * There is no other way to reach a server. A server on this machine is
  * registered here by `yaac server start` exactly as an in-cluster one is by
  * `yaac cluster install` (`registerServer` below), so no client has a local
- * case: an origin and a token is the whole of "how do I reach the server".
+ * case: an origin is the whole of "how do I reach the server". Who the
+ * caller IS is not a credential this file holds — the server derives it
+ * from the request (docs/remote-hosting.md).
  */
 export interface SavedServer {
   url: string
-  token: string
 }
 
 export interface ServerConfig {
   url: string
-  token: string
   enabled: boolean
   saved: SavedServer[]
   /**
@@ -51,9 +49,9 @@ export function serverConfigPath(): string {
 
 /**
  * Absent, unparseable, or wrong-shaped file → null (no server configured).
- * The selected server is always folded into `saved` (files written before
- * `saved` existed lack it), so callers can treat `saved` as the complete
- * known-servers list.
+ * The selected server is always folded into `saved`, so callers can treat
+ * `saved` as the complete known-servers list. Fields this reader does not
+ * know are dropped, and go on the next write.
  */
 export async function readServerConfig(): Promise<ServerConfig | null> {
   try {
@@ -61,27 +59,19 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const cfg = parsed as Record<string, unknown>
-    if (
-      typeof cfg.url !== 'string'
-      || typeof cfg.token !== 'string'
-      || typeof cfg.enabled !== 'boolean'
-    ) return null
+    if (typeof cfg.url !== 'string' || typeof cfg.enabled !== 'boolean') return null
     const saved = (Array.isArray(cfg.saved) ? cfg.saved : [])
-      .filter((s: unknown): s is SavedServer => {
-        if (!s || typeof s !== 'object') return false
-        const r = s as Record<string, unknown>
-        return typeof r.url === 'string' && typeof r.token === 'string'
-      })
-      .map((s) => ({ url: s.url, token: s.token }))
+      .filter((s: unknown): s is SavedServer =>
+        !!s && typeof s === 'object' && typeof (s as Record<string, unknown>).url === 'string')
+      .map((s) => ({ url: s.url }))
     // The empty url is `clearServerConfig`'s "nothing selected, but this is
     // still a k8s install" state — not a server to remember.
     if (cfg.url !== '' && !saved.some((s) => s.url === cfg.url)) {
-      saved.unshift({ url: cfg.url, token: cfg.token })
+      saved.unshift({ url: cfg.url })
     }
     const driver = cfg.driver === 'k8s' || cfg.driver === 'containerless' ? cfg.driver : undefined
     return {
       url: cfg.url,
-      token: cfg.token,
       enabled: cfg.enabled,
       saved,
       ...(driver ? { driver } : {}),
@@ -91,7 +81,7 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
   }
 }
 
-/** Persist atomically (tmp + rename) at 0600 — the token is a bearer. */
+/** Persist atomically (tmp + rename) at 0600, like everything client-local. */
 export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
   await ensureClientLocalRoot()
   const p = serverConfigPath()
@@ -114,7 +104,7 @@ export async function clearServerConfig(): Promise<void> {
     await fs.rm(serverConfigPath(), { force: true })
     return
   }
-  await writeServerConfig({ url: '', token: '', enabled: false, saved: [], driver })
+  await writeServerConfig({ url: '', enabled: false, saved: [], driver })
 }
 
 /**
@@ -140,21 +130,16 @@ export function normalizeServerUrl(raw: string): string {
 }
 
 /**
- * A config with `url`/`token` as the selected server, upserted into
- * `saved` (an existing entry for the origin gets the new token). The other
- * saved servers and the install's `driver` carry over from `existing`.
+ * A config with `url` as the selected server, moved to the front of
+ * `saved`. The other saved servers and the install's `driver` carry over
+ * from `existing`.
  */
-export function withServerSelected(
-  existing: ServerConfig | null,
-  url: string,
-  token: string,
-): ServerConfig {
+export function withServerSelected(existing: ServerConfig | null, url: string): ServerConfig {
   const others = (existing?.saved ?? []).filter((s) => s.url !== url)
   return {
     url,
-    token,
     enabled: true,
-    saved: [{ url, token }, ...others],
+    saved: [{ url }, ...others],
     ...(existing?.driver ? { driver: existing.driver } : {}),
   }
 }
@@ -162,29 +147,30 @@ export function withServerSelected(
 const PROBE_TIMEOUT_MS = 5000
 
 /**
- * The server answered, and it says this token is not one of its own.
- *
- * Distinguished from every other probe failure because the two call for
- * opposite actions: a rejected token must be replaced, while a token we
- * merely could not CHECK — the server is down, slow, mid-migration, or
- * answering 5xx — must be kept. Treating the second as the first throws
- * away a working credential (see `registerServer`).
+ * The server answered, and it will not say who this device is: it reached
+ * the server through `tailscale serve` with no user identity (a tagged
+ * device, or Funnel), or by a name that is not loopback without going
+ * through `serve` at all. The message is the server's own, which says
+ * which. Distinguished from every other probe failure because retrying
+ * does not help — the fix is on the tailnet, not here.
  */
-export class TokenRejectedError extends Error {
+export class IdentityRejectedError extends Error {
   constructor(message: string) {
     super(message)
-    this.name = 'TokenRejectedError'
+    this.name = 'IdentityRejectedError'
   }
 }
 
 /**
- * Verify a server end to end: the origin answers /health, and the token
- * authenticates against a protected route (/health is public — only an
- * authenticated call proves the token). Returns the server's build id so
- * callers can warn on skew; throws a prescriptive error on any failure,
- * and a `TokenRejectedError` specifically when the server rejected it.
+ * Verify a server end to end: the origin answers /health, and /whoami
+ * identifies this device (/health is public — only /whoami proves the
+ * server will take this device's requests). Returns the server's build id
+ * so callers can warn on skew, and who the server says this device is;
+ * throws a prescriptive error on any failure, and an
+ * `IdentityRejectedError` specifically when the server refused to
+ * identify the caller.
  */
-export async function probeServer(origin: string, token: string): Promise<{ buildId: string }> {
+export async function probeServer(origin: string): Promise<{ buildId: string; principal: Principal }> {
   let health: Response
   try {
     health = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
@@ -194,161 +180,23 @@ export async function probeServer(origin: string, token: string): Promise<{ buil
   if (!health.ok) throw new Error(`${origin}/health returned HTTP ${health.status}`)
   const { buildId } = await health.json() as { ok: boolean; buildId: string }
 
-  const check = await fetch(`${origin}/tokens`, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-  })
-  if (check.status === 401) {
-    throw new TokenRejectedError(
-      `token rejected by ${origin} — mint one on the server with: yaac auth token create <name>`,
+  const whoami = await fetch(`${origin}/whoami`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+  if (whoami.status === 401) {
+    const body = await whoami.json().catch(() => null) as { error?: { message?: string } } | null
+    throw new IdentityRejectedError(
+      `${origin} refused to identify this device: ${body?.error?.message ?? 'HTTP 401'}`,
     )
   }
-  if (!check.ok) throw new Error(`token check against ${origin} failed (HTTP ${check.status})`)
-  return { buildId }
+  if (!whoami.ok) throw new Error(`identity check against ${origin} failed (HTTP ${whoami.status})`)
+  return { buildId, principal: await whoami.json() as Principal }
 }
-
-/** Name of the durable token a machine keeps for its own install's server. */
-export const LOCAL_CLIENT_TOKEN_NAME = 'local-client'
-
-const MINT_TIMEOUT_MS = 10_000
 
 /**
  * Point this machine's clients at the server that was just stood up, and
- * record which kind of install stood it up.
- *
- * This is the ONLY bootstrap in the system, and both substrates use it:
- * `yaac server start` calls it for the host server it spawned,
- * `yaac cluster install` for the Deployment it applied. What makes it
- * possible either way is the lock on the shared data dir — a host server
- * writes it directly, a pod writes it into the hostPath it mounts — so the
- * per-boot secret that authenticates as the server itself is readable
- * here, and buys a DURABLE token. Durable because the lock secret is per
- * BOOT: the moment the server restarts, a config holding the old secret
- * would be answered BAD_BEARER by its replacement.
- *
- * A saved token that still works is kept rather than rotated, so a routine
- * `yaac server start` doesn't invalidate the token every other client on
- * this machine is holding.
- *
- * Deps are injected so every branch unit-tests without a server or a lock.
+ * record which kind of install stood it up. `yaac server start` calls it
+ * for the host server it spawned, `yaac cluster install` for the
+ * Deployment it applied — the one registration both substrates share.
  */
-export async function registerServer(
-  origin: string,
-  driver: DriverKind,
-  opts: {
-    log?: (message: string) => void
-    /** Non-empty means "this install requires a credential" — an empty
-     *  token there is a lockout, so `registerServer` says so. */
-    credentialRequired?: boolean
-    readConfig?: typeof readServerConfig
-    writeConfig?: typeof writeServerConfig
-    probe?: typeof probeServer
-    mint?: (origin: string) => Promise<string>
-  } = {},
-): Promise<void> {
-  const log = opts.log ?? ((): void => { /* quiet by default */ })
-  const readConfig = opts.readConfig ?? readServerConfig
-  const writeConfig = opts.writeConfig ?? writeServerConfig
-  const probe = opts.probe ?? probeServer
-  const mint = opts.mint ?? mintLocalClientToken
-
-  const existing = await readConfig()
-  const saved = existing?.saved.find((s) => s.url === origin)
-  if (saved && saved.token !== '') {
-    const verdict = await checkSavedToken(probe, origin, saved.token)
-    // Reused when it still authenticates: rotating on every start would
-    // break every other client holding the old one, for no gain.
-    //
-    // And reused when the answer is UNKNOWN, which is the important half.
-    // A server that is down, slow, or mid-migration fails the probe and
-    // would then fail the mint too — writing an empty token over a
-    // credential that is still valid on the server, and locking this
-    // machine out of a credential-requiring install until some later
-    // command happens to succeed here. Only a real rejection rotates.
-    if (verdict !== 'rejected') {
-      if (verdict === 'unverified') {
-        log(
-          `could not verify this machine's token against ${origin} — keeping it. `
-          + 'If commands are refused, run this again once the server is answering.',
-        )
-      }
-      await writeConfig({ ...withServerSelected(existing, origin, saved.token), driver })
-      return
-    }
-  }
-
-  const token = await mint(origin)
-  // An empty token is right on a credential-optional install, where
-  // nothing checks it. On one that REQUIRES a credential it is a lockout,
-  // and the operator has to hear about it rather than discover it on the
-  // next command.
-  if (token === '' && opts.credentialRequired) {
-    log(
-      'WARNING: could not mint a durable token for this machine, and this '
-      + 'server REQUIRES a credential — so the CLI here cannot reach it. '
-      + 'Mint one against the server and configure it by hand: `yaac auth '
-      + `token create <name>\`, then \`yaac remote set ${origin} --token <token>\`.`,
-    )
-  }
-  await writeConfig({ ...withServerSelected(existing, origin, token), driver })
-}
-
-/**
- * What the server said about a token this machine already holds: it is
- * good, it is not ours, or we could not get an answer. The third is not a
- * failure of the token — see `registerServer`.
- */
-async function checkSavedToken(
-  probe: typeof probeServer,
-  origin: string,
-  token: string,
-): Promise<'ok' | 'rejected' | 'unverified'> {
-  try {
-    await probe(origin, token)
-    return 'ok'
-  } catch (err) {
-    return err instanceof TokenRejectedError ? 'rejected' : 'unverified'
-  }
-}
-
-/**
- * Mint the durable token for this machine, authenticated with the lock
- * secret (see `registerServer`).
- *
- * The lock is read through `readLockFn` because it is the SERVER's file
- * and only sometimes this machine's: a host server writes it here, while
- * an in-cluster server writes it where its pod mounts it, which on a
- * cloud cluster is nowhere this machine can open. Install hands in a
- * reader that asks the pod.
- *
- * Revoke-then-create: the full token value only ever leaves the server at
- * creation, so a stale one cannot be recovered and is replaced instead.
- * Failures degrade to an empty token, which is exactly right on a
- * credential-optional install where nothing checks it.
- */
-export async function mintLocalClientToken(
-  origin: string,
-  readLockFn: () => Promise<ServerLock | null> = readLock,
-): Promise<string> {
-  const lock = await readLockFn()
-  if (!lock) return ''
-  const auth = { authorization: `Bearer ${lock.secret}` }
-  try {
-    await fetch(`${origin}/tokens/${LOCAL_CLIENT_TOKEN_NAME}`, {
-      method: 'DELETE',
-      headers: auth,
-      signal: AbortSignal.timeout(MINT_TIMEOUT_MS),
-    })
-    const res = await fetch(`${origin}/tokens`, {
-      method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ name: LOCAL_CLIENT_TOKEN_NAME }),
-      signal: AbortSignal.timeout(MINT_TIMEOUT_MS),
-    })
-    if (!res.ok) return ''
-    const entry = await res.json() as { token?: string }
-    return entry.token ?? ''
-  } catch {
-    return ''
-  }
+export async function registerServer(origin: string, driver: DriverKind): Promise<void> {
+  await writeServerConfig({ ...withServerSelected(await readServerConfig(), origin), driver })
 }

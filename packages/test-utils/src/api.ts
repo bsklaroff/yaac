@@ -6,38 +6,44 @@ type ServerApp = ReturnType<typeof buildApp>
 
 /**
  * Wrap an in-memory `buildApp(...)` instance as a raw typed Hono API client.
- * Injects the bearer header on every request and dispatches through
- * `app.fetch`, so no port is bound. Uses a loopback host so the server's
- * Host-header check accepts it (the real CLI likewise targets 127.0.0.1).
+ * Dispatches through `app.fetch`, so no port is bound. Uses a loopback host
+ * so the server's Host-header check accepts it and identifies the caller as
+ * local (the real CLI likewise targets 127.0.0.1).
+
  *
  * Raw on purpose: unlike the app's `createApiClient`, this neither throws on
  * non-2xx nor unwraps the body, so contract tests can assert status codes and
  * read `res.json()` themselves.
  */
-export function makeTestApiClient(app: ServerApp, secret = 'shh') {
+export function makeTestApiClient(app: ServerApp) {
   return hc<AppType>('http://127.0.0.1/', {
-    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers ?? {})
-      headers.set('authorization', `Bearer ${secret}`)
-      const req = new Request(input as string | URL, { ...init, headers })
-      return app.fetch(req)
-    },
+    fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+      app.fetch(new Request(input as string | URL, init)),
   })
 }
 
 /**
  * Raw typed Hono API client that speaks to a real spawned server subprocess
  * over HTTP. Mirrors `makeTestApiClient` (also raw) but issues real network
- * calls against `server.lock.port` with the server's bearer secret.
+ * calls against `server.lock.port`.
  */
 export function makeServerApiClient(server: SpawnedServer) {
-  return hc<AppType>(`http://127.0.0.1:${server.lock.port}/`, {
-    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers ?? {})
-      headers.set('authorization', `Bearer ${server.lock.secret}`)
-      return fetch(input as string | URL, { ...init, headers })
-    },
-  })
+  return hc<AppType>(`http://127.0.0.1:${server.lock.port}/`)
+}
+
+/**
+ * The headers `tailscale serve` puts on a request it forwards from a
+ * user-owned tailnet device, addressed as `host` — so a test can make a
+ * tailnet call against a server whose `YAAC_ALLOWED_HOSTS` it stubs to
+ * admit that name. Without `login`, what serve sends for a tagged device or
+ * Funnel: forwarded, with no user.
+ */
+export function asTailnet(login: string | null, host: string): Record<string, string> {
+  return {
+    host,
+    'x-forwarded-for': '100.64.0.7',
+    ...(login === null ? {} : { 'tailscale-user-login': login, 'tailscale-user-name': login.split('@')[0] }),
+  }
 }
 
 /**

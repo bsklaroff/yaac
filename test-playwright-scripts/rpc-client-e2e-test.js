@@ -5,20 +5,20 @@
  *
  * Drives the running yaac server's webapp in real Chromium and exercises the
  * request paths through the actual compiled client:
- *   - initial load         → POST /auth/web-session, GET /auth/list, /shortcuts/get
+ *   - initial load         → GET /whoami, GET /auth/list, /shortcuts/get
  *   - open Settings        → its batch of GETs
  *   - New worktree → Create→ POST /worktree/create (NDJSON stream)
  *   - Rename worktree      → POST /worktree/:id/title
  *   - Stop worktree        → POST /worktree/stop
  * Every same-origin API response is captured (method, path, status); the run
- * asserts the app authenticated via cookie, rendered its main view, produced no
+ * asserts the app identified itself, rendered its main view, produced no
  * page errors, and that each exercised endpoint answered 2xx.
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/rpc-client-e2e-test.js
  * Needs a running server (`yaac server start`) whose project can create a
  * worktree — a git credential it can fetch with, a server git identity, and a
  * claude credential (`yaac auth fake claude-oauth` is enough: the agent never
- * has to answer); reads the port/secret from
+ * has to answer); reads the port from
  * $YAAC_DATA_DIR/server-local/.server.lock (or ~/.yaac). The worktree it
  * creates is stopped at the end (UI, then API fallback). (playwright is
  * resolved from the global npm root; browsers live under
@@ -66,17 +66,9 @@ async function main() {
   const project = process.env.PROJECT || 'yaac'
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
 
-  // Fresh one-time exchange token → authed URL (?token=…); the SPA exchanges
-  // it for the session cookie on load.
-  const res = await fetch(`${base}/tokens`, {
-    method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status} ${await res.text()}`)
-  const authedUrl = `${base}/?project=${project}&token=${(await res.json()).token}`
+  // Loopback is local: the app needs no credential to load.
+  const appUrl = `${base}/?project=${project}`
 
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, bypassCSP: true })
@@ -102,10 +94,10 @@ async function main() {
   const ok2xx = (calls) => calls.length > 0 && calls.every((c) => c.status >= 200 && c.status < 300)
 
   try {
-    // ---- load + cookie auth (postWebSession) ----------------------------
-    await page.goto(authedUrl)
+    // ---- load + identity probe (GET /whoami) ---------------------------
+    await page.goto(appUrl)
     await page.waitForSelector('[title="New worktree"]', { timeout: 20_000 })
-    check('app rendered main view (cookie auth + initial loads)', true)
+    check('app rendered main view (identified + initial loads)', true)
 
     // ---- Settings: a batch of GETs --------------------------------------
     const beforeSettings = api.length
@@ -156,7 +148,7 @@ async function main() {
     check('stop drove a worktree-stop write', stopped)
 
     // ---- assert the endpoints answered 2xx ------------------------------
-    check('POST /auth/web-session → 2xx', ok2xx(hit('POST', /^\/auth\/web-session$/)))
+    check('GET /whoami → 2xx', ok2xx(hit('GET', /^\/whoami$/)))
     check('GET /auth/list → 2xx', ok2xx(hit('GET', /^\/auth\/list$/)))
     check('GET /shortcuts/get → 2xx', ok2xx(hit('GET', /^\/shortcuts\/get$/)))
     check('POST /worktree/create → 2xx', ok2xx(hit('POST', /^\/worktree\/create$/)))
@@ -175,7 +167,7 @@ async function main() {
     if (createdWorktreeId) {
       await fetch(`${base}/worktree/stop`, {
         method: 'POST',
-        headers: { ...auth, 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ worktreeId: createdWorktreeId }),
       }).catch(() => {})
     }

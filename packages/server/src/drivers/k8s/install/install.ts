@@ -887,9 +887,9 @@ async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
 
 /**
  * The `--tailnet` gate: the Tailscale Kubernetes operator has to be there
- * before the tailnet fronting's Service can mean anything, and it is the
- * cluster owner's to install (one helm command). Two reads, both refusals
- * rather than warnings — a Service of the tailnet class with no operator
+ * before the tailnet fronting's Ingress can mean anything, and it is the
+ * cluster owner's to install (one helm command). Three reads, all refusals
+ * rather than warnings — an Ingress of the tailnet class with no operator
  * simply never gets a hostname, and install would sit out the publish
  * timeout and refuse anyway, after applying every layer.
  *
@@ -906,6 +906,7 @@ async function verifyTailnetOperator(deps: ClusterInstallDeps): Promise<void> {
       `the operator Deployment (${TAILSCALE_OPERATOR_NAMESPACE}/operator)`,
       ['get', 'deployment', 'operator', '-n', TAILSCALE_OPERATOR_NAMESPACE],
     ],
+    ['the operator\'s IngressClass (tailscale)', ['get', 'ingressclass', 'tailscale']],
   ]
   for (const [what, args] of reads) {
     try {

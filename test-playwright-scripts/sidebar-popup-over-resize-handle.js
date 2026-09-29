@@ -43,16 +43,6 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running?')
 }
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`token mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
 const SHOT_DIR = '/tmp/yaac-shots'
 
 async function main() {
@@ -69,9 +59,7 @@ async function main() {
     console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`)
   }
 
-  const token = await mintToken(lock)
-  await page.goto(`http://127.0.0.1:${lock.port}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  await page.goto(`http://127.0.0.1:${lock.port}/`)
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.waitForTimeout(3000) // let the pushed /events snapshot land
 

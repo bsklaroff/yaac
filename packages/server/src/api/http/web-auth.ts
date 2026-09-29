@@ -1,146 +1,150 @@
-import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
-import { getCookie } from 'hono/cookie'
 import { env } from '@yaac/shared/env'
-// Install IDENTITY, not storage — the cookie hash must stay stable when
-// the storage tiers split (see sessionCookieName below).
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { getDataDir } from '@yaac/shared/paths'
+import type { Principal } from '@yaac/shared/types'
 
-/** Base name of the HttpOnly cookie that carries a webapp session. */
-export const SESSION_COOKIE_BASE = 'yaac_session'
-
-let cookieNameCache: { dir: string; name: string } | null = null
-
-/**
- * Name of THIS server instance's webapp session cookie —
- * `yaac_session_<hash>`, where `<hash>` is a short digest of the server's
- * data dir. Cookies are scoped by host, not by port, so two yaac servers
- * reachable under one hostname — e.g. an outer server behind `tailscale
- * serve` (https) and a nested one on a forwarded http port — would otherwise
- * share the bare `yaac_session` cookie and clobber each other's sessions.
- * Worse, the https server's `Secure` cookie blocks the http server from
- * storing a same-named one at all (browsers refuse to let an insecure origin
- * overwrite a Secure cookie), stranding the nested webapp unauthenticated.
- * The data dir is unique per install (1:1 with the server lock), so hashing
- * it gives each co-hosted server an independent cookie. Like the cluster
- * label hash, this uses the install root as an IDENTITY rather than as a
- * storage tier, so it is unaffected when the tiers split. Memoized per data
- * dir; re-derives when it changes (tests call `setDataDir`).
- */
-export function sessionCookieName(): string {
-  const dir = getDataDir()
-  if (cookieNameCache?.dir === dir) return cookieNameCache.name
-  const suffix = crypto.createHash('sha256').update(dir).digest('hex').slice(0, 8)
-  const name = `${SESSION_COOKIE_BASE}_${suffix}`
-  cookieNameCache = { dir, name }
-  return name
+/** What `identify()` stores on the context for the routes after it. */
+export interface IdentityEnv {
+  Variables: { principal: Principal }
 }
 
 /**
- * Routes reachable without any credential: the SPA shell, its hashed
- * assets, the health probe, and the token→cookie exchange itself. The
- * exchange is public only for POST — GET /auth/web-session is the
- * authenticated "is my cookie still good" probe and must stay gated.
+ * Routes reachable without an identity: the SPA shell and its hashed
+ * assets — public so that an unidentified browser can still load the app
+ * and be told what is wrong — and the health probe.
  */
-export function isPublicPath(method: string, path: string): boolean {
-  if (path === '/health') return true
-  if (path === '/auth/web-session') return method === 'POST'
-  // The in-worktree command channel, which carries its own credential: a
-  // worktree holds a per-worktree bearer, never the server secret this gate
-  // checks, and the route rejects anything else. Public here in the same
-  // sense the exchange above is — the gate does not apply because a
-  // stricter, per-caller one does (see `/worktree/mama`).
-  if (path === '/worktree/mama') return method === 'POST'
-  if (path === '/') return true
-  if (path.startsWith('/assets/')) return true
-  return false
+function isPublicPath(path: string): boolean {
+  return path === '/health' || path === '/' || path.startsWith('/assets/')
 }
 
 /**
- * True when the server is a purely-local deployment: bound loopback-only,
- * with no remote hosting configured (`YAAC_ALLOWED_HOSTS` empty and
- * `YAAC_TRUST_PROXY` unset).
+ * The request's host as the guards see it: the `Host` header, or the URL's
+ * host for in-memory dispatch (hono's `app.fetch` in tests), which carries
+ * no header. Real socket traffic always carries Host, and a DNS-rebind
+ * request reflects the attacker host in both, so the fallback weakens
+ * nothing. Lowercased, port kept.
  */
-export function isLoopbackOnlyDeployment(): boolean {
-  return env.allowedHosts.length === 0 && !env.trustProxy
+function requestHost(header: string | undefined, url: string): string {
+  if (header) return header.toLowerCase()
+  try {
+    return new URL(url).host.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === '127.0.0.1' || hostname === 'localhost'
+}
+
+/** One RFC 2047 encoded word, `=?utf-8?q?…?=` or `?b?`, as bytes. */
+const ENCODED_WORD = /=\?utf-8\?([qb])\?([^?]*)\?=/gi
+
+function encodedWordBytes(encoding: string, text: string): number[] {
+  if (encoding.toLowerCase() === 'b') return [...Buffer.from(text, 'base64')]
+  const bytes: number[] = []
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '_') bytes.push(0x20)
+    else if (text[i] === '=' && /^[0-9a-f]{2}$/i.test(text.slice(i + 1, i + 3))) {
+      bytes.push(parseInt(text.slice(i + 1, i + 3), 16))
+      i += 2
+    } else bytes.push(text.charCodeAt(i))
+  }
+  return bytes
 }
 
 /**
- * Whether the credential gate is skipped for this deployment — a browser or
- * CLI reaching it needs no token. Skipped when the server isn't deliberately
- * remote-fronted for direct external access:
- *   - a pure loopback deployment (`isLoopbackOnlyDeployment`), or
- *   - a yaac running inside a worktree (`YAAC_WORKTREE_ID`): it can pick up
- *     the outer install's `allowedHosts`/`trustProxy` through a project
- *     environment variable of the same name — ambient env, not a
- *     remote-fronting of this inner server, because nothing outside the
- *     machine addresses it unmediated.
- *     Under k8s the only path in is the outer server's port-forward, already
- *     tailnet-gated like any forwarded port; under containerless the inner
- *     server binds host loopback, which this model already trusts. Keyed on
- *     the worktree id because the reasoning holds for every worktree and
- *     `createWorktree` stamps it on all of them, under both drivers. The
- *     cost is that a server someone
- *     deliberately fronts, but starts from a shell inside a worktree, also
- *     skips the gate — `YAAC_REQUIRE_AUTH=1` is the answer there
- *     (docs/remote-hosting.md).
- * `YAAC_REQUIRE_AUTH` forces the gate on regardless (shared machines; a
- * deliberately-gated inner server; the auth-path tests). The Host + Origin +
- * Sec-Fetch-Site guards still defeat a malicious website in every case. Read
- * per request (never cached) so a restarted server — and tests — see current
- * env.
+ * An identity header as text to show and log. A non-ASCII value arrives as
+ * RFC 2047 encoded words — several, space-separated, once it is longer than
+ * one word may be — which are decoded together, the whitespace between
+ * adjacent words dropped as the RFC says. Control characters are removed
+ * whatever the encoding: the value goes into every request-log line and
+ * into what `yaac remote set` prints.
  */
-export function isCredentialOptional(): boolean {
-  if (env.requireAuth) return false
-  return env.worktreeId !== undefined || isLoopbackOnlyDeployment()
+function decodeIdentityHeader(value: string): string {
+  const words = [...value.trim().matchAll(ENCODED_WORD)]
+  const whole = words.length > 0
+    && words.map((w) => w[0]).join(' ') === value.trim().replace(/\s+/g, ' ')
+  const text = whole
+    ? Buffer.from(words.flatMap((w) => encodedWordBytes(w[1], w[2]))).toString('utf8')
+    : value
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
 }
 
 /**
- * Accept a request if it carries either a matching bearer (CLI) or a
- * valid webapp session cookie. Public paths skip the check, and a
- * deployment where the credential is optional skips it entirely (see
- * `isCredentialOptional`) unless `YAAC_REQUIRE_AUTH` forces it on.
+ * Who a request is from, derived from the request itself
+ * (docs/remote-hosting.md), or why it cannot be said.
  *
- * A presented-but-wrong bearer is answered with `BAD_BEARER` rather than
- * the generic `UNAUTHENTICATED`: the CLI client re-reads its credential
- * source and retries exactly once on that code (a restarted server
- * rotates the lock secret out from under a long-lived CLI process).
+ * `tailscale serve` — a host `serve`, or the Tailscale operator's Ingress
+ * proxy, which is the same code — stamps `X-Forwarded-For` on everything
+ * it forwards, `Tailscale-User-Login`/`-Name` on what comes from a
+ * user-owned device, and strips client-supplied copies of those. So:
  *
- * `tokens` extends the bearer check to durable client tokens (remote
- * CLIs can never read the lock file) and owns the web sessions the
- * cookie is checked against. Structural type rather than the TokenStore
- * import to keep this module free of server-store dependencies.
+ * - Forwarded (either header present) and carrying a user: that tailnet
+ *   user.
+ * - Forwarded without one: a tagged device or Funnel, which has no user to
+ *   be. Refused.
+ * - Not forwarded, addressed to loopback: this machine — local.
+ * - Not forwarded, addressed to any other name: a path that is not
+ *   `serve` and not loopback, which a top-level server refuses rather than
+ *   trust — the fail-closed half, since `YAAC_ALLOWED_HOSTS` is what opts
+ *   a server into remote access and remote access is identity-only. A
+ *   server inside a worktree (`YAAC_WORKTREE_ID`) is reached exactly that
+ *   way, as `srv.<tailnet>:<port>` through the outer install's forward, so
+ *   there it is local.
+ *
+ * A local process can forge any of these headers, and gains nothing by it:
+ * it is the owner already. The bind (loopback unless in-cluster) and, in
+ * the cluster, the server pod's ingress policy are what keep everything
+ * else from reaching the server unmediated.
  */
-export function cookieOrBearerAuth(
-  secret: string,
-  tokens: {
-    isValidToken(candidate: string): boolean
-    isValidSession(candidate: string): boolean
-  },
-): MiddlewareHandler {
-  return async (c, next) => {
-    if (isPublicPath(c.req.method, c.req.path)) return next()
-    if (isCredentialOptional()) return next()
-
-    const header = c.req.header('authorization') ?? ''
-    const match = /^Bearer\s+(.+)$/i.exec(header)
-    if (match && timingSafeStrEqual(match[1], secret)) return next()
-    if (match && tokens.isValidToken(match[1])) return next()
-
-    const sid = getCookie(c, sessionCookieName())
-    if (sid && tokens.isValidSession(sid)) return next()
-
-    if (match) {
-      return c.json(
-        { error: { code: 'BAD_BEARER', message: 'bearer token rejected' } },
-        401,
-      )
+function identifyRequest(
+  header: (name: string) => string | undefined,
+  url: string,
+): Principal | { refused: string } {
+  const login = header('tailscale-user-login')
+  const proxied = header('x-forwarded-for') !== undefined
+    || login !== undefined
+    || header('tailscale-user-name') !== undefined
+  if (proxied) {
+    if (login) {
+      const name = header('tailscale-user-name')
+      return {
+        kind: 'tailnet',
+        login: decodeIdentityHeader(login),
+        name: name ? decodeIdentityHeader(name) : decodeIdentityHeader(login),
+      }
     }
-    return c.json(
-      { error: { code: 'UNAUTHENTICATED', message: 'missing or invalid credentials' } },
-      401,
-    )
+    return {
+      refused: 'tailscale serve sent no user identity: this device is a tagged device, '
+        + 'or the request came through Funnel. Reach the server from a device '
+        + 'logged in as a tailnet user.',
+    }
+  }
+  const hostname = requestHost(header('host'), url).split(':')[0]
+  if (isLoopbackHostname(hostname) || env.worktreeId !== undefined) return { kind: 'local' }
+  return {
+    refused: `reached as ${hostname} without tailscale serve: a server is reached `
+      + 'at loopback on its own machine, and through tailscale serve from '
+      + 'anywhere else (docs/remote-hosting.md).',
+  }
+}
+
+/**
+ * The identity gate: every non-public request gets a `principal`, or a 401
+ * saying why it could not be given one (`identifyRequest`). Runs after the
+ * Host, CORS, Origin and Sec-Fetch-Site guards, and on WebSocket upgrades
+ * like any other request. Read per request (never cached) so a restarted
+ * server — and tests — see the current environment.
+ */
+export function identify(): MiddlewareHandler<IdentityEnv> {
+  return async (c, next) => {
+    if (isPublicPath(c.req.path)) return next()
+    const who = identifyRequest((name) => c.req.header(name), c.req.url)
+    if ('refused' in who) {
+      return c.json({ error: { code: 'UNAUTHENTICATED', message: who.refused } }, 401)
+    }
+    c.set('principal', who)
+    return next()
   }
 }
 
@@ -168,22 +172,9 @@ export function isAllowedHost(host: string, allowed: readonly string[] = []): bo
 
 export function hostHeaderCheck(): MiddlewareHandler {
   return async (c, next) => {
-    // Prefer the Host header (what a browser sends). Fall back to the
-    // request URL's host for in-memory dispatch (hono's app.fetch in
-    // tests) where no Host header is present. Real socket traffic always
-    // carries Host, and a DNS-rebind request reflects the attacker host
-    // in both the header and the URL, so the fallback doesn't weaken it.
-    let host = c.req.header('host') ?? ''
-    if (!host) {
-      try {
-        host = new URL(c.req.url).host
-      } catch {
-        host = ''
-      }
-    }
     // Read per request (never cached) so tests — and a server restarted
     // with new env — see the current allowlist.
-    if (isAllowedHost(host, env.allowedHosts)) return next()
+    if (isAllowedHost(requestHost(c.req.header('host'), c.req.url), env.allowedHosts)) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
       403,
@@ -192,34 +183,44 @@ export function hostHeaderCheck(): MiddlewareHandler {
 }
 
 /**
- * Whether a request's `Origin` is allowed. Mirrors `isAllowedHost`, applied
- * to the origin's host: absent Origin (non-browser clients — CLI/undici,
- * curl — and same-origin GETs, which browsers may send without one) is
- * allowed; a present Origin must resolve to loopback or an allow-listed host.
+ * Whether a request's `Origin` is the request's own origin: the scheme,
+ * host AND port it was sent to. `host` is the Host guard's reading; the
+ * scheme is `https` when `tailscale serve` terminated TLS in front of us
+ * (its `X-Forwarded-Proto`) and plain `http` otherwise, since the server
+ * itself serves nothing else. Absent Origin (non-browser clients —
+ * CLI/undici, curl — and same-origin GETs, which browsers may send without
+ * one) is allowed.
  *
- * This is the load-bearing defense for a credential-free loopback server:
- * `Origin` is browser-controlled and page JS cannot forge or drop it (a Fetch
- * "forbidden header"; the WebSocket constructor has no header API), so a
- * request from a malicious site arrives stamped with the attacker's origin
- * and is rejected. `Origin: null` (opaque origins) is unparseable and fails
- * closed. Kept as hardening even when the credential gate is on.
+ * The port is the point. Every page served on the server's hostname at
+ * another port — a worktree's forwarded dev server on `127.0.0.1:<port>`,
+ * the desktop's preview pane, `srv.<tailnet>.ts.net:19500` — runs untrusted
+ * repo code, and a hostname comparison would admit it. `Origin` is
+ * browser-controlled and page JS cannot forge or drop it (a Fetch
+ * "forbidden header"; the WebSocket constructor has no header API), so
+ * such a page, or any other site, arrives stamped with its own origin and
+ * is rejected — nor can it add the `X-Forwarded-Proto` that would make an
+ * `http` page look like the `https` one, since any custom header needs a
+ * preflight (`denyBrowserCors`). Host and Origin both come from the URL the
+ * browser targeted, so a port-forward that remaps the port leaves them
+ * equal, and `tailscale serve` preserves Host. `Origin: null` (opaque origins) is unparseable and
+ * fails closed.
  */
-export function isAllowedOrigin(origin: string | undefined, allowed: readonly string[] = []): boolean {
+export function isAllowedOrigin(origin: string | undefined, host: string, forwardedProto?: string): boolean {
   if (origin === undefined || origin === '') return true
-  let host: string
+  const scheme = forwardedProto?.toLowerCase() === 'https' ? 'https' : 'http'
   try {
-    host = new URL(origin).host
+    // Both through URL, so a default port written in Host (`:443`) compares
+    // equal to one the Origin leaves out.
+    return new URL(origin).origin === new URL(`${scheme}://${host}`).origin
   } catch {
     return false
   }
-  return isAllowedHost(host, allowed)
 }
 
 export function originHeaderCheck(): MiddlewareHandler {
   return async (c, next) => {
-    // Read per request (never cached) so tests — and a server restarted with
-    // new env — see the current allowlist.
-    if (isAllowedOrigin(c.req.header('origin'), env.allowedHosts)) return next()
+    const host = requestHost(c.req.header('host'), c.req.url)
+    if (isAllowedOrigin(c.req.header('origin'), host, c.req.header('x-forwarded-proto'))) return next()
     return c.json(
       { error: { code: 'BAD_ORIGIN', message: 'origin not allowed' } },
       403,
@@ -269,14 +270,4 @@ export function fetchSiteCheck(): MiddlewareHandler {
       403,
     )
   }
-}
-
-export function timingSafeStrEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a)
-  const bb = Buffer.from(b)
-  // timingSafeEqual throws on unequal-length inputs; a length mismatch is not
-  // itself secret (these are fixed-width tokens), so short-circuit it. The
-  // point is not to leak — via the compare's timing — how long a matching
-  // prefix an attacker guessed.
-  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb)
 }

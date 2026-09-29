@@ -208,6 +208,7 @@ import {
   BUILDER_MEMORY_REQUEST_BYTES,
 } from '#drivers/k8s/images/builder-pod'
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
+import { egressAllButServerFront } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import type { ImageLayerName } from '@yaac/shared/types'
 
@@ -580,7 +581,10 @@ describe('ensureImage', () => {
     }>('NetworkPolicy')
     expect(np.spec.podSelector.matchLabels).toEqual({ 'yaac.role': 'builder' })
     expect(np.spec.policyTypes).toEqual(['Egress'])
-    expect(np.spec.egress).toEqual([{}])
+    // Everywhere a build fetches from, but never the kind fronting's node
+    // port: a RUN step comes from an agent-editable Dockerfile, and from
+    // there the server would take it for its owner.
+    expect(np.spec.egress).toEqual(egressAllButServerFront(['10.89.0.7/32']))
 
     // storage.conf bootstrap, parent pull, extract, build, push — in order.
     const remote = remoteCommands()

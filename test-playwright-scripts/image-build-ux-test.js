@@ -20,7 +20,7 @@
  * project has to be named explicitly with --project.
  *
  * Exercises, against a running server + cluster:
- *   1. auth via a one-time token (POST /tokens), lands in the webapp
+ *   1. lands in the webapp at the server's loopback origin
  *   2. PUTs a cache-busting Dockerfile.yaac, waits for the "building"
  *      pill (scoped to the active project) — screenshot
  *   3. opens the overlay on the running build (layer + step N/M) — screenshot
@@ -31,7 +31,7 @@
  *
  * Run: node test-playwright-scripts/image-build-ux-test.js [--project hello-world]
  * Needs a running server with a wired cluster and the project registered
- * (`yaac auth fake github && yaac project add <url> fake-github`). Reads port/secret from
+ * (`yaac auth fake github && yaac project add <url> fake-github`). Reads port from
  * $YAAC_DATA_DIR/.server.lock. Screenshots go to $SCREENSHOT_DIR (or $TMPDIR).
  * playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers.
@@ -76,26 +76,16 @@ function check(name, cond, detail = '') {
   console.log(`${mark}  ${name}${detail ? `  [${detail}]` : ''}`)
 }
 
-async function mintToken(lock) {
-  const res = await fetch(`http://127.0.0.1:${lock.port}/tokens`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${lock.secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (res.status !== 201) throw new Error(`mint failed: HTTP ${res.status}`)
-  return (await res.json()).token
-}
-
-async function readDockerfile(base, auth) {
-  const res = await fetch(`${base}/project/${PROJECT}/dockerfile`, { headers: auth })
+async function readDockerfile(base) {
+  const res = await fetch(`${base}/project/${PROJECT}/dockerfile`)
   if (!res.ok) throw new Error(`dockerfile GET failed: HTTP ${res.status}`)
   return (await res.json()).content
 }
 
-async function writeDockerfile(base, auth, content) {
+async function writeDockerfile(base, content) {
   return fetch(`${base}/project/${PROJECT}/dockerfile`, {
     method: 'PUT',
-    headers: { ...auth, 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content }),
   })
 }
@@ -112,9 +102,9 @@ function warnManualRestore() {
  * leaving the project mutated — so it counts into `failures` and says how
  * to fix it by hand.
  */
-async function restoreDockerfile(base, auth, original) {
+async function restoreDockerfile(base, original) {
   try {
-    const res = await writeDockerfile(base, auth, original)
+    const res = await writeDockerfile(base, original)
     check('Dockerfile.yaac restored', res.ok, `HTTP ${res.status}`)
     if (!res.ok) warnManualRestore()
   } catch (err) {
@@ -137,25 +127,23 @@ async function main() {
   const { chromium } = requirePlaywright()
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
 
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, bypassCSP: true })
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  const originalDockerfile = await readDockerfile(base, auth)
+  const originalDockerfile = await readDockerfile(base)
 
   // Node's default SIGINT disposition terminates without unwinding, so the
   // `finally` restore below never runs on a Ctrl-C — and this script sits in
   // waits of up to 150s, which is exactly when someone reaches for one.
   process.once('SIGINT', () => {
     console.error('\ninterrupted — restoring Dockerfile.yaac...')
-    void restoreDockerfile(base, auth, originalDockerfile).finally(() => process.exit(130))
+    void restoreDockerfile(base, originalDockerfile).finally(() => process.exit(130))
   })
 
   try {
-    const token = await mintToken(lock)
-    await page.goto(`${base}/?token=${token}`)
+    await page.goto(`${base}/`)
     // Only project registered → auto-selected; the sidebar's + button proves
     // we're in the workspace (not the connect splash).
     await page.waitForSelector('[title="New session"]', { timeout: 20_000 })
@@ -165,7 +153,7 @@ async function main() {
     // The unique RUN line is the whole point: an identical Dockerfile would
     // resolve to a tag the registry already holds and build nothing.
     const bust = `ARG BASE_IMAGE\nFROM \${BASE_IMAGE}\nRUN echo ibux-${process.pid}-${Date.now()}\n`
-    const put = await writeDockerfile(base, auth, bust)
+    const put = await writeDockerfile(base, bust)
     check('cache-busting Dockerfile.yaac accepted', put.ok, `HTTP ${put.status}`)
 
     // 1. Building pill, scoped to the active project. The prewarm sweep runs
@@ -198,7 +186,7 @@ async function main() {
   } finally {
     // Put the project back where it was; the busted layer's tag is left in
     // the registry for the build-cache GC to age out.
-    await restoreDockerfile(base, auth, originalDockerfile)
+    await restoreDockerfile(base, originalDockerfile)
     await browser.close()
   }
 
