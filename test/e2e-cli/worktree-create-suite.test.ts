@@ -8,6 +8,7 @@ import net from 'node:net'
 import path from 'node:path'
 import WebSocket from 'ws'
 import { git } from '@yaac/test-utils/git'
+import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
 import { reapNodeLocal } from '@yaac/server/drivers/k8s/images'
@@ -422,13 +423,15 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
   describe('kitchen-sink claude session', () => {
     // One session exercises every orthogonal create-time feature at once.
-    const PORT_FORWARD = [
-      { containerPort: 8080, hostPortStart: 20000 },
-      { containerPort: 8081, hostPortStart: 20010 },
-      { containerPort: 8082, hostPortStart: 20020 },
-      { containerPort: 8083, hostPortStart: 20030 },
-      { containerPort: 8084, hostPortStart: 20040 },
-    ]
+    // Host ports drawn free in beforeAll, never fixed: the resident forwarder
+    // binds them on this host, where another test rig's run of this same
+    // file may be binding its own at the same moment.
+    const PORT_FORWARD = [8080, 8081, 8082, 8083, 8084]
+      .map((containerPort) => ({ containerPort, hostPortStart: 0 }))
+    // A detected port is offered at its own number, so the two listeners the
+    // detection tests go on to forward are drawn free for the same reason.
+    let detectedPort = 0
+    let persistedPort = 0
     // Container-port → host-port map, populated from the CLI's
     // "Offering host port ... -> container port ..." progress messages.
     const hostPortFor = new Map<number, number>()
@@ -438,6 +441,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     let projectPath = ''
 
     beforeAll(async () => {
+      for (const entry of PORT_FORWARD) entry.hostPortStart = await freeLocalPort()
+      detectedPort = await freeLocalPort()
+      persistedPort = await freeLocalPort()
       projectPath = await setupProject('kitchen', {
         // Real Node projects gitignore node_modules; seed the same so
         // `git status` stays clean once the bind mount is populated.
@@ -751,15 +757,15 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // The escape hatch from what the server offers: a declared port on a
       // different local number, or one the list did not name. Nothing is
       // polled here — the user said what they wanted.
-      const explicit = startForwardCli(worktreeId, '--port', '8080:20500', '-p', '8081')
+      const [local, bare] = [await freeLocalPort(), await freeLocalPort()]
+      const explicit = startForwardCli(worktreeId, '--port', `8080:${local}`, '-p', String(bare))
       try {
         const lines = await explicit.ready(2)
-        expect(lines.join('\n')).toContain('127.0.0.1:20500 -> ')
-        // A bare `-p 8081` means the same port on both sides — and 8081 is
-        // free on the host precisely because the config mapped it to 20010.
-        expect(lines.join('\n')).toContain('127.0.0.1:8081 -> ')
+        expect(lines.join('\n')).toContain(`127.0.0.1:${local} -> `)
+        // A bare `-p <n>` means the same port on both sides.
+        expect(lines.join('\n')).toContain(`127.0.0.1:${bare} -> `)
 
-        const res = await httpGet('http://127.0.0.1:20500/')
+        const res = await httpGet(`http://127.0.0.1:${local}/`)
         expect(res.status).toBe(200)
         expect(res.body).toBe('hello ipv4')
       } finally {
@@ -771,10 +777,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // 10300 is streamd, yaac's own in-pod control surface, and it IS
       // listening — so this is the dial's check, not a connection refused
       // inside the pod. The tunnel closes with the dial-failed code.
-      const stray = startForwardCli(worktreeId, '--port', '10300:20501')
+      const local = await freeLocalPort()
+      const stray = startForwardCli(worktreeId, '--port', `10300:${local}`)
       try {
         await stray.ready(1)
-        await expect(httpGet('http://127.0.0.1:20501/')).rejects.toThrow()
+        await expect(httpGet(`http://127.0.0.1:${local}/`)).rejects.toThrow()
         expect(stray.output()).toMatch(/dial failed/)
       } finally {
         await stray.stop()
@@ -952,12 +959,12 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // One ordinary listener plus one on the sensitive-port denylist
       // (9229, node --inspect). Detection rides streamd's in-pod poll →
       // relay push → server map → snapshot, so poll the list endpoint.
-      await startHttpServerInContainer(jobName, 8090, '127.0.0.1', 'detected server')
+      await startHttpServerInContainer(jobName, detectedPort, '127.0.0.1', 'detected server')
       await startHttpServerInContainer(jobName, 9229, '127.0.0.1', 'sensitive server')
 
       const unforwarded = await waitForUnforwarded(
-        (ports) => ports.includes(8090),
-        'listener on 8090 never surfaced in unforwardedPorts',
+        (ports) => ports.includes(detectedPort),
+        `listener on ${detectedPort} never surfaced in unforwardedPorts`,
       )
       // The sensitive listener is up (the helper curled it) but hidden, as
       // is yaac's own in-pod infra (streamd on 10300); the config-declared
@@ -973,11 +980,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ containerPort: 8090 }),
+        body: JSON.stringify({ containerPort: detectedPort }),
       })
       expect(res.status).toBe(200)
       const mapping = await res.json() as { containerPort: number; hostPort: number }
-      expect(mapping.containerPort).toBe(8090)
+      expect(mapping.containerPort).toBe(detectedPort)
 
       await waitForLocalListener(mapping.hostPort)
       const page = await httpGet(`http://127.0.0.1:${mapping.hostPort}/`)
@@ -986,7 +993,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       // The snapshot moves the port from unforwarded to forwarded.
       const session = await kitchenSession()
-      expect(session.unforwardedPorts).not.toContain(8090)
+      expect(session.unforwardedPorts).not.toContain(detectedPort)
       expect(session.forwardedPorts).toContainEqual(mapping)
 
       // Now forwarded → subtracted from the offerable set, so a repeat
@@ -994,7 +1001,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const again = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ containerPort: 8090 }),
+        body: JSON.stringify({ containerPort: detectedPort }),
       })
       expect(again.status).toBe(409)
     }, 60_000)
@@ -1009,16 +1016,16 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 30_000)
 
     it('persists a detected port into the project config and forwards it live', async () => {
-      await startHttpServerInContainer(jobName, 8091, '127.0.0.1', 'persisted server')
+      await startHttpServerInContainer(jobName, persistedPort, '127.0.0.1', 'persisted server')
       await waitForUnforwarded(
-        (ports) => ports.includes(8091),
-        'listener on 8091 never surfaced in unforwardedPorts',
+        (ports) => ports.includes(persistedPort),
+        `listener on ${persistedPort} never surfaced in unforwardedPorts`,
       )
 
       const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ containerPort: 8091, persist: true }),
+        body: JSON.stringify({ containerPort: persistedPort, persist: true }),
       })
       expect(res.status).toBe(200)
       const mapping = await res.json() as { containerPort: number; hostPort: number }
@@ -1035,7 +1042,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const config = JSON.parse(configRaw) as {
         portForward: Array<{ containerPort: number; hostPortStart: number }>
       }
-      expect(config.portForward).toContainEqual({ containerPort: 8091, hostPortStart: 8091 })
+      expect(config.portForward).toContainEqual({ containerPort: persistedPort, hostPortStart: persistedPort })
       for (const entry of PORT_FORWARD) {
         expect(config.portForward).toContainEqual(entry)
       }

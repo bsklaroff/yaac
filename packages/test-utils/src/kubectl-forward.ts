@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import fs from 'node:fs/promises'
 import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
 
 /**
  * A `kubectl port-forward` the TEST HARNESS holds, on a local port it picks
@@ -30,10 +33,20 @@ export interface KubectlForward {
   stop: () => Promise<void>
 }
 
-/** Local port range the harness draws forwards from — clear of the real
- *  server's default and of the suite's own `YAAC_SERVER_PORT` block. */
+/** Local port range the harness draws every host port it binds from —
+ *  forwards, each test env's `YAAC_SERVER_PORT`, the forward ports a suite
+ *  configures. Clear of the real server's default (8787) and below the
+ *  kernel's ephemeral range, so an outgoing connection never lands on a
+ *  port in the gap between a pick and its bind. */
 const FORWARD_PORT_MIN = 21000
 const FORWARD_PORT_MAX = 21999
+
+/** Where {@link freeLocalPort} records its picks: one file per port, holding
+ *  the drawing process's pid. HOST-wide on purpose — a pick is only proven
+ *  free, not held, and it can sit unbound for minutes (a suite's forward
+ *  ports wait out a whole worktree create), so every process that draws
+ *  from the range, in any worker and any test rig, has to see it. */
+const PORT_CLAIM_DIR = path.join(os.tmpdir(), 'yaac-test-ports')
 
 /** How long a caller may wait for a specific port to come free. */
 const PORT_FREE_TIMEOUT_MS = 30_000
@@ -79,7 +92,7 @@ export interface KubectlForwardSpec {
 export async function startKubectlForward(spec: KubectlForwardSpec): Promise<KubectlForward> {
   installExitHook()
   const port = spec.localPort === undefined
-    ? await pickLocalPort()
+    ? await freeLocalPort()
     : await waitForPortFree(spec.localPort)
   let stopped = false
   let child: ChildProcess | null = null
@@ -132,7 +145,8 @@ async function waitForPortFree(port: number): Promise<number> {
     if (Date.now() > deadline) {
       throw new Error(
         `127.0.0.1:${String(port)} is still held, so this file's forward cannot `
-        + 'bind it. Look for a leaked `kubectl port-forward` from an interrupted run.',
+        + 'bind it. Either another worker or test rig drew this port, or a '
+        + '`kubectl port-forward` leaked from an interrupted run.',
       )
     }
     await new Promise((r) => setTimeout(r, 250))
@@ -142,16 +156,53 @@ async function waitForPortFree(port: number): Promise<number> {
 /**
  * An arbitrary free loopback port. Bound and released to prove it is free —
  * the race with another process claiming it in between is the one every
- * ephemeral-port helper runs, and losing it surfaces as the forward failing
- * to bind, which the caller's readiness probe reports.
+ * ephemeral-port helper runs, and losing it surfaces as the bind failing,
+ * which the caller's readiness probe reports.
+ *
+ * Random rather than a fixed per-worker block because a fixed number is
+ * the same number in every test rig on the host: two rigs' runs would
+ * bind it at once. Claimed (see {@link claimPort}) so that no other draw,
+ * in this process or another, answers it while it waits to be bound.
  */
-async function pickLocalPort(): Promise<number> {
+export async function freeLocalPort(): Promise<number> {
   for (let attempt = 0; attempt < 50; attempt++) {
     const candidate = FORWARD_PORT_MIN
       + Math.floor(Math.random() * (FORWARD_PORT_MAX - FORWARD_PORT_MIN))
-    if (await portFree(candidate)) return candidate
+    if (await portFree(candidate) && await claimPort(candidate)) return candidate
   }
-  throw new Error('no free local port for a test kubectl forward')
+  throw new Error('no free local port for the test harness')
+}
+
+/**
+ * Claim a port for this process, host-wide, until the process exits. A claim
+ * whose process is gone is stale and taken over; this process's own claim
+ * counts as taken, so no two draws here share a number either. The same
+ * pid-file pattern as the server mutex in cli.ts.
+ */
+async function claimPort(port: number): Promise<boolean> {
+  await fs.mkdir(PORT_CLAIM_DIR, { recursive: true })
+  const file = path.join(PORT_CLAIM_DIR, String(port))
+  for (;;) {
+    try {
+      await fs.writeFile(file, String(process.pid), { flag: 'wx' })
+      return true
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+    }
+    const holder = Number.parseInt(await fs.readFile(file, 'utf8').catch(() => ''), 10)
+    // No pid yet is a claim still being written: taken.
+    if (Number.isNaN(holder) || holder === process.pid || pidAlive(holder)) return false
+    await fs.unlink(file).catch(() => { /* another process took it over first */ })
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function portFree(port: number): Promise<boolean> {
