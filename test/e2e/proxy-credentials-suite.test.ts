@@ -51,7 +51,8 @@ const execFileAsync = promisify(execFile)
  *   rewriting it without a tool signs that tool out of a running worktree;
  *   a git token reaches only worktrees of the projects it is assigned to
  * - the ssh keys reach the agent through the same Secret
- * - a refresh a worktree drives is captured into `yaac-proxy-refreshed`
+ * - a refresh a worktree drives is captured into `yaac-proxy-refreshed`,
+ *   and a burst of them spends the credential upstream once
  * - a blocked host lands in `yaac-proxy-state`, and widening the
  *   registration object prunes it
  * - the pod is replaceable: delete it, and the replacement serves the same
@@ -63,6 +64,8 @@ const ECHO_PORT = 8080
 /** Never-routable TEST-NET-1 addresses the redirect must intercept. */
 const FAKE_IP = '192.0.2.10'
 const MITM_HOST = 'api.anthropic.com'
+/** claude's claude.ai connectors send the same OAuth bearer here. */
+const MCP_PROXY_HOST = 'mcp-proxy.anthropic.com'
 const TOKEN_HOST = 'platform.claude.com'
 const GIT_HOST = 'github.com'
 const BLOCKED_HOST = 'blocked.example.com'
@@ -136,22 +139,25 @@ async function waitForPodRunning(name: string, timeoutMs = 120_000): Promise<voi
 
 /**
  * HTTP echo (request mirror as JSON) that also plays an OAuth token
- * endpoint: `/v1/oauth/token` answers a rotation. Pod + Service.
+ * endpoint: `/v1/oauth/token` answers a rotation numbered by how many it
+ * has minted, and echoes that count as `rotations`. Pod + Service.
  */
 async function startEchoPod(name: string): Promise<{ host: string }> {
   const echoScript = `
     const http = require('http');
+    let rotations = 0;
     http.createServer((req, res) => {
       const chunks = [];
       req.on('data', c => chunks.push(c));
       req.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
         if (req.url === '/v1/oauth/token') {
+          rotations += 1;
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
-            access_token: 'rotated-access', refresh_token: 'rotated-refresh',
+            access_token: 'rotated-access-' + rotations, refresh_token: 'rotated-refresh-' + rotations,
             expires_in: 3600, scope: 'user:inference', token_type: 'Bearer',
-            echoed: JSON.parse(body),
+            echoed: JSON.parse(body), rotations,
           }));
           return;
         }
@@ -255,8 +261,21 @@ async function curlUntil(
 }
 
 /** The MITM'd, redirected request every injection case sends. */
-const probeArgs = (extra: string): string =>
-  `--cacert ${CA_PATH} --resolve ${MITM_HOST}:443:${FAKE_IP} ${extra} https://${MITM_HOST}/v1/messages`
+const probeArgs = (extra: string, host = MITM_HOST): string =>
+  `--cacert ${CA_PATH} --resolve ${host}:443:${FAKE_IP} ${extra} https://${host}/v1/messages`
+
+/** A refresh the way a workspace sends one: presenting the placeholder. */
+const refreshArgs = `--cacert ${CA_PATH} --resolve ${TOKEN_HOST}:443:${FAKE_IP} -X POST `
+  + `-H 'content-type: application/json' `
+  + `-d '{"grant_type":"refresh_token","refresh_token":"${PLACEHOLDER_REFRESH_TOKEN}","client_id":"x"}' `
+  + `https://${TOKEN_HOST}/v1/oauth/token`
+
+interface RefreshReply {
+  access_token: string
+  refresh_token: string
+  rotations: number
+  echoed: { refresh_token: string }
+}
 
 /** An HTTPS git request to the worktree's registered remote. */
 const gitProbe = `--cacert ${CA_PATH} --resolve ${GIT_HOST}:443:${FAKE_IP} https://${GIT_HOST}/acme/app.git/info/refs?service=git-upload-pack`
@@ -322,11 +341,13 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     const redirect = { host: echoHost, port: ECHO_PORT, tls: false }
     registration = {
       rules: [],
-      allowedHosts: [MITM_HOST, TOKEN_HOST, GIT_HOST],
+      allowedHosts: [MITM_HOST, MCP_PROXY_HOST, TOKEN_HOST, GIT_HOST],
       repoUrl: `https://${GIT_HOST}/acme/app.git`,
       tool: 'claude',
       projectSlug: 'creds-suite',
-      upstreamRedirects: { [MITM_HOST]: redirect, [TOKEN_HOST]: redirect, [GIT_HOST]: redirect },
+      upstreamRedirects: {
+        [MITM_HOST]: redirect, [MCP_PROXY_HOST]: redirect, [TOKEN_HOST]: redirect, [GIT_HOST]: redirect,
+      },
     }
     await applyWorktreeRegistration(worktreeId, registration)
     await startWorktreePod(podName, worktreeId, proxyHost)
@@ -411,7 +432,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     expect(await pollUntil(agentFingerprints, (f) => f.includes(keyA.fingerprint))).toEqual([keyA.fingerprint])
   }, 180_000)
 
-  it('captures a rotation a worktree drives into the refreshed Secret', async () => {
+  it('captures a rotation a worktree drives, spending the credential once for a burst', async () => {
     await syncProxyCredentials({
       ...EMPTY,
       claude: {
@@ -423,33 +444,51 @@ describe('proxy credentials suite (objects in, objects out)', () => {
         },
       },
     })
-    // The pod holds placeholders; the proxy swaps the real refresh token
-    // out, and swaps placeholders back into the response.
-    const r = await curlUntil(podName,
-      `--cacert ${CA_PATH} --resolve ${TOKEN_HOST}:443:${FAKE_IP} -X POST -H 'content-type: application/json' `
-      + `-d '{"grant_type":"refresh_token","refresh_token":"${PLACEHOLDER_REFRESH_TOKEN}","client_id":"x"}' `
-      + `https://${TOKEN_HOST}/v1/oauth/token`,
-      (res) => res.exit === 0 && res.out.includes(PLACEHOLDER_ACCESS_TOKEN))
-    expect(r.exit, r.out).toBe(0)
-    const body = JSON.parse(r.out.slice(0, r.out.lastIndexOf('EXIT:'))) as {
-      access_token: string; refresh_token: string; echoed: { refresh_token: string }
+    // Wait for the bundle through a request that spends nothing, so every
+    // refresh below is one the proxy mediates.
+    await curlUntil(podName, probeArgs(`-H 'authorization: Bearer ${PLACEHOLDER_ACCESS_TOKEN}'`),
+      (r) => r.exit === 0 && echoedOf(r.out).headers.authorization === 'Bearer real-access')
+
+    // Two workspaces refreshing together, then a third a moment later. The
+    // proxy swaps the real refresh token out once and every one of them gets
+    // that rotation back as placeholders: a second spend of `real-refresh`
+    // would be the invalid_grant that makes claude wipe the shared file.
+    const { stdout } = await kubectlWithRetry([
+      'exec', '-n', k8sNamespace(), podName, '--', 'sh', '-c',
+      `curl -sS --max-time 20 ${refreshArgs} > /tmp/r1 & curl -sS --max-time 20 ${refreshArgs} > /tmp/r2 & wait; `
+      + `curl -sS --max-time 20 ${refreshArgs} > /tmp/r3; `
+      + 'cat /tmp/r1; echo; cat /tmp/r2; echo; cat /tmp/r3',
+    ], { timeout: 60_000 })
+    const replies = stdout.trim().split('\n').map((l) => JSON.parse(l) as RefreshReply)
+    expect(replies).toHaveLength(3)
+    for (const reply of replies) {
+      expect(reply.access_token).toBe(PLACEHOLDER_ACCESS_TOKEN)
+      expect(reply.refresh_token).toBe(PLACEHOLDER_REFRESH_TOKEN)
+      expect(reply.echoed.refresh_token).toBe('real-refresh')
+      expect(reply.rotations).toBe(replies[0].rotations)
     }
-    expect(body.access_token).toBe(PLACEHOLDER_ACCESS_TOKEN)
-    expect(body.refresh_token).toBe(PLACEHOLDER_REFRESH_TOKEN)
-    expect(body.echoed.refresh_token).toBe('real-refresh')
+    const rotated = `rotated-access-${replies[0].rotations}`
 
     // Durable the moment it was captured, in the host store's own shape.
     const captured = await pollUntil(
       () => readSecretKey(PROXY_REFRESHED_SECRET_NAME, 'claude.json'),
-      (v) => v !== undefined && v.includes('rotated-access'),
+      (v) => v !== undefined && v.includes(rotated),
     )
     expect(JSON.parse(captured!)).toMatchObject({
       kind: 'oauth',
-      claudeAiOauth: { accessToken: 'rotated-access', refreshToken: 'rotated-refresh', scopes: ['user:inference'] },
+      claudeAiOauth: {
+        accessToken: rotated,
+        refreshToken: `rotated-refresh-${replies[0].rotations}`,
+        scopes: ['user:inference'],
+      },
     })
-    // And served from here on, ahead of the bundle the server pushed.
-    const next = await curlInPod(podName, probeArgs(`-H 'authorization: Bearer ${PLACEHOLDER_ACCESS_TOKEN}'`))
-    expect(echoedOf(next.out).headers.authorization).toBe('Bearer rotated-access')
+    // And served from here on, ahead of the bundle the server pushed — to
+    // inference and to the claude.ai connectors alike, which is what keeps a
+    // starting claude from forcing a refresh over a rejected placeholder.
+    for (const host of [MITM_HOST, MCP_PROXY_HOST]) {
+      const next = await curlInPod(podName, probeArgs(`-H 'authorization: Bearer ${PLACEHOLDER_ACCESS_TOKEN}'`, host))
+      expect(echoedOf(next.out).headers.authorization, host).toBe(`Bearer ${rotated}`)
+    }
   }, 180_000)
 
   it('records a blocked host in the state ConfigMap, and widening the registration prunes it', async () => {
