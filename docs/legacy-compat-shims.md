@@ -81,6 +81,27 @@ gate and no sign of it.
 **How to tell it is safe to remove:** a release or two after the one that
 removed tokens, once nobody who set it can still be upgrading from before.
 
+## The proxy's re-signing of an outdated CA
+
+`loadOrGenerateCA` in `k8s/proxy/proxy.ts` re-signs a stored CA that lacks
+a `subjectKeyIdentifier` or a critical `basicConstraints`, over the CA's
+own key, adding both.
+
+**What it reads:** the CA every existing install's proxy has written into
+`yaac-proxy-ca` so far. None has the critical flag; one without the SKI
+exists only if it was seeded from a very old on-disk CA.
+
+**What breaks silently if it goes too early:** such an install keeps the
+old CA, and every strict verifier (Python 3.13+ by default) rejects every
+proxied HTTPS request, while curl, Node and Python 3.12 keep working, so it
+reads as a Python bug rather than a yaac one. Changing it to mint a new
+key instead breaks every running worktree at upgrade: its agent and nested
+containers loaded the old root at startup and reject the new key's leaves
+until the pod restarts. Keeping the key is what makes the swap invisible.
+
+**How to tell it is safe to remove:** a season after the release that sets
+the critical flag. Then drop the condition and load any stored CA.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

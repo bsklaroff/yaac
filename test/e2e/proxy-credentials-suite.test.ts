@@ -396,6 +396,18 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     expect(echoedOf(own.out).headers['x-api-key']).toBe('my-own-key')
   }, 180_000)
 
+  it('serves a chain a strict X.509 verifier accepts', async () => {
+    // Python 3.13+ verifies with VERIFY_X509_STRICT by default; the base
+    // image's 3.12 has the flag, so set it explicitly.
+    const script = [
+      'import socket, ssl',
+      `c = ssl.create_default_context(cafile='${CA_PATH}')`,
+      'c.verify_flags |= ssl.VERIFY_X509_STRICT',
+      `c.wrap_socket(socket.create_connection(('${FAKE_IP}', 443), timeout=20), server_hostname='${MITM_HOST}').close()`,
+    ].join('\n')
+    await kubectlWithRetry(['exec', '-n', k8sNamespace(), podName, '--', 'python3', '-c', script], { timeout: 40_000 })
+  }, 60_000)
+
   it('signs a running worktree out when the Secret is rewritten without the tool', async () => {
     await syncProxyCredentials({
       ...EMPTY,
@@ -529,7 +541,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     }
   }, 180_000)
 
-  // LAST: it replaces the shared proxy pod.
+  // These two run LAST: they replace the shared proxy pod.
   it('is replaceable: a fresh pod serves the same CA, registration and credentials with no server action', async () => {
     const caBefore = await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.pem')
     expect(caBefore).toContain('BEGIN CERTIFICATE')
@@ -556,5 +568,47 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     expect(echoedOf(r.out).headers['x-api-key']).toBe('sk-ant-survives')
     // The mounted CA still verifies the replacement's leaves (--cacert
     // above), so the CA it serves is the one it read back.
+  }, 300_000)
+
+  it('re-signs an outdated stored CA over its own key, so running pods keep verifying', async () => {
+    const key = await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.key')
+    expect(key).toContain('PRIVATE KEY')
+    // What every CA minted before the critical flag looks like: same key,
+    // non-critical basicConstraints. openssl ships in the base image.
+    const { stdout: outdated } = await kubectlWithRetry([
+      'exec', '-i', '-n', k8sNamespace(), podName, '--', 'sh', '-c', [
+        "cat > /tmp/ca.cnf <<'EOF'",
+        '[req]', 'distinguished_name = dn', 'x509_extensions = v3', 'prompt = no',
+        '[dn]', 'CN = yaac Proxy CA',
+        '[v3]', 'basicConstraints = CA:TRUE', 'keyUsage = keyCertSign, cRLSign', 'subjectKeyIdentifier = hash',
+        'EOF',
+        'openssl req -x509 -new -key /dev/stdin -days 1 -config /tmp/ca.cnf',
+      ].join('\n'),
+    ], { input: key, timeout: 40_000 })
+    await kubectlWithRetry([
+      'patch', 'secret', PROXY_CA_SECRET_NAME, '-n', k8sNamespace(),
+      '-p', JSON.stringify({ data: { 'ca.pem': Buffer.from(outdated).toString('base64') } }),
+    ])
+
+    await kubectlWithRetry([
+      'delete', 'pod', '-l', `app=${PROXY_APP_NAME}`, '-n', k8sNamespace(), '--wait=false',
+    ])
+    await kubectlWithRetry([
+      'rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', k8sNamespace(), '--timeout=180s',
+    ], { timeout: 190_000 })
+
+    const resigned = await pollUntil(
+      async () => (await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.pem')) ?? '', (pem) => pem !== outdated)
+    const spki = (pem: string): Buffer =>
+      new crypto.X509Certificate(pem).publicKey.export({ type: 'spki', format: 'der' })
+    expect(spki(resigned).equals(spki(outdated))).toBe(true)
+    const { stdout: text } = await kubectlWithRetry([
+      'exec', '-i', '-n', k8sNamespace(), podName, '--', 'openssl', 'x509', '-noout', '-text',
+    ], { input: resigned, timeout: 40_000 })
+    expect(text).toMatch(/Basic Constraints: critical/)
+    // The pod's already-mounted CA still verifies the re-signed CA's leaves.
+    const r = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
+      (res) => res.exit === 0, 120_000)
+    expect(r.exit, r.out).toBe(0)
   }, 300_000)
 })
