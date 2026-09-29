@@ -1,4 +1,3 @@
-import { piSessionLogs } from './transcripts'
 import { scanJsonlForward } from './jsonl'
 import type { SandboxFile } from './sandbox-fs'
 
@@ -6,12 +5,11 @@ import type { SandboxFile } from './sandbox-fs'
  * Status classification + first-message lookup for pi (earendil) sessions.
  *
  * Unlike opencode, pi writes plain JSONL session logs (one
- * `<timestamp>_<worktreeId>.jsonl` per session) into the shared, host-mounted
- * `.pi` home (`piSessionsDir`), so the first-message lookup reads those files
- * directly on the host — no HTTP probe and no DB meta cache. A session's logs
- * are matched by the id pi embeds in the filename (from our `--session-id`).
- * The files persist across container teardown, so the live and deleted-session
- * lookups are the same read.
+ * `<timestamp>_<sessionId>.jsonl` per session) into the worktree's history,
+ * which the host reads directly — no HTTP probe and no DB meta cache. A
+ * session's logs are matched by the id pi embeds in the filename (from our
+ * `--session-id`; see `transcripts.ts`). The files persist across container
+ * teardown, so the live and deleted-session lookups are the same read.
  *
  * Status is read from the rendered tmux pane (window `yaac:pi.0`). The busy/idle
  * classification runs *inside tmux*: the session's status watcher
@@ -63,25 +61,6 @@ function getUserMessageText(entry: PiMessageEntry): string | undefined {
       .join('')
       .trim()
     return text.length > 0 ? text : undefined
-  }
-  return undefined
-}
-
-/**
- * First user message for a pi session, used by `yaac worktree list` to show a
- * prompt preview. Reads the oldest session log's first `role:"user"` entry;
- * falls through to later logs if the first has none (e.g. an empty session).
- * Host files persist across teardown, so this serves live and deleted
- * sessions alike.
- */
-export async function getSessionPiFirstUserMessage(
-  projectSlug: string,
-  worktreeId: string,
-): Promise<string | undefined> {
-  const files = await piSessionLogs(projectSlug, worktreeId)
-  for (const file of files) {
-    const msg = await getPiFirstUserMessage(file)
-    if (msg !== undefined) return msg
   }
   return undefined
 }

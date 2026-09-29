@@ -334,55 +334,124 @@ server can neither resolve nor meaningfully store once the two are separate
 processes.
 
 Project-relative rather than tool-home-relative so the column needs no tool to
-be read: every tool home is `<projectDir>/<tool>`, so the tool segment is simply
-the first component. The reporter
-is handed its home and that home's name (`yaac-agent-links "$HOME/.claude"
-claude`), so producing the form stays parameter expansion with no interpreter.
-It tries the home's physical path as well, since a workspace may reach its tool
-home through a link and a tool that resolves its own paths then reports the
-transcript under the target.
+be read. The reporter is handed its home and that home's name
+(`yaac-agent-links "$HOME/.claude" claude`), so producing the form stays
+parameter expansion with no interpreter. It tries the home's physical path as
+well, since a workspace may reach its tool home through a link and a tool that
+resolves its own paths then reports the transcript under the target.
+
+What the reporter names is the path the tool sees — `claude/projects/…`,
+`codex/sessions/…` — which in a pod is the worktree's history mounted there
+(see "Agent history"). So discovery does not record it verbatim:
+`locateTranscript` looks for it in `history/<worktreeId>/<tool>/` first and the
+shared home second, then resolves links, so a host worktree's row names the
+file its folder link leads to. A path that resolves outside the project, into a
+sibling's history, or nowhere yet is left out (the next tick fills it). pi's
+logs sit outside the home its reporter names, so a pi conversation is found by
+the id in its log's filename instead.
 
 `toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
 are the only place the two forms meet. Disk code works in `SandboxFile`s — a
-tool home and a path under it (see "Sandbox-writable dirs") — while a path
-reaches an event already project-relative, as the pane named it. The
-conversion is applied at the *last write* before the column only where the
-on-demand founding-ask capture is fed by a reader that has already resolved a
-path.
-
-Decoding funnels through `toLinkRow`, the single projection every server-side
-reader comes through. That is where the shared-filesystem assumption between
-the halves still lives: the stopped listing stats a transcript for
-last-activity and the detail route parses one for a founding ask, both against
-files on disk.
+dir and a path under it (see "Sandbox-writable dirs") — while a path reaches an
+event already project-relative. Decoding funnels through `toLinkRow`, the
+single projection every server-side reader comes through.
 
 A pane's `@yaac-session` is the one input yaac does not write, so it is
 *validated* rather than converted: anything in the workspace can set it.
 `parsePaneSession` holds the id to `agentSessionIdSchema` and drops a path that
 is absolute or climbs out of the project, and decoding (`resolveProjectPath`)
-resolves a path only under the recording tool's own home — a pane naming
-`known_hosts` or `repo/.git/config` names no transcript.
+resolves a path only under the recording tool's shared home or its part of the
+reading worktree's own history — a pane naming `known_hosts`,
+`repo/.git/config` or a sibling's history names no transcript.
 
-The transcripts themselves are deliberately left where each tool writes them,
-in the project-shared tool home. Recording the path is what makes them findable,
-and it costs less than relocating them would: no mount moves, a worktree started
-before any of this still resolves, and cross-worktree `--resume` keeps working.
-The price is that the shared homes stay shared — `file-history/<worktreeId>/` and
-`worktree-env/<worktreeId>/` outlive the worktree that made them, `history.jsonl`
-is pooled across a project, and every worktree of a project is a concurrent
-writer into one transcript directory, which is why `seed.ts` raises claude's
-`cleanupPeriodDays` so it cannot prune another worktree's history on startup.
+Readers without a recorded path (`sessionTranscriptPath`) search the same two
+places in the same order: the worktree's history, then the shared home. codex is
+why the path is recorded at all: claude's transcript is named for its
+conversation and pi's is found by matching the id in its filename, but codex
+names its rollout files by a timestamp as well as a thread id, so a reader holding
+only a conversation id does not look for one.
 
-codex is why the path is recorded at all: claude's transcript is at a
-conventional location and pi's is found by matching the id in its filename, but
-codex names its rollout files unpredictably, so nothing derives one from a
-worktree id.
+## Agent history
+
+Each worktree's conversation state lives in `history/<worktreeId>/`, not in the
+project's shared tool homes, so under k8s a pod can reach only its own
+worktree's conversations. It still reads and writes the shared agent *config*
+(settings, `.claude.json`, credentials, skills, plugins, `config.toml`) — that
+is shared on purpose.
+
+| `history/<wt>/…` | Holds | k8s | containerless |
+|---|---|---|---|
+| `claude/` | claude's `projects/` (transcripts, subagent logs, tool results) | mounted at `~/.claude/projects` | the folder claude files this checkout under, linked to `claude/-workspace` |
+| `claude-file-history/` | claude's `file-history/<sid>/` (what `/rewind` restores) | mounted at `~/.claude/file-history` | one link per conversation in the shared `file-history/` |
+| `codex/` | codex's `sessions/` rollouts | mounted at `~/.codex/sessions` | one link per rollout in the shared `sessions/` |
+| `codex-sqlite/` | codex's sqlite state | mounted at `~/.codex-sqlite`, named by `CODEX_SQLITE_HOME` | the same declaration, as a link in the private HOME |
+| `pi/` | pi's session logs | mounted at `~/.yaac-pi-sessions`, named by `PI_CODING_AGENT_SESSION_DIR` | likewise |
+
+Where a tool has an env override the directory sits outside every tool home, so
+both drivers realize the mount as they are. The other three are nested inside
+a shared home: a pod layers them over it (as it does builtin skills), but a
+host has no mount namespace and a link written inside a home that is itself a
+link lands in the shared dir. So a host create plants links *in the shared
+homes* instead. Every conversation is filed under `-workspace` in the history
+on both drivers — a pod's cwd — which is what makes one folder link enough on a
+host.
+
+Auto-memory stays shared: claude keys it on the canonical git root, `/repo` in
+a pod, so `claude/projects/-repo/memory` is mounted back on top of the
+`projects/` overlay. On a host the key is the munged host repo path, which a
+host create links to `-repo`, so memory is one thing on both drivers (two real
+folders are left alone; memory is never merged). The munging is claude's own
+rule (`claudeProjectDirName`, pinned against the binary by a test).
+
+The boundary is the worktree, not the conversation. Several conversations in
+one worktree run in one pod as one uid, so one can delete another's
+transcript, just as it can delete the checkout. Under containerless there is no
+isolation at all — an agent can delete anything the server's user can; what it
+gets is the shared layout, which is what lets an install switch drivers.
+
+**Converging at create.** A stretch on either driver can leave files where the
+other one needs them, so every create and restart runs `convergeAgentHistory`
+(`#domain/agent-history`) in its prep, before the workspace launches. It first
+makes every mount source and nested mountpoint (so the kubelet never creates
+one root-owned), then moves every conversation the worktree ever held out of
+the shared homes into its history. That set is every id its rows name (not
+only the active ones), every ACP record in `acp/<wt>/` (an ACP conversation
+fires no hook, yet the SDK's claude still writes a transcript), and the
+worktree id itself, which the pinned first conversation uses before any row
+names it — less any conversation a sibling's rows also name. Such a
+conversation was resumed from one worktree in another back when the folder was
+shared, so it has no single owner: moving it would hand it to whichever
+worktree converged first and orphan it in the other. It stays in the shared
+home, readable by both through the fallback, and a pod of either can no longer
+resume it. Subagents ride with their parent: claude files them inside the
+conversation's `<sid>/` dir, which moves with it; a codex `spawn_agent` child or
+fork is a thread of its own that may fire no hook, so the set closes over
+rollouts whose first line (`session_meta`) names a thread already in it —
+except a thread a sibling's rows name, since a host codex can fork any thread
+linked into the shared home and that fork is the sibling's. Moves are `rename`s
+under the project dir, done through a `no-links` root, never overwrite, and
+leave links alone. A row whose file is gone from the shared home (judged
+`no-links`, as a pod would see it) and present at its history destination is
+repointed through a `sessions-discovered` event. That is read off the disk, not
+off the moves just made, so a converge interrupted between a rename and the row
+write is repaired by the next one. Under containerless the create then plants the
+links above, first emptying a real folder where the checkout's link belongs
+(one still holding a shared conversation stays real and unlinked).
+The step is permanent, not a migration: a host run can always leave new files
+in the shared homes (a new rollout, a new file-history dir), and the next create
+moves them in. Readers search the history and then the shared homes, so a
+file is readable wherever it currently is; only a *resume* needs the move.
+
+A stop keeps the history. `deleteWorktreeState` removes it, with every link in
+the shared homes that still leads into it; `project remove` takes it with the project dir.
+Because claude's history now goes with its worktree, `seed.ts` raises claude's
+`cleanupPeriodDays` so claude never prunes it itself.
 
 ## Sandbox-writable dirs
 
 Under k8s every pod of a project mounts its tool homes (`claude/`, `codex/`,
-`pi/`, `opencode-config/`), its conversation records (`acp/<worktreeId>/`) and
-the checkout read-write, so anything below a mount root may be a link or a FIFO
+`pi/`, `opencode-config/`), its conversation records (`acp/<worktreeId>/`), its
+history (`history/<worktreeId>/…`) and the checkout read-write, so anything below a mount root may be a link or a FIFO
 the pod planted. The server never touches those trees with plain path I/O: it
 opens them as a confined root (`#lib/confined-fs`), which checks every step on
 the descriptor it opened, opens leaves non-blocking, caps what it reads, writes

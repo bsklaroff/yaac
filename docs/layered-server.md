@@ -150,7 +150,9 @@ rows a vocabulary the db layer can speak alone.
   build files, plus the image-build retry, which hands the runtime the
   project-config reader it may not fetch), `git/` (domain's process
   boundary onto git, the way kubectl is the driver's; see
-  docs/server-git.md), `titles/`, `auth/`, `skills/`, and `reconcile.ts` —
+  docs/server-git.md), `agent-history/` (each worktree's conversations on
+  disk, converged into the shape its runtime reaches before every launch),
+  `titles/`, `auth/`, `skills/`, and `reconcile.ts` —
   the ordered step list one pass runs.
 
   Config and credentials sit here rather than a layer down because writing

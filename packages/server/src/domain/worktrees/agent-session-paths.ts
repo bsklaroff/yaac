@@ -1,9 +1,9 @@
 import { resolveProjectPath, type SandboxFile } from '#runtime/agents'
 import type { AgentSessionLinkRow } from '#db'
 
-/** What resolving takes: the project and tool the path is recorded against,
- *  and the stored value. Every conversation row satisfies it. */
-type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectSlug' | 'tool' | 'transcriptPath'>
+/** What resolving takes: the project, worktree and tool the path is recorded
+ *  against, and the stored value. Every conversation row satisfies it. */
+type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectSlug' | 'worktreeId' | 'tool' | 'transcriptPath'>
 
 /**
  * The transcript a recorded conversation names, or undefined when this
@@ -17,10 +17,10 @@ type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectSlug' | 'tool' | 'tr
  *
  * The single door, so a caller cannot forget the project or the tool:
  * `resolveProjectPath` refuses a stored value that is not under the recording
- * tool's home, and every reader degrades the same way on undefined — no
+ * tool's home or this worktree's history, and every reader degrades the same way on undefined — no
  * prompt, no last-activity.
  */
 export function recordedTranscript(row: RecordedTranscript | undefined): SandboxFile | undefined {
   if (row?.transcriptPath === undefined) return undefined
-  return resolveProjectPath(row.projectSlug, row.tool, row.transcriptPath)
+  return resolveProjectPath(row.projectSlug, row.worktreeId, row.tool, row.transcriptPath)
 }

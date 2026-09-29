@@ -70,14 +70,20 @@ export {
 // the primary consumers; these are what a mediator needs to record a
 // path, resolve one back, or stat it for last activity.
 export {
+  CLAUDE_POD_CWD,
+  CLAUDE_POD_REPO,
+  claudeProjectDirName,
+  locateTranscript,
   resolveProjectPath,
+  sessionIdFromPiLog,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
 } from './transcripts'
 // codex is the one tool whose posture is read off its disk rather than pushed
-// on its pane, so a caller following it has to know it is codex anyway.
-export { getCodexPermissionMode } from './codex'
+// on its pane, so a caller following it has to know it is codex anyway. Its
+// rollouts' names and lineage are what a worktree's history is gathered by.
+export { codexRolloutParent, codexRolloutThreadId, getCodexPermissionMode } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 // How the server reads and writes the project dirs an agent can write too.
 export { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'

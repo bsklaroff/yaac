@@ -5,6 +5,7 @@ import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/stat
 import {
   acpRecord,
   getCodexPermissionMode,
+  locateTranscript,
   readAcpFirstPrompt,
   resolveAgentPermissionMode,
   resolveProjectPath,
@@ -72,8 +73,17 @@ async function reconcileWorktreeAgentSessions(
   // No live set yet (a pod whose connection hasn't attached): leave the rows
   // alone rather than blanking them — a transient stream gap must never look
   // like "every agent exited".
-  const observed = liveAgents(projectSlug, worktreeId)
-  if (observed === undefined) return
+  const reported = liveAgents(projectSlug, worktreeId)
+  if (reported === undefined) return
+  // Each path as the workspace reported it, turned into where the file really
+  // is — the worktree's own history, or the shared home — or dropped.
+  const observed = await Promise.all(reported.map(async (a): Promise<LiveAgent> => {
+    const { transcriptPath, ...rest } = a
+    const located = a.agentSessionId === undefined
+      ? undefined
+      : await locateTranscript(projectSlug, worktreeId, a.tool, a.agentSessionId, transcriptPath)
+    return located === undefined ? rest : { ...rest, transcriptPath: located }
+  }))
   const row = await getWorktreeRow(projectSlug, worktreeId)
   const links = await listWorktreeAgentSessions(projectSlug, worktreeId)
   if (row !== undefined) {
@@ -130,7 +140,7 @@ async function describe(
     : mode === 'acp' ? await readAcpFirstPrompt(record)
     : await captureFirstPrompt(
       projectSlug, tool, agentSessionId,
-      transcript !== undefined ? resolveProjectPath(projectSlug, tool, transcript) : undefined, jobName,
+      transcript !== undefined ? resolveProjectPath(projectSlug, worktreeId, tool, transcript) : undefined, jobName,
     )
   const recordFile = mode === 'acp' ? acpRecord(record) : undefined
   const lastActiveMs = recordFile !== undefined ? await transcriptLastActiveMs(recordFile) : undefined
@@ -215,7 +225,7 @@ async function withRolloutModes(
     const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === a.agentSessionId)
     const transcript = a.transcriptPath ?? recorded?.transcriptPath
     const rollout = a.tool === 'codex' && transcript !== undefined
-      ? resolveProjectPath(row.projectSlug, 'codex', transcript)
+      ? resolveProjectPath(row.projectSlug, row.worktreeId, 'codex', transcript)
       : undefined
     const read = rollout !== undefined ? await getCodexPermissionMode(rollout) : undefined
     return read !== undefined && read.atMs >= life ? { ...a, reportedMode: read.permissionMode } : a

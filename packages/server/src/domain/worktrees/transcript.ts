@@ -70,7 +70,7 @@ export async function getAgentSessionTranscript(
   // path, and deriving it from the layout is the only way its conversation is
   // ever read. `stoppedPrompt` falls back for the same reason.
   const file = recordedTranscript(session)
-    ?? await sessionTranscriptPath(projectSlug, agentSessionId, session.tool)
+    ?? await sessionTranscriptPath(projectSlug, worktreeId, session.tool, agentSessionId)
   const raw = await readTranscript(file)
   return raw === null ? [] : claudeTranscriptAsAcp(raw, agentSessionId)
 }

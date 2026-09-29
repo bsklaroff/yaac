@@ -165,7 +165,9 @@ export function repoDir(slug: string): string {
 /**
  * GLOBAL: mounted at `/home/yaac/.claude` in every worktree of the project,
  * and named by `CLAUDE_CONFIG_DIR` — so claude's global config is the
- * `.claude.json` INSIDE this directory, carried by this mount.
+ * `.claude.json` INSIDE this directory, carried by this mount. Its
+ * `projects/` (all but the shared auto-memory) and `file-history/` are each
+ * worktree's own history, mounted over it (`agentHistoryDir`).
  */
 export function claudeDir(slug: string): string {
   return globalProjectPath(slug, 'claude')
@@ -181,7 +183,8 @@ export function projectClaudeCredentialsFile(slug: string): string {
   return path.join(claudeDir(slug), '.credentials.json')
 }
 
-/** GLOBAL: mounted at `/home/yaac/.codex`. */
+/** GLOBAL: mounted at `/home/yaac/.codex`. Its `sessions/` is the worktree's
+ *  own history, mounted over it (`agentHistoryDir`). */
 export function codexDir(slug: string): string {
   return globalProjectPath(slug, 'codex')
 }
@@ -286,24 +289,38 @@ export function opencodeDataDir(projectId: string, worktreeId: string): string {
 /**
  * GLOBAL. Per-project pi home. Bind-mounted at `/home/yaac/.pi/` inside the
  * container (the whole `.pi` dir, mirroring `claudeDir`/`~/.claude`), so every
- * worktree's settings, extensions, and JSONL session logs are shared across all
- * worktrees of the project. Persists across container teardown, so a deleted
- * worktree's first message can still be parsed from its log on demand.
+ * worktree's settings and extensions are shared across all worktrees of the
+ * project. Its session logs are not: pi writes those to the worktree's own
+ * history (`agentHistoryDir`).
  */
 export function piDir(slug: string): string {
   return globalProjectPath(slug, 'pi')
 }
 
 /**
- * GLOBAL. Directory holding pi's JSONL session logs (one
- * `<timestamp>_<worktreeId>.jsonl` per worktree) under the mounted pi home. pi
- * addresses each session by id via `--session-id`, so the server reads a
- * worktree's log by matching that id in the filename rather than isolating each
- * worktree in its own dir.
+ * GLOBAL. Where pi kept its session logs before they moved into each
+ * worktree's history — read as a fallback and moved in by the next create
+ * (docs/legacy-compat-shims.md).
  */
 export function piSessionsDir(slug: string): string {
   return path.join(piDir(slug), 'agent', 'sessions')
 }
+
+/**
+ * GLOBAL. One worktree's agent history: the conversation state every tool
+ * would otherwise keep in the project's shared home, where any sibling could
+ * delete it (docs/worktree-storage.md). One subdirectory per part —
+ * `claude` (claude's `projects/`), `claude-file-history`, `codex` (its
+ * `sessions/`), `codex-sqlite` and `pi` — reached as mounts over the tool
+ * homes in a pod and as links in the shared homes on a host. Outlives stops;
+ * goes when the worktree does.
+ */
+export function agentHistoryDir(slug: string, worktreeId: string, part?: AgentHistoryPart): string {
+  return globalProjectPath(slug, 'history', worktreeId, ...(part === undefined ? [] : [part]))
+}
+
+export const AGENT_HISTORY_PARTS = ['claude', 'claude-file-history', 'codex', 'codex-sqlite', 'pi'] as const
+export type AgentHistoryPart = typeof AGENT_HISTORY_PARTS[number]
 
 /** GLOBAL — see {@link worktreeDir}. */
 export function worktreesDir(slug: string): string {
