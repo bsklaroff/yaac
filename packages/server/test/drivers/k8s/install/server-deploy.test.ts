@@ -13,6 +13,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 import type * as registryModule from '#drivers/k8s/container/registry'
+import type * as runtimeModule from '#drivers/k8s/container/runtime'
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
@@ -45,6 +46,18 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
   registryHasTag: mockRegistryHasTag,
   registryRef: (tag: string) => `reg.local:5000/${tag}`,
   pushImageToRegistry: (tag: string) => Promise.resolve(`reg.local:5000/${tag}`),
+}))
+
+// The host engine, which the kind fronting asks for the port its node
+// publishes. Nothing else here crosses it, so any other call is a failure
+// rather than a real process run without the options it was given.
+const mockPodmanPort = vi.hoisted(() => vi.fn<(args: string[]) => Promise<{ stdout: string; stderr: string }>>())
+vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof runtimeModule>()),
+  execFileAsync: (file: string, args: string[]) =>
+    file === 'podman' && args[0] === 'port'
+      ? mockPodmanPort(args)
+      : Promise.reject(new Error(`unexpected host process: ${file} ${args.join(' ')}`)),
 }))
 
 import {
@@ -191,6 +204,9 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   mockApply.mockResolvedValue(undefined)
   mockWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  // The kind node publishes the server where a cluster created with no
+  // YAAC_SERVER_PORT would, unless a case says otherwise.
+  mockPodmanPort.mockResolvedValue({ stdout: '127.0.0.1:8787\n', stderr: '' })
   // One node with an InternalIP, so the ingress wall has a concrete node
   // address to admit.
   mockGetJson.mockImplementation((args: string[]) => {
@@ -707,9 +723,46 @@ describe('startClusterServer', () => {
     // origin is the loopback one.
     mockGetJson.mockResolvedValue(null)
     await expect(startClusterServer()).resolves.toBe('http://127.0.0.1:9123')
+    // Named outright, so the node's mapping is not asked.
+    expect(mockPodmanPort).not.toHaveBeenCalled()
     const calls = retried()
     expect(calls.some((c) => c.includes('scale') && c.includes('--replicas=1'))).toBe(true)
     expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
+  })
+
+  it('waits on the port the cluster was created with, not this shell\'s default', async () => {
+    // kind fixes the host port at create time. A cluster created under
+    // another YAAC_SERVER_PORT still holds that one, so an unset variable
+    // here is read off the node's mapping — not taken to mean 8787, where
+    // some other server may well be answering.
+    vi.stubEnv('YAAC_SERVER_PORT', '')
+    mockGetJson.mockResolvedValue(null)
+    mockPodmanPort.mockResolvedValue({ stdout: '127.0.0.1:8866\n', stderr: '' })
+    await expect(startClusterServer()).resolves.toBe('http://127.0.0.1:8866')
+    expect(mockPodmanPort).toHaveBeenCalledWith(['port', 'yaac-control-plane', `${String(SERVER_FRONT_PORT)}/tcp`])
+    expect(vi.mocked(globalThis.fetch).mock.calls.every(([u]) =>
+      (u as string).startsWith('http://127.0.0.1:8866/'))).toBe(true)
+  })
+
+  it('refuses rather than guess a port when the node\'s mapping cannot be read', async () => {
+    // Whatever answers a guessed port is not this cluster — and install
+    // would register it. A node created before the mapping existed gets the
+    // recreate advice at once, not after a 60s wait on nothing.
+    vi.stubEnv('YAAC_SERVER_PORT', '')
+    mockGetJson.mockResolvedValue(null)
+    mockPodmanPort.mockRejectedValueOnce(Object.assign(new Error('exit 125'), {
+      stderr: 'Error: failed to find published port "30787/tcp"\n',
+    }))
+    await expect(startClusterServer()).rejects.toThrow(/publishes no host port[\s\S]*yaac cluster delete/)
+    // Any other podman failure is reported in podman's words, and is not
+    // mistaken for a cluster that needs recreating.
+    mockPodmanPort.mockRejectedValueOnce(Object.assign(new Error('exit 125'), {
+      stderr: 'Error: unable to connect to Podman socket\n',
+    }))
+    const other = startClusterServer()
+    await expect(other).rejects.toThrow(/unable to connect to Podman socket/)
+    await expect(other).rejects.not.toThrow(/yaac cluster delete/)
+    expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
   it('waits on the tailnet origin when that is what the live Ingress records', async () => {
