@@ -34,19 +34,21 @@ describe('createApiClient / createRawApiClient', () => {
     const fetchImpl = vi.fn(() =>
       Promise.resolve(jsonResponse('{"error":{"code":"VALIDATION","message":"bad"}}', 400)),
     )
-    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const client = createApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     await expect(client.auth.list.$get()).rejects.toMatchObject({ code: 'VALIDATION', message: 'bad' })
   })
 
   it('createApiClient resolves the parsed body directly on a JSON route (no .json() unwrap)', async () => {
     const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse('{"tool":"codex"}')))
-    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const client = createApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     expect(await client.auth.list.$get()).toEqual({ tool: 'codex' })
+    // Routes are addressed unprefixed; the client puts them under /api.
+    expect(String((fetchImpl.mock.calls[0] as unknown[])[0])).toBe('http://server.local/api/auth/list')
   })
 
   it('createApiClient resolves undefined for a 204 (no body to parse)', async () => {
     const fetchImpl = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })))
-    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const client = createApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     expect(await client.auth.list.$get()).toBeUndefined()
   })
 
@@ -59,7 +61,7 @@ describe('createApiClient / createRawApiClient', () => {
         headers: { 'content-type': 'application/x-ndjson' },
       })),
     )
-    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const client = createApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     const res = await client.auth.list.$get()
     expect(res).toBeInstanceOf(Response)
     expect((res as unknown as Response).body).not.toBeNull()
@@ -69,7 +71,7 @@ describe('createApiClient / createRawApiClient', () => {
     const fetchImpl = vi.fn(() =>
       Promise.resolve(jsonResponse('{"error":{"code":"VALIDATION","message":"bad"}}', 400)),
     )
-    const client = createRawApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const client = createRawApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     const res = await client.auth.list.$get()
     expect(res.status).toBe(400)
   })

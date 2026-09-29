@@ -85,7 +85,7 @@ async function runningServerDriver(): Promise<string | undefined> {
     // quite possibly another yaac.
     const { resolveServerTarget } = await import('@yaac/shared/server-api')
     const target = await resolveServerTarget()
-    const res = await fetch(`${target.baseUrl}/health`, {
+    const res = await fetch(`${target.baseUrl}/api/health`, {
       signal: AbortSignal.timeout(2_000),
     })
     if (!res.ok) return undefined

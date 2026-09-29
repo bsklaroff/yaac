@@ -35,7 +35,7 @@ describe('project env api', () => {
     const vars = [{ id: 'a', name: 'K', secret: true, hasValue: true, rule: { hosts: ['a.com'] } }]
     const fetchMock = stub({ vars })
     expect(await getProjectEnv('demo')).toEqual(vars)
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/project/demo/env')
+    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/project/demo/env')
   })
 
   it('setProjectEnvVar PUTs the variable and unwraps { var }', async () => {
@@ -43,7 +43,7 @@ describe('project env api', () => {
     const fetchMock = stub({ var: saved })
     expect(await setProjectEnvVar('demo', { name: 'K', value: 'v', secret: false })).toEqual(saved)
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/project/demo/env')
+    expect(url).toBe('/api/project/demo/env')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ name: 'K', value: 'v', secret: false })
   })
@@ -52,7 +52,7 @@ describe('project env api', () => {
     const fetchMock = stub(null, 204)
     await deleteProjectEnvVar('demo', 'row-id')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/project/demo/env/row-id')
+    expect(url).toBe('/api/project/demo/env/row-id')
     expect(init.method).toBe('DELETE')
   })
 })
@@ -69,7 +69,7 @@ describe('git identity api', () => {
     const fetchMock = stub({ identity: { name: 'Ada', email: 'ada@example.com' } })
     await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/config/git-identity')
+    expect(url).toBe('/api/config/git-identity')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ name: 'Ada', email: 'ada@example.com' })
   })
@@ -79,14 +79,14 @@ describe('project config / dockerfile api', () => {
   it('getProjectConfig GETs the config route and unwraps { config }', async () => {
     const fetchMock = stub({ config: { initCommands: ['pnpm install'] } })
     expect(await getProjectConfig('demo')).toEqual({ initCommands: ['pnpm install'] })
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/project/demo/config')
+    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/project/demo/config')
   })
 
   it('saveProjectConfig PUTs { config } and unwraps the result', async () => {
     const fetchMock = stub({ config: { initCommands: ['pnpm build'] } })
     expect(await saveProjectConfig('demo', { initCommands: ['pnpm build'] })).toEqual({ initCommands: ['pnpm build'] })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/project/demo/config')
+    expect(url).toBe('/api/project/demo/config')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ config: { initCommands: ['pnpm build'] } })
   })
@@ -100,7 +100,7 @@ describe('project config / dockerfile api', () => {
     const fetchMock = stub({ content: 'FROM x\n' })
     await saveProjectDockerfile('demo', 'FROM x\n')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/project/demo/dockerfile')
+    expect(url).toBe('/api/project/demo/dockerfile')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ content: 'FROM x\n' })
   })
@@ -116,7 +116,7 @@ describe('user dockerfile api', () => {
     const fetchMock = stub({ content: '' })
     await saveUserDockerfile('')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/config/user-dockerfile')
+    expect(url).toBe('/api/config/user-dockerfile')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ content: '' })
   })

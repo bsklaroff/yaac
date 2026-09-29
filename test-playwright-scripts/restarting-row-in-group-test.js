@@ -164,10 +164,10 @@ function report(label, samples) {
     samples.every((s) => rowsOf(s).length >= 2), JSON.stringify(rowsOf(samples[0])))
 }
 
-const { groups } = await get(`/worktree/group/list?project=${PROJECT}`)
+const { groups } = await get(`/api/worktree/group/list?project=${PROJECT}`)
 const group = groups.find((g) => g.name === GROUP)
 if (!group) throw new Error(`project ${PROJECT} has no group named ${GROUP} — see the header comment`)
-const { worktrees } = await get(`/worktree/list?project=${PROJECT}`)
+const { worktrees } = await get(`/api/worktree/list?project=${PROJECT}`)
 const members = worktrees.filter((w) => w.groupId === group.groupId).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 if (members.length < 2) throw new Error(`group ${GROUP} needs two live members, has ${members.length}`)
 const subject = members[0]
@@ -193,7 +193,7 @@ try {
   }
 
   // --- pass 1: restarted by clicking the ghost row, as a user does ---
-  await api('/worktree/stop', { worktreeId: subject.worktreeId })
+  await api('/api/worktree/stop', { worktreeId: subject.worktreeId })
   await openGhosts()
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row')
   check('the stopped member is a ghost row in the group', true)
@@ -210,12 +210,12 @@ try {
   // --- pass 2: restarted from outside the browser, so only the server's
   // snapshot row is ever drawn ---
   await untilShape(page, (s) => !(s.all ?? []).some((t) => t.startsWith('Restarting')), 'the restart to finish')
-  await api('/worktree/stop', { worktreeId: subject.worktreeId })
+  await api('/api/worktree/stop', { worktreeId: subject.worktreeId })
   await openGhosts()
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row again')
   // Exactly what the webapp posts, minus the browser: projectSlug + tool, the
   // pair that makes the route register the row before it resolves anything.
-  const streamed = api('/worktree/restart', {
+  const streamed = api('/api/worktree/restart', {
     worktreeId: subject.worktreeId, projectSlug: PROJECT, tool: subject.tool,
   }).then((res) => res.text())
   report('server', await sampleWhileRestarting(page, 'server'))

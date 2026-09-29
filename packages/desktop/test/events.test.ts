@@ -17,10 +17,10 @@ class FakeSocket implements EventsSocket {
 
 describe('eventsWsUrl', () => {
   it('maps http → ws and appends /events', () => {
-    expect(eventsWsUrl('http://127.0.0.1:8787')).toBe('ws://127.0.0.1:8787/events')
+    expect(eventsWsUrl('http://127.0.0.1:8787')).toBe('ws://127.0.0.1:8787/api/events')
   })
   it('maps https → wss', () => {
-    expect(eventsWsUrl('https://srv.example.ts.net')).toBe('wss://srv.example.ts.net/events')
+    expect(eventsWsUrl('https://srv.example.ts.net')).toBe('wss://srv.example.ts.net/api/events')
   })
 })
 
@@ -51,7 +51,7 @@ describe('startEventsMonitor', () => {
   it('connects with the resolved target and forwards snapshot frames', async () => {
     const h = harness()
     await vi.runOnlyPendingTimersAsync()
-    expect(h.opens).toEqual(['ws://127.0.0.1:8787/events'])
+    expect(h.opens).toEqual(['ws://127.0.0.1:8787/api/events'])
     h.sockets[0].message?.(JSON.stringify({ type: 'snapshot', data: { worktrees: [] } }))
     expect(h.snapshots).toHaveLength(1)
   })
@@ -70,7 +70,7 @@ describe('startEventsMonitor', () => {
     h.sockets[0].closeCb?.()
     await vi.advanceTimersByTimeAsync(100)
     expect(h.opens).toHaveLength(2)
-    expect(h.opens[1]).toBe('ws://127.0.0.1:9999/events')
+    expect(h.opens[1]).toBe('ws://127.0.0.1:9999/api/events')
   })
 
   it('schedules only one reconnect when close fires twice (error + close)', async () => {

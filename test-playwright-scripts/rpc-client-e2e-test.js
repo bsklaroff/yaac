@@ -81,13 +81,13 @@ async function main() {
   page.on('response', (res) => {
     let p
     try { p = new URL(res.url()).pathname } catch { return }
-    if (isAsset(p) || p === '/events') return
+    if (isAsset(p) || p === '/api/events') return
     api.push({ method: res.request().method(), path: p, status: res.status() })
   })
   // The webapp pre-generates the worktree id and sends it in the create body.
   let createdWorktreeId = null
   page.on('request', (req) => {
-    if (req.method() !== 'POST' || new URL(req.url()).pathname !== '/worktree/create') return
+    if (req.method() !== 'POST' || new URL(req.url()).pathname !== '/api/worktree/create') return
     try { createdWorktreeId = JSON.parse(req.postData() ?? '{}').worktreeId ?? null } catch { /* asserted below */ }
   })
   const hit = (method, pathRe) => api.filter((c) => c.method === method && pathRe.test(c.path))
@@ -148,12 +148,12 @@ async function main() {
     check('stop drove a worktree-stop write', stopped)
 
     // ---- assert the endpoints answered 2xx ------------------------------
-    check('GET /whoami → 2xx', ok2xx(hit('GET', /^\/whoami$/)))
-    check('GET /auth/list → 2xx', ok2xx(hit('GET', /^\/auth\/list$/)))
-    check('GET /shortcuts/get → 2xx', ok2xx(hit('GET', /^\/shortcuts\/get$/)))
-    check('POST /worktree/create → 2xx', ok2xx(hit('POST', /^\/worktree\/create$/)))
-    if (renamed) check('POST /worktree/:id/title → 2xx', ok2xx(hit('POST', /^\/worktree\/[^/]+\/title$/)))
-    if (stopped) check('POST /worktree/stop → 2xx', ok2xx(hit('POST', /^\/worktree\/stop$/)))
+    check('GET /whoami → 2xx', ok2xx(hit('GET', /^\/api\/whoami$/)))
+    check('GET /auth/list → 2xx', ok2xx(hit('GET', /^\/api\/auth\/list$/)))
+    check('GET /shortcuts/get → 2xx', ok2xx(hit('GET', /^\/api\/shortcuts\/get$/)))
+    check('POST /worktree/create → 2xx', ok2xx(hit('POST', /^\/api\/worktree\/create$/)))
+    if (renamed) check('POST /worktree/:id/title → 2xx', ok2xx(hit('POST', /^\/api\/worktree\/[^/]+\/title$/)))
+    if (stopped) check('POST /worktree/stop → 2xx', ok2xx(hit('POST', /^\/api\/worktree\/stop$/)))
     check('no page errors', pageErrors.length === 0, pageErrors.join(' | '))
     check('no API 4xx/5xx (except benign 404 skew probes)',
       api.every((c) => c.status < 400 || c.status === 404),
@@ -165,7 +165,7 @@ async function main() {
     await browser.close()
     // Cleanup fallback: if the UI stop didn't land, stop it via the API.
     if (createdWorktreeId) {
-      await fetch(`${base}/worktree/stop`, {
+      await fetch(`${base}/api/worktree/stop`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ worktreeId: createdWorktreeId }),

@@ -238,7 +238,7 @@ async function main() {
   })
   console.log('github.com upstream redirected to mock (mode=401)')
 
-  const codeRes = await fetch(`${base}/auth/bootstrap-code`)
+  const codeRes = await fetch(`${base}/api/auth/bootstrap-code`)
   const { code } = await codeRes.json()
 
   const browser = await chromium.launch()

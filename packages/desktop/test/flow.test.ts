@@ -156,7 +156,7 @@ describe('probeIdentity', () => {
     }
     await expect(probeIdentity({ resolveTarget: () => Promise.resolve(LOCAL), fetchImpl }))
       .resolves.toEqual({ kind: 'local' })
-    expect(seen).toEqual([{ url: `${LOCAL.baseUrl}/whoami`, auth: null }])
+    expect(seen).toEqual([{ url: `${LOCAL.baseUrl}/api/whoami`, auth: null }])
   })
 
   it("throws with the server's message when it will not identify this device", async () => {

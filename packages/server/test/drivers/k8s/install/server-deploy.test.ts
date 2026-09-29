@@ -581,7 +581,7 @@ describe('deployServerWorkload', () => {
     // machine's CLI goes through the identity rule like any device — and a
     // tagged device has no user to be. Said at install, not on the next
     // command.
-    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(String(url).endsWith('/whoami')
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(String(url).endsWith('/api/whoami')
       ? new Response(JSON.stringify({
         error: { code: 'UNAUTHENTICATED', message: 'tailscale serve sent no user identity' },
       }), { status: 401 })
@@ -730,6 +730,22 @@ describe('startClusterServer', () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
       const pending = startClusterServer()
       const verdict = expect(pending).rejects.toThrow(/yaac cluster delete/)
+      await vi.advanceTimersByTimeAsync(61_000)
+      await verdict
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('points an origin that answers 404 at a re-install, never at recreating the cluster', async () => {
+    // A Deployment an older yaac installed runs an image whose routes
+    // predate this CLI's: reached, so the fronting's "recreate it" advice
+    // (which loses every worktree) is wrong, and a re-install is the fix.
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 404 }))))
+      const pending = startClusterServer()
+      const verdict = expect(pending).rejects.toThrow(/answered HTTP 404[\s\S]*yaac cluster install`\.$/)
       await vi.advanceTimersByTimeAsync(61_000)
       await verdict
     } finally {

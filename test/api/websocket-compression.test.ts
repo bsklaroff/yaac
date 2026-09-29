@@ -89,7 +89,7 @@ describe('WebSocket compression', () => {
     // ANSI-heavy terminal repaints. The PTY route closes the socket right
     // after the upgrade here (no such worktree), which is fine — the
     // handshake, and so the negotiation, has already happened by then.
-    for (const path of ['/events', '/pty/attach?id=nonexistent']) {
+    for (const path of ['/api/events', '/api/pty/attach?id=nonexistent']) {
       const headers = await upgrade(server.lock.port, path)
       expect(headers['sec-websocket-extensions'], path).toMatch(/permessage-deflate/)
     }
@@ -99,13 +99,13 @@ describe('WebSocket compression', () => {
   // before any lookup: an empty id must never match whichever worktree the
   // runtime lists first.
   it('refuses an attach with no worktree id, before upgrading', async () => {
-    for (const path of ['/pty/attach', '/pty/attach?id=', '/forward/attach?port=80', '/acp/attach?session=s1']) {
+    for (const path of ['/api/pty/attach', '/api/pty/attach?id=', '/api/forward/attach?port=80', '/api/acp/attach?session=s1']) {
       await expect(upgrade(server.lock.port, path), path)
         .rejects.toThrow(/no upgrade: HTTP 400/)
     }
     // The conversation id is joined into a path downstream, so it is checked
     // against the agent-session charset first.
-    await expect(upgrade(server.lock.port, '/acp/attach?id=x&session=..%2F..%2Fetc'))
+    await expect(upgrade(server.lock.port, '/api/acp/attach?id=x&session=..%2F..%2Fetc'))
       .rejects.toThrow(/no upgrade: HTTP 400/)
   })
 
@@ -114,7 +114,7 @@ describe('WebSocket compression', () => {
     // it must not have become a way to reach one unidentified: the identity
     // gate runs on the upgrade request like any other — here a tailnet name
     // reached without tailscale serve.
-    await expect(upgrade(server.lock.port, '/events', TAILNET_HOST))
+    await expect(upgrade(server.lock.port, '/api/events', TAILNET_HOST))
       .rejects.toThrow(/no upgrade: HTTP 401/)
   })
 })

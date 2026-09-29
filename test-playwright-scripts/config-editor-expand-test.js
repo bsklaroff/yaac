@@ -90,7 +90,7 @@ async function main() {
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
 
-  const codeRes = await fetch(`${base}/auth/bootstrap-code`)
+  const codeRes = await fetch(`${base}/api/auth/bootstrap-code`)
   if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
   const { code } = await codeRes.json()
 

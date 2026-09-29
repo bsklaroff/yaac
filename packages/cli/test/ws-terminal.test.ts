@@ -18,7 +18,7 @@ describe('buildPtyAttachUrl', () => {
     }))
     expect(url.protocol).toBe('wss:')
     expect(url.host).toBe('srv.ts.net')
-    expect(url.pathname).toBe('/pty/attach')
+    expect(url.pathname).toBe('/api/pty/attach')
     expect(url.searchParams.get('id')).toBe('abc-123')
     expect(url.searchParams.get('target')).toBe('native')
     expect(url.searchParams.get('cols')).toBe('132')

@@ -162,7 +162,7 @@ async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
  */
 describe('empty state (must run before any state is seeded)', () => {
   it('GET /events sends a snapshot frame on connect', async () => {
-    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/events`)
+    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/api/events`)
     await opened
     // The snapshot is pushed immediately after the upgrade.
     for (let i = 0; i < 50 && text.length === 0; i++) await sleep(100)
@@ -200,13 +200,13 @@ describe('server WebSocket surface (real server, no containers)', () => {
   it('refuses /events to a caller it cannot identify', async () => {
     // The tailnet name this file's server admits, reached without
     // tailscale serve.
-    const { ws, failed } = openWs(`ws://127.0.0.1:${server.lock.port}/events`, { host: TAILNET_HOST })
+    const { ws, failed } = openWs(`ws://127.0.0.1:${server.lock.port}/api/events`, { host: TAILNET_HOST })
     expect(await failed).toBe(401)
     ws.close()
   })
 
-  it('/pty/attach reports an error frame for an unknown session', async () => {
-    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/pty/attach?id=definitely-bogus`)
+  it('/api/pty/attach reports an error frame for an unknown session', async () => {
+    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/api/pty/attach?id=definitely-bogus`)
     await opened
     const closed = new Promise<void>((r) => ws.once('close', () => r()))
     await closed
@@ -219,7 +219,7 @@ describe('server WebSocket surface (real server, no containers)', () => {
  * objects, against a REAL server (no containers needed — a create against a
  * non-existent project fails fast at project validation, before any cluster or
  * podman interaction). Proves:
- *  - a create registers a provisioning entry surfaced in the `/events` snapshot,
+ *  - a create registers a provisioning entry surfaced in the `/api/events` snapshot,
  *  - it carries kind/createdAt and, on failure, an error (kept, not dropped),
  *  - a freshly-opened WS re-hydrates it (the reload-survival mechanism),
  *  - dismiss removes it from the snapshot.
@@ -234,7 +234,7 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     // A create against a non-existent project: the route registers the
     // provisioning entry up front, then createWorktree throws NOT_FOUND fast →
     // the entry is marked failed (kept until dismissed).
-    const res = await fetch(`${base}/worktree/create`, {
+    const res = await fetch(`${base}/api/worktree/create`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ project: 'ghost-project', tool: 'claude', worktreeId }),
@@ -261,7 +261,7 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     expect(entry?.error).toBeTruthy()
 
     // Dismiss drops it from the server registry → out of the snapshot.
-    const dismiss = await fetch(`${base}/worktree/provisioning/${worktreeId}/dismiss`, {
+    const dismiss = await fetch(`${base}/api/worktree/provisioning/${worktreeId}/dismiss`, {
       method: 'POST',
     })
     expect(dismiss.status).toBe(204)
@@ -675,7 +675,7 @@ describe('with seeded projects', () => {
       // state: `group create` is idempotent. The webapp's own "new group"
       // still can, which is exactly why the refusal has to exist.
       for (let i = 0; i < 2; i++) {
-        const res = await fetch(`http://127.0.0.1:${server.lock.port}/worktree/group/create`, {
+        const res = await fetch(`http://127.0.0.1:${server.lock.port}/api/worktree/group/create`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ projectSlug: GRP_SLUG, name: 'twin' }),

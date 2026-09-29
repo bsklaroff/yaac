@@ -132,7 +132,7 @@ export function connectAuthAgent(opts: {
 
   const connect = (): void => {
     if (stopped) return
-    const wsUrl = `${opts.baseUrl.replace(/^http/, 'ws')}/agent/auth`
+    const wsUrl = `${opts.baseUrl.replace(/^http/, 'ws')}/api/agent/auth`
     const sock = new WebSocket(wsUrl)
     ws = sock
 

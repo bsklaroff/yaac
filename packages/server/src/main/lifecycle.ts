@@ -52,7 +52,7 @@ export async function startServer(): Promise<void> {
     )
   }
 
-  // Lock file present but not live (pid dead or /health unresponsive) —
+  // Lock file present but not live (pid dead or its port silent) —
   // the next spawn's idempotency check would overwrite it anyway, but
   // clearing first keeps the "wait for new lock" poll simple.
   if (existing) await removeLock()

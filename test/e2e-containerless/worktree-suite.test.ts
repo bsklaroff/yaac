@@ -300,7 +300,7 @@ interface ListedWorktree {
 
 /** The worktrees the server currently reports, newest first. */
 async function listWorktrees(): Promise<ListedWorktree[]> {
-  const res = await fetch(`${origin()}/worktree/list`)
+  const res = await fetch(`${origin()}/api/worktree/list`)
   const body = await res.json() as { worktrees: ListedWorktree[] }
   return body.worktrees
 }
@@ -435,7 +435,7 @@ afterAll(async () => {
 
 describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no cluster)', () => {
   it('reports the containerless driver on /health, before any credential', async () => {
-    const res = await fetch(`${origin()}/health`)
+    const res = await fetch(`${origin()}/api/health`)
     const body = await res.json() as { driver: string }
     // The CLI reads this to decide whether `yaac cluster …` means anything
     // against this server, so it has to answer unauthenticated.
@@ -489,7 +489,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // remembered for the project yet — so the conversation is named from its
     // launch. The fake agent never answers, so this is the launch's value,
     // not anything a transcript reported.
-    const res = await fetch(`${origin()}/worktree/list`)
+    const res = await fetch(`${origin()}/api/worktree/list`)
     const { worktrees } = await res.json() as {
       worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
     }
@@ -513,14 +513,14 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId,
     )
     await fs.writeFile(path.join(dir, 'NEW.md'), '# added by the test\n')
-    const res = await fetch(`${origin()}/worktree/${worktreeId}/changes`)
+    const res = await fetch(`${origin()}/api/worktree/${worktreeId}/changes`)
     const changes = await res.json() as { files: Array<{ path: string }> }
     expect(changes.files.map((f) => f.path)).toContain('NEW.md')
   })
 
   it('edits the checkout over HTTP: create, list, read, a stale save refused, then saved', async () => {
     const api = (route: string, init: RequestInit = {}): Promise<Response> => fetch(
-      `${origin()}/worktree/${worktreeId}${route}`,
+      `${origin()}/api/worktree/${worktreeId}${route}`,
       { ...init, headers: { 'content-type': 'application/json' } },
     )
     const put = (body: object): Promise<Response> => api('/file', { method: 'PUT', body: JSON.stringify(body) })
@@ -557,7 +557,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // Sent on a connection of its own: the server answers without reading
     // the rest and drops the socket, which a pooled fetch would reuse.
     const huge = await new Promise<number>((resolve, reject) => {
-      const req = http.request(`${origin()}/worktree/${worktreeId}/file`, {
+      const req = http.request(`${origin()}/api/worktree/${worktreeId}/file`, {
         method: 'PUT',
         agent: false,
         headers: { 'content-type': 'application/json' },
@@ -621,7 +621,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   })
 
   it('opens a shell window through the same exec transport the webapp uses', async () => {
-    const res = await fetch(`${origin()}/worktree/${worktreeId}/terminals`, {
+    const res = await fetch(`${origin()}/api/worktree/${worktreeId}/terminals`, {
       method: 'POST',
     })
     expect(res.ok).toBe(true)
@@ -660,7 +660,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // which is the tree the port sweep walks — bound to loopback only, the
     // way dev servers are. It is reachable from this host directly; what is
     // under test is the OTHER way to reach it, the one a client on another
-    // machine has: `/forward/attach` into the driver's dial.
+    // machine has: `/api/forward/attach` into the driver's dial.
     const devPort = await freeLocalPort()
     const script = path.join(testEnv.scratchDir, 'dev-server.cjs')
     await fs.writeFile(script, `
@@ -937,7 +937,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
 
     // Read back through the ordinary API: what the command channel wrote is
     // the same state the sidebar renders.
-    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`)
+    const res = await fetch(`${origin()}/api/worktree/group/list?project=${SLUG}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     expect(groups.map((g) => g.name)).toContain('nightly')
 
@@ -953,7 +953,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(renamed.out).toContain('wiring up the mama channel')
 
     // Read back through the ordinary API — one title, one piece of state.
-    const res = await fetch(`${origin()}/worktree/list?project=${SLUG}`)
+    const res = await fetch(`${origin()}/api/worktree/list?project=${SLUG}`)
     const body = await res.json() as { worktrees: Array<{ worktreeId: string; title?: string }> }
     const mine = body.worktrees.find((w) => w.worktreeId === worktreeId)
     expect(mine?.title).toBe('wiring up the mama channel')
@@ -995,7 +995,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       const theirs = await worktreeEnv(otherId)
       expect(theirs.YAAC_MAMA_TOKEN).not.toBe((await mamaCreds()).YAAC_MAMA_TOKEN)
 
-      const res = await fetch(`${origin()}/worktree/mama`, {
+      const res = await fetch(`${origin()}/api/worktree/mama`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1005,7 +1005,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       })
       expect(res.status).toBe(200)
 
-      const listed = await fetch(`${origin()}/worktree/list?project=${SLUG}`)
+      const listed = await fetch(`${origin()}/api/worktree/list?project=${SLUG}`)
       const body = await listed.json() as {
         worktrees: Array<{ worktreeId: string; title?: string }>
       }
@@ -1035,7 +1035,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // Straight at the route, past the script: the server refuses the same
     // command, and refuses a caller it cannot identify.
     const post = async (token: string, command: string): Promise<number> => {
-      const res = await fetch(`${origin()}/worktree/mama`, {
+      const res = await fetch(`${origin()}/api/worktree/mama`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ command, args: {}, body: 'x' }),
@@ -1350,7 +1350,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   }, 60_000)
 
   it('still reads the checkout\'s files once the worktree is stopped', async () => {
-    const res = await fetch(`${origin()}/worktree/${worktreeId}/file?path=notes/todo.md`)
+    const res = await fetch(`${origin()}/api/worktree/${worktreeId}/file?path=notes/todo.md`)
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ path: 'notes/todo.md', content: 'mine\n' })
   })
@@ -1546,7 +1546,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
       // conversation is a row, which is what lets a webapp swap the
       // provisioning placeholder for the chat pane rather than a terminal on
       // acpd's log.
-      const res = await fetch(`${origin()}/worktree/list`)
+      const res = await fetch(`${origin()}/api/worktree/list`)
       const { worktrees } = await res.json() as {
         worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
       }
@@ -1704,7 +1704,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     // A terminal paste: uploaded, and answered with the path to type in its
     // place — here the host's own copy, and linked into the agent's HOME
     // where a pod mounts it.
-    const res = await fetch(`${origin()}/worktree/${id}/attachments`, {
+    const res = await fetch(`${origin()}/api/worktree/${id}/attachments`, {
       method: 'POST',
       headers: { 'Content-Type': 'image/png' },
       body: png,
@@ -1722,7 +1722,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
     // attaching later is greeted with.
     const attach = async (): Promise<{ ws: WebSocket; hello: { events: Array<{ type: string; content?: unknown[] }> } }> => {
       const ws = new WebSocket(
-        `ws://127.0.0.1:${String(server.lock.port)}/acp/attach?id=${id}&session=e2e-acp-claude`,
+        `ws://127.0.0.1:${String(server.lock.port)}/api/acp/attach?id=${id}&session=e2e-acp-claude`,
       )
       const hello = await new Promise<{ events: Array<{ type: string; content?: unknown[] }> }>((resolve, reject) => {
         ws.on('message', (data) => {
@@ -1864,7 +1864,7 @@ describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
 
     // The group was created by name — the caller was naming one, not picking
     // it from a list they could see.
-    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`)
+    const res = await fetch(`${origin()}/api/worktree/group/list?project=${SLUG}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     const made = groups.find((g) => g.name === 'friday batch')
     expect(made).toBeDefined()
@@ -1983,7 +1983,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
       // became, for that one's own stop.
       const entry = latest().queuedWorktrees.find((q) => q.id === grandchild)
       expect(entry).toMatchObject({ parentWorktreeId: childWorktree })
-      await fetch(`${origin()}/worktree/queue/discard`, {
+      await fetch(`${origin()}/api/worktree/queue/discard`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: grandchild }),
@@ -2004,7 +2004,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
     }
     try {
       const parent = await createWorktree()
-      const res = await fetch(`${origin()}/worktree/queue/create`, {
+      const res = await fetch(`${origin()}/api/worktree/queue/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project: SLUG, parent, prompt: 'never on a crash' }),
@@ -2021,7 +2021,7 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
       expect(latest().queuedWorktrees.map((q) => q.id)).toContain(id)
       expect(latest().worktrees.find((w) => w.prompt === 'never on a crash')).toBeUndefined()
 
-      const discarded = await fetch(`${origin()}/worktree/queue/discard`, {
+      const discarded = await fetch(`${origin()}/api/worktree/queue/discard`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),

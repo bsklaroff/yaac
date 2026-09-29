@@ -32,7 +32,7 @@ describe('frontend api client', () => {
     const fetchMock = stubFetch({ json: () => Promise.resolve({ tool: 'claude' }) })
     await api.auth.list.$get()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/auth/list')
+    expect(url).toBe('/api/auth/list')
     expect(new Headers(init.headers).get('accept')).toBe('application/json')
   })
 

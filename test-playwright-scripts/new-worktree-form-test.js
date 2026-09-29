@@ -72,7 +72,7 @@ const lock = readServerLock()
 const origin = `http://127.0.0.1:${lock.port}`
 
 const signedIn = new Set(
-  (await (await fetch(`${origin}/auth/list`)).json()).toolAuth.map((t) => t.tool),
+  (await (await fetch(`${origin}/api/auth/list`)).json()).toolAuth.map((t) => t.tool),
 )
 if (!signedIn.has('claude')) throw new Error('needs a claude credential')
 

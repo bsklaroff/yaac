@@ -65,7 +65,7 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
     server = await spawnYaacServer(testEnv.env)
     expect(server.lock.port).toBeGreaterThan(0)
 
-    const res = await fetch(`http://127.0.0.1:${server.lock.port}/health`)
+    const res = await fetch(`http://127.0.0.1:${server.lock.port}/api/health`)
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true })
 
@@ -99,7 +99,7 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
       // Generous budget: a cold `server run` binds and writes its lock in a
       // few seconds, and a loaded parallel run stretches that — at 5s this
       // timed out and read `port` off an undefined lock. Only the lock is
-      // awaited, not `/health` readiness: the port is stamped at bind time,
+      // awaited, not `/api/health` readiness: the port is stamped at bind time,
       // well before the DB init that `ready` gates on.
       const deadline = Date.now() + 60_000
       let lock = await readLock()
@@ -110,7 +110,7 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
       expect(lock, 'server never wrote its lock').not.toBeNull()
       expect(lock?.port).toBeGreaterThanOrEqual(wanted)
       expect(lock!.port).toBeLessThan(wanted + MAX_PORT_PROBES)
-      const res = await fetch(`http://127.0.0.1:${lock!.port}/health`)
+      const res = await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
       expect(res.status).toBe(200)
     } finally {
       child.kill('SIGTERM')
@@ -143,7 +143,7 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     // never an OS-assigned ephemeral port well outside that range.
     expect(lock!.port).toBeGreaterThanOrEqual(testEnv.serverPort)
     expect(lock!.port).toBeLessThan(testEnv.serverPort + MAX_PORT_PROBES)
-    const res = await fetch(`http://127.0.0.1:${lock!.port}/health`)
+    const res = await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
     expect(res.status).toBe(200)
     // `server start` returns only once the server is ready (DB init done),
     // not merely bound — so /health reports ready: true by the time the
@@ -200,7 +200,7 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     const after = await readLock()
     expect(after).not.toBeNull()
     expect(after!.pid).not.toBe(before!.pid)
-    const res = await fetch(`http://127.0.0.1:${after!.port}/health`)
+    const res = await fetch(`http://127.0.0.1:${after!.port}/api/health`)
     expect(res.status).toBe(200)
   })
 
@@ -322,12 +322,12 @@ describe('yaac server logs (real CLI)', () => {
     // Hit /health to guarantee the request logger has flushed at least
     // one line, plus the initial "listening on …" line from startup.
     const lock = await readLock()
-    await fetch(`http://127.0.0.1:${lock!.port}/health`)
+    await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
 
     const { exitCode, stdout } = await runYaac(testEnv.env, 'server', 'logs')
     expect(exitCode).toBe(0)
     expect(stdout).toMatch(/\[server\] listening on 127\.0\.0\.1:/)
-    expect(stdout).toMatch(/GET \/health 200/)
+    expect(stdout).toMatch(/GET \/api\/health 200/)
   })
 
   it('`-n 1` prints only the last line', async () => {

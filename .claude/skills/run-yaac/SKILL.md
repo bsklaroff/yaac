@@ -132,7 +132,7 @@ When `/etc/yaac/certs` exists you are in a k8s worktree pod (directly, or in a
 worktree of a containerless server inside one). That changes three things:
 
 - **You are already isolated.** The server this repo's `yaac-config.json`
-  starts is yours — check `curl -s http://127.0.0.1:8787/health`, run
+  starts is yours — check `curl -s http://127.0.0.1:8787/api/health`, run
   `yaac server start` if it is down, and mutate it freely. No second
   instance is needed.
 - **Only containerless works.** There is no cluster and no `kubectl`, so

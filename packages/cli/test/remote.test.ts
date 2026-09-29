@@ -47,7 +47,7 @@ describe('yaac remote commands', () => {
       await remoteSet('https://srv.ts.net/')
 
       expect(fetchMock.mock.calls.map(([u]) => u as string))
-        .toEqual(['https://srv.ts.net/health', 'https://srv.ts.net/whoami'])
+        .toEqual(['https://srv.ts.net/api/health', 'https://srv.ts.net/api/whoami'])
       expect(await readServerConfig()).toEqual({
         url: 'https://srv.ts.net',
         enabled: true,

@@ -32,7 +32,7 @@ describe('tool sign-in api calls', () => {
     const fetchMock = stub(undefined, 204)
     await setToolApiKey('codex', 'sk-openai-x')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/codex')
+    expect(url).toBe('/api/auth/codex')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ kind: 'api-key', apiKey: 'sk-openai-x' })
   })
@@ -41,7 +41,7 @@ describe('tool sign-in api calls', () => {
     const fetchMock = stub(undefined, 204)
     await setToolApiKey('opencode', 'nw-key', 'neuralwatt')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/opencode')
+    expect(url).toBe('/api/auth/opencode')
     expect(JSON.parse(init.body as string)).toEqual({ kind: 'api-key', apiKey: 'nw-key', provider: 'neuralwatt' })
   })
 
@@ -49,7 +49,7 @@ describe('tool sign-in api calls', () => {
     const fetchMock = stub(undefined, 204)
     await clearToolAuth('opencode')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/clear')
+    expect(url).toBe('/api/auth/clear')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ service: 'opencode' })
   })
@@ -60,7 +60,7 @@ describe('web sign-in flow api calls', () => {
     const fetchMock = stub()
     await startToolLogin('claude')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/claude/login/start')
+    expect(url).toBe('/api/auth/claude/login/start')
     expect(init.method).toBe('POST')
   })
 
@@ -68,7 +68,7 @@ describe('web sign-in flow api calls', () => {
     const fetchMock = stub()
     await getToolLogin('id-1')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/login/id-1')
+    expect(url).toBe('/api/auth/login/id-1')
     expect(init.method ?? 'GET').toBe('GET')
   })
 
@@ -76,7 +76,7 @@ describe('web sign-in flow api calls', () => {
     const fetchMock = stub()
     await sendToolLoginInput('id-1', 'code#state')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/login/id-1/input')
+    expect(url).toBe('/api/auth/login/id-1/input')
     expect(JSON.parse(init.body as string)).toEqual({ text: 'code#state' })
   })
 
@@ -84,7 +84,7 @@ describe('web sign-in flow api calls', () => {
     const fetchMock = stub(undefined, 204)
     await cancelToolLogin('id-1')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/login/id-1/cancel')
+    expect(url).toBe('/api/auth/login/id-1/cancel')
     expect(init.method).toBe('POST')
   })
 })
@@ -93,20 +93,20 @@ describe('web install flow api calls', () => {
   it('startToolInstall POSTs to the tool install route', async () => {
     const fetchMock = stub()
     await startToolInstall('codex')
-    expect(call(fetchMock)[0]).toBe('/auth/codex/install/start')
+    expect(call(fetchMock)[0]).toBe('/api/auth/codex/install/start')
   })
 
   it('getToolInstall polls the session route', async () => {
     const fetchMock = stub()
     await getToolInstall('id-2')
-    expect(call(fetchMock)[0]).toBe('/auth/install/id-2')
+    expect(call(fetchMock)[0]).toBe('/api/auth/install/id-2')
   })
 
   it('cancelToolInstall POSTs the cancel route', async () => {
     const fetchMock = stub(undefined, 204)
     await cancelToolInstall('id-2')
     const [url, init] = call(fetchMock)
-    expect(url).toBe('/auth/install/id-2/cancel')
+    expect(url).toBe('/api/auth/install/id-2/cancel')
     expect(init.method).toBe('POST')
   })
 })
@@ -117,17 +117,17 @@ describe('git credential api calls', () => {
   it('create, rename and delete a named credential, and assign one to a project', async () => {
     let fetchMock = stub({ id: ID })
     expect(await addHttpsCredential('github.com token', 'ghp_x')).toBe(ID)
-    expect(call(fetchMock)[0]).toBe('/auth/git/credentials')
+    expect(call(fetchMock)[0]).toBe('/api/auth/git/credentials')
     expect(JSON.parse(call(fetchMock)[1].body as string)).toEqual({ name: 'github.com token', token: 'ghp_x' })
 
     fetchMock = stub({ id: ID, publicKey: 'ssh-ed25519 AAAA' })
     expect(await generateSshKey('github.com key')).toEqual({ id: ID, publicKey: 'ssh-ed25519 AAAA' })
-    expect(call(fetchMock)[0]).toBe('/auth/git/ssh-keys')
+    expect(call(fetchMock)[0]).toBe('/api/auth/git/ssh-keys')
     expect(JSON.parse(call(fetchMock)[1].body as string)).toEqual({ name: 'github.com key' })
 
     fetchMock = stub(undefined, 204)
     await renameGitCredential(ID, 'renamed')
-    expect(call(fetchMock)[0]).toBe(`/auth/git/credentials/${ID}`)
+    expect(call(fetchMock)[0]).toBe(`/api/auth/git/credentials/${ID}`)
     expect(call(fetchMock)[1].method).toBe('PATCH')
 
     fetchMock = stub(undefined, 204)
@@ -136,7 +136,7 @@ describe('git credential api calls', () => {
 
     fetchMock = stub({ knownHostsEntry: 'github.com ssh-ed25519 HOST' })
     expect(await setProjectGitCredential('repo', ID)).toBe('github.com ssh-ed25519 HOST')
-    expect(call(fetchMock)[0]).toBe('/project/repo/git-credential')
+    expect(call(fetchMock)[0]).toBe('/api/project/repo/git-credential')
     expect(call(fetchMock)[1].method).toBe('PUT')
 
     fetchMock = stub({ project: { slug: 'repo' }, knownHostsEntry: null })

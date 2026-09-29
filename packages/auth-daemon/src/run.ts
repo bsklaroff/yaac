@@ -145,7 +145,7 @@ export async function statusAuthDaemon(): Promise<void> {
   // The authoritative "connected" signal lives on the main server.
   try {
     const target = await resolveServerTarget()
-    const res = await fetch(`${target.baseUrl}/auth/agent`, { signal: AbortSignal.timeout(3000) })
+    const res = await fetch(`${target.baseUrl}/api/auth/agent`, { signal: AbortSignal.timeout(3000) })
     const { connected } = await res.json() as { connected: boolean }
     console.log(`connected:   ${connected ? 'yes' : 'no'}`)
   } catch {

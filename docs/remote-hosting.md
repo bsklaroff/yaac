@@ -204,10 +204,12 @@ Semantics to keep in mind:
   | carries neither, and names a loopback `Host` | local |
   | carries neither, and names any other `Host` | refused — or local, inside a worktree (below) |
 
-  `/health`, `/` and `/assets/*` are exempt, so an unidentified browser can
-  still load the app and be told why. `GET /whoami` answers what the server
-  decided; the webapp and `yaac remote set` show it, and the request log
-  names the tailnet user on every line.
+  Every route a client calls, HTTP and WebSocket, is mounted under `/api`
+  (docs name them relative to it: `GET /whoami` is `/api/whoami`); the rest
+  is the SPA. `/api/health`, `/` and `/assets/*` are exempt, so an
+  unidentified browser can still load the app and be told why. `GET
+  /whoami` answers what the server decided; the webapp and `yaac remote
+  set` show it, and the request log names the tailnet user on every line.
 - **It fails closed.** There is no setting that says "this server is
   fronted" to leave off by mistake. A name other than loopback can only be
   admitted by `YAAC_ALLOWED_HOSTS`, and any request to such a name has to

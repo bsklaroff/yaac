@@ -173,14 +173,14 @@ export class IdentityRejectedError extends Error {
 export async function probeServer(origin: string): Promise<{ buildId: string; principal: Principal }> {
   let health: Response
   try {
-    health = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+    health = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
   } catch (err) {
     throw new Error(`cannot reach ${origin}: ${err instanceof Error ? err.message : String(err)}`)
   }
-  if (!health.ok) throw new Error(`${origin}/health returned HTTP ${health.status}`)
+  if (!health.ok) throw new Error(`${origin}/api/health returned HTTP ${health.status}`)
   const { buildId } = await health.json() as { ok: boolean; buildId: string }
 
-  const whoami = await fetch(`${origin}/whoami`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+  const whoami = await fetch(`${origin}/api/whoami`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
   if (whoami.status === 401) {
     const body = await whoami.json().catch(() => null) as { error?: { message?: string } } | null
     throw new IdentityRejectedError(

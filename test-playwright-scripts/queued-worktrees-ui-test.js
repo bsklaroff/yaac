@@ -84,7 +84,7 @@ if (!PROJECT) throw new Error('set PROJECT=<slug> to a project with a running wo
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const origin = readServerOrigin()
 
-const listRes = await fetch(`${origin}/worktree/list?project=${PROJECT}`)
+const listRes = await fetch(`${origin}/api/worktree/list?project=${PROJECT}`)
 if (!listRes.ok) throw new Error(`listing worktrees failed: HTTP ${listRes.status}`)
 const { worktrees } = await listRes.json()
 const parent = process.env.WORKTREE

@@ -1,5 +1,5 @@
-import { hc } from 'hono/client'
-import type { buildApp, AppType } from '@yaac/server/main/server'
+import { createRawApiClient } from '@yaac/shared/api-core'
+import type { buildApp } from '@yaac/server/main/server'
 import type { SpawnedServer } from '#cli'
 
 type ServerApp = ReturnType<typeof buildApp>
@@ -16,10 +16,8 @@ type ServerApp = ReturnType<typeof buildApp>
  * read `res.json()` themselves.
  */
 export function makeTestApiClient(app: ServerApp) {
-  return hc<AppType>('http://127.0.0.1/', {
-    fetch: (input: RequestInfo | URL, init?: RequestInit) =>
-      app.fetch(new Request(input as string | URL, init)),
-  })
+  return createRawApiClient('http://127.0.0.1', (input, init) =>
+    Promise.resolve(app.fetch(new Request(input as string | URL, init))))
 }
 
 /**
@@ -28,7 +26,7 @@ export function makeTestApiClient(app: ServerApp) {
  * calls against `server.lock.port`.
  */
 export function makeServerApiClient(server: SpawnedServer) {
-  return hc<AppType>(`http://127.0.0.1:${server.lock.port}/`)
+  return createRawApiClient(`http://127.0.0.1:${server.lock.port}`)
 }
 
 /**
