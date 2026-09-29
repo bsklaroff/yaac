@@ -219,12 +219,34 @@ readiness probe holds it out of its Service until they have landed, so
 a replacement never serves a worktree it has not been told about. What it
 observes goes the other way: a blocked host or a rejected git credential
 lands in the state ConfigMap (debounced), which the server's cache turns
-into the snapshot; a refresh a worktree drives is captured into the
-refreshed Secret synchronously, before the response is forwarded — a
-codex rotation is single-use — and the server's `credential-adopt` step
+into the snapshot; a refresh a worktree drives is captured in memory
+before the response is forwarded and written to the refreshed Secret
+right after — one writer carrying the newest capture, retried until it
+lands, because a codex rotation is single-use and the Secret is what a
+replacement pod boots from — and the server's `credential-adopt` step
 takes it into the host store under the same newest-wins compare every
 writer uses, then pushes the credentials Secret again so the proxy sees
 its own capture echoed and stops preferring it.
+
+Every workspace presents the same placeholder refresh token, so the proxy
+is the one place refreshes can be serialized — claude's own refresh lock
+covers a single config dir, and workspaces of different projects (or an
+agent of a yaac running inside a workspace) hold different ones. It runs
+one refresh per credential at a time: a refresh arriving while one is in
+flight joins it, and one arriving within seconds of a rotation — while
+that rotation is still the credential held — is answered with it instead
+of spending the credential again. A caller that outwaits a slow upstream
+is answered with a 504, but the flight stays open until upstream settles:
+a rotation upstream committed and answered late is still captured, and a
+refresh arriving meanwhile joins rather than spending the old token. A second
+spend would come back `invalid_grant`, and claude answers that by clearing
+every stored credential holding the refresh token it presented — the
+placeholder, in the project's shared tool home — which signs out every
+worktree of the project at once. The access-token swap covers
+`mcp-proxy.anthropic.com` as well as `api.anthropic.com`: claude's claude.ai
+connectors send the same bearer there, and a placeholder they were left to
+send would draw a 401 that claude answers by forcing a refresh on every
+start.
 
 RBAC cannot scope `create` by name, so the server pre-creates the three
 outputs empty and the proxy's Role grants `update`/`patch` on exactly

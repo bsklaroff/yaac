@@ -16,6 +16,7 @@ COPY pp2.ts /app/pp2.ts
 COPY pod-watch.ts /app/pod-watch.ts
 COPY dns-stub.ts /app/dns-stub.ts
 COPY secure-compare.ts /app/secure-compare.ts
+COPY refresh-flight.ts /app/refresh-flight.ts
 COPY objects.ts /app/objects.ts
 COPY object-watch.ts /app/object-watch.ts
 COPY agent-keys.ts /app/agent-keys.ts

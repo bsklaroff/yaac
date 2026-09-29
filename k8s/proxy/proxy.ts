@@ -56,6 +56,7 @@ import {
   type GitAuthFailureRecord,
   type HostInjectionRule,
   type ProxyState,
+  type RefreshedBundles,
   type UpstreamRedirect,
   type WorktreeRegistration,
 } from './objects'
@@ -83,6 +84,7 @@ import type { MamaResult } from './mama-queue'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { createSshAgentServer } from './ssh-agent-relay'
 import { timingSafeStrEqual } from './secure-compare'
+import { RefreshFlights } from './refresh-flight'
 import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
 
 // Control-API listener: health, the change stream and the yaac-mama queue.
@@ -192,6 +194,10 @@ const IN_CLUSTER = Boolean(process.env.KUBERNETES_SERVICE_HOST)
 const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
 const ANTHROPIC_API_HOST = 'api.anthropic.com'
+// claude's claude.ai MCP connectors authenticate here with the same OAuth
+// bearer as inference. Left unswapped, the sentinel draws a 401, and claude
+// answers a 401 by forcing an OAuth refresh — a real rotation on every start.
+const CLAUDE_MCP_PROXY_HOST = 'mcp-proxy.anthropic.com'
 const OPENAI_API_HOST = 'api.openai.com'
 const OPENAI_TOKEN_URL_HOST = 'auth.openai.com'
 const OPENAI_TOKEN_URL_PATH = '/oauth/token'
@@ -200,6 +206,11 @@ const OPENAI_TOKEN_URL_PATH = '/oauth/token'
 // swap for codex worktrees.
 const CHATGPT_HOST = 'chatgpt.com'
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
+// How long a mediated refresh may sit idle on upstream before it is given up.
+// Its callers are answered long before this (refresh-flight.ts); this only
+// keeps a dead upstream from holding the credential's flight open forever,
+// so it is far past any reply upstream could still be committing to.
+const TOKEN_REFRESH_HARD_TIMEOUT_MS = 5 * 60_000
 // opencode and pi are api-key only. The proxy swaps the placeholder key for
 // the real one on the chosen provider's host when the worktree is registered as
 // that tool. The provider→host tables are code-generated from each tool's own
@@ -459,17 +470,40 @@ function resolveHttpsCredentialForWorktree(worktreeId: string): { token: string;
 }
 
 /**
- * A rotation captured from a worktree's refresh: durable the moment it is
- * captured — a codex refresh token is single-use, so the pod dying a
- * millisecond after the write must not lose it — and served from here
- * until the server adopts it and the credentials Secret carries it back.
+ * A rotation captured from a worktree's refresh: served from memory at once,
+ * and written to the refreshed Secret — which the server adopts and a
+ * replacement pod boots from — until the write lands.
+ *
+ * One writer, always carrying the newest capture, retried with backoff. Two
+ * patches in flight could land in either order, and a failed one left
+ * unretried would do the same harm as one landing last with an earlier
+ * rotation: the Secret would hold a refresh token already spent — for codex,
+ * single-use.
  */
-function captureRefreshed(bundles: { claude?: ClaudeOAuthBundle; codex?: CodexOAuthBundle }): void {
+let unwrittenRefreshed: RefreshedBundles | null = null
+let refreshedWriter: Promise<void> | null = null
+function captureRefreshed(bundles: RefreshedBundles): void {
   objects.capture(bundles)
   if (!IN_CLUSTER) return
-  writeRefreshed(encodeRefreshed(bundles)).catch((err: unknown) => {
-    console.error(`[proxy] Failed to persist refreshed OAuth tokens to ${REFRESHED_SECRET_NAME}:`, String(err))
-  })
+  unwrittenRefreshed = { ...unwrittenRefreshed, ...bundles }
+  refreshedWriter ??= writeRefreshedUntilLanded().finally(() => { refreshedWriter = null })
+}
+
+async function writeRefreshedUntilLanded(): Promise<void> {
+  let backoffMs = 1_000
+  while (unwrittenRefreshed) {
+    const batch = unwrittenRefreshed
+    try {
+      await writeRefreshed(encodeRefreshed(batch))
+      // A capture during the write replaced the batch; go round for it.
+      if (unwrittenRefreshed === batch) unwrittenRefreshed = null
+      backoffMs = 1_000
+    } catch (err) {
+      console.error(`[proxy] Failed to persist refreshed OAuth tokens to ${REFRESHED_SECRET_NAME}, retrying:`, String(err))
+      await new Promise((r) => setTimeout(r, backoffMs))
+      backoffMs = Math.min(backoffMs * 2, 60_000)
+    }
+  }
 }
 
 // ── What only this process observes ─────────────────────────────────
@@ -723,7 +757,7 @@ function applyBodyInjections(
  */
 function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port: number): boolean {
   if (port === 22) return false
-  if (hostname === ANTHROPIC_API_HOST) return true
+  if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) return true
   if (hostname === CLAUDE_TOKEN_URL_HOST) return true
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
@@ -823,8 +857,6 @@ function swapApiKeyHeader(
 function buildDynamicRules(
   worktreeId: string | null,
   hostname: string,
-  claudeTokenBundle: ClaudeOAuthBundle | null,
-  codexTokenBundle: CodexOAuthBundle | null,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
   if (!worktreeId) return []
@@ -879,11 +911,13 @@ function buildDynamicRules(
   // retoolable), so the gate only ever decided which of those placeholders
   // resolved — and any agent in any worktree may now spend any credential the
   // host has signed in. That is a real widening, and the intended one.
-  if (hostname === ANTHROPIC_API_HOST) {
+  if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) {
     const creds = objects.credentials.claude
     const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
     const incomingAuth = headerValue(reqHeaders, 'authorization')
-    if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY) {
+    // The connectors' host takes only the claude.ai bearer, never a key.
+    if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY
+      && hostname === ANTHROPIC_API_HOST) {
       rules.push({
         pathPattern: '*',
         injections: [{ action: 'set_header', name: 'x-api-key', value: creds.apiKey }],
@@ -958,29 +992,6 @@ function buildDynamicRules(
   }
 
   return rules
-}
-
-/**
- * The outbound half of an OAuth refresh: the real refresh token, to replace
- * the placeholder the workspace holds.
- *
- * Deliberately NOT a dynamic injection rule. The caller applies these only
- * when the request actually presented our placeholder, and that fact is not
- * known where rules are built — the body has not been read yet. Keeping the
- * swap out of the rule list keeps the generic injection pipeline generic and
- * unconditional, and leaves this endpoint's already-bespoke multi-step flow
- * (buffer body, swap outbound, capture response, rewrite inbound) owning the
- * one condition that is its own.
- *
- * At most one bundle is ever non-null: which is loaded is decided by the
- * hostname, and the two endpoints are different hosts.
- */
-function oauthRefreshSwaps(
-  claudeTokenBundle: ClaudeOAuthBundle | null,
-  codexTokenBundle: CodexOAuthBundle | null,
-): BodyParamSwap[] {
-  const bundle = claudeTokenBundle ?? codexTokenBundle
-  return bundle ? [{ name: 'refresh_token', value: bundle.refreshToken }] : []
 }
 
 // ── Claude OAuth Swap ──────────────────────────────────────────────────
@@ -1084,134 +1095,104 @@ function rewriteTokenResponseBody(parsed: TokenResponseBody): TokenResponseBody 
 }
 
 /**
- * Buffer a Claude token-endpoint response, capture any refreshed tokens
- * (captureRefreshed), and forward a placeholder-rewritten copy to the
- * container. Upstream headers (including content-type and
- * content-encoding) are preserved so the container sees a response that
- * looks byte-for-byte identical to the real upstream apart from the token
- * values. Falls back to forwarding the raw upstream bytes when the encoding
- * is unknown, decoding fails, or the body isn't a recognizable success
- * response.
+ * The OAuth credential a token-endpoint request would spend, tagged with the
+ * tool it belongs to — which decides how a rotation of it is captured.
  */
-function handleClaudeTokenResponse(
-  upstreamRes: http.IncomingMessage,
-  res: http.ServerResponse,
-  claudeTokenBundle: ClaudeOAuthBundle,
-): void {
-  const chunks: Buffer[] = []
-  upstreamRes.on('data', (c: Buffer) => chunks.push(c))
-  upstreamRes.on('end', () => {
-    const raw = Buffer.concat(chunks)
-    const encoding = upstreamRes.headers['content-encoding']
+type RefreshTool = 'claude' | 'codex'
+type HeldBundle =
+  | { tool: 'claude'; bundle: ClaudeOAuthBundle }
+  | { tool: 'codex'; bundle: CodexOAuthBundle }
 
-    // Base outgoing headers: preserve everything from upstream, but drop
-    // transfer-encoding since we always send a single buffer with a fixed
-    // content-length.
-    const outHeaders: http.OutgoingHttpHeaders = { ...upstreamRes.headers }
-    delete outHeaders['transfer-encoding']
+function heldBundle(tool: RefreshTool): HeldBundle | null {
+  if (tool === 'claude') {
+    const bundle = objects.claudeOAuthBundle()
+    return bundle ? { tool, bundle } : null
+  }
+  const bundle = objects.codexOAuthBundle()
+  return bundle ? { tool, bundle } : null
+}
 
-    const statusCode = upstreamRes.statusCode ?? 200
-
-    const passThrough = (): void => {
-      outHeaders['content-length'] = String(raw.length)
-      res.writeHead(statusCode, outHeaders)
-      res.end(raw)
-    }
-
-    let decoded: Buffer | null
-    try {
-      decoded = decodeBody(raw, encoding)
-    } catch (err) {
-      console.error('[proxy] Failed to decode Claude token response body:', (err as Error).message)
-      passThrough()
-      return
-    }
-    if (!decoded) {
-      // Unknown encoding — cannot safely rewrite.
-      passThrough()
-      return
-    }
-
-    const parsed = tryParseJsonBody(decoded)
-    if (!parsed || typeof parsed !== 'object') {
-      passThrough()
-      return
-    }
-    const body = parsed as TokenResponseBody
-    if (typeof body.access_token !== 'string') {
-      // Not a success response — pass through unchanged.
-      passThrough()
-      return
-    }
-    // Success: capture the refreshed tokens.
-    try {
-      const fresh: ClaudeOAuthBundle = {
+/** The bundle a successful token response rotated `held` into. */
+function rotationFrom(held: HeldBundle, body: TokenResponseBody & { access_token: string }): RefreshedBundles {
+  const refreshToken = typeof body.refresh_token === 'string' && body.refresh_token
+    ? body.refresh_token
+    : held.bundle.refreshToken
+  if (held.tool === 'claude') {
+    return {
+      claude: {
         accessToken: body.access_token,
-        refreshToken: typeof body.refresh_token === 'string' && body.refresh_token
-          ? body.refresh_token
-          : claudeTokenBundle.refreshToken,
+        refreshToken,
         expiresAt: typeof body.expires_in === 'number'
           ? Date.now() + body.expires_in * 1000
-          : claudeTokenBundle.expiresAt,
-        scopes: typeof body.scope === 'string' ? body.scope.split(' ').filter(Boolean) : claudeTokenBundle.scopes,
-        subscriptionType: claudeTokenBundle.subscriptionType,
-      }
-      captureRefreshed({ claude: fresh })
-      console.log('[proxy] Captured refreshed Claude OAuth tokens (expires in ' + Math.floor((fresh.expiresAt - Date.now()) / 1000) + 's)')
-    } catch (err) {
-      console.error('[proxy] Failed to capture refreshed Claude OAuth tokens:', (err as Error).message)
+          : held.bundle.expiresAt,
+        scopes: typeof body.scope === 'string' ? body.scope.split(' ').filter(Boolean) : held.bundle.scopes,
+        subscriptionType: held.bundle.subscriptionType,
+      },
     }
+  }
+  // Codex's response carries `id_token` rather than `expires_in`/`scope`;
+  // expiry comes from the new access token's own JWT.
+  return {
+    codex: {
+      accessToken: body.access_token,
+      refreshToken,
+      idTokenRawJwt: typeof body.id_token === 'string' && body.id_token ? body.id_token : held.bundle.idTokenRawJwt,
+      expiresAt: decodeJwtExp(body.access_token) ?? (Date.now() + CODEX_DEFAULT_REFRESH_WINDOW_MS),
+      lastRefresh: new Date().toISOString(),
+      accountId: held.bundle.accountId,
+    },
+  }
+}
 
-    const rewritten = rewriteTokenResponseBody(body)
-    const rewrittenJson = Buffer.from(JSON.stringify(rewritten), 'utf8')
-    let outBody: Buffer
-    try {
-      outBody = encodeBody(rewrittenJson, encoding)
-    } catch (err) {
-      console.error('[proxy] Failed to re-encode Claude token response body:', (err as Error).message)
-      outBody = rewrittenJson
-      delete outHeaders['content-encoding']
-    }
-    outHeaders['content-length'] = String(outBody.length)
-    res.writeHead(statusCode, outHeaders)
-    res.end(outBody)
-  })
+/** A token-endpoint answer, fully read and ready to write — to the request
+ *  that drove the refresh and to every one that joins it. */
+type TokenReply = {
+  status: number
+  headers: http.OutgoingHttpHeaders
+  body: Buffer
+  /** The refresh token upstream rotated the credential to (the body then
+   *  carries placeholders), or null when it did not rotate it. */
+  rotatedTo: string | null
+}
+
+function errorReply(status: number, message: string): TokenReply {
+  return { status, headers: { 'content-type': 'text/plain' }, body: Buffer.from(message), rotatedTo: null }
+}
+
+function writeTokenReply(res: http.ServerResponse, reply: TokenReply): void {
+  res.writeHead(reply.status, { ...reply.headers, 'content-length': String(reply.body.length) })
+  res.end(reply.body)
 }
 
 /**
- * Same shape as `handleClaudeTokenResponse`, but for Codex's token endpoint.
- * Differences: response carries `id_token` instead of `expires_in`/`scope`;
- * expiry is derived from the new access_token's JWT `exp` claim; the real
- * `id_token` passes through to the container so Codex's display claims stay
- * fresh.
+ * Buffer a token-endpoint response, capture the rotation it carries
+ * (captureRefreshed), and hand back a copy with placeholders where the real
+ * tokens were. Upstream headers (content-type, content-encoding) are kept,
+ * so the workspace sees what upstream sent apart from the token values. An
+ * unknown encoding, an undecodable body or anything but a success passes
+ * through unchanged.
  */
-function handleCodexTokenResponse(
+function collectTokenReply(
   upstreamRes: http.IncomingMessage,
-  res: http.ServerResponse,
-  codexTokenBundle: CodexOAuthBundle,
+  held: HeldBundle,
+  done: (reply: TokenReply) => void,
 ): void {
   const chunks: Buffer[] = []
   upstreamRes.on('data', (c: Buffer) => chunks.push(c))
   upstreamRes.on('end', () => {
     const raw = Buffer.concat(chunks)
     const encoding = upstreamRes.headers['content-encoding']
-
-    const outHeaders: http.OutgoingHttpHeaders = { ...upstreamRes.headers }
-    delete outHeaders['transfer-encoding']
-
-    const statusCode = upstreamRes.statusCode ?? 200
-
-    const passThrough = (): void => {
-      outHeaders['content-length'] = String(raw.length)
-      res.writeHead(statusCode, outHeaders)
-      res.end(raw)
-    }
+    // Sent as one buffer with a fixed length, so no chunked framing.
+    const headers: http.OutgoingHttpHeaders = { ...upstreamRes.headers }
+    delete headers['transfer-encoding']
+    const status = upstreamRes.statusCode ?? 200
+    const passThrough = (): void => { done({ status, headers, body: raw, rotatedTo: null }) }
 
     let decoded: Buffer | null
     try {
       decoded = decodeBody(raw, encoding)
     } catch (err) {
-      console.error('[proxy] Failed to decode Codex token response body:', (err as Error).message)
+      console.error(`[proxy] Failed to decode ${held.tool} token response body:`, (err as Error).message)
       passThrough()
       return
     }
@@ -1219,53 +1200,35 @@ function handleCodexTokenResponse(
       passThrough()
       return
     }
-
-    const parsed = tryParseJsonBody(decoded)
-    if (!parsed || typeof parsed !== 'object') {
+    const parsed = tryParseJsonBody(decoded) as TokenResponseBody | null
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.access_token !== 'string') {
       passThrough()
       return
     }
-    const body = parsed as TokenResponseBody
-    if (typeof body.access_token !== 'string') {
-      passThrough()
-      return
-    }
-    try {
-      const newIdToken = typeof body.id_token === 'string' && body.id_token
-        ? body.id_token
-        : codexTokenBundle.idTokenRawJwt
-      const exp = decodeJwtExp(body.access_token)
-      const fresh: CodexOAuthBundle = {
-        accessToken: body.access_token,
-        refreshToken: typeof body.refresh_token === 'string' && body.refresh_token
-          ? body.refresh_token
-          : codexTokenBundle.refreshToken,
-        idTokenRawJwt: newIdToken,
-        expiresAt: exp ?? (Date.now() + CODEX_DEFAULT_REFRESH_WINDOW_MS),
-        lastRefresh: new Date().toISOString(),
-        accountId: codexTokenBundle.accountId,
-      }
-      captureRefreshed({ codex: fresh })
-      console.log('[proxy] Captured refreshed Codex OAuth tokens (expires in ' + Math.floor((fresh.expiresAt - Date.now()) / 1000) + 's)')
-    } catch (err) {
-      console.error('[proxy] Failed to capture refreshed Codex OAuth tokens:', (err as Error).message)
-    }
+    const body = parsed as TokenResponseBody & { access_token: string }
+    const rotation = rotationFrom(held, body)
+    const fresh = (rotation.claude ?? rotation.codex)!
+    captureRefreshed(rotation)
+    console.log(`[proxy] Captured refreshed ${held.tool} OAuth tokens (expires in ${Math.floor((fresh.expiresAt - Date.now()) / 1000)}s)`)
 
-    const rewritten = rewriteTokenResponseBody(body)
-    const rewrittenJson = Buffer.from(JSON.stringify(rewritten), 'utf8')
-    let outBody: Buffer
+    const rewrittenJson = Buffer.from(JSON.stringify(rewriteTokenResponseBody(body)), 'utf8')
+    let out: Buffer
     try {
-      outBody = encodeBody(rewrittenJson, encoding)
+      out = encodeBody(rewrittenJson, encoding)
     } catch (err) {
-      console.error('[proxy] Failed to re-encode Codex token response body:', (err as Error).message)
-      outBody = rewrittenJson
-      delete outHeaders['content-encoding']
+      console.error(`[proxy] Failed to re-encode ${held.tool} token response body:`, (err as Error).message)
+      out = rewrittenJson
+      delete headers['content-encoding']
     }
-    outHeaders['content-length'] = String(outBody.length)
-    res.writeHead(statusCode, outHeaders)
-    res.end(outBody)
+    done({ status, headers, body: out, rotatedTo: fresh.refreshToken })
   })
 }
+
+/** Refreshes serialized per credential (see refresh-flight.ts). */
+const refreshFlights = new RefreshFlights<TokenReply>(
+  (reply) => reply.rotatedTo,
+  () => errorReply(504, 'token refresh is taking too long upstream'),
+)
 
 // ── MITM Handler ───────────────────────────────────────────────────────
 
@@ -1300,24 +1263,17 @@ function handleMitm(
     // worktree's tool: a worktree is tool-agnostic, so any agent in it may
     // drive any signed-in tool's refresh. (The host-side tool sign-in flow
     // never traverses the worktree proxy, so it's unaffected.)
-    const claudeTokenBundle =
-      hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH
-      && worktreeId !== null
-        ? objects.claudeOAuthBundle()
-        : null
-    const codexTokenBundle =
-      hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH
-      && worktreeId !== null
-        ? objects.codexOAuthBundle()
-        : null
+    const tokenTool: RefreshTool | null = worktreeId === null ? null
+      : hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH ? 'claude'
+        : hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH ? 'codex'
+          : null
+    const heldAtArrival = tokenTool ? heldBundle(tokenTool) : null
 
-    // Dynamic rules (GitHub / Codex / Claude auth + OAuth refresh swap) are
-    // derived from the live credentials on every request and merged into
-    // the registered rules (secretRefs resolved per request,
-    // same freshness semantics) so a single injection pipeline handles both.
-    const dynamicRules = buildDynamicRules(
-      worktreeId, hostname, claudeTokenBundle, codexTokenBundle, req.headers,
-    )
+    // Dynamic rules (GitHub / Codex / Claude auth) are derived from the live
+    // credentials on every request and merged into the registered rules
+    // (secretRefs resolved per request, same freshness semantics) so a
+    // single injection pipeline handles both.
+    const dynamicRules = buildDynamicRules(worktreeId, hostname, req.headers)
     const projectSlug = worktreeId ? registrationOf(worktreeId)?.projectSlug : undefined
     const allRules: InjectionRule[] = [...resolveRegisteredRules(rules, projectSlug), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
@@ -1336,7 +1292,12 @@ function handleMitm(
       console.log(`[proxy] MITM ${req.method} https://${hostname}${reqPath} (${injCount} header + ${bodyInjections.length} body injections${dynSuffix})`)
     }
 
-    function sendUpstream(body: Buffer | null, shouldCaptureTokenResponse: boolean): void {
+    /** `refresh` set means this request is a mediated refresh of `held`:
+     *  its response is collected for `done` instead of streamed to `res`. */
+    function sendUpstream(
+      body: Buffer | null,
+      refresh: { held: HeldBundle; done: (reply: TokenReply) => void } | null,
+    ): void {
       if (body !== null) {
         headers['content-length'] = String(body.length)
       }
@@ -1361,16 +1322,18 @@ function handleMitm(
         if (gitCredInjected && worktreeId !== null) {
           noteGitUpstreamStatus(worktreeId, hostname, reqPath, upstreamRes.statusCode ?? 0)
         }
-        if (claudeTokenBundle && shouldCaptureTokenResponse) {
-          handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle)
-        } else if (codexTokenBundle && shouldCaptureTokenResponse) {
-          handleCodexTokenResponse(upstreamRes, res, codexTokenBundle)
+        if (refresh) {
+          collectTokenReply(upstreamRes, refresh.held, refresh.done)
         } else {
           res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
           upstreamRes.pipe(res)
         }
         upstreamRes.on('error', (err: Error) => {
           console.error('[proxy] Upstream response error for ' + hostname + reqPath + ':', err.message)
+          if (refresh) {
+            refresh.done(errorReply(502, err.message))
+            return
+          }
           if (!res.headersSent) res.writeHead(502)
           res.end(err.message)
         })
@@ -1378,11 +1341,21 @@ function handleMitm(
 
       upstream.on('error', (err: Error) => {
         console.error(`[proxy] Upstream error for ${hostname}${reqPath}:`, err.message)
+        if (refresh) {
+          refresh.done(errorReply(502, err.message))
+          return
+        }
         if (!res.headersSent) {
           res.writeHead(502, { 'Content-Type': 'text/plain' })
         }
         res.end(err.message)
       })
+      // The destroy surfaces as the error above, releasing the flight.
+      if (refresh) {
+        upstream.setTimeout(TOKEN_REFRESH_HARD_TIMEOUT_MS, () => {
+          upstream.destroy(new Error('token refresh timed out'))
+        })
+      }
 
       if (body !== null) {
         upstream.end(body)
@@ -1395,8 +1368,7 @@ function handleMitm(
     // body rule, or a token endpoint we are mediating. The token case has to
     // be named explicitly — its swap is no longer a rule, so the rule list
     // alone would stop buffering the very requests the capture depends on.
-    const mediatingTokenEndpoint = claudeTokenBundle !== null || codexTokenBundle !== null
-    if (bodyInjections.length > 0 || mediatingTokenEndpoint) {
+    if (bodyInjections.length > 0 || heldAtArrival) {
       const chunks: Buffer[] = []
       req.on('data', (chunk: Buffer) => chunks.push(chunk))
       req.on('end', () => {
@@ -1420,18 +1392,23 @@ function handleMitm(
         // out. And capturing a response we did not cause would clobber the
         // stored bundle with credentials from an unrelated
         // authorization_code exchange through the same endpoint.
-        const oursToRefresh = mediatingTokenEndpoint
-          && bodyHasPlaceholderRefreshToken(inboundBody, contentType)
-        const swaps = oursToRefresh
-          ? oauthRefreshSwaps(claudeTokenBundle, codexTokenBundle)
-          : []
-        const rawBody = applyBodyInjections(
-          inboundBody, contentType, [...bodyInjections, ...swaps],
-        )
-        sendUpstream(rawBody, oursToRefresh)
+        if (tokenTool && heldAtArrival && bodyHasPlaceholderRefreshToken(inboundBody, contentType)) {
+          // What is held now, which a flight that ended while this body was
+          // being read may have rotated.
+          const held = heldBundle(tokenTool) ?? heldAtArrival
+          refreshFlights.run(tokenTool, held.bundle.refreshToken, () => new Promise<TokenReply>((done) => {
+            const swap: BodyParamSwap = { name: 'refresh_token', value: held.bundle.refreshToken }
+            sendUpstream(applyBodyInjections(inboundBody, contentType, [...bodyInjections, swap]), { held, done })
+          })).then(
+            (reply) => { writeTokenReply(res, reply) },
+            (err: unknown) => { writeTokenReply(res, errorReply(502, String(err))) },
+          )
+          return
+        }
+        sendUpstream(applyBodyInjections(inboundBody, contentType, bodyInjections), null)
       })
     } else {
-      sendUpstream(null, false)
+      sendUpstream(null, null)
     }
   })
 
@@ -1447,7 +1424,7 @@ function handleMitm(
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
 
-    const dynamicRules = buildDynamicRules(worktreeId, hostname, null, null, req.headers)
+    const dynamicRules = buildDynamicRules(worktreeId, hostname, req.headers)
     const projectSlug = worktreeId ? registrationOf(worktreeId)?.projectSlug : undefined
     const allRules: InjectionRule[] = [...resolveRegisteredRules(rules, projectSlug), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
