@@ -3,12 +3,13 @@ import clsx from 'clsx'
 import { CodeView } from '#components/CodeView'
 import { DiffView } from '#components/DiffView'
 import { Markdown } from '#components/Markdown'
+import { useImageSrc } from '#lib/attachments'
 import { codeLines, unfence } from '#lib/code'
 import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import { WarningIcon, ChevronIcon } from '#lib/icons'
 import type {
-  AcpContent, AcpDiff, AcpEvent, AcpPermissionOption, AcpPlanEntry, AcpToolCall,
+  AcpContent, AcpDiff, AcpEvent, AcpImage, AcpPermissionOption, AcpPlanEntry, AcpToolCall,
   AcpToolContent,
 } from '@yaac/shared/acp'
 
@@ -33,11 +34,12 @@ import type {
  * feel live.
  */
 
-/** Consecutive same-kind text events read as one message. */
+/** Consecutive same-kind text events read as one message, its images kept
+ *  apart from its words so they can be drawn rather than named. */
 export type Group =
-  | { kind: 'user'; seq: number; text: string }
-  | { kind: 'agent'; seq: number; text: string }
-  | { kind: 'thought'; seq: number; text: string }
+  | { kind: 'user'; seq: number; text: string; images: AcpImage[] }
+  | { kind: 'agent'; seq: number; text: string; images: AcpImage[] }
+  | { kind: 'thought'; seq: number; text: string; images: AcpImage[] }
   | { kind: 'tool'; seq: number; call: AcpToolCall }
   | { kind: 'plan'; seq: number; entries: AcpPlanEntry[] }
   | { kind: 'error'; seq: number; message: string }
@@ -142,14 +144,40 @@ export function groupEvents(events: AcpEvent[]): Group[] {
       continue
     }
     const last = groups[groups.length - 1]
-    const text = textOf(e.content)
+    const text = e.content.map((c) => (c.type === 'text' ? c.text : '')).join('')
+    const images = e.content.filter((c) => c.type === 'image')
     if (last !== undefined && last.kind === e.type) {
-      groups[groups.length - 1] = { kind: e.type, seq: last.seq, text: last.text + text }
+      groups[groups.length - 1] = {
+        kind: e.type, seq: last.seq, text: last.text + text, images: [...last.images, ...images],
+      }
       continue
     }
-    groups.push({ kind: e.type, seq: e.seq, text })
+    groups.push({ kind: e.type, seq: e.seq, text, images })
   }
   return groups
+}
+
+/** A message's images, each a thumbnail that opens to the column's width. */
+function MessageImages({ images }: { images: AcpImage[] }): JSX.Element | null {
+  if (images.length === 0) return null
+  return (
+    <div className="my-1 flex flex-wrap gap-1.5">
+      {images.map((image, i) => <MessageImage key={i} image={image} />)}
+    </div>
+  )
+}
+
+function MessageImage({ image }: { image: AcpImage }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <button type="button" onClick={() => setOpen((o) => !o)} className="max-w-full">
+      <img
+        src={useImageSrc(image)}
+        alt=""
+        className={clsx('max-w-full rounded border border-hairline', !open && 'max-h-48')}
+      />
+    </button>
+  )
 }
 
 /**
@@ -520,6 +548,7 @@ export function AcpTranscript({
           return (
             <div key={g.seq} className="flex justify-start">
               <div className="max-w-[85%] whitespace-pre-wrap rounded-md bg-surface-2 px-2.5 py-1.5 text-text">
+                <MessageImages images={g.images} />
                 {g.text}
               </div>
             </div>
@@ -529,6 +558,7 @@ export function AcpTranscript({
           return (
             <div key={g.seq} className="text-text">
               <Markdown>{g.text}</Markdown>
+              <MessageImages images={g.images} />
             </div>
           )
         }

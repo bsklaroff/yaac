@@ -64,7 +64,7 @@ import {
 } from './acp-protocol'
 import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
 import { serverLog } from '#log'
-import type { AcpEventInit } from '@yaac/shared/acp'
+import type { AcpEventInit, AcpImage } from '@yaac/shared/acp'
 import type { PermissionMode } from '@yaac/shared/types'
 
 export interface AcpConversationDeps {
@@ -987,8 +987,10 @@ export class AcpConversation {
   /**
    * Send a user message and run the turn. Resolves when the agent stops; the
    * caller does not await it (the pane is fed by events, not by this return).
+   * `images` follow the text as image blocks; every adapter yaac runs
+   * advertises `promptCapabilities.image`.
    */
-  async prompt(text: string, timeoutMs = 120_000): Promise<void> {
+  async prompt(text: string, images: readonly AcpImage[] = [], timeoutMs = 120_000): Promise<void> {
     try {
       await this.whenReady(timeoutMs)
     } catch (err) {
@@ -1003,7 +1005,10 @@ export class AcpConversation {
       throw err
     }
     if (this.sessionId === undefined) throw new Error('no ACP session')
-    const run = this.turn.then(() => this.runTurn(text))
+    const run = this.turn.then(() => this.runTurn([
+      ...(text === '' ? [] : [{ type: 'text', text }]),
+      ...images.map(({ mimeType, data }) => ({ type: 'image', mimeType, data })),
+    ]))
     // The chain must survive a failed turn, or one rejection would strand every
     // message queued behind it.
     this.turn = run.catch(() => { /* reported to its own caller */ })
@@ -1011,7 +1016,7 @@ export class AcpConversation {
   }
 
   /** One prompt turn, run only once its predecessor has finished. */
-  private async runTurn(text: string): Promise<void> {
+  private async runTurn(prompt: Array<Record<string, string>>): Promise<void> {
     if (this.closed) throw new Error('conversation is closed')
     // A turn recovered from the record is running at the adapter but was never
     // put in `turn` — nothing here started it. Waiting it out is the same rule
@@ -1028,7 +1033,7 @@ export class AcpConversation {
     try {
       const result = await this.peer.request<AcpPromptResult>(ACP.sessionPrompt, {
         sessionId: this.sessionId,
-        prompt: [{ type: 'text', text }],
+        prompt,
       })
       this.endTurn(result.stopReason)
     } catch (err) {

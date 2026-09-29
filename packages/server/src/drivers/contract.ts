@@ -649,6 +649,9 @@ export interface WorkspacePaths {
   sshAgentSock: string
   /** Where an ACP conversation's JSONL log is written. */
   acpLogDir: string
+  /** Where the workspace reads the images pasted into its terminal panes —
+   *  the path a paste hands the agent. */
+  attachmentsDir: string
   /** acpd's entry module, for the launch command that supervises an agent. */
   acpdEntry: string
 }

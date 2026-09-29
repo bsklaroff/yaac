@@ -170,8 +170,9 @@ function toContent(value: unknown): AcpContent | undefined {
   return undefined
 }
 
-/** A chunk update's payload is one block; a tool call's is a list. */
-function toContentList(value: unknown): AcpContent[] {
+/** A chunk update's payload is one block; a tool call's or a prompt's is a
+ *  list. */
+export function toContentList(value: unknown): AcpContent[] {
   const list = Array.isArray(value) ? value : [value]
   return list.map(toContent).filter((c): c is AcpContent => c !== undefined)
 }

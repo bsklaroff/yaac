@@ -4,9 +4,10 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { createSettleGate } from '#lib/attach-settle'
+import { clipboardImages, imageFiles, prepareImage, uploadAttachment } from '#lib/attachments'
 import { clipboardKeyAction } from '#lib/clipboard'
 import { IS_MAC } from '#lib/platform'
-import { LoadingIcon } from '#lib/icons'
+import { CloseIcon, LoadingIcon } from '#lib/icons'
 import { paneKey, registerPtyInput } from '#lib/ptyInput'
 import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '#lib/selection'
 import { patchTouchScroll } from '#lib/touch-scroll'
@@ -75,6 +76,11 @@ export function WorktreeTerminal({
   // flashing mid-reflow garbage. Opacity (not display) so FitAddon can
   // measure and size the PTY while hidden.
   const [settled, setSettled] = useState(false)
+  /** Images pasted or dropped on the pane that are still on their way up, and
+   *  why the last one failed — shown over the pane, since neither ever reaches
+   *  the terminal itself. */
+  const [uploading, setUploading] = useState(0)
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -119,6 +125,19 @@ export function WorktreeTerminal({
         // the control byte while still letting the browser fire its native
         // paste event, which xterm's textarea handler turns into a properly
         // bracketed paste — no clipboard-read permission needed.
+        //
+        // Except for an image under a Shift chord (Ctrl+Shift+V, the chord
+        // everywhere but macOS): Chromium runs that as paste-as-plain-text,
+        // whose event carries no image, so the clipboard is read for one.
+        // The native paste event fires before the read resolves; should a
+        // browser's carry the image after all, `onPaste` has claimed it and
+        // the read stands down rather than attaching it twice.
+        if (e.shiftKey) {
+          pasteClaimed = false
+          void clipboardImages().then((files) => {
+            if (files.length > 0 && !pasteClaimed) attach(files)
+          })
+        }
         return false
       }
       return true
@@ -318,6 +337,52 @@ export function WorktreeTerminal({
     const dataSub = term.onData((d: string): void => input.push(d))
     const resizeSub = term.onResize((): void => sendResize())
 
+    // An image pasted or dropped on the pane is uploaded to the worktree and
+    // its path pasted in its place: what a terminal sends for a dropped file,
+    // and what every agent TUI yaac runs turns into an attachment
+    // (docs/agent-modes.md, "Images"). One at a time, so several land in the
+    // order they were given. Anything else falls through to xterm, whose own
+    // paste handler takes the text.
+    let attaching = Promise.resolve()
+    /** Whether a paste event took images since the last Shift paste chord. */
+    let pasteClaimed = false
+    const attach = (files: File[]): void => {
+      setUploadError(null)
+      for (const file of files) {
+        setUploading((n) => n + 1)
+        attaching = attaching
+          .then(async () => {
+            const path = await uploadAttachment(worktreeId, await prepareImage(file))
+            term.paste(`${path} `)
+          })
+          .catch((err: unknown) => setUploadError(err instanceof Error ? err.message : String(err)))
+          .finally(() => setUploading((n) => n - 1))
+      }
+    }
+    // Capture phase, so the image is claimed before xterm's textarea sees the
+    // event at all.
+    const onPaste = (e: ClipboardEvent): void => {
+      const files = imageFiles(e.clipboardData)
+      if (files.length === 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      pasteClaimed = true
+      attach(files)
+    }
+    const onDragOver = (e: DragEvent): void => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault()
+    }
+    const onDrop = (e: DragEvent): void => {
+      const files = imageFiles(e.dataTransfer)
+      if (files.length === 0) return
+      e.preventDefault()
+      attach(files)
+      term.focus()
+    }
+    el.addEventListener('paste', onPaste, true)
+    el.addEventListener('dragover', onDragOver)
+    el.addEventListener('drop', onDrop)
+
     // Let the mobile accessory key bar type into this pane. Routed through
     // xterm's own input() so a bar-pressed Esc takes exactly the path a typed
     // one does (onData → this socket), including while it's reconnecting.
@@ -382,6 +447,9 @@ export function WorktreeTerminal({
       cancelAnimationFrame(fitRaf)
       dataSub.dispose()
       resizeSub.dispose()
+      el.removeEventListener('paste', onPaste, true)
+      el.removeEventListener('dragover', onDragOver)
+      el.removeEventListener('drop', onDrop)
       unregisterInput()
       testHooks.__xterms?.delete(term)
       disposeWheelPacing?.()
@@ -450,6 +518,24 @@ export function WorktreeTerminal({
           justify-center gap-2 text-xs text-text-faint">
           <LoadingIcon size={13} className="animate-spin" />
           Connecting…
+        </div>
+      )}
+      {(uploading > 0 || uploadError !== null) && (
+        <div className="absolute right-2 bottom-2 flex items-center gap-1.5 rounded-md border
+          border-hairline bg-surface-2 px-2 py-1 text-xs text-text-dim">
+          {uploading > 0 ? (
+            <>
+              <LoadingIcon size={12} className="animate-spin" />
+              Uploading image…
+            </>
+          ) : (
+            <>
+              <span className="text-[#f85149]">Image not attached: {uploadError}</span>
+              <button type="button" aria-label="Dismiss" onClick={() => setUploadError(null)} className="hover:text-text">
+                <CloseIcon size={12} />
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

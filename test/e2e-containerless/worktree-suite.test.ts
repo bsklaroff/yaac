@@ -3,6 +3,7 @@ import { execFile, spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
 import { promisify } from 'node:util'
+import WebSocket from 'ws'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -1644,6 +1645,64 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
       expect((await relayed()).filter((m) => m.method === 'session/set_mode').map((m) => m.params?.modeId))
         .toEqual(['bypassPermissions'])
     }, { timeout: 30_000, interval: 250 })
+
+    await runYaac(serverEnv, 'worktree', 'stop', id)
+  }, 180_000)
+
+  it('hands a pasted image to the agent: a file for the terminal, a block for the chat', async () => {
+    const id = await createWorktreeWith('claude', '--mode', 'acp', '--permission-mode', 'accept-edits')
+    const png = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.from('e2e pixels')])
+
+    // A terminal paste: uploaded, and answered with the path to type in its
+    // place — here the host's own copy, and linked into the agent's HOME
+    // where a pod mounts it.
+    const res = await fetch(`${origin()}/worktree/${id}/attachments`, {
+      method: 'POST',
+      headers: { ...authHeader(), 'Content-Type': 'image/png' },
+      body: png,
+    })
+    expect(res.status).toBe(200)
+    const { path: pasted } = await res.json() as { path: string }
+    expect(await fs.readFile(pasted)).toEqual(png)
+    const home = path.join(
+      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', id, 'containerless', 'home',
+    )
+    expect(await fs.readFile(path.join(home, '.yaac-attachments', path.basename(pasted)))).toEqual(png)
+
+    // A chat message: the image rides the prompt inline, reaches the agent
+    // (acpd records what it relays), and comes back in the history a pane
+    // attaching later is greeted with.
+    const attach = async (): Promise<{ ws: WebSocket; hello: { events: Array<{ type: string; content?: unknown[] }> } }> => {
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${String(server.lock.port)}/acp/attach?id=${id}&session=e2e-acp-claude`,
+        { headers: authHeader() },
+      )
+      const hello = await new Promise<{ events: Array<{ type: string; content?: unknown[] }> }>((resolve, reject) => {
+        ws.on('message', (data) => {
+          const msg = JSON.parse((data as Buffer).toString('utf8')) as { type: string; events: Array<{ type: string }> }
+          if (msg.type === 'hello') resolve(msg)
+        })
+        ws.once('close', () => reject(new Error('closed before hello')))
+        ws.once('error', reject)
+      })
+      return { ws, hello }
+    }
+    const first = await vi.waitFor(attach, { timeout: 30_000, interval: 500 })
+    const image = { type: 'image', mimeType: 'image/png', data: png.toString('base64') }
+    first.ws.send(JSON.stringify({ type: 'prompt', text: 'what is this?', images: [image] }))
+    const record = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, 'e2e-acp-claude.jsonl')
+    await vi.waitFor(async () => {
+      const prompt = (await fs.readFile(record, 'utf8')).split('\n')
+        .map((l) => { try { return JSON.parse(l) as { method?: string; params?: { prompt?: unknown } } } catch { return {} } })
+        .find((m) => m.method === 'session/prompt')
+      expect(prompt?.params?.prompt).toEqual([{ type: 'text', text: 'what is this?' }, image])
+    }, { timeout: 30_000, interval: 250 })
+    first.ws.close()
+
+    const second = await attach()
+    second.ws.close()
+    expect(second.hello.events.find((e) => e.type === 'user')?.content)
+      .toEqual([{ type: 'text', text: 'what is this?' }, image])
 
     await runYaac(serverEnv, 'worktree', 'stop', id)
   }, 180_000)

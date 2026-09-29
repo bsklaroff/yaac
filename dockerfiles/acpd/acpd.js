@@ -25,7 +25,8 @@
  *
  * ## The record
  *
- * Every byte acpd relays, in both directions, is appended verbatim to `--log`.
+ * Every byte acpd relays, in both directions, is appended verbatim to `--log`,
+ * a whole line at a time (see `lineRecorder`).
  * That file IS the conversation's history: written whether or not a client is
  * attached, on a host-mounted path the server reads without going through the
  * pod — and can still read once the pod is gone.
@@ -242,6 +243,35 @@ export function createAcpd({
   }
 
   /**
+   * A `record` for one source that writes only whole lines. Both directions
+   * share one file and arrive in chunks, so a long line still in flight — a
+   * prompt carrying an image is megabytes of base64 — would otherwise be split
+   * by whatever the other side said meanwhile, and neither line would parse.
+   * The unfinished tail waits for its newline; one left over when its source
+   * goes away was never a whole message: `abandon` drops it, and says
+   * whether there was one.
+   */
+  function lineRecorder() {
+    let pending = []
+    const recorder = (chunk) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8')
+      const end = buf.lastIndexOf(0x0a) + 1
+      if (end === 0) {
+        pending.push(buf)
+        return
+      }
+      record(Buffer.concat([...pending, buf.subarray(0, end)]))
+      pending = end < buf.length ? [buf.subarray(end)] : []
+    }
+    recorder.abandon = () => {
+      const had = pending.length > 0
+      pending = []
+      return had
+    }
+    return recorder
+  }
+
+  /**
    * Spawn the agent and wire its stdio. Factored out because a record failure
    * restarts it (see `restartForRecord`) — everything below is per agent
    * process, not per acpd process.
@@ -293,11 +323,12 @@ export function createAcpd({
       setTimeout(() => shutdown(childExit.code, childExit.signal), 50).unref()
     })
 
+    const recordStdout = lineRecorder()
     child.stdout.on('data', (chunk) => {
       // Recorded before delivery, and regardless of whether anyone is attached:
       // that is what makes the file complete rather than a view of one client's
       // connection.
-      record(chunk)
+      recordStdout(chunk)
       emit(chunk)
     })
   }
@@ -343,17 +374,24 @@ export function createAcpd({
     sock.write(controlLine('_acpd/hello', { firstAttach: !everSpoke }))
     child.stdout.resume()
 
+    const recordClient = lineRecorder()
     sock.on('data', (chunk) => {
       everSpoke = true
       // Recorded too: the agent echoes a user message only when replaying under
       // `session/load`, so without the client's own `session/prompt` lines the
       // record would show no user turns for anything said live.
-      record(chunk)
+      recordClient(chunk)
       if (!child.stdin.destroyed) child.stdin.write(chunk)
     })
     sock.on('drain', () => child.stdout.resume())
-    sock.on('error', () => detach(sock, 'error'))
-    sock.on('close', () => detach(sock, 'closed'))
+    // A client gone mid-line has already handed the agent that line's start.
+    // Ending it here makes the agent discard just the fragment; left open, the
+    // next client's first line would be glued onto it and lost with it.
+    const endLine = () => {
+      if (recordClient.abandon() && !child.stdin.destroyed) child.stdin.write('\n')
+    }
+    sock.on('error', () => { endLine(); detach(sock, 'error') })
+    sock.on('close', () => { endLine(); detach(sock, 'closed') })
     // A client half-closing means "I am done sending", not "kill the agent" —
     // the whole point of acpd. Explicitly do NOT end the child's stdin.
     sock.on('end', () => { /* keep the agent running */ })

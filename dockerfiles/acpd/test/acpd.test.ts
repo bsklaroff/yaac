@@ -153,6 +153,51 @@ describe('createAcpd', () => {
     expect(recorded).toContain('while detached')
   })
 
+  it('records whole lines, so one side speaking mid-line cannot split the other\'s', async () => {
+    // A prompt carrying an image is megabytes on one line and arrives in many
+    // chunks; the agent may say something in between. Here it speaks the
+    // moment it sees a `!`, which the client sends before finishing its line.
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
+    tmpDirs.push(path.dirname(logPath))
+    const agent = 'process.stdin.on("data", (d) => { if (String(d).includes("!")) process.stdout.write(\'{"agent":"spoke"}\\n\') })'
+    const { sock } = await start(['node', '-e', agent], { logPath })
+
+    const a = connect(sock)
+    await a.waitFor((l) => l.length >= 1)
+    a.socket.write('{"user":"a long line!')
+    await a.waitFor((l) => l.some((line) => line.includes('spoke')))
+    a.socket.write('"}\n')
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes('long line!"}'))
+
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').slice(1)
+    expect(parsed(lines)).toEqual([{ agent: 'spoke' }, { user: 'a long line!' }])
+  })
+
+  it('ends a line its client abandoned, so the next client\'s first line arrives whole', async () => {
+    // The server dying mid-write leaves the agent holding the start of a
+    // line. The agent here reads lines, as an adapter does, and echoes each.
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
+    tmpDirs.push(path.dirname(logPath))
+    const agent = 'require("readline").createInterface({ input: process.stdin })'
+      + '.on("line", (l) => process.stdout.write(JSON.stringify({ got: l }) + "\\n"))'
+    const { sock } = await start(['node', '-e', agent], { logPath })
+
+    const a = connect(sock)
+    await a.waitFor((l) => l.length >= 1)
+    a.socket.write('{"cut":"sho')
+    await new Promise((r) => setTimeout(r, 50))
+    a.socket.destroy()
+    await new Promise((r) => setTimeout(r, 50))
+
+    const b = connect(sock)
+    await b.waitFor((l) => l.length >= 1)
+    b.socket.write('{"next":"request"}\n')
+    await b.waitFor((l) => l.some((line) => line.includes('next')))
+    // The fragment is ended on its own (an adapter answers it with a parse
+    // error), and the request after it is untouched.
+    expect(parsed(b.lines)).toContainEqual({ got: '{"next":"request"}' })
+  })
+
   it('does not replay to a new client — the record is what it missed', async () => {
     const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
     tmpDirs.push(path.dirname(logPath))

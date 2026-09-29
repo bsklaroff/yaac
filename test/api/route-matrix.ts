@@ -175,6 +175,9 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // founding ask outlives the workspace, so neither substrate needs one to
   // answer — which is why no 503 sits beside the 404 here.
   { method: 'GET', path: '/worktree/:id/prompt', request: '/worktree/nope/prompt', k8s: [200, 404], containerless: [200, 404] },
+  // An image pasted into a terminal pane, for its agent to read: only a
+  // running workspace has one to hand it to.
+  { method: 'POST', path: '/worktree/:id/attachments', request: '/worktree/nope/attachments', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/worktree/:id/terminals', request: '/worktree/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/worktree/:id/terminals', request: '/worktree/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/worktree/:id/terminals/close', request: '/worktree/nope/terminals/close', body: { target: 'window:@1' }, k8s: [404, 409, 503], containerless: MISSING },

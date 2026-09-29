@@ -24,7 +24,9 @@
 
 import fs from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
-import { ACP, ACPD, AcpProjection, asRecord, asString, sessionModeId, sessionStateModeId } from './acp-protocol'
+import {
+  ACP, ACPD, AcpProjection, asRecord, asString, sessionModeId, sessionStateModeId, toContentList,
+} from './acp-protocol'
 import { serverLog } from '#log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 
@@ -267,8 +269,8 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   // replaying under `session/load`, so for anything said live these lines are
   // the only record that a user spoke at all.
   if (msg.method === ACP.sessionPrompt) {
-    const text = promptText(msg.params)
-    return text === undefined ? [] : [{ type: 'user', content: [{ type: 'text', text }] }]
+    const content = toContentList(asRecord(msg.params)?.prompt)
+    return content.length === 0 ? [] : [{ type: 'user', content }]
   }
   if (msg.method === ACP.sessionUpdate) {
     const event = projection.apply(msg.params)
@@ -411,6 +413,11 @@ export async function readAcpPendingPermissions(
  */
 const FIRST_PROMPT_SCAN_BYTES = 64 * 1024
 
+/** The text block at the head of a `session/prompt` line — only ever tried
+ *  on a line too long to parse. */
+const TRUNCATED_PROMPT_TEXT =
+  /"method":"session\/prompt".*?"prompt":\[\{"type":"text","text":("(?:[^"\\]|\\.)*")/
+
 /**
  * The conversation's opening user message — what labels a worktree in the
  * sidebar.
@@ -435,9 +442,15 @@ export async function readAcpFirstPrompt(logPath: string): Promise<string | unde
     // is discarded with it: an incomplete trailing line is not an answer.
     const head = new StringDecoder('utf8').write(buf.subarray(0, bytesRead))
     for (const line of head.split('\n')) {
-      // The scan can end mid-line; a truncated tail is not an answer.
       const msg = parseLine(line)
       if (msg?.method === ACP.sessionPrompt) return promptText(msg.params)
+      // The scan can end mid-line. That is the normal shape of an opening
+      // message carrying an image — megabytes of base64 on one line — whose
+      // text is still in reach, because `AcpConversation.prompt` writes the
+      // text block ahead of the images. Anything else cut short is not an
+      // answer.
+      const cut = TRUNCATED_PROMPT_TEXT.exec(line)
+      if (cut) return JSON.parse(cut[1]) as string
     }
     return undefined
   } finally {

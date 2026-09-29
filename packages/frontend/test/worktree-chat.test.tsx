@@ -174,6 +174,70 @@ describe('WorktreeChat drafts', () => {
 })
 
 /**
+ * Images ride a message inline. jsdom decodes no images, so the bitmap the
+ * downscale measures is stood in for: an image this small goes as it is.
+ */
+describe('WorktreeChat images', () => {
+  const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const image = { type: 'image' as const, mimeType: 'image/png', data: 'iVBORw0KGgo=' }
+
+  beforeAll(() => {
+    globalThis.createImageBitmap ??= (() => Promise.resolve({ width: 8, height: 8, close: () => {} })) as
+      unknown as typeof createImageBitmap
+  })
+
+  beforeEach(() => {
+    stream.events = []
+    stream.busy = false
+    stream.connected = true
+    stream.send.mockClear()
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    flushChatDrafts()
+  })
+
+  it('attaches a pasted image, sends it with the words, and clears both on the echo', async () => {
+    const { rerender, container } = show()
+    const file = new File([PNG], 'shot.png', { type: 'image/png' })
+    fireEvent.paste(box(), { clipboardData: { types: ['Files'], files: [file], getData: () => '' } })
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+
+    type('what is this?')
+    fireEvent.click(screen.getByText('Send'))
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'what is this?', images: [image] })
+
+    // The echo carries the image back, now drawn in the conversation, and the
+    // composer lets go of both halves of what it sent.
+    stream.events = [{ type: 'user', seq: 0, content: [{ type: 'text', text: 'what is this?' }, image] }]
+    rerender(<WorktreeChat worktreeId="w1" agentSessionId="acp-1" />)
+    await waitFor(() => expect(box().value).toBe(''))
+    expect(container.querySelectorAll('img')).toHaveLength(1)
+    expect(screen.queryByLabelText('Remove image')).toBeNull()
+  })
+
+  it('leaves a paste that carries text to the box', () => {
+    const { container } = show()
+    const file = new File([PNG], 'cells.png', { type: 'image/png' })
+    // What a spreadsheet puts on the clipboard: the cells, and a picture of them.
+    const clipboard = (text: string): object => ({ types: ['text/plain', 'Files'], files: [file], getData: () => text })
+    fireEvent.paste(box(), { clipboardData: clipboard('A1\tB1') })
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+  })
+
+  it('takes the image when the only text beside it is its URL, as Firefox copies one', async () => {
+    const { container } = show()
+    const file = new File([PNG], 'copied.png', { type: 'image/png' })
+    fireEvent.paste(box(), {
+      clipboardData: { types: ['text/plain', 'Files'], files: [file], getData: () => 'https://example.com/a.png' },
+    })
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+  })
+})
+
+/**
  * How the conversation reads. The agent writes markdown whether or not anyone
  * renders it, and its edits arrive as before/after pairs rather than prose —
  * so what is asserted here is that each kind of content is shown as the thing

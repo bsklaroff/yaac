@@ -43,6 +43,7 @@ export {
   getWorktreePrompt,
 } from './detail'
 export { allowWorktreeHost } from './allow-host'
+export { saveWorktreeAttachment } from './attachments'
 export {
   createWorktreeFolder,
   deleteWorktreeEntry,

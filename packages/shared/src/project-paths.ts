@@ -356,6 +356,16 @@ export function worktreeStateDir(slug: string, worktreeId: string): string {
 }
 
 /**
+ * GLOBAL. The images a user pasted into the worktree's terminal panes,
+ * server-written and read by the agent the path was pasted to. Under the
+ * state dir, so they go when the worktree stops: an agent copies an image in
+ * when the path is pasted, so the file only has to outlive the paste.
+ */
+export function worktreeAttachmentsDir(slug: string, worktreeId: string): string {
+  return path.join(worktreeStateDir(slug, worktreeId), 'attachments')
+}
+
+/**
  * Both `projects/` trees — the slug SOURCE for any sweep that must see
  * every project. Enumerating only the global root would miss a project
  * whose global half is already gone but whose node-local tree (pnpm
