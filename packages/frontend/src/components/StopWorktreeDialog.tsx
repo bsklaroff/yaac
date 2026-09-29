@@ -5,6 +5,7 @@ import { agentLabel } from '#lib/agentLabel'
 import { discardQueuedWorktree } from '#lib/queueApi'
 import { clip, queuedChildren, queuedTitle } from '#lib/queued'
 import { useSnapshot } from '#lib/useSnapshot'
+import { useOpenerFocus } from '#lib/useOpenerFocus'
 import { useUiStore } from '#lib/store'
 import type { QueuedWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
 
@@ -31,6 +32,7 @@ export function StopWorktreeDialog({
   onConfirm: () => void
 }): JSX.Element {
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const finalFocus = useOpenerFocus(worktree !== null)
   const snapshot = useSnapshot()
   const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
   // Kept through the close animation, when `worktree` is already null.
@@ -82,6 +84,7 @@ export function StopWorktreeDialog({
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
         <AlertDialog.Popup
           initialFocus={confirmRef}
+          finalFocus={finalFocus}
           className="fixed left-1/2 top-1/2 w-[420px] max-w-[calc(100vw-2rem)] -translate-x-1/2
             -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)]
             outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
