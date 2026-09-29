@@ -95,9 +95,16 @@ export async function worktreeUpstreamBranch(repoPath: string, branchName: strin
 
 /** The commit `refs/remotes/origin/<branch>` names; rejects when absent. */
 export async function resolveRemoteRef(repoPath: string, branch: string): Promise<string> {
-  return (await runGit(repo(repoPath), [
-    'rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`,
-  ])).trim()
+  return resolveCommit(repoPath, `refs/remotes/origin/${branch}`)
+}
+
+/** The commit local branch `<branch>` names; rejects when absent. */
+export async function resolveLocalBranch(repoPath: string, branch: string): Promise<string> {
+  return resolveCommit(repoPath, `refs/heads/${branch}`)
+}
+
+async function resolveCommit(repoPath: string, ref: string): Promise<string> {
+  return (await runGit(repo(repoPath), ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])).trim()
 }
 
 /** Names of the subtrees directly under `treePath` at `ref`, or [] when that
@@ -133,6 +140,9 @@ export async function readBlobAt(repoPath: string, ref: string, blobPath: string
  * resource); fetches on different repos still run in parallel.
  */
 const fetchOriginMutex = createKeyedMutex()
+/** Per repo, the fetch that is queued behind a running one and not yet
+ *  started — which every caller arriving meanwhile joins. */
+const queuedFetches = new Map<string, Promise<void>>()
 
 /**
  * Where the server records when it last fetched a repo — see lastFetchedAtMs.
@@ -148,21 +158,33 @@ function fetchRecord(repoPath: string): string {
  * the project row's, passed in: the repository's own `remote.origin.*` is
  * written by pods, so it never decides where a fetch goes, what it runs, or
  * where a token is sent.
+ *
+ * Fetches of one repo run one at a time, and coalesce: a caller that arrives
+ * while one is running joins the fetch queued behind it rather than queueing
+ * its own. That one starts after every caller joining it asked, so each
+ * still sees the remote as of its request, and a burst of callers costs two
+ * fetches rather than one per caller.
  */
-export async function fetchOrigin(
+export function fetchOrigin(
   repoPath: string,
   remoteUrl: string,
   credential: ResolvedGitCredential | null,
 ): Promise<void> {
-  const url = credential?.kind === 'https' ? injectTokenIntoUrl(remoteUrl, credential.token) : remoteUrl
-  const env = credential?.kind === 'https' ? torEnv() : await gitEnvForCredential(credential)
-  await fetchOriginMutex(repoPath, async () => {
+  const queued = queuedFetches.get(repoPath)
+  if (queued) return queued
+  const run = fetchOriginMutex(repoPath, async () => {
+    // Started: a caller from here on needs a fetch that starts after it.
+    queuedFetches.delete(repoPath)
+    const url = credential?.kind === 'https' ? injectTokenIntoUrl(remoteUrl, credential.token) : remoteUrl
+    const env = credential?.kind === 'https' ? torEnv() : await gitEnvForCredential(credential)
     await runGit(repo(repoPath), [
       'fetch', url, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok',
     ], { env, remoteUrl })
     await fs.mkdir(path.dirname(fetchRecord(repoPath)), { recursive: true })
     await fs.writeFile(fetchRecord(repoPath), String(Date.now()))
   })
+  queuedFetches.set(repoPath, run)
+  return run
 }
 
 /** Run a rollback step, keeping the failure that triggered it as the one

@@ -21,7 +21,9 @@
  * Spares are branch-agnostic the same way: one warmed on a different
  * reference branch is re-branched at claim time (`rebranchSpare` — worktree
  * reset + upstream rewrite + window respawns), so any spare serves any
- * branch and a changed project default never invalidates the pool.
+ * branch and a changed project default never invalidates the pool. A spare
+ * that keeps its branch goes through the same prep when that branch has moved
+ * on origin since it was warmed, so its age never shows as a stale base.
  *
  * The server is a single process (lock-file enforced), so module-level state
  * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
@@ -40,6 +42,7 @@ import {
   fetchOrigin,
   getDefaultBranch,
   remoteBranchExists,
+  resolveLocalBranch,
   resolveRemoteRef,
   worktreeUpstreamBranch,
 } from '#domain/git'
@@ -182,6 +185,54 @@ export function resolveRebranchTarget(params: {
   return desired === spareBranch ? null : desired
 }
 
+/** Fetch the project's origin into its repo. Same e2e fixture escape hatch
+ *  as the cold path (pre-populated bare repos, no reachable remote). */
+async function fetchProjectOrigin(projectSlug: string): Promise<void> {
+  if (testEnv.e2eSkipFetch) return
+  await fetchOrigin(
+    repoDir(projectSlug),
+    await projectRemoteUrl(projectSlug),
+    await resolveProjectCredential(projectSlug),
+  )
+}
+
+/** How long a claim that keeps its spare's branch waits on its fetch before
+ *  handing the spare over on the base it was warmed at instead. */
+const REFRESH_FETCH_WAIT_MS = 5_000
+
+/**
+ * The tip a claim that keeps its spare's `branch` should bring the spare up
+ * to, or null to hand it over as warmed: when `fetched` did not land within
+ * the wait, or the spare's branch is already there. Never throws — a refresh
+ * is worth a claim only while it is cheap, and none of this is worth falling
+ * back to a cold create over.
+ */
+async function refreshTarget(
+  fetched: Promise<void>,
+  repo: string,
+  branch: string,
+  worktreeId: string,
+): Promise<string | null> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    const landed = await Promise.race([
+      fetched.then(() => true),
+      new Promise<false>((r) => { timer = setTimeout(() => { r(false) }, REFRESH_FETCH_WAIT_MS) }),
+    ])
+    if (!landed) {
+      console.warn(`Claimed session ${worktreeId} kept its warmed base: fetch still running`)
+      return null
+    }
+    const sha = await resolveRemoteRef(repo, branch)
+    return sha === await resolveLocalBranch(repo, `agent/${worktreeId}`) ? null : sha
+  } catch (err) {
+    console.warn(`Claimed session ${worktreeId} kept its warmed base: ${(err as Error).message}`)
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * Try to claim a ready prewarmed spare for `(projectSlug, setup, branch)`.
  * Returns the claimed worktree's result (its own id) or `undefined` to fall
@@ -193,7 +244,8 @@ export function resolveRebranchTarget(params: {
  *
  * Any running spare in the setup's agent mode is claimable, one whose agent
  * already matches the setup first: one warmed on a different reference
- * branch is re-branched first (`rebranchSpare`), one booted with a different
+ * branch — or on one origin has moved since — is re-branched first
+ * (`rebranchSpare`), one booted with a different
  * tool, model or posture is retooled (`retoolSpare`). `claimSpare` is the commit point: a crash after it leaves
  * a normal worktree (no orphaned state); a crash before it leaves the spare
  * reusable — except once re-branch/retool mutations have started, when a
@@ -263,6 +315,13 @@ export async function tryClaimPrewarmed(
     }
     if (!chosen) return undefined
     const asWarmed = matches(chosen)
+    // Every claim brings its spare to the tip of its base branch, so the
+    // fetch starts now, under the transport gate and row writes below, and
+    // is awaited where the checkout is prepped. Its failure is observed
+    // there; the catch only keeps a claim that gives up first from leaving
+    // it unhandled.
+    const fetched = fetchProjectOrigin(projectSlug)
+    fetched.catch(() => { /* observed below */ })
 
     // Every in-pod command below this line — re-branch, retool, the git
     // identity re-apply — rides the spare's agent transport, so gate on it
@@ -282,11 +341,12 @@ export async function tryClaimPrewarmed(
     const repo = repoDir(projectSlug)
     const config = await resolveProjectConfig(projectSlug) ?? {}
     const spareUpstreamBranch = await worktreeUpstreamBranch(repo, `agent/${chosen.workspaceId}`)
+    const defaultBranch = await getDefaultBranch(repo)
     const rebranchTo = resolveRebranchTarget({
       requestedBranch: branch,
       configReferenceBranch: config.referenceBranch,
       spareUpstreamBranch,
-      defaultBranch: await getDefaultBranch(repo),
+      defaultBranch,
     })
 
     // Claim the spare's row before the spare is touched: from the moment the
@@ -344,14 +404,14 @@ export async function tryClaimPrewarmed(
       })
     }
 
+    // Branch prep happens here, before the hand-over, because only a spare
+    // nobody has prompted yet can have its checkout reset and its agent
+    // restarted for free.
+    let prep: { branch: string; sha: string } | null = null
     if (rebranchTo !== null) {
-      // The claim path is otherwise zero-network; a re-branch must fetch so
-      // the target ref exists and is current. Same e2e fixture escape hatch
-      // as the cold path (pre-populated bare repos, no reachable remote).
-      if (!testEnv.e2eSkipFetch) {
-        const remoteUrl = await projectRemoteUrl(projectSlug)
-        await fetchOrigin(repo, remoteUrl, await resolveProjectCredential(projectSlug))
-      }
+      // A re-branch waits out the fetch however long it takes: the target
+      // ref must exist and be current.
+      await fetched
       if (!(await remoteBranchExists(repo, rebranchTo))) {
         // Pre-mutation user error: propagate instead of burning the spare
         // on a cold create that hits the identical VALIDATION failure.
@@ -361,12 +421,22 @@ export async function tryClaimPrewarmed(
           `branch "${rebranchTo}" not found on origin — check ${source}.`,
         )
       }
-      const sha = await resolveRemoteRef(repo, rebranchTo)
+      prep = { branch: rebranchTo, sha: await resolveRemoteRef(repo, rebranchTo) }
       emit(`Switching prewarmed session to branch ${rebranchTo}...`)
+    } else {
+      // The spare's own branch, as far as origin has moved it since warming.
+      const warmedBranch = spareUpstreamBranch ?? defaultBranch
+      const sha = await refreshTarget(fetched, repo, warmedBranch, claimedId)
+      if (sha !== null) {
+        prep = { branch: warmedBranch, sha }
+        emit(`Updating prewarmed session to the latest ${warmedBranch}...`)
+      }
+    }
+    if (prep !== null) {
       mutated = true
       // The agent read the old checkout at startup, so it is restarted as
       // it was — unless a retool follows, whose respawn supersedes this one.
-      await rebranchSpare(chosen, rebranchTo, sha, asWarmed ? setup : null)
+      await rebranchSpare(chosen, prep.branch, prep.sha, asWarmed ? setup : null)
     }
 
     if (!asWarmed) {

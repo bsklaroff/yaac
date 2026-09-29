@@ -200,7 +200,8 @@ export function buildRebranchPrep(params: {
 /**
  * Re-point a prewarmed spare's baked worktree at a different reference
  * branch at claim time — the branch analogue of `retoolSpare`, so any spare
- * serves any branch. The caller resolves the SHA (host-side, post-fetch) and
+ * serves any branch — or at a newer tip of the branch it was warmed on, so
+ * none is handed over on a stale base. The caller resolves the SHA (host-side, post-fetch) and
  * validates the branch exists BEFORE calling; from the first exec on, a
  * failure means the spare is tainted (worktree, upstream, and windows may
  * disagree) and the caller must reap it.

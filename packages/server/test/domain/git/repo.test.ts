@@ -12,6 +12,7 @@ import {
   listTreeSubdirs,
   readBlobAt,
   remoteBranchExists,
+  resolveLocalBranch,
   resolveRemoteRef,
   worktreeAheadBehind,
   worktreeUpstreamBranch,
@@ -470,6 +471,25 @@ describe('fetchOrigin', () => {
     expect(await subjectAt(cloneDir, `origin/${defaultBranch}`)).toBe('second commit')
   })
 
+  it('joins callers onto a fetch not yet started, which still sees what each asked for', async () => {
+    const cloneDir = path.join(tmpDir, 'clone')
+    await cloneRepo(sourceRepo, cloneDir, null)
+
+    const first = fetchOrigin(cloneDir, sourceRepo, null)
+    expect(fetchOrigin(cloneDir, sourceRepo, null)).toBe(first)
+    // Once it has started, a caller needs a fetch of its own — one queued
+    // behind it, joined by everyone else who asks before it starts.
+    await new Promise((r) => setTimeout(r, 0))
+    await commitToSource('late.txt', 'late commit')
+    const second = fetchOrigin(cloneDir, sourceRepo, null)
+    expect(second).not.toBe(first)
+    expect(fetchOrigin(cloneDir, sourceRepo, null)).toBe(second)
+    await Promise.all([first, second])
+
+    const defaultBranch = await getDefaultBranch(cloneDir)
+    expect(await subjectAt(cloneDir, `origin/${defaultBranch}`)).toBe('late commit')
+  })
+
   it('with a token, fetches the authenticated URL rather than a remote name', async () => {
     const cloneDir = path.join(tmpDir, 'clone-token')
     await cloneRepo(sourceRepo, cloneDir, null)
@@ -509,6 +529,15 @@ describe('resolveRemoteRef', () => {
     const head = (await git(sourceRepo, ['rev-parse', 'HEAD'])).trim()
     expect(await resolveRemoteRef(cloneDir, defaultBranch)).toBe(head)
     await expect(resolveRemoteRef(cloneDir, 'no-such-branch')).rejects.toThrow()
+  })
+})
+
+describe('resolveLocalBranch', () => {
+  it('names the commit a local branch points at, and rejects a missing one', async () => {
+    const head = (await git(sourceRepo, ['rev-parse', 'HEAD'])).trim()
+    await git(sourceRepo, ['branch', 'agent/w1'])
+    expect(await resolveLocalBranch(sourceRepo, 'agent/w1')).toBe(head)
+    await expect(resolveLocalBranch(sourceRepo, 'no-such-branch')).rejects.toThrow()
   })
 })
 
