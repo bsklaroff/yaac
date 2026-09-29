@@ -179,8 +179,7 @@ export interface WorktreeCreateOptions {
   mode?: AgentMode
   /**
    * Reference branch for the fresh worktree (a branch on `origin`, no
-   * `origin/` prefix). Overrides the project's `referenceBranch` config
-   * default; unset → that default, else the remote's default branch.
+   * `origin/` prefix); unset → the remote's default branch.
    */
   branch?: string
   /**
@@ -376,7 +375,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   const runtime = worktreeDriver()
 
   // Reject-only view of the worktree leg, raced against the boot waits
-  // below: its failures — unknown branch, referenceBranch typo, git auth —
+  // below: its failures — unknown branch, git auth —
   // are the most common user-facing create errors, and before the legs ran
   // concurrently they surfaced in well under a second. Racing them here
   // keeps that: a bad input aborts the boot the moment it's known instead
@@ -945,13 +944,11 @@ export async function createWorktree(
   }
 
   const worktreeId = options.worktreeId ?? crypto.randomUUID()
-  // Per-create branch wins over the project's configured default; both fall
-  // back to the remote default branch. Not resolved for a resume, which
-  // reuses its checkout as it stands.
-  const requestedBranch = options.branch ?? config.referenceBranch
+  // The requested branch, else the remote default. Not resolved for a
+  // resume, which reuses its checkout as it stands.
   const refBranch = options.resume === true
     ? undefined
-    : requestedBranch ?? await getDefaultBranch(repo)
+    : options.branch ?? await getDefaultBranch(repo)
   // The conversations this create will launch, decided here rather than at
   // agent-command time so they can be recorded alongside the worktree row.
   // A worktree's tool and founding ask are read off its first conversation,
@@ -1132,17 +1129,11 @@ export async function createWorktree(
     // An explicitly requested branch must exist as a remote-tracking ref
     // (fetchOrigin above brought down all heads, so a just-pushed branch is
     // already visible).
-    if (requestedBranch && !(await remoteBranchExists(repo, requestedBranch))) {
-      const source = options.branch
-        ? 'the requested branch'
-        : 'referenceBranch in yaac-config.json'
-      throw new ServerError(
-        'VALIDATION',
-        `branch "${requestedBranch}" not found on origin — check ${source}.`,
-      )
+    if (options.branch && !(await remoteBranchExists(repo, options.branch))) {
+      throw new ServerError('VALIDATION', `branch "${options.branch}" not found on origin.`)
     }
     // A resume whose checkout is gone recreates it from the default.
-    const base = refBranch ?? requestedBranch ?? await getDefaultBranch(repo)
+    const base = refBranch ?? options.branch ?? await getDefaultBranch(repo)
     emit(`Creating worktree from ${base}...`, options)
     // addWorktree checks out into the pre-created dir whether or not it is
     // empty; nothing pod-side reads /workspace before launchWithSetup

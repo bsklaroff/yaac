@@ -1967,13 +1967,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
   })
 
   /**
-   * --prompt, --model and the configured referenceBranch on ONE session.
+   * --prompt, --model and --branch on ONE session.
    * The three are orthogonal create-time knobs whose assertions read
    * different surfaces of the same pod (the agent pane, the window's
    * start command, the worktree's upstream), so a session apiece bought
    * nothing but two more pod bring-ups.
    */
-  describe('create-time overrides (--prompt, --model, referenceBranch)', () => {
+  describe('create-time overrides (--prompt, --model, --branch)', () => {
     const SLUG = 'overridden'
     let jobName = ''
     let createStdout = ''
@@ -1981,7 +1981,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
     beforeAll(async () => {
       const projectPath = await setupProject(SLUG, {
-        yaacConfig: { referenceBranch: 'dev' },
         extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
       })
       // Pre-seed claude's onboarding state (same as the kitchen-sink
@@ -2003,7 +2002,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       const created = await createWorktree(
         SLUG, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8',
-        '--permission-mode', 'accept-edits',
+        '--permission-mode', 'accept-edits', '--branch', 'dev',
       )
       jobName = created.jobName
       createStdout = created.stdout
@@ -2043,10 +2042,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 60_000)
 
 
-    it('lands on the configured referenceBranch and tracks it', async () => {
-      // The --branch override's happy path (on a prewarmed claim) lives in
-      // worktree-prewarm.test.ts; this is the config-default path on a
-      // cold create.
+    it('--branch lands on the requested branch and tracks it', async () => {
+      // The prewarmed-claim path lives in worktree-prewarm.test.ts; this is
+      // the cold create.
       expect(createStdout).toContain('Creating worktree from dev...')
 
       const { stdout: upstream } = await execInJob(jobName, [

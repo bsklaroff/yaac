@@ -226,7 +226,7 @@ describe('SkillsButton on a phone', () => {
     vi.mocked(getProjectSkills).mockResolvedValue(SKILLS)
     vi.mocked(getSkillBody).mockResolvedValue(BODY)
     vi.mocked(getProjectBranches).mockResolvedValue({
-      branches: ['main'], defaultBranch: 'main', referenceBranch: null,
+      branches: ['main'], defaultBranch: 'main',
     })
   })
 

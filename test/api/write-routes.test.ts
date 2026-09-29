@@ -380,10 +380,9 @@ describe('write routes', () => {
     interface BranchesBody {
       branches: string[]
       defaultBranch: string
-      referenceBranch: string | null
     }
 
-    it('GET /project/:slug/branches lists branches with the default and reference branch', async () => {
+    it('GET /project/:slug/branches lists branches with the default branch', async () => {
       await writeProjectWithRepo('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({ param: { slug: 'demo' }, query: {} })
@@ -392,7 +391,6 @@ describe('write routes', () => {
       expect(body.branches).toContain('main')
       expect(body.branches).toContain('develop')
       expect(body.defaultBranch).toBe('main')
-      expect(body.referenceBranch).toBeNull()
     })
 
     it('GET /project/:slug/branches?refresh=1 fetches new branches first', async () => {
@@ -410,49 +408,6 @@ describe('write routes', () => {
     it('GET returns 404 for an unknown project', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({ param: { slug: 'nope' }, query: {} })
-      expect(res.status).toBe(404)
-    })
-
-    it('PUT /project/:slug/reference-branch sets, reflects in GET, and clears with null', async () => {
-      await writeProjectWithRepo('demo')
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-
-      const set = await client.project[':slug']['reference-branch'].$put({
-        param: { slug: 'demo' },
-        json: { branch: 'develop' },
-      })
-      expect(set.status).toBe(200)
-      expect(await set.json()).toEqual({ referenceBranch: 'develop' })
-
-      const get = await client.project[':slug'].branches.$get({ param: { slug: 'demo' }, query: {} })
-      expect((await get.json() as BranchesBody).referenceBranch).toBe('develop')
-
-      const cleared = await client.project[':slug']['reference-branch'].$put({
-        param: { slug: 'demo' },
-        json: { branch: null },
-      })
-      expect(cleared.status).toBe(200)
-      expect(await cleared.json()).toEqual({ referenceBranch: null })
-    })
-
-    it('PUT rejects a branch that does not exist on origin', async () => {
-      await writeProjectWithRepo('demo')
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug']['reference-branch'].$put({
-        param: { slug: 'demo' },
-        json: { branch: 'no-such-branch' },
-      })
-      expect(res.status).toBe(400)
-      const body = await res.json() as unknown as { error: { code: string } }
-      expect(body.error.code).toBe('VALIDATION')
-    })
-
-    it('PUT returns 404 for an unknown project', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug']['reference-branch'].$put({
-        param: { slug: 'nope' },
-        json: { branch: 'develop' },
-      })
       expect(res.status).toBe(404)
     })
   })

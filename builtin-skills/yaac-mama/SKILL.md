@@ -64,7 +64,7 @@ pass — the server resolves who is calling and answers for that project only.
   - **`--ui-mode`**: `tui` (the default — the agent's own terminal UI) or `acp`
     (a chat pane in the yaac webapp).
   - **`--branch`**: the branch on origin the new worktree starts from.
-    Omitted, the project's reference branch. Push a branch first to hand a
+    Omitted, origin's default branch. Push a branch first to hand a
     sibling work from here. A branch that is not on origin is not caught
     here: the id comes back and the worktree then fails to provision.
   - **`--group`**: file the new worktree in this group, creating the group
@@ -144,7 +144,7 @@ pass — the server resolves who is calling and answers for that project only.
   create runs detached and takes tens of seconds. You cannot watch progress
   from here — the user follows it in the yaac webapp.
 - **The sibling shares nothing with this worktree.** It gets a fresh checkout
-  branched from the project's reference branch — it does not see this
+  branched from origin's default branch (or `--branch`) — it does not see this
   worktree's uncommitted changes, env, or conversation. Write the prompt
   self-contained; if the new worktree must build on work from here, commit and
   push a branch first and tell the prompt to fetch and check it out.

@@ -7,12 +7,12 @@ vi.mock('node:child_process', () => ({
   exec: vi.fn(),
 }))
 
-vi.mock('node:fs/promises', () => ({
-  default: {
+const { fsFake } = vi.hoisted(() => ({
+  fsFake: {
     access: vi.fn().mockResolvedValue(undefined),
     mkdir: vi.fn().mockResolvedValue(undefined),
-    writeFile: vi.fn().mockResolvedValue(undefined),
-    readFile: vi.fn().mockRejectedValue(new Error('missing')),
+    writeFile: vi.fn<(file: string, data: string) => Promise<void>>().mockResolvedValue(undefined),
+    readFile: vi.fn<(file: string) => Promise<Buffer>>().mockRejectedValue(new Error('missing')),
     chmod: vi.fn().mockResolvedValue(undefined),
     // Built-in skill staging: rm the stage dir, list (readdir) the bundled
     // skills, cp each across. An empty readdir stages nothing. Session-bin
@@ -27,6 +27,19 @@ vi.mock('node:fs/promises', () => ({
     // beforeEach without having to be re-primed in all three.
     rename: vi.fn(() => Promise.resolve()),
   },
+}))
+vi.mock('node:fs/promises', () => ({ default: fsFake }))
+
+// Confined roots (the claude home's seeds, the ephemeral module dirs) walk
+// the real disk — realpath, fds — which the fs mock above has none of, so
+// they read and write through that mock instead. Inline for the same
+// `resetAllMocks` reason as `rename`.
+vi.mock('@yaac/server/lib/confined-fs', () => ({
+  openRoot: vi.fn((root: string) => Promise.resolve({
+    mkdirp: () => Promise.resolve(),
+    readFile: (rel: string) => fsFake.readFile(`${root}/${rel}`).catch(() => null),
+    writeAtomic: (rel: string, data: string) => fsFake.writeFile(`${root}/${rel}`, data),
+  })),
 }))
 
 // Stubbed to keep podman off the import path; nothing on the create path
@@ -567,13 +580,7 @@ describe('createWorktree', () => {
     expect(vi.mocked(recordAgentSessions)).not.toHaveBeenCalled()
   })
 
-  it('falls back to the configured referenceBranch, with an explicit branch winning', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({ referenceBranch: 'develop' })
-    await createWorktree('demo', { tool: 'claude' })
-    expect(vi.mocked(addWorktree)).toHaveBeenLastCalledWith(
-      expect.anything(), expect.anything(), expect.anything(), 'origin/develop',
-    )
-
+  it('creates from the requested branch without asking origin for its default', async () => {
     await createWorktree('demo', { tool: 'claude', branch: 'dev' })
     expect(vi.mocked(addWorktree)).toHaveBeenLastCalledWith(
       expect.anything(), expect.anything(), expect.anything(), 'origin/dev',
@@ -581,14 +588,10 @@ describe('createWorktree', () => {
     expect(vi.mocked(getDefaultBranch)).not.toHaveBeenCalled()
   })
 
-  it('rejects a requested branch missing from origin, naming the source', async () => {
+  it('rejects a requested branch missing from origin', async () => {
     vi.mocked(remoteBranchExists).mockResolvedValue(false)
     await expect(createWorktree('demo', { tool: 'claude', branch: 'ghost' }))
-      .rejects.toThrow(/branch "ghost" not found on origin — check the requested branch/)
-
-    vi.mocked(resolveProjectConfig).mockResolvedValue({ referenceBranch: 'ghost' })
-    await expect(createWorktree('demo', { tool: 'claude' }))
-      .rejects.toThrow(/check referenceBranch in yaac-config\.json/)
+      .rejects.toThrow(/branch "ghost" not found on origin/)
     expect(vi.mocked(addWorktree)).not.toHaveBeenCalled()
   })
 
@@ -732,6 +735,7 @@ describe('createWorktree', () => {
 
     const labels = {
       'yaac.project': 'demo',
+      'yaac.project-id': projectRow('').id,
       'yaac.worktree-id': 'abcd1234',
       'yaac.data-dir-hash': 'ddh0123456789abc',
       'yaac.tool': 'claude',
@@ -764,7 +768,7 @@ describe('createWorktree', () => {
       '/tmp/demo/repo/.git',
       '/tmp/demo/claude',
       '/tmp/demo/codex',
-      '/tmp/node/demo/opencode-data/abcd1234',
+      `/tmp/node/${projectRow('').id}/opencode-data/abcd1234`,
       '/tmp/demo/opencode-data/abcd1234',
       '/tmp/demo/opencode-config',
       '/tmp/demo/pi',
@@ -1163,8 +1167,9 @@ describe('createWorktree', () => {
 
     const { volumes, containers } = appliedJobManifest().spec.template.spec
 
-    // The NODE-LOCAL working copy the tool runs against...
-    const dataVol = volumes.find((v) => v.hostPath?.path === '/tmp/node/demo/opencode-data/abcd1234')
+    // The NODE-LOCAL working copy the tool runs against, named by the
+    // project's immutable id...
+    const dataVol = volumes.find((v) => v.hostPath?.path === `/tmp/node/${projectRow('').id}/opencode-data/abcd1234`)
     expect(dataVol).toBeDefined()
     const dataMount = containers[0].volumeMounts
       .find((m) => m.mountPath === '/home/yaac/.local/share/opencode')
@@ -1243,11 +1248,11 @@ describe('buildAgentCmd', () => {
     expect(fresh).toMatch(/^OPENCODE_CONFIG_CONTENT="\{.*\}" opencode --standalone$/)
   })
 
-  it('passes --continue when resuming an opencode session', () => {
+  it('resumes an opencode session by its id', () => {
     const resume = buildAgentCmd({
       tool: 'opencode', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
-    expect(resume).toMatch(/ opencode --standalone --continue$/)
+    expect(resume).toMatch(/ opencode --standalone --session sid-abc$/)
   })
 })
 

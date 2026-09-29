@@ -25,7 +25,6 @@ const mock = vi.mocked(getWorktreeChanges)
 const BRANCHES: ProjectBranches = {
   branches: ['main', 'dev', 'feature/x'],
   defaultBranch: 'main',
-  referenceBranch: null,
 }
 
 const PAYLOAD: SessionChangesData = {

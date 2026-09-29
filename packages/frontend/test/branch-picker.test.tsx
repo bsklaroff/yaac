@@ -47,20 +47,4 @@ describe('BranchPicker', () => {
     render(<BranchPicker branches={BRANCHES} query="" onQueryChange={() => {}} onSelect={() => {}} showList={false} />)
     expect(screen.queryByRole('list')).toBeNull()
   })
-
-  it('renders the trailing and belowInput slots', () => {
-    render(
-      <BranchPicker
-        branches={BRANCHES}
-        query=""
-        onQueryChange={() => {}}
-        onSelect={() => {}}
-        showList={false}
-        trailing={<button type="button">pin</button>}
-        belowInput={<div>oops</div>}
-      />,
-    )
-    expect(screen.getByText('pin')).toBeTruthy()
-    expect(screen.getByText('oops')).toBeTruthy()
-  })
 })

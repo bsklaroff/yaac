@@ -270,7 +270,7 @@ container on the worktree's node could build it. That is out of scope here.
 | `cloneRepo` | `project add` | nothing; it creates the main clone |
 | `fetchOrigin` (+ `maintainRepo`) | create, claim, branch picker `?refresh=1` | origin refs |
 | `getDefaultBranch`, `listRemoteBranches` | branch picker, create, skills | `refs/remotes/origin/*` |
-| `remoteBranchExists`, `resolveRemoteRef` | create, claim, reference-branch route, skills | `refs/remotes/origin/<b>` |
+| `remoteBranchExists`, `resolveRemoteRef` | create, claim, skills | `refs/remotes/origin/<b>` |
 | `listTreeSubdirs`, `readBlobAt` | skills discovery | trees and blobs at `origin/<b>` |
 | the `for-each-ref` inside `createCheckout` | create | origin refs |
 

@@ -4,7 +4,6 @@ import {
   isGitAuthError,
   listRemoteBranches,
 } from '#domain/git'
-import { resolveProjectConfig } from './config'
 import { resolveProjectCredential } from './credentials'
 import { projectRemoteUrl } from './detail'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -16,16 +15,14 @@ export interface ProjectBranches {
   branches: string[]
   /** The remote's default branch (origin/HEAD). */
   defaultBranch: string
-  /** The project's configured default reference branch, if set. */
-  referenceBranch: string | null
 }
 
 /**
  * Branch data for the new-worktree picker. Reads local remote-tracking refs
  * (instant); `refresh` runs a credentialed fetch first so a just-pushed
  * branch appears — the frontend shows the instant list and re-fetches with
- * refresh in the background. Free-typed branches that aren't listed still
- * work at create time, which re-fetches and validates itself.
+ * refresh in the background. A branch named by the CLI or `yaac-mama
+ * --branch` need not be listed: the create re-fetches and validates it.
  */
 export async function getProjectBranches(slug: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
   const repo = repoDir(slug)
@@ -50,10 +47,9 @@ export async function getProjectBranches(slug: string, opts: { refresh?: boolean
     }
   }
 
-  const [branches, defaultBranch, config] = await Promise.all([
+  const [branches, defaultBranch] = await Promise.all([
     listRemoteBranches(repo),
     getDefaultBranch(repo),
-    resolveProjectConfig(slug),
   ])
-  return { branches, defaultBranch, referenceBranch: config?.referenceBranch ?? null }
+  return { branches, defaultBranch }
 }

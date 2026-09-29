@@ -154,7 +154,11 @@ function fetchRecord(repoPath: string): string {
 }
 
 /**
- * Fetch every branch of `remoteUrl` into `refs/remotes/origin/*`. The URL is
+ * Fetch every branch of `remoteUrl` into `refs/remotes/origin/*`, pruning
+ * the ones origin has deleted — so a merged-and-deleted branch leaves the
+ * picker, and a create naming it is refused rather than forked from its last
+ * fetched tip. Only the refspec's destination is pruned: worktree branches
+ * are local `agent/*` heads, and the symbolic `origin/HEAD` is kept. The URL is
  * the project row's, passed in: the repository's own `remote.origin.*` is
  * written by pods, so it never decides where a fetch goes, what it runs, or
  * where a token is sent.
@@ -178,7 +182,7 @@ export function fetchOrigin(
     const url = credential?.kind === 'https' ? injectTokenIntoUrl(remoteUrl, credential.token) : remoteUrl
     const env = credential?.kind === 'https' ? torEnv() : await gitEnvForCredential(credential)
     await runGit(repo(repoPath), [
-      'fetch', url, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok',
+      'fetch', '--prune', url, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok',
     ], { env, remoteUrl })
     await fs.mkdir(path.dirname(fetchRecord(repoPath)), { recursive: true })
     await fs.writeFile(fetchRecord(repoPath), String(Date.now()))
