@@ -12,6 +12,7 @@ vi.mock('#db', async (importOriginal) => ({
   getWorktreeRow: vi.fn(),
   listActiveAgentSessions: vi.fn(),
   setWorktreeGroup: vi.fn(),
+  setWorktreeTitle: vi.fn(),
   getGitIdentity: mockGitIdentity,
 }))
 
@@ -76,6 +77,7 @@ import {
   listActiveAgentSessions,
   restoreSpareWorktree,
   setWorktreeGroup,
+  setWorktreeTitle,
   type WorktreeRow,
 } from '#db'
 import type { CreateSetup } from '#domain/worktrees/create'
@@ -755,13 +757,16 @@ describe('tryClaimPrewarmed', () => {
   })
 
   // The rest of the create is handed over with the agent, the way a cold
-  // create's is: the group before the worktree shows, then the prompt its
-  // agent booted without.
-  it('files the claimed worktree in its group and gives its agent the prompt', async () => {
+  // create's is: the group and title before the worktree shows, then the
+  // prompt its agent booted without.
+  it('files and titles the claimed worktree and gives its agent the prompt', async () => {
     mockList.mockResolvedValue([spare()])
-    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { prompt: 'fix the bug', groupId: 'g1' })
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, {
+      prompt: 'fix the bug', title: 'Bug fix', groupId: 'g1',
+    })
     expect(result?.worktreeId).toBe('spare1')
     expect(vi.mocked(setWorktreeGroup)).toHaveBeenCalledWith('p', 'spare1', 'g1')
+    expect(vi.mocked(setWorktreeTitle)).toHaveBeenCalledWith('p', 'spare1', 'Bug fix')
     // The paste script travels base64'd, and carries the prompt the same
     // way, so the script is decoded to be read.
     const pasted = mockExec.mock.calls.flatMap(([jobName, cmd]) => {

@@ -63,31 +63,40 @@ describe('openDb', () => {
     expect(await getDb()).toBe(await getDb())
   })
 
-  // The one migration that moves data rather than only reshaping it: the
-  // project's single remembered posture and the global default tool become
-  // per-agent create memory. Nothing else can catch it going wrong — every
-  // other test starts from a database migrated from empty.
-  it('carries the old create memory into per-agent rows', async () => {
-    const migrations = path.resolve(fileURLToPath(import.meta.url), '../../../drizzle')
+  // The migrations that move data rather than only reshaping it. Nothing else
+  // can catch one going wrong — every other test starts from a database
+  // migrated from empty. `seedBefore` migrates a fresh in-memory database up
+  // to (not including) the migration named `name`, runs `seed` there, then
+  // migrates the rest.
+  const migrations = path.resolve(fileURLToPath(import.meta.url), '../../../drizzle')
+  async function seedBefore(
+    name: string,
+    seed: string,
+  ): Promise<ReturnType<typeof drizzle>> {
     const all = (await fs.readdir(migrations)).filter((d) => /^\d{14}_/.test(d)).sort()
-    const target = all.findIndex((d) => d.endsWith('_per_project_create_defaults'))
+    const target = all.findIndex((d) => d.endsWith(`_${name}`))
     expect(target).toBeGreaterThan(0)
     const before = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-migrations-'))
     dirs.push(before)
     for (const d of all.slice(0, target)) {
       await fs.cp(path.join(migrations, d), path.join(before, d), { recursive: true })
     }
-
     const db = drizzle({ connection: { dataDir: 'memory://' } })
-    try {
-      await migrate(db, { migrationsFolder: before })
-      await db.$client.exec(`
+    await migrate(db, { migrationsFolder: before })
+    await db.$client.exec(seed)
+    await migrate(db, { migrationsFolder: migrations })
+    return db
+  }
+
+  // The project's single remembered posture and the global default tool
+  // become per-agent create memory.
+  it('carries the old create memory into per-agent rows', async () => {
+    const db = await seedBefore('per_project_create_defaults', `
         INSERT INTO projects (slug, remote_url, added_at, last_permission_mode)
           VALUES ('p', 'git@h:o/p.git', 'now', 'auto'), ('q', 'git@h:o/q.git', 'now', NULL);
         INSERT INTO preferences (key, value) VALUES ('default_tool', 'codex');
       `)
-      await migrate(db, { migrationsFolder: migrations })
-
+    try {
       const memory = await db.$client.query<{ project_slug: string; tool: string; permission_mode: string }>(
         'SELECT project_slug, tool, permission_mode FROM project_tool_defaults ORDER BY project_slug, tool',
       )
@@ -106,6 +115,44 @@ describe('openDb', () => {
       ])
       const prefs = await db.$client.query('SELECT key FROM preferences')
       expect(prefs.rows).toEqual([])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
+  // A draft's title was the generated one; it moves aside for the user's. A
+  // queued entry launched into its nearest parent worktree's group, and now
+  // stores it — walked up a chain, and none when that worktree is ungrouped,
+  // has no row, or the chain dangles or loops.
+  it('moves draft titles aside and files queued entries in their parent\'s group', async () => {
+    const entry = (id: string, parent: string): string =>
+      `('${id}', 'p', ${parent}, 'go', 'claude', 'opus', 'tui', 'bypass', 'main')`
+    const uuid = (n: number): string => `00000000-0000-4000-8000-00000000000${n}`
+    const db = await seedBefore('queued_and_draft_titles_and_groups', `
+      INSERT INTO draft_worktrees (id, project_slug, prompt, title, tool, mode, permission_mode) VALUES
+        ('${uuid(1)}', 'p', 'x', 'Gen one', 'claude', 'tui', 'bypass'),
+        ('${uuid(2)}', 'p', 'y', NULL, 'claude', 'tui', 'bypass');
+      INSERT INTO worktrees (project_slug, worktree_id, group_id) VALUES ('p', 'w1', 'g1'), ('p', 'w2', NULL);
+      INSERT INTO queued_worktrees
+        (id, project_slug, parent_worktree_id, parent_queued_id, prompt, tool, model, mode, permission_mode, branch)
+      VALUES
+        ${entry(uuid(1), `'w1', NULL`)}, ${entry(uuid(2), `NULL, '${uuid(1)}'`)},
+        ${entry(uuid(3), `NULL, '${uuid(2)}'`)}, ${entry(uuid(4), `'w2', NULL`)},
+        ${entry(uuid(5), `'w-missing', NULL`)}, ${entry(uuid(6), `NULL, '${uuid(9)}'`)},
+        ${entry(uuid(7), `NULL, '${uuid(8)}'`)}, ${entry(uuid(8), `NULL, '${uuid(7)}'`)};
+    `)
+    try {
+      const drafts = await db.$client.query<{ title: string | null; generated_title: string | null }>(
+        'SELECT title, generated_title FROM draft_worktrees ORDER BY id',
+      )
+      expect(drafts.rows).toEqual([
+        { title: null, generated_title: 'Gen one' },
+        { title: null, generated_title: null },
+      ])
+      const queued = await db.$client.query<{ group_id: string | null }>(
+        'SELECT group_id FROM queued_worktrees ORDER BY id',
+      )
+      expect(queued.rows.map((r) => r.group_id)).toEqual(['g1', 'g1', 'g1', null, null, null, null, null])
     } finally {
       await db.$client.close()
     }

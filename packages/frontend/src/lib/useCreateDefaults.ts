@@ -87,12 +87,18 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
 export function useCreateWorktree(): (
   projectSlug: string,
   tool: AgentTool,
-  setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'mode'> & { modelName?: string; prompt?: string; draftId?: string },
+  setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'mode'> & {
+    modelName?: string
+    prompt?: string
+    title?: string
+    groupId?: string
+    draftId?: string
+  },
   branch?: string,
 ) => void {
   const provision = useProvisionWorktree()
   return useCallback((projectSlug, tool, setup, branch) => {
-    const { model, modelName, permissionMode, mode, prompt, draftId } = setup
+    const { model, modelName, permissionMode, mode, prompt, title, groupId, draftId } = setup
     provision(projectSlug, tool, 'create', randomUUID(),
       (sid, onProgress) =>
         createWorktree(projectSlug, tool, onProgress, sid, {
@@ -103,9 +109,11 @@ export function useCreateWorktree(): (
           permissionMode,
           mode,
           ...(prompt ? { prompt } : {}),
+          ...(title ? { title } : {}),
+          ...(groupId !== undefined ? { group: groupId } : {}),
           ...(draftId !== undefined ? { draftId } : {}),
         }),
-      undefined,
+      groupId,
       model !== '' ? { model, ...(modelName !== undefined ? { modelName } : {}) } : undefined)
   }, [provision])
 }

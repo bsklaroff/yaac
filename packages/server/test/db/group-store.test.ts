@@ -11,6 +11,8 @@ import {
   setWorktreeGroupPinned,
 } from '#db/group-store'
 import { getProjectWorktreeRows, recordWorktreeCreated, recordWorktreeStopped } from '#db/worktree-store'
+import { getQueuedWorktreeRow, insertQueuedWorktree } from '#db/queued-worktree-store'
+import { insertDraftWorktree, listDraftWorktreeRows } from '#db/draft-worktree-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -122,18 +124,25 @@ describe('worktree group store', () => {
   })
 
   describe('deleteWorktreeGroup', () => {
-    it('releases every member — running or stopped — back to the default list', async () => {
+    it('releases every member — running, stopped, queued or drafted — back to the default list', async () => {
       await create('live')
       await create('dead')
       const group = await createWorktreeGroup('proj', 'release', 'live')
       await setWorktreeGroup('proj', 'dead', group.groupId)
       await recordWorktreeStopped('proj', 'dead')
+      const settings = { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'bypass', groupId: group.groupId } as const
+      const queued = await insertQueuedWorktree('proj', { parentWorktreeId: 'live' }, {
+        ...settings, model: 'opus', branch: 'main',
+      })
+      await insertDraftWorktree('proj', settings)
 
       await deleteWorktreeGroup('proj', group.groupId)
 
       expect(await listWorktreeGroupRows('proj')).toEqual([])
       expect(await groupOf('live')).toBeUndefined()
       expect(await groupOf('dead')).toBeUndefined()
+      expect((await getQueuedWorktreeRow(queued.id))?.groupId).toBeUndefined()
+      expect((await listDraftWorktreeRows())[0].groupId).toBeUndefined()
     })
 
     it('leaves another group and its members alone', async () => {

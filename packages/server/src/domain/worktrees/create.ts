@@ -76,6 +76,7 @@ import {
   listActiveAgentSessions,
   setWorktreeGroup,
   setWorktreeMamaTokenHash,
+  setWorktreeTitle,
 } from '#db'
 import { reportAgentLaunchFailure } from './provisioning'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
@@ -221,6 +222,11 @@ export interface WorktreeCreateOptions {
    * the group the user asked for for its whole visible life.
    */
   groupId?: string
+  /**
+   * The user's title for the new worktree, set with its group — before its
+   * founding prompt is recorded, so the title sweep never sees it untitled.
+   */
+  title?: string
   /**
    * The permission posture this worktree's agents launch in — how much they
    * may do before stopping to ask.
@@ -1014,6 +1020,7 @@ export async function createWorktree(
   if (options.groupId !== undefined) {
     await setWorktreeGroup(projectSlug, worktreeId, options.groupId)
   }
+  if (options.title !== undefined) await setWorktreeTitle(projectSlug, worktreeId, options.title)
 
   // The life this create is starting, stamped after the row exists (it is an
   // UPDATE) and before any handle can be recorded — a life is exactly the
