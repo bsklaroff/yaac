@@ -3,10 +3,11 @@
 #
 # Usage:
 #   yaac-mama list
-#   yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M]
-#                    [--branch B] [--group G] "<prompt>"
-#   yaac-mama queue [--worktree W] [--tool T] [--model M]
-#                   [--permission-mode P] "<prompt>"
+#   yaac-mama create [opts] "<prompt>"
+#   yaac-mama queue --parent-worktree W [opts] "<prompt>"
+#   yaac-mama edit-queued [--parent-worktree W] [opts] <queued> ["<prompt>"]
+#     where opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U]
+#                 [--branch B] [--group G] [--title T]
 #   yaac-mama rename [<worktree>] "<title>"
 #   yaac-mama stop [<worktree>]
 #   yaac-mama group create "<name>"
@@ -47,7 +48,10 @@ yaac-mama — ask the yaac server running this worktree to do something.
 Usage:
   yaac-mama list                                   # worktrees + groups here
   yaac-mama create [opts] "<prompt>"               # start another worktree
-  yaac-mama queue [opts] "<prompt>"                # start one when this stops
+  yaac-mama queue --parent-worktree <id> [opts] "<prompt>"
+                                                   # start one when <id> stops
+  yaac-mama edit-queued [opts] <queued> ["<prompt>"]
+                                                   # change a queued one
   yaac-mama rename [<worktree>] "<title>"          # retitle (default: yourself)
   yaac-mama stop [<worktree>]                      # stop it (default: yourself)
   yaac-mama group create "<name>"                  # make an empty group
@@ -55,7 +59,7 @@ Usage:
   yaac-mama models                                 # tools/models available
   yaac-mama --help
 
-Options for create:
+Options for create, queue and edit-queued:
   --tool <tool>    agent for the new worktree: claude, codex, opencode, or pi.
                    Omitted, inherits this worktree's tool, then the project
                    default, then claude. Must be logged in on the host (see
@@ -70,20 +74,26 @@ Options for create:
                    Omitted, it inherits this worktree's own. It can never be
                    more permissive than this worktree's: asking for more is an
                    error. Not every tool has every mode (pi has only bypass).
-  --mode <mode>    how the agent is driven: tui (its terminal UI, the default)
+  --ui-mode <mode> how the agent is driven: tui (its terminal UI, the default)
                    or acp (a chat pane in the yaac webapp).
   --branch <name>  reference branch on origin for the new worktree. Omitted,
                    the project's default branch.
   --group <name>   file the new worktree in this group, creating it if needed.
+  --title <title>  the sidebar title; omitted, it is titled from its prompt.
 
-Options for queue:
-  --worktree <id>  what the queued worktree waits on: a worktree in this
-                   project, or a queued worktree's id (to chain after it).
-                   Omitted, this worktree.
-  --tool, --model, --permission-mode
-                   as for create, but omitted ones default to that parent's
-                   settings; the permission mode is still never more
-                   permissive than this worktree's own.
+queue also takes, and requires:
+  --parent-worktree <id>
+                   what the queued worktree waits on: a worktree in this
+                   project ("$YAAC_WORKTREE_ID" for this one), or a queued
+                   worktree's id (to chain after it). Options it omits
+                   default to that parent's settings; the permission mode is
+                   still never more permissive than this worktree's own.
+
+edit-queued changes the queued worktree <queued> names: each option given
+replaces its setting (--parent-worktree re-parents it), and a prompt given
+replaces its prompt. A queued worktree more permissive than this one is
+refused until the edit names a permission mode at or below this worktree's,
+or a new --tool (whose permission mode is then resolved at or below it).
 
 queue saves a worktree to start when its parent is STOPPED — by
 `yaac-mama stop` or by the user. A parent that crashes or exits does not
@@ -190,45 +200,57 @@ case "$1" in
 
   models) run models '' ;;
 
-  create)
-    shift
-    tool=""; model=""; perm=""; mode=""; branch=""; group=""
+  create|queue|edit-queued)
+    cmd=$1; shift
+    tool=""; model=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --tool) tool="${2:?yaac-mama: --tool needs a value}"; shift 2 ;;
-        --model) model="${2:?yaac-mama: --model needs a value}"; shift 2 ;;
-        --permission-mode) perm="${2:?yaac-mama: --permission-mode needs a value}"; shift 2 ;;
-        --mode) mode="${2:?yaac-mama: --mode needs a value}"; shift 2 ;;
-        --branch) branch="${2:?yaac-mama: --branch needs a value}"; shift 2 ;;
-        --group) group="${2:?yaac-mama: --group needs a value}"; shift 2 ;;
+        --tool|--model|--permission-mode|--ui-mode|--branch|--group|--title|--parent-worktree)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
-    done
-    if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M] [--branch B] [--group G] "<prompt>"' >&2
-      exit 2
-    fi
-    run create "$1" tool "$tool" model "$model" permission-mode "$perm" \
-      mode "$mode" branch "$branch" group "$group"
-    ;;
-
-  queue)
-    shift
-    worktree=""; tool=""; model=""; perm=""
-    while [ $# -gt 0 ]; do
       case "$1" in
-        --worktree) worktree="${2:?yaac-mama: --worktree needs a value}"; shift 2 ;;
-        --tool) tool="${2:?yaac-mama: --tool needs a value}"; shift 2 ;;
-        --model) model="${2:?yaac-mama: --model needs a value}"; shift 2 ;;
-        --permission-mode) perm="${2:?yaac-mama: --permission-mode needs a value}"; shift 2 ;;
-        *) break ;;
+        --tool) tool=$2 ;;
+        --model) model=$2 ;;
+        --permission-mode) perm=$2 ;;
+        --ui-mode) ui_mode=$2 ;;
+        --branch) branch=$2 ;;
+        --group) group=$2 ;;
+        --title) title=$2 ;;
+        --parent-worktree) parent=$2 ;;
       esac
+      shift 2
     done
-    if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama queue [--worktree W] [--tool T] [--model M] [--permission-mode P] "<prompt>"' >&2
-      exit 2
-    fi
-    run queue "$1" worktree "$worktree" tool "$tool" model "$model" permission-mode "$perm"
+    opts='[--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]'
+    queued=""; prompt=""
+    case "$cmd" in
+      create)
+        if [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama create $opts \"<prompt>\"" >&2
+          exit 2
+        fi
+        prompt=$1
+        ;;
+      queue)
+        if [ -z "$parent" ] || [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama queue --parent-worktree W $opts \"<prompt>\"" >&2
+          exit 2
+        fi
+        prompt=$1
+        ;;
+      edit-queued)
+        # The prompt is optional (omitted keeps the stored one), but one that
+        # is present and empty is refused: `edit-queued "$id" "$p"` with $p
+        # unset meant to change the prompt, not to leave it.
+        if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ] || { [ $# -eq 2 ] && [ -z "$2" ]; }; then
+          echo "usage: yaac-mama edit-queued [--parent-worktree W] $opts <queued> [\"<prompt>\"]" >&2
+          exit 2
+        fi
+        queued=$1; prompt=${2:-}
+        ;;
+    esac
+    run "$cmd" "$prompt" queued "$queued" parent-worktree "$parent" tool "$tool" model "$model" \
+      permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
     ;;
 
   rename)
@@ -293,7 +315,7 @@ case "$1" in
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, rename, stop, group, models)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, rename, stop, group, models)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

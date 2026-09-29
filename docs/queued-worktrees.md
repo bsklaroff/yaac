@@ -58,7 +58,7 @@ The parent pointer moves down the chain as it runs:
   its row — an **orphaned** entry, which the snapshot flags and the sidebar
   shows at the top level.
 - **Queueing under a launching entry** (possible by id through
-  `yaac-mama queue --worktree`) queues under the worktree it is becoming, and
+  `yaac-mama queue --parent-worktree`) queues under the worktree it is becoming, and
   the failure rule takes the child back if the launch fails.
 
 ## Settings
@@ -83,7 +83,7 @@ cannot supply is refused rather than stored empty.
 (`options.branch ?? config.referenceBranch ?? getDefaultBranch`) is a local
 read — so a parent that is still provisioning supplies its branch. The
 `base-branch-resolved` event survives only for a claimed spare's re-branch.
-`id=$(yaac-mama create …); yaac-mama queue --worktree "$id" …` can arrive
+`id=$(yaac-mama create …); yaac-mama queue --parent-worktree "$id" …` can arrive
 before even the row: a create in flight under its own id (never a spare
 claim, whose worktree lists under the spare's id — which is why `yaac-mama
 create` never claims one) resolves as a parent from its provisioning entry,
@@ -157,11 +157,20 @@ stands in for it.
   stopped listing, which stats transcripts and is too slow for a snapshot).
   `WorktreeListEntry.permissionMode` lets the create dialog seed a child from
   a live parent.
-- **`yaac-mama queue`** queues under the caller, or under the worktree or
-  entry `--worktree` names, and prints the entry id so an agent can build a
-  chain in a script. Its posture defaults to the parent's and is held to the
+- **`yaac-mama queue`** queues under the worktree or entry
+  `--parent-worktree` names — required, so a follow-up to the caller names
+  `$YAAC_WORKTREE_ID` — takes every option `yaac-mama create` does, and
+  prints the entry id so an agent can build a chain in a script. Its posture defaults to the parent's and is held to the
   caller's own as a ceiling (docs/permission-modes.md). `yaac-mama list`
   shows entries indented under their parents.
+- **`yaac-mama edit-queued`** changes an entry's prompt, any of those
+  settings, or its parent, by id or prefix within the caller's project. It
+  holds the stored posture to the same ceiling, as if it were asked for: an
+  agent refining a prompt would otherwise put its own words behind a grant
+  the user gave, so an entry above the caller's posture is refused until the
+  edit names one at or below it. A new tool is the exception — its posture
+  is re-resolved for that tool, as queueing does, so it lands at or below
+  the caller's. Discard and Run now stay the user's.
 - **Webapp.** One create dialog (Alt+N, a row's `…` menu, a queued row) with
   a **Start** field: `Now`, or after a live worktree or queued entry stops.
   A title set with the pencil beside its heading turns off auto-titling for

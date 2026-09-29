@@ -10,7 +10,7 @@
  *
  * What a caller may NOT do is as deliberate as what it may. An agent can see
  * the project's worktrees, make another one (now, or queued for when one
- * stops), retitle one, file them into named groups, and stop one — its own included. Stopping is in reach
+ * stops), edit what it queued, retitle one, file them into named groups, and stop one — its own included. Stopping is in reach
  * because in yaac it is REVERSIBLE: `stopWorktree` ends the running unit and
  * keeps the checkout, the row, the title, the group and the conversation, so
  * a user can restart whatever an agent wound down. Deleting, restarting and
@@ -21,7 +21,7 @@
  * by the transport (pod source IP under k8s, an opaque per-worktree token
  * under containerless) and every command is scoped to that caller's project.
  */
-import { decideSpawn } from './spawn-policy'
+import { decideSpawn, type SpawnRequest } from './spawn-policy'
 import { listActiveWorktrees } from './list'
 import { listWorktreeGroups, resolveGroup } from './groups'
 import {
@@ -34,15 +34,17 @@ import {
 } from '#db'
 import { resolveWorktree } from './resolve'
 import { stopWorktree } from './stop'
-import { queueWorktree } from './queued-worktrees'
+import { queueWorktree, updateQueuedWorktree, type QueueRequest } from './queued-worktrees'
 import { ServerError } from '@yaac/shared/errors'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
-import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
+import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
+  AGENT_MODES,
   AGENT_TOOLS,
   MAMA_COMMANDS,
   MODEL_RE,
   PERMISSION_MODES,
+  type AgentMode,
   type AgentTool,
   type PermissionMode,
   type MamaCommand,
@@ -81,6 +83,9 @@ export type MamaOutcome =
  */
 const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 
+/** The options every command that makes a worktree takes. */
+const CREATE_ARGS = ['tool', 'model', 'permission-mode', 'ui-mode', 'branch', 'group', 'title'] as const
+
 /**
  * Which options each command reads. An option a command does not take is
  * refused rather than ignored, because silently dropping one means the
@@ -93,13 +98,14 @@ const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: [],
-  create: ['tool', 'model', 'permission-mode', 'mode', 'branch', 'group'],
+  create: CREATE_ARGS,
   rename: ['worktree'],
   stop: ['worktree'],
   'group-create': [],
   'group-move': ['worktree'],
   models: [],
-  queue: ['worktree', 'tool', 'model', 'permission-mode'],
+  queue: ['parent-worktree', ...CREATE_ARGS],
+  'edit-queued': ['queued', 'parent-worktree', ...CREATE_ARGS],
 }
 
 /**
@@ -146,6 +152,7 @@ export async function runMamaCommand(
       case 'group-move': return await runGroupMove(caller, request)
       case 'models': return await runModels(caller)
       case 'queue': return await runQueue(caller, request)
+      case 'edit-queued': return await runEditQueued(caller, request)
     }
   } catch (err) {
     // Anything a command threw (a bad group name, an unreachable substrate)
@@ -268,11 +275,8 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
   // so a caller without one has no posture to cap a spawn at — refuse rather
   // than guess one.
   if (!callerRow) return { ok: false, error: 'this worktree has no recorded permission mode' }
-  const { args } = request
-  const group = args.group
-  const groupId = group === undefined
-    ? undefined
-    : (await resolveGroup(caller.projectSlug, group, { create: true })).groupId
+  const settings = createSettings(request.args)
+  if (!settings.ok) return settings
 
   const decision = await decideSpawn({
     requestId: `mama:${caller.workspaceId}`,
@@ -281,12 +285,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     ...(caller.tool !== undefined ? { callerTool: caller.tool } : {}),
     callerPermissionMode: callerRow.permissionMode,
     prompt: request.body,
-    ...(args.tool !== undefined ? { tool: args.tool } : {}),
-    ...(args.model !== undefined ? { model: args.model } : {}),
-    ...(args['permission-mode'] !== undefined ? { permissionMode: args['permission-mode'] } : {}),
-    ...(args.mode !== undefined ? { mode: args.mode } : {}),
-    ...(args.branch !== undefined ? { branch: args.branch } : {}),
-    ...(groupId !== undefined ? { groupId } : {}),
+    ...settings.settings,
   })
   return decision.ok
     // The id alone, so `id=$(yaac-mama create "…")` works — the one output
@@ -296,10 +295,10 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
 }
 
 /**
- * Queue a worktree to start when its parent stops naturally — by default
- * the caller, so an agent can say "when I'm done, this picks up from here"
- * and then `yaac-mama stop` itself. `--worktree` names another parent: a
- * worktree in this project, or a queued entry to chain after.
+ * Queue a worktree to start when its parent stops naturally. The parent is
+ * always named — the caller's own id for "when I'm done, this picks up from
+ * here", before it `yaac-mama stop`s itself — and may be any worktree in
+ * this project, or a queued entry to chain after.
  *
  * Settings default from the parent, and the posture from the parent too, but
  * never above the caller's own: an agent may not hand work to something with
@@ -308,30 +307,114 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
 async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const callerRow = await getWorktreeRow(caller.projectSlug, caller.workspaceId)
   if (!callerRow) return { ok: false, error: 'this worktree has no recorded permission mode' }
-  const { args } = request
-  if (args.tool !== undefined && !(AGENT_TOOLS as readonly string[]).includes(args.tool)) {
-    return { ok: false, error: `invalid tool '${args.tool}' (expected one of: ${AGENT_TOOLS.join(', ')})` }
+  const parent = request.args['parent-worktree']?.trim() ?? ''
+  if (parent === '') return { ok: false, error: 'queue needs --parent-worktree' }
+  const settings = createSettings(request.args)
+  if (!settings.ok) return settings
+  const entry = await queueWorktree(caller.projectSlug, {
+    parent,
+    prompt: request.body,
+    ...queueFields(settings.settings),
+  }, { ceiling: callerRow.permissionMode })
+  // The id alone, so `a=$(yaac-mama queue …)` can chain the next one after it.
+  return { ok: true, output: entry.id }
+}
+
+/**
+ * Edit a queued worktree in the caller's project — its prompt, any setting
+ * `queue` takes, or its parent — so an agent can refine a follow-up without
+ * discarding it (which it cannot do) and queueing another. An empty body
+ * keeps the prompt. The ceiling is `queue`'s: an entry the user queued
+ * above the caller's own posture is refused until the edit names one at or
+ * below it, or an agent could put its words behind someone else's grant.
+ */
+async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const callerRow = await getWorktreeRow(caller.projectSlug, caller.workspaceId)
+  if (!callerRow) return { ok: false, error: 'this worktree has no recorded permission mode' }
+  const target = request.args.queued?.trim() ?? ''
+  if (target === '') return { ok: false, error: 'edit-queued needs a queued worktree id' }
+  // Scoped like every other lookup here: only this project's entries are
+  // candidates, and a prefix matching two resolves to neither.
+  const rows = await listQueuedWorktreeRows(caller.projectSlug)
+  const exact = rows.find((r) => r.id === target)
+  const matches = exact !== undefined ? [exact] : rows.filter((r) => r.id.startsWith(target))
+  if (matches.length !== 1) {
+    return {
+      ok: false,
+      error: matches.length === 0
+        ? `no queued worktree '${target}' in ${caller.projectSlug}`
+        : `'${target}' matches more than one queued worktree in ${caller.projectSlug} — use a longer prefix`,
+    }
   }
-  if (args.model !== undefined && !MODEL_RE.test(args.model)) {
-    return { ok: false, error: `invalid model '${args.model}'` }
+  const settings = createSettings(request.args)
+  if (!settings.ok) return settings
+  const parent = request.args['parent-worktree']?.trim()
+  const patch: Partial<QueueRequest> = {
+    ...(request.body !== '' ? { prompt: request.body } : {}),
+    ...(parent !== undefined && parent !== '' ? { parent } : {}),
+    ...queueFields(settings.settings),
   }
+  if (Object.keys(patch).length === 0) {
+    return { ok: false, error: 'edit-queued needs a new prompt or an option to change' }
+  }
+  const entry = await updateQueuedWorktree(matches[0].id, patch, { ceiling: callerRow.permissionMode })
+  return {
+    ok: true,
+    output: `Updated queued worktree ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `
+      + `${entry.permissionMode} — ${flatten(entry.prompt, 60)}`,
+  }
+}
+
+/** What `create`, `queue` and `edit-queued` all take, checked and resolved. */
+type CreateSettings = Pick<SpawnRequest, 'tool' | 'model' | 'permissionMode' | 'uiMode' | 'branch' | 'group' | 'title'>
+
+/**
+ * The options every command that makes a worktree shares, shape-checked.
+ * The group stays a name: the command resolves it, creating it if needed,
+ * only once its own checks have passed, so a refused request leaves no
+ * group behind.
+ */
+function createSettings(
+  args: Record<string, string>,
+): { ok: true; settings: CreateSettings } | { ok: false; error: string } {
+  const { tool, model, branch, group } = args
   const permissionMode = args['permission-mode']
+  const uiMode = args['ui-mode']
+  if (tool !== undefined && !(AGENT_TOOLS as readonly string[]).includes(tool)) {
+    return { ok: false, error: `invalid tool '${tool}' (expected one of: ${AGENT_TOOLS.join(', ')})` }
+  }
+  if (model !== undefined && !MODEL_RE.test(model)) {
+    return { ok: false, error: `invalid model '${model}'` }
+  }
   if (permissionMode !== undefined && !(PERMISSION_MODES as readonly string[]).includes(permissionMode)) {
     return {
       ok: false,
       error: `invalid permission mode '${permissionMode}' (expected one of: ${PERMISSION_MODES.join(', ')})`,
     }
   }
-  const parent = args.worktree?.trim() || caller.workspaceId
-  const entry = await queueWorktree(caller.projectSlug, {
-    parent,
-    prompt: request.body,
-    ...(args.tool !== undefined ? { tool: args.tool as AgentTool } : {}),
-    ...(args.model !== undefined ? { model: args.model } : {}),
-    ...(permissionMode !== undefined ? { permissionMode: permissionMode as PermissionMode } : {}),
-  }, { ceiling: callerRow.permissionMode })
-  // The id alone, so `a=$(yaac-mama queue …)` can chain the next one after it.
-  return { ok: true, output: entry.id }
+  if (uiMode !== undefined && !(AGENT_MODES as readonly string[]).includes(uiMode)) {
+    return { ok: false, error: `invalid ui mode '${uiMode}' (expected one of: ${AGENT_MODES.join(', ')})` }
+  }
+  if (branch !== undefined && branch.trim() === '') return { ok: false, error: 'branch must not be empty' }
+  const title = args.title !== undefined ? normalizeTitle(args.title) : undefined
+  if (title === '') return { ok: false, error: 'title must not be empty' }
+  return {
+    ok: true,
+    settings: {
+      ...(tool !== undefined ? { tool: tool as AgentTool } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(permissionMode !== undefined ? { permissionMode: permissionMode as PermissionMode } : {}),
+      ...(uiMode !== undefined ? { uiMode: uiMode as AgentMode } : {}),
+      ...(branch !== undefined ? { branch: branch.trim() } : {}),
+      ...(group !== undefined ? { group } : {}),
+      ...(title !== undefined ? { title } : {}),
+    },
+  }
+}
+
+/** The same settings in the shape a queue write takes. */
+function queueFields({ uiMode, ...rest }: CreateSettings): Partial<QueueRequest> {
+  return { ...rest, ...(uiMode !== undefined ? { mode: uiMode } : {}) }
 }
 
 /**

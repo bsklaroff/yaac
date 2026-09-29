@@ -971,7 +971,7 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
 
     const { stdout: branch } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])
     const made = await runMama(
-      'create', '--permission-mode', 'plan', '--mode', 'tui', '--branch', branch.trim(), 'plan the work',
+      'create', '--permission-mode', 'plan', '--ui-mode', 'tui', '--branch', branch.trim(), 'plan the work',
     )
     expect(made.code).toBe(0)
     const sibling = made.out.trim()
@@ -1978,15 +1978,28 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
       // this file create with other postures, and this one's is the ceiling
       // asserted below. Asking above it queues nothing.
       const parent = await createWorktree('--permission-mode', 'accept-edits')
-      await expect(mamaAs(parent, 'queue', '--tool', 'codex', '--permission-mode', 'bypass', 'x'))
+      await expect(mamaAs(parent, 'queue', '--parent-worktree', parent, '--tool', 'codex', '--permission-mode', 'bypass', 'x'))
         .rejects.toThrow(/more permissive than this worktree's own \('accept-edits'\)/)
+      // The parent is never implied.
+      await expect(mamaAs(parent, 'queue', 'x')).rejects.toThrow(/usage: yaac-mama queue --parent-worktree/)
       // The fake codex reports its conversation only once a prompt has been
       // pasted into it, which is what proves the prompt arrived; it logs its
-      // launch arguments, which is where the model and posture show.
-      const child = await mamaAs(
-        parent, 'queue', '--tool', 'codex', '--model', 'gpt-5.5', '--permission-mode', 'read-only', 'hello',
-      )
-      const grandchild = await mamaAs(parent, 'queue', '--worktree', child.slice(0, 8), 'after that')
+      // launch arguments, which is where the model and posture show. Every
+      // one of them comes from the edit, not from what was queued.
+      const child = await mamaAs(parent, 'queue', '--parent-worktree', parent, 'draft')
+      await expect(mamaAs(parent, 'edit-queued', child.slice(0, 8), ''))
+        .rejects.toThrow(/usage: yaac-mama edit-queued/)
+      expect(await mamaAs(
+        parent, 'edit-queued', '--tool', 'codex', '--model', 'gpt-5.5', '--permission-mode', 'read-only',
+        '--title', 'Say hello', child.slice(0, 8), 'hello',
+      )).toContain(`Updated queued worktree ${child.slice(0, 8)}: codex gpt-5.5, read-only — hello`)
+      // Queued under the parent, then moved under the child with no new
+      // prompt: were the move lost, the parent's stop would launch it too.
+      const grandchild = await mamaAs(parent, 'queue', '--parent-worktree', parent, 'after that')
+      expect(await mamaAs(
+        parent, 'edit-queued', '--parent-worktree', child.slice(0, 8), '--ui-mode', 'acp',
+        '--branch', 'release/next', '--group', 'e2e follow-ups', grandchild.slice(0, 8),
+      )).toContain('after that')
       expect(child).toMatch(/^[0-9a-f-]{36}$/)
       expect(await mamaAs(parent, 'list')).toContain('after that')
 
@@ -1996,6 +2009,9 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
       await vi.waitFor(() => {
         childWorktree = latest().worktrees.find((w) => w.prompt === 'hello')?.worktreeId
         expect(childWorktree).toBeDefined()
+      }, { timeout: 60_000, interval: 250 })
+      await vi.waitFor(() => {
+        expect(latest().worktrees.find((w) => w.worktreeId === childWorktree)?.title).toBe('Say hello')
       }, { timeout: 60_000, interval: 250 })
       await vi.waitFor(() => {
         const sessions = latest().worktrees.find((w) => w.worktreeId === childWorktree)?.agentSessions ?? []
@@ -2010,7 +2026,12 @@ describe.skipIf(!CAN_RUN)('queued worktrees', () => {
       // The grandchild did not start: it waits on the worktree the child
       // became, for that one's own stop.
       const entry = latest().queuedWorktrees.find((q) => q.id === grandchild)
-      expect(entry).toMatchObject({ parentWorktreeId: childWorktree })
+      const group = latest().worktreeGroups.find((g) => g.projectSlug === SLUG && g.name === 'e2e follow-ups')
+      expect(entry).toMatchObject({
+        parentWorktreeId: childWorktree, prompt: 'after that', mode: 'acp', branch: 'release/next',
+        groupId: group?.groupId,
+      })
+      expect(group).toBeDefined()
       await fetch(`${origin()}/api/worktree/queue/discard`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

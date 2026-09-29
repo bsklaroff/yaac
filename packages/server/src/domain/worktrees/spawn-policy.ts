@@ -1,11 +1,9 @@
 import crypto from 'node:crypto'
 import { registerProvisioning, runProvisioned } from './provisioning'
+import { resolveGroup } from './groups'
 import { startWorktree } from './start'
 import { getProjectRow } from '#db'
 import {
-  AGENT_MODES,
-  AGENT_TOOLS,
-  MODEL_RE,
   PERMISSION_MODES,
   isRankedPermissionMode,
   morePermissive,
@@ -32,16 +30,18 @@ export interface SpawnRequest {
    *  and the most it may be granted. */
   callerPermissionMode: PermissionMode
   prompt: string
-  tool?: string
+  tool?: AgentTool
   model?: string
-  permissionMode?: string
+  permissionMode?: PermissionMode
   /** `tui` or `acp`; unnamed is `tui`. */
-  mode?: string
+  uiMode?: AgentMode
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
-  /** Sidebar group for the new worktree — already resolved to an id by the
-   *  caller, since a group named by a request may have to be created first. */
-  groupId?: string
+  /** Sidebar group for the new worktree, by id or name — a name matching
+   *  none is created, but only once nothing else here can refuse. */
+  group?: string
+  /** The new worktree's title; given, it is not auto-titled. */
+  title?: string
 }
 
 /** What the server decided about one spawn request. */
@@ -91,27 +91,11 @@ export async function decideSpawn(
 ): Promise<SpawnDecision> {
   const fail = (error: string): SpawnDecision => ({ ok: false, error })
 
-  // Re-validate what the proxy already checked — defense in depth, and the
-  // server is the side that owns what a valid request is.
+  // The settings arrive shape-checked (`yaac-mama`'s `createSettings`); the
+  // prompt is the one thing only a create carries.
   if (request.prompt.trim().length === 0) return fail('prompt must not be empty')
   if (request.prompt.length > SPAWN_MAX_PROMPT_CHARS) {
     return fail(`prompt exceeds ${SPAWN_MAX_PROMPT_CHARS} characters`)
-  }
-  if (request.tool !== undefined && !(AGENT_TOOLS as readonly string[]).includes(request.tool)) {
-    return fail(`invalid tool '${request.tool}' (expected one of: ${AGENT_TOOLS.join(', ')})`)
-  }
-  if (request.model !== undefined && !MODEL_RE.test(request.model)) {
-    return fail(`invalid model '${request.model}'`)
-  }
-  if (request.mode !== undefined && !(AGENT_MODES as readonly string[]).includes(request.mode)) {
-    return fail(`invalid mode '${request.mode}' (expected one of: ${AGENT_MODES.join(', ')})`)
-  }
-  if (request.permissionMode !== undefined
-    && !(PERMISSION_MODES as readonly string[]).includes(request.permissionMode)) {
-    return fail(`invalid permission mode '${request.permissionMode}' (expected one of: ${PERMISSION_MODES.join(', ')})`)
-  }
-  if (request.branch !== undefined && request.branch.trim() === '') {
-    return fail('branch must not be empty')
   }
 
   const inFlight = inFlightByCaller.get(request.callerWorkspaceId) ?? 0
@@ -121,15 +105,17 @@ export async function decideSpawn(
 
   // Tool precedence: explicit request > the caller's own tool > the agent
   // the project was last created with > claude.
-  const tool = (request.tool as AgentTool | undefined)
+  const tool = request.tool
     ?? request.callerTool
     ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectSlug)
     ?? 'claude'
-  const mode = (request.mode ?? 'tui') as AgentMode
-  const posture = agentPermissionMode(
-    tool, mode, request.callerPermissionMode, request.permissionMode as PermissionMode | undefined,
-  )
+  const uiMode = request.uiMode ?? 'tui'
+  const posture = agentPermissionMode(tool, uiMode, request.callerPermissionMode, request.permissionMode)
   if (!posture.ok) return posture
+  // Last, so a spawn refused for anything above leaves no group behind.
+  const groupId = request.group === undefined
+    ? undefined
+    : (await resolveGroup(request.callerProjectSlug, request.group, { create: true })).groupId
 
   const workspaceId = (deps.mintIdFn ?? (() => crypto.randomUUID()))()
   const projectSlug = request.callerProjectSlug
@@ -139,21 +125,21 @@ export async function decideSpawn(
   // shows provisioning progress in the webapp, and a spawn that fails at any
   // point, resolving its setup included, leaves a failed row (dismissable)
   // instead of vanishing silently. It also makes the minted id resolvable
-  // the moment the caller has it: `queue --worktree "$id"` right after the
+  // the moment the caller has it: `queue --parent-worktree "$id"` right after the
   // create finds it here before the create has recorded its row.
   registerProvisioning({
     worktreeId: workspaceId,
     projectSlug,
     tool,
     kind: 'create',
-    ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
+    ...(groupId !== undefined ? { groupId } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
   })
   void runProvisioned(workspaceId, (onProgress) => startWorktree({
     projectSlug,
     worktreeId: workspaceId,
     tool,
-    mode,
+    mode: uiMode,
     // The caller's posture, not the project's remembered one: a spawned
     // sibling is the caller's work carried on, and a `plan` or `manual`
     // inherited from someone's last webapp create would strand it at a
@@ -162,7 +148,8 @@ export async function decideSpawn(
     prompt: request.prompt,
     ...(request.model !== undefined ? { model: request.model } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
-    ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
+    ...(groupId !== undefined ? { groupId } : {}),
+    ...(request.title !== undefined ? { title: request.title } : {}),
     // An agent's choice is not the project's next default.
     rememberDefaults: false,
     // Never a spare: a claim hands back the spare's own id, and the caller

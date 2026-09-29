@@ -118,11 +118,14 @@ export async function queueWorktree(
  * names replaces the stored one; a new tool without a model or posture
  * re-resolves those for that tool, as queueing does. A parent that is the
  * entry itself or one of its descendants would close a cycle that never
- * runs, and is refused.
+ * runs, and is refused. An agent's edit is held to its ceiling like its
+ * queue: the stored posture counts as asked for, so an entry above the
+ * caller's own is refused rather than quietly lowered.
  */
 export async function updateQueuedWorktree(
   id: string,
   patch: Partial<QueueRequest>,
+  source: QueueSource,
 ): Promise<QueuedWorktreeEntry> {
   const row = await editableRow(id)
   if (patch.prompt !== undefined) checkPrompt(patch.prompt)
@@ -141,7 +144,7 @@ export async function updateQueuedWorktree(
     ...(patch.permissionMode !== undefined
       ? { permissionMode: patch.permissionMode }
       : retooled ? {} : { permissionMode: row.permissionMode }),
-  }, 'user')
+  }, source)
   const updated = await updateQueuedWorktreeRow(id, {
     ...settings,
     ...(patch.parent !== undefined ? { parent: parent.pointer } : {}),
@@ -340,7 +343,7 @@ function pointerOf(row: QueuedWorktreeRow): QueuedParent {
  * launching resolves to the worktree it is becoming — a failed launch then
  * takes the new child back with its other children. So does the full id of
  * a create still in flight, which may not have recorded its row yet:
- * `id=$(yaac-mama create …); yaac-mama queue --worktree "$id" …` must not
+ * `id=$(yaac-mama create …); yaac-mama queue --parent-worktree "$id" …` must not
  * race it.
  */
 async function resolveParent(projectSlug: string, parent: string): Promise<ParentInfo> {
