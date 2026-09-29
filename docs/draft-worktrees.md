@@ -33,7 +33,10 @@ not resolved them yet (catalog or branch list still loading); reopening then
 takes the default, as a fresh open does. Start is the id of the worktree or
 queued entry the create would have waited on, not a live reference: a parent
 that is gone by the time the draft reopens leaves it starting now. Deleting
-the draft's group clears it.
+the draft's group clears it. A group only being named in the dialog's "+ New
+group" box is not kept — it does not exist until a create or queue makes
+it, and a draft holds groups by id — so the draft keeps the group picked
+before the box was opened.
 
 Creating or queueing from a reopened draft discards it. The create and queue
 requests name the draft (`draftId`), and the server deletes it once the
@@ -42,7 +45,7 @@ its prompt.
 
 ## Titles
 
-A title typed in the dialog is the draft's `title`, and the worktree or
+A title set on the dialog's heading is the draft's `title`, and the worktree or
 entry created from it carries it. Without one, the title sweep
 (`reconcileGeneratedTitles`) titles drafts as it does live worktrees: a
 prompt long enough to need summarizing gets one model attempt, written to

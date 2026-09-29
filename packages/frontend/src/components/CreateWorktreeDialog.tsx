@@ -3,16 +3,18 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertDialog } from '@base-ui/react/alert-dialog'
 import { Dialog } from '@base-ui/react/dialog'
 import clsx from 'clsx'
-import { CloseIcon, PinIcon, TOOL_LABEL } from '#lib/icons'
+import { CloseIcon, PinIcon, RenameIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { Modal } from '#components/ui/Modal'
 import { Typeahead } from '#components/ui/Typeahead'
 import { saveDraftWorktree } from '#lib/draftApi'
+import { shownGroups } from '#lib/groups'
 import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type ProjectBranches } from '#lib/projectApi'
 import { queueWorktree, runQueuedWorktree, updateQueuedWorktree } from '#lib/queueApi'
 import { clip, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useCreateDefaults, useCreateWorktree } from '#lib/useCreateDefaults'
+import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore, type CreateWorktreeDialogOpts } from '#lib/store'
 import {
@@ -100,6 +102,9 @@ function entrySeed(e: QueuedWorktreeEntry): Seed {
   }
 }
 
+/** The Group dropdown's "+ New group" option, which swaps it for a name box. */
+const NEW_GROUP = '\u0000new'
+
 const worktreeName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New worktree', 40)
 
@@ -142,8 +147,12 @@ async function keepDraft(pending: PendingDraft): Promise<void> {
  * fetched fresh from origin when the queued worktree starts. Changing Start
  * re-seeds only the fields not touched here — the Group too, which follows
  * the parent's — and changing the agent reloads the rest from its own
- * memory, as the create form always has. A Title typed here is the
- * worktree's (and a draft's) from the start, so neither is auto-titled.
+ * memory, as the create form always has. A title set on the heading (its
+ * pencil, like every other rename) is the worktree's (and a draft's) from the
+ * start, so neither is auto-titled. The Group offers the groups the sidebar
+ * shows and those queued worktrees will launch into, plus "+ New group",
+ * which swaps the dropdown for a name box — the create or queue brings that
+ * group into being (a draft keeps the group picked before it).
  *
  * Enter anywhere but on a button submits, and Shift+Enter in the prompt is a
  * newline, like the chat composer — so Alt+N, type, Enter is a create with
@@ -268,6 +277,13 @@ function CreateWorktreeForm({
     ].find((c) => c.id === draftStart)?.groupId
     return draft.groupId === seeded ? undefined : draft.groupId ?? null
   })
+  // null = picking from the dropdown; a string is the "+ New group" box.
+  const [newGroup, setNewGroup] = useState<string | null>(null)
+  const newGroupRef = useRef<HTMLInputElement>(null)
+  // Focused from here rather than by `autoFocus`, which can lose to the
+  // dialog's own focus handling.
+  const naming = newGroup !== null
+  useEffect(() => { if (naming) newGroupRef.current?.focus() }, [naming])
   // null = untouched: the input shows (and a submit uses) the seeded branch.
   const [branchInput, setBranchInput] = useState<string | null>(from?.branch ?? null)
   const [pinPending, setPinPending] = useState(false)
@@ -334,7 +350,20 @@ function CreateWorktreeForm({
   // A group deleted since it was seeded or picked is the default list.
   const wantedGroup = groupPick !== undefined ? groupPick : seed?.groupId ?? null
   const groupId = groups.some((g) => g.groupId === wantedGroup) ? wantedGroup : null
+  // Offered: the groups the sidebar shows, those a queued worktree will
+  // launch into (a group made by queueing holds nothing else yet, and the
+  // sidebar nests entries under their parent, not their group), and
+  // whichever one is chosen.
+  const offeredGroups = shownGroups(groups, [
+    ...(snapshot?.worktrees ?? []),
+    ...(snapshot?.provisioning ?? []),
+    ...(snapshot?.heldWorktrees ?? []),
+    ...entries,
+    ...(groupId !== null ? [{ groupId }] : []),
+  ])
+  const newGroupName = newGroup === null ? '' : normalizeTitle(newGroup)
   const titleText = normalizeTitle(title)
+  const titleEdit = useInlineEdit(title, setTitle)
 
   const tool = toolPick ?? seed?.tool ?? defaults.lastTool
   const base = defaults.forTool(tool)
@@ -434,6 +463,7 @@ function CreateWorktreeForm({
     : storesEntry && prompt.trim() === '' ? 'A queued worktree needs a prompt'
     : storesEntry && model === '' ? 'Pick a model'
     : storesEntry && branchValue === '' ? 'Pick a branch'
+    : newGroup !== null && newGroupName === '' ? 'Name the new group'
     : null
 
   const submit = (): void => {
@@ -473,13 +503,20 @@ function CreateWorktreeForm({
         mode,
         ...(text !== '' ? { prompt: text } : {}),
         ...(titleText !== '' ? { title: titleText } : {}),
-        ...(groupId !== null ? { groupId } : {}),
+        ...(newGroup !== null ? { newGroup: newGroupName } : groupId !== null ? { groupId } : {}),
         ...(draft !== undefined ? { draftId: draft.id } : {}),
       }, branchValue && !isDefault ? branchValue : undefined)
       return
     }
     const settings = {
-      prompt: text, tool, model, mode, permissionMode, branch: branchValue, title: titleText, group: groupId,
+      prompt: text,
+      tool,
+      model,
+      mode,
+      permissionMode,
+      branch: branchValue,
+      title: titleText,
+      group: newGroup !== null ? newGroupName : groupId,
     }
     setBusy(true)
     setError(null)
@@ -559,7 +596,37 @@ function CreateWorktreeForm({
   return (
     <div ref={rootRef} tabIndex={-1} onKeyDown={onKeyDown} className="flex min-h-0 flex-1 flex-col outline-none">
       <div className="flex shrink-0 items-center justify-between px-4 pb-1 pt-3">
-        <Dialog.Title className="text-sm font-semibold">{heading}</Dialog.Title>
+        {titleEdit.editing ? (
+          <input
+            ref={titleEdit.inputRef}
+            aria-label="Worktree title"
+            defaultValue={titleEdit.seed}
+            placeholder="Generated from the prompt"
+            maxLength={MAX_TITLE_LENGTH}
+            onKeyDown={(e) => {
+              // Enter and Escape finish the title, not the dialog.
+              if (e.key === 'Enter' || e.key === 'Escape') e.stopPropagation()
+              titleEdit.handleKeyDown(e)
+            }}
+            onBlur={titleEdit.handleBlur}
+            className="mr-2 min-w-0 flex-1 rounded border border-border-strong bg-bg px-1.5 py-0.5
+              text-sm font-semibold text-text outline-none placeholder:font-normal placeholder:text-text-faint"
+          />
+        ) : (
+          <div className="flex min-w-0 items-center gap-0.5">
+            <Dialog.Title className="min-w-0 truncate text-sm font-semibold">{titleText || heading}</Dialog.Title>
+            <button
+              type="button"
+              onClick={titleEdit.start}
+              title="Rename worktree"
+              aria-label="Rename worktree"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text"
+            >
+              <RenameIcon size={12} />
+            </button>
+          </div>
+        )}
         <Dialog.Close
           aria-label="Close"
           className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
@@ -583,18 +650,6 @@ function CreateWorktreeForm({
           />
         </div>
 
-        <Row label="Title">
-          <input
-            aria-label="Title"
-            value={title}
-            maxLength={MAX_TITLE_LENGTH}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Generated from the prompt"
-            className="h-[26px] min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs text-text
-              outline-none placeholder:text-text-faint focus:border-border-strong"
-          />
-        </Row>
-
         <Row label="Start">
           <select
             aria-label="Start"
@@ -606,60 +661,95 @@ function CreateWorktreeForm({
           </select>
         </Row>
 
-        {groups.length > 0 && (
-          <Row label="Group">
+        <Row label="Group">
+          {newGroup === null ? (
             <select
               aria-label="Group"
               value={groupId ?? ''}
-              onChange={(e) => setGroupPick(e.target.value === '' ? null : e.target.value)}
+              onChange={(e) => {
+                if (e.target.value === NEW_GROUP) setNewGroup('')
+                else setGroupPick(e.target.value === '' ? null : e.target.value)
+              }}
               className={SELECT}
             >
               <option value="">None</option>
-              {groups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
+              {offeredGroups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
+              <option value={NEW_GROUP}>+ New group</option>
             </select>
-          </Row>
-        )}
-
-        <div className="mb-1">
-          <BranchPicker
-            branches={branchData?.branches ?? []}
-            defaultBranch={branchData?.defaultBranch}
-            query={branchInput ?? seed?.branch ?? defaultResolved ?? ''}
-            onQueryChange={(q) => { setBranchInput(q); setPinError(null) }}
-            onSelect={(b) => setBranchInput(b)}
-            showList={branchInput !== null && branchInput !== from?.branch}
-            // Escape abandons the search, not the dialog and its prompt.
-            onDismiss={() => setBranchInput(null)}
-            placeholder={branchData ? defaultResolved ?? '' : 'loading branches…'}
-            ariaLabel="Reference branch"
-            className="px-1 pb-1"
-            trailing={
+          ) : (
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <input
+                ref={newGroupRef}
+                aria-label="New group name"
+                value={newGroup}
+                maxLength={MAX_TITLE_LENGTH}
+                onChange={(e) => setNewGroup(e.target.value)}
+                onKeyDown={(e) => {
+                  // Escape goes back to the dropdown, not out of the dialog.
+                  if (e.key !== 'Escape') return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setNewGroup(null)
+                }}
+                placeholder="New group name"
+                className="h-[26px] min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs
+                  text-text outline-none placeholder:text-text-faint focus:border-border-strong"
+              />
               <button
                 type="button"
-                title={isDefault ? 'This is the project default' : `Set ${branchValue} as the project default`}
-                aria-label="Set as default branch"
-                disabled={isDefault || !branchValue || pinPending}
-                onClick={pinAsDefault}
-                className={clsx(
-                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md outline-none transition',
-                  isDefault || !branchValue
-                    ? 'text-text-faint/50'
-                    : 'text-text-dim hover:bg-surface-3 hover:text-accent',
-                )}
+                onClick={() => setNewGroup(null)}
+                title="Pick an existing group"
+                aria-label="Pick an existing group"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-faint transition
+                  hover:bg-surface-3 hover:text-text"
               >
-                <PinIcon size={12} />
+                <CloseIcon size={12} />
               </button>
-            }
-            belowInput={
-              <>
-                {queued && (
-                  <div className="px-2 pb-1 text-[11px] text-text-faint">latest from origin when it starts</div>
-                )}
-                {pinError && <div className="px-2 pb-1 text-[11px] text-[#d65858]">{pinError}</div>}
-              </>
-            }
-          />
-        </div>
+            </div>
+          )}
+        </Row>
+
+        <Row label="Base branch">
+          <div className="min-w-0 flex-1">
+            <BranchPicker
+              branches={branchData?.branches ?? []}
+              defaultBranch={branchData?.defaultBranch}
+              query={branchInput ?? seed?.branch ?? defaultResolved ?? ''}
+              onQueryChange={(q) => { setBranchInput(q); setPinError(null) }}
+              onSelect={(b) => setBranchInput(b)}
+              showList={branchInput !== null && branchInput !== from?.branch}
+              // Escape abandons the search, not the dialog and its prompt.
+              onDismiss={() => setBranchInput(null)}
+              placeholder={branchData ? defaultResolved ?? '' : 'loading branches…'}
+              ariaLabel="Reference branch"
+              trailing={
+                <button
+                  type="button"
+                  title={isDefault ? 'This is the project default' : `Set ${branchValue} as the project default`}
+                  aria-label="Set as default branch"
+                  disabled={isDefault || !branchValue || pinPending}
+                  onClick={pinAsDefault}
+                  className={clsx(
+                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-md outline-none transition',
+                    isDefault || !branchValue
+                      ? 'text-text-faint/50'
+                      : 'text-text-dim hover:bg-surface-3 hover:text-accent',
+                  )}
+                >
+                  <PinIcon size={12} />
+                </button>
+              }
+              belowInput={
+                <>
+                  {queued && (
+                    <div className="px-1 pb-1 pt-0.5 text-[11px] text-text-faint">latest from origin when it starts</div>
+                  )}
+                  {pinError && <div className="px-1 pb-1 pt-0.5 text-[11px] text-[#d65858]">{pinError}</div>}
+                </>
+              }
+            />
+          </div>
+        </Row>
 
         <Row label="Agent">
           <select

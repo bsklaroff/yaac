@@ -34,7 +34,7 @@ import {
   listProvisioning,
   registerProvisioning,
 } from '#domain/worktrees/provisioning'
-import { applyWorktreeEvent, createWorktreeGroup, setWorktreeGroup } from '#db'
+import { applyWorktreeEvent, createWorktreeGroup, listWorktreeGroupRows, setWorktreeGroup } from '#db'
 import {
   claimQueuedLaunch,
   failQueuedLaunch,
@@ -174,13 +174,13 @@ describe('queueWorktree', () => {
     const c = await queueWorktree('proj', { parent: b.id, prompt: 'c', title: ' ' }, 'user')
     expect(c.groupId).toBe(review.groupId)
     expect(c.title).toBeUndefined()
-    // Named by name, or none at all; a group that does not exist is refused.
+    // Named by name, or none at all; a name matching no group creates it.
     expect((await queueWorktree('proj', { parent: 'top', prompt: 'd', group: 'other' }, 'user')).groupId)
       .not.toBe(review.groupId)
     expect((await queueWorktree('proj', { parent: 'top', prompt: 'e', group: null }, 'user')).groupId)
       .toBeUndefined()
-    await expect(queueWorktree('proj', { parent: 'top', prompt: 'f', group: 'nope' }, 'user'))
-      .rejects.toMatchObject({ code: 'NOT_FOUND' })
+    const fresh = await queueWorktree('proj', { parent: 'top', prompt: 'f', group: 'Brand new' }, 'user')
+    expect((await listWorktreeGroupRows('proj')).find((g) => g.groupId === fresh.groupId)?.name).toBe('Brand new')
   })
 
   it('queues under a create still in flight, before its row exists, by its full id', async () => {
