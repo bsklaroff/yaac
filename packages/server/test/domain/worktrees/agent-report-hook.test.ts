@@ -67,6 +67,10 @@ describe('the agent reporters', () => {
           ...env,
         },
       }, (err, out) => (err ? reject(err instanceof Error ? err : new Error('reporter failed')) : resolve(out)))
+      // A reporter that bails before reading its payload (no tool, no pane)
+      // closes the pipe; under load that lands before the write, and an
+      // unheard EPIPE would fail the run.
+      child.stdin?.on('error', () => {})
       child.stdin?.end(stdin)
     })
     const tmux = (await fs.readFile(calls, 'utf8').catch(() => '')).split('\n').filter(Boolean)
