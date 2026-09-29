@@ -1206,10 +1206,7 @@ describe('buildAgentCmd', () => {
     const resume = buildAgentCmd({
       tool: 'codex', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
-    // A resume names its conversation on the pane before codex starts.
-    expect(bare(resume)).toBe(
-      'yaac-agent-links "$CODEX_HOME" codex sid-abc; codex --dangerously-bypass-hook-trust --yolo resume sid-abc',
-    )
+    expect(bare(resume)).toBe('codex --dangerously-bypass-hook-trust --yolo resume sid-abc')
   })
 
   // The `env -u TMUX` prefix is load-bearing — it is what keeps claude

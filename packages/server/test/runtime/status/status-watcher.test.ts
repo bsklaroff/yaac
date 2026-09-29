@@ -101,7 +101,7 @@ async function connectWatcher(
 ): Promise<void> {
   child.feedBanner()
   await vi.waitFor(() => expect(child.commandCount).toBe(1)) // list-panes
-  child.feedReply(`${paneId}\t${tool}\t`)
+  child.feedReply(`${paneId}\t${tool}\t0\t`)
   await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B session
   child.feedReply('')
   await vi.waitFor(() => expect(child.commandCount).toBe(3)) // refresh-client -B status
@@ -135,7 +135,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     const child = children[0]
     await connectWatcher(child)
     const sent = child.writes.join('')
-    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     // The subscription name carries the pane id: same-name subscriptions
     // replace each other, so a shared name silences every pane but the last.
     expect(sent).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
@@ -210,7 +210,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     const second = children[1]
     second.feedBanner()
     await vi.waitFor(() => expect(second.commandCount).toBe(1))
-    second.feedReply('%7\tclaude\t')
+    second.feedReply('%7\tclaude\t0\t')
     for (const n of [2, 3, 4]) {
       await vi.waitFor(() => expect(second.commandCount).toBe(n))
       second.feedReply('')
@@ -304,7 +304,7 @@ describe('WorktreeStatusWatcher (pane tools)', () => {
     const child = children[0]
     await connectWatcher(child, '%2', 'opencode')
     const sent = child.writes.join('')
-    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     // The subscription carries a content-search format that resolves the
     // verdict inside tmux; the pane is never captured.
     expect(sent).toContain("refresh-client -B 'status-2:%2:#{?#{||:#{C/ri:")

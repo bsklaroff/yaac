@@ -11,9 +11,8 @@
 # arguments the conversation is read from a hook payload on stdin: claude's
 # and codex's SessionStart names it, their SessionEnd ends it. A third
 # argument is the conversation id in hand and $4 its transcript, or `--end`
-# when it ended: pi's extension and opencode's plugin pass them, and codex's
-# and opencode's resume launches pass the id, since neither announces a
-# resumed conversation before its next turn.
+# when it ended, as pi's extension and opencode's plugin pass them. (A resume
+# launch names its conversation on the pane itself, as tmux starts it.)
 #
 # Reports nest, because an agent can run another inside its own pane (a
 # `claude -p` from a Bash tool), which inherits the pane. A start saves the
