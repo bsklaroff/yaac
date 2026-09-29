@@ -1,10 +1,14 @@
 import { env } from '#env'
-import { DEFAULT_SERVER_PORT } from '#server-port-default'
 
-// Re-exported so existing consumers keep importing it from `#server-port`.
-// It is defined in a dependency-free leaf module so `vite.config.ts` can read
-// the constant without pulling `#env` into the config-load bundle.
-export { DEFAULT_SERVER_PORT }
+/**
+ * Port the server binds on 127.0.0.1 when `yaac server run` is invoked
+ * without `--port`. A fixed default — rather than an OS-assigned ephemeral
+ * port — keeps the browser-app URL (http://127.0.0.1:<port>/) stable across
+ * server restarts so it can be bookmarked, and lets the Vite dev server fall
+ * back to the right target when no server lock exists yet (see
+ * vite.config.ts). Override per-run with `yaac server run --port <N>`.
+ */
+export const DEFAULT_SERVER_PORT = 8787
 
 /**
  * Resolve the port the server should bind, honoring (highest precedence
