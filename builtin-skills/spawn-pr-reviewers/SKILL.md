@@ -153,6 +153,25 @@ like an overlap. Only when both hold: name the PR, say what you verified, and
 ask the reviewer to flag likely conflicts for whoever merges second — **not**
 to resolve them.
 
+**Tell the reviewer to run what it can, not defer it.** A reviewer worktree
+can run containerless yaac, so a check on the PR's "Not run" list is often
+not host-only, and "not verified on a live server" is not something to leave
+for later. Tell the reviewer to run every check that runs under containerless
+yaac and report the results in its review:
+
+- the narrowest `unit:*` projects the PR touches;
+- `api-containerless` and `e2e-containerless`;
+- the PR's own Playwright scripts, and a manual or Playwright check of the
+  changed behavior against a locally running server (`pnpm build`, then
+  `yaac server start` in the checkout);
+- a migration run against a seeded PGlite DB.
+
+Skip only what the submitter already ran: the PR description's verification
+list says what that is, so name those items in the prompt as already done.
+Only genuinely host-only checks stay deferred, and the reviewer names them as
+such: the k8s tiers (`api-k8s`, `e2e`, `e2e-cli`) and anything else that
+needs a cluster.
+
 ### 4. Spawn it
 
 ```
