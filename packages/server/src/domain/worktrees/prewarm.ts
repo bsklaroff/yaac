@@ -36,6 +36,7 @@ import { applyWorktreeEvent } from '#db'
 import { claimProvisioning } from './provisioning'
 import { rebranchSpare, retoolSpare } from './spare-pool'
 import { claimSpareWorktree, getGitIdentity, getWorktreeRow, restoreSpareWorktree, setWorktreeGroup } from '#db'
+import type { WorktreeRow } from '#db'
 import { handOverAgent, type CreateSetup, type WorktreeCreateResult } from './create'
 import { parkAcpLaunchModel } from '#runtime/agents'
 import { isTmuxSessionAlive } from '#runtime/status'
@@ -275,6 +276,8 @@ export async function tryClaimPrewarmed(
   const runtime = worktreeDriver()
   let reserved: string | undefined
   let chosen: RuntimeHandle | undefined
+  /** The chosen spare's row as warming left it, for a rollback to restore. */
+  let warmed: WorktreeRow | undefined
   let mutated = false
   // Whether this claim inserted a worktree row that a failure must undo. A
   // spare's id is freshly minted and never reused, so the row can only be
@@ -320,6 +323,7 @@ export async function tryClaimPrewarmed(
       reserved = undefined
     }
     if (!chosen) return undefined
+    warmed = launched.get(chosen.jobName)
     const asWarmed = matches(chosen)
     // Every claim brings its spare to the tip of its base branch, so the
     // fetch starts now, under the transport gate and row writes below, and
@@ -603,12 +607,12 @@ export async function tryClaimPrewarmed(
           : undefined))
         .catch(() => { /* best-effort; the stale-session reaper retries */ })
       reserved = undefined
-    } else if (chosen && recordedRow) {
-      // An untouched spare is still a perfectly good spare — putting the flag
+    } else if (warmed && recordedRow) {
+      // An untouched spare is still a perfectly good spare — putting its row
       // back returns it to the pool rather than stranding a spare whose row no
       // longer says it is reapable.
       try {
-        await restoreSpareWorktree(projectSlug, chosen.workspaceId)
+        await restoreSpareWorktree(warmed)
       } catch {
         // Best-effort; the row has nothing running behind it either way.
       }

@@ -83,8 +83,6 @@ export interface WorktreeCreatedInput {
   worktreeId: string
   /** Branch the worktree forked from. */
   baseBranch?: string
-  /** When the worktree came into being. Defaults to now. */
-  createdAt?: Date
   /** Record it as an unclaimed prewarmed spare. Set only by warming; the
    *  flag is never cleared here, because clearing it is a claim and a claim
    *  must be able to fail (see `claimSpareWorktree`). */
@@ -144,7 +142,6 @@ export async function recordWorktreeCreated(input: WorktreeCreatedInput): Promis
     .values({
       projectSlug: input.projectSlug,
       worktreeId: input.worktreeId,
-      createdAt: input.createdAt ?? new Date(),
       ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
       // Only ever set here, never cleared: a claim is what clears it, and it
       // has to be able to fail loudly (a silently-missed flip would leave a
@@ -196,8 +193,10 @@ export async function recordWorktreeResumed(
  * Turn an unclaimed spare into a worktree: clear the flag, and stamp what the
  * claimant is handed — the base branch the claim resolved and the launch the
  * agent now runs (posture, mode, model), with no stop or death from before.
- * An UPDATE of the spare's own row, never a second insert: warming claimed
- * the id, and this hands that row over.
+ * `createdAt` becomes the claim time: the worktree is born when someone is
+ * handed it, not when the pool warmed it, so the sidebar's age and order
+ * match the request that made it. An UPDATE of the spare's own row, never a
+ * second insert: warming claimed the id, and this hands that row over.
  *
  * The one spare write a caller must be able to fail on. The startup sweep
  * DELETES a checkout on the strength of `spare = true`, so a silently-lost
@@ -215,6 +214,7 @@ export async function claimSpareWorktree(
   const db = await getDb()
   const rows = await db.update(worktrees).set({
     spare: false,
+    createdAt: new Date(),
     stoppedAt: null,
     deathReason: null,
     deathDetail: null,
@@ -247,7 +247,11 @@ export async function deleteSpareWorktreeRow(
 
 /**
  * Put a claimed spare back to being a spare — the rollback for a claim that
- * failed before it touched the pod.
+ * failed before it touched the pod. Everything the claim stamped goes back
+ * to `warmed`, the row as it was read before the claim: the next claim
+ * decides from `model` and `permissionMode` whether the booted agent can be
+ * handed over as-is, so a row still carrying the failed claim's launch would
+ * hand over an agent running in another posture than the row says.
  *
  * Without this the row would have to be deleted, and a spare pod whose row is
  * gone is unreapable: `listProjectWorktreeIds` is what the sweep collects a
@@ -266,10 +270,8 @@ export async function deleteSpareWorktreeRow(
  * Best-effort, unlike the claim: this runs while a claim is already failing,
  * and the caller is about to fall back to a cold create either way.
  */
-export async function restoreSpareWorktree(
-  projectSlug: string,
-  worktreeId: string,
-): Promise<void> {
+export async function restoreSpareWorktree(warmed: WorktreeRow): Promise<void> {
+  const { projectSlug, worktreeId } = warmed
   try {
     await deleteWorktreeAgentSessions(projectSlug, worktreeId)
   } catch {
@@ -278,7 +280,14 @@ export async function restoreSpareWorktree(
   }
   try {
     const db = await getDb()
-    await db.update(worktrees).set({ spare: true }).where(key(projectSlug, worktreeId))
+    await db.update(worktrees).set({
+      spare: true,
+      createdAt: warmed.createdAt,
+      baseBranch: warmed.baseBranch ?? null,
+      permissionMode: warmed.permissionMode,
+      model: warmed.model ?? null,
+      mode: warmed.mode ?? null,
+    }).where(key(projectSlug, worktreeId))
   } catch {
     // Non-fatal: the worktree dir sweep still collects a checkout with no pod.
   }
