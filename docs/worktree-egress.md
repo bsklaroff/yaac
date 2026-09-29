@@ -220,12 +220,17 @@ whole when a prewarmed spare is claimed — from its project's config as it
 is then, so an allowlist or secret edited since warm-up applies to the
 claimed worktree's new connections as it would to a cold create — deleted
 at teardown, and swept when its worktree is gone and it is an hour old.
-A registration governs connections opened after the proxy's informer
-delivers it, not ones already open: the proxy checks the allowlist and
-picks the injection rules once per tunnel, so a tunnel a warm-time process
-(an init command, the agent) opened before a claim keeps the registration
-it started under. The same holds for the npm cache, whose policy admits an
-established flow after the label comes off.
+The proxy checks the allowlist and picks the injection rules once per
+tunnel (and once per plain-HTTP request), so when its informer delivers a
+changed registration it re-admits the worktree's open tunnels and
+in-flight plain-HTTP requests against it: one whose host is no longer
+allowed, or whose registered rules or redirect for its host differ, is
+dropped, and the client reconnects under the registration as it is now. A
+tunnel the change admits unchanged stays up, so widening drops nothing,
+while a warm-time process (an init command, the agent) holding a tunnel
+across a claim loses it if the claim narrowed it. The npm cache is the
+exception: its policy admits an established flow after the label comes
+off, and that flow only brings npm content in.
 
 The proxy restores itself from its informers' initial lists, and its
 readiness probe holds it out of its Service until they have landed, so

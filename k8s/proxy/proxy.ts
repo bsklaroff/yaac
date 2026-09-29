@@ -85,6 +85,7 @@ import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { createSshAgentServer } from './ssh-agent-relay'
 import { timingSafeStrEqual } from './secure-compare'
 import { RefreshFlights } from './refresh-flight'
+import { LiveTunnels } from './live-tunnels'
 import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
 
 // Control-API listener: health, the change stream and the yaac-mama queue.
@@ -384,8 +385,15 @@ function getLeafCert(hostname: string): { key: string; cert: string } {
 const objects = new ProxyObjects({
   loadSshKeys: (entries) => agentKeys.reload(entries),
   // A registration's allowlist widening (the webapp's allow-host click)
-  // prunes the host from the blocked record so the badge clears.
+  // prunes the host from the blocked record so the badge clears, and its
+  // narrowing (a claimed spare's re-registration) drops the tunnels it no
+  // longer admits as they were accepted.
   onRegistration: (worktreeId, registration) => {
+    const dropped = liveTunnels.revoke(worktreeId, registration && ((host) => admissionFor(worktreeId, host)))
+    if (dropped.length > 0) {
+      console.log(`[proxy] dropped ${dropped.length} tunnel(s) of ${worktreeId.slice(0, 8)}... `
+        + `the registration no longer admits: ${[...new Set(dropped)].join(', ')}`)
+    }
     const blocked = blockedHostsByWorktree.get(worktreeId)
     if (!blocked) return
     if (registration === null) {
@@ -406,6 +414,20 @@ const objects = new ProxyObjects({
 
 function registrationOf(worktreeId: string): WorktreeRegistration | undefined {
   return objects.registration(worktreeId)
+}
+
+const liveTunnels = new LiveTunnels()
+
+/**
+ * What a tunnel to `hostname` is accepted under — the registered rules and
+ * redirect it applies for its life — or null when the host is not allowed.
+ */
+function admissionFor(worktreeId: string, hostname: string): string | null {
+  if (!isHostAllowed(worktreeId, hostname)) return null
+  return JSON.stringify([
+    findRulesForHost(worktreeId, hostname),
+    registrationOf(worktreeId)?.upstreamRedirects?.[hostname] ?? null,
+  ])
 }
 
 /**
@@ -1485,7 +1507,7 @@ function handleMitm(
         }
         wsClientSocket.destroy()
       })
-      wsClientSocket.on('error', () => {
+      wsClientSocket.on('close', () => {
         upstreamSocket.destroy()
       })
     })
@@ -1549,7 +1571,7 @@ function handleTunnel(clientSocket: Duplex, hostname: string, port: string | und
         console.error(`[proxy] Tunnel error for ${hostname}:`, uerr.message)
         clientSocket.end()
       })
-      clientSocket.on('error', () => { upstream.destroy() })
+      clientSocket.on('close', () => { upstream.destroy() })
     })
     return
   }
@@ -1564,7 +1586,7 @@ function handleTunnel(clientSocket: Duplex, hostname: string, port: string | und
     clientSocket.end()
   })
 
-  clientSocket.on('error', () => {
+  clientSocket.on('close', () => {
     upstream.destroy()
   })
 }
@@ -1586,6 +1608,10 @@ function dispatchToUpstream(
   worktreeId: string,
   opts: { writeConnectOk: boolean; head?: Buffer },
 ): void {
+  // A client that hung up during the worktree lookup has already closed:
+  // nothing would untrack it, or tear down an upstream dialed for it.
+  if (clientSocket.destroyed) return
+
   // Hold the read side until handleMitm/handleTunnel attaches the pipe (which
   // resumes it). We connect upstream asynchronously, so without this the bytes
   // the client sends right after our 200 — the TLS ClientHello on a CONNECT
@@ -1608,7 +1634,8 @@ function dispatchToUpstream(
     return
   }
 
-  if (!isHostAllowed(worktreeId, hostname)) {
+  const admission = admissionFor(worktreeId, hostname)
+  if (admission === null) {
     const label = opts.writeConnectOk ? 'CONNECT' : 'transparent HTTPS'
     console.log(`[proxy] BLOCKED ${label} to ${hostname}:${port ?? '443'} (not in allowlist)`)
     recordBlockedHost(worktreeId, hostname)
@@ -1621,6 +1648,7 @@ function dispatchToUpstream(
     return
   }
 
+  liveTunnels.add(worktreeId, clientSocket, hostname, admission)
   const rules = findRulesForHost(worktreeId, hostname)
 
   // Always MITM well-known tool-auth hosts so we can inject credentials,
@@ -1833,7 +1861,8 @@ function forwardPlainHttp(
   worktreeId: string,
   target: { hostname: string; port: number; path: string },
 ): void {
-  if (!isHostAllowed(worktreeId, target.hostname)) {
+  const admission = admissionFor(worktreeId, target.hostname)
+  if (admission === null) {
     console.log(`[proxy] BLOCKED HTTP forward to ${target.hostname} (not in allowlist)`)
     recordBlockedHost(worktreeId, target.hostname)
     res.writeHead(403, { 'Content-Type': 'text/plain' })
@@ -1867,6 +1896,13 @@ function forwardPlainHttp(
     res.end(err.message)
   })
 
+  // Tracked for the request's life, like a tunnel — both halves, since an
+  // upstream that answers early leaves the body still streaming after the
+  // response closes. A half cut short takes the upstream request with it.
+  liveTunnels.add(worktreeId, req, target.hostname, admission)
+  liveTunnels.add(worktreeId, res, target.hostname, admission)
+  req.once('close', () => { if (!req.complete) upstream.destroy() })
+  res.once('close', () => { if (!res.writableFinished) upstream.destroy() })
   req.pipe(upstream)
 }
 
