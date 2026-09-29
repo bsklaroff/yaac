@@ -187,12 +187,16 @@ export function sidebarLayout(
   const filedIn = (entry: { groupId?: string }): string | null =>
     entry.groupId !== undefined && known.has(entry.groupId) ? entry.groupId : null
   const live = [...worktrees].sort(byCreatedAt)
+  const liveIds = new Set([...worktrees, ...provisioning].map((w) => w.worktreeId))
+  // A parent still stopping is already held but keeps its live row until the
+  // snapshot drops it; drawing both would show it, and its queue, twice.
+  const shownHeld = held.filter((h) => !liveIds.has(h.worktreeId))
   // The stopped listing's row wins over the snapshot's slimmer held entry.
   const stoppedIds = new Set(stopped.map((d) => d.worktreeId))
-  const heldIds = new Set(held.map((h) => h.worktreeId))
+  const heldIds = new Set(shownHeld.map((h) => h.worktreeId))
   const heldRows = [
     ...stopped.filter((d) => heldIds.has(d.worktreeId)),
-    ...held.filter((h) => !stoppedIds.has(h.worktreeId)).map(heldAsStopped),
+    ...shownHeld.filter((h) => !stoppedIds.has(h.worktreeId)).map(heldAsStopped),
   ].sort(byCreatedAt)
   const ghosts = stopped.filter((d) => !heldIds.has(d.worktreeId)).sort(byCreatedAt)
   // Provisioning rows keep the order they were started in (the caller's merge
@@ -211,12 +215,7 @@ export function sidebarLayout(
     .filter((s) => s.group.pinned || s.members.length > 0 || s.provisioning.length > 0 || s.held.length > 0)
   const defaultHeld = heldRows.filter((d) => filedIn(d) === null)
 
-  const onScreen = new Set([
-    ...provisioning.map((p) => p.worktreeId),
-    ...live.map((w) => w.worktreeId),
-    ...defaultHeld.map((d) => d.worktreeId),
-    ...sections.flatMap((s) => s.held.map((d) => d.worktreeId)),
-  ])
+  const onScreen = new Set([...liveIds, ...heldIds])
   const queuedIds = new Set(queued.map((e) => e.id))
   return {
     provisioning: provisioning.filter((p) => filedIn(p) === null),
