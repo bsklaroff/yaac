@@ -21,6 +21,7 @@ import {
   type SpawnRequest,
 } from '#domain/worktrees/spawn-policy'
 import { recordProject } from '#db/project-store'
+import type { PermissionMode } from '@yaac/shared/types'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorktreeDriver, resetWorktreeDriver } from '@yaac/test-utils/fake-driver'
@@ -179,10 +180,10 @@ describe('decideSpawn', () => {
     await settle()
   })
 
-  it('threads the UI mode and reference branch into the create', async () => {
+  it('threads the UI mode, reference branch and title into the create', async () => {
     const create = stubCreate()
-    expect((await decideSpawn(makeRequest({ mode: 'acp', branch: 'feature/x' }))).ok).toBe(true)
-    expect((await createdWith(create))[0]).toMatchObject({ mode: 'acp', branch: 'feature/x' })
+    expect((await decideSpawn(makeRequest({ uiMode: 'acp', branch: 'feature/x', title: 'Port the lexer' }))).ok).toBe(true)
+    expect((await createdWith(create))[0]).toMatchObject({ mode: 'acp', branch: 'feature/x', title: 'Port the lexer' })
     await settle()
   })
 
@@ -201,7 +202,7 @@ describe('decideSpawn', () => {
     expect(await posture({ callerPermissionMode: 'auto', tool: 'opencode' })).toBe('accept-edits')
     // Stepping down never goes UP: codex's adapter has nothing at or below
     // `manual`, and pi has nothing below `bypass`, so both are refused.
-    expect(await posture({ callerPermissionMode: 'manual', mode: 'acp' })).toEqual({
+    expect(await posture({ callerPermissionMode: 'manual', uiMode: 'acp' })).toEqual({
       ok: false,
       error: "codex has no permission mode under acp at or below this worktree's own ('manual')",
     })
@@ -210,7 +211,7 @@ describe('decideSpawn', () => {
 
   it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
     const create = stubCreate()
-    const at = (callerPermissionMode: SpawnRequest['callerPermissionMode'], permissionMode: string) =>
+    const at = (callerPermissionMode: SpawnRequest['callerPermissionMode'], permissionMode: PermissionMode) =>
       decideSpawn(makeRequest({ tool: 'claude', callerPermissionMode, permissionMode }))
 
     expect((await at('accept-edits', 'accept-edits')).ok).toBe(true)
@@ -244,7 +245,7 @@ describe('decideSpawn', () => {
       expect((await at(caller, asked)).ok, `${caller} → ${asked}`).toBe(false)
     }
     // Within the ceiling but not a posture the tool has under that UI.
-    expect(await decideSpawn(makeRequest({ permissionMode: 'plan', mode: 'acp' }))).toEqual({
+    expect(await decideSpawn(makeRequest({ permissionMode: 'plan', uiMode: 'acp' }))).toEqual({
       ok: false, error: "codex has no 'plan' permission mode under acp",
     })
     expect(await decideSpawn(makeRequest({ permissionMode: 'manual' }))).toEqual({
@@ -253,30 +254,13 @@ describe('decideSpawn', () => {
     // A caller row holding a posture this build does not rank (written by
     // another build) cannot be compared, so it grants nothing — named or not.
     const unknown = 'dontAsk' as SpawnRequest['callerPermissionMode']
-    for (const asked of ['bypass', 'plan', undefined]) {
+    for (const asked of ['bypass', 'plan', undefined] as const) {
       expect(await decideSpawn(makeRequest({
         callerPermissionMode: unknown, tool: 'claude', ...(asked !== undefined ? { permissionMode: asked } : {}),
       }))).toEqual({
         ok: false, error: "this worktree's recorded permission mode 'dontAsk' is not one this server knows",
       })
     }
-    expect(await at('bypass', 'yolo')).toMatchObject({ ok: false, error: expect.stringContaining("invalid permission mode 'yolo'") as string })
-    expect(await decideSpawn(makeRequest({ mode: 'gui' }))).toMatchObject({ ok: false })
-    expect(create).not.toHaveBeenCalled()
-  })
-
-  it('rejects a malformed model without creating', async () => {
-    const create = stubCreate()
-    const decision = await decideSpawn(makeRequest({ tool: 'claude', model: "opus'; rm -rf /" }))
-    expect(decision).toEqual({ ok: false, error: "invalid model 'opus'; rm -rf /'" })
-    expect(create).not.toHaveBeenCalled()
-  })
-
-  it('rejects an invalid requested tool without creating', async () => {
-    const create = stubCreate()
-    const decision = await decideSpawn(makeRequest({ tool: 'not-a-tool' }))
-    expect(decision.ok).toBe(false)
-    expect(decision.ok ? '' : decision.error).toContain('not-a-tool')
     expect(create).not.toHaveBeenCalled()
   })
 

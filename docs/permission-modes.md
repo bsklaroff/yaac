@@ -228,8 +228,8 @@ tool can give. A restart's posture lands the same way.
 
 ### A spawned worktree's posture
 
-`yaac-mama create` (the spawn policy) and `yaac-mama queue` (docs/queued-worktrees.md)
-do not go through that chain. Both resolve their posture with the same
+`yaac-mama create` (the spawn policy), `yaac-mama queue` and `yaac-mama edit-queued`
+(docs/queued-worktrees.md) do not go through that chain. All three resolve their posture with the same
 helper, `agentPermissionMode` in the spawn policy. It
 starts from the **caller's** posture, which is read from the caller's row
 and never taken from the request, and it treats that posture as a ceiling. A
@@ -250,7 +250,10 @@ caller's own for `create`, the parent's for `queue` (a sibling worktree, or
 the stored posture of a queued worktree it chains after) — and steps down to
 the most permissive posture the tool has at or below both it and the
 ceiling. If there is none, for example pi under a caller that is not in
-`bypass`, it is refused.
+`bypass`, it is refused. An `edit-queued` treats the entry's stored posture as
+named, so editing one above the ceiling is refused rather than lowered —
+unless the edit changes the tool, which re-resolves the posture as an unnamed
+one, at or below the ceiling.
 
 The ceiling limits agents only. The webapp and the `/worktree/queue/*`
 routes are the user's, and a user editing a queued worktree an agent made is

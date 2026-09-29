@@ -311,7 +311,7 @@ export const worktreeApp = new Hono()
     })),
     async (c) => {
       const { id, ...patch } = c.req.valid('json')
-      return c.json(await updateQueuedWorktree(id, patch))
+      return c.json(await updateQueuedWorktree(id, patch, 'user'))
     },
   )
   .post(

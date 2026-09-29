@@ -184,7 +184,7 @@ describe('queueWorktree', () => {
   })
 
   it('queues under a create still in flight, before its row exists, by its full id', async () => {
-    // `id=$(yaac-mama create …); yaac-mama queue --worktree "$id"` — the id
+    // `id=$(yaac-mama create …); yaac-mama queue --parent-worktree "$id"` — the id
     // is answered before the create has recorded anything.
     registerProvisioning({ worktreeId: 'spawned', projectSlug: 'proj', tool: 'codex', kind: 'create', branch: 'feature' })
     const entry = await queueWorktree('proj', { parent: 'spawned', prompt: 'x' }, 'user')
@@ -246,20 +246,20 @@ describe('updateQueuedWorktree', () => {
     const entry = await queueWorktree('proj', { parent: 'p', prompt: 'x' }, 'user')
     expect(entry.permissionMode).toBe('plan')
 
-    const edited = await updateQueuedWorktree(entry.id, { prompt: 'edited', branch: 'other' })
+    const edited = await updateQueuedWorktree(entry.id, { prompt: 'edited', branch: 'other' }, 'user')
     expect(edited).toMatchObject({ prompt: 'edited', branch: 'other', model: 'claude-sonnet-5', permissionMode: 'plan' })
 
-    const retooled = await updateQueuedWorktree(entry.id, { tool: 'codex' })
+    const retooled = await updateQueuedWorktree(entry.id, { tool: 'codex' }, 'user')
     expect(retooled).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex, prompt: 'edited' })
     expect(retooled.permissionMode).not.toBe('plan')
 
     // A title and a group are kept until named, and a blank or null clears them.
     const group = await createWorktreeGroup('proj', 'review', null)
-    expect(await updateQueuedWorktree(entry.id, { title: 'Named', group: 'review' }))
+    expect(await updateQueuedWorktree(entry.id, { title: 'Named', group: 'review' }, 'user'))
       .toMatchObject({ title: 'Named', groupId: group.groupId })
-    expect(await updateQueuedWorktree(entry.id, { prompt: 'again' }))
+    expect(await updateQueuedWorktree(entry.id, { prompt: 'again' }, 'user'))
       .toMatchObject({ title: 'Named', groupId: group.groupId })
-    const cleared = await updateQueuedWorktree(entry.id, { title: '', group: null })
+    const cleared = await updateQueuedWorktree(entry.id, { title: '', group: null }, 'user')
     expect(cleared.title).toBeUndefined()
     expect(cleared.groupId).toBeUndefined()
   })
@@ -269,28 +269,28 @@ describe('updateQueuedWorktree', () => {
     const q = await queueWorktree('proj', { parent: 'top', prompt: 'q' }, 'user')
     const e = await queueWorktree('proj', { parent: q.id, prompt: 'e' }, 'user')
     const c = await queueWorktree('proj', { parent: e.id, prompt: 'c' }, 'user')
-    await expect(updateQueuedWorktree(q.id, { parent: c.id })).rejects.toMatchObject({ code: 'VALIDATION' })
-    await expect(updateQueuedWorktree(q.id, { parent: q.id })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(updateQueuedWorktree(q.id, { parent: c.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(updateQueuedWorktree(q.id, { parent: q.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
 
     // E launches as W: C now waits on W, and W is E, which waits on Q.
     await claimQueuedLaunch(e.id, 'w')
-    await expect(updateQueuedWorktree(q.id, { parent: c.id })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(updateQueuedWorktree(q.id, { parent: c.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
     // Mid-launch, E itself cannot be edited.
-    await expect(updateQueuedWorktree(e.id, { prompt: 'x' })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(updateQueuedWorktree(e.id, { prompt: 'x' }, 'user')).rejects.toMatchObject({ code: 'CONFLICT' })
 
     // Two edits racing to close a cycle between them: one of them loses.
     await failQueuedLaunch(e.id, 'w', 'x')
     const x = await queueWorktree('proj', { parent: 'top', prompt: 'x' }, 'user')
     const y = await queueWorktree('proj', { parent: 'top', prompt: 'y' }, 'user')
     const raced = await Promise.allSettled([
-      updateQueuedWorktree(x.id, { parent: y.id }),
-      updateQueuedWorktree(y.id, { parent: x.id }),
+      updateQueuedWorktree(x.id, { parent: y.id }, 'user'),
+      updateQueuedWorktree(y.id, { parent: x.id }, 'user'),
     ])
     expect(raced.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected'])
 
     // A legal move takes the children along.
     await worktree('elsewhere')
-    const moved = await updateQueuedWorktree(e.id, { parent: 'elsewhere' })
+    const moved = await updateQueuedWorktree(e.id, { parent: 'elsewhere' }, 'user')
     expect(moved.parentWorktreeId).toBe('elsewhere')
     expect((await getQueuedWorktreeRow(c.id))?.parentQueuedId).toBe(e.id)
   })
