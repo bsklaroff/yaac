@@ -15,7 +15,7 @@ import {
   tmuxCmd,
   type InitWindow,
 } from './agent-command'
-import { agentWindowName } from './agent-tools'
+import { agentWindowName, nameSessionCommand } from './agent-tools'
 import { shellEscape } from '#lib/shell'
 import { ServerError } from '@yaac/shared/errors'
 import { AGENT_TOOLS } from '@yaac/shared/types'
@@ -107,6 +107,10 @@ export function validateInitWindows(config: YaacConfig): InitWindow[] {
 export interface AgentWindowSpec {
   tool: AgentTool
   cmd: string
+  /** The conversation it resumes, named on its pane by the same tmux command
+   *  that starts it: codex and opencode announce a resumed conversation only
+   *  at its next turn, and a pane naming none reads as holding none. */
+  resumes?: string
 }
 
 export function buildWindowsExec(
@@ -115,15 +119,19 @@ export function buildWindowsExec(
   agents: AgentWindowSpec[],
   paths: WorkspacePaths,
 ): string {
-  const TMUX = tmuxCmd(paths)
-  const cmds = windows.map((win) => initWindowCommand(win, paths))
   const [primary, ...extra] = agents
+  const named = (target: string, spec?: AgentWindowSpec): string =>
+    spec?.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : ''
+  // Every agent window in ONE tmux invocation: tmux runs a client's command
+  // group to completion before reading another client's, so the watcher's
+  // listing sees all of them or none, each already naming what it resumes.
+  //
   // The placeholder window carries the worktree's tool name, so the primary
   // agent respawns into it whatever tool it runs. A primary whose tool
   // differs is a case restart cannot currently produce (ordinal 0 is the
   // worktree's own agent), and renaming the window would break every
   // `yaac:<tool>` target.
-  cmds.push(`${TMUX} respawn-window -k -t yaac:${tool} '${primary?.cmd ?? ''}'`)
+  const agentCmds = [`respawn-window -k -t yaac:${tool} '${primary?.cmd ?? ''}'${named(`yaac:${tool}`, primary)}`]
   extra.forEach((spec, i) => {
     // -d so the extra agents don't steal the active window from the primary,
     // which is what the user attaches to. -c because a new window otherwise
@@ -131,10 +139,11 @@ export function buildWindowsExec(
     // a pod — where the primary inherits the session's: an agent resumed
     // from the wrong directory looks its conversation up under the wrong
     // project.
-    cmds.push(
-      `${TMUX} new-window -d -t yaac -n ${agentWindowName(spec.tool, i + 1)} `
-      + `-c ${paths.workspaceDir} '${spec.cmd}'`,
-    )
+    const name = agentWindowName(spec.tool, i + 1)
+    agentCmds.push(`new-window -d -t yaac -n ${name} -c ${paths.workspaceDir} '${spec.cmd}'${named(`yaac:${name}`, spec)}`)
   })
-  return cmds.join(' && ')
+  return [
+    ...windows.map((win) => initWindowCommand(win, paths)),
+    `${tmuxCmd(paths)} ${agentCmds.join(' \\; ')}`,
+  ].join(' && ')
 }

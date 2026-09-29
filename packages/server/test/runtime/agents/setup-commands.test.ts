@@ -74,11 +74,26 @@ describe('buildWindowsExec', () => {
   it('opens every agent past the first in its own window, in the workspace', () => {
     const cmd = buildWindowsExec([], 'claude', [
       { tool: 'claude', cmd: 'claude --resume a' },
-      { tool: 'codex', cmd: 'codex resume b' },
+      { tool: 'codex', cmd: 'codex --yolo' },
     ], PATHS)
     expect(cmd).toBe(
       `${TMUX} respawn-window -k -t yaac:claude 'claude --resume a'`
-      + ` && ${TMUX} new-window -d -t yaac -n codex-2 -c ${PATHS.workspaceDir} 'codex resume b'`,
+      + ` \\; new-window -d -t yaac -n codex-2 -c ${PATHS.workspaceDir} 'codex --yolo'`,
+    )
+  })
+
+  it('starts every agent in one tmux command, each naming what it resumes', () => {
+    // codex reports a resumed conversation only at its next turn, and a pane
+    // naming none reads as holding none — so no listing may land between.
+    const cmd = buildWindowsExec([], 'codex', [
+      { tool: 'codex', cmd: 'codex resume t-1', resumes: 't-1' },
+      { tool: 'opencode', cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
+    ], PATHS)
+    expect(cmd).toBe(
+      `${TMUX} respawn-window -k -t yaac:codex 'codex resume t-1'`
+      + " \\; set-option -p -t yaac:codex @yaac-session 'codex|t-1|'"
+      + ` \\; new-window -d -t yaac -n opencode-2 -c ${PATHS.workspaceDir} 'opencode --standalone --session ses_2'`
+      + " \\; set-option -p -t yaac:opencode-2 @yaac-session 'opencode|ses_2|'",
     )
   })
 })

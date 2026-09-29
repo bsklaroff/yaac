@@ -121,9 +121,18 @@ export function splitAgentReport(value: string): { model: string; mode: string }
  * `<tool>|<id>|<project-relative transcript>` — set by
  * `worktree-bin/yaac-agent-links` from claude's and codex's `SessionStart`
  * hooks, pi's extension and opencode's plugin, so it moves on every `/clear`,
- * `/new` or resume, and dies with its pane.
+ * `/new` or resume, and dies with its pane. A resume launch sets it first
+ * (`nameSessionCommand`).
  */
 const SESSION_PANE_OPTION = '@yaac-session'
+
+/**
+ * The tmux command naming a conversation on `target`'s pane, as its tool's
+ * reporter would but for the transcript, which only the tool knows.
+ */
+export function nameSessionCommand(target: string, tool: AgentTool, agentSessionId: string): string {
+  return `set-option -p -t ${target} ${SESSION_PANE_OPTION} '${tool}|${agentSessionId}|'`
+}
 
 /**
  * The tmux format a pane's session subscription watches. Filtered and bounded

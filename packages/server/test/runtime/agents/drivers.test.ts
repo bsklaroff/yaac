@@ -333,7 +333,7 @@ describe('agentDriver', () => {
     // tmux's unsolicited attach banner, then the pane enumeration reply.
     stream.feed('%begin 1 100 0\n%end 1 100 0\n%session-changed $0 yaac\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
-    stream.feed('%begin 1 101 1\n%7\tclaude\t\n%end 1 101 1\n')
+    stream.feed('%begin 1 101 1\n%7\tclaude\t0\t\n%end 1 101 1\n')
     await answer(stream, "refresh-client -B 'session-7:%7:#{=1024;s/[^ -~]//:@yaac-session}'")
     await answer(stream, "refresh-client -B 'status-7:%7:#{pane_title}'")
     // Another subscription per agent pane follows what its tool reports: the
@@ -394,10 +394,10 @@ describe('agentDriver', () => {
     // The agent window, already naming its conversation, and a scratch
     // shell: the shell gets the session subscription alone — no status and no
     // posture of its own.
-    stream.feed('%begin 1 101 1\n%7\tclaude\tclaude|conv-a|claude/projects/-workspace/conv-a.jsonl\n'
-      + '%9\tNew Shell\t\n%end 1 101 1\n')
+    stream.feed('%begin 1 101 1\n%7\tclaude\t0\tclaude|conv-a|claude/projects/-workspace/conv-a.jsonl\n'
+      + '%9\tNew Shell\t0\t\n%end 1 101 1\n')
     expect(stream.writes.join('')).toContain(
-      "list-panes -s -F '#{pane_id}\t#{window_name}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+      "list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     await answer(stream, "refresh-client -B 'session-7:")
     await answer(stream, "refresh-client -B 'status-7:")
     await answer(stream, "refresh-client -B 'report-7:")
@@ -447,6 +447,48 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
   })
 
+  it('waits out the placeholder a session opens on, then trusts pushes over listings', async () => {
+    const stream = new FakeStream()
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+      dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
+    }))
+    const listings = (): number => stream.writes.join('').split('list-panes').length - 1
+    const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
+    stream.feed('%begin 1 100 0\n%end 1 100 0\n')
+
+    // The keepalive sits in the agent's window before the agent does, and is
+    // no agent: published as one it would name no conversation, and mark
+    // every conversation the launch recorded inactive.
+    await vi.waitFor(() => expect(listings()).toBe(1))
+    stream.feed('%begin 1 101 1\n%7\tclaude\t1\t\n%end 1 101 1\n')
+    await answer(stream, "refresh-client -B 'boot-7:%7:#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}'")
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
+    expect(agentSets()).toEqual([])
+
+    // A respawn announces nothing but that: the agent, already naming the
+    // conversation its launch resumed, is then enumerated.
+    stream.feed('%subscription-changed boot-7 $0 @0 0 %7 : 0\n')
+    await vi.waitFor(() => expect(listings()).toBe(2))
+    stream.feed('%begin 1 102 1\n%7\tclaude\t0\tclaude|conv-a|\n%end 1 102 1\n')
+    await answer(stream, "refresh-client -B 'session-7:")
+    await answer(stream, "refresh-client -B 'status-7:")
+    await answer(stream, "refresh-client -B 'report-7:")
+    await vi.waitFor(() => expect(agentSets()).toEqual([
+      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a' }] },
+    ]))
+
+    // A watched pane's own push outranks any later listing of it, which can
+    // be older than the push: tmux would never push that value again.
+    stream.feed('%subscription-changed session-7 $0 @0 0 %7 : claude|conv-b|\n')
+    stream.feed('%window-add @1\n')
+    await vi.waitFor(() => expect(listings()).toBe(3))
+    stream.feed('%begin 1 103 1\n%7\tclaude\t0\tclaude|conv-a|\n%end 1 103 1\n')
+    await vi.waitFor(() => expect(agentSets()).toHaveLength(3))
+    expect(agentSets().at(-1)).toEqual(
+      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-b' }] })
+  })
+
   it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
     // codex can run nothing on a model switch, but it retitles the pane: the
     // format cuts the model's display name out of the title, and codex's own
@@ -458,7 +500,7 @@ describe('agentDriver', () => {
     }))
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
-    stream.feed('%begin 1 101 1\n%2\tcodex\t\n%end 1 101 1\n')
+    stream.feed('%begin 1 101 1\n%2\tcodex\t0\t\n%end 1 101 1\n')
     await answer(stream, "refresh-client -B 'session-2:")
     await answer(stream, "refresh-client -B 'status-2:")
     await answer(stream, "refresh-client -B 'report-2:%2:#{?#{m/r: [|] ,")

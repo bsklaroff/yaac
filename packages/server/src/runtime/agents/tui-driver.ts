@@ -70,6 +70,16 @@ const SUBSCRIPTION_PREFIX = 'status-'
 const REPORT_SUBSCRIPTION_PREFIX = 'report-'
 /** The one subscription EVERY pane gets: the conversation it holds. */
 const SESSION_SUBSCRIPTION_PREFIX = 'session-'
+/** The one a placeholder pane gets, until an agent is respawned into it. */
+const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
+
+/**
+ * `1` while a pane still runs the `sleep infinity` keepalive a session opens
+ * on, in the window its agent is later respawned into (tmux quotes the start
+ * command in some versions). Published as an agent, it would name no
+ * conversation, and so mark every one the launch recorded inactive.
+ */
+const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep infinity"?$,#{pane_start_command}}'
 
 /**
  * The tmux subscription name for one agent pane.
@@ -223,22 +233,30 @@ class TuiConnection implements AgentConnection {
    * Re-run on every heartbeat and on window add/close, so a conversation
    * opened (or closed) mid-session is picked up without a reconnect. Already
    * subscribed panes are skipped, since re-subscribing the same pane under the
-   * same name would just duplicate pushes.
+   * same name would just duplicate pushes. A respawn announces nothing, so a
+   * placeholder pane is watched until the agent replaces it, and re-run then.
    */
   private async syncPanes(): Promise<void> {
     // Tab-separated: a window name or a transcript path can hold a space,
     // and the session format strips every tab.
-    const listed = await this.send(`list-panes -s -F '#{pane_id}\t#{window_name}\t${PANE_SESSION_FORMAT}' -t yaac`)
+    const listed = await this.send(
+      `list-panes -s -F '#{pane_id}\t#{window_name}\t${PLACEHOLDER_FORMAT}\t${PANE_SESSION_FORMAT}' -t yaac`)
     if (this.done) return
 
     const panes = listed.split('\n')
       .map((line) => line.split('\t'))
-      .flatMap(([paneId, windowName, session]) => {
+      .flatMap(([paneId, windowName, placeholder, session]) => {
         if (paneId === undefined || !paneId.startsWith('%')) return []
         // Classify each pane against ITS tool's grammar, not the worktree's: a
         // pi pane read with claude's title format is permanently misclassified.
-        return [{ paneId, tool: agentWindowTool(windowName ?? ''), session: parsePaneSession(session ?? '') }]
+        const tool = placeholder === '1' ? undefined : agentWindowTool(windowName ?? '')
+        return [{ paneId, placeholder: placeholder === '1', tool, session: parsePaneSession(session ?? '') }]
       })
+
+    for (const { paneId } of panes.filter((p) => p.placeholder)) {
+      await this.send(`refresh-client -B '${subscriptionName(BOOT_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${PLACEHOLDER_FORMAT}'`)
+      if (this.done) return
+    }
 
     if (!panes.some((p) => p.tool !== undefined)) {
       // Nothing to classify yet (the agent window is still being created).
@@ -247,10 +265,11 @@ class TuiConnection implements AgentConnection {
       return
     }
 
-    // All at once, before any await: a push that lands while a subscription
-    // below is in flight is newer than this listing, and must stand.
+    // Only panes not yet watched are read from the listing — a watched one's
+    // pushes are never older than it — and all at once, before any await: a
+    // push that lands while a subscription below is in flight must stand.
     const unwatched = new Set(panes.filter((p) => !this.sessions.has(p.paneId)).map((p) => p.paneId))
-    for (const { paneId, session } of panes) this.sessions.set(paneId, session)
+    for (const { paneId, session } of panes) if (unwatched.has(paneId)) this.sessions.set(paneId, session)
     for (const { paneId, tool } of panes) {
       if (unwatched.has(paneId)) {
         await this.send(`refresh-client -B '${subscriptionName(SESSION_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${PANE_SESSION_FORMAT}'`)
@@ -359,6 +378,11 @@ class TuiConnection implements AgentConnection {
       return
     }
     if (n.kind === 'subscription') {
+      if (n.name.startsWith(BOOT_SUBSCRIPTION_PREFIX)) {
+        // The agent was respawned into the placeholder: enumerate it as one.
+        if (n.value === '0') void this.resync()
+        return
+      }
       if (n.name.startsWith(SESSION_SUBSCRIPTION_PREFIX)) {
         this.onSession(n.paneId, n.value)
         return
