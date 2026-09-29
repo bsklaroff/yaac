@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { closeDb } from '#db/client'
+import { closeDb, getDb } from '#db/client'
 import {
   claimQueuedLaunch,
   deleteProjectQueuedWorktrees,
@@ -16,6 +16,8 @@ import {
   type QueuedParent,
   type QueuedWorktreeRow,
 } from '#db/queued-worktree-store'
+import { deleteProjectWorktrees, recordWorktreeCreated } from '#db/worktree-store'
+import { deleteWorktreeGroup } from '#db/group-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('queued worktree store', () => {
@@ -95,10 +97,43 @@ describe('queued worktree store', () => {
     // A child that ended up on the entry anyway follows it to the worktree.
     const late = await queue({ parentWorktreeId: 'wt-a' })
     await updateQueuedWorktree(late.id, { ...settings, parent: { parentQueuedId: top.id } })
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-new' })
     await finishQueuedLaunch(top.id, 'wt-new')
     expect(await getQueuedWorktreeRow(top.id)).toBeUndefined()
+    expect((await listQueuedWorktreeRows('proj')).map((r) => r.id)).not.toContain(top.id)
     expect(await parentOf(child.id)).toEqual({ parentWorktreeId: 'wt-new' })
     expect(await parentOf(late.id)).toEqual({ parentWorktreeId: 'wt-new' })
+
+    // Launched, the entry stays on as a record of what that worktree was
+    // queued as — shut out of every write — until the worktree's row goes.
+    const launched = async () => (await (await getDb()).$client.query<{ launched_worktree_id: string }>(
+      'SELECT launched_worktree_id FROM queued_worktrees WHERE id = $1', [top.id],
+    )).rows
+    expect(await launched()).toEqual([{ launched_worktree_id: 'wt-new' }])
+    expect(await deleteQueuedWorktree(top.id)).toBe(false)
+    await failQueuedLaunch(top.id, 'wt-new', 'x')
+    expect(await launched()).toEqual([{ launched_worktree_id: 'wt-new' }])
+    await deleteProjectWorktrees('proj')
+    expect(await launched()).toEqual([])
+  })
+
+  it('leaves a launched entry\'s record as it was queued when its old parent or group changes', async () => {
+    // Run now on a child of a pending entry: it launches still pointing at it.
+    const parent = await queue({ parentWorktreeId: 'wt-a' })
+    const child = await insertQueuedWorktree('proj', { parentQueuedId: parent.id }, { ...settings, groupId: 'g1' })
+    await claimQueuedLaunch(child.id, 'wt-child')
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-child' })
+    await finishQueuedLaunch(child.id, 'wt-child')
+
+    await deleteWorktreeGroup('proj', 'g1')
+    await claimQueuedLaunch(parent.id, 'wt-parent')
+    await failQueuedLaunch(parent.id, 'wt-parent', 'x')
+    expect(await deleteQueuedWorktree(parent.id)).toBe(true)
+
+    const record = await (await getDb()).$client.query(
+      'SELECT parent_worktree_id, parent_queued_id, group_id FROM queued_worktrees WHERE id = $1', [child.id],
+    )
+    expect(record.rows).toEqual([{ parent_worktree_id: null, parent_queued_id: parent.id, group_id: 'g1' }])
   })
 
   it('puts a failed launch back, with its unreleased children, but never takes a release back', async () => {

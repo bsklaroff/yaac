@@ -116,7 +116,13 @@ create does.
 - **Claim.** A compare-and-set on `launchWorktreeId` before anything is
   provisioned under that id. A Run-now double-click, or a stop racing the
   reconcile step, loses and does nothing.
-- **Success** deletes the entry.
+- **Success** sets `launchedWorktreeId`, a foreign key to the worktree it
+  created, and keeps the entry as the record of what that worktree was queued
+  as. It keeps its claim too, so no edit reaches it; the writes that reach
+  it through another entry (splicing or re-pointing that entry's children,
+  deleting a group) and every store read filter it out, so above the store
+  it is gone. It is deleted with that
+  worktree's row (`ON DELETE CASCADE`) or its project.
 - **Failure** clears the claim and the release, records `launchError`, and
   removes the provisioning row, so the error shows once, on the queued row,
   with the prompt still there.

@@ -37,9 +37,14 @@ beforeEach(async () => {
   await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
   await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'parent', baseBranch: 'main', permissionMode: 'auto' })
   vi.mocked(cleanupWorktreeDetached).mockReset().mockResolvedValue()
-  mockCreate.mockReset().mockImplementation((_slug, opts) => Promise.resolve({
-    worktreeId: opts.worktreeId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-  } as WorktreeCreateResult))
+  // A create records the worktree's row, as the real one does — a launched
+  // entry keeps a foreign key to it.
+  mockCreate.mockReset().mockImplementation(async (slug, opts) => {
+    await recordWorktreeCreated({ projectSlug: slug, worktreeId: opts.worktreeId ?? 'x' })
+    return {
+      worktreeId: opts.worktreeId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+    } as WorktreeCreateResult
+  })
 })
 
 afterEach(async () => {

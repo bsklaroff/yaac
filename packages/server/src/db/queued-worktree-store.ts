@@ -18,6 +18,12 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  * An entry whose `launchWorktreeId` is set is mid-launch, and that column is
  * the claim: every edit is guarded on it being null, so nothing can change
  * or remove an entry out from under the create that is running it.
+ *
+ * A launch that succeeds leaves its entry in the table as a record, with
+ * `launchedWorktreeId` naming what it became. It keeps its claim, so the
+ * edit guard shuts it out; the writes that reach it through another entry
+ * (re-pointing or splicing that entry's children) filter it, as every read
+ * here does — to everything above the store it is gone.
  */
 
 /** What an entry waits on — exactly one of the two. */
@@ -94,6 +100,9 @@ function settingsColumns(s: QueuedWorktreeSettings): Omit<typeof queuedWorktrees
 /** Not mid-launch — the guard on every edit. */
 const notLaunching = isNull(queuedWorktrees.launchWorktreeId)
 
+/** Not launched yet — the filter on every read. */
+const pending = isNull(queuedWorktrees.launchedWorktreeId)
+
 export async function insertQueuedWorktree(
   projectSlug: string,
   parent: QueuedParent,
@@ -130,7 +139,7 @@ export async function updateQueuedWorktree(
       const [self] = await tx.select().from(queuedWorktrees).where(eq(queuedWorktrees.id, id))
       if (!self) return []
       const entries = (await tx.select().from(queuedWorktrees)
-        .where(eq(queuedWorktrees.projectSlug, self.projectSlug))).map(toRow)
+        .where(and(eq(queuedWorktrees.projectSlug, self.projectSlug), pending))).map(toRow)
       if (closesCycle(id, parent, entries)) {
         throw new ServerError('VALIDATION', 'a queued worktree cannot wait on itself or on one queued after it')
       }
@@ -178,7 +187,7 @@ export async function deleteQueuedWorktree(id: string): Promise<boolean> {
     if (!row) return false
     await tx.update(queuedWorktrees)
       .set({ parentWorktreeId: row.parentWorktreeId, parentQueuedId: row.parentQueuedId })
-      .where(eq(queuedWorktrees.parentQueuedId, id))
+      .where(and(eq(queuedWorktrees.parentQueuedId, id), pending))
     return true
   })
   if (deleted) notifyWorktreeListChanged()
@@ -189,18 +198,16 @@ export async function getQueuedWorktreeRow(id: string): Promise<QueuedWorktreeRo
   // Entry ids are uuids; anything else names no entry.
   if (!isUuid(id)) return undefined
   const db = await getDb()
-  const rows = await db.select().from(queuedWorktrees).where(eq(queuedWorktrees.id, id))
+  const rows = await db.select().from(queuedWorktrees).where(and(eq(queuedWorktrees.id, id), pending))
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
 /** Every entry of a project (or of all), oldest first — launching ones too. */
 export async function listQueuedWorktreeRows(projectSlug?: string): Promise<QueuedWorktreeRow[]> {
   const db = await getDb()
-  const rows = projectSlug === undefined
-    ? await db.select().from(queuedWorktrees).orderBy(asc(queuedWorktrees.createdAt))
-    : await db.select().from(queuedWorktrees)
-      .where(eq(queuedWorktrees.projectSlug, projectSlug))
-      .orderBy(asc(queuedWorktrees.createdAt))
+  const rows = await db.select().from(queuedWorktrees)
+    .where(projectSlug === undefined ? pending : and(eq(queuedWorktrees.projectSlug, projectSlug), pending))
+    .orderBy(asc(queuedWorktrees.createdAt))
   return rows.map(toRow)
 }
 
@@ -254,21 +261,22 @@ export async function claimQueuedLaunch(id: string, worktreeId: string): Promise
     if (rows.length === 0) return false
     await tx.update(queuedWorktrees)
       .set({ parentWorktreeId: worktreeId, parentQueuedId: null })
-      .where(eq(queuedWorktrees.parentQueuedId, id))
+      .where(and(eq(queuedWorktrees.parentQueuedId, id), pending))
     return true
   })
   if (claimed) notifyWorktreeListChanged()
   return claimed
 }
 
-/** Claimed by exactly this launch — the guard on resolving one, so a caller
- *  holding a stale view of the claim (a reconcile pass racing a Run now)
- *  changes nothing. */
+/** Claimed by exactly this launch, and not resolved yet — the guard on
+ *  resolving one, so a caller holding a stale view of the claim (a
+ *  reconcile pass racing a Run now) changes nothing. */
 const claimedBy = (id: string, worktreeId: string) =>
-  and(eq(queuedWorktrees.id, id), eq(queuedWorktrees.launchWorktreeId, worktreeId))
+  and(eq(queuedWorktrees.id, id), eq(queuedWorktrees.launchWorktreeId, worktreeId), pending)
 
 /**
- * The launch under `worktreeId` succeeded: the entry is a worktree now. Any
+ * The launch under `worktreeId` succeeded: the entry is a worktree now, and
+ * stays behind only as the record of what that worktree was queued as. Any
  * child still pointing at the entry — none should, since the claim re-pointed
  * them — follows it to that worktree, so no path leaves one waiting on an
  * entry that is gone.
@@ -276,11 +284,14 @@ const claimedBy = (id: string, worktreeId: string) =>
 export async function finishQueuedLaunch(id: string, worktreeId: string): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
-    const deleted = await tx.delete(queuedWorktrees).where(claimedBy(id, worktreeId)).returning()
-    if (deleted.length === 0) return
+    const launched = await tx.update(queuedWorktrees)
+      .set({ launchedWorktreeId: worktreeId })
+      .where(claimedBy(id, worktreeId))
+      .returning({ id: queuedWorktrees.id })
+    if (launched.length === 0) return
     await tx.update(queuedWorktrees)
       .set({ parentWorktreeId: worktreeId, parentQueuedId: null })
-      .where(eq(queuedWorktrees.parentQueuedId, id))
+      .where(and(eq(queuedWorktrees.parentQueuedId, id), pending))
   })
   notifyWorktreeListChanged()
 }
@@ -313,7 +324,7 @@ export async function failQueuedLaunch(id: string, worktreeId: string, error: st
   notifyWorktreeListChanged()
 }
 
-/** Forget a project's entries — the project going away. */
+/** Forget a project's entries, launched ones too — the project going away. */
 export async function deleteProjectQueuedWorktrees(projectSlug: string): Promise<void> {
   const db = await getDb()
   await db.delete(queuedWorktrees).where(eq(queuedWorktrees.projectSlug, projectSlug))

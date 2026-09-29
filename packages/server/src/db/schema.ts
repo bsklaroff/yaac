@@ -410,8 +410,10 @@ export const gitCredentials = snakeCase.table('git_credentials', {
 /**
  * A worktree create request saved to run when its parent stops naturally
  * (docs/queued-worktrees.md). Not a worktree: no `worktrees` row, checkout
- * or runtime exists until it launches, and the launch deletes it. Every
- * setting is stored concrete, so what the sidebar shows is what will run.
+ * or runtime exists until it launches. A launch that succeeds keeps the
+ * entry as a record, pointed at the worktree it became, and every read
+ * leaves it out. Every setting is stored concrete, so what the sidebar shows
+ * is what will run.
  */
 export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   id: uuid().primaryKey().defaultRandom(),
@@ -444,6 +446,10 @@ export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   launchWorktreeId: text(),
   /** Why the last launch failed; cleared by the next release. */
   launchError: text(),
+  /** The worktree a successful launch created. Set, the entry is history:
+   *  it keeps its claim, so no edit reaches it, and no read returns it. It
+   *  goes with that worktree's row. */
+  launchedWorktreeId: text().references(() => worktrees.worktreeId, { onDelete: 'cascade' }),
 }, (t) => [
   index().on(t.projectSlug, t.parentWorktreeId),
   index().on(t.parentQueuedId),

@@ -61,9 +61,14 @@ beforeEach(async () => {
   await fs.mkdir(projectDir('proj'), { recursive: true })
   await createTestRepo(repoDir('proj'))
   await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
-  mockCreate.mockReset().mockImplementation((_slug, opts) => Promise.resolve({
-    worktreeId: opts.worktreeId ?? 'minted', jobName: 'j', forwardedPorts: [], tool: opts.tool ?? 'claude', mode: 'tui',
-  } as WorktreeCreateResult))
+  // A create records the worktree's row, as the real one does — a launched
+  // entry keeps a foreign key to it.
+  mockCreate.mockReset().mockImplementation(async (slug, opts) => {
+    await recordWorktreeCreated({ projectSlug: slug, worktreeId: opts.worktreeId ?? 'minted' })
+    return {
+      worktreeId: opts.worktreeId ?? 'minted', jobName: 'j', forwardedPorts: [], tool: opts.tool ?? 'claude', mode: 'tui',
+    } as WorktreeCreateResult
+  })
 })
 
 afterEach(async () => {
