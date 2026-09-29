@@ -3,6 +3,7 @@ import {
   reconcileAgentSessions,
   reconcilePrewarmPool,
   reconcileMamaRequests,
+  reconcileQueuedWorktrees,
   reconcileStaleWorktrees,
 } from '#domain/worktrees'
 import { reconcileGeneratedTitles } from '#domain/titles'
@@ -77,6 +78,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // the worktree.
     { name: 'stale-worktrees', triggers: ['workspaces', 'units', 'status-streams'],
       run: (ctx) => reconcileStaleWorktrees(ctx.snapshot()) },
+    // The crash backstop for queued worktrees: a launch a server restart
+    // interrupted, or a release it lost before launching. `stopWorktree`
+    // launches directly, so this has no triggers of its own — the resync
+    // (and the first pass after start, which is one) is enough.
+    { name: 'queued-worktrees', triggers: [], run: () => reconcileQueuedWorktrees() },
     // Service in-worktree `yaac-mama` requests queued at the egress proxy.
     // The drain resolves who called from pod labels; what a request MEANS
     // (which commands exist, and what each may do) is `runMamaCommand`'s.

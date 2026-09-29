@@ -1,14 +1,30 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { listProvisioning, clearAllProvisioningForTests } from '#domain/worktrees/provisioning'
-vi.mock('#domain/worktrees/create', () => ({ createWorktree: vi.fn() }))
-import { createWorktree } from '#domain/worktrees/create'
-import type { WorktreeCreateOptions, WorktreeCreateResult } from '#domain/worktrees/create'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as createModule from '#domain/worktrees/create'
+
+// The spawn runs the real create path — resolving its setup, its provisioning
+// row, the spare question — down to the create itself, which is the boundary:
+// past it lies the substrate.
+vi.mock('#domain/worktrees/create', async (importOriginal) => ({
+  ...(await importOriginal<typeof createModule>()),
+  createWorktree: vi.fn(),
+}))
+import {
+  createWorktree,
+  type WorktreeCreateOptions,
+  type WorktreeCreateResult,
+} from '#domain/worktrees/create'
+import { clearAllProvisioningForTests, listProvisioning } from '#domain/worktrees/provisioning'
 import {
   SPAWN_MAX_IN_FLIGHT_PER_WORKTREE,
   SPAWN_MAX_PROMPT_CHARS,
   decideSpawn,
   type SpawnRequest,
 } from '#domain/worktrees/spawn-policy'
+import { recordProject } from '#db/project-store'
+import { closeDb } from '#db/client'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { installFakeWorktreeDriver, resetWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 
 type CreateFn = (slug: string, opts: WorktreeCreateOptions) => Promise<WorktreeCreateResult>
 
@@ -27,37 +43,64 @@ function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
 /** Stub the create whose only job is to record what it was asked for. */
 function stubCreate(impl?: CreateFn): ReturnType<typeof vi.mocked<typeof createWorktree>> {
   const create = vi.mocked(createWorktree)
-  create.mockReset().mockImplementation(impl ?? (() => Promise.resolve({
-    worktreeId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+  create.mockReset().mockImplementation(impl ?? ((_slug, opts) => Promise.resolve({
+    worktreeId: opts.worktreeId ?? 'minted', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
   } as WorktreeCreateResult)))
   return create
+}
+
+/** What the detached creates were asked for, once `n` of them have been. */
+async function createdWith(
+  create: ReturnType<typeof stubCreate>,
+  n = 1,
+): Promise<WorktreeCreateOptions[]> {
+  await vi.waitFor(() => { expect(create.mock.calls.length).toBeGreaterThanOrEqual(n) })
+  return create.mock.calls.map((c) => c[1])
 }
 
 /** Let the detached create's .then/.finally chains settle. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-beforeEach(() => {
+let tmpDir: string
+const listSpares = vi.fn(() => Promise.resolve([]))
+
+beforeEach(async () => {
+  tmpDir = await createTempDataDir()
+  installFakeWorktreeDriver({ list: listSpares })
+  listSpares.mockClear()
+  await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
   clearAllProvisioningForTests()
   stubCreate()
 })
 
+afterEach(async () => {
+  await settle()
+  resetWorktreeDriver()
+  await closeDb()
+  await cleanupTempDir(tmpDir)
+})
+
 describe('decideSpawn', () => {
-  it('creates in the caller project with the minted id and returns ok', async () => {
+  it('creates in the caller project under the id it answers with, never a spare\'s', async () => {
     const create = stubCreate()
     const decision = await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })
     expect(decision).toEqual({ ok: true, workspaceId: 'minted-id' })
-    // The exact options, so nothing identity-shaped can creep back in: a
-    // spawn has no interactive caller to resolve one, which is the reason
-    // the identity a worktree commits under is the server's own setting.
-    expect(create).toHaveBeenCalledWith('proj', {
+    const [opts] = await createdWith(create)
+    expect(create.mock.calls[0][0]).toBe('proj')
+    // Nothing identity-shaped: a spawn has no interactive caller to resolve
+    // one, which is the reason the identity a worktree commits under is the
+    // server's own setting.
+    expect(opts).toMatchObject({
+      worktreeId: 'minted-id',
       tool: 'codex', // the caller's own tool, absent an explicit request
       initialPrompt: 'write the report',
-      worktreeId: 'minted-id',
       mode: 'tui',
       permissionMode: 'bypass', // the caller's own posture, likewise
-      onProgress: expect.any(Function) as (message: string) => void,
+      model: FALLBACK_MODELS.codex,
     })
-    await settle()
+    // A claimed spare would list under its own id, and the id the caller was
+    // handed — `id=$(yaac-mama create …)` — would name nothing.
+    expect(listSpares).not.toHaveBeenCalled()
   })
 
   it('provisions under a sidebar row: registered on spawn, dropped on success', async () => {
@@ -70,31 +113,27 @@ describe('decideSpawn', () => {
       } as WorktreeCreateResult)
     })
     expect((await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })).ok).toBe(true)
+    // There before the answer goes back, so the id resolves at once.
+    expect(listProvisioning().map((p) => p.worktreeId)).toEqual(['minted-id'])
+    await vi.waitFor(() => { expect(rowDuringCreate).toBeDefined() })
     expect(rowDuringCreate).toMatchObject({
-      worktreeId: 'minted-id',
-      projectSlug: 'proj',
-      tool: 'codex',
-      kind: 'create',
-      message: 'Creating job...',
+      worktreeId: 'minted-id', projectSlug: 'proj', tool: 'codex', kind: 'create', message: 'Creating job...',
     })
-    await settle()
-    expect(listProvisioning()).toEqual([])
+    await vi.waitFor(() => { expect(listProvisioning()).toEqual([]) })
   })
 
   it('keeps a failed row (dismissable) when the detached create rejects', async () => {
     stubCreate(() => Promise.reject(new Error('image build exploded')))
     expect((await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })).ok).toBe(true)
-    await settle()
-    expect(listProvisioning()[0]).toMatchObject({
-      worktreeId: 'minted-id',
-      error: 'image build exploded',
+    await vi.waitFor(() => {
+      expect(listProvisioning()[0]).toMatchObject({ worktreeId: 'minted-id', error: 'image build exploded' })
     })
   })
 
   it('prefers an explicitly requested tool over the caller tool', async () => {
     const create = stubCreate()
     expect((await decideSpawn(makeRequest({ tool: 'opencode' }))).ok).toBe(true)
-    expect(create.mock.calls[0][1].tool).toBe('opencode')
+    expect((await createdWith(create))[0].tool).toBe('opencode')
     await settle()
   })
 
@@ -109,7 +148,7 @@ describe('decideSpawn', () => {
       { lastToolFn },
     )).ok).toBe(true)
     expect(lastToolFn).toHaveBeenCalledWith(makeRequest().callerProjectSlug)
-    expect(withDefault.mock.calls[0][1].tool).toBe('pi')
+    expect((await createdWith(withDefault))[0].tool).toBe('pi')
     await settle()
 
     const noDefault = stubCreate()
@@ -117,7 +156,7 @@ describe('decideSpawn', () => {
       makeRequest({ callerTool: undefined }),
       { lastToolFn: () => Promise.resolve(undefined) },
     )).ok).toBe(true)
-    expect(noDefault.mock.calls[0][1].tool).toBe('claude')
+    expect((await createdWith(noDefault))[0].tool).toBe('claude')
     await settle()
   })
 
@@ -128,15 +167,7 @@ describe('decideSpawn', () => {
       { mintIdFn: () => 'minted-id' },
     )
     expect(decision.ok).toBe(true)
-    expect(create).toHaveBeenCalledWith('proj', {
-      tool: 'claude',
-      initialPrompt: 'write the report',
-      worktreeId: 'minted-id',
-      model: 'claude-opus-4-8',
-      mode: 'tui',
-      permissionMode: 'bypass',
-      onProgress: expect.any(Function) as (message: string) => void,
-    })
+    expect((await createdWith(create))[0]).toMatchObject({ tool: 'claude', model: 'claude-opus-4-8' })
     await settle()
   })
 
@@ -144,14 +175,14 @@ describe('decideSpawn', () => {
     // No explicit tool: resolves to the caller's own tool (codex).
     const create = stubCreate()
     expect((await decideSpawn(makeRequest({ model: 'openai/gpt-5.2' }))).ok).toBe(true)
-    expect(create.mock.calls[0][1]).toMatchObject({ tool: 'codex', model: 'openai/gpt-5.2' })
+    expect((await createdWith(create))[0]).toMatchObject({ tool: 'codex', model: 'openai/gpt-5.2' })
     await settle()
   })
 
   it('threads the UI mode and reference branch into the create', async () => {
     const create = stubCreate()
     expect((await decideSpawn(makeRequest({ mode: 'acp', branch: 'feature/x' }))).ok).toBe(true)
-    expect(create.mock.calls[0][1]).toMatchObject({ mode: 'acp', branch: 'feature/x' })
+    expect((await createdWith(create))[0]).toMatchObject({ mode: 'acp', branch: 'feature/x' })
     await settle()
   })
 
@@ -160,7 +191,7 @@ describe('decideSpawn', () => {
       const create = stubCreate()
       const decision = await decideSpawn(makeRequest(over))
       await settle()
-      return decision.ok ? create.mock.calls[0][1].permissionMode : decision
+      return decision.ok ? (await createdWith(create))[0].permissionMode : decision
     }
     expect(await posture({ callerPermissionMode: 'auto' })).toBe('auto')
     // The headline case: a `plan` caller's sibling is `plan`, not the
@@ -186,7 +217,9 @@ describe('decideSpawn', () => {
     expect((await at('accept-edits', 'manual')).ok).toBe(true)
     expect((await at('manual', 'plan')).ok).toBe(true)
     await settle()
-    expect(create.mock.calls.map((c) => c[1].permissionMode)).toEqual(['accept-edits', 'manual', 'plan'])
+    // Sorted: the three detached creates reach the create in any order.
+    expect((await createdWith(create, 3)).map((o) => o.permissionMode).sort())
+      .toEqual(['accept-edits', 'manual', 'plan'])
     create.mockClear()
 
     // bypass > auto > accept-edits > manual > plan = read-only: anything left
@@ -194,7 +227,7 @@ describe('decideSpawn', () => {
     expect(await at('accept-edits', 'auto')).toEqual({
       ok: false,
       error: "permission mode 'auto' is more permissive than this worktree's own ('accept-edits'); "
-        + 'a spawned worktree may be granted at most that '
+        + 'a worktree it starts may be granted at most that '
         + '(bypass > auto > accept-edits > manual > plan = read-only)',
     })
     // plan and read-only share the strictest place, so each tool's strictest
@@ -202,11 +235,10 @@ describe('decideSpawn', () => {
     expect(await decideSpawn(makeRequest({ callerPermissionMode: 'plan', permissionMode: 'read-only' })))
       .toMatchObject({ ok: true })
     expect(await at('read-only', 'plan')).toMatchObject({ ok: true })
-    await settle()
+    await createdWith(create, 2)
     create.mockClear()
     expect(await decideSpawn(makeRequest({ callerPermissionMode: 'plan' }))).toMatchObject({ ok: true })
-    await settle()
-    expect(create.mock.calls.map((c) => c[1].permissionMode)).toEqual(['read-only'])
+    expect((await createdWith(create)).map((o) => o.permissionMode)).toEqual(['read-only'])
     create.mockClear()
     for (const [caller, asked] of [['plan', 'bypass'], ['plan', 'manual'], ['manual', 'accept-edits'], ['auto', 'bypass']] as const) {
       expect((await at(caller, asked)).ok, `${caller} → ${asked}`).toBe(false)
@@ -261,7 +293,7 @@ describe('decideSpawn', () => {
     const callerWorkspaceId = 'guarded-caller'
     let release!: () => void
     const gate = new Promise<void>((r) => { release = r })
-    stubCreate(async () => {
+    const create = stubCreate(async () => {
       await gate
       return {
         worktreeId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
@@ -274,10 +306,11 @@ describe('decideSpawn', () => {
     expect(over.ok).toBe(false)
     expect(over.ok ? '' : over.error).toContain('too many concurrent spawns')
 
+    await createdWith(create, SPAWN_MAX_IN_FLIGHT_PER_WORKTREE)
     release()
-    await settle()
-    expect((await decideSpawn(makeRequest({ callerWorkspaceId, requestId: 'r-after' }))).ok).toBe(true)
-    await settle()
+    await vi.waitFor(async () => {
+      expect((await decideSpawn(makeRequest({ callerWorkspaceId, requestId: 'r-after' }))).ok).toBe(true)
+    })
   })
 
   it('releases the guard and stays ok when the detached create rejects', async () => {

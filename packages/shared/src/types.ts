@@ -926,6 +926,10 @@ export interface WorktreeListEntry {
    *  through stopping and restarting (and, via `StoppedWorktreeEntry.groupId`,
    *  keeps a ghost row in it while stopped). */
   groupId?: string
+  /** The permission posture its agents run in (`worktrees.permissionMode`) —
+   *  what a worktree queued after this one defaults to. Absent while its row
+   *  has not landed yet. */
+  permissionMode?: PermissionMode
 }
 
 /**
@@ -1262,6 +1266,54 @@ export interface ProvisioningWorktreeEntry {
   createdAt: string
 }
 
+/**
+ * A worktree create request saved to run when its parent stops naturally
+ * (docs/queued-worktrees.md). Not a worktree yet: every setting is concrete,
+ * so what the sidebar shows is exactly what will launch. Exactly one parent
+ * field is set — a worktree, or another entry it is chained after.
+ */
+export interface QueuedWorktreeEntry {
+  id: string
+  projectSlug: string
+  parentWorktreeId?: string
+  parentQueuedId?: string
+  prompt: string
+  tool: AgentTool
+  model: string
+  /** `model`'s display name, when the catalog has one. */
+  modelName?: string
+  mode: AgentMode
+  permissionMode: PermissionMode
+  /** The reference branch it forks from, fetched fresh at launch. */
+  branch: string
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  createdAt: string
+  /** Why its last launch failed; it is back in the queue until run again. */
+  launchError?: string
+  /** Its parent worktree has no row (that worktree's own create failed), so
+   *  it has nothing to nest under and renders at the top level. */
+  orphaned?: boolean
+}
+
+/**
+ * A stopped worktree that still has queued worktrees waiting on it — kept
+ * in the sidebar, as a stopped row, until the last of them has launched or
+ * been discarded. Slimmer than `StoppedWorktreeEntry` because the snapshot
+ * rebuilds on every change and cannot afford that listing's transcript stats.
+ */
+export interface HeldWorktreeEntry {
+  worktreeId: string
+  projectSlug: string
+  tool: AgentTool
+  title?: string
+  prompt?: string
+  groupId?: string
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  stoppedAt: string
+  deathReason?: WorktreeDeathReason
+  deathDetail?: string
+}
+
 /** Named step in a project's image chain, in build order. */
 export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
 
@@ -1340,6 +1392,11 @@ export interface ServerSnapshot {
   stale: StaleWorktreeInfo[]
   projects: ProjectSummary[]
   provisioning: ProvisioningWorktreeEntry[]
+  /** Every project's queued worktrees not currently launching, oldest first
+   *  (clients filter by slug). A launching one is its provisioning row. */
+  queuedWorktrees: QueuedWorktreeEntry[]
+  /** Stopped worktrees that queued worktrees still wait on. */
+  heldWorktrees: HeldWorktreeEntry[]
   /** Project slug -> git credentials the upstream rejected (project-wide;
    *  see ActiveWorktreesResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>
@@ -1429,6 +1486,7 @@ export const MAMA_COMMANDS = [
   'group-create',
   'group-move',
   'models',
+  'queue',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]
 

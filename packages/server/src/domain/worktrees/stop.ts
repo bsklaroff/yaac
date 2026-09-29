@@ -1,6 +1,7 @@
 import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktreeDetached } from './cleanup'
 import { reconcileBeforeTeardown } from './agent-session-registry'
+import { startQueuedChildren } from './queued-worktrees'
 import { harvestToolCredentials } from '#domain/auth'
 import { serverLog } from '#log'
 import { ServerError } from '@yaac/shared/errors'
@@ -15,7 +16,12 @@ export interface StoppedWorktreeInfo {
  * Resolve a worktree by prefix match on id or Job/pod name and schedule a
  * detached cleanup (delete the Job + prune the worktree dirs). The *git
  * worktree* is deliberately kept — that is what makes this a stop rather
- * than a delete, and what a later restart re-attaches to. Throws
+ * than a delete, and what a later restart re-attaches to.
+ *
+ * This is a NATURAL stop — the user's, or an agent's `yaac-mama stop` — and
+ * the only one: a death, a restart's teardown and a failed resume never come
+ * through here. So it is where the worktrees queued after this one are
+ * started (docs/queued-worktrees.md). Throws
  * `NOT_FOUND` if nothing matches, `RUNTIME_UNAVAILABLE` if the cluster
  * can't be reached.
  */
@@ -45,6 +51,12 @@ export async function stopWorktree(idOrName: string): Promise<StoppedWorktreeInf
     projectSlug: target.projectSlug,
     worktreeId: target.workspaceId,
   })
+  // Once the stop is recorded, not once the runtime is gone: a child has its
+  // own checkout and runtime, and nothing of the parent's in its way. A
+  // failure here leaves the stop done; the reconcile step launches whatever
+  // was released and not started.
+  await startQueuedChildren(target.projectSlug, target.workspaceId)
+    .catch((err: unknown) => serverLog(`[server] starting queued worktrees on stop failed: ${String(err)}`))
   return {
     jobName: target.unitName,
     worktreeId: target.workspaceId,

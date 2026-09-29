@@ -3,7 +3,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type {
+  HeldWorktreeEntry,
   ProvisioningWorktreeEntry,
+  QueuedWorktreeEntry,
   StoppedWorktreeEntry,
   WorktreeGroupSummary,
   WorktreeListEntry,
@@ -25,9 +27,17 @@ vi.mock('#lib/groupApi', () => ({
 }))
 vi.mock('#lib/stopWorktreeFlow', () => ({ stopWorktreeOptimistic: vi.fn() }))
 vi.mock('#lib/useProvisionWorktree', () => ({ useProvisionWorktree: () => vi.fn() }))
+vi.mock('#lib/queueApi', () => ({
+  runQueuedWorktree: vi.fn(() => Promise.resolve({ worktreeId: 'w-run' })),
+  discardQueuedWorktree: vi.fn(() => Promise.resolve()),
+}))
+// The stop dialog lists what is queued, off the snapshot.
+const snapshot = vi.hoisted(() => vi.fn())
+vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { WorktreeList } from '#components/WorktreeList'
 import { renameWorktree } from '#lib/createWorktree'
+import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
 import {
   createWorktreeGroup,
   deleteWorktreeGroup,
@@ -50,6 +60,7 @@ const initial = useUiStore.getState()
 beforeEach(() => {
   localStorage.clear()
   stoppedRows.length = 0
+  snapshot.mockReturnValue(undefined)
   useUiStore.setState(initial, true)
 })
 
@@ -90,12 +101,29 @@ const provisioning = (over: Partial<ProvisioningWorktreeEntry> = {}): Provisioni
   ...over,
 })
 
+const queuedEntry = (id: string, over: Partial<QueuedWorktreeEntry> = {}): QueuedWorktreeEntry => ({
+  id,
+  projectSlug: 'proj',
+  parentWorktreeId: 'a',
+  prompt: `Step ${id}\nmore detail`,
+  tool: 'claude',
+  model: 'claude-sonnet-5',
+  modelName: 'Sonnet 5',
+  mode: 'tui',
+  permissionMode: 'bypass',
+  branch: 'main',
+  createdAt: '2026-08-10 00:00:00',
+  ...over,
+})
+
 function renderList(
   worktrees: WorktreeListEntry[],
   opts: {
     groups?: WorktreeGroupSummary[]
     projectSlug?: string | null
     provisioning?: ProvisioningWorktreeEntry[]
+    queued?: QueuedWorktreeEntry[]
+    held?: HeldWorktreeEntry[]
   } = {},
 ): void {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -106,9 +134,17 @@ function renderList(
         worktrees={worktrees}
         groups={opts.groups ?? []}
         provisioning={opts.provisioning ?? []}
+        queued={opts.queued ?? []}
+        held={opts.held ?? []}
       />
     </QueryClientProvider>,
   )
+}
+
+/** Pick an item from a row's `…` menu; the item runs once the menu closes. */
+async function pickAction(item: string, menu = 'Worktree actions', index = 0): Promise<void> {
+  fireEvent.click(screen.getAllByRole('button', { name: menu })[index])
+  fireEvent.click(await screen.findByRole('menuitem', { name: item }))
 }
 
 /**
@@ -233,13 +269,104 @@ describe('WorktreeList', () => {
     expect(useUiStore.getState().mobileScreen).toBe('pane')
   })
 
-  it('exposes group and delete as real buttons — reachable without a hover', async () => {
+  it('gathers a row\'s actions into one menu — reachable without a hover', async () => {
     renderList([entry({ worktreeId: 'a', title: 'Fix parser' })])
-    fireEvent.click(screen.getByLabelText('Add to group'))
+    fireEvent.click(screen.getByRole('button', { name: 'Worktree actions' }))
+    const items = (await screen.findAllByRole('menuitem')).map((i) => i.textContent)
+    expect(items).toEqual(['Rename', 'Move to group…', 'Queue worktree after this…', 'Stop…'])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to group…' }))
     expect(await screen.findByText('Add to group')).toBeTruthy()
+  })
 
-    fireEvent.click(screen.getByLabelText('Stop worktree'))
-    expect(await screen.findByText('Stop worktree?')).toBeTruthy()
+  it('confirms a stop, naming what it will start', async () => {
+    snapshot.mockReturnValue({ queuedWorktrees: [queuedEntry('q1'), queuedEntry('q2', {
+      parentWorktreeId: undefined, parentQueuedId: 'q1',
+    })] })
+    renderList([entry({ worktreeId: 'a', title: 'Fix parser' })])
+    await pickAction('Stop…')
+    expect(await screen.findByText('Stop “Fix parser”?')).toBeTruthy()
+    // Only the direct child starts with this stop; the chain below it waits.
+    expect(screen.getByRole('button', { name: 'Stop and start 1 queued' })).toBeTruthy()
+    expect(screen.getByText(/waits for its parent/)).toBeTruthy()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Discard' })[0])
+    expect(discardQueuedWorktree).toHaveBeenCalledWith('q1')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1])
+    expect(useUiStore.getState().createWorktreeDialog).toEqual({ projectSlug: 'proj', editId: 'q2' })
+  })
+
+  it('opens the create dialog queued after a row', async () => {
+    renderList([entry({ worktreeId: 'a', title: 'Fix parser' })])
+    await pickAction('Queue worktree after this…')
+    await waitFor(() => expect(useUiStore.getState().createWorktreeDialog)
+      .toEqual({ projectSlug: 'proj', parent: 'a', focus: 'prompt' }))
+  })
+
+  describe('queued worktrees', () => {
+    it('nests each under the row it waits on, a chain one step deeper per link', () => {
+      renderList([entry({ worktreeId: 'a', title: 'Parent' }), entry({ worktreeId: 'b', title: 'Other' })], {
+        queued: [
+          queuedEntry('q1'),
+          queuedEntry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1', launchError: 'branch gone' }),
+        ],
+      })
+      const text = screen.getByRole('group', { name: 'Ungrouped worktrees' }).textContent ?? ''
+      // The chain follows the row it waits on, whatever else is listed.
+      expect(text.indexOf('Parent')).toBeLessThan(text.indexOf('Step q1'))
+      expect(text.indexOf('Step q1')).toBeLessThan(text.indexOf('Step q2'))
+      expect(screen.getByText('Claude · Sonnet 5 · queued')).toBeTruthy()
+      // A failed launch says why in place of its settings.
+      expect(screen.getByText('branch gone')).toBeTruthy()
+    })
+
+    it('keeps a held parent in its place with why it died, and puts an orphan on top', () => {
+      renderList([], {
+        queued: [
+          queuedEntry('q1', { parentWorktreeId: 'dead' }),
+          queuedEntry('q9', { parentWorktreeId: 'never', orphaned: true }),
+        ],
+        held: [{
+          worktreeId: 'dead', projectSlug: 'proj', tool: 'claude', title: 'Crashed one',
+          stoppedAt: '2026-08-10 00:00:00', deathReason: 'oom',
+        }],
+      })
+      expect(screen.getByText('Crashed one')).toBeTruthy()
+      expect(screen.getByText(/died .* — /)).toBeTruthy()
+      expect(screen.getByText('parent gone')).toBeTruthy()
+      expect(screen.queryByText('No worktrees yet')).toBeNull()
+    })
+
+    it('keeps a group on screen for a held member', () => {
+      renderList([], {
+        groups: [group()],
+        queued: [queuedEntry('q1', { parentWorktreeId: 'dead' })],
+        held: [{ worktreeId: 'dead', projectSlug: 'proj', tool: 'claude', groupId: 'g1', stoppedAt: '' }],
+      })
+      expect(screen.getByRole('group', { name: 'Release' }).textContent).toContain('Step q1')
+    })
+
+    it('edits on click, and runs, re-queues after, or discards from its menu', async () => {
+      renderList([entry({ worktreeId: 'a', title: 'Parent' })], {
+        queued: [queuedEntry('q1'), queuedEntry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1' })],
+      })
+      fireEvent.click(screen.getByText('Step q1'))
+      expect(useUiStore.getState().createWorktreeDialog).toEqual({ projectSlug: 'proj', editId: 'q1' })
+
+      await pickAction('Run now', 'Queued worktree actions')
+      await waitFor(() => expect(runQueuedWorktree).toHaveBeenCalledWith('q1'))
+
+      await pickAction('Queue worktree after this…', 'Queued worktree actions')
+      await waitFor(() => expect(useUiStore.getState().createWorktreeDialog)
+        .toEqual({ projectSlug: 'proj', parent: 'q1', focus: 'prompt' }))
+
+      await pickAction('Discard…', 'Queued worktree actions')
+      // The confirmation says where its chain goes, and that it still runs.
+      expect(await screen.findByText(
+        '“Step q1” will not run. The worktree queued after it will start when “Parent” stops instead.',
+      )).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+      await waitFor(() => expect(discardQueuedWorktree).toHaveBeenCalledWith('q1'))
+    })
   })
 
   it('says what to do when there is nothing to show', () => {
@@ -256,7 +383,7 @@ describe('WorktreeList', () => {
   describe('the group dialog', () => {
     it('creates a group around the row it was opened from', async () => {
       renderList([entry({ worktreeId: 'a', title: 'Fix parser' })])
-      fireEvent.click(screen.getByLabelText('Add to group'))
+      await pickAction('Move to group…')
       fireEvent.change(await screen.findByPlaceholderText('New group name'), {
         target: { value: 'Release' },
       })
@@ -272,7 +399,7 @@ describe('WorktreeList', () => {
       renderList([entry({ worktreeId: 'a', title: 'Fix parser' })], {
         groups: [group({ pinned: true }), group({ groupId: 'g2', name: 'Hidden' })],
       })
-      fireEvent.click(screen.getByLabelText('Add to group'))
+      await pickAction('Move to group…')
 
       expect(await screen.findByRole('button', { name: 'Release' })).toBeTruthy()
       expect(screen.queryByRole('button', { name: 'Hidden' })).toBeNull()
@@ -283,13 +410,13 @@ describe('WorktreeList', () => {
       renderList([entry({ worktreeId: 'a', title: 'Fix parser' })], {
         groups: [group({ pinned: true })],
       })
-      fireEvent.click(screen.getByLabelText('Add to group'))
+      await pickAction('Move to group…')
       fireEvent.click(await screen.findByRole('button', { name: 'Release' }))
       await waitFor(() => expect(setWorktreeGroup).toHaveBeenCalledWith('proj', 'a', 'g1'))
 
       cleanup()
       renderList([entry({ worktreeId: 'a', title: 'Fix parser', groupId: 'g1' })], { groups: [group()] })
-      fireEvent.click(screen.getByLabelText('Add to group'))
+      await pickAction('Move to group…')
       fireEvent.click(await screen.findByRole('button', { name: 'Remove from group' }))
       await waitFor(() => expect(setWorktreeGroup).toHaveBeenCalledWith('proj', 'a', null))
     })
@@ -395,24 +522,24 @@ describe('WorktreeList', () => {
   })
 
   describe('row rename', () => {
-    /** Click a row's rename pencil to open its inline editor and return the field. */
-    function openEditor(): HTMLInputElement {
-      fireEvent.click(screen.getByRole('button', { name: 'Rename worktree' }))
-      return screen.getByRole<HTMLInputElement>('textbox', { name: 'Worktree row title' })
+    /** Pick Rename from a row's menu to open its inline editor and return the field. */
+    async function openEditor(): Promise<HTMLInputElement> {
+      await pickAction('Rename')
+      return await screen.findByRole<HTMLInputElement>('textbox', { name: 'Worktree row title' })
     }
 
-    it('seeds the editor from the title, falling back to the prompt', () => {
+    it('seeds the editor from the title, falling back to the prompt', async () => {
       renderList([entry({ worktreeId: 'a', title: 'My worktree', prompt: 'do a thing' })])
-      expect(openEditor().value).toBe('My worktree')
+      expect((await openEditor()).value).toBe('My worktree')
       cleanup()
 
       renderList([entry({ worktreeId: 'a', title: '', prompt: 'do a thing' })])
-      expect(openEditor().value).toBe('do a thing')
+      expect((await openEditor()).value).toBe('do a thing')
     })
 
-    it('commits a rename on Enter and closes the editor', () => {
+    it('commits a rename on Enter and closes the editor', async () => {
       renderList([entry({ worktreeId: 'a', title: 'Old' })])
-      const input = openEditor()
+      const input = await openEditor()
       fireEvent.change(input, { target: { value: 'New name' } })
       fireEvent.keyDown(input, { key: 'Enter' })
 
@@ -420,18 +547,18 @@ describe('WorktreeList', () => {
       expect(screen.queryByRole('textbox')).toBeNull()
     })
 
-    it('commits a rename on blur', () => {
+    it('commits a rename on blur', async () => {
       renderList([entry({ worktreeId: 'a', title: 'Old' })])
-      const input = openEditor()
+      const input = await openEditor()
       fireEvent.change(input, { target: { value: 'Renamed' } })
       fireEvent.blur(input)
 
       expect(renameWorktree).toHaveBeenCalledWith('a', 'Renamed')
     })
 
-    it('reverts on Escape without renaming', () => {
+    it('reverts on Escape without renaming', async () => {
       renderList([entry({ worktreeId: 'a', title: 'Old' })])
-      const input = openEditor()
+      const input = await openEditor()
       fireEvent.change(input, { target: { value: 'discard me' } })
       fireEvent.keyDown(input, { key: 'Escape' })
 
@@ -439,17 +566,17 @@ describe('WorktreeList', () => {
       expect(screen.queryByRole('textbox')).toBeNull()
     })
 
-    it('does not rename when the value is unchanged', () => {
+    it('does not rename when the value is unchanged', async () => {
       renderList([entry({ worktreeId: 'a', title: 'Same' })])
-      const input = openEditor()
+      const input = await openEditor()
       fireEvent.keyDown(input, { key: 'Enter' })
 
       expect(renameWorktree).not.toHaveBeenCalled()
     })
 
-    it('does not select the worktree when clicking the rename pencil', () => {
+    it('does not select the worktree when renaming it', async () => {
       renderList([entry({ worktreeId: 'a', title: 'Old' })])
-      openEditor()
+      await openEditor()
 
       expect(useUiStore.getState().selectedWorktreeId).toBeNull()
     })

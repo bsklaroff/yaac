@@ -5,6 +5,8 @@
 #   yaac-mama list
 #   yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M]
 #                    [--branch B] [--group G] "<prompt>"
+#   yaac-mama queue [--worktree W] [--tool T] [--model M]
+#                   [--permission-mode P] "<prompt>"
 #   yaac-mama rename [<worktree>] "<title>"
 #   yaac-mama stop [<worktree>]
 #   yaac-mama group create "<name>"
@@ -45,6 +47,7 @@ yaac-mama — ask the yaac server running this worktree to do something.
 Usage:
   yaac-mama list                                   # worktrees + groups here
   yaac-mama create [opts] "<prompt>"               # start another worktree
+  yaac-mama queue [opts] "<prompt>"                # start one when this stops
   yaac-mama rename [<worktree>] "<title>"          # retitle (default: yourself)
   yaac-mama stop [<worktree>]                      # stop it (default: yourself)
   yaac-mama group create "<name>"                  # make an empty group
@@ -73,8 +76,23 @@ Options for create:
                    the project's default branch.
   --group <name>   file the new worktree in this group, creating it if needed.
 
-create prints the new worktree's id; it provisions in the background
-(watch it in the yaac webapp). Everything else prints a short report.
+Options for queue:
+  --worktree <id>  what the queued worktree waits on: a worktree in this
+                   project, or a queued worktree's id (to chain after it).
+                   Omitted, this worktree.
+  --tool, --model, --permission-mode
+                   as for create, but omitted ones default to that parent's
+                   settings; the permission mode is still never more
+                   permissive than this worktree's own.
+
+queue saves a worktree to start when its parent is STOPPED — by
+`yaac-mama stop` or by the user. A parent that crashes or exits does not
+start it; it waits for the user. It forks from the latest origin tip of the
+parent's reference branch.
+
+create prints the new worktree's id and queue the queued worktree's id;
+a create provisions in the background (watch it in the yaac webapp).
+Everything else prints a short report.
 
 stop ends a worktree's running container/tmux server and keeps its checkout,
 title, group and conversation, so the user can restart it. Stopping YOURSELF
@@ -194,6 +212,25 @@ case "$1" in
       mode "$mode" branch "$branch" group "$group"
     ;;
 
+  queue)
+    shift
+    worktree=""; tool=""; model=""; perm=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --worktree) worktree="${2:?yaac-mama: --worktree needs a value}"; shift 2 ;;
+        --tool) tool="${2:?yaac-mama: --tool needs a value}"; shift 2 ;;
+        --model) model="${2:?yaac-mama: --model needs a value}"; shift 2 ;;
+        --permission-mode) perm="${2:?yaac-mama: --permission-mode needs a value}"; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama queue [--worktree W] [--tool T] [--model M] [--permission-mode P] "<prompt>"' >&2
+      exit 2
+    fi
+    run queue "$1" worktree "$worktree" tool "$tool" model "$model" permission-mode "$perm"
+    ;;
+
   rename)
     shift
     # One argument retitles the caller, two retitle the worktree named first.
@@ -256,7 +293,7 @@ case "$1" in
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, rename, stop, group, models)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, rename, stop, group, models)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

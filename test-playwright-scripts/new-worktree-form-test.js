@@ -2,8 +2,8 @@
  * Verifies the "+ New worktree" form end to end in a real browser, with real
  * keyboard events:
  *
- *  1. The fields sit in order under the branch picker — Agent, Model,
- *     Permissions, UI — with a Create button below them.
+ *  1. The fields sit in order — Prompt, Start, the branch picker, Agent,
+ *     Model, Permissions, UI — with a Create button below them.
  *  2. The model field shows a model by its name ("Opus 5.5"), and typing part
  *     of a name or an id filters the suggestions.
  *  3. Changing the agent reloads the other three fields from that agent's own
@@ -109,14 +109,14 @@ try {
   await open()
   const order = await page.evaluate(() => {
     const at = (label) => document.querySelector(`[aria-label="${label}"]`)
-    const labels = ['Reference branch', 'Agent', 'Model', 'Permissions', 'UI']
+    const labels = ['Prompt', 'Start', 'Reference branch', 'Agent', 'Model', 'Permissions', 'UI']
     const els = labels.map(at)
     const create = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Create')
     const all = [...els, create]
     return all.every(Boolean)
       && all.every((el, i) => i === 0 || (all[i - 1].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING))
   })
-  check('branch, agent, model, permissions, UI, then Create', order)
+  check('prompt, start, branch, agent, model, permissions, UI, then Create', order)
   await page.screenshot({ path: path.join(SHOTS, 'new-worktree-form.png') })
 
   // (2) Shown by name; searched by name or id.
@@ -125,7 +125,11 @@ try {
   check('the model field shows a name, not an id', !shown.startsWith('claude-'), shown)
   await page.getByLabel('Model').fill('claude-sonn')
   check('an id fragment finds the model by name', await page.getByText('Sonnet 5', { exact: true }).isVisible())
-  await page.keyboard.press('Escape').catch(() => {})
+  // The first Escape closes only the suggestion list; the second, the dialog.
+  await page.keyboard.press('Escape')
+  await page.getByText('Sonnet 5', { exact: true }).waitFor({ state: 'detached' })
+  await page.keyboard.press('Escape')
+  await page.getByLabel('Prompt').waitFor({ state: 'detached' })
 
   // (3) Another agent brings its own options.
   if (signedIn.has('pi')) {

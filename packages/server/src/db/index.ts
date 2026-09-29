@@ -65,6 +65,22 @@ export {
   setWorktreeGroupPinned,
 } from './group-store'
 export { closeDb, openDb } from './client'
+export {
+  claimQueuedLaunch,
+  deleteProjectQueuedWorktrees,
+  deleteQueuedWorktree,
+  failQueuedLaunch,
+  finishQueuedLaunch,
+  getQueuedWorktreeRow,
+  insertQueuedWorktree,
+  listQueuedWorktreeRows,
+  releaseQueuedChildren,
+  releaseQueuedWorktree,
+  updateQueuedWorktree,
+  type QueuedParent,
+  type QueuedWorktreeRow,
+  type QueuedWorktreeSettings,
+} from './queued-worktree-store'
 export { loadTokens, saveTokens, type TokenEntry, type TokenKind } from './token-store'
 export {
   clearShortcutOverrides,

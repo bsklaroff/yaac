@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointe
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
-import { useUiStore } from '#lib/store'
+import { shortcutsSuspended, useUiStore } from '#lib/store'
 import { WorktreeTerminal } from '#components/WorktreeTerminal'
 import { WorktreePreview } from '#components/WorktreePreview'
 import { WorktreeChanges } from '#components/WorktreeChanges'
@@ -438,8 +438,9 @@ export function WorktreeView({
       const ctx = shortcutCtx.current
       if (!ctx.sid) return
       const state = useUiStore.getState()
-      // The settings pane is capturing a rebind — leave the keypress alone.
-      if (state.recordingShortcut) return
+      // A rebind being recorded, or the create dialog open: the keypress is
+      // theirs.
+      if (shortcutsSuspended(state)) return
       // Only the terminal-scoped commands are handled here; project-scoped ones
       // belong to App's listener, so their ids fall through the switch.
       const id = matchShortcut(state.bindings, e)

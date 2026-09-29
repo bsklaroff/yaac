@@ -18,8 +18,8 @@ export function successorRow(rowIds: string[], deletedId: string): string | null
 }
 
 /**
- * Optimistic worktree stop, shared by the sidebar row's × and the Alt+D
- * shortcut (both post-confirm): mark the worktree stopping (WorktreeRow
+ * Optimistic worktree stop, shared by the sidebar row's menu and the Alt+D
+ * shortcut (both confirmed through the stop dialog): mark the worktree stopping (WorktreeRow
  * greys it) and move a matching selection to the neighbouring row
  * immediately, then fire the stop. The server's cleanup is detached (a stop
  * can take ~10s), so we can't wait for the snapshot to drop the row. On

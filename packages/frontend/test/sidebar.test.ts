@@ -2,7 +2,9 @@
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
 import type {
+  HeldWorktreeEntry,
   ProvisioningWorktreeEntry,
+  QueuedWorktreeEntry,
   StoppedWorktreeEntry,
   WorktreeGroupSummary,
   WorktreeListEntry,
@@ -193,6 +195,77 @@ describe('sidebarLayout', () => {
     // What a snapshot arriving mid-delete looks like.
     expect(shape([entry('orphan', 1, { groupId: 'gone' })], [])).toEqual({ default: ['orphan'] })
     expect(sidebarLayout([], [], [stopped('a', 1, 'gone')]).groups).toEqual([])
+  })
+})
+
+/** A queued worktree waiting on `parent` — a worktree, or with `chained`
+ *  another entry. */
+const queued = (
+  id: string,
+  parent: string,
+  extra: Partial<QueuedWorktreeEntry> & { chained?: boolean } = {},
+): QueuedWorktreeEntry => {
+  const { chained, ...rest } = extra
+  return {
+    id,
+    projectSlug: 'p',
+    ...(chained === true ? { parentQueuedId: parent } : { parentWorktreeId: parent }),
+    prompt: id,
+    tool: 'claude',
+    model: 'm',
+    mode: 'tui',
+    permissionMode: 'bypass',
+    branch: 'main',
+    createdAt: '2026-01-01 00:00:00',
+    ...rest,
+  }
+}
+
+const held = (worktreeId: string, groupId?: string): HeldWorktreeEntry => ({
+  worktreeId,
+  projectSlug: 'p',
+  tool: 'claude',
+  stoppedAt: '2026-01-01 00:00:05',
+  ...(groupId !== undefined ? { groupId } : {}),
+})
+
+describe('sidebarLayout with queued worktrees', () => {
+  it('nests each entry under what it waits on, chains included', () => {
+    const layout = sidebarLayout([entry('a', 1)], [], [], [prov('p', 2)], [
+      queued('q1', 'a'),
+      queued('q2', 'q1', { chained: true }),
+      queued('q3', 'p'),
+    ])
+    expect(layout.queuedChildren.get('a')?.map((e) => e.id)).toEqual(['q1'])
+    expect(layout.queuedChildren.get('q1')?.map((e) => e.id)).toEqual(['q2'])
+    expect(layout.queuedChildren.get('p')?.map((e) => e.id)).toEqual(['q3'])
+    expect(layout.orphans).toEqual([])
+  })
+
+  it('holds a stopped parent in its place, the default list included', () => {
+    const g = group('g', 10)
+    const layout = sidebarLayout([], [g], [stopped('grouped', 3, 'g')], [],
+      [queued('q1', 'loose'), queued('q2', 'grouped')],
+      [held('loose'), held('grouped', 'g')])
+    expect(layout.defaultHeld.map((d) => d.worktreeId)).toEqual(['loose'])
+    // Shown for its held member alone, which is drawn once — from the
+    // stopped listing, whose row carries more.
+    expect(layout.groups.map((s) => s.ghosts.map((d) => d.worktreeId))).toEqual([['grouped']])
+    expect(layout.groups[0]?.ghosts[0]?.createdAt).toBe('2026-01-01 00:00:03')
+    expect(layout.orphans).toEqual([])
+  })
+
+  it('does not show a group for a stopped member nothing waits on', () => {
+    expect(sidebarLayout([], [group('g', 10)], [stopped('gone', 1, 'g')], [], [], []).groups).toEqual([])
+  })
+
+  it('puts an entry with no row to nest under at the top', () => {
+    const layout = sidebarLayout([entry('a', 1)], [], [], [], [
+      queued('q1', 'nowhere', { orphaned: true }),
+      queued('q2', 'q1', { chained: true }),
+      queued('q3', 'not-drawn'),
+    ])
+    expect(layout.orphans.map((e) => e.id)).toEqual(['q1', 'q3'])
   })
 })
 

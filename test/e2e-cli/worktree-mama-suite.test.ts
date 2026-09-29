@@ -412,7 +412,15 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
     expect(mine.output).toContain('(you)')
   }, 240_000)
 
-  it('stops ITSELF when no worktree is named', async () => {
+  it('stops ITSELF when no worktree is named, starting what it queued after itself', async () => {
+    // The agent's "when I'm done, this picks up from here": queued over the
+    // proxy queue, then started by the caller's own natural stop.
+    const queued = await runMama('queue "follow-up from queue e2e"')
+    expect(queued.exitCode).toBe(0)
+    expect(queued.output.trim()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    const listedQueue = await runMama('list')
+    expect(listedQueue.output).toContain('follow-up from queue e2e')
+
     // A self-stop tears down the pod its own reply travels back through, so
     // what is asserted is that the worktree went away — not what printed.
     // Whether the confirmation (or the exec itself) survives the teardown is
@@ -438,5 +446,15 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
     const listed = await runYaac(serverEnv, 'worktree', 'list', '--stopped')
     expect(listed.exitCode).toBe(0)
     expect(listed.stdout).toContain(callerWorktreeId.slice(0, 8))
-  }, 240_000)
+
+    // The stop started the queued worktree: a new pod in the project that is
+    // neither the caller nor the sibling.
+    let child: PodInfo | undefined
+    for (let i = 0; i < 180 && !child?.running; i++) {
+      const pods = await listWorktreePods(SLUG)
+      child = pods.find((p) => p.worktreeId !== callerWorktreeId && p.worktreeId !== spawnedWorktreeId)
+      if (!child?.running) await sleep(1000)
+    }
+    expect(child?.running).toBe(true)
+  }, 420_000)
 })

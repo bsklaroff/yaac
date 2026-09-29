@@ -64,6 +64,8 @@ function renderSidebar(): HTMLElement {
         projectRemoteUrl=""
         worktrees={[]}
         groups={[]}
+        queued={[]}
+        held={[]}
         provisioning={[]}
         connected
         gitAuthFailures={[]}

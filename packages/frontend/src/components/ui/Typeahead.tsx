@@ -23,7 +23,8 @@ export interface TypeaheadItem {
  * inside the field. `autoHighlight` highlights the first row as soon as the
  * user types, for a field whose typed text is a search rather than a value.
  * `freeEntry` adds a last row for text no item matches exactly (the model
- * field's "use this id").
+ * field's "use this id"). Escape with the list open calls `onDismiss` and
+ * goes no further, so a dialog around the field is not closed by it.
  */
 export function Typeahead({
   items,
@@ -40,6 +41,7 @@ export function Typeahead({
   autoHighlight = false,
   freeEntry,
   onBlur,
+  onDismiss,
   trailing,
   belowInput,
 }: {
@@ -66,6 +68,8 @@ export function Typeahead({
   /** Focus left the input — rows never take it (see their onMouseDown), so
    *  this is the user moving on, not picking. */
   onBlur?: () => void
+  /** Escape was pressed with the list open — close it. */
+  onDismiss?: () => void
   /** Accessory rendered to the right of the input box. */
   trailing?: ReactNode
   /** Node rendered between the input row and the suggestion list. */
@@ -94,6 +98,10 @@ export function Typeahead({
       e.preventDefault()
       e.stopPropagation()
       onSelect(rows[active].value)
+    } else if (e.key === 'Escape' && onDismiss !== undefined) {
+      e.preventDefault()
+      e.stopPropagation()
+      onDismiss()
     }
   }
 

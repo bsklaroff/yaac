@@ -29,6 +29,9 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 vi.mock('#db', () => ({
   applyWorktreeEvent: vi.fn(),
   desiredWorktrees: vi.fn(),
+  // A death is not a natural stop: the worktrees queued after one wait
+  // under it rather than starting (docs/queued-worktrees.md).
+  releaseQueuedChildren: vi.fn(),
 }))
 
 // The reaper reads session rows to tell a yaac-issued delete (whose
@@ -39,7 +42,7 @@ import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#log'
-import { applyWorktreeEvent, desiredWorktrees } from '#db'
+import { applyWorktreeEvent, desiredWorktrees, releaseQueuedChildren } from '#db'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
 import type { WorktreeEvent } from '#db'
 import {
@@ -145,6 +148,8 @@ describe('reconcileStaleWorktrees', () => {
     const log = loggedLines()
     expect(log).toContain('reaping session=zombie-1')
     expect(log).toContain('tmux gone')
+    // Its queued worktrees stay queued, the parent held, until the user acts.
+    expect(releaseQueuedChildren).not.toHaveBeenCalled()
   })
 
   // The cause is derived at the runtime boundary (see the view's handle

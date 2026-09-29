@@ -14,6 +14,7 @@ import {
 import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/worktree-store'
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
 import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
+import { getQueuedWorktreeRow } from '@yaac/server/db/queued-worktree-store'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { closeDb } from '@yaac/server/db/client'
 import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
@@ -998,6 +999,72 @@ describe('write routes', () => {
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-a', name: '' }),
       }))
       expect(res.status).toBe(400)
+    })
+  })
+
+  // Queued worktrees through the routes (docs/queued-worktrees.md). The
+  // create a launch runs is mocked, as it is for /worktree/create; what is
+  // real is everything that decides what it runs and when.
+  describe('queued worktree routes', () => {
+    const client = (): ReturnType<typeof makeTestApiClient> =>
+      makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const post = (route: string, body: unknown): Promise<Response> =>
+      Promise.resolve(buildApp({ secret: 'shh', buildId: 'test' }).request(`/worktree/queue/${route}`, withAuth({
+        method: 'POST', body: JSON.stringify(body),
+      })))
+
+    beforeEach(async () => {
+      await writeProject('demo')
+      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+    })
+
+    it('queues, edits and runs one — once', async () => {
+      const queued = await (await client().worktree.queue.create.$post({
+        json: { project: 'demo', parent: 'parent', prompt: 'follow up', tool: 'claude' },
+      })).json()
+      expect(queued).toMatchObject({ parentWorktreeId: 'parent', branch: 'main', permissionMode: 'plan' })
+
+      const edited = await (await client().worktree.queue.update.$post({
+        json: { id: queued.id, prompt: 'follow up, edited' },
+      })).json()
+      expect(edited.prompt).toBe('follow up, edited')
+
+      // A launch still in flight: a second Run now loses the claim.
+      let finish!: () => void
+      mockCreateWorktree.mockImplementation((_slug, opts) => new Promise((resolve) => {
+        finish = () => resolve({ worktreeId: opts.worktreeId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' })
+      }))
+      const run = await client().worktree.queue.run.$post({ json: { id: queued.id } })
+      expect(run.status).toBe(200)
+      const { worktreeId } = await run.json()
+      expect((await post('run', { id: queued.id })).status).toBe(409)
+      expect((await post('discard', { id: queued.id })).status).toBe(409)
+
+      await vi.waitFor(() => { expect(mockCreateWorktree).toHaveBeenCalledTimes(1) })
+      expect(mockCreateWorktree.mock.calls[0][1]).toMatchObject({
+        worktreeId, initialPrompt: 'follow up, edited', branch: 'main', permissionMode: 'plan',
+      })
+      finish()
+      // The entry became the worktree; there is nothing left to run.
+      await vi.waitFor(async () => { expect(await getQueuedWorktreeRow(queued.id)).toBeUndefined() })
+      expect((await post('run', { id: queued.id })).status).toBe(404)
+    })
+
+    it('refuses a cycle in a chain, and splices a discarded link\'s children up', async () => {
+      const queue = async (parent: string, prompt: string): Promise<string> =>
+        (await (await client().worktree.queue.create.$post({
+          json: { project: 'demo', parent, prompt },
+        })).json()).id
+      const top = await queue('parent', 'top')
+      const middle = await queue(top, 'middle')
+      const bottom = await queue(middle, 'bottom')
+
+      expect((await post('update', { id: top, parent: bottom })).status).toBe(400)
+      expect((await post('discard', { id: middle })).status).toBe(204)
+      expect((await getQueuedWorktreeRow(bottom))?.parentQueuedId).toBe(top)
+      expect((await post('discard', { id: middle })).status).toBe(404)
+      // An entry with no prompt would launch an agent nobody is watching.
+      expect((await post('create', { project: 'demo', parent: 'parent', prompt: '' })).status).toBe(400)
     })
   })
 

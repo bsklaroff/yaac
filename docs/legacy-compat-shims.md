@@ -39,6 +39,29 @@ conflict error it can search for. It just loses the recipe.
 **How to tell it is safe to remove:** a season after the first release
 that depends on core `kind`. The redirect and the prose go together.
 
+## Queueing under a worktree with no recorded base branch
+
+`queueWorktree` (`domain/worktrees/queued-worktrees.ts`) stores a queued
+worktree's branch concretely, defaulting to the parent's
+`worktrees.baseBranch`. A create now records that column with the row, but a
+row written before it was recorded at creation may have none: an interrupted
+create, or a claimed spare whose upstream could not be read. For such a
+parent, `referenceBranch` answers what a create in the project would fork
+from. (The same function also serves a parent whose create is still in
+flight and has no row yet; that use is not legacy and stays.)
+
+**What it reads:** `worktrees.baseBranch IS NULL` on the parent row.
+
+**What breaks silently if it goes too early:** queueing under such a parent
+fails (or, depending on how it is removed, stores an empty branch that fails
+at launch).
+
+**How to tell it is safe to remove:** nothing retires a legacy null — a
+resume never writes `baseBranch` and no stop deletes a row — so it is safe
+once `SELECT count(*) FROM worktrees WHERE base_branch IS NULL AND NOT spare`
+is 0 on the installs we support (they have deleted those worktrees or their
+projects).
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

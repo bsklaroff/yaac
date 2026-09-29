@@ -6,10 +6,9 @@ import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from 
 import { getShortcutOverrides } from './lib/settingsApi'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
-import { useCreateDefaults, useCreateWorktree } from './lib/useCreateDefaults'
 import {
   mergeProvisioning, persistSelection, resolveVacantSelection,
-  unreadWaitingBySlug, useUiStore,
+  shortcutsSuspended, unreadWaitingBySlug, useUiStore,
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
@@ -23,7 +22,8 @@ import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
 import { newlyWaitingWorktrees, shouldChime, waitingSpellKeys } from './lib/attentionChime'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
-import { ConfirmDialog } from './components/ui/ConfirmDialog'
+import { CreateWorktreeDialog } from './components/CreateWorktreeDialog'
+import { StopWorktreeDialog } from './components/StopWorktreeDialog'
 import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
 
 type AuthState = 'checking' | 'authed' | 'needs-token'
@@ -105,13 +105,6 @@ function App(): JSX.Element {
       <div className="min-h-0 flex-1">{content}</div>
     </div>
   )
-}
-
-/** A worktree's display name for dialog copy — title, else prompt (which can
- *  be a whole first message, so clipped), else the placeholder. */
-function worktreeName(worktree: WorktreeListEntry | null): string {
-  const name = worktree ? worktree.title || worktree.prompt || 'New worktree' : ''
-  return name.length > 60 ? `${name.slice(0, 60)}…` : name
 }
 
 function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; connected: boolean }): JSX.Element {
@@ -200,30 +193,24 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
   const scopedGroups = (snapshot?.worktreeGroups ?? [])
     .filter((g) => g.projectSlug === activeProjectSlug)
+  const scopedQueued = (snapshot?.queuedWorktrees ?? []).filter((e) => e.projectSlug === activeProjectSlug)
+  const scopedHeld = (snapshot?.heldWorktrees ?? []).filter((h) => h.projectSlug === activeProjectSlug)
 
   // Worktree shortcuts, window-captured so the chord is swallowed before
   // xterm's textarea handler could forward it to the PTY, and registered
   // here, not in Sidebar, so they work with the sidebar hidden too:
   //  - Alt+K/Alt+J step through the sidebar rows top-to-bottom (wrapping)
   //    — the vertical sibling of WorktreeView's Alt+H/Alt+L terminal cycler.
-  //  - Alt+N starts a new worktree in the active project exactly as the
-  //    create popover would if opened and confirmed untouched: the agent the
-  //    project was last created with, and that agent's remembered model,
-  //    posture and UI — ignored while that agent has no stored credential
-  //    or the project no git credential (both set in settings → credentials).
-  //  - Alt+D deletes the selected worktree, through the same confirm dialog
-  //    as the sidebar row's × (Enter confirms — the button holds focus).
+  //  - Alt+N opens the create dialog on the active project with the prompt
+  //    focused, so Alt+N, Enter is a create with every default and Alt+N,
+  //    type, Enter one with an opening prompt.
+  //  - Alt+D stops the selected worktree, through the same stop dialog as
+  //    the sidebar row's menu (Enter confirms — the button holds focus).
   // The ref keeps the single listener reading the current render's state.
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
-  const createDefaults = useCreateDefaults(activeProjectSlug)
-  const createWorktree = useCreateWorktree()
+  const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
   const newWorktree = (): void => {
-    if (!activeProjectSlug || !createDefaults.ready || !createDefaults.hasGitCredential) return
-    const tool = createDefaults.lastTool
-    if (!createDefaults.configured.has(tool)) return
-    const setup = createDefaults.forTool(tool)
-    const modelName = setup.models.find((m) => m.id === setup.model)?.name
-    createWorktree(activeProjectSlug, tool, { ...setup, ...(modelName !== undefined ? { modelName } : {}) })
+    if (activeProjectSlug) openCreateWorktree({ projectSlug: activeProjectSlug, focus: 'prompt' })
   }
   const [confirmDelete, setConfirmDelete] = useState<WorktreeListEntry | null>(null)
   const selectedWorktree = selectedWorktreeId && !pendingDeleteIds.includes(selectedWorktreeId)
@@ -235,9 +222,9 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
       const state = useUiStore.getState()
-      // The settings pane is capturing a rebind — don't act on the keypress
-      // it's recording.
-      if (state.recordingShortcut) return
+      // A rebind being recorded, or the create dialog open: the keypress is
+      // theirs.
+      if (shortcutsSuspended(state)) return
       // Only the project-scoped commands are handled here; terminal-scoped
       // ones (new-shell, kill-terminal, terminal cycles) belong to WorktreeView,
       // so its ids fall through the switch untouched.
@@ -395,6 +382,8 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
             worktrees={scoped}
             groups={scopedGroups}
             provisioning={scopedProvisioning}
+            queued={scopedQueued}
+            held={scopedHeld}
             connected={connected}
             gitAuthFailures={scopedGitAuthFailures}
             onBack={goBackScreen}
@@ -407,6 +396,8 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
           worktrees={scoped}
           groups={scopedGroups}
           provisioning={scopedProvisioning}
+          queued={scopedQueued}
+          held={scopedHeld}
           connected={connected}
           gitAuthFailures={scopedGitAuthFailures}
         />
@@ -421,19 +412,16 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
         <WorktreeView snapshot={snapshot} provisioning={scopedProvisioning} />
       </div>
 
-      {/* Alt+D's confirm. Unlike the sidebar row's × (whose dialog needs no
-          name — you clicked the row), this names its invisible target. */}
-      <ConfirmDialog
-        open={!!confirmDelete}
+      {/* Alt+D's confirm — the same dialog the sidebar row's Stop… opens. */}
+      <StopWorktreeDialog
+        worktree={confirmDelete}
         onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}
-        title={`Stop “${worktreeName(confirmDelete)}”?`}
-        description="Stops and removes the worktree's container. The worktree history and worktree will be saved, and can be restarted."
-        confirmLabel="Stop"
         onConfirm={() => {
           if (confirmDelete) stopWorktreeOptimistic(confirmDelete, rowIds)
           setConfirmDelete(null)
         }}
       />
+      <CreateWorktreeDialog />
     </div>
   )
 }

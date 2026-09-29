@@ -9,8 +9,8 @@
  * name cannot be run, whichever way it arrived.
  *
  * What a caller may NOT do is as deliberate as what it may. An agent can see
- * the project's worktrees, make another one, retitle one, file them into
- * named groups, and stop one — its own included. Stopping is in reach
+ * the project's worktrees, make another one (now, or queued for when one
+ * stops), retitle one, file them into named groups, and stop one — its own included. Stopping is in reach
  * because in yaac it is REVERSIBLE: `stopWorktree` ends the running unit and
  * keeps the checkout, the row, the title, the group and the conversation, so
  * a user can restart whatever an agent wound down. Deleting, restarting and
@@ -24,16 +24,27 @@
 import { decideSpawn } from './spawn-policy'
 import { listActiveWorktrees } from './list'
 import { listWorktreeGroups, resolveGroup } from './groups'
-import { getProjectWorktreeRows, getWorktreeRow, setWorktreeGroup, setWorktreeTitle } from '#db'
+import {
+  getProjectWorktreeRows,
+  getWorktreeRow,
+  listQueuedWorktreeRows,
+  setWorktreeGroup,
+  setWorktreeTitle,
+  type QueuedWorktreeRow,
+} from '#db'
 import { resolveWorktreeInProject } from './resolve'
 import { stopWorktree } from './stop'
+import { queueWorktree } from './queued-worktrees'
 import { ServerError } from '@yaac/shared/errors'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import {
   AGENT_TOOLS,
   MAMA_COMMANDS,
+  MODEL_RE,
+  PERMISSION_MODES,
   type AgentTool,
+  type PermissionMode,
   type MamaCommand,
   type WorktreeListEntry,
 } from '@yaac/shared/types'
@@ -88,6 +99,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   'group-create': [],
   'group-move': ['worktree'],
   models: [],
+  queue: ['worktree', 'tool', 'model', 'permission-mode'],
 }
 
 /**
@@ -133,6 +145,7 @@ export async function runMamaCommand(
       case 'group-create': return await runGroupCreate(caller, request)
       case 'group-move': return await runGroupMove(caller, request)
       case 'models': return await runModels(caller)
+      case 'queue': return await runQueue(caller, request)
     }
   } catch (err) {
     // Anything a command threw (a bad group name, an unreachable substrate)
@@ -143,9 +156,10 @@ export async function runMamaCommand(
 
 /** The caller's project, as it would look in the sidebar. */
 async function runList(caller: MamaCaller): Promise<MamaOutcome> {
-  const [{ worktrees }, groups] = await Promise.all([
+  const [{ worktrees }, groups, queued] = await Promise.all([
     listActiveWorktrees(caller.projectSlug),
     listWorktreeGroups(caller.projectSlug),
+    listQueuedWorktreeRows(caller.projectSlug),
   ])
   const names = new Map(groups.map((g) => [g.groupId, g.name]))
 
@@ -155,6 +169,10 @@ async function runList(caller: MamaCaller): Promise<MamaOutcome> {
   } else {
     lines.push(`Running worktrees in ${caller.projectSlug}:`, '')
     lines.push(...renderWorktrees(worktrees, names, caller.workspaceId))
+  }
+  if (queued.length > 0) {
+    lines.push('', 'Queued worktrees (each starts when what it is under is stopped):', '')
+    lines.push(...renderQueued(queued, caller.workspaceId))
   }
   lines.push('')
   lines.push(groups.length === 0
@@ -201,6 +219,37 @@ function renderWorktrees(
   ]
 }
 
+/**
+ * Queued entries as a tree: each under the worktree it waits on, one level
+ * deeper per link of a chain — so an agent can see what it has queued, and
+ * after what.
+ */
+function renderQueued(rows: QueuedWorktreeRow[], callerId: string): string[] {
+  const children = new Map<string, QueuedWorktreeRow[]>()
+  for (const r of rows) {
+    const parent = r.parentQueuedId ?? r.parentWorktreeId ?? ''
+    children.set(parent, [...(children.get(parent) ?? []), r])
+  }
+  const ids = new Set(rows.map((r) => r.id))
+  const lines: string[] = []
+  const walk = (parent: string, depth: number): void => {
+    for (const r of children.get(parent) ?? []) {
+      const status = r.launchWorktreeId !== undefined ? `launching as ${r.launchWorktreeId.slice(0, 8)}`
+        : r.launchError !== undefined ? `failed: ${flatten(r.launchError, 60)}`
+        : 'queued'
+      lines.push(`${'  '.repeat(depth + 1)}${r.id.slice(0, 8)}  ${r.tool}  ${status}  ${flatten(r.prompt, 60)}`)
+      walk(r.id, depth + 1)
+    }
+  }
+  // The roots are the worktrees entries wait on directly.
+  for (const parent of children.keys()) {
+    if (ids.has(parent)) continue
+    lines.push(`after ${parent.slice(0, 8)}${parent === callerId ? ' (you)' : ''}:`)
+    walk(parent, 0)
+  }
+  return lines
+}
+
 function flatten(text: string, max: number): string {
   const oneLine = text.replace(/\s+/g, ' ').trim()
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`
@@ -244,6 +293,45 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     // here that a script is likely to capture rather than read.
     ? { ok: true, output: decision.workspaceId }
     : { ok: false, error: decision.error }
+}
+
+/**
+ * Queue a worktree to start when its parent stops naturally — by default
+ * the caller, so an agent can say "when I'm done, this picks up from here"
+ * and then `yaac-mama stop` itself. `--worktree` names another parent: a
+ * worktree in this project, or a queued entry to chain after.
+ *
+ * Settings default from the parent, and the posture from the parent too, but
+ * never above the caller's own: an agent may not hand work to something with
+ * more permission than it has.
+ */
+async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const callerRow = await getWorktreeRow(caller.projectSlug, caller.workspaceId)
+  if (!callerRow) return { ok: false, error: 'this worktree has no recorded permission mode' }
+  const { args } = request
+  if (args.tool !== undefined && !(AGENT_TOOLS as readonly string[]).includes(args.tool)) {
+    return { ok: false, error: `invalid tool '${args.tool}' (expected one of: ${AGENT_TOOLS.join(', ')})` }
+  }
+  if (args.model !== undefined && !MODEL_RE.test(args.model)) {
+    return { ok: false, error: `invalid model '${args.model}'` }
+  }
+  const permissionMode = args['permission-mode']
+  if (permissionMode !== undefined && !(PERMISSION_MODES as readonly string[]).includes(permissionMode)) {
+    return {
+      ok: false,
+      error: `invalid permission mode '${permissionMode}' (expected one of: ${PERMISSION_MODES.join(', ')})`,
+    }
+  }
+  const parent = args.worktree?.trim() || caller.workspaceId
+  const entry = await queueWorktree(caller.projectSlug, {
+    parent,
+    prompt: request.body,
+    ...(args.tool !== undefined ? { tool: args.tool as AgentTool } : {}),
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(permissionMode !== undefined ? { permissionMode: permissionMode as PermissionMode } : {}),
+  }, { ceiling: callerRow.permissionMode })
+  // The id alone, so `a=$(yaac-mama queue …)` can chain the next one after it.
+  return { ok: true, output: entry.id }
 }
 
 /**

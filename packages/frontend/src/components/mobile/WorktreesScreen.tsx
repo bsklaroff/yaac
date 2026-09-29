@@ -9,7 +9,9 @@ import { UsageBadge } from '#components/UsageBadge'
 import { WorktreeList } from '#components/WorktreeList'
 import type {
   GitAuthFailure,
+  HeldWorktreeEntry,
   ProvisioningWorktreeEntry,
+  QueuedWorktreeEntry,
   WorktreeGroupSummary,
   WorktreeListEntry,
 } from '@yaac/shared/types'
@@ -27,6 +29,8 @@ export function WorktreesScreen({
   worktrees,
   groups,
   provisioning,
+  queued,
+  held,
   connected,
   gitAuthFailures,
   onBack,
@@ -39,6 +43,10 @@ export function WorktreesScreen({
   /** The active project's sidebar groups. */
   groups: WorktreeGroupSummary[]
   provisioning: ProvisioningWorktreeEntry[]
+  /** The active project's queued worktrees, and the stopped worktrees they
+   *  still wait on. */
+  queued: QueuedWorktreeEntry[]
+  held: HeldWorktreeEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
   gitAuthFailures: GitAuthFailure[]
@@ -81,6 +89,8 @@ export function WorktreesScreen({
         worktrees={worktrees}
         groups={groups}
         provisioning={provisioning}
+        queued={queued}
+        held={held}
       />
     </>
   )

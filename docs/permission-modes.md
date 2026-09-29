@@ -228,7 +228,9 @@ tool can give. A restart's posture lands the same way.
 
 ### A spawned worktree's posture
 
-`yaac-mama create` (the spawn policy) does not go through that chain. It
+`yaac-mama create` (the spawn policy) and `yaac-mama queue` (docs/queued-worktrees.md)
+do not go through that chain. Both resolve their posture with the same
+helper, `agentPermissionMode` in the spawn policy. It
 starts from the **caller's** posture, which is read from the caller's row
 and never taken from the request, and it treats that posture as a ceiling. A
 sibling may run at most as permissively as its parent, in the order `bypass >
@@ -243,10 +245,16 @@ approved (see "Following the agent"), and the sibling shows as waiting.
 
 A named `--permission-mode` above the ceiling, or one the tool lacks, is
 refused. This is the last point where a refusal can reach the caller,
-because the create itself runs detached. An unnamed posture that the tool lacks
-steps down to the most permissive posture the tool has below the ceiling. If
-there is none, for example pi under a caller that is not in `bypass`, it is
-refused.
+because the create itself runs detached. An unnamed posture is inherited — the
+caller's own for `create`, the parent's for `queue` (a sibling worktree, or
+the stored posture of a queued worktree it chains after) — and steps down to
+the most permissive posture the tool has at or below both it and the
+ceiling. If there is none, for example pi under a caller that is not in
+`bypass`, it is refused.
+
+The ceiling limits agents only. The webapp and the `/worktree/queue/*`
+routes are the user's, and a user editing a queued worktree an agent made is
+not held to the agent's ceiling.
 
 The ceiling is the caller's posture as its row holds it, which follows the
 running agent either way (see "Following the agent"): a caller that moved
@@ -275,8 +283,8 @@ dropped rather than launched.
 The agent mode has no server-side rung: an omitted mode is `tui`, because the
 CLI can only present a terminal and would otherwise print "open it in the
 web app" instead of attaching. The webapp, which can present both, sends the
-remembered mode itself — from the create form and from Alt+N alike, which
-both submit exactly what the form shows untouched. `resolveToolCreateDefaults`
+remembered mode itself: the create dialog (which Alt+N opens) submits
+exactly what it shows untouched. `resolveToolCreateDefaults`
 in `@yaac/shared/types` is the one function both ends answer "what would an
 untouched create run" with, so the form never shows one thing and launches
 another.

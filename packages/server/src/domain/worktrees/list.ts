@@ -109,6 +109,7 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
       prompt: links[0]?.firstPrompt,
       title: row?.title,
       groupId: row?.groupId,
+      ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
     }
     if (w.phase === 'terminating') {
       // A distinct, non-interactive placeholder: no agents, no ports, and a

@@ -43,9 +43,8 @@ export interface CreateDefaults {
 
 /**
  * The create form's defaults for a project, from the project's remembered
- * choices in the snapshot and each credential's model list. The popover opens
- * on them and Alt+N submits them as they stand, which is what makes the
- * shortcut and "open, Enter" the same create.
+ * choices in the snapshot and each credential's model list. The create dialog
+ * opens on them, so "open, Enter" creates with them as they stand.
  */
 export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
   const snapshot = useSnapshot()
@@ -88,12 +87,12 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
 export function useCreateWorktree(): (
   projectSlug: string,
   tool: AgentTool,
-  setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'mode'> & { modelName?: string },
+  setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'mode'> & { modelName?: string; prompt?: string },
   branch?: string,
 ) => void {
   const provision = useProvisionWorktree()
   return useCallback((projectSlug, tool, setup, branch) => {
-    const { model, modelName, permissionMode, mode } = setup
+    const { model, modelName, permissionMode, mode, prompt } = setup
     provision(projectSlug, tool, 'create', randomUUID(),
       (sid, onProgress) =>
         createWorktree(projectSlug, tool, onProgress, sid, {
@@ -103,6 +102,7 @@ export function useCreateWorktree(): (
           ...(model !== '' ? { model } : {}),
           permissionMode,
           mode,
+          ...(prompt ? { prompt } : {}),
         }),
       undefined,
       model !== '' ? { model, ...(modelName !== undefined ? { modelName } : {}) } : undefined)
