@@ -29,7 +29,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   spawnSshAgent: mockSpawnSshAgent,
   killPids: mockKillPids,
 }))
-import { launchWorkspace } from '#drivers/containerless/launch'
+import { AGENT_SESSION_VARS, launchWorkspace } from '#drivers/containerless/launch'
 import { _resetRegistryForTests, listWorkspaces } from '#drivers/containerless/registry'
 import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 
@@ -482,6 +482,28 @@ describe('launchWorkspace', () => {
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(call.env.HOME).toBe(home)
     expect(await fsp.realpath(path.join(home, '.claude'))).toBe(await fsp.realpath(claudeSrc))
+  })
+
+  it('drops the markers of the agent session that started the server', async () => {
+    // A server started from inside a claude session carries that session's
+    // child markers, and a claude that inherits CLAUDE_CODE_CHILD_SESSION
+    // stops saving its transcript.
+    const saved = { ...process.env }
+    for (const key of AGENT_SESSION_VARS) process.env[key] = '1'
+    process.env.GIT_EDITOR = 'true'
+    try {
+      await launchWorkspace(spec())
+    } finally {
+      process.env = saved
+    }
+    const call = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    for (const key of AGENT_SESSION_VARS) {
+      expect(call.env[key], `${key} reached the workspace`).toBeUndefined()
+    }
+    // The session's no-op editor goes too, or a terminal's `git commit`
+    // aborts on an empty message.
+    expect(call.env.GIT_EDITOR).toBeUndefined()
   })
 
   it('lets a caller\'s own env win over the inherited host value', async () => {
