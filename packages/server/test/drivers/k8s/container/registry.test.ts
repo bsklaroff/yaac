@@ -1,3 +1,5 @@
+import crypto from 'node:crypto'
+import fs from 'node:fs'
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -11,7 +13,14 @@ interface FakeChild extends EventEmitter {
   unref: () => void
   kill: () => void
 }
-const spawnedChildren: Array<{ file: string; args: string[]; child: FakeChild }> = []
+interface SpawnedChild {
+  file: string
+  args: string[]
+  child: FakeChild
+  /** The `--authfile` as the child saw it: content and mode, read at spawn. */
+  authFile?: { path: string; content: string; mode: number }
+}
+const spawnedChildren: SpawnedChild[] = []
 let spawnCloseCode = 0
 /** Local port the fake `kubectl port-forward` reports listening on. */
 const FORWARD_PORT = 41234
@@ -43,7 +52,15 @@ vi.mock('node:child_process', () => ({
     child.stderr = Object.assign(new EventEmitter(), { unref: vi.fn() })
     child.unref = vi.fn()
     child.kill = vi.fn()
-    spawnedChildren.push({ file, args, child })
+    const authPath = args.includes('--authfile') ? args[args.indexOf('--authfile') + 1] : null
+    spawnedChildren.push({
+      file,
+      args,
+      child,
+      authFile: authPath
+        ? { path: authPath, content: fs.readFileSync(authPath, 'utf8'), mode: fs.statSync(authPath).mode & 0o777 }
+        : undefined,
+    })
     if (args[0] === 'port-forward') {
       // A live port-forward announces its listener and then stays up.
       process.nextTick(() => {
@@ -80,9 +97,48 @@ import {
   registryRef,
   registryTagState,
 } from '#drivers/k8s/container'
-// State-reset hook for the shared port-forward registry (module state that
-// would otherwise leak a live child between cases), not a unit under test.
+// State-reset hooks for the shared port-forward registry and the memoized
+// grant key (module state that would otherwise leak between cases), not
+// units under test.
 import { _resetPortForwardsForTests } from '#drivers/k8s/substrate/port-forward'
+import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
+
+/** The cluster's grant key, as the `kubectl get secret` below serves it. */
+const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+const GRANT_SECRET = JSON.stringify({
+  data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
+})
+
+/**
+ * A push's `--authfile`, checked the way the registry's write gate checks
+ * its grant: for the engine's endpoint, signed by the cluster key,
+ * unexpired, and for every repo (`*`). Private while it exists, and gone
+ * once the push is.
+ */
+function expectAdminAuthFile(push: SpawnedChild, endpoint: string): void {
+  const authFile = push.authFile!
+  expect(authFile.mode).toBe(0o600)
+  expect(fs.existsSync(authFile.path)).toBe(false)
+  const { auths } = JSON.parse(authFile.content) as { auths: Record<string, { auth: string }> }
+  expect(Object.keys(auths)).toEqual([endpoint])
+  const basic = Buffer.from(auths[endpoint].auth, 'base64').toString()
+  expect(basic.slice(0, basic.indexOf(':'))).toBe('yaac')
+  const password = basic.slice(basic.indexOf(':') + 1)
+  const dot = password.lastIndexOf('.')
+  const payload = password.slice(0, dot)
+  expect(crypto.verify('sha256', Buffer.from(payload), GRANT_KEY, Buffer.from(password.slice(dot + 1), 'base64url')))
+    .toBe(true)
+  const [, expiry, scope] = payload.split('|')
+  expect(scope).toBe('*')
+  expect(Number(expiry)).toBeGreaterThan(Date.now() / 1000)
+}
+
+/** A push's argv with the (verified) authfile pair removed. */
+function withoutAuthFile(push: SpawnedChild, endpoint = ENDPOINT): string[] {
+  expectAdminAuthFile(push, endpoint)
+  const i = push.args.indexOf('--authfile')
+  return [...push.args.slice(0, i), ...push.args.slice(i + 2)]
+}
 
 const fetchMock = vi.fn<typeof fetch>()
 
@@ -109,7 +165,7 @@ function stubPlatform(platform: NodeJS.Platform): void {
 }
 
 /** Only the podman children (the port-forward child is not a push). */
-function podmanPushes(): Array<{ file: string; args: string[] }> {
+function podmanPushes(): SpawnedChild[] {
   return spawnedChildren.filter((c) => c.file === 'podman')
 }
 
@@ -119,6 +175,10 @@ function forwardArgs(): string[][] {
 
 beforeEach(() => {
   execFileMock.mockReset()
+  execFileMock.mockImplementation((file, args) => (args[0] === 'get' && args[1] === 'secret'
+    ? Promise.resolve({ stdout: GRANT_SECRET, stderr: '' })
+    : Promise.reject(new Error(`unexpected ${file} ${args.join(' ')}`))))
+  _resetRegistryGrantKeyForTests()
   fetchMock.mockReset()
   spawnedChildren.length = 0
   spawnCloseCode = 0
@@ -281,7 +341,10 @@ describe('pushImageToRegistry', () => {
     // Blob storage is keyed by repository path, so they name the same bytes.
     expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
     expect(podmanPushes()).toHaveLength(1)
-    expect(podmanPushes()[0].args).toEqual([
+    // With an admin grant: the registry's write gate refuses a write
+    // without one. In a file, never argv, where any local `ps` reads it.
+    expect(podmanPushes()[0].args.join(' ')).not.toContain('--creds')
+    expect(withoutAuthFile(podmanPushes()[0])).toEqual([
       'push', '--tls-verify=false', 'yaac-tools:abc', `${ENDPOINT}/yaac-tools:abc`,
     ])
   })
@@ -296,7 +359,7 @@ describe('pushImageToRegistry', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const ref = await pushImageToRegistry('yaac-tools:abc')
     expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
-    expect(podmanPushes()[0].args).toEqual([
+    expect(withoutAuthFile(podmanPushes()[0], VM_ENDPOINT)).toEqual([
       'push', '--tls-verify=false', 'yaac-tools:abc', `${VM_ENDPOINT}/yaac-tools:abc`,
     ])
     // The host is swapped, the PORT is not: it is a host port either way, and
@@ -314,12 +377,14 @@ describe('pushImageToRegistry', () => {
     await expect(pushImageToRegistry('yaac-tools:abc')).rejects.toThrow(
       'podman push exited with code 125',
     )
+    // The grant does not outlive a failed push either.
+    expect(fs.existsSync(podmanPushes()[0].authFile!.path)).toBe(false)
   })
 
   it('passes --compression-format through (trust-split zstd parent pushes)', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     await pushImageToRegistry('yaac-tools:abc', { compressionFormat: 'zstd' })
-    expect(podmanPushes()[0].args).toEqual([
+    expect(withoutAuthFile(podmanPushes()[0])).toEqual([
       'push', '--tls-verify=false', '--compression-format', 'zstd',
       'yaac-tools:abc', `${ENDPOINT}/yaac-tools:abc`,
     ])

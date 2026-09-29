@@ -102,8 +102,7 @@ The removal runs on the node: a privileged `hostPID` pod calls
 `nsenter -t 1 -m -- crictl -t 10m rmi` on the node's own `crictl`, the same
 way the gVisor installer reaches the node's systemctl. That pod is node
 root, so it runs the digest-pinned upstream `registry:2` (busybox has
-`nsenter`) and never a tag in the main registry. A builder pod can
-overwrite any tag there (docs/trust-split-builds.md "Open risk"), but not a
-digest. The timeout is not
-decoration. crictl's default is 2 s, and a multi-GB delete under it reports
+`nsenter`) and never a tag in the main registry: a digest ref cannot be
+redirected by an overwritten tag, whoever manages to write one. The timeout
+is not decoration. crictl's default is 2 s, and a multi-GB delete under it reports
 `DeadlineExceeded` and frees almost nothing.

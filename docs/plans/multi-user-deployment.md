@@ -328,17 +328,16 @@ two are dubious even single-user):
   every running sibling worktree — under ownership, that is a project
   *write* (owner/team-gated); non-owners get per-worktree, non-persistent
   approvals.
-- **Builder pods can write any tag in the shared registry.** Builders push
-  to the main registry (`yaac-registry.yaac.svc`), an unauthenticated
-  `registry:2` that accepts pushes to any `repo:tag` from pods running
-  agent-authored Dockerfile `RUN` steps; docs/trust-split-builds.md states
-  this open risk plainly, and the per-project build-cache repo says its
-  confinement "is not a boundary". Single-user it is self-poisoning;
-  multi-user it is one user's *agent* overwriting the image another user's
-  next worktree boots — and consumption is by content-hash *tag*, so an
-  overwritten tag is what the next pod pulls. Containment is write grants
-  on the main registry, in docs/plans/isolation-groundwork.md workstream 5,
-  which ships before this plan's phase 3.
+- **Builder pods write the shared registry under a per-project grant.**
+  Every write to the main registry needs a signed grant naming the repos
+  it covers, and a builder's names only the layer it builds and its
+  project's step-cache repo (docs/trust-split-builds.md "The write gate").
+  That closes cross-project writes, but not cross-user ones inside a
+  communal project: `yaac-user-<id>` is built from each user's own
+  `Dockerfile.user`, yet every user's builder may write it, and the image
+  one user's agent pushes there is what another user's next worktree
+  boots. Phase 3 keys the user-layer repo — and so its grant — by
+  (project id, owner).
 - **The per-project registries are a cross-user channel too.** They are
   not on the builder path, but they are written from *inside* worktree
   sandboxes (nested-image salvage), unauthenticated, by every worktree of
@@ -346,8 +345,7 @@ two are dubious even single-user):
   every nested worktree of the project — upstream names included. Within a
   communal project that is one user's agent choosing the images another
   user's nested worktree resolves locally. Phase 3 derives the registry
-  name and store path from (project id, owner) rather than the project id
-  (docs/plans/isolation-groundwork.md 5.6).
+  name and store path from (project id, owner) rather than the project id.
 
 **Stays shared by design** (availability or teammate-trust class, named
 rather than fixed):
@@ -435,8 +433,8 @@ flaws. Two structural facts frame all of them:
 ### Preconditions — pre-existing bugs that make ownership meaningless until fixed
 
 This one is exploitable in the *current* single-user server too; ownership
-cannot be enforced on top of it. docs/plans/isolation-groundwork.md
-workstream 1 plans it (1.6). The rest of that list — exact worktree-id
+cannot be enforced on top of it. docs/plans/worktree-reference-clones.md
+delivers it. The rest of that list — exact worktree-id
 resolution, the `.cached-packages` mount, `cacheVolumes` key traversal and
 the ungated `POST /auth/fake` — has shipped.
 
@@ -500,7 +498,7 @@ the ungated `POST /auth/fake` — has shipped.
   control plane with it, which is the trust class handoff means anyway —
   the delegate can already type into the agent. Separately, the port
   policy (`lib/port-policy.ts`) now refuses yaac's infra range in config
-  `portForward` and on the k8s dial (isolation-groundwork 1.3); a
+  `portForward` and on the k8s dial; a
   config-declared *sensitive* port such as 9229 is still honored on
   purpose, and the owner gate above is what limits who reaches it.
 
@@ -657,14 +655,14 @@ processes, no new arrows:
 
 ## Phasing
 
-0. **Precondition hardening — ship now, independent of tenancy.** Planned
-   in docs/plans/isolation-groundwork.md: the audit's preconditions
-   (workstream 1, with the read-only `/repo/.git` delivered by
-   docs/plans/worktree-reference-clones.md), plus globally unique worktree
+0. **Precondition hardening — shipped, bar one.** Exact worktree-id
+   resolution, the audit's other preconditions, globally unique worktree
    ids, server I/O confined on sandbox-writable paths, immutable project
    ids for everything named outside the data dir, and main-registry write
-   grants. None of it needs a `Principal`; all of it is required before
-   any owner check is meaningful.
+   grants have all shipped; the read-only `/repo/.git` is
+   docs/plans/worktree-reference-clones.md. None of it needs a
+   `Principal`; all of it is required before any owner check is
+   meaningful.
 1. **Identity without tokens — shipped** (see "Identity terminates in
    `api/http`" above). The `whois` form follows.
 2. **Principal plumbing, no behavior change.** The `Principal` type,
@@ -681,7 +679,7 @@ processes, no new arrows:
    symlink set), the proxy's credential-set keying (injection, refresh
    write-back, git tokens, ssh-agent filtering), per-(project, owner)
    prewarm, the audit's scoping fixes (allow-host/forward-port/env persist
-   as project writes, builder registry containment, admin-gated user
+   as project writes, owner-keyed user-layer repos and grants, admin-gated user
    Dockerfile + build-files, per-user preference rows including the git
    identity), the credential/auth-daemon fixes (per-principal daemon
    socket, owner-scoped `/auth/*`), the spawn owner inheritance +

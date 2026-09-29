@@ -53,6 +53,7 @@ import {
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
   pushImageToRegistry,
+  registryEndpoint,
   registryHost,
   registryReachable,
 } from '#drivers/k8s/container'
@@ -236,7 +237,7 @@ export async function runClusterCheck(
   // registry Deployment — so a failure is either an absent Deployment or
   // an apiserver that will not forward, never a host networking question.
   if (await registryReachable()) {
-    add({ name: 'registry', status: 'pass', detail: `serving as ${registryHost()}` })
+    add(await registryGateResult())
   } else {
     add({
       name: 'registry', status: 'fail',
@@ -748,6 +749,40 @@ async function runNodeTuningCheck(): Promise<CheckResult> {
       detail: `could not verify node tuning (${truncate(err)})`,
       fix: nodeTuningFix(),
     }
+  }
+}
+
+/**
+ * The registry check once it answers: is its write gate up? An anonymous
+ * upload must be refused, or any builder pod can overwrite the trusted
+ * chain — and a registry rolled by an install that predates the gate is
+ * open while still answering every read. The upload is only started,
+ * never finished; on an open registry that leaves an empty upload session
+ * its own purge reclaims.
+ */
+async function registryGateResult(): Promise<CheckResult> {
+  let status: number | null = null
+  try {
+    const res = await fetch(`http://${await registryEndpoint()}/v2/yaac-cluster-probe/blobs/uploads/`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5_000),
+    })
+    status = res.status
+  } catch { /* reported below */ }
+  if (status === 401) {
+    return { name: 'registry', status: 'pass', detail: `serving as ${registryHost()}; writes need a grant` }
+  }
+  if (status !== null && status >= 200 && status < 300) {
+    return {
+      name: 'registry', status: 'fail',
+      detail: `the in-cluster registry ${registryHost()} accepts anonymous writes — its write gate is missing`,
+      fix: 'An install that predates the gate rolled it. Re-apply it with:\n  yaac cluster install',
+    }
+  }
+  return {
+    name: 'registry', status: 'warn',
+    detail: `serving as ${registryHost()}, but its write gate could not be verified `
+      + `(${status === null ? 'no answer' : `HTTP ${String(status)}`} to an anonymous upload)`,
   }
 }
 
@@ -1766,9 +1801,9 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_PROXY_OPEN || echo NP_PROXY_LOCKED'
       : ''
 
-    // Third leg, same pod: the registry is unauthenticated with mutable
-    // tags and no path ACLs, so "a worktree cannot reach it" is a security
-    // property and worth asserting rather than assuming. Addressed by
+    // Third leg, same pod: the registry serves every image anonymously and
+    // is the bus the trusted chain travels on, so "a worktree cannot reach
+    // it" is a security property and worth asserting rather than assuming. Addressed by
     // ClusterIP, not by name — a DNS failure would otherwise read as a
     // pass. Absent Service → skip (nothing to reach).
     let registryIp: string | null = null
@@ -1867,8 +1902,8 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
     if (logs.includes('NP_REGISTRY_OPEN')) {
       return {
         name: 'egress', status: 'fail',
-        detail: 'a session-labeled pod reached the image registry directly — it is '
-          + 'unauthenticated with mutable tags, so any session could overwrite any image',
+        detail: 'a session-labeled pod reached the image registry directly — the bus '
+          + 'every worktree image and the trusted chain travel on',
         fix: 'Session egress must default-deny everything but the node\'s netd '
           + 'listener range, and the registry admits only the node and builder '
           + 'pods. Restart the yaac server so both policies are re-applied.',

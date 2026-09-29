@@ -15,11 +15,13 @@
  *      tag so `--build-arg BASE_IMAGE=P` matches host builds,
  *   3. stream the build context in as a tar over `kubectl exec -i`,
  *      honoring `.containerignore` exactly like `contextHash()`,
- *   4. `podman build --isolation chroot` with registry step cache
+ *   4. hand the pod a registry write grant for exactly this layer's repo and
+ *      the project's step-cache repo,
+ *   5. `podman build --isolation chroot` with registry step cache
  *      (`--cache-from`/`--cache-to`, per-project repo),
- *   5. delta push the product (parent blobs cross-repo-mount, never
+ *   6. delta push the product (parent blobs cross-repo-mount, never
  *      re-upload),
- *   6. delete the pod (the reap sweep catches leaks).
+ *   7. delete the pod (the reap sweep catches leaks).
  *
  * The registry is the only image bus: parents come from it, products and
  * per-step cache images go back to it, and the host store never sees these
@@ -30,7 +32,8 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { registryHost } from '#drivers/k8s/container'
+import { Readable } from 'node:stream'
+import { registryAuthFile, registryHost } from '#drivers/k8s/container'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#lib/build-context'
 import {
   EGRESS_WORLD_DENY_NAME,
@@ -147,13 +150,24 @@ export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
  * Named by the project's immutable id, so a project re-added under a freed
  * slug never reads the old one's entries as cache hits.
  *
- * The confinement is over WHERE THIS BUILD READS AND WRITES, not a
- * boundary: the registry is unauthenticated with no path ACLs, so a
- * hostile RUN step can push to another project's cache repo by hand. See
- * the open risk in docs/trust-split-builds.md.
+ * The build's write grant (`builderGrantRepos`) names this repo, and the
+ * registry's write gate refuses a write to any other project's.
  */
 export function buildCacheRepo(projectId: string): string {
   return `yaac-buildcache-${projectId}`
+}
+
+/** In-pod path of the build's registry authfile (`--authfile`). */
+export const BUILDER_AUTHFILE = '/run/yaac-registry-auth.json'
+
+/**
+ * The repositories a layer's build may write: the product's own repo and
+ * the project's step-cache repo. The grant a builder pod holds names
+ * exactly these, so a hostile `RUN` step that reads it can write nothing a
+ * different project — or the trusted chain — consumes.
+ */
+function builderGrantRepos(layer: ImageLayer, projectId: string): string[] {
+  return [layer.tag.slice(0, layer.tag.lastIndexOf(':')), buildCacheRepo(projectId)]
 }
 
 /** Builder pod name: hash of the first layer tag + entropy, so concurrent
@@ -293,6 +307,7 @@ export function builderBuildArgs(
     // instead of a nested OCI runtime — the spike-validated mode.
     '--isolation', 'chroot',
     '--tls-verify=false',
+    '--authfile', BUILDER_AUTHFILE,
     '-t', layer.tag,
     '-f', `${BUILDER_CONTEXT_DIR}/${opts.dockerfileRel}`,
     '--cache-from', cacheRef,
@@ -654,6 +669,19 @@ async function runLayerBuild(
   const plan = await planBuildContext(layer.context, layer.dockerfile)
   await streamContextToPod(pod, layer.context, plan.files, execOpts)
 
+  // Over stdin, never argv. Valid as long as the pod can live: a pod reused
+  // across layers gets a fresh grant for each one.
+  const authFile = await registryAuthFile(
+    clusterHost,
+    builderGrantRepos(layer, ctx.project.id),
+    BUILDER_ACTIVE_DEADLINE_SECONDS + 60,
+  )
+  await execInBuilderPod(
+    pod,
+    ['sh', '-c', `umask 077 && cat > ${BUILDER_AUTHFILE}`],
+    { ...execOpts, input: Readable.from([authFile]), idleTimeoutMs: BUILDER_CONTEXT_IDLE_TIMEOUT_MS },
+  )
+
   await execInBuilderPod(
     pod,
     ['podman', ...builderBuildArgs(layer, {
@@ -672,7 +700,10 @@ async function runLayerBuild(
   // a HEAD here would cost an exec to learn what we already know.
   await execInBuilderPod(
     pod,
-    ['podman', 'push', '--tls-verify=false', layer.tag, `${clusterHost}/${layer.tag}`],
+    [
+      'podman', 'push', '--tls-verify=false', '--authfile', BUILDER_AUTHFILE,
+      layer.tag, `${clusterHost}/${layer.tag}`,
+    ],
     { ...execOpts, idleTimeoutMs: BUILDER_PUSH_IDLE_TIMEOUT_MS },
   )
 }

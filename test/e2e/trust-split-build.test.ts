@@ -23,11 +23,14 @@ import { imageExists } from '@yaac/server/drivers/k8s/container/runtime'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
+  registryEndpoint,
   registryHasTag,
   registryHost,
   registryReachable,
   registryRef,
+  registryTagState,
 } from '@yaac/server/drivers/k8s/container/registry'
+import { registryGrant } from '@yaac/server/drivers/k8s/container/registry-grant'
 import {
   MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
@@ -208,6 +211,76 @@ describe('trust-split builds', () => {
     expect(deploy?.status?.readyReplicas).toBeGreaterThan(0)
     await expect(registryReachable()).resolves.toBe(true)
   }, 120_000)
+
+  it('gates every registry write on a signed grant for the repo it writes', async () => {
+    // Throwaway project-shaped repos: ids no project holds, so the main
+    // registry's GC reclaims them like any removed project's.
+    const [idA, idB] = [crypto.randomUUID(), crypto.randomUUID()]
+    const base = `http://${await registryEndpoint()}`
+    const basic = (password: string): string =>
+      `Basic ${Buffer.from(`yaac:${password}`).toString('base64')}`
+    const grantA = basic(await registryGrant([`yaac-user-${idA}`], 600))
+    const startUpload = async (repo: string, authorization?: string): Promise<Response> =>
+      fetch(`${base}/v2/${repo}/blobs/uploads/`, {
+        method: 'POST',
+        headers: authorization ? { authorization } : {},
+      })
+
+    // Reads need nothing: the catalog, and a manifest HEAD of the tag the
+    // builder pods themselves boot from.
+    expect((await fetch(`${base}/v2/_catalog`)).status).toBe(200)
+    await expect(registryTagState('podman-stable:v5.5')).resolves.toBe('present')
+
+    // A project grant pushes a whole image into the repo it names.
+    const config = Buffer.from('{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}')
+    const digest = `sha256:${crypto.createHash('sha256').update(config).digest('hex')}`
+    const started = await startUpload(`yaac-user-${idA}`, grantA)
+    expect(started.status).toBe(202)
+    const location = new URL(started.headers.get('location')!, base)
+    location.searchParams.set('digest', digest)
+    const blob = await fetch(location, {
+      method: 'PUT',
+      headers: { authorization: grantA, 'content-type': 'application/octet-stream' },
+      body: config,
+    })
+    expect(blob.status).toBe(201)
+    const manifest = await fetch(`${base}/v2/yaac-user-${idA}/manifests/gate`, {
+      method: 'PUT',
+      headers: { authorization: grantA, 'content-type': 'application/vnd.oci.image.manifest.v1+json' },
+      body: JSON.stringify({
+        schemaVersion: 2,
+        mediaType: 'application/vnd.oci.image.manifest.v1+json',
+        config: { mediaType: 'application/vnd.oci.image.config.v1+json', digest, size: config.length },
+        layers: [],
+      }),
+    })
+    expect(manifest.status).toBe(201)
+    await expect(registryTagState(`yaac-user-${idA}:gate`)).resolves.toBe('present')
+
+    // The same grant writes nothing else: another project's repo, the
+    // trusted chain, a mirror.
+    for (const repo of [`yaac-user-${idB}`, 'yaac-base', 'podman-stable']) {
+      expect((await startUpload(repo, grantA)).status, repo).toBe(403)
+    }
+    // Nor a repo nested under its own: registry:2 would name this manifest's
+    // repo `yaac-user-<A>/blobs/x`.
+    const nested = await fetch(`${base}/v2/yaac-user-${idA}/blobs/x/manifests/gate`, {
+      method: 'PUT',
+      headers: { authorization: grantA, 'content-type': 'application/vnd.oci.image.index.v1+json' },
+      body: JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.index.v1+json', manifests: [] }),
+    })
+    expect(nested.status).toBe(403)
+    // No grant, an expired one, and a DELETE under any grant are refused.
+    expect((await startUpload(`yaac-user-${idA}`)).status).toBe(401)
+    const expired = basic(await registryGrant([`yaac-user-${idA}`], -60))
+    expect((await startUpload(`yaac-user-${idA}`, expired)).status).toBe(401)
+    const admin = basic(await registryGrant('*', 600))
+    const del = await fetch(`${base}/v2/yaac-user-${idA}/manifests/gate`, {
+      method: 'DELETE',
+      headers: { authorization: admin },
+    })
+    expect(del.status).toBe(403)
+  }, 60_000)
 
   it('reserves yaac.role=builder for the server ServiceAccount alone', async () => {
     await ensureBuilderRoleGuard()

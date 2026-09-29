@@ -37,6 +37,7 @@ vi.mock('#drivers/k8s/cluster/builder-image', () => ({
 
 vi.mock('#drivers/k8s/container/registry', () => ({
   REGISTRY_NAMESPACE: 'yaac',
+  registryEndpoint: vi.fn().mockResolvedValue('127.0.0.1:41234'),
   registryReachable: vi.fn().mockResolvedValue(true),
   registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
   registryRef: vi.fn((tag: string) => `yaac-registry.yaac.svc.cluster.local:5000/${tag}`),
@@ -450,6 +451,10 @@ function stage(overrides: { run?: RunMock; registryReachable?: boolean } = {}): 
   return { run, apply: mockApply, pushImage: mockPush }
 }
 
+/** What the registry answers an anonymous upload; null for no answer. */
+let gateStatus: number | null = 401
+const gateProbes: Array<{ url: string; method?: string }> = []
+
 function byName(results: CheckResult[], name: string): CheckResult | undefined {
   return results.find((r) => r.name === name)
 }
@@ -481,9 +486,19 @@ describe('runClusterCheck', () => {
     // vapAvailable()'s kubectl probe answers unless a test overrides.
     mockRetry.mockReset()
     mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    // The registry's write gate refuses an anonymous upload.
+    gateStatus = 401
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      gateProbes.push({ url, method: init?.method })
+      return gateStatus === null
+        ? Promise.reject(new Error('ECONNRESET'))
+        : Promise.resolve({ status: gateStatus } as Response)
+    }))
+    gateProbes.length = 0
   })
 
   afterEach(async () => {
+    vi.unstubAllGlobals()
     await cleanupTempDir(tmpDir)
   })
 
@@ -1708,6 +1723,30 @@ describe('runClusterCheck', () => {
     // Fail, not warn: the guard refuses to apply without the API, so no
     // worktree image can be built at all.
     expect(ok).toBe(false)
+  })
+
+  it('fails the registry check when an anonymous write is accepted', async () => {
+    stage()
+    const healthy = byName((await runClusterCheck()).results, 'registry')
+    expect(healthy).toMatchObject({ status: 'pass' })
+    expect(healthy?.detail).toContain('writes need a grant')
+    // Probed with a bare upload start through this process's endpoint.
+    expect(gateProbes).toEqual([
+      { url: 'http://127.0.0.1:41234/v2/yaac-cluster-probe/blobs/uploads/', method: 'POST' },
+    ])
+
+    // An open registry answers every read, so only a write shows that an
+    // older install rolled it without the gate.
+    gateStatus = 202
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    expect(byName(results, 'registry')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'registry')?.fix).toContain('yaac cluster install')
+
+    gateStatus = null
+    const unverified = byName((await runClusterCheck()).results, 'registry')
+    expect(unverified).toMatchObject({ status: 'warn' })
+    expect(unverified?.detail).toContain('no answer')
   })
 
   it('fails the registry check with repair instructions when nothing answers', async () => {
