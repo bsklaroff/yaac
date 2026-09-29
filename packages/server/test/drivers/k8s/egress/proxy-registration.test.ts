@@ -24,7 +24,7 @@ import {
   buildWorktreeRegistration,
   deregisterWorkspaceEgress,
   reconcileRegistrationGc,
-  registerWorkspace,
+  registerWorkspaceEgress,
   type WorktreeRegistration,
 } from '#drivers/k8s/egress/proxy-registration'
 import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#lib/allowed-hosts'
@@ -238,12 +238,12 @@ describe('applyWorktreeRegistration', () => {
   })
 })
 
-describe('registerWorkspace', () => {
+describe('registerWorkspaceEgress', () => {
   // The caller supplies decisions — which config, tool and remote apply —
   // and this is where they become an allowlist and a rule set. That split is
   // the point of the verb, so it is what the test pins.
-  it('assembles the registration from the caller’s decisions and applies it', async () => {
-    await registerWorkspace({
+  it('assembles the registration from the caller’s decisions, applies it, and answers with it', async () => {
+    const written = await registerWorkspaceEgress({
       workspaceId: 'w1',
       projectSlug: 'demo',
       tool: 'codex',
@@ -264,13 +264,14 @@ describe('registerWorkspace', () => {
     // a patch, so an incomplete one would leave the workspace reaching less
     // than it should (fail-closed, but wrongly).
     expect(state.allowedHosts).toEqual(expect.arrayContaining([...DEFAULT_ALLOWED_HOSTS]))
+    expect(written).toEqual(state)
   })
 
-  // A retooled spare re-registers rather than being patched, so the caller
-  // has to hear a failed registration — it is what taints the spare.
+  // A claimed spare re-registers rather than being patched, so the caller
+  // has to hear a failed registration — it is what fails the claim.
   it('propagates a failed registration', async () => {
     mockApply.mockRejectedValue(new Error('apiserver down'))
-    await expect(registerWorkspace({
+    await expect(registerWorkspaceEgress({
       workspaceId: 'w1',
       projectSlug: 'demo',
       tool: 'claude',

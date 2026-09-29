@@ -181,7 +181,11 @@ its project sets `npmCache: false`, its allowlist leaves
 `registry.npmjs.org` out, or its project authenticates to npmjs through a
 proxied secret. Without it, the pod can neither dial the cache nor is
 pointed at it: its pnpm keeps npmjs, through the proxy like any other
-host.
+host. A prewarmed spare is decided again when it is claimed: if its
+project's current config no longer admits the cache, the claim unpoints its
+`~/.npmrc` and removes the label, so a narrowed allowlist does not leave it
+this path for new connections. The reverse is not re-decided — a spare warmed without the label
+keeps npmjs, which costs speed and nothing else.
 
 ## What the proxy is told, and how
 
@@ -211,8 +215,17 @@ project's values are rewritten when one of its secrets is edited, and go
 with the project. A registration is written before the worktree's Job
 (after `ensureRunning`, so a create never registers against a proxy that
 cannot see the object), rewritten to widen it (the webapp's allow-host
-click, fanned out over the project's registrations by label), deleted at
-teardown, and swept when its worktree is gone and it is an hour old.
+click, fanned out over the project's registrations by label), rewritten
+whole when a prewarmed spare is claimed — from its project's config as it
+is then, so an allowlist or secret edited since warm-up applies to the
+claimed worktree's new connections as it would to a cold create — deleted
+at teardown, and swept when its worktree is gone and it is an hour old.
+A registration governs connections opened after the proxy's informer
+delivers it, not ones already open: the proxy checks the allowlist and
+picks the injection rules once per tunnel, so a tunnel a warm-time process
+(an init command, the agent) opened before a claim keeps the registration
+it started under. The same holds for the npm cache, whose policy admits an
+established flow after the label comes off.
 
 The proxy restores itself from its informers' initial lists, and its
 readiness probe holds it out of its Service until they have landed, so

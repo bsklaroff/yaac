@@ -8,7 +8,7 @@
 // imports `#drivers/k8s/worktrees`.
 export { getWorktreeChanges } from './changes'
 export { runtimeHandleFromPod } from './handle'
-export { claimSpareWorkspace } from './claim'
+export { claimSpareWorkspace, registerWorkspace } from './claim'
 export { launchWorkspace, prepareWorkspaceSubstrate } from './launch'
 export {
   countProjectWorkspaces,

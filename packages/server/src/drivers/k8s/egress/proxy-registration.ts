@@ -205,28 +205,30 @@ export async function applyWorktreeRegistration(
 }
 
 /**
- * Tell the egress path what a workspace may reach — the whole of it, in one
- * call, from decisions the caller already resolved.
+ * Tell the egress proxy what a workspace may reach — the whole of it, in one
+ * call, from decisions the caller already resolved — and answer with the
+ * registration written.
  *
  * The seam a mediator registers through: it supplies WHICH config, tool and
  * remote apply (rows and disk answer those); everything about how they
  * become an allowlist and a set of injection rules is assembled here.
  *
- * Idempotent, and re-called rather than patched — a spare retooled at claim
- * time registers again under its new tool, because the proxy gates all
- * credential injection on the registered one.
+ * Idempotent, and re-called rather than patched — a claimed spare registers
+ * again from its project's current config and under its claimed tool,
+ * because the proxy gates all credential injection on the registered one.
  */
-export async function registerWorkspace(reg: WorkspaceRegistration): Promise<void> {
-  await applyWorktreeRegistration(
-    reg.workspaceId,
-    buildWorktreeRegistration({
-      config: reg.config,
-      remoteUrl: reg.remoteUrl,
-      tool: reg.tool,
-      projectSlug: reg.projectSlug,
-      secretRules: reg.proxySecretRules,
-    }),
-  )
+export async function registerWorkspaceEgress(
+  reg: WorkspaceRegistration,
+): Promise<WorktreeRegistration> {
+  const registration = buildWorktreeRegistration({
+    config: reg.config,
+    remoteUrl: reg.remoteUrl,
+    tool: reg.tool,
+    projectSlug: reg.projectSlug,
+    secretRules: reg.proxySecretRules,
+  })
+  await applyWorktreeRegistration(reg.workspaceId, registration)
+  return registration
 }
 
 /**

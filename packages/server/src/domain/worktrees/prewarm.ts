@@ -15,8 +15,10 @@
  * — so the usual claim hands that agent over as-is. Spares are otherwise
  * tool-agnostic: warm-time provisioning seeds every tool's config and env
  * placeholders, so a claim that asks for something else just retools the
- * spare (proxy re-registration + agent respawn) instead of falling back to a
- * cold create. Only the agent mode is fixed at warm time.
+ * spare (agent respawn) instead of falling back to a cold create. Only the
+ * agent mode is fixed at warm time. Every claim re-registers the spare's
+ * egress from the project's current config, so an allowlist or secret edited
+ * since warming applies to it as it would to a cold create.
  *
  * Spares are branch-agnostic the same way: one warmed on a different
  * reference branch is re-branched at claim time (`rebranchSpare` — worktree
@@ -45,7 +47,12 @@ import {
   resolveRemoteRef,
   worktreeUpstreamBranch,
 } from '#domain/git'
-import { projectRemoteUrl, resolveProjectConfig, resolveProjectCredential } from '#domain/projects'
+import {
+  projectRemoteUrl,
+  resolveProjectConfig,
+  resolveProjectCredential,
+  resolveProjectEnv,
+} from '#domain/projects'
 import { shellEscape } from '#lib/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -421,6 +428,33 @@ export async function tryClaimPrewarmed(
         emit(`Updating prewarmed session to the latest ${warmedBranch}...`)
       }
     }
+    // Re-register, whatever else the claim changes: the registration the
+    // spare was warmed with holds the allowlist, proxied-secret rules and
+    // remote of that moment, and a project edited since must reach a claimed
+    // spare exactly as it would a cold create — a revoked host must not be
+    // reachable by a new connection, nor a newly allowed one stay blocked.
+    // Under the claimed tool, since the proxy gates credential injection on
+    // it; a retool below respawns the agent to match. The config is read
+    // again rather than reused from above: the fetch awaited since can take
+    // seconds, and a persisted allow-host click in that window widens this
+    // spare's registration, which a stale config would then overwrite.
+    const registration = {
+      workspaceId: claimedId,
+      projectSlug,
+      tool,
+      config: await resolveProjectConfig(projectSlug) ?? {},
+      remoteUrl: await projectRemoteUrl(projectSlug),
+      proxySecretRules: Object.fromEntries(
+        Object.entries((await resolveProjectEnv(projectSlug)).secrets)
+          .map(([name, { rule }]) => [name, rule]),
+      ),
+    }
+    // Under its own tool, a spare left with either registration is still
+    // consistent and can go back to the pool; under another, its registration
+    // stops matching its agent, and a failure from here taints it.
+    if (chosen.tool !== tool) mutated = true
+    await runtime.registerWorkspace(registration)
+
     if (prep !== null) {
       mutated = true
       // The agent read the old checkout at startup, so it is restarted as
