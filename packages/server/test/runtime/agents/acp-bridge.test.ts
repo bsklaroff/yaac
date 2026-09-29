@@ -101,13 +101,13 @@ const updateLine = (u: unknown): unknown => ({
  */
 function liveConversation(): AcpConversation {
   transport = new FakeTransport()
-  const logPath = path.join(acpLogDir('demo', 'wt-1'), 'acp-1.jsonl')
+  const record = { slug: 'demo', worktreeId: 'wt-1', agentSessionId: 'acp-1' }
   const c = new AcpConversation({
     transport,
     cwd: '/workspace',
     resumeSessionId: 'acp-1',
-    recoverInFlight: () => readAcpInFlight(logPath),
-    recoverPendingPermissions: () => readAcpPendingPermissions(logPath),
+    recoverInFlight: () => readAcpInFlight(record),
+    recoverPendingPermissions: () => readAcpPendingPermissions(record),
     onSessionId: () => {},
     onBusy: () => {},
     onDown: () => {},

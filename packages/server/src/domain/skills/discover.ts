@@ -37,13 +37,14 @@
  * append them as list-only `system` skills.
  */
 
-import fs from 'node:fs/promises'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
 import { getDefaultBranch, listTreeSubdirs, readBlobAt, remoteBranchExists } from '#domain/git'
+import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
+import { openSandboxDir } from '#runtime/agents'
 import { getClaudeBundledSkills } from './claude-bundled'
 import { builtinSkillsDir, isBuiltinSkillLink } from './builtin'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from './parse'
@@ -69,24 +70,50 @@ interface DiscoveredSkill extends SkillSummary {
   raw: string
 }
 
-/** Immediate subdirectory names of `dir` (symlinked dirs included), or [] when
- *  the dir is missing/unreadable — an absent skills dir just means no skills. */
-async function subdirs(dir: string): Promise<string[]> {
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true })
-    return entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name)
-  } catch {
-    return []
-  }
+/**
+ * More than any skill's instructions run to. A `SKILL.md` is read whole into
+ * the skills API's answer, and the tool homes are the agent's to write.
+ */
+const MAX_SKILL_MD_BYTES = 256 * 1024
+
+/**
+ * A directory on the host a reader lists and reads under, confined: the tool
+ * homes as `openSandboxDir` opens them (no links at all where a sandbox can
+ * write them — so a link named `SKILL.md` cannot hand the skills API any
+ * file the server can read), and the install and checkout dirs as `inside`.
+ * Null for one that does not exist, which just means no skills.
+ */
+type HostRoot = ConfinedRoot | null
+
+function toolHome(slug: string, dir: string): Promise<HostRoot> {
+  return openSandboxDir(slug, dir).catch(() => null)
 }
 
-/** A reader over `<name>/SKILL.md` dirs in a host directory. */
-function fsReader(dir: string, source: SkillSource, sourceLabel?: string): SkillReader {
+function hostDir(dir: string): Promise<HostRoot> {
+  return openRoot(dir, 'inside').catch(() => null)
+}
+
+/** A text file under `root`, or null when there is none it will read. */
+async function readText(root: HostRoot, rel: string, maxBytes: number): Promise<string | null> {
+  const raw = await root?.readFile(rel, { maxBytes }).catch(() => null)
+  return raw?.toString('utf8') ?? null
+}
+
+/** Immediate subdirectory names of `rel` (symlinked dirs included, which a
+ *  reader then follows only as far as its root allows), or [] when it is
+ *  missing — an absent skills dir just means no skills. */
+async function subdirs(root: HostRoot, rel: string): Promise<string[]> {
+  const entries = await root?.readdir(rel).catch(() => []) ?? []
+  return entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name)
+}
+
+/** A reader over `<rel>/<name>/SKILL.md` dirs under a host root. */
+function fsReader(root: HostRoot, rel: string, source: SkillSource, sourceLabel?: string): SkillReader {
   return {
     source,
     sourceLabel,
-    list: () => subdirs(dir),
-    read: (name) => fs.readFile(path.join(dir, name, 'SKILL.md'), 'utf8').catch(() => null),
+    list: () => subdirs(root, rel),
+    read: (name) => readText(root, `${rel === '' ? '' : `${rel}/`}${name}/SKILL.md`, MAX_SKILL_MD_BYTES),
   }
 }
 
@@ -98,13 +125,13 @@ function fsReader(dir: string, source: SkillSource, sourceLabel?: string): Skill
  * so without this filter each builtin would be offered twice, the second time
  * under a tier the user never put it in.
  */
-function personalReader(dir: string): SkillReader {
-  const base = fsReader(dir, 'personal')
+function personalReader(root: HostRoot, homeDir: string, rel: string): SkillReader {
+  const base = fsReader(root, rel, 'personal')
   return {
     ...base,
     list: async () => {
       const names = await base.list()
-      const ours = await Promise.all(names.map((n) => isBuiltinSkillLink(path.join(dir, n))))
+      const ours = await Promise.all(names.map((n) => isBuiltinSkillLink(path.join(homeDir, rel, n))))
       return names.filter((_, i) => !ours[i])
     },
   }
@@ -133,20 +160,26 @@ function repoReader(
   ref: string | null,
   treePath: string,
   source: SkillSource,
-  sourceLabel?: string,
 ): SkillReader {
-  return ref
-    ? gitReader(repoPath, ref, treePath, source, sourceLabel)
-    : fsReader(path.join(repoPath, treePath), source, sourceLabel)
+  if (ref) return gitReader(repoPath, ref, treePath, source)
+  const root = hostDir(repoPath)
+  return {
+    source,
+    list: async () => subdirs(await root, treePath),
+    read: async (name) => readText(await root, `${treePath}/${name}/SKILL.md`, MAX_SKILL_MD_BYTES),
+  }
 }
 
 /** Read a project (repo) file from `origin/<branch>` when `ref` is set, else
  *  from the working tree; null when absent. */
-function readRepoFile(repoPath: string, ref: string | null, relPath: string): Promise<string | null> {
+async function readRepoFile(repoPath: string, ref: string | null, relPath: string): Promise<string | null> {
   return ref
     ? readBlobAt(repoPath, ref, relPath)
-    : fs.readFile(path.join(repoPath, relPath), 'utf8').catch(() => null)
+    : readText(await hostDir(repoPath), relPath, MAX_SETTINGS_BYTES)
 }
+
+/** More than any settings file or `config.toml` a person writes. */
+const MAX_SETTINGS_BYTES = 1024 * 1024
 
 /** The `origin/<branch>` ref project tiers should read from, or null to fall
  *  back to the working tree. `branch` is the caller's pick; absent, the remote
@@ -180,10 +213,10 @@ function parseEnabledPlugins(raw: string | null): Record<string, unknown> {
  *  like the project skills themselves. A plugin counts as installed exactly
  *  when its id is present and truthy here, so plugins that only exist in the
  *  on-disk marketplace clone — never installed — are excluded. */
-async function claudeEnabledPluginIds(slug: string, ref: string | null): Promise<Set<string>> {
+async function claudeEnabledPluginIds(slug: string, claude: HostRoot, ref: string | null): Promise<Set<string>> {
   const repo = repoDir(slug)
   const [user, project, local] = await Promise.all([
-    fs.readFile(path.join(claudeDir(slug), 'settings.json'), 'utf8').catch(() => null),
+    readText(claude, 'settings.json', MAX_SETTINGS_BYTES),
     readRepoFile(repo, ref, '.claude/settings.json'),
     readRepoFile(repo, ref, '.claude/settings.local.json'),
   ])
@@ -201,15 +234,15 @@ async function claudeEnabledPluginIds(slug: string, ref: string | null): Promise
  *  The `<plugin>` and `<marketplace>` dir names are the same names Claude keys
  *  `enabledPlugins` on, so a dir survives only when `<plugin>@<marketplace>` is
  *  in `enabledIds`. */
-async function claudePluginReaders(pluginsRoot: string, enabledIds: Set<string>): Promise<SkillReader[]> {
+async function claudePluginReaders(claude: HostRoot, enabledIds: Set<string>): Promise<SkillReader[]> {
   const out: SkillReader[] = []
-  const marketplaces = path.join(pluginsRoot, 'marketplaces')
-  for (const mkt of await subdirs(marketplaces)) {
+  const marketplaces = 'plugins/marketplaces'
+  for (const mkt of await subdirs(claude, marketplaces)) {
     for (const group of ['plugins', 'external_plugins']) {
-      const groupDir = path.join(marketplaces, mkt, group)
-      for (const plugin of await subdirs(groupDir)) {
+      const groupDir = `${marketplaces}/${mkt}/${group}`
+      for (const plugin of await subdirs(claude, groupDir)) {
         if (!enabledIds.has(`${plugin}@${mkt}`)) continue
-        out.push(fsReader(path.join(groupDir, plugin, 'skills'), 'plugin', plugin))
+        out.push(fsReader(claude, `${groupDir}/${plugin}/skills`, 'plugin', plugin))
       }
     }
   }
@@ -222,10 +255,10 @@ async function claudePluginReaders(pluginsRoot: string, enabledIds: Set<string>)
  *  on the base name (before `@`) because the clone under `.tmp/plugins/plugins`
  *  is a single bundled marketplace, so the dir name alone identifies the
  *  plugin. */
-async function codexEnabledPluginNames(configPath: string): Promise<Set<string>> {
+async function codexEnabledPluginNames(codex: HostRoot): Promise<Set<string>> {
   let parsed: unknown
   try {
-    parsed = parseToml(await fs.readFile(configPath, 'utf8'))
+    parsed = parseToml(await readText(codex, 'config.toml', MAX_SETTINGS_BYTES) ?? '')
   } catch {
     return new Set()
   }
@@ -242,26 +275,29 @@ async function codexEnabledPluginNames(configPath: string): Promise<Set<string>>
 /** Enabled plugin readers under Codex's marketplace clone at
  *  `.tmp/plugins/plugins/<plugin>/skills/` — a dir survives only when its
  *  plugin is in `enabledNames`. */
-async function codexPluginReaders(pluginsDir: string, enabledNames: Set<string>): Promise<SkillReader[]> {
+async function codexPluginReaders(codex: HostRoot, enabledNames: Set<string>): Promise<SkillReader[]> {
   const out: SkillReader[] = []
-  for (const plugin of await subdirs(pluginsDir)) {
+  const pluginsDir = '.tmp/plugins/plugins'
+  for (const plugin of await subdirs(codex, pluginsDir)) {
     if (!enabledNames.has(plugin)) continue
-    out.push(fsReader(path.join(pluginsDir, plugin, 'skills'), 'plugin', plugin))
+    out.push(fsReader(codex, `${pluginsDir}/${plugin}/skills`, 'plugin', plugin))
   }
   return out
 }
 
 async function claudeReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
-  const claude = claudeDir(slug)
+  const dir = claudeDir(slug)
+  const claude = await toolHome(slug, dir)
   return [
-    personalReader(path.join(claude, 'skills')),
-    ...(await claudePluginReaders(path.join(claude, 'plugins'), await claudeEnabledPluginIds(slug, ref))),
+    personalReader(claude, dir, 'skills'),
+    ...(await claudePluginReaders(claude, await claudeEnabledPluginIds(slug, claude, ref))),
     repoReader(repoDir(slug), ref, '.claude/skills', 'project'),
   ]
 }
 
 async function codexReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
-  const codex = codexDir(slug)
+  const dir = codexDir(slug)
+  const codex = await toolHome(slug, dir)
   // `skills/` is read directly (readSkills skips dot-dirs, so the sibling
   // `.system/` and `.tmp/` aren't picked up as personal skills). Codex's
   // built-in tier is materialized into `skills/.system/`, read by its own
@@ -269,27 +305,27 @@ async function codexReaders(slug: string, ref: string | null): Promise<SkillRead
   // immediate skill-dir names, not the reader's root. config.toml is the host
   // install registry, not a repo check, so its read stays on-disk.
   return [
-    personalReader(path.join(codex, 'skills')),
-    fsReader(path.join(codex, 'skills', '.system'), 'system'),
-    ...(await codexPluginReaders(
-      path.join(codex, '.tmp', 'plugins', 'plugins'),
-      await codexEnabledPluginNames(path.join(codex, 'config.toml')),
-    )),
+    personalReader(codex, dir, 'skills'),
+    fsReader(codex, 'skills/.system', 'system'),
+    ...(await codexPluginReaders(codex, await codexEnabledPluginNames(codex))),
     repoReader(repoDir(slug), ref, '.agents/skills', 'project'),
   ]
 }
 
-function opencodeReaders(slug: string, ref: string | null): SkillReader[] {
-  const cfg = opencodeConfigDir(slug)
+async function opencodeReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
+  const cfgDir = opencodeConfigDir(slug)
+  const cfg = await toolHome(slug, cfgDir)
+  const claudeHome = claudeDir(slug)
+  const claude = await toolHome(slug, claudeHome)
   const repo = repoDir(slug)
   // opencode has no plugin-skills tier (its plugins are JS modules). Its own
   // dirs accept both singular `skill/` and plural `skills/`; it also reads the
   // Claude- and agents-compatible locations. Ordered by precedence so the
   // dedupe below keeps the winning copy of a same-named skill.
   return [
-    personalReader(path.join(cfg, 'skill')),
-    personalReader(path.join(cfg, 'skills')),
-    personalReader(path.join(claudeDir(slug), 'skills')),
+    personalReader(cfg, cfgDir, 'skill'),
+    personalReader(cfg, cfgDir, 'skills'),
+    personalReader(claude, claudeHome, 'skills'),
     repoReader(repo, ref, '.opencode/skill', 'project'),
     repoReader(repo, ref, '.opencode/skills', 'project'),
     repoReader(repo, ref, '.claude/skills', 'project'),
@@ -297,14 +333,15 @@ function opencodeReaders(slug: string, ref: string | null): SkillReader[] {
   ]
 }
 
-function piReaders(slug: string, ref: string | null): SkillReader[] {
+async function piReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
   const repo = repoDir(slug)
+  const dir = piDir(slug)
   // pi's whole `~/.pi` home is mounted per-project (piDir), so its global
   // `~/.pi/agent/skills` personal tier is host-visible. `~/.agents/skills` is
   // not mounted, so it isn't reachable. Project skills come from the repo.
   // `skills` plural only; no plugin tier.
   return [
-    personalReader(path.join(piDir(slug), 'agent', 'skills')),
+    personalReader(await toolHome(slug, dir), dir, 'agent/skills'),
     repoReader(repo, ref, '.pi/skills', 'project'),
     repoReader(repo, ref, '.agents/skills', 'project'),
   ]
@@ -423,7 +460,7 @@ async function discover(tool: AgentTool, slug: string, branch?: string): Promise
   // tool's personal root at worktree create (see builtin.ts). Read the install
   // dir directly here, since pod-less discovery can't see the in-pod mounts;
   // surfaced as `system`/`yaac` for every tool.
-  readers.push(fsReader(builtinSkillsDir(), 'system', 'yaac'))
+  readers.push(fsReader(await hostDir(builtinSkillsDir()), '', 'system', 'yaac'))
   const perReader = await Promise.all(readers.map(readSkills))
   const flat = perReader.flat()
   // Claude's bundled built-ins live only in the binary; append their published

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { constants as C, existsSync, type Stats } from 'node:fs'
+import { constants as C, type Stats } from 'node:fs'
 import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { repoDir, worktreeDir } from '@yaac/shared/project-paths'
@@ -14,6 +14,9 @@ import type {
   WorktreeGitStatus,
 } from '@yaac/shared/types'
 import { listCheckoutFiles, worktreeAheadBehind } from '#domain/git'
+import {
+  ConfinedPathError, openExactDir, openRoot, type ConfinedRoot, type PinnedDir,
+} from '#lib/confined-fs'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { worktreeForkBranch } from './fork-branch'
@@ -28,18 +31,9 @@ import { resolveWorktreeRecord } from './resolve'
  *
  * Every path here is a SECURITY BOUNDARY under k8s: the checkout is the
  * sandboxed agent's to shape, and the server pod can see `server-local/`.
- * Symlinks are followed only as far as where they finally land, and that is
- * checked on what was actually opened — the descriptor — never on a path
- * string, which proves nothing about where the kernel ends up. All I/O then
- * goes through that descriptor, so there is no second lookup to race. A walk
- * that has to pin a directory opens each segment through its parent's
- * descriptor (`/proc/self/fd/<fd>/<name>`, Linux's stand-in for `openat`,
- * which Node lacks).
- *
- * Without `/proc/self/fd` (a macOS containerless server) there is no sandbox
- * to escape — the agent already runs as the host user — so the same checks
- * run on `fs.realpath` instead, where a race costs nothing the agent could
- * not do directly.
+ * So every access goes through the checkout's confined root
+ * (`#lib/confined-fs`), which follows a symlink only as far as where it
+ * finally lands inside the checkout, checked on the descriptor it opened.
  */
 
 /** The listing's cap on `paths`. */
@@ -49,8 +43,6 @@ const MAX_DIR_ENTRIES = 5_000
 /** How many untracked folders the empty-folder search may open. */
 const MAX_EMPTY_DIR_VISITS = 5_000
 
-const PROC_FD = existsSync('/proc/self/fd')
-
 /** Mutations of one worktree's checkout run one at a time. */
 const mutate = createKeyedMutex()
 
@@ -58,60 +50,38 @@ interface Checkout {
   worktreeId: string
   projectSlug: string
   dir: string
-  /** `dir` with every symlink resolved — what a descriptor reads back as. */
-  real: string
+  /** The checkout, confined: links are followed only while they stay in
+   *  it, and its `.git` counts as outside (nothing in the listing points
+   *  there, and a write into it is how a hook or config gets planted). */
+  root: ConfinedRoot
 }
 
 async function openCheckout(idOrName: string): Promise<Checkout> {
   const { projectSlug, worktreeId } = await resolveWorktreeRecord(idOrName)
   const dir = worktreeDir(projectSlug, worktreeId)
   try {
-    return { worktreeId, projectSlug, dir, real: await fs.realpath(dir) }
+    return { worktreeId, projectSlug, dir, root: await openRoot(dir, 'inside', { exclude: ['.git'] }) }
   } catch {
     throw new ServerError('NOT_FOUND', `worktree ${idOrName} has no checkout`)
   }
 }
 
-/**
- * The lexical half of confinement: a non-empty relative path with no NUL,
- * no `..` once normalized, and not under `.git` (nothing in the listing
- * points there, and a write into it is how a hook or config gets planted).
- * Returns the normalized path.
- */
-function checkPath(rel: string): string {
-  if (rel === '' || rel.includes('\0') || path.posix.isAbsolute(rel)) {
-    throw new ServerError('VALIDATION', `invalid path ${JSON.stringify(rel)}`)
+/** The lexical half of confinement (`ConfinedRoot.normalize`), as a
+ *  caller's error. */
+function checkPath(co: Checkout, rel: string): string {
+  try {
+    return co.root.normalize(rel)
+  } catch (err) {
+    throw fsFailure(err, rel)
   }
-  const segments = path.posix.normalize(rel).replace(/\/+$/, '').split('/')
-  if (segments.includes('..') || segments[0] === '.') {
-    throw new ServerError('VALIDATION', `path escapes the worktree: ${JSON.stringify(rel)}`)
-  }
-  if (segments[0] === '.git') {
-    throw new ServerError('VALIDATION', 'the .git folder is not editable')
-  }
-  return segments.join('/')
-}
-
-/** Where a real path sits in the checkout, or null when outside it (the
- *  checkout's `.git` counts as outside). */
-function relativeTo(co: Checkout, real: string): string | null {
-  // A pipe or socket reads back as `pipe:[123]`, which `path.relative` would
-  // resolve against the process's cwd.
-  if (!path.isAbsolute(real)) return null
-  const rel = path.relative(co.real, real)
-  if (rel === '') return rel
-  if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null
-  const segments = rel.split(path.sep)
-  return segments[0] === '.git' ? null : segments.join('/')
-}
-
-function outside(rel: string): ServerError {
-  return new ServerError('VALIDATION', `${rel} points outside the worktree`)
 }
 
 /** Turn an fs failure into the answer a caller can act on. */
 function fsFailure(err: unknown, rel: string): unknown {
   if (err instanceof ServerError) return err
+  if (err instanceof ConfinedPathError) {
+    return new ServerError('VALIDATION', err.reason === 'outside' ? `${rel} points outside the worktree` : err.message)
+  }
   switch ((err as NodeJS.ErrnoException).code) {
     case 'ENOENT':
     case 'ENOTDIR': return new ServerError('NOT_FOUND', `no such file: ${rel}`)
@@ -126,141 +96,22 @@ function fsFailure(err: unknown, rel: string): unknown {
   }
 }
 
-/** Where an open descriptor really is. */
-async function landed(fh: FileHandle): Promise<string> {
-  return fs.readlink(`/proc/self/fd/${fh.fd}`)
-}
-
-/**
- * A directory pinned for the operations inside it: `child(name)` names an
- * entry relative to the pinned directory itself, so nothing swapped in above
- * it after the check can redirect the lookup.
- */
-interface Dir {
-  real: string
-  self: string
-  child(name: string): string
-  close(): Promise<void>
-}
-
-function pinned(real: string, fh?: FileHandle): Dir {
-  const self = fh ? `/proc/self/fd/${fh.fd}` : real
-  return {
-    real,
-    self,
-    child: (name) => `${self}/${name}`,
-    close: async () => { await fh?.close() },
-  }
-}
-
-/** Open a directory, following links, and verify it landed in the checkout. */
-async function openDir(co: Checkout, abs: string, rel: string): Promise<Dir> {
-  if (!PROC_FD) {
-    const real = await fs.realpath(abs)
-    if (relativeTo(co, real) === null) throw outside(rel)
-    if (!(await fs.stat(real)).isDirectory()) throw new ServerError('VALIDATION', `${rel} is not a folder`)
-    return pinned(real)
-  }
-  const fh = await fs.open(abs, C.O_RDONLY | C.O_DIRECTORY)
-  const real = await landed(fh)
-  if (relativeTo(co, real) === null) {
-    await fh.close()
-    throw outside(rel)
-  }
-  return pinned(real, fh)
-}
-
-/**
- * Open `name` inside `parent` only if it is a real directory right there —
- * never through a link. `O_NOFOLLOW` alone is not relied on (gVisor follows
- * a link anyway when `O_DIRECTORY` is also set), so where it landed is
- * checked too. Null for anything else: a file, a link, a vanished entry.
- */
-async function openExactDir(parent: Dir, name: string): Promise<Dir | null> {
-  const expected = path.join(parent.real, name)
-  if (!PROC_FD) {
-    const st = await fs.lstat(expected).catch(() => null)
-    return st?.isDirectory() ? pinned(expected) : null
-  }
-  let fh: FileHandle
-  try {
-    fh = await fs.open(parent.child(name), C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW)
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOTDIR' || code === 'ELOOP' || code === 'ENOENT') return null
-    throw err
-  }
-  if (await landed(fh) !== expected) {
-    await fh.close()
-    return null
-  }
-  return pinned(expected, fh)
-}
-
-/**
- * Pin the directory `rel` is in, one segment at a time from the checkout's
- * root, verifying each step before taking the next (and, with `create`,
- * making any segment that is missing). Returns it with the final name, which
- * the caller acts on through the pinned directory.
- */
-async function openParent(
-  co: Checkout,
-  rel: string,
-  opts: { create: boolean },
-): Promise<{ dir: Dir; name: string }> {
-  const segments = rel.split('/')
-  const name = segments.pop()!
-  let dir = await openDir(co, co.real, '.')
-  try {
-    let walked = ''
-    for (const segment of segments) {
-      walked = walked ? `${walked}/${segment}` : segment
-      let next: Dir
-      try {
-        next = await openDir(co, dir.child(segment), walked)
-      } catch (err) {
-        if (!opts.create || (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-        await fs.mkdir(dir.child(segment)).catch((e: NodeJS.ErrnoException) => {
-          if (e.code !== 'EEXIST') throw e
-        })
-        next = await openDir(co, dir.child(segment), walked)
-      }
-      await dir.close()
-      dir = next
-    }
-    return { dir, name }
-  } catch (err) {
-    await dir.close()
-    throw fsFailure(err, rel)
-  }
-}
-
-/** Open a file, following links, and verify it landed in the checkout. */
+/** Open a regular file, following links only as far as they stay inside. */
 async function openFile(co: Checkout, rel: string, flags: number): Promise<FileHandle> {
-  // Non-blocking so a planted FIFO cannot hang the open before it is checked.
-  const safe = flags | C.O_NONBLOCK | C.O_NOCTTY
-  const abs = path.join(co.real, rel)
   try {
-    if (!PROC_FD) {
-      const real = await fs.realpath(abs)
-      if (relativeTo(co, real) === null) throw outside(rel)
-      return await fs.open(real, safe)
-    }
-    const fh = await fs.open(abs, safe)
-    if (relativeTo(co, await landed(fh)) === null) {
-      await fh.close()
-      throw outside(rel)
-    }
-    return fh
+    return await co.root.open(rel, flags)
   } catch (err) {
     throw fsFailure(err, rel)
   }
 }
 
-async function regularFile(fh: FileHandle, rel: string): Promise<void> {
-  const st = await fh.stat()
-  if (st.isDirectory()) throw new ServerError('VALIDATION', `${rel} is a folder`)
-  if (!st.isFile()) throw new ServerError('VALIDATION', `${rel} is not a regular file`)
+/** Pin the directory `rel` is in, as a caller's error. */
+async function openParent(co: Checkout, rel: string, create: boolean): Promise<{ dir: PinnedDir; name: string }> {
+  try {
+    return await co.root.parent(rel, { create })
+  } catch (err) {
+    throw fsFailure(err, rel)
+  }
 }
 
 function hash(bytes: Uint8Array): string {
@@ -301,7 +152,7 @@ async function writeAll(fh: FileHandle, data: Buffer): Promise<void> {
 async function linkTarget(co: Checkout, abs: string): Promise<SymlinkTarget> {
   try {
     const real = await fs.realpath(abs)
-    const target = relativeTo(co, real)
+    const target = co.root.contains(real)
     if (target === null) return { target: null, dir: false }
     return { target, dir: (await fs.stat(real)).isDirectory() }
   } catch {
@@ -332,7 +183,7 @@ async function findEmptyDirs(
   const ignoredDirs = new Set(ignored.filter((p) => p.endsWith('/')).map((p) => p.slice(0, -1)))
   const out: string[] = []
   let visits = 0
-  const visit = async (dir: Dir, rel: string): Promise<void> => {
+  const visit = async (dir: PinnedDir, rel: string): Promise<void> => {
     if (++visits > MAX_EMPTY_DIR_VISITS) return
     if (!occupied.has(rel)) out.push(rel)
     for (const entry of await fs.readdir(dir.self, { withFileTypes: true })) {
@@ -348,14 +199,14 @@ async function findEmptyDirs(
       }
     }
   }
-  const root = await openDir(co, co.real, '.')
+  const root = await co.root.dir('')
   try {
     for (const top of untrackedDirs) {
       if (ignoredDirs.has(top) || top.split('/')[0] === '.git') continue
       // Pinned segment by segment: a root that is no longer a real folder
       // all the way down is simply skipped.
-      let dir: Dir | null = root
-      const opened: Dir[] = []
+      let dir: PinnedDir | null = root
+      const opened: PinnedDir[] = []
       for (const segment of top.split('/')) {
         dir = await openExactDir(dir, segment)
         if (!dir) break
@@ -393,7 +244,7 @@ export async function listWorktreeFiles(idOrName: string): Promise<WorktreeFiles
   // git reports a symlink as one entry and never lists what is behind one.
   for (let i = 0; i < paths.length; i += 256) {
     await Promise.all(paths.slice(i, i + 256).map(async (p) => {
-      const abs = path.join(co.real, p)
+      const abs = path.join(co.root.real, p)
       const st = await fs.lstat(abs).catch(() => null)
       if (st?.isSymbolicLink()) symlinks[p] = await linkTarget(co, abs)
     }))
@@ -433,10 +284,10 @@ export async function getWorktreeGitStatus(idOrName: string, base?: string): Pro
  */
 export async function listWorktreeDir(idOrName: string, relPath: string): Promise<WorktreeDir> {
   const co = await openCheckout(idOrName)
-  const rel = checkPath(relPath)
-  let dir: Dir
+  const rel = checkPath(co, relPath)
+  let dir: PinnedDir
   try {
-    dir = await openDir(co, path.join(co.real, rel), rel)
+    dir = await co.root.dir(rel)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOTDIR') {
       throw new ServerError('VALIDATION', `${rel} is not a folder`)
@@ -466,10 +317,9 @@ export async function readWorktreeFile(
   known?: string,
 ): Promise<WorktreeFile> {
   const co = await openCheckout(idOrName)
-  const rel = checkPath(relPath)
+  const rel = checkPath(co, relPath)
   const fh = await openFile(co, rel, C.O_RDONLY)
   try {
-    await regularFile(fh, rel)
     const bytes = await readEditable(fh)
     if (bytes === null) {
       const st = await fh.stat()
@@ -510,7 +360,7 @@ export async function writeWorktreeFile(
   baseVersion: string | null,
 ): Promise<WorktreeFileWrite> {
   const co = await openCheckout(idOrName)
-  const rel = checkPath(relPath)
+  const rel = checkPath(co, relPath)
   const data = Buffer.from(content, 'utf8')
   if (data.length > MAX_TEXT_FILE_BYTES) {
     throw new ServerError('TOO_LARGE', `${rel} is over the ${MAX_TEXT_FILE_BYTES / 1024 ** 2} MiB editable size`)
@@ -518,7 +368,7 @@ export async function writeWorktreeFile(
   const saved = { saved: { path: rel, version: hash(data), size: data.length } }
   return mutate(co.worktreeId, async () => {
     if (baseVersion === null) {
-      const { dir, name } = await openParent(co, rel, { create: true })
+      const { dir, name } = await openParent(co, rel, true)
       let fh: FileHandle
       try {
         // O_EXCL never creates through a link, dangling or not.
@@ -544,8 +394,7 @@ export async function writeWorktreeFile(
       throw err
     }
     try {
-      await regularFile(fh, rel)
-      const bytes = await readEditable(fh)
+        const bytes = await readEditable(fh)
       const current = bytes === null ? largeVersion(await fh.stat()) : hash(bytes)
       if (current !== baseVersion) return { conflict: current }
       await fh.truncate(0)
@@ -573,9 +422,9 @@ async function existingVersion(co: Checkout, rel: string): Promise<string> {
  *  already there. */
 export async function createWorktreeFolder(idOrName: string, relPath: string): Promise<{ path: string }> {
   const co = await openCheckout(idOrName)
-  const rel = checkPath(relPath)
+  const rel = checkPath(co, relPath)
   return mutate(co.worktreeId, async () => {
-    const { dir, name } = await openParent(co, rel, { create: true })
+    const { dir, name } = await openParent(co, rel, true)
     try {
       await fs.mkdir(dir.child(name))
     } catch (err) {
@@ -600,14 +449,14 @@ export async function renameWorktreeEntry(
   toPath: string,
 ): Promise<{ from: string; to: string }> {
   const co = await openCheckout(idOrName)
-  const from = checkPath(fromPath)
-  const to = checkPath(toPath)
+  const from = checkPath(co, fromPath)
+  const to = checkPath(co, toPath)
   if (to.startsWith(`${from}/`)) throw new ServerError('VALIDATION', `can't move ${from} into itself`)
   return mutate(co.worktreeId, async () => {
-    const src = await openParent(co, from, { create: false })
+    const src = await openParent(co, from, false)
     try {
       await fs.lstat(src.dir.child(src.name)).catch((err: unknown) => { throw fsFailure(err, from) })
-      const dst = await openParent(co, to, { create: true })
+      const dst = await openParent(co, to, true)
       try {
         const taken = await fs.lstat(dst.dir.child(dst.name)).then(() => true, () => false)
         if (taken) throw new ServerError('CONFLICT', `${to} already exists`)
@@ -630,43 +479,12 @@ export async function renameWorktreeEntry(
  */
 export async function deleteWorktreeEntry(idOrName: string, relPath: string): Promise<void> {
   const co = await openCheckout(idOrName)
-  const rel = checkPath(relPath)
+  const rel = checkPath(co, relPath)
   await mutate(co.worktreeId, async () => {
-    const { dir, name } = await openParent(co, rel, { create: false })
     try {
-      const st = await fs.lstat(dir.child(name))
-      if (st.isDirectory()) await removeTree(dir, name)
-      else await fs.unlink(dir.child(name))
+      await co.root.removeTree(rel)
     } catch (err) {
       throw fsFailure(err, rel)
-    } finally {
-      await dir.close()
     }
   })
-}
-
-/**
- * Remove a folder through descriptors: each child is opened as a real
- * folder through its parent's descriptor and recursed into, and anything
- * else — a file, or a link, which is never followed — is unlinked by name.
- * Node's own recursive `fs.rm` walks by path, so a folder swapped for a link
- * mid-walk could steer it out of the checkout; this walk never re-resolves
- * a path it has already checked.
- */
-async function removeTree(parent: Dir, name: string): Promise<void> {
-  if (!PROC_FD) {
-    await fs.rm(parent.child(name), { recursive: true })
-    return
-  }
-  const dir = await openExactDir(parent, name)
-  if (!dir) {
-    await fs.unlink(parent.child(name))
-    return
-  }
-  try {
-    for (const child of await fs.readdir(dir.self)) await removeTree(dir, child)
-  } finally {
-    await dir.close()
-  }
-  await fs.rmdir(parent.child(name))
 }

@@ -9,6 +9,7 @@ import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { setClaudeBundledSkills } from '#domain/skills/claude-bundled'
 import { setBuiltinSkillsDir } from '#domain/skills/builtin'
 import { git } from '@yaac/test-utils/git'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 
 const slug = 'proj'
 
@@ -175,16 +176,34 @@ describe('getProjectSkills', () => {
     expect(deploy?.userInvocable).toBe(false)
   })
 
-  it('reads a symlinked skill dir like a real one', async () => {
-    await writeSkill(path.join(tmp, 'external', 'linked'),
+  it('reads a symlinked skill dir only where no sandbox writes the home', async () => {
+    // Under containerless the links are yaac's and the user's own, and are
+    // followed while they stay in the project.
+    await writeSkill(path.join(claudeDir(slug), '..', 'shared-skills', 'linked'),
       '---\nname: linked\ndescription: symlinked in\n---\nb')
     await fs.symlink(
-      path.join(tmp, 'external', 'linked'),
+      path.join(claudeDir(slug), '..', 'shared-skills', 'linked'),
       path.join(claudeDir(slug), 'skills', 'linked'),
       'dir',
     )
+    installFakeWorktreeDriver({ kind: 'containerless' })
     const found = (await getProjectSkills('claude', slug)).skills.find((s) => s.name === 'linked')
     expect(found).toMatchObject({ source: 'personal', description: 'symlinked in' })
+  })
+
+  it('reads no link a sandbox could have planted in a tool home', async () => {
+    // A pod mounts the home read-write: a link named SKILL.md would hand the
+    // skills API any file the server can read.
+    const secret = path.join(tmp, 'secret.md')
+    await fs.writeFile(secret, '---\nname: leaked\ndescription: server file\n---\nb')
+    await fs.mkdir(path.join(claudeDir(slug), 'skills', 'planted'), { recursive: true })
+    await fs.symlink(secret, path.join(claudeDir(slug), 'skills', 'planted', 'SKILL.md'))
+    await fs.symlink(path.dirname(secret), path.join(claudeDir(slug), 'skills', 'dirlink'), 'dir')
+    installFakeWorktreeDriver({ kind: 'k8s' })
+    const names = (await getProjectSkills('claude', slug)).skills.map((s) => s.name)
+    expect(names).not.toContain('leaked')
+    expect(names).not.toContain('planted')
+    expect(names).not.toContain('dirlink')
   })
 
   it('tolerates every SKILL.md frontmatter shape, coercing each field type', async () => {
@@ -361,9 +380,10 @@ describe('getProjectSkills', () => {
     }
     // A link of the user's own in the same root stays personal — the filter
     // is "ours", not "a symlink".
-    await writeSkill(path.join(tmp, 'external', 'theirs'), '---\nname: theirs\ndescription: t\n---\nb')
-    await fs.symlink(path.join(tmp, 'external', 'theirs'),
-      path.join(claudeDir(slug), 'skills', 'theirs'), 'dir')
+    const theirs = path.join(claudeDir(slug), '..', 'shared-skills', 'theirs')
+    await writeSkill(theirs, '---\nname: theirs\ndescription: t\n---\nb')
+    await fs.symlink(theirs, path.join(claudeDir(slug), 'skills', 'theirs'), 'dir')
+    installFakeWorktreeDriver({ kind: 'containerless' })
 
     for (const tool of ['claude', 'pi'] as const) {
       const { skills } = await getProjectSkills(tool, slug)

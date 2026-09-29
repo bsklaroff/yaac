@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorktreeCreated } from '#db/worktree-store'
 import { recordAgentSessions, setAgentSessionCapture } from '#db/agent-session-store'
@@ -170,6 +172,26 @@ describe('getAgentSessionTranscript', () => {
 
     await expect(getAgentSessionTranscript(SLUG, WORKTREE, TUI_SESSION))
       .rejects.toMatchObject({ code: 'TOO_LARGE' })
+  })
+
+  it('reads nothing through a link or a FIFO planted where a transcript belongs', async () => {
+    // Both files are written from inside the sandbox. A link would render
+    // whatever it names (another project's conversation); a FIFO would park
+    // a thread of the server's fs pool until something wrote to it.
+    await seedSession(TUI_SESSION)
+    await seedSession(ACP_SESSION, { mode: 'acp' })
+    const elsewhere = await writeClaudeTranscript(TUI_SESSION, path.join(tmpDir, 'elsewhere', 't.jsonl'))
+    const file = path.join(claudeDir(SLUG), 'projects', '-workspace', `${TUI_SESSION}.jsonl`)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.symlink(elsewhere, file)
+    expect(await getAgentSessionTranscript(SLUG, WORKTREE, TUI_SESSION)).toEqual([])
+
+    await fs.rm(file)
+    await promisify(execFile)('mkfifo', [file])
+    await fs.mkdir(acpLogDir(SLUG, WORKTREE), { recursive: true })
+    await promisify(execFile)('mkfifo', [path.join(acpLogDir(SLUG, WORKTREE), `${ACP_SESSION}.jsonl`)])
+    expect(await getAgentSessionTranscript(SLUG, WORKTREE, TUI_SESSION)).toEqual([])
+    expect(await getAgentSessionTranscript(SLUG, WORKTREE, ACP_SESSION)).toEqual([])
   })
 
   it('refuses a conversation the worktree never had', async () => {

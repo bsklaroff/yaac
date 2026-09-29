@@ -1,6 +1,5 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { AGENT_CLIS } from '@yaac/shared/types'
+import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 
 // `lastOnboardingVersion` must be >= the running CLI's version, or a newer
 // onboarding flow lets the first-run wizard reappear — so it is the pinned one.
@@ -35,15 +34,10 @@ interface ClaudeJsonState {
  * than rewritten, so it costs an entry per worktree and nothing else.
  */
 export async function seedClaudeJson(
-  claudeJsonPath: string,
+  claudeHome: ConfinedRoot,
   trustedDirs: readonly string[],
 ): Promise<void> {
-  let state: ClaudeJsonState = {}
-  try {
-    state = JSON.parse(await fs.readFile(claudeJsonPath, 'utf8')) as ClaudeJsonState
-  } catch {
-    // missing or invalid — start fresh
-  }
+  const state = await readJson(claudeHome, '.claude.json') as ClaudeJsonState
   state.hasCompletedOnboarding = true
   state.lastOnboardingVersion = CLAUDE_ONBOARDING_VERSION
   const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
@@ -53,7 +47,7 @@ export async function seedClaudeJson(
     projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
   }
   state.projects = projects
-  await fs.writeFile(claudeJsonPath, JSON.stringify(state, null, 2) + '\n')
+  await claudeHome.writeAtomic('.claude.json', JSON.stringify(state, null, 2) + '\n')
 }
 
 /**
@@ -80,44 +74,27 @@ export async function seedClaudeJson(
  * hence a large finite value.) codex and opencode need no equivalent:
  * neither expires worktrees.
  */
-export async function seedClaudeSettings(settingsPath: string): Promise<void> {
-  let settings: Record<string, unknown> = {}
-  try {
-    settings = JSON.parse(await fs.readFile(settingsPath, 'utf8')) as Record<string, unknown>
-  } catch {
-    // missing or invalid — start fresh
-  }
+export async function seedClaudeSettings(claudeHome: ConfinedRoot): Promise<void> {
+  const settings = await readJson(claudeHome, 'settings.json')
   settings.skipDangerousModePermissionPrompt = true
   settings.cleanupPeriodDays = 36500
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n')
+  await claudeHome.writeAtomic('settings.json', JSON.stringify(settings, null, 2) + '\n')
 }
 
 /**
- * `mkdir -p` a mount target inside the worktree without following a link
- * out of it. On a restart the worktree is already full of agent-authored
- * content, so a committed `frontends -> /anywhere` would otherwise turn a
- * plain-looking `"frontends/node_modules"` into a host-side mkdir at
- * `/anywhere/node_modules`. A link that stays inside the worktree (a repo
- * pointing one of its own dirs at another) is left alone — the pod resolves
- * it the same way.
+ * A JSON object from the claude home, or `{}` when there is none — missing,
+ * invalid, over 1 MiB, or anything but a regular file (a planted link or
+ * FIFO reads as missing, and the write then replaces it, never its target).
  */
-async function mkdirMountTarget(worktreeDirPath: string, rel: string): Promise<void> {
-  const root = await fs.realpath(worktreeDirPath)
-  let dir = root
-  for (const segment of rel.split('/')) {
-    dir = path.join(dir, segment)
-    try {
-      await fs.mkdir(dir)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-    }
-    const resolved = await fs.realpath(dir)
-    if (resolved !== dir && !resolved.startsWith(root + path.sep)) {
-      throw new Error(
-        `ephemeralModulesPaths: "${rel}" leaves the worktree through a symlink at "${segment}"`,
-      )
-    }
-    dir = resolved
+async function readJson(claudeHome: ConfinedRoot, rel: string): Promise<Record<string, unknown>> {
+  try {
+    const raw = await claudeHome.readFile(rel, { maxBytes: 1024 * 1024 })
+    const parsed: unknown = raw === null ? null : JSON.parse(raw.toString('utf8'))
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
   }
 }
 
@@ -136,6 +113,16 @@ export async function prepareModuleDirs(
   worktreeDirPath: string,
   relPaths: string[],
 ): Promise<string[]> {
-  for (const rel of relPaths) await mkdirMountTarget(worktreeDirPath, rel)
+  // On a restart the checkout is full of agent-authored content, so a
+  // committed `frontends -> /anywhere` would otherwise turn a plain-looking
+  // `"frontends/node_modules"` into a host-side mkdir at
+  // `/anywhere/node_modules`. A link that stays inside the checkout is
+  // followed — the pod resolves it the same way.
+  const checkout = await openRoot(worktreeDirPath, 'inside')
+  for (const rel of relPaths) {
+    await checkout.mkdirp(rel).catch((err: unknown) => {
+      throw new Error(`ephemeralModulesPaths: "${rel}": ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
   return relPaths.map((rel) => `/workspace/${rel}`)
 }

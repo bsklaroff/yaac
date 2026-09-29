@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { createRequire } from 'node:module'
-import { readClaudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
+import { claudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
 
 /**
  * A tui claude conversation read as ACP events.
@@ -69,7 +69,7 @@ function assistant(content: unknown, extra: Record<string, unknown> = {}): unkno
   return turn('assistant', { role: 'assistant', model: 'claude-fable-5', content }, extra)
 }
 
-describe('readClaudeTranscriptAsAcp', () => {
+describe('claudeTranscriptAsAcp', () => {
   it('replays a conversation as the events an acp pane renders', async () => {
     const file = await transcript([
       user('add a health route'),
@@ -86,7 +86,7 @@ describe('readClaudeTranscriptAsAcp', () => {
       assistant([{ type: 'text', text: 'Added it.' }]),
     ])
 
-    const events = await readClaudeTranscriptAsAcp(file, SESSION)
+    const events = await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)
 
     // The shape of the conversation: what was asked, what was thought, what
     // was said, the tool that ran, and the plan it kept.
@@ -142,7 +142,7 @@ describe('readClaudeTranscriptAsAcp', () => {
       assistant([{ type: 'text', text: 'the real answer' }]),
     ])
 
-    const events = await readClaudeTranscriptAsAcp(file, SESSION)
+    const events = await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)
 
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
     const [ask, said] = events
@@ -164,7 +164,7 @@ describe('readClaudeTranscriptAsAcp', () => {
       ]),
     ])
 
-    const calls = (await readClaudeTranscriptAsAcp(file, SESSION))
+    const calls = (await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION))
       .filter((e) => e.type === 'tool').map((e) => e.call)
 
     expect(calls.find((c) => c.toolCallId === 'tu_1' && c.status === 'failed')).toBeDefined()
@@ -173,21 +173,17 @@ describe('readClaudeTranscriptAsAcp', () => {
     expect(dangling[0].status === 'completed' || dangling[0].status === 'failed').toBe(false)
   })
 
-  it('answers empty for a transcript that is missing, empty, or unparseable', async () => {
+  it('answers empty for a transcript that is empty or unparseable', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claude-replay-'))
     dirs.push(dir)
 
-    // A conversation whose agent never wrote anything is an empty history,
-    // not a failure — the same verdict `readAcpLog` reaches.
-    expect(await readClaudeTranscriptAsAcp(path.join(dir, 'gone.jsonl'), SESSION)).toEqual([])
-
     const empty = path.join(dir, 'empty.jsonl')
     await fs.writeFile(empty, '')
-    expect(await readClaudeTranscriptAsAcp(empty, SESSION)).toEqual([])
+    expect(await claudeTranscriptAsAcp(await fs.readFile(empty, 'utf8'), SESSION)).toEqual([])
 
     const junk = path.join(dir, 'junk.jsonl')
     await fs.writeFile(junk, 'not json at all\n{"half": \n')
-    expect(await readClaudeTranscriptAsAcp(junk, SESSION)).toEqual([])
+    expect(await claudeTranscriptAsAcp(await fs.readFile(junk, 'utf8'), SESSION)).toEqual([])
   })
 
   it('tolerates a transcript still being appended to', async () => {
@@ -197,7 +193,7 @@ describe('readClaudeTranscriptAsAcp', () => {
       [user('a question'), assistant([{ type: 'text', text: 'an answer' }])],
       '{"type":"assistant","uuid":"uuid-9","mes',
     )
-    expect((await readClaudeTranscriptAsAcp(file, SESSION)).map((e) => e.type))
+    expect((await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)).map((e) => e.type))
       .toEqual(['user', 'agent'])
   })
 
@@ -208,7 +204,7 @@ describe('readClaudeTranscriptAsAcp', () => {
       user('still readable'),
       assistant([{ type: 'text', text: 'indeed' }]),
     ])
-    expect((await readClaudeTranscriptAsAcp(file, 'not-a-uuid')).map((e) => e.type))
+    expect((await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), 'not-a-uuid')).map((e) => e.type))
       .toEqual(['user', 'agent'])
   })
 })

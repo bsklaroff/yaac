@@ -8,6 +8,10 @@ import {
   getCodexFirstUserMessage,
   getCodexPermissionMode,
 } from '#runtime/agents/codex'
+import type { SandboxFile } from '#runtime/agents/sandbox-fs'
+
+/** A path as the readers take it: a file under the dir it sits in. */
+const at = (file: string): SandboxFile => ({ slug: 'demo', dir: path.dirname(file), rel: path.basename(file) })
 
 // Title fixtures below reproduce states observed against a live Codex
 // session (codex-cli 0.142.4): a running turn animates a Braille spinner
@@ -82,7 +86,7 @@ describe('getCodexFirstUserMessage', () => {
   it('returns message from event_msg entry', async () => {
     await writeEntry({ type: 'session_start', session_id: 'abc', model: 'gpt-4' })
     await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' } })
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBe('fix the login bug')
   })
 
   it('returns the message of a completed UserMessage item, as codex 0.156.1 writes it', async () => {
@@ -92,29 +96,29 @@ describe('getCodexFirstUserMessage', () => {
       type: 'event_msg',
       payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'hello' }] } },
     })
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('hello')
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBe('hello')
   })
 
   it('returns undefined when no event_msg exists', async () => {
     await writeEntry({ type: 'session_start', session_id: 'abc' })
     await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBeUndefined()
   })
 
   it('returns undefined when file does not exist', async () => {
-    expect(await getCodexFirstUserMessage(path.join(tmpDir, 'nonexistent.jsonl'))).toBeUndefined()
+    expect(await getCodexFirstUserMessage(at(path.join(tmpDir, 'nonexistent.jsonl')))).toBeUndefined()
   })
 
   it('returns undefined for empty file', async () => {
     await fs.writeFile(jsonlPath, '')
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBeUndefined()
   })
 
   it('skips non-event_msg entries', async () => {
     await writeEntry({ type: 'session_start', session_id: 'abc' })
     await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
     await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'second prompt' } })
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('second prompt')
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBe('second prompt')
   })
 
   it('ignores bootstrap response_item user messages and reads the user_message event', async () => {
@@ -136,7 +140,7 @@ describe('getCodexFirstUserMessage', () => {
       },
     })
     await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' } })
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBe('fix the login bug')
   })
 
   it('finds the first user_message beyond the first 8KB of the file', async () => {
@@ -157,17 +161,17 @@ describe('getCodexFirstUserMessage', () => {
     })
     await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' } })
 
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBe('fix the login bug')
   })
 
   it('ignores the legacy top-level event_msg message shape', async () => {
     await writeEntry({ type: 'event_msg', message: 'legacy prompt', images: [] })
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBeUndefined()
   })
 
   it('ignores non-user event_msg payloads', async () => {
     await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'internal note' } })
-    expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
+    expect(await getCodexFirstUserMessage(at(jsonlPath))).toBeUndefined()
   })
 })
 
@@ -229,7 +233,7 @@ describe('getCodexPermissionMode', () => {
       [{ permission_profile: READ_ONLY }, 'read-only'],
     ]
     for (const [s, mode] of cases) {
-      expect((await getCodexPermissionMode(await rollout([turnContext(s)])))?.permissionMode).toBe(mode)
+      expect((await getCodexPermissionMode(at(await rollout([turnContext(s)]))))?.permissionMode).toBe(mode)
     }
   })
 
@@ -243,7 +247,7 @@ describe('getCodexPermissionMode', () => {
     ])
     // With when it was written — which is what tells this process's settings
     // from the ones a restart resumed.
-    await expect(getCodexPermissionMode(jsonl))
+    await expect(getCodexPermissionMode(at(jsonl)))
       .resolves.toEqual({ permissionMode: 'bypass', atMs: Date.parse('2026-09-24T20:21:41.151Z') })
 
     // Codex's own plan mode is only instructions to the model, over whatever
@@ -251,7 +255,7 @@ describe('getCodexPermissionMode', () => {
     await fs.appendFile(jsonl, JSON.stringify(applied({
       approval_policy: 'never', permission_profile: FULL, collaboration_mode: { mode: 'plan' },
     })) + '\n')
-    expect((await getCodexPermissionMode(jsonl))?.permissionMode).toBe('bypass')
+    expect((await getCodexPermissionMode(at(jsonl)))?.permissionMode).toBe('bypass')
   })
 
   // Settings the launch table never makes read as the most permissive posture
@@ -264,7 +268,7 @@ describe('getCodexPermissionMode', () => {
       [{ approvals_reviewer: 'auto_review', permission_profile: READ_ONLY }, 'auto'],
     ]
     for (const [s, mode] of cases) {
-      expect((await getCodexPermissionMode(await rollout([turnContext(s)])))?.permissionMode).toBe(mode)
+      expect((await getCodexPermissionMode(at(await rollout([turnContext(s)]))))?.permissionMode).toBe(mode)
     }
   })
 
@@ -272,10 +276,10 @@ describe('getCodexPermissionMode', () => {
   // that named one, which would claim a posture codex has since left.
   it('answers nothing for settings no posture stands for', async () => {
     const jsonl = await rollout([turnContext(), applied({ approval_policy: { granular: {} } })])
-    await expect(getCodexPermissionMode(jsonl)).resolves.toBeUndefined()
+    await expect(getCodexPermissionMode(at(jsonl))).resolves.toBeUndefined()
   })
 
   it('reads nothing from a rollout that is not there', async () => {
-    await expect(getCodexPermissionMode(path.join(dir, 'missing.jsonl'))).resolves.toBeUndefined()
+    await expect(getCodexPermissionMode(at(path.join(dir, 'missing.jsonl')))).resolves.toBeUndefined()
   })
 })

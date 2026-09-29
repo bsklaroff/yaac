@@ -64,6 +64,7 @@ import {
   buildWindowsExec,
   buildWorktreeLinkExec,
   ensureAgentReporters,
+  openSandboxDir,
   validateInitWindows,
   verifyAgentWindowAlive,
   type InitWindow,
@@ -1174,13 +1175,6 @@ export async function createWorktree(
     }
 
     const claude = claudeDir(projectSlug)
-    // Where claude reads its global config. It resolves `<$CLAUDE_CONFIG_DIR
-    // or the home dir>/.claude.json`, with no fallback probe of the other, so
-    // naming the config dir — which every create now does — puts the file
-    // INSIDE the claude home on both substrates. That is also why it needs no
-    // mount of its own any more: it is a file in a directory already mounted,
-    // rather than a lone `File` mount beside it.
-    const claudeJson = path.join(claude, '.claude.json')
     const codex = codexDir(projectSlug)
     const opencodeData = opencodeDataDir(projectSlug, worktreeId)
     const opencodeCheckpoint = opencodeCheckpointDir(projectSlug, worktreeId)
@@ -1255,29 +1249,37 @@ export async function createWorktree(
     // dirs are all mounted into every pod anyway, and a retooled spare must
     // find its config in place. All writes are cheap and idempotent.
 
-    // claude.json (hostPath-mounted as a file): seed claude-code's onboarding
-    // state so the first-run wizard — theme picker then login — is skipped.
-    // The injected placeholder credential authenticates the agent; without
-    // these flags the user is forced to log in inside every worktree.
+    // `.claude.json`: claude resolves `<$CLAUDE_CONFIG_DIR or the home
+    // dir>/.claude.json` with no fallback probe of the other, so naming the
+    // config dir — which every create does — puts it INSIDE the claude home
+    // on both substrates. Seed claude-code's onboarding state so the
+    // first-run wizard — theme picker then login — is skipped. The injected
+    // placeholder credential authenticates the agent; without these flags
+    // the user is forced to log in inside every worktree.
     //
     // The trusted roots are named in the shape the agent will see them: a
     // pod's mount points, or the real checkout when there is no mount
     // namespace to put one anywhere else.
+    //
+    // Every write below lands in a home the pod mounts read-write, so each
+    // goes through a confined root: a link planted in place of a file is
+    // replaced, never followed to whatever it names.
+    const claudeHome = await openSandboxDir(projectSlug, claude)
     await seedClaudeJson(
-      claudeJson,
+      claudeHome,
       mediatedEgress ? ['/workspace', '/repo'] : await withResolved([wtDir, repo]),
     )
-    await seedClaudeSettings(path.join(claude, 'settings.json'))
+    await seedClaudeSettings(claudeHome)
     // Point every tool at the reporters that name its conversation, model and
     // mode on its pane (the scripts are staged from worktree-bin onto the
     // workspace's PATH below). Best-effort: without them the agents still
     // run, and only what yaac learns about them is lost.
-    await ensureAgentReporters({
-      claudeDir: claude,
-      codexDir: codex,
-      piAgentDir: path.join(pi, 'agent'),
-      opencodeConfigDir: opencodeConfig,
-    }).catch(() => {})
+    await (async () => ensureAgentReporters({
+      claude: claudeHome,
+      codex: await openSandboxDir(projectSlug, codex),
+      pi: await openSandboxDir(projectSlug, pi),
+      opencodeConfig: await openSandboxDir(projectSlug, opencodeConfig),
+    }))().catch(() => {})
 
     // Pre-create cacheVolumes host dirs so they're server-owned rather than
     // root-owned via DirectoryOrCreate — the in-container yaac user carries

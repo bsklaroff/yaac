@@ -4,6 +4,10 @@ import path from 'node:path'
 import os from 'node:os'
 
 import { classifyClaudeTitle, getFirstUserMessage } from '#runtime/agents/claude'
+import type { SandboxFile } from '#runtime/agents/sandbox-fs'
+
+/** A path as the readers take it: a file under the dir it sits in. */
+const at = (file: string): SandboxFile => ({ slug: 'demo', dir: path.dirname(file), rel: path.basename(file) })
 
 // Title fixtures below reproduce states observed against a live Claude
 // Code session inside a session pod: a running turn animates a spinner
@@ -115,7 +119,7 @@ describe('getFirstUserMessage', () => {
     await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
     await writeEntry({ type: 'user', message: { role: 'user', content: 'fix the login bug' } })
     await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    expect(await getFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+    expect(await getFirstUserMessage(at(jsonlPath))).toBe('fix the login bug')
   })
 
   it('returns text from content block array', async () => {
@@ -123,28 +127,28 @@ describe('getFirstUserMessage', () => {
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text: 'refactor the API' }] },
     })
-    expect(await getFirstUserMessage(jsonlPath)).toBe('refactor the API')
+    expect(await getFirstUserMessage(at(jsonlPath))).toBe('refactor the API')
   })
 
   it('skips a user entry with no text block, such as a tool result', async () => {
     await writeEntry({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] } })
     await writeEntry({ type: 'user', message: { role: 'user', content: 'the real ask' } })
-    expect(await getFirstUserMessage(jsonlPath)).toBe('the real ask')
+    expect(await getFirstUserMessage(at(jsonlPath))).toBe('the real ask')
   })
 
   it('returns undefined when no user messages exist', async () => {
     await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
     await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    expect(await getFirstUserMessage(jsonlPath)).toBeUndefined()
+    expect(await getFirstUserMessage(at(jsonlPath))).toBeUndefined()
   })
 
   it('returns undefined for empty file', async () => {
     await fs.writeFile(jsonlPath, '')
-    expect(await getFirstUserMessage(jsonlPath)).toBeUndefined()
+    expect(await getFirstUserMessage(at(jsonlPath))).toBeUndefined()
   })
 
   it('returns undefined for missing file', async () => {
-    expect(await getFirstUserMessage(path.join(tmpDir, 'nope.jsonl'))).toBeUndefined()
+    expect(await getFirstUserMessage(at(path.join(tmpDir, 'nope.jsonl')))).toBeUndefined()
   })
 
   it('skips metadata and returns first user message', async () => {
@@ -152,7 +156,7 @@ describe('getFirstUserMessage', () => {
     await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
     await writeEntry({ type: 'user', message: { role: 'user', content: 'hello world' } })
     await writeEntry({ type: 'user', message: { role: 'user', content: 'second message' } })
-    expect(await getFirstUserMessage(jsonlPath)).toBe('hello world')
+    expect(await getFirstUserMessage(at(jsonlPath))).toBe('hello world')
   })
 
   it('finds the first user message beyond the first 8KB of the file', async () => {
@@ -160,7 +164,7 @@ describe('getFirstUserMessage', () => {
     await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
     await writeEntry({ type: 'user', message: { role: 'user', content: 'hello world' } })
 
-    expect(await getFirstUserMessage(jsonlPath)).toBe('hello world')
+    expect(await getFirstUserMessage(at(jsonlPath))).toBe('hello world')
   })
 
   it('skips a session started with a slash command and returns the first real message', async () => {
@@ -185,13 +189,13 @@ describe('getFirstUserMessage', () => {
     })
     await writeEntry({ type: 'user', message: { role: 'user', content: 'fix the login bug' } })
 
-    expect(await getFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+    expect(await getFirstUserMessage(at(jsonlPath))).toBe('fix the login bug')
   })
 
   it('skips an isMeta user entry even without a command wrapper', async () => {
     await writeEntry({ type: 'user', isMeta: true, message: { role: 'user', content: 'synthetic preamble' } })
     await writeEntry({ type: 'user', message: { role: 'user', content: 'real message' } })
-    expect(await getFirstUserMessage(jsonlPath)).toBe('real message')
+    expect(await getFirstUserMessage(at(jsonlPath))).toBe('real message')
   })
 
   it('returns undefined when only command messages exist', async () => {
@@ -204,6 +208,6 @@ describe('getFirstUserMessage', () => {
       type: 'user',
       message: { role: 'user', content: '<command-name>/clear</command-name>' },
     })
-    expect(await getFirstUserMessage(jsonlPath)).toBeUndefined()
+    expect(await getFirstUserMessage(at(jsonlPath))).toBeUndefined()
   })
 })

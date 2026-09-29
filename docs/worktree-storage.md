@@ -329,9 +329,9 @@ event is worse still — it names a machine-absolute place, which the
 server can neither resolve nor meaningfully store once the two are separate
 processes.
 
-Project-relative rather than tool-home-relative because it needs no tool: every
-tool home is `<projectDir>/<tool>`, so the tool segment is simply the first
-component, and nothing has to know which home a path came out of. The reporter
+Project-relative rather than tool-home-relative so the column needs no tool to
+be read: every tool home is `<projectDir>/<tool>`, so the tool segment is simply
+the first component. The reporter
 is handed its home and that home's name (`yaac-agent-links "$HOME/.claude"
 claude`), so producing the form stays parameter expansion with no interpreter.
 It tries the home's physical path as well, since a workspace may reach its tool
@@ -339,8 +339,8 @@ home through a link and a tool that resolves its own paths then reports the
 transcript under the target.
 
 `toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
-are the only place the two forms meet. Disk code works in absolute paths
-internally — it stats transcripts and hands them to parsers — while a path
+are the only place the two forms meet. Disk code works in `SandboxFile`s — a
+tool home and a path under it (see "Sandbox-writable dirs") — while a path
 reaches an event already project-relative, as the pane named it. The
 conversion is applied at the *last write* before the column only where the
 on-demand founding-ask capture is fed by a reader that has already resolved a
@@ -352,11 +352,12 @@ the halves still lives: the stopped listing stats a transcript for
 last-activity and the detail route parses one for a founding ask, both against
 files on disk.
 
-A pane's `@yaac-session` is the one input yaac does not write, so it is the
-one place a path is *validated* rather than converted: anything in the
-workspace can set it, and `parsePaneSession` refuses a path that is absolute
-or climbs out of the project — everything downstream takes the value at face
-value and would happily stat and parse whatever it named.
+A pane's `@yaac-session` is the one input yaac does not write, so it is
+*validated* rather than converted: anything in the workspace can set it.
+`parsePaneSession` holds the id to `agentSessionIdSchema` and drops a path that
+is absolute or climbs out of the project, and decoding (`resolveProjectPath`)
+resolves a path only under the recording tool's own home — a pane naming
+`known_hosts` or `repo/.git/config` names no transcript.
 
 The transcripts themselves are deliberately left where each tool writes them,
 in the project-shared tool home. Recording the path is what makes them findable,
@@ -372,6 +373,35 @@ codex is why the path is recorded at all: claude's transcript is at a
 conventional location and pi's is found by matching the id in its filename, but
 codex names its rollout files unpredictably, so nothing derives one from a
 worktree id.
+
+## Sandbox-writable dirs
+
+Under k8s every pod of a project mounts its tool homes (`claude/`, `codex/`,
+`pi/`, `opencode-config/`), its conversation records (`acp/<worktreeId>/`) and
+the checkout read-write, so anything below a mount root may be a link or a FIFO
+the pod planted. The server never touches those trees with plain path I/O: it
+opens them as a confined root (`#lib/confined-fs`), which checks every step on
+the descriptor it opened, opens leaves non-blocking, caps what it reads, writes
+through a random temp file and a rename, and deletes by walking descriptors.
+
+- **Tool homes and records** are opened with `openSandboxDir`
+  (`#runtime/agents`). Under a sandboxing runtime that is `no-links`, rooted at
+  the dir itself — a mount root the pod cannot replace: a link or FIFO in place
+  of a file reads as missing, and a write replaces it rather than following
+  it. Under containerless there is no boundary to defend and the links there
+  are yaac's own, so it is `inside`, rooted at the project dir: links are
+  followed while they stay in the project. One consequence: a personal skill
+  linked in from outside the project dir is not listed by skills discovery,
+  though the agent itself still loads it.
+- **The checkout** is opened `inside` on both substrates (the file editor
+  excludes its `.git`).
+- **Whole-tree deletes** of a worktree or project run only once no pod is left
+  to write under them, so Node's recursive `rm` — which follows no link it
+  meets — cannot be steered mid-walk.
+
+Ids that come from a workspace (a pane's conversation id, an ACP agent's
+minted `sessionId`) are held to `agentSessionIdSchema` before they are recorded
+or joined into a path.
 
 ## First messages
 

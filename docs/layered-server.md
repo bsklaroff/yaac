@@ -119,9 +119,9 @@ egress proxy, and the images it builds.
 `db` reaches nothing sideways at all. A column that names a place on disk
 holds a portable form (a transcript path is project-relative, so it stays
 true wherever the data dir sits); resolving one against the project
-directory takes layout knowledge, so it happens a layer up, in
-`absoluteTranscriptPath`. That keeps rows a vocabulary the db layer can
-speak alone.
+directory — confined to the recording tool's own home — takes layout
+knowledge, so it happens a layer up, in `recordedTranscript`. That keeps
+rows a vocabulary the db layer can speak alone.
 
 ## What lives where
 

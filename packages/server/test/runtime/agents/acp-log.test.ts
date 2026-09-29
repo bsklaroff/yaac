@@ -1,14 +1,16 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import {
   readAcpFirstPrompt,
-  readAcpLog,
   readAcpPendingPermissions,
   replayAcpLog,
   tailAcpLog,
+  MAX_ACP_RECORD_BYTES,
+  type AcpRecordRef,
 } from '#runtime/agents/acp-log'
+import { acpLogDir, setDataDir } from '@yaac/shared/project-paths'
 
 /**
  * The record acpd writes is now a conversation's history, so this projection
@@ -61,71 +63,31 @@ const answer = (id: string | number, optionId?: string): string => line({
     : { outcome: { outcome: 'selected', optionId } },
 })
 
-const dirs: string[] = []
-afterEach(async () => {
-  for (const d of dirs.splice(0)) await fs.rm(d, { recursive: true, force: true })
+let dataDir: string
+beforeAll(async () => {
+  dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
+  setDataDir(dataDir)
+})
+afterAll(async () => {
+  await fs.rm(dataDir, { recursive: true, force: true })
 })
 
-describe('readAcpLog', () => {
-  it('answers empty for a conversation that has not been recorded yet', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
-    dirs.push(dir)
-    // Not an error: a conversation whose agent has not spoken has no history.
-    expect(await readAcpLog(path.join(dir, 'missing.jsonl'))).toEqual([])
-  })
-
-  it('reads a record off disk', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
-    dirs.push(dir)
-    const file = path.join(dir, 'acp-1.jsonl')
-    await fs.writeFile(file, [
-      line({ jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } }),
-      prompt('do it'),
-      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } }),
-    ].join('\n') + '\n')
-
-    const events = await readAcpLog(file)
-    expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
-  })
-
-  it('replays a message\'s images with its words', async () => {
-    // The user's own turn exists only as the client's `session/prompt` line,
-    // so an image the user sent is in the history only if that projection
-    // keeps it.
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
-    dirs.push(dir)
-    const file = path.join(dir, 'acp-1.jsonl')
-    await fs.writeFile(file, line({
-      jsonrpc: '2.0',
-      id: 'abc-1',
-      method: 'session/prompt',
-      params: {
-        sessionId: 'acp-1',
-        prompt: [
-          { type: 'text', text: 'what is this?' },
-          { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
-        ],
-      },
-    }) + '\n')
-
-    expect(await readAcpLog(file)).toMatchObject([{
-      type: 'user',
-      content: [
-        { type: 'text', text: 'what is this?' },
-        { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
-      ],
-    }])
-  })
-})
+let seq = 0
+/** A fresh conversation's record: the file acpd would write, and the name a
+ *  reader asks for it by. */
+async function record(): Promise<{ file: string; ref: AcpRecordRef }> {
+  const ref = { slug: 'demo', worktreeId: `wt-${String(++seq)}`, agentSessionId: 'acp-1' }
+  const dir = acpLogDir(ref.slug, ref.worktreeId)
+  await fs.mkdir(dir, { recursive: true })
+  return { ref, file: path.join(dir, 'acp-1.jsonl') }
+}
 
 describe('tailAcpLog', () => {
   const tails: Array<{ close(): void }> = []
   afterEach(() => { for (const t of tails.splice(0)) t.close() })
 
-  async function scratch(): Promise<string> {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-tail-'))
-    dirs.push(dir)
-    return path.join(dir, 'acp-1.jsonl')
+  async function scratch(): Promise<{ file: string; ref: AcpRecordRef }> {
+    return record()
   }
 
   async function until(cond: () => boolean, ms = 3000): Promise<void> {
@@ -138,7 +100,7 @@ describe('tailAcpLog', () => {
 
   it('reports an empty history for a record that does not exist yet', async () => {
     const batches: Array<{ events: unknown[]; reset: boolean }> = []
-    tails.push(tailAcpLog(await scratch(), (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog((await scratch()).ref, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
 
     // A conversation whose agent has not spoken has an empty history, not a
     // missing one — a pane must still learn that it is attached.
@@ -147,10 +109,10 @@ describe('tailAcpLog', () => {
   })
 
   it('delivers appended lines as they arrive, without re-sending what it had', async () => {
-    const file = await scratch()
+    const { file, ref } = await scratch()
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'one' } }) + '\n')
     const batches: Array<{ events: Array<{ type: string }>; reset: boolean }> = []
-    tails.push(tailAcpLog(file, (events, reset) => batches.push({ events: events as Array<{ type: string }>, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events: events as Array<{ type: string }>, reset }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
     expect(batches[0].reset).toBe(true)
     expect(batches[0].events).toHaveLength(1)
@@ -164,11 +126,11 @@ describe('tailAcpLog', () => {
   })
 
   it('holds a partial trailing line until the rest arrives', async () => {
-    const file = await scratch()
+    const { file, ref } = await scratch()
     const full = update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'split' } })
     await fs.writeFile(file, full.slice(0, 20))
     const batches: Array<{ events: unknown[] }> = []
-    tails.push(tailAcpLog(file, (events) => batches.push({ events }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, (events) => batches.push({ events }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
     // acpd appends as the agent streams, so a pass always lands mid-line.
     expect(batches[0].events).toEqual([])
@@ -178,7 +140,7 @@ describe('tailAcpLog', () => {
   })
 
   it('starts over when the record is truncated for a new agent life', async () => {
-    const file = await scratch()
+    const { file, ref } = await scratch()
     await fs.writeFile(file, [
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old life' } }),
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'more' } }),
@@ -188,7 +150,7 @@ describe('tailAcpLog', () => {
     // point — `writeFile` truncates before it writes, so a pass can legally
     // land on an empty record and report the reset with no events in it.
     let view: Array<{ content?: Array<{ text?: string }> }> = []
-    tails.push(tailAcpLog(file, (events, reset) => {
+    tails.push(tailAcpLog(ref, (events, reset) => {
       const batch = events as typeof view
       view = reset ? batch : [...view, ...batch]
     }, { intervalMs: 20 }))
@@ -210,10 +172,10 @@ describe('tailAcpLog', () => {
     // empties the file before writing a byte, so a pass can see size 0: there
     // is nothing to project yet, but forgetting the reset would append the new
     // life's first events to the old life's transcript.
-    const file = await scratch()
+    const { file, ref } = await scratch()
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old life' } }) + '\n')
     const batches: Array<{ events: unknown[]; reset: boolean }> = []
-    tails.push(tailAcpLog(file, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
 
     await fs.truncate(file, 0)
@@ -232,7 +194,7 @@ describe('tailAcpLog', () => {
     // characters, so a pass can see the file ending mid-sequence. Decoding
     // each pass's bytes on their own would put a U+FFFD on each side of the
     // split, inside JSON that still parses — silent corruption.
-    const file = await scratch()
+    const { file, ref } = await scratch()
     const full = Buffer.from(
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'héllo 😀 世界' } }) + '\n',
       'utf8',
@@ -242,7 +204,7 @@ describe('tailAcpLog', () => {
     await fs.writeFile(file, full.subarray(0, at))
 
     const events: Array<{ content?: Array<{ text?: string }> }> = []
-    tails.push(tailAcpLog(file, (batch) => events.push(...batch as typeof events), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, (batch) => events.push(...batch as typeof events), { intervalMs: 20 }))
     await until(() => events.length === 0)
     await new Promise((r) => setTimeout(r, 60))
 
@@ -256,12 +218,12 @@ describe('tailAcpLog', () => {
     // session/load replay regrows the file past where we were reading, inside
     // one tick, looks like an ordinary append. The life id is what makes the
     // distinction exact.
-    const file = await scratch()
+    const { file, ref } = await scratch()
     const a = update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old' } })
     await fs.writeFile(file, [life('life-1'), a].join('\n') + '\n')
 
     let view: Array<{ content?: Array<{ text?: string }> }> = []
-    tails.push(tailAcpLog(file, (batch, reset) => {
+    tails.push(tailAcpLog(ref, (batch, reset) => {
       view = reset ? batch as typeof view : [...view, ...batch as typeof view]
     }, { intervalMs: 20 }))
     await until(() => view.length === 1)
@@ -278,10 +240,10 @@ describe('tailAcpLog', () => {
     // contents. A flush that returned early because the interval had just
     // fired would resolve without reading the answer's last bytes, and the
     // turn would render above them.
-    const file = await scratch()
+    const { file, ref } = await scratch()
     await fs.writeFile(file, '')
     const events: unknown[] = []
-    const tail = tailAcpLog(file, (batch) => events.push(...batch), { intervalMs: 20 })
+    const tail = tailAcpLog(ref, (batch) => events.push(...batch), { intervalMs: 20 })
     tails.push(tail)
     await until(() => events.length === 0)
 
@@ -293,11 +255,24 @@ describe('tailAcpLog', () => {
     expect(events).toHaveLength(1)
   })
 
+  it('follows no record past the cap, whatever size it claims', async () => {
+    // A sparse file costs the pod that plants it nothing; reading to its size
+    // would cost the server that much memory on every pass.
+    const { file, ref } = await scratch()
+    const handle = await fs.open(file, 'w')
+    await handle.truncate(MAX_ACP_RECORD_BYTES + 1)
+    await handle.close()
+    const batches: Array<{ events: unknown[]; reset: boolean }> = []
+    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
+    await until(() => batches.length > 0)
+    expect(batches[0]).toEqual({ events: [], reset: true })
+  })
+
   it('stops reading once closed', async () => {
-    const file = await scratch()
+    const { file, ref } = await scratch()
     await fs.writeFile(file, '')
     const batches: unknown[] = []
-    const tail = tailAcpLog(file, (events) => batches.push(events), { intervalMs: 20 })
+    const tail = tailAcpLog(ref, (events) => batches.push(events), { intervalMs: 20 })
     await until(() => batches.length > 0)
     tail.close()
     const after = batches.length
@@ -312,9 +287,7 @@ describe('readAcpFirstPrompt', () => {
   it('finds the opening message without a live conversation', async () => {
     // The registry labels a worktree from this, on a reconciler tick — so it
     // must come off disk rather than from something attached.
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
-    dirs.push(dir)
-    const file = path.join(dir, 'acp-1.jsonl')
+    const { file, ref } = await record()
     await fs.writeFile(file, [
       line({ jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } }),
       line({ jsonrpc: '2.0', id: 'x-1', method: 'initialize', params: {} }),
@@ -322,15 +295,13 @@ describe('readAcpFirstPrompt', () => {
       prompt('a later one'),
     ].join('\n') + '\n')
 
-    expect(await readAcpFirstPrompt(file)).toBe('the founding ask')
+    expect(await readAcpFirstPrompt(ref)).toBe('the founding ask')
   })
 
   it('labels from an opening message whose images run it past the scan', async () => {
     // Megabytes of base64 on one line: the scan cannot parse it, but the text
     // is written ahead of the images, so the label is still in reach.
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
-    dirs.push(dir)
-    const file = path.join(dir, 'acp-1.jsonl')
+    const { file, ref } = await record()
     await fs.writeFile(file, [
       life('life-1'),
       line({
@@ -347,20 +318,18 @@ describe('readAcpFirstPrompt', () => {
       }),
     ].join('\n') + '\n')
 
-    expect(await readAcpFirstPrompt(file)).toBe('why is "this" red?')
+    expect(await readAcpFirstPrompt(ref)).toBe('why is "this" red?')
   })
 
   it('answers undefined for a record with no prompt, or none at all', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
-    dirs.push(dir)
-    const file = path.join(dir, 'quiet.jsonl')
+    const { file, ref } = await record()
     await fs.writeFile(file, update({
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'unprompted' },
     }) + '\n')
 
-    expect(await readAcpFirstPrompt(file)).toBeUndefined()
-    expect(await readAcpFirstPrompt(path.join(dir, 'missing.jsonl'))).toBeUndefined()
+    expect(await readAcpFirstPrompt(ref)).toBeUndefined()
+    expect(await readAcpFirstPrompt((await record()).ref)).toBeUndefined()
   })
 })
 
@@ -370,39 +339,37 @@ describe('readAcpFirstPrompt', () => {
  * record is the only evidence, exactly as it is for turn state.
  */
 describe('readAcpPendingPermissions', () => {
-  const write = async (name: string, lines: string[]): Promise<string> => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
-    dirs.push(dir)
-    const file = path.join(dir, `${name}.jsonl`)
+  const write = async (lines: string[]): Promise<AcpRecordRef> => {
+    const { file, ref } = await record()
     await fs.writeFile(file, lines.join('\n') + '\n')
-    return file
+    return ref
   }
 
   it('returns an unanswered ask with the id the agent used, type included', async () => {
     // Verbatim, not stringified: JSON-RPC pairs an id by value AND type, so a
     // numeric 42 answered as "42" is a reply the agent never matches — and a
     // turn that stays blocked forever.
-    const file = await write('blocked', [life('l1'), prompt('go'), ask(42)])
+    const file = await write([life('l1'), prompt('go'), ask(42)])
     expect(await readAcpPendingPermissions(file)).toEqual([42])
 
-    const strung = await write('blocked-str', [life('l1'), ask('req-9')])
+    const strung = await write([life('l1'), ask('req-9')])
     expect(await readAcpPendingPermissions(strung)).toEqual(['req-9'])
   })
 
   it('answers empty once the ask has been settled, or when there was never one', async () => {
-    const settled = await write('settled', [life('l1'), ask(1), answer(1, 'allow')])
+    const settled = await write([life('l1'), ask(1), answer(1, 'allow')])
     expect(await readAcpPendingPermissions(settled)).toEqual([])
 
-    const quiet = await write('quiet', [life('l1'), prompt('go')])
+    const quiet = await write([life('l1'), prompt('go')])
     expect(await readAcpPendingPermissions(quiet)).toEqual([])
-    expect(await readAcpPendingPermissions('/nonexistent/none.jsonl')).toEqual([])
+    expect(await readAcpPendingPermissions((await record()).ref)).toEqual([])
   })
 
   it('forgets asks the agent died holding, which nobody can answer any more', async () => {
     // The bound on "unanswered ⇒ still blocked". Without acpd's exit line the
     // scan would report a conversation waiting on a decision whose process is
     // gone, and nothing would ever clear it.
-    const file = await write('dead', [
+    const file = await write([
       life('l1'),
       ask(1),
       line({ jsonrpc: '2.0', method: '_acpd/exit', params: { code: 1, signal: null } }),
@@ -411,12 +378,47 @@ describe('readAcpPendingPermissions', () => {
   })
 
   it('reports every ask of a batch the agent is holding at once', async () => {
-    const file = await write('batch', [life('l1'), ask(1), ask(2), ask(3), answer(2, 'allow')])
+    const file = await write([life('l1'), ask(1), ask(2), ask(3), answer(2, 'allow')])
     expect(await readAcpPendingPermissions(file)).toEqual([1, 3])
   })
 })
 
 describe('replayAcpLog', () => {
+  it('reads a record', () => {
+    const events = replayAcpLog([
+      line({ jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } }),
+      prompt('do it'),
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } }),
+    ].join('\n') + '\n')
+    expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
+  })
+
+  it('replays a message\'s images with its words', () => {
+    // The user's own turn exists only as the client's `session/prompt` line,
+    // so an image the user sent is in the history only if that projection
+    // keeps it.
+    const raw = (line({
+      jsonrpc: '2.0',
+      id: 'abc-1',
+      method: 'session/prompt',
+      params: {
+        sessionId: 'acp-1',
+        prompt: [
+          { type: 'text', text: 'what is this?' },
+          { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+        ],
+      },
+    }) + '\n')
+
+    expect(replayAcpLog(raw)).toMatchObject([{
+      type: 'user',
+      content: [
+        { type: 'text', text: 'what is this?' },
+        { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+      ],
+    }])
+  })
+
   it('reconstructs user turns from the client\'s own prompts', () => {
     // The agent echoes a user message only when replaying under `session/load`,
     // so for anything said live these request lines are the only record that a

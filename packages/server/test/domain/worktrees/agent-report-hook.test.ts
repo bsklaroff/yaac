@@ -164,6 +164,15 @@ describe('the agent reporters', () => {
       expect(await named()).toEqual({ tool: 'claude', agentSessionId: 'conv-b' })
     })
 
+    it('names no conversation whose id could climb out of a path it is joined into', () => {
+      // The id becomes `acp/<wt>/<id>.jsonl` and `--resume <id>`: a pane is
+      // anything in the workspace's to set, so the shape is the server's check.
+      for (const id of ['../../etc/passwd', 'a/b', '-flag', 'x'.repeat(129), 'a.b']) {
+        expect(parsePaneSession(`claude|${id}|claude/t.jsonl`)).toBeUndefined()
+      }
+      expect(parsePaneSession('claude|ok-id_1|claude/t.jsonl')?.agentSessionId).toBe('ok-id_1')
+    })
+
     it('makes the path project-relative through a symlinked tool home', async () => {
       // A containerless workspace: the tool home in its private HOME links to
       // the project's shared one, and the tool reports the physical path.
