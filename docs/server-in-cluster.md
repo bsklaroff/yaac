@@ -104,10 +104,16 @@ listening on port 30787 and TCP-proxying to the absolute name
 `yaac-server.<ns>.svc.cluster.local.` (`dnsPolicy: ClusterFirstWithHostNet`
 is what lets a host-networked process resolve a cluster name; the trailing
 dot keeps it from first trying the node's own search domains, which
-CoreDNS forwards to a host resolver that may hang). The kind `extraPortMapping`, written when
-the cluster is created, delivers `127.0.0.1:<server port>` on the host to
-that node port. The browser, the CLI, the desktop app and the auth daemon
-all resolve that origin through `server.json`, which is the only thing
+CoreDNS forwards to a host resolver that may hang). The kind
+`extraPortMapping`, written when the cluster is created, delivers
+`127.0.0.1:<server port>` on the host to that node port. Being fixed at
+creation, that port is read back off the control-plane node's mapping
+(`podman port`) whenever install or `yaac server start|restart` resolves
+the origin, unless `YAAC_SERVER_PORT` names one outright. There is no
+fallback port: whatever answers a guessed one is not this cluster, so a
+node without the mapping, or a podman that cannot be asked, is a refusal.
+The browser, the CLI, the desktop app and the auth daemon all resolve that
+origin through `server.json`, which is the only thing
 `resolveServerTarget` reads (docs/server-selection.md).
 
 A forwarder rather than a NodePort, because of what the pod's ingress

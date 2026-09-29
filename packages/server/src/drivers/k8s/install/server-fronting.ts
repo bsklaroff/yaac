@@ -33,8 +33,8 @@ import {
   kubectlGetJson,
 } from '#drivers/k8s/substrate'
 import { ENVOY_MIRROR_TAG } from '#drivers/k8s/cluster'
-import { registryRef } from '#drivers/k8s/container'
-import { resolveServerPort } from '@yaac/shared/server-port'
+import { execFileAsync, registryRef } from '#drivers/k8s/container'
+import { env } from '@yaac/shared/env'
 import { ClusterInstallError } from './arg-guards'
 
 /** What the Deployment's environment must state for a published origin. */
@@ -116,7 +116,6 @@ function serverServiceManifest(): Record<string, unknown> {
  * API stops being published on every address the nodes have.
  */
 export function kindFronting(): ServerFronting {
-  const origin = `http://127.0.0.1:${String(resolveServerPort())}`
   return {
     kind: 'kind',
     manifests: () => [
@@ -126,19 +125,65 @@ export function kindFronting(): ServerFronting {
     ],
     retired: () => [['ingress', SERVER_APP_NAME]],
     ingressPeers: () => [],
-    resolveOrigin: () => Promise.resolve(origin),
+    resolveOrigin: async () => `http://127.0.0.1:${String(await kindPublishedPort())}`,
     remoteHosting: () => ({ allowedHosts: [] }),
     publishTimeoutMs: 60_000,
     unreachableDiagnosis: () =>
       'This is what a cluster created before the server was published looks '
       + 'like: the mapped port has no host end, and kind writes port mappings '
-      + 'only when a cluster is created.\n'
-      + '    Recreate it: `yaac cluster delete`, then `yaac cluster install`. '
-      + 'Running worktrees are lost (as any cluster delete loses them); nothing '
-      + 'under the data dir is touched.\n'
+      + `only when a cluster is created.\n    ${KIND_RECREATE_ADVICE}\n`
       + `    If the cluster is recent, inspect the forwarder: \`kubectl -n ${k8sNamespace()} `
       + `get deploy,pods -l app=${SERVER_FRONT_APP_NAME}\`.`,
   }
+}
+
+const KIND_RECREATE_ADVICE = 'Recreate it: `yaac cluster delete`, then `yaac cluster '
+  + 'install`. Running worktrees are lost (as any cluster delete loses them); '
+  + 'nothing under the data dir is touched.'
+
+/**
+ * The host port the kind cluster publishes the server on. kind fixes it
+ * when the cluster is CREATED, so an unset `YAAC_SERVER_PORT` in this
+ * shell says nothing about it: a cluster created under another value holds
+ * that one, and it is read off the control-plane node's own mapping. An
+ * explicit `YAAC_SERVER_PORT` still names it outright, which is how the
+ * e2e harness publishes each file's server on a forward of its own.
+ *
+ * There is no fallback port. Whatever answers a guessed one is not this
+ * cluster, and install would register it. A node without the mapping is
+ * refused with the recreate advice at once, and any other podman failure
+ * with podman's own words.
+ */
+async function kindPublishedPort(): Promise<number> {
+  if (env.serverPort !== undefined) return env.serverPort
+  const node = `${env.kindCluster}-control-plane`
+  let stdout = ''
+  try {
+    ({ stdout } = await execFileAsync('podman', ['port', node, `${String(SERVER_FRONT_PORT)}/tcp`]))
+  } catch (err) {
+    const stderr = ((err as { stderr?: string }).stderr ?? '').trim()
+      || (err instanceof Error ? err.message : String(err))
+    if (!stderr.includes('failed to find published port')) {
+      throw new ClusterInstallError(
+        `Cannot read the server's host port off the kind node ${node}: ${stderr}`,
+      )
+    }
+  }
+  const mapped = stdout.trim().split('\n')[0]
+  if (mapped === '') {
+    throw new ClusterInstallError(
+      `The kind node ${node} publishes no host port for the server: the cluster `
+      + 'was created before the server was published, and kind writes port '
+      + `mappings only when a cluster is created.\n    ${KIND_RECREATE_ADVICE}`,
+    )
+  }
+  const port = Number(mapped.split(':').pop())
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new ClusterInstallError(
+      `Unexpected \`podman port\` output for the kind node ${node}: ${mapped}`,
+    )
+  }
+  return port
 }
 
 /** The IngressClass the Tailscale operator serves. */
