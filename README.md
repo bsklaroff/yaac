@@ -265,7 +265,7 @@ Commands:
   cluster         Manage the kubernetes cluster yaac runs worktrees on
   project         Manage projects
   worktree        Manage worktrees (a git worktree + its container and agents)
-  config          Edit project configuration files (via the server)
+  config          Edit project configuration files and server settings
   auth            Manage credentials (git credentials and tool sign-ins)
   remote          Point this CLI at a remote yaac server
 
@@ -312,6 +312,9 @@ yaac config <command>
   edit <project>              Open the project's yaac-config.json in $EDITOR
   edit-dockerfile <project>   Open the project's Dockerfile.yaac in $EDITOR
   edit-user-dockerfile        Open the global ~/.yaac/server-local/build/Dockerfile.user in $EDITOR
+  git-identity [options]      Show the git identity worktrees commit under, or set it:
+    --name <name>               Git user.name to set (with --email)
+    --email <email>             Git user.email to set (with --name)
 
 yaac auth <command>
   list                List configured credentials (masked; git credentials by name)
@@ -355,6 +358,15 @@ rewrites requests carrying the placeholder sentinel it put in the container's
 env, so traffic you authenticate yourself passes through untouched.
 
 Git credentials are the exception: they live encrypted in the server's database (see below). The proxy is handed every credential whenever one changes, so updates via `yaac auth update` or the web app propagate to every running worktree immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
+
+### Git identity
+
+Worktrees commit under one server-wide git identity. The auth server fills it
+from your git config when it starts and the server has none — it runs under
+the desktop app, `yaac auth server start`, and the browser sign-in of
+`yaac auth update` for Claude or Codex. Otherwise a create is refused until
+you set it, in the web app's Settings → General or with
+`yaac config git-identity --name <name> --email <email>`.
 
 ### Git credentials
 

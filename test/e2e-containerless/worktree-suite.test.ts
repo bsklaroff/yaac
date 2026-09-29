@@ -415,12 +415,6 @@ beforeAll(async () => {
     XDG_CONFIG_HOME: '/nowhere/config',
     XDG_DATA_HOME: '/nowhere/share',
   }
-  // A create resolves the git identity from the global config; the test env
-  // redirects that to its own file, which starts empty.
-  await fs.writeFile(
-    testEnv.gitConfigPath,
-    '[user]\n\tname = Test\n\temail = test@test.com\n',
-  )
   server = await spawnYaacServer(serverEnv)
 
   // A tool credential has to exist before a create resolves one; the fake
@@ -467,6 +461,27 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(exitCode).toBe(1)
     expect(stderr).toContain('containerless')
     expect(stderr).toContain('yaac host check')
+  })
+
+  it('yaac config git-identity shows and sets the identity a create commits under', async () => {
+    // A fresh server has none, and a create would refuse — which is why
+    // this runs before the first one.
+    const unset = await runYaac(serverEnv, 'config', 'git-identity')
+    expect(unset.exitCode).toBe(0)
+    expect(unset.stdout).toContain('No git identity is set')
+
+    // Half an identity is no identity: refused before anything is sent.
+    const half = await runYaac(serverEnv, 'config', 'git-identity', '--name', 'Test')
+    expect(half.exitCode).toBe(1)
+    expect(half.stderr).toContain('--name and --email')
+
+    const set = await runYaac(
+      serverEnv, 'config', 'git-identity', '--name', 'Test', '--email', 'test@test.com',
+    )
+    expect(set.exitCode).toBe(0)
+    expect(set.stdout).toContain('Git identity: Test <test@test.com>')
+    expect((await runYaac(serverEnv, 'config', 'git-identity')).stdout)
+      .toContain('Test <test@test.com>')
   })
 
   it('creates a worktree as a tmux session on this host', async () => {

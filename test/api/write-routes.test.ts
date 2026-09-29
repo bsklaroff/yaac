@@ -336,7 +336,7 @@ describe('write routes', () => {
         .toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
     })
 
-    it('refuses a half-identity or a non-address', async () => {
+    it('refuses a half-identity, a non-address, a control character or an overlong value', async () => {
       // Committing as a name with no email is not a lesser identity — git
       // refuses it — so neither is this.
       const app = buildApp({ secret: 'shh', buildId: 'test' })
@@ -344,6 +344,9 @@ describe('write routes', () => {
         { name: 'Ada', email: '' },
         { name: '   ', email: 'ada@example.com' },
         { name: 'Ada', email: 'not-an-address' },
+        { name: 'Ada\n[core]\n\tpager = touch /tmp/x', email: 'ada@example.com' },
+        { name: 'Ada', email: 'ada@example.com\u0000' },
+        { name: 'A'.repeat(257), email: 'ada@example.com' },
       ]) {
         const res = await app.request('/config/git-identity', withAuth({
           method: 'PUT',

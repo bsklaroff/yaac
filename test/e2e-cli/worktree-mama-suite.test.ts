@@ -7,6 +7,7 @@ import { listWorktreePods, type PodInfo } from '@yaac/server/drivers/k8s/substra
 import {
   createYaacTestEnv,
   spawnYaacServer,
+  setTestGitIdentity,
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
@@ -66,10 +67,6 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
       savedAt: new Date().toISOString(),
       apiKey: 'sk-ant-fake-real-key',
     }) + '\n')
-    await fs.writeFile(
-      testEnv.gitConfigPath,
-      '[user]\n\tname = Test User\n\temail = test@example.com\n',
-    )
 
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
@@ -94,6 +91,7 @@ describe('yaac-mama from inside a worktree (real CLI + server + cluster)', () =>
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await setTestGitIdentity(serverEnv)
 
     // Stage the project as if `yaac project add` had cloned it (the
     // worktree-create-suite pattern: local bare repo, github-shaped remote).

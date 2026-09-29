@@ -100,7 +100,6 @@ export async function acquireServerMutex(): Promise<() => Promise<void>> {
 export interface YaacTestEnv {
   scratchDir: string
   dataDir: string
-  gitConfigPath: string
   /** Port the server binds when started without `--port` (via YAAC_SERVER_PORT). */
   serverPort: number
   env: NodeJS.ProcessEnv
@@ -112,9 +111,8 @@ export interface YaacTestEnv {
  * (test process) to redirect the yaac data dir, rather than
  * overriding HOME — overriding HOME breaks podman, which reads its
  * config from `$HOME/.config/containers/`. `GIT_CONFIG_GLOBAL`
- * redirects git's global config for the same reason: tests that need
- * a user identity write to `gitConfigPath` and leave the real
- * `~/.gitconfig` untouched.
+ * redirects git's global config for the same reason, so nothing a test
+ * spawns (the auth server's identity seed) reads the real `~/.gitconfig`.
  *
  * Test-only server hooks are preset here so container-backed tests
  * land on pre-built images and a worker-isolated kubernetes namespace;
@@ -205,7 +203,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     }
   }
 
-  return { scratchDir, dataDir, gitConfigPath, serverPort, env, cleanup }
+  return { scratchDir, dataDir, serverPort, env, cleanup }
 }
 
 export interface SpawnedServer {
@@ -501,4 +499,15 @@ export async function runYaac(
     child.once('exit', (code) => resolve(code))
   })
   return { stdout, stderr, exitCode }
+}
+
+/**
+ * Give a spawned server the git identity a create refuses without, through
+ * the CLI command a user runs (`yaac config git-identity`).
+ */
+export async function setTestGitIdentity(env: NodeJS.ProcessEnv): Promise<void> {
+  const { exitCode, stderr } = await runYaac(
+    env, 'config', 'git-identity', '--name', 'Test User', '--email', 'test@example.com',
+  )
+  if (exitCode !== 0) throw new Error(`yaac config git-identity failed: ${stderr}`)
 }

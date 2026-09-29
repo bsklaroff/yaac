@@ -7,6 +7,7 @@ import WebSocket from 'ws'
 import {
   createYaacTestEnv,
   spawnYaacServer,
+  setTestGitIdentity,
   runYaac,
   TEST_CLI_ENTRY,
   type YaacTestEnv,
@@ -63,16 +64,8 @@ beforeAll(async () => {
   await requirePodman()
   await requireCluster()
   testEnv = await createYaacTestEnv()
-  // Global git identity so the CLI's session restart/create don't prompt
-  // on stdin. `GIT_CONFIG_GLOBAL` is preset in `testEnv.env`, so seeding
-  // this file is the same as populating `~/.gitconfig` without clobbering
-  // the real one. The git config file lives outside the server data dir,
-  // so writing it here does not violate the empty-state tests below.
-  await fs.writeFile(
-    testEnv.gitConfigPath,
-    '[user]\n\tname = Test User\n\temail = test@example.com\n',
-  )
   server = await spawnYaacServer(testEnv.env)
+  await setTestGitIdentity(testEnv.env)
 })
 
 afterAll(async () => {

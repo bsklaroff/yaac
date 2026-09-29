@@ -26,6 +26,7 @@ import { imageStoreDir } from '@yaac/shared/project-paths'
 import {
   createYaacTestEnv,
   spawnYaacServer,
+  setTestGitIdentity,
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
@@ -229,10 +230,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
     testEnv = await createYaacTestEnv()
     await seedCredentials()
-    await fs.writeFile(
-      testEnv.gitConfigPath,
-      '[user]\n\tname = Test User\n\temail = test@example.com\n',
-    )
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
     mockRegistry = await startMockUpstreamRegistry()
@@ -252,6 +249,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await setTestGitIdentity(serverEnv)
 
     await setupProject('nested-shared')
     const shared = await createWorktree('nested-shared')

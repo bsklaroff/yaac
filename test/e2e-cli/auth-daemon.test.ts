@@ -19,7 +19,7 @@ import { CLAUDE_STUB } from '@yaac/test-utils/fixtures'
  * `yaac auth server` lifecycle commands and the raw /agent/auth wire.
  *
  * ONE main server for the file — spawning one waits on the cross-worker
- * server mutex and dominated the wall-clock of these four tests. What
+ * server mutex and dominated the wall-clock of these tests. What
  * each test actually needs isolated is the AUTH server, not the main one:
  * the afterEach below stops it, so every case starts with no agent
  * connected (which is exactly what the 503-guidance case asserts). The
@@ -93,6 +93,35 @@ describe('yaac auth server (real CLI + real servers)', () => {
 
     const status = await runYaac(testEnv.env, 'auth', 'server', 'status')
     expect(status.stdout).toMatch(/not running/)
+  })
+
+  it('seeds the server git identity from this machine, and never overwrites one', async () => {
+    // The one path that gives a user an identity without typing one. The
+    // seed runs before the auth server writes its lock, and `start` returns
+    // once the lock lands, so each check below follows a finished seed.
+    const base = `http://127.0.0.1:${server.lock.port}`
+    const auth = { authorization: `Bearer ${server.lock.secret}` }
+    const identity = async (): Promise<unknown> =>
+      ((await (await fetch(`${base}/config/git-identity`, { headers: auth })).json()) as { identity: unknown }).identity
+    const gitConfig = testEnv.env.GIT_CONFIG_GLOBAL!
+    await fs.writeFile(gitConfig, '[user]\n\tname = Seeded User\n\temail = seeded@example.com\n')
+    try {
+      expect(await identity()).toBeNull()
+      expect((await runYaac(testEnv.env, 'auth', 'server', 'start')).exitCode).toBe(0)
+      expect(await identity()).toEqual({ name: 'Seeded User', email: 'seeded@example.com' })
+      await runYaac(testEnv.env, 'auth', 'server', 'stop')
+
+      // One the user chose is a deliberate answer: a restart with a
+      // different git config beside it leaves it alone.
+      const set = await runYaac(
+        testEnv.env, 'config', 'git-identity', '--name', 'Chosen User', '--email', 'chosen@example.com',
+      )
+      expect(set.exitCode, set.stderr).toBe(0)
+      expect((await runYaac(testEnv.env, 'auth', 'server', 'start')).exitCode).toBe(0)
+      expect(await identity()).toEqual({ name: 'Chosen User', email: 'chosen@example.com' })
+    } finally {
+      await fs.writeFile(gitConfig, '')
+    }
   })
 
   it('without an agent, webapp-shaped login starts get actionable 503 guidance', async () => {

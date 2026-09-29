@@ -22,9 +22,12 @@ export const configApp = new Hono()
   .get('/git-identity', async (c) => c.json({ identity: await getGitIdentity() }))
   .put(
     '/git-identity',
+    // Capped and free of control characters: the pair lands in a
+    // workspace's `.gitconfig` and in env vars, and a newline in a display
+    // name has no business in either.
     zv('json', z.object({
-      name: z.string().min(1),
-      email: z.string().min(1),
+      name: z.string().min(1).max(256).regex(/^[^\x00-\x1f\x7f]*$/),
+      email: z.string().min(1).max(256).regex(/^[^\x00-\x1f\x7f]*$/),
     })),
     async (c) => {
       const { name, email } = c.req.valid('json')

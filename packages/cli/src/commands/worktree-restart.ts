@@ -1,4 +1,3 @@
-import { ensureGitIdentity } from '#commands/git-identity'
 import { api } from '#commands/api'
 import { attachWorktreePty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
@@ -12,18 +11,12 @@ interface WorktreeRestartResult {
 }
 
 /**
- * CLI entry for `yaac worktree restart <id>`. Resolves git identity
- * up-front (prompting when missing), then hands the restart off to the
- * server. The server tears down the old Job, keeps the git worktree, and
+ * CLI entry for `yaac worktree restart <id>`. Hands the restart off to
+ * the server. The server tears down the old Job, keeps the git worktree, and
  * spins up a fresh Job that resumes every agent session which was live when
  * the worktree stopped — each in its own window.
  */
 export async function worktreeRestart(worktreeId: string): Promise<string | undefined> {
-  if (!await ensureGitIdentity()) {
-    process.exitCode = 1
-    return
-  }
-
   const res = await api.worktree.restart.$post({
     json: {
       worktreeId,

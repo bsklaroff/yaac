@@ -388,8 +388,8 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const gitEmail = env.YAAC_GIT_EMAIL ?? env.GIT_AUTHOR_EMAIL
   const gitconfig = [
     '[user]',
-    ...(gitName !== undefined ? [`\tname = ${gitName}`] : []),
-    ...(gitEmail !== undefined ? [`\temail = ${gitEmail}`] : []),
+    ...(gitName !== undefined ? [`\tname = ${gitConfigValue(gitName)}`] : []),
+    ...(gitEmail !== undefined ? [`\temail = ${gitConfigValue(gitEmail)}`] : []),
     '[safe]',
     `\tdirectory = ${paths.workspaceDir}`,
     `\tdirectory = ${paths.repoGitDir}`,
@@ -520,3 +520,13 @@ export function awaitReady(): Promise<void> {
 /** Where the workspace's state dir lives, for a teardown that must remove
  *  it. Re-exported so teardown need not reach into `paths` for one name. */
 export { workspaceStateDir }
+
+/**
+ * `value` as a git-config value that reads back verbatim: quoted, so `#`,
+ * `;` and edge spaces are not comment starts or trimmed, with `\`, `"` and a
+ * newline escaped, so a display name can neither break the file nor open a
+ * section of its own.
+ */
+function gitConfigValue(value: string): string {
+  return `"${value.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\n')}"`
+}

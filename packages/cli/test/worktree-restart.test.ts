@@ -10,9 +10,6 @@ const { attachSpy, postSpy, consumeSpy } = vi.hoisted(() => ({
   consumeSpy: vi.fn(),
 }))
 vi.mock('#commands/ws-terminal', () => ({ attachWorktreePty: attachSpy }))
-vi.mock('#commands/git-identity', () => ({
-  ensureGitIdentity: vi.fn().mockResolvedValue({ name: 'T', email: 't@e' }),
-}))
 vi.mock('#commands/api', () => ({ api: { worktree: { restart: { $post: postSpy } } } }))
 vi.mock('@yaac/shared/ndjson', () => ({ consumeNdjsonStream: consumeSpy }))
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'

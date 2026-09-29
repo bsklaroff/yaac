@@ -15,6 +15,7 @@ import { listWorktreePods, type PodInfo } from '@yaac/server/drivers/k8s/substra
 import {
   createYaacTestEnv,
   spawnYaacServer,
+  setTestGitIdentity,
   runYaac,
   TEST_CLI_ENTRY,
   type YaacTestEnv,
@@ -181,10 +182,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       apiKey: 'sk-or-v1-fake-test-key',
     }) + '\n')
 
-    await fs.writeFile(
-      testEnv.gitConfigPath,
-      '[user]\n\tname = Test User\n\temail = test@example.com\n',
-    )
 
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
@@ -221,6 +218,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       YAAC_TEST_VAR: 'hello-from-host',
     }
     server = await spawnYaacServer(serverEnv)
+    await setTestGitIdentity(serverEnv)
     base = `http://127.0.0.1:${server.lock.port}`
     auth = { authorization: `Bearer ${server.lock.secret}` }
   })

@@ -3,6 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { setDataDir } from '@yaac/shared/paths'
 import { worktreeDir } from '@yaac/shared/project-paths'
 import { agentBinDirs } from '@yaac/shared/tool-install'
@@ -31,6 +33,7 @@ import { launchWorkspace } from '#drivers/containerless/launch'
 import { _resetRegistryForTests, listWorkspaces } from '#drivers/containerless/registry'
 import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 
+const execFileAsync = promisify(execFile)
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 const PRIVATE_KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n'
 let dataDir: string
@@ -284,11 +287,21 @@ describe('launchWorkspace', () => {
   })
 
   it('writes git identity into the workspace home, never the server user\'s', async () => {
-    await launchWorkspace(spec())
+    // A name git's config syntax would otherwise mangle: a backslash breaks
+    // the file, `#` starts a comment, quotes vanish, and a newline opens a
+    // section of its own.
+    const name = 'Ada "The" \\Lovelace #1\n[core]\n\tpager = touch /tmp/x'
+    await launchWorkspace(spec({
+      env: [`YAAC_GIT_NAME=${name}`, 'YAAC_GIT_EMAIL=ada@example.com'],
+    }))
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
-    const gitconfig = await fsp.readFile(path.join(home, '.gitconfig'), 'utf8')
-    expect(gitconfig).toContain('name = Ada')
-    expect(gitconfig).toContain('ada@example.com')
+    const gitconfigPath = path.join(home, '.gitconfig')
+    const read = async (key: string): Promise<string> =>
+      (await execFileAsync('git', ['config', '--file', gitconfigPath, '--get', key])).stdout
+    expect(await read('user.name')).toBe(`${name}\n`)
+    expect(await read('user.email')).toBe('ada@example.com\n')
+    await expect(read('core.pager')).rejects.toThrow()
+    const gitconfig = await fsp.readFile(gitconfigPath, 'utf8')
     // Both repo roots are trusted, exactly as the pod's init hook does.
     expect(gitconfig).toContain(worktreeDir('demo', UUID))
 

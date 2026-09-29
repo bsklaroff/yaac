@@ -160,9 +160,14 @@ Semantics to keep in mind:
   git credential is generated on the server, so there is no key on your
   machine for it to name. Nothing mounts a host directory into a worktree;
   `cacheVolumes` covers a directory that should persist across them.
-- **The git identity worktrees commit under is a server setting.** The CLI
-  and the auth server seed it from your own machine's git config the first
-  time either talks to the server, and Settings → General edits it.
+- **The git identity worktrees commit under is a server setting.** The auth
+  server seeds it from your own machine's git config when it starts and the
+  server has none. It starts under the desktop app, `yaac auth server start`,
+  and the browser sign-in of `yaac auth update` for Claude or Codex — not
+  under `yaac server start`, `yaac cluster install`, or an api-key login —
+  so a CLI-only user sets it with `yaac config git-identity --name <name>
+  --email <email>` (or in Settings → General); until then a create is
+  refused with that instruction.
 - **Machine-scoped commands** operate wherever they run and ignore the
   remote setting: `yaac server *`, `yaac cluster *`,
   `yaac auth server *` (the auth server is by design the local machine's

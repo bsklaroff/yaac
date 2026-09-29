@@ -9,6 +9,7 @@ import { listProjects } from '@yaac/server/domain/projects/list'
 import {
   createYaacTestEnv,
   spawnYaacServer,
+  setTestGitIdentity,
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
@@ -104,7 +105,6 @@ describe('yaac prewarmed sessions', () => {
       path.join(credsDir, 'claude.json'),
       JSON.stringify({ kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-fake-real-key' }) + '\n',
     )
-    await fs.writeFile(testEnv.gitConfigPath, '[user]\n\tname = Test User\n\temail = test@example.com\n')
   }
 
 /**
@@ -147,6 +147,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await setTestGitIdentity(serverEnv)
     await registerTestProject(server, 'repo-demo', FAKE_REMOTE)
     await assignTestGitCredential(server, 'repo-demo', 'fake-ghp-token')
 

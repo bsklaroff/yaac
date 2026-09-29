@@ -31,10 +31,9 @@
 import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#db'
-import { resolveGitIdentity } from './git-identity'
 import { claimProvisioning } from './provisioning'
 import { rebranchSpare, retoolSpare } from './spare-pool'
-import { claimSpareWorktree, getWorktreeRow, restoreSpareWorktree, setWorktreeGroup } from '#db'
+import { claimSpareWorktree, getGitIdentity, getWorktreeRow, restoreSpareWorktree, setWorktreeGroup } from '#db'
 import { handOverAgent, type CreateSetup, type WorktreeCreateResult } from './create'
 import { parkAcpLaunchModel } from '#runtime/agents'
 import { isTmuxSessionAlive } from '#runtime/status'
@@ -460,15 +459,12 @@ export async function tryClaimPrewarmed(
     await runtime.claimSpare(claimedId, tool)
     mutated = true
 
-    // Re-apply git identity so the identity this claim resolves to wins over
-    // whatever the spare was warmed with. The full chain runs even when the
-    // caller (e.g. the webapp) sends none, because a spare's identity is baked
+    // Re-apply git identity so the server's current setting wins over
+    // whatever the spare was warmed with, because a spare's identity is baked
     // at WARM time and nothing re-warms the pool: after a user changes their
-    // git identity — and, on a k8s install, re-runs `yaac cluster install` to
-    // carry it to the server pod — the spares already sitting in the pool
-    // still hold the old one. Resolving here is what makes the documented
-    // remedy reach them; skipping on no-caller-identity would let the next
-    // claim per project commit under the stale name, durably.
+    // git identity, the spares already sitting in the pool still hold the old
+    // one. Without this, the next claim per project would commit under the
+    // stale name, durably.
     //
     // One exec, and non-fatal. This runs PAST the commit point, against a
     // worktree that is already whole, over a transport whose readiness gate
@@ -476,7 +472,7 @@ export async function tryClaimPrewarmed(
     // A hiccup here would otherwise reap a perfectly good claimed worktree
     // over a step that is a correction, not a prerequisite — the spare's
     // warmed-in identity stands and the claim is still good.
-    const claimIdentity = await resolveGitIdentity()
+    const claimIdentity = await getGitIdentity()
     if (claimIdentity) {
       await runtime.exec(
         chosen.jobName,

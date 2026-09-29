@@ -68,9 +68,10 @@ export async function clearShortcutOverrides(): Promise<void> {
  * is not where the user is: under `k8s` the server is a pod whose `$HOME` is
  * an image layer with no git config in it, and under `containerless` the
  * host's config belongs to whoever runs the server, not to whoever is
- * driving it from another machine. Clients seed this from their own shell
- * (`seedGitIdentityFromShell`) and the webapp edits it, so both ways of
- * reaching a server can answer the question.
+ * driving it from another machine. The auth server seeds this from its own
+ * machine's shell (`seedGitIdentityFromShell`), and the webapp and
+ * `yaac config git-identity` edit it, so every way of reaching a server can
+ * answer the question.
  *
  * Two rows rather than one JSON blob, to match every other preference here;
  * the pair is only ever read together, and half of one is no identity at all.
