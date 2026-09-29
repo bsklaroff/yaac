@@ -414,6 +414,26 @@ describe('CreateWorktreeDialog', () => {
     expect(document.activeElement).toBe(promptInput())
   })
 
+  // Handing focus back would park a focus ring on the + after a keyboard
+  // close; jsdom has no :focus-visible, so this pins where focus lands.
+  it('leaves focus off the + once its dialog closes, dismissed or created', async () => {
+    mount()
+    const plus = screen.getByRole('button', { name: 'New worktree' })
+    for (const close of [
+      () => fireEvent.click(screen.getByRole('button', { name: 'Close' })),
+      () => fireEvent.keyDown(promptInput(), { key: 'Enter' }),
+    ]) {
+      plus.focus()
+      fireEvent.click(plus)
+      await waitFor(() => expect(createButton().disabled).toBe(false))
+      close()
+      await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull())
+      await new Promise((r) => setTimeout(r, 0))
+      expect(document.activeElement).toBe(document.body)
+    }
+    expect(createWorktree).toHaveBeenCalledTimes(1)
+  })
+
   it('focuses the prompt, and a typed prompt rides the create', async () => {
     await openReady()
     await waitFor(() => expect(document.activeElement).toBe(promptInput()))
