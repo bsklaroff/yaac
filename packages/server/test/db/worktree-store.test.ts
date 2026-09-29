@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
@@ -19,11 +19,12 @@ import {
   recordWorktreeCreated,
   recordWorktreeStopped,
   claimSpareWorktree,
+  restoreSpareWorktree,
   clearWorktreeStopped,
   setWorktreeTitle,
 } from '#db/worktree-store'
 import { applyWorktreeEvent } from '#db/apply-worktree-event'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { firstAgentSession, recordAgentSessions } from '#db/agent-session-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('session store', () => {
@@ -47,16 +48,25 @@ describe('session store', () => {
   const create = (worktreeId: string, extra = {}): Promise<void> =>
     recordWorktreeCreated({ projectSlug: 'proj', worktreeId, ...extra })
 
+  /** A spare as prewarm leaves it: warming inserts the row, then stamps the
+   *  life its pod starts. */
+  const warmSpare = async (): Promise<void> => {
+    await applyWorktreeEvent({
+      type: 'worktree-created', projectSlug: 'proj', worktreeId: 'spare1',
+      spare: true, baseBranch: 'main', permissionMode: 'bypass', mode: 'tui',
+    })
+    await applyWorktreeEvent({ type: 'worktree-life-started', projectSlug: 'proj', worktreeId: 'spare1' })
+  }
+
   describe('recordWorktreeCreated', () => {
     it('stores the row', async () => {
-      await create('sid-1', { baseBranch: 'main', createdAt: new Date('2026-01-01') })
+      await create('sid-1', { baseBranch: 'main' })
 
       const row = (await getProjectWorktreeRows('proj')).get('sid-1')
       expect(row).toMatchObject({
         projectSlug: 'proj',
         worktreeId: 'sid-1',
         baseBranch: 'main',
-        createdAt: new Date('2026-01-01'),
         deathSeen: false,
       })
       expect(row?.stoppedAt).toBeUndefined()
@@ -67,13 +77,16 @@ describe('session store', () => {
   // row, and the claim must hand that same row over — a second insert on
   // the id is refused now, which silently sent every claim to a cold create.
   describe('claimSpareWorktree', () => {
-    it('hands the warmed row over with the claim\'s launch, and refuses a second claim', async () => {
-      await applyWorktreeEvent({
-        type: 'worktree-created', projectSlug: 'proj', worktreeId: 'spare1',
-        spare: true, baseBranch: 'main', permissionMode: 'bypass', mode: 'tui',
-      })
-      const warmed = (await getWorktreeRow('proj', 'spare1'))!
+    const warmT = new Date('2026-01-01T00:00:00Z')
+    const claimT = new Date('2026-01-01T00:05:00Z')
+    afterEach(() => { vi.useRealTimers() })
+
+    it('hands the warmed row over with the claim\'s launch and time, and refuses a second claim', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(warmT)
+      await warmSpare()
       pushes = 0
+      vi.setSystemTime(claimT)
 
       await claimSpareWorktree('proj', 'spare1', {
         baseBranch: 'dev', permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
@@ -81,7 +94,10 @@ describe('session store', () => {
 
       expect(await getWorktreeRow('proj', 'spare1')).toMatchObject({
         spare: false,
-        createdAt: warmed.createdAt,
+        // The worktree is born at the claim, not the warm…
+        createdAt: claimT,
+        // …but it is the warmed row: only warming stamps the life.
+        lifeStartedAt: warmT,
         baseBranch: 'dev',
         permissionMode: 'plan',
         mode: 'acp',
@@ -90,6 +106,25 @@ describe('session store', () => {
       expect(pushes).toBe(1)
       await expect(claimSpareWorktree('proj', 'spare1')).rejects.toMatchObject({ code: 'CONFLICT' })
       await expect(claimSpareWorktree('proj', 'no-such-spare')).rejects.toMatchObject({ code: 'CONFLICT' })
+    })
+  })
+
+  describe('restoreSpareWorktree', () => {
+    it('puts back everything the claim stamped and drops the conversation it recorded', async () => {
+      await warmSpare()
+      const warmed = (await getWorktreeRow('proj', 'spare1'))!
+      await claimSpareWorktree('proj', 'spare1', {
+        baseBranch: 'dev', permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
+      })
+      await applyWorktreeEvent({
+        type: 'sessions-launched', projectSlug: 'proj', worktreeId: 'spare1',
+        sessions: [{ tool: 'claude', agentSessionId: 'spare1' }],
+      })
+
+      await restoreSpareWorktree(warmed)
+
+      expect(await getWorktreeRow('proj', 'spare1')).toEqual(warmed)
+      expect(await firstAgentSession('proj', 'spare1')).toBeUndefined()
     })
   })
 
