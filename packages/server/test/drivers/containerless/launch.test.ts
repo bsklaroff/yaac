@@ -50,6 +50,7 @@ function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
     mode: 'tui',
     prewarm: false,
     env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_STATUS_RIGHT= demo 4bfc59c6 '],
+    secretEnvKeys: [],
     mounts: [],
     moduleDirs: [],
     resources: {
@@ -86,6 +87,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
@@ -121,6 +123,30 @@ describe('launchWorkspace', () => {
     expect(marker.tool).toBe('claude')
     // Read back from tmux so the port scan has a tree root to walk.
     expect(marker.tmuxPid).toBe(4242)
+  })
+
+  it('writes the launch\'s own entries to the marker, and never a credential', async () => {
+    vi.stubEnv('HOST_SHELL_TOKEN', 'exported-by-the-user')
+    await launchWorkspace(spec({
+      env: ['PROJECT_SETTING=on', 'ANTHROPIC_API_KEY=sk-real', 'YAAC_MAMA_TOKEN=bearer'],
+      secretEnvKeys: ['ANTHROPIC_API_KEY', 'YAAC_MAMA_TOKEN'],
+    }))
+    const newSession = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    // The workspace itself gets everything...
+    expect(newSession.env).toMatchObject({ ANTHROPIC_API_KEY: 'sk-real', YAAC_MAMA_TOKEN: 'bearer' })
+
+    // ...while the file a restart reads it back from holds what the create
+    // added, and neither the secrets nor the host's inherited environment.
+    const raw = await fsp.readFile(
+      path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
+      'utf8',
+    )
+    const { launchEnv } = JSON.parse(raw) as { launchEnv: Record<string, string> }
+    expect(launchEnv.PROJECT_SETTING).toBe('on')
+    expect(raw).not.toContain('sk-real')
+    expect(raw).not.toContain('bearer')
+    expect(raw).not.toContain('exported-by-the-user')
   })
 
   it('gives the workspace its own HOME with the project tool dirs linked in', async () => {
@@ -360,6 +386,12 @@ describe('launchWorkspace', () => {
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(env.env.SSH_AUTH_SOCK).toContain('-ssh.sock')
+    // Emptied by the invocation that creates the session, before anything
+    // can attach: every attach would otherwise copy the attaching client's
+    // SSH_AUTH_SOCK — the server's, the host user's agent — into the session
+    // environment the agent's later windows inherit.
+    const newSession = tmuxCalls().find((a) => a.includes('new-session')) ?? []
+    expect(newSession.slice(-5)).toEqual([';', 'set-option', '-g', 'update-environment', ''])
     const sshCmd = env.env.GIT_SSH_COMMAND ?? ''
     // `-i` on the PUBLIC key under IdentitiesOnly is how ssh is pinned to
     // this agent identity without the private half ever being on disk.
@@ -534,8 +566,10 @@ describe('launchWorkspace', () => {
   it('survives a tmux that refuses its cosmetic options', async () => {
     // Every option is a display or input preference; a worktree whose bells
     // do not ring beats a create that failed after the session came up.
+    // (The session's own invocation empties `update-environment`, which is
+    // not cosmetic, so it is not the one refused here.)
     mockRunHost.mockImplementation((argv: string[]) =>
-      argv.includes('set-option')
+      argv.includes('set-option') && !argv.includes('new-session')
         ? Promise.reject(new Error('unknown option'))
         : Promise.resolve({ stdout: '7', stderr: '' }))
     await expect(launchWorkspace(spec())).resolves.toBeDefined()

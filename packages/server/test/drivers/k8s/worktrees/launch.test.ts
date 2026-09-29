@@ -108,6 +108,7 @@ function specOf(
     prewarm: false,
     image: 'localhost:5000/img:tag',
     env: ['CALLER_SAID=yes'],
+    secretEnvKeys: [],
     mounts: [{ source: { kind: 'hostPath', path: worktreeDir('proj', 's1') }, mountPath: '/workspace' }],
     moduleDirs: [],
     resources: {

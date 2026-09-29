@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import pty from '@lydell/node-pty'
-import { containerlessWorkspacePaths, refFromJobName } from './paths'
-import { workspaceEnv } from './registry'
+import { workspaceRunEnvironment } from './launch'
+import { containerlessWorkspacePaths } from './paths'
 import type { StreamChild, StreamPty } from '#drivers/contract'
 
 /**
@@ -15,16 +15,6 @@ import type { StreamChild, StreamPty } from '#drivers/contract'
  * runs on the host, in the workspace's checkout, with its environment.
  */
 
-function envFor(jobName: string): NodeJS.ProcessEnv {
-  const { worktreeId } = refFromJobName(jobName)
-  // The server's own environment is the fallback, and after a restart it is
-  // the ordinary case: the table's copy is lost while the tmux server holds
-  // the real one, and everything dialed from then on is a tmux client that
-  // only needs to reach the socket.
-  // eslint-disable-next-line no-process-env -- inheriting the host environment IS this driver's model; there is no image to have provided one
-  return workspaceEnv(worktreeId) ?? process.env
-}
-
 /**
  * See `WorktreeDriver.dialCtrl`. Synchronous by contract, which a real
  * `spawn` satisfies for free: the object exists immediately and a failure to
@@ -36,7 +26,7 @@ export function dialCtrlStream(jobName: string, argv: string[]): StreamChild {
   const [cmd, ...args] = argv
   return spawn(cmd, args, {
     cwd: paths.workspaceDir,
-    env: envFor(jobName),
+    env: workspaceRunEnvironment(jobName),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 }
@@ -56,7 +46,7 @@ export function dialPtyStream(
     cols: size.cols ?? 80,
     rows: size.rows ?? 24,
     cwd: paths.workspaceDir,
-    env: envFor(jobName) as Record<string, string>,
+    env: workspaceRunEnvironment(jobName) as Record<string, string>,
   })
   return {
     onData: (cb) => { proc.onData(cb) },
