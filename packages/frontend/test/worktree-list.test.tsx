@@ -2,7 +2,7 @@
 import type { JSX } from 'react'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type {
   DraftWorktreeEntry,
   HeldWorktreeEntry,
@@ -202,23 +202,79 @@ describe('WorktreeList', () => {
     expect(screen.getByText('OpenCode')).toBeTruthy()
   })
 
-  it('ghosts a group\'s stopped members and offers them a way out of it', async () => {
-    stoppedRows.push({
-      worktreeId: 'gone',
+  it('folds a group\'s stopped members behind a count and offers them a way out of it', async () => {
+    const stoppedMember = (worktreeId: string, title: string): StoppedWorktreeEntry => ({
+      worktreeId,
       projectSlug: 'proj',
       tool: 'claude',
       createdAt: '2026-08-10 00:00:00',
       stoppedAt: '2026-08-10 01:00:00',
-      title: 'Stopped one',
+      title,
       seen: false,
       agentSessions: [],
       groupId: 'g1',
     })
+    stoppedRows.push(stoppedMember('gone', 'Stopped one'), stoppedMember('gone2', 'Stopped two'))
     renderList([entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
 
-    expect(await screen.findByText('Stopped one')).toBeTruthy()
-    fireEvent.click(screen.getByLabelText('Remove from group'))
+    // Closed by default, at the foot of the section, after the live rows.
+    const expander = await screen.findByRole('button', { name: '2 stopped worktrees' })
+    const section = screen.getByRole('group', { name: group().name })
+    expect(section.textContent?.indexOf('2 stopped worktrees'))
+      .toBeGreaterThan(section.textContent?.indexOf('Filed one') ?? Infinity)
+    expect(screen.queryByText('Stopped one')).toBeNull()
+
+    fireEvent.click(expander)
+    expect(screen.getByText('Stopped one')).toBeTruthy()
+    const row = screen.getByText('Stopped one').closest<HTMLElement>('.group')
+    fireEvent.click(within(row ?? document.body).getByLabelText('Remove from group'))
     await waitFor(() => expect(setWorktreeGroup).toHaveBeenCalledWith('proj', 'gone', null))
+  })
+
+  it('moves a stopped member in and out of the fold as its queue comes and goes', async () => {
+    const stoppedMember = (worktreeId: string, over: Partial<StoppedWorktreeEntry> = {}): StoppedWorktreeEntry => ({
+      worktreeId,
+      projectSlug: 'proj',
+      tool: 'claude',
+      createdAt: '2026-08-10 00:00:00',
+      stoppedAt: '2026-08-10 01:00:00',
+      title: `Stopped ${worktreeId}`,
+      seen: true,
+      agentSessions: [],
+      groupId: 'g1',
+      ...over,
+    })
+    const live = [entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })]
+    const held = [{ worktreeId: 's', projectSlug: 'proj', tool: 'claude' as const, groupId: 'g1',
+      stoppedAt: '2026-08-10 01:00:00' }]
+    stoppedRows.push(stoppedMember('s'))
+    const rerender = renderList(live, { groups: [group()], queued: [queuedEntry('q1', { parentWorktreeId: 's' })], held })
+
+    // Held: its row stays out, with what waits on it.
+    expect(await screen.findByText('Stopped s')).toBeTruthy()
+    expect(screen.getByText('Step q1')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /stopped worktree/ })).toBeNull()
+
+    // Its queue drains: into a closed fold.
+    rerender(live, { groups: [group()] })
+    expect(screen.getByRole('button', { name: '1 stopped worktree' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('Stopped s')).toBeNull()
+
+    // Opened, it stays open as another member stops — and an unread death
+    // shows on the trigger, since a closed fold would hide it.
+    fireEvent.click(screen.getByRole('button', { name: '1 stopped worktree' }))
+    // The stopped list is refetched when the live set changes.
+    stoppedRows.push(stoppedMember('t', { deathReason: 'oom', seen: false }))
+    const more = [...live, entry({ worktreeId: 'c', title: 'Other' })]
+    rerender(more, { groups: [group()] })
+    const toggle = await screen.findByRole('button', { name: /2 stopped worktrees.*1 died/ })
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('Stopped t')).toBeTruthy()
+
+    // It gains a queued child: out of the fold again.
+    rerender(more, { groups: [group()], queued: [queuedEntry('q2', { parentWorktreeId: 's' })], held })
+    expect(screen.getByRole('button', { name: /1 stopped worktree.*1 died/ })).toBeTruthy()
+    expect(screen.getByText('Stopped s')).toBeTruthy()
   })
 
   it('opens a stopped member\'s conversation, without selecting a worktree', async () => {
@@ -239,7 +295,8 @@ describe('WorktreeList', () => {
     })
     renderList([entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
 
-    fireEvent.click(await screen.findByText('Stopped one'))
+    fireEvent.click(await screen.findByRole('button', { name: '1 stopped worktree' }))
+    fireEvent.click(screen.getByText('Stopped one'))
 
     expect(useUiStore.getState().stoppedOverlayOpen).toBe(true)
     expect(useUiStore.getState().stoppedOverlayFocus).toBe('gone')

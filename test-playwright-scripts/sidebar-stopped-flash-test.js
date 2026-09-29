@@ -170,7 +170,16 @@ try {
   const aside = page.locator('aside')
   const entry = aside.getByRole('button', { name: /^Stopped worktrees/ })
   const ghost = (label) => aside.locator('button[title="Read this worktree\'s conversation"]', { hasText: label })
+  const section = aside.getByRole('group', { name: GROUP, exact: true })
+  // The group's ghost rows are folded behind a count until it is opened, and
+  // fold again whenever the section remounts (a project switch).
+  const openGhosts = async () => {
+    const toggle = section.getByRole('button', { name: /^\d+ stopped worktrees?\b/ })
+    await toggle.waitFor({ timeout: 20_000 })
+    if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+  }
   await entry.waitFor({ timeout: 20_000 })
+  await openGhosts()
   await ghost(T('ghost B')).waitFor({ timeout: 20_000 })
   await settle()
 
@@ -277,7 +286,7 @@ try {
   await ghost(T('ghost B')).hover()
   await ghost(T('ghost B')).locator('..').getByRole('button', { name: 'Restart worktree' }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Restart' }).click()
-  const dismiss = aside.getByRole('group', { name: GROUP, exact: true }).getByRole('button', { name: 'Dismiss' })
+  const dismiss = section.getByRole('button', { name: 'Dismiss' })
   await dismiss.waitFor({ timeout: 15_000 })
   await sleep(DELAY_MS + 500)
   check('(3) the entry stays hidden while the failed row is up', !(await ghost(T('ghost B')).isVisible()))
@@ -299,6 +308,7 @@ try {
   await mark('p4-back')
   await page.locator(`[title="${PROJECT}"]`).first().click()
   await entry.waitFor({ timeout: 10_000 })
+  await openGhosts()
   await settle()
   await mark('p4-end')
   const away = await phase('p4')

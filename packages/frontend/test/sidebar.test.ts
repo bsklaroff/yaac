@@ -244,14 +244,16 @@ describe('sidebarLayout with queued worktrees', () => {
 
   it('holds a stopped parent in its place, the default list included', () => {
     const g = group('g', 10)
-    const layout = sidebarLayout([], [g], [stopped('grouped', 3, 'g')], [],
+    const layout = sidebarLayout([], [g], [stopped('grouped', 3, 'g'), stopped('gone', 2, 'g')], [],
       [queued('q1', 'loose'), queued('q2', 'grouped')],
       [held('loose'), held('grouped', 'g')])
     expect(layout.defaultHeld.map((d) => d.worktreeId)).toEqual(['loose'])
     // Shown for its held member alone, which is drawn once — from the
-    // stopped listing, whose row carries more.
-    expect(layout.groups.map((s) => s.ghosts.map((d) => d.worktreeId))).toEqual([['grouped']])
-    expect(layout.groups[0]?.ghosts[0]?.createdAt).toBe('2026-01-01 00:00:03')
+    // stopped listing, whose row carries more — and kept out of the ghosts,
+    // which fold away with what is queued under them still waiting.
+    expect(layout.groups.map((s) => s.held.map((d) => d.worktreeId))).toEqual([['grouped']])
+    expect(layout.groups[0]?.held[0]?.createdAt).toBe('2026-01-01 00:00:03')
+    expect(layout.groups.map((s) => s.ghosts.map((d) => d.worktreeId))).toEqual([['gone']])
     expect(layout.orphans).toEqual([])
   })
 
