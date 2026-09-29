@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
+import type { JSX } from 'react'
 import type { ImageBuildEntry, ProjectSkills, SkillDetail, StoppedWorktreeEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
@@ -27,6 +28,7 @@ vi.mock('#lib/imageBuildsApi', () => ({
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { SkillsButton } from '#components/SkillsButton'
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
+import { useStoppedWorktrees } from '#lib/useStoppedWorktrees'
 import { MasterDetail } from '#components/ui/MasterDetail'
 import { getImageBuildLog } from '#lib/imageBuildsApi'
 import { getProjectBranches } from '#lib/projectApi'
@@ -137,11 +139,15 @@ describe('StoppedWorktreesButton on a phone', () => {
     ...over,
   })
 
+  function Harness(): JSX.Element {
+    return <StoppedWorktreesButton projectSlug="proj" stopped={useStoppedWorktrees('proj', [], [])} />
+  }
+
   const openOverlay = async (): Promise<void> => {
     useUiStore.setState({ stoppedOverlayOpen: false, optimisticStopped: [] })
     render(
       <QueryClientProvider client={client()}>
-        <StoppedWorktreesButton projectSlug="proj" activeSignature="s0" />
+        <Harness />
       </QueryClientProvider>,
     )
     fireEvent.click(await screen.findByRole('button', { name: /^Stopped worktrees/ }))

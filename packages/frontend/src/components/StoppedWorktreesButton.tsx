@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, DeleteIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -8,8 +8,9 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MasterDetail } from '#components/ui/MasterDetail'
 import { StoppedTranscript } from '#components/StoppedTranscript'
 import { restartWorktree } from '#lib/createWorktree'
-import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
+import { markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
+import { patchStopped } from '#lib/useStoppedWorktrees'
 import { useIsMobile } from '#lib/viewport'
 import { isUnseenDeath, useUiStore } from '#lib/store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
@@ -32,18 +33,16 @@ const label = (d: StoppedWorktreeEntry): string => d.title || d.prompt || 'New w
  */
 export function StoppedWorktreesButton({
   projectSlug,
-  activeSignature,
+  stopped,
 }: {
   projectSlug: string
-  /** Sorted active-worktree id list — re-fetches the deleted list whenever the
-   *  active set changes (a just-deleted worktree appears, a restarted one drops). */
-  activeSignature: string
+  /** The project's stopped worktrees, from `useStoppedWorktrees`. */
+  stopped: StoppedWorktreeEntry[]
 }): JSX.Element {
   const open = useUiStore((s) => s.stoppedOverlayOpen)
   const openOverlay = useUiStore((s) => s.openStoppedOverlay)
   const closeOverlay = useUiStore((s) => s.closeStoppedOverlay)
   const focus = useUiStore((s) => s.stoppedOverlayFocus)
-  const optimisticStopped = useUiStore((s) => s.optimisticStopped)
   const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
   const provision = useProvisionWorktree()
   const queryClient = useQueryClient()
@@ -51,56 +50,16 @@ export function StoppedWorktreesButton({
 
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [restarting, setRestarting] = useState<string[]>([])
   const [confirm, setConfirm] = useState<StoppedWorktreeEntry | null>(null)
-
-  // Fetch even while closed so the sidebar can hide the entry point when the
-  // project has no deleted worktrees. Re-keys on the active set (activeSignature)
-  // so a just-deleted worktree shows up and a restarted one drops.
-  const { data } = useQuery({
-    queryKey: ['deleted', projectSlug, activeSignature],
-    queryFn: () => getStoppedWorktrees(projectSlug, 100),
-    staleTime: 2000,
-  })
-
-  // Once list-deleted catches up to an optimistic entry, drop the optimistic
-  // copy (the fetched one takes over — same id, no flicker).
-  useEffect(() => {
-    if (!data) return
-    const fetched = new Set(data.map((d) => d.worktreeId))
-    for (const e of optimisticStopped) if (fetched.has(e.worktreeId)) removeOptimisticStopped(e.worktreeId)
-  }, [data, optimisticStopped, removeOptimisticStopped])
-
-  // A restart reuses the worktree id and clears its recorded deletion, so once
-  // the restart takes effect the worktree drops out of the fetched list. Prune
-  // it from `restarting` then — the filter below has done its job. Otherwise a
-  // later re-delete of the same id re-enters `data` but stays hidden by that
-  // filter until a browser reload resets this component-local state.
-  useEffect(() => {
-    if (!data) return
-    const fetched = new Set(data.map((d) => d.worktreeId))
-    setRestarting((r) => {
-      const next = r.filter((id) => fetched.has(id))
-      return next.length === r.length ? r : next
-    })
-  }, [data])
-
-  // Merge optimistic just-deleted entries (this project) ahead of the fetched
-  // list, de-duped, minus any mid-restart.
-  const fetchedIds = new Set((data ?? []).map((d) => d.worktreeId))
-  const merged = [
-    ...optimisticStopped.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.worktreeId)),
-    ...(data ?? []),
-  ].filter((d) => !restarting.includes(d.worktreeId))
 
   // Unseen abnormal deaths across the whole list (search-independent) drive the
   // sidebar notification dot.
-  const unseenDeaths = merged.filter(isUnseenDeath).length
+  const unseenDeaths = stopped.filter(isUnseenDeath).length
 
   const q = queryText.trim().toLowerCase()
   const rows = q
-    ? merged.filter((d) => `${label(d)} ${TOOL_LABEL[d.tool]}`.toLowerCase().includes(q))
-    : merged
+    ? stopped.filter((d) => `${label(d)} ${TOOL_LABEL[d.tool]}`.toLowerCase().includes(q))
+    : stopped
   // `picked` is a row the user clicked; `selected` is what the detail pane
   // shows. Desktop shows both panes, so the top row stands in there until the
   // user picks one. A phone shows the list *or* the detail, so there the detail
@@ -120,8 +79,7 @@ export function StoppedWorktreesButton({
   // Clicking a death's row marks it seen server-side (durable, shared across
   // clients) and optimistically flips `seen` in the cached list so the dot /
   // highlight clear instantly. The `!picked.seen` guard stops the cache patch
-  // from re-triggering this effect (and re-POSTing); the partial query-key
-  // matcher survives activeSignature changing.
+  // from re-triggering this effect (and re-POSTing).
   //
   // Keyed on `picked`, never on `selected`: the desktop stand-in row is a
   // display convenience, and a durable cross-client write must not ride on it.
@@ -134,10 +92,7 @@ export function StoppedWorktreesButton({
   useEffect(() => {
     if (!open || !picked?.deathReason || picked.seen) return
     void markDeathSeen(projectSlug, picked.worktreeId)
-    queryClient.setQueriesData<StoppedWorktreeEntry[]>(
-      { queryKey: ['deleted', projectSlug] },
-      (old) => old?.map((e) => (e.worktreeId === picked.worktreeId ? { ...e, seen: true } : e)),
-    )
+    patchStopped(queryClient, projectSlug, (e) => (e.worktreeId === picked.worktreeId ? { ...e, seen: true } : e))
   }, [open, picked, projectSlug, queryClient])
 
   // Dismiss every death at once. Same server-persisted acknowledgement the
@@ -145,18 +100,14 @@ export function StoppedWorktreesButton({
   // row highlights clear without waiting for a refetch.
   const onMarkAllRead = (): void => {
     void markAllDeathsSeen(projectSlug)
-    queryClient.setQueriesData<StoppedWorktreeEntry[]>(
-      { queryKey: ['deleted', projectSlug] },
-      (old) => old?.map((e) => (e.deathReason ? { ...e, seen: true } : e)),
-    )
+    patchStopped(queryClient, projectSlug, (e) => (e.deathReason ? { ...e, seen: true } : e))
   }
 
   const onConfirmRestart = (entry: StoppedWorktreeEntry): void => {
     setConfirm(null)
-    setRestarting((r) => [...r, entry.worktreeId])
     removeOptimisticStopped(entry.worktreeId)
-    // Close the overlay so useProvisionWorktree's auto-open shows progress in
-    // the main pane.
+    // Its provisioning row takes it off the list. Close the overlay so
+    // useProvisionWorktree's auto-open shows progress in the main pane.
     closeOverlay()
     provision(projectSlug, entry.tool, 'restart', entry.worktreeId,
       (sid, onProgress) => restartWorktree(sid, onProgress),
@@ -165,10 +116,10 @@ export function StoppedWorktreesButton({
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (next) openOverlay(); else closeOverlay() }}>
-      {/* Entry point hidden until the project actually has deleted worktrees
-          (optimistic or fetched). The overlay below stays mounted regardless so
-          an open dialog keeps its exit animation if the list empties out. */}
-      {merged.length > 0 && (
+      {/* Entry point hidden until the project actually has stopped worktrees.
+          The overlay below stays mounted regardless so an open dialog keeps
+          its exit animation if the list empties out. */}
+      {stopped.length > 0 && (
         <button
           onClick={() => openOverlay()}
           className="mt-1 flex w-full items-center gap-1.5 px-3 py-1 text-xs font-medium text-text-faint
@@ -183,7 +134,7 @@ export function StoppedWorktreesButton({
           {/* The count reads as the same kind of row as a worktree group's
               header on desktop; on touch it is the row's second affordance,
               which is why the entry is a full tap-sized card there. */}
-          <span className="text-text-faint/70">{merged.length}</span>
+          <span className="text-text-faint/70">{stopped.length}</span>
           {/* Decorative unread dot (aria-hidden so it stays out of the button's
               accessible name); the title is a hover tooltip. */}
           {unseenDeaths > 0 && (
@@ -231,7 +182,7 @@ export function StoppedWorktreesButton({
             </div>
           </div>
 
-          {merged.length === 0 ? (
+          {stopped.length === 0 ? (
             <EmptyState
               className="flex-1"
               title="No stopped worktrees"
