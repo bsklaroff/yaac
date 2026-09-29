@@ -1304,6 +1304,11 @@ export interface QueuedWorktreeEntry {
   permissionMode: PermissionMode
   /** The reference branch it forks from, fetched fresh at launch. */
   branch: string
+  /** The user's title for the worktree it launches, which is then not
+   *  auto-titled. */
+  title?: string
+  /** The sidebar group it launches into; absent is the default list. */
+  groupId?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   /** Why its last launch failed; it is back in the queue until run again. */
@@ -1318,7 +1323,8 @@ export interface QueuedWorktreeEntry {
  * — the fields as the dialog showed them, so reopening it puts them back.
  * `model` and `branch` are absent when the dialog had not resolved them yet;
  * `startAfter` is the Start field's parent (a worktree or queued entry id),
- * absent for "Now".
+ * absent for "Now". `title` is the user's own, absent when the dialog's
+ * Title field was left blank.
  */
 export interface DraftWorktreeSettings {
   prompt: string
@@ -1328,14 +1334,17 @@ export interface DraftWorktreeSettings {
   model?: string
   branch?: string
   startAfter?: string
+  title?: string
+  groupId?: string
 }
 
 /** A create-dialog's contents the user kept instead of running. */
 export interface DraftWorktreeEntry extends DraftWorktreeSettings {
   id: string
   projectSlug: string
-  /** Model-generated from the prompt, once the title sweep has run. */
-  title?: string
+  /** Model-generated from the prompt, once the title sweep has run — never
+   *  for a draft with a `title`. */
+  generatedTitle?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   updatedAt: string

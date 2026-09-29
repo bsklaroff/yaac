@@ -15,6 +15,7 @@
  */
 import crypto from 'node:crypto'
 import { resolveCreate } from './create'
+import { resolveGroup } from './groups'
 import { inFlightCreate, listProvisioning, removeProvisioning, runProvisioned } from './provisioning'
 import { resolveWorktree } from './resolve'
 import { startWorktree } from './start'
@@ -46,6 +47,7 @@ import { serverLog } from '#log'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { normalizeTitle } from '@yaac/shared/titles'
 import {
   MAX_PROMPT_LENGTH,
   toolSupportsPermissionMode,
@@ -67,6 +69,10 @@ export interface QueueRequest {
   mode?: AgentMode
   permissionMode?: PermissionMode
   branch?: string
+  /** The launched worktree's title; blank leaves it to be auto-titled. */
+  title?: string
+  /** A group id or name; null is the default list, absent the parent's. */
+  group?: string | null
 }
 
 /**
@@ -86,6 +92,7 @@ interface ParentInfo {
   model?: string
   permissionMode?: PermissionMode
   branch?: string
+  groupId?: string
 }
 
 /** Entries this process is launching, by id — claimed or about to be. The
@@ -127,6 +134,8 @@ export async function updateQueuedWorktree(
     tool: patch.tool ?? row.tool,
     mode: patch.mode ?? row.mode,
     branch: patch.branch ?? row.branch,
+    title: patch.title ?? row.title ?? '',
+    group: patch.group !== undefined ? patch.group : row.groupId ?? null,
     ...(patch.model !== undefined ? { model: patch.model } : retooled ? {} : { model: row.model }),
     ...(patch.permissionMode !== undefined
       ? { permissionMode: patch.permissionMode }
@@ -266,9 +275,6 @@ async function launch(row: QueuedWorktreeRow): Promise<string | undefined> {
 
   void (async () => {
     try {
-      // The group its parent is in NOW — a parent moved since the entry was
-      // queued takes its children with it.
-      const groupId = await groupOf(row)
       await runProvisioned(worktreeId, (onProgress) => startWorktree({
         projectSlug: row.projectSlug,
         worktreeId,
@@ -278,7 +284,8 @@ async function launch(row: QueuedWorktreeRow): Promise<string | undefined> {
         permissionMode: row.permissionMode,
         branch: row.branch,
         prompt: row.prompt,
-        ...(groupId !== undefined ? { groupId } : {}),
+        ...(row.title !== undefined ? { title: row.title } : {}),
+        ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
         rememberDefaults: false,
         // The children already point at `worktreeId`; a spare would list
         // under its own id and leave them waiting on nothing.
@@ -296,20 +303,6 @@ async function launch(row: QueuedWorktreeRow): Promise<string | undefined> {
     }
   })()
   return worktreeId
-}
-
-/** The group of the nearest worktree above an entry, if it has one. */
-async function groupOf(row: QueuedWorktreeRow): Promise<string | undefined> {
-  const rows = await listQueuedWorktreeRows(row.projectSlug)
-  const byId = new Map(rows.map((r) => [r.id, r]))
-  let cur: QueuedWorktreeRow | undefined = row
-  const seen = new Set<string>()
-  while (cur?.parentQueuedId !== undefined && !seen.has(cur.id)) {
-    seen.add(cur.id)
-    cur = byId.get(cur.parentQueuedId)
-  }
-  if (cur?.parentWorktreeId === undefined) return undefined
-  return (await getProjectWorktreeRows(row.projectSlug)).get(cur.parentWorktreeId)?.groupId
 }
 
 /** An entry that exists and is not mid-launch — what every edit needs. */
@@ -403,6 +396,7 @@ async function parentInfo(projectSlug: string, pointer: QueuedParent): Promise<P
   const mode = first?.mode ?? row?.mode
   const tool = first?.tool ?? creating?.tool
   const branch = row?.baseBranch ?? creating?.branch
+  const groupId = row !== undefined ? row.groupId : creating?.groupId
   return {
     pointer,
     ...(tool !== undefined ? { tool } : {}),
@@ -410,6 +404,7 @@ async function parentInfo(projectSlug: string, pointer: QueuedParent): Promise<P
     ...(model !== undefined ? { model } : {}),
     ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
     ...(branch !== undefined ? { branch } : {}),
+    ...(groupId !== undefined ? { groupId } : {}),
   }
 }
 
@@ -420,13 +415,15 @@ function settingsOf(entry: QueuedWorktreeRow): Omit<ParentInfo, 'pointer'> {
     model: entry.model,
     permissionMode: entry.permissionMode,
     branch: entry.branch,
+    ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
   }
 }
 
 /**
  * Every setting, concrete: what the request named, else the parent's (the
  * tool-dependent ones only when the tool is the parent's), else what a
- * create in this project would resolve.
+ * create in this project would resolve. The group too is decided here, as
+ * its parent's group is now — moving the parent later leaves it where it is.
  */
 async function resolveSettings(
   projectSlug: string,
@@ -477,6 +474,10 @@ async function resolveSettings(
   if (setup.model === undefined) {
     throw new ServerError('VALIDATION', `no model is known for ${setup.tool}; pick one`)
   }
+  const title = normalizeTitle(request.title ?? '')
+  const groupId = request.group === undefined ? parent.groupId
+    : request.group === null ? undefined
+    : (await resolveGroup(projectSlug, request.group)).groupId
   return {
     prompt: request.prompt,
     tool: setup.tool,
@@ -484,6 +485,8 @@ async function resolveSettings(
     mode: setup.mode,
     permissionMode: setup.permissionMode,
     branch: request.branch ?? parent.branch ?? await referenceBranch(projectSlug),
+    ...(title !== '' ? { title } : {}),
+    ...(groupId !== undefined ? { groupId } : {}),
   }
 }
 
@@ -520,6 +523,8 @@ async function toEntries(rows: QueuedWorktreeRow[]): Promise<QueuedWorktreeEntry
       mode: r.mode,
       permissionMode: r.permissionMode,
       branch: r.branch,
+      ...(r.title !== undefined ? { title: r.title } : {}),
+      ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       ...(r.launchError !== undefined ? { launchError: r.launchError } : {}),
       ...(orphaned ? { orphaned: true } : {}),

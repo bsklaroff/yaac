@@ -14,15 +14,19 @@ import {
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { normalizeTitle } from '@yaac/shared/titles'
 import type { DraftWorktreeEntry, DraftWorktreeSettings } from '@yaac/shared/types'
 
-/** Save a new draft, or replace draft `id`'s settings. */
+/** Save a new draft, or replace draft `id`'s settings. A blank title is
+ *  none, leaving the draft to be auto-titled. */
 export async function saveDraftWorktree(
   projectSlug: string,
-  settings: DraftWorktreeSettings,
+  { title, ...rest }: DraftWorktreeSettings,
   id?: string,
 ): Promise<DraftWorktreeEntry> {
   if (!await getProjectRow(projectSlug)) throw new ServerError('NOT_FOUND', `project ${projectSlug} not found`)
+  const named = normalizeTitle(title ?? '')
+  const settings = { ...rest, ...(named !== '' ? { title: named } : {}) }
   const row = id === undefined
     ? await insertDraftWorktree(projectSlug, settings)
     : await updateDraftWorktree(projectSlug, id, settings)

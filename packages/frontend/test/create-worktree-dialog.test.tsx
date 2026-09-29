@@ -115,6 +115,12 @@ const PARENT: WorktreeListEntry = {
   permissionMode: 'accept-edits',
 }
 
+const GROUPS = [
+  { groupId: 'g-review', projectSlug: 'proj', name: 'Review', pinned: false, createdAt: '2026-01-01 00:00:00' },
+  { groupId: 'g-other', projectSlug: 'proj', name: 'Other', pinned: true, createdAt: '2026-01-02 00:00:00' },
+  { groupId: 'g-theirs', projectSlug: 'else', name: 'Theirs', pinned: true, createdAt: '2026-01-02 00:00:00' },
+]
+
 const entry = (id: string, extra: Partial<QueuedWorktreeEntry> = {}): QueuedWorktreeEntry => ({
   id,
   projectSlug: 'proj',
@@ -412,6 +418,27 @@ describe('CreateWorktreeDialog', () => {
       expect.objectContaining({ prompt: 'fix the flaky test' }))
   })
 
+  it('names and files a create: a typed title and a picked group ride it', async () => {
+    await openReady()
+    // No group to pick, no field.
+    expect(screen.queryByLabelText('Group')).toBeNull()
+
+    cleanup()
+    useUiStore.setState({ createWorktreeDialog: null })
+    snapshot.mockReturnValue(project({}, 'k8s', { worktreeGroups: GROUPS }))
+    await openReady()
+    // Now has no parent to take a group from; only this project's are offered.
+    expect(select('Group').value).toBe('')
+    expect([...select('Group').options].map((o) => o.textContent)).toEqual(['None', 'Review', 'Other'])
+    fireEvent.change(select('Group'), { target: { value: 'g-other' } })
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: '  Fix   the build ' } })
+    fireEvent.click(createButton())
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
+      expect.objectContaining({ title: 'Fix the build', group: 'g-other' }))
+    // The optimistic row is filed in the group from its first frame.
+    expect(provision.mock.calls[0][5]).toBe('g-other')
+  })
+
   it('prefills the branch input with the project default', async () => {
     vi.mocked(getProjectBranches).mockResolvedValue({ ...BRANCHES, referenceBranch: 'dev' })
     await openMenu()
@@ -459,10 +486,13 @@ describe('CreateWorktreeDialog', () => {
     // forked from — every one sent concrete.
     it('seeds from the parent worktree and queues with every setting concrete', async () => {
       vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
-      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        worktrees: [{ ...PARENT, groupId: 'g-review' }], worktreeGroups: GROUPS,
+      }))
       await openWith({ parent: 'w-parent' })
 
       expect(select('Start').value).toBe('w-parent')
+      expect(select('Group').value).toBe('g-review')
       expect(select('Agent').value).toBe('codex')
       expect(modelInput().value).toBe('GPT-5.5')
       expect(select('Permissions').value).toBe('accept-edits')
@@ -472,10 +502,12 @@ describe('CreateWorktreeDialog', () => {
       // A queued worktree runs unattended, so it needs something to do.
       expect(submitButton().disabled).toBe(true)
       fireEvent.change(promptInput(), { target: { value: 'follow up' } })
+      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Follow-up' } })
       fireEvent.click(submitButton())
 
       await waitFor(() => expect(vi.mocked(queueWorktree)).toHaveBeenCalledWith('proj', 'w-parent', {
         prompt: 'follow up', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits', branch: 'dev',
+        title: 'Follow-up', group: 'g-review',
       }, undefined))
       expect(createWorktree).not.toHaveBeenCalled()
       await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull())
@@ -485,13 +517,18 @@ describe('CreateWorktreeDialog', () => {
 
     it('re-seeds only untouched fields when Start changes', async () => {
       vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
-      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        worktrees: [{ ...PARENT, groupId: 'g-review' }], worktreeGroups: GROUPS,
+      }))
       await openReady()
       expect(select('Agent').value).toBe('claude')
+      expect(select('Group').value).toBe('')
       expect(screen.getByRole('button', { name: 'Create' })).toBeTruthy()
 
       fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
       fireEvent.change(select('Start'), { target: { value: 'w-parent' } })
+      // The group follows the parent until it is picked.
+      expect(select('Group').value).toBe('g-review')
       // The agent was untouched, so it follows the parent — and a new agent
       // brings its own memory, so the posture pick goes with the old one.
       expect(select('Agent').value).toBe('codex')
@@ -499,9 +536,11 @@ describe('CreateWorktreeDialog', () => {
       expect(screen.getByRole('button', { name: 'Queue' })).toBeTruthy()
 
       fireEvent.change(select('Agent'), { target: { value: 'claude' } })
+      fireEvent.change(select('Group'), { target: { value: 'g-other' } })
       fireEvent.change(select('Start'), { target: { value: '' } })
       // Picked here, so a different Start leaves it alone.
       expect(select('Agent').value).toBe('claude')
+      expect(select('Group').value).toBe('g-other')
     })
 
     it('surfaces a refused queue and stays open', async () => {
@@ -519,17 +558,21 @@ describe('CreateWorktreeDialog', () => {
   describe('editing a queued worktree', () => {
     const chain = [
       entry('q1'),
-      entry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1' }),
+      entry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1', title: 'Second', groupId: 'g-review' }),
       entry('q3', { parentWorktreeId: undefined, parentQueuedId: 'q2' }),
       entry('q4', { prompt: 'sibling' }),
     ]
 
     it('opens on the entry\'s own settings and never offers a cycle', async () => {
       vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
-      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT], queuedWorktrees: chain }))
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        worktrees: [PARENT], queuedWorktrees: chain, worktreeGroups: GROUPS,
+      }))
       await openWith({ editId: 'q2' })
 
       expect(promptInput().value).toBe('step q2')
+      expect(screen.getByLabelText<HTMLInputElement>('Title').value).toBe('Second')
+      expect(select('Group').value).toBe('g-review')
       expect(select('Start').value).toBe('q1')
       expect(modelInput().value).toBe('Sonnet 5')
       expect(select('Permissions').value).toBe('manual')
@@ -542,10 +585,14 @@ describe('CreateWorktreeDialog', () => {
       vi.mocked(updateQueuedWorktree)
         .mockResolvedValueOnce(entry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q4' }))
       fireEvent.change(select('Start'), { target: { value: 'q4' } })
+      // Its own group, not the new parent's; a cleared title goes back to auto.
+      expect(select('Group').value).toBe('g-review')
+      fireEvent.change(screen.getByLabelText('Title'), { target: { value: '' } })
+      fireEvent.change(select('Group'), { target: { value: '' } })
       fireEvent.click(submitButton())
       await waitFor(() => expect(vi.mocked(updateQueuedWorktree)).toHaveBeenCalledWith('q2', {
         prompt: 'step q2', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'manual',
-        branch: 'release/2.x', parent: 'q4',
+        branch: 'release/2.x', title: '', group: null, parent: 'q4',
       }))
       expect(runQueuedWorktree).not.toHaveBeenCalled()
       // The sidebar opens the set the server says it landed in.
@@ -591,9 +638,12 @@ describe('CreateWorktreeDialog', () => {
 
     it('asks on dismissal with a prompt, and saves every setting as shown', async () => {
       vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
-      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        worktrees: [{ ...PARENT, groupId: 'g-review' }], worktreeGroups: GROUPS,
+      }))
       await openReady()
       fireEvent.change(promptInput(), { target: { value: '  later, maybe  ' } })
+      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Someday' } })
       fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
 
       // Keep editing goes back to the form, prompt and all.
@@ -613,7 +663,7 @@ describe('CreateWorktreeDialog', () => {
       await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
       expect(saveDraftWorktree).toHaveBeenCalledWith('proj', {
         prompt: 'later, maybe', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
-        branch: 'dev', startAfter: 'w-parent',
+        branch: 'dev', startAfter: 'w-parent', title: 'Someday', groupId: 'g-review',
       }, undefined)
       expect(createWorktree).not.toHaveBeenCalled()
       expect(queueWorktree).not.toHaveBeenCalled()
@@ -680,16 +730,50 @@ describe('CreateWorktreeDialog', () => {
       await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
       expect(screen.queryByText('Save changes to this draft?')).toBeNull()
 
+      // A title and group of its own ride the create.
       cleanup()
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        draftWorktrees: [draft({ title: 'Named', groupId: 'g-other' })], worktreeGroups: GROUPS,
+      }))
       mount()
       act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
       await waitFor(() => expect(createButton().disabled).toBe(false))
+      expect(screen.getByLabelText<HTMLInputElement>('Title').value).toBe('Named')
+      expect(select('Group').value).toBe('g-other')
       fireEvent.click(createButton())
       // The server drops the draft once the create succeeds, so a failed one keeps it.
       expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
-        branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea', draftId: 'd1',
+        branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea',
+        title: 'Named', group: 'g-other', draftId: 'd1',
       })
       expect(discardDraftWorktree).not.toHaveBeenCalled()
+    })
+
+    it('keeps an untouched draft group following Start, and a picked one where it was', async () => {
+      const other = { ...PARENT, worktreeId: 'w-other', title: 'Other work', groupId: 'g-other' }
+      const open = async (d: DraftWorktreeEntry): Promise<void> => {
+        cleanup()
+        useUiStore.setState({ createWorktreeDialog: null })
+        snapshot.mockReturnValue(project({}, 'k8s', {
+          worktrees: [{ ...PARENT, groupId: 'g-review' }, other], worktreeGroups: GROUPS, draftWorktrees: [d],
+        }))
+        mount()
+        act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', draftId: 'd1' }))
+        await waitFor(() => expect(screen.getByLabelText('Group')).toBeTruthy())
+      }
+      // Saved following its Start's group: it still follows.
+      await open(draft({ startAfter: 'w-parent', groupId: 'g-review' }))
+      expect(select('Group').value).toBe('g-review')
+      fireEvent.change(select('Start'), { target: { value: 'w-other' } })
+      expect(select('Group').value).toBe('g-other')
+      // Saved on Now with no group: so does this one.
+      await open(draft())
+      fireEvent.change(select('Start'), { target: { value: 'w-parent' } })
+      expect(select('Group').value).toBe('g-review')
+      // Saved with a group its Start would not give: picked, so it stays.
+      await open(draft({ startAfter: 'w-parent', groupId: 'g-other' }))
+      fireEvent.change(select('Start'), { target: { value: '' } })
+      expect(select('Group').value).toBe('g-other')
     })
 
     it('queueing from a draft names it, for the server to drop once queued', async () => {

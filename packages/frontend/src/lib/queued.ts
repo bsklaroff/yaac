@@ -55,9 +55,10 @@ export function queuedInTreeOrder(entries: QueuedWorktreeEntry[]): QueuedWorktre
   return out
 }
 
-/** An entry's label: the first non-blank line of its prompt. */
-export function queuedTitle(entry: Pick<QueuedWorktreeEntry, 'prompt'>): string {
-  return entry.prompt.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? 'Queued worktree'
+/** An entry's label: the title it was given, else the first non-blank line
+ *  of its prompt. */
+export function queuedTitle(entry: Pick<QueuedWorktreeEntry, 'prompt' | 'title'>): string {
+  return entry.title ?? entry.prompt.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? 'Queued worktree'
 }
 
 /** Clip a label for dialog and dropdown copy. */

@@ -163,6 +163,26 @@ describe('queueWorktree', () => {
     expect(c.parentWorktreeId).toBeUndefined()
   })
 
+  it('takes its parent\'s group unless it names one, and keeps a title of its own', async () => {
+    const review = await createWorktreeGroup('proj', 'review', null)
+    await createWorktreeGroup('proj', 'other', null)
+    await worktree('top')
+    await setWorktreeGroup('proj', 'top', review.groupId)
+    const b = await queueWorktree('proj', { parent: 'top', prompt: 'b', title: '  My   title ' }, 'user')
+    expect(b).toMatchObject({ groupId: review.groupId, title: 'My title' })
+    // Chained under an entry: that entry's group.
+    const c = await queueWorktree('proj', { parent: b.id, prompt: 'c', title: ' ' }, 'user')
+    expect(c.groupId).toBe(review.groupId)
+    expect(c.title).toBeUndefined()
+    // Named by name, or none at all; a group that does not exist is refused.
+    expect((await queueWorktree('proj', { parent: 'top', prompt: 'd', group: 'other' }, 'user')).groupId)
+      .not.toBe(review.groupId)
+    expect((await queueWorktree('proj', { parent: 'top', prompt: 'e', group: null }, 'user')).groupId)
+      .toBeUndefined()
+    await expect(queueWorktree('proj', { parent: 'top', prompt: 'f', group: 'nope' }, 'user'))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
   it('queues under a create still in flight, before its row exists, by its full id', async () => {
     // `id=$(yaac-mama create …); yaac-mama queue --worktree "$id"` — the id
     // is answered before the create has recorded anything.
@@ -232,6 +252,16 @@ describe('updateQueuedWorktree', () => {
     const retooled = await updateQueuedWorktree(entry.id, { tool: 'codex' })
     expect(retooled).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex, prompt: 'edited' })
     expect(retooled.permissionMode).not.toBe('plan')
+
+    // A title and a group are kept until named, and a blank or null clears them.
+    const group = await createWorktreeGroup('proj', 'review', null)
+    expect(await updateQueuedWorktree(entry.id, { title: 'Named', group: 'review' }))
+      .toMatchObject({ title: 'Named', groupId: group.groupId })
+    expect(await updateQueuedWorktree(entry.id, { prompt: 'again' }))
+      .toMatchObject({ title: 'Named', groupId: group.groupId })
+    const cleared = await updateQueuedWorktree(entry.id, { title: '', group: null })
+    expect(cleared.title).toBeUndefined()
+    expect(cleared.groupId).toBeUndefined()
   })
 
   it('refuses a cycle, including one hidden behind a launching entry', async () => {
@@ -281,13 +311,14 @@ describe('discardQueuedWorktree', () => {
 })
 
 describe('runQueuedWorktree', () => {
-  it('launches cold from the stored settings, in the parent\'s group as it is now', async () => {
+  it('launches cold from the stored settings, in the group it was queued with', async () => {
     await worktree('p', { tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits' })
-    const entry = await queueWorktree('proj', { parent: 'p', prompt: 'go' }, 'user')
-    const child = await queueWorktree('proj', { parent: entry.id, prompt: 'after' }, 'user')
-    // Moved after queueing: the child follows the parent.
     const group = await createWorktreeGroup('proj', 'review', null)
     await setWorktreeGroup('proj', 'p', group.groupId)
+    const entry = await queueWorktree('proj', { parent: 'p', prompt: 'go', title: 'Named' }, 'user')
+    const child = await queueWorktree('proj', { parent: entry.id, prompt: 'after' }, 'user')
+    // Moving the parent after queueing leaves the entry where it was filed.
+    await setWorktreeGroup('proj', 'p', null)
 
     const { worktreeId } = await runQueuedWorktree(entry.id)
     // A second press loses the claim.
@@ -300,6 +331,7 @@ describe('runQueuedWorktree', () => {
       permissionMode: 'accept-edits',
       branch: 'develop',
       initialPrompt: 'go',
+      title: 'Named',
       groupId: group.groupId,
     })])
     await settled(entry.id, true)

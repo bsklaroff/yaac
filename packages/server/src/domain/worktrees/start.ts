@@ -18,6 +18,8 @@ export interface StartWorktreeRequest {
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
   prompt?: string
+  /** The user's title; given, the worktree is not auto-titled. */
+  title?: string
   /** Sidebar group, already resolved to an id. */
   groupId?: string
   /** Record what the request named as the project's next create defaults —
@@ -42,7 +44,7 @@ export async function startWorktree(
   request: StartWorktreeRequest,
   onProgress: (message: string) => void,
 ): Promise<WorktreeCreateResult> {
-  const { projectSlug, worktreeId, groupId, prompt } = request
+  const { projectSlug, worktreeId, groupId, prompt, title } = request
   // Every choice resolved here, once: what the request named, else what this
   // project last used for that agent, else the fallback — the same answer
   // the webapp's create form shows before submit. An unnamed mode stays
@@ -91,6 +93,7 @@ export async function startWorktree(
     const claimed = await tryClaimPrewarmed(projectSlug, worktreeId, setup, onProgress, {
       ...(request.branch !== undefined ? { branch: request.branch } : {}),
       ...(prompt !== undefined ? { prompt } : {}),
+      ...(title !== undefined ? { title } : {}),
       ...(groupId !== undefined ? { groupId } : {}),
     })
     if (claimed) return claimed
@@ -105,6 +108,7 @@ export async function startWorktree(
     ...(setup.model !== undefined ? { model: setup.model } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     ...(prompt !== undefined ? { initialPrompt: prompt } : {}),
+    ...(title !== undefined ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
   })
 }

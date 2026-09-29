@@ -424,6 +424,13 @@ export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   /** The reference branch to fork from (no `origin/` prefix); fetched fresh
    *  from origin at launch, so the child starts from its latest tip. */
   branch: text().notNull(),
+  /** The user's title for the worktree it launches; null leaves that
+   *  worktree to be auto-titled from its prompt. */
+  title: text(),
+  /** The sidebar group it launches into; null is the default list. Chosen
+   *  when it is queued (its parent's group unless named), and cleared when
+   *  the group is deleted. */
+  groupId: text(),
   /** Set by a natural parent stop or Run now; the launcher's work list. */
   releasedAt: timestamp({ withTimezone: true }),
   /** The worktree id this entry's in-flight launch is creating. Set by a
@@ -449,8 +456,11 @@ export const draftWorktrees = snakeCase.table('draft_worktrees', {
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   prompt: text().notNull(),
-  /** Model-generated from the prompt; cleared when the prompt changes. */
+  /** The user's title, carried to what is created from it; set, it turns
+   *  off `generatedTitle`. */
   title: text(),
+  /** Model-generated from the prompt; cleared when the prompt changes. */
+  generatedTitle: text(),
   tool: text().notNull(),
   mode: text().notNull(),
   permissionMode: text().notNull(),
@@ -462,4 +472,6 @@ export const draftWorktrees = snakeCase.table('draft_worktrees', {
    *  on, null for "Now". Not a live reference — a parent that has gone by
    *  the time the draft is reopened falls back to "Now". */
   startAfter: text(),
+  /** The dialog's Group field; cleared when the group is deleted. */
+  groupId: text(),
 }, (t) => [index().on(t.projectSlug)])

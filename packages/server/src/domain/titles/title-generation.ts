@@ -6,9 +6,10 @@
  * Eligibility is checked again by the write itself: a rename that lands
  * while the model is still running wins.
  *
- * Draft worktrees are titled from their prompt the same way. A draft has no
- * rename; its title is cleared when its prompt changes, so the write is
- * conditional on the draft still holding the prompt it was made from.
+ * Draft worktrees are titled from their prompt the same way, unless the user
+ * gave one a title of their own. A generated draft title is cleared when its
+ * prompt changes, so the write is conditional on the draft still holding the
+ * prompt it was made from.
  *
  * Each tick fires one detached task per eligible session — the tick body
  * never blocks on a model download or inference (those serialize inside
@@ -49,8 +50,8 @@ export async function reconcileGeneratedTitles(): Promise<void> {
   }
   // A draft is keyed on its prompt too: editing the prompt clears the title,
   // and the new prompt is worth one attempt of its own.
-  for (const { id, prompt, title } of await listDraftWorktreeRows()) {
-    if (title !== undefined) continue
+  for (const { id, prompt, title, generatedTitle } of await listDraftWorktreeRows()) {
+    if (title !== undefined || generatedTitle !== undefined) continue
     void generateOnce(`draft:${id}:${prompt}`, `draft ${id}`, prompt, (t) => setDraftWorktreeTitle(id, prompt, t))
   }
 }
