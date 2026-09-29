@@ -25,6 +25,8 @@ export function BranchPicker({
   onSelect: (branch: string) => void
   /** Whether to render the suggestion list at all. */
   showList: boolean
+  /** Escape was pressed with the list open. */
+  onDismiss?: () => void
   placeholder?: string
   ariaLabel?: string
   /** Max suggestions shown (default 8). */

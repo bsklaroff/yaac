@@ -22,7 +22,7 @@ vi.mock('#lib/files', async (importOriginal) => ({
 
 import { WorktreeView } from '#components/WorktreeView'
 import { DEFAULT_BINDINGS } from '#lib/shortcuts'
-import { useUiStore } from '#lib/store'
+import { shortcutsSuspended, useUiStore } from '#lib/store'
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -91,5 +91,25 @@ describe('WorktreeView: open-files', () => {
     expect(tabsOf()).not.toContain('files')
     fireEvent.keyDown(window, { code: 'KeyO', key: 'o', altKey: true })
     expect(tabsOf()).toContain('files')
+  })
+})
+
+describe('window shortcuts while the create dialog is open', () => {
+  it('leave the keypress to the dialog, and resume once it closes', () => {
+    renderView()
+    useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', focus: 'prompt' })
+    altE()
+    expect(tabsOf()).not.toContain('files')
+
+    useUiStore.getState().closeCreateWorktree()
+    altE()
+    expect(tabsOf()).toContain('files')
+  })
+
+  it('suspends for the dialog and for a rebind being recorded, not otherwise', () => {
+    const base = { recordingShortcut: false, createWorktreeDialog: null }
+    expect(shortcutsSuspended(base)).toBe(false)
+    expect(shortcutsSuspended({ ...base, recordingShortcut: true })).toBe(true)
+    expect(shortcutsSuspended({ ...base, createWorktreeDialog: { projectSlug: 'proj' } })).toBe(true)
   })
 })

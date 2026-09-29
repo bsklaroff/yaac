@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { registerProvisioning, runProvisioned } from './provisioning'
-import { createWorktree } from './create'
+import { startWorktree } from './start'
 import { getProjectRow } from '#db'
 import {
   AGENT_MODES,
@@ -126,7 +126,7 @@ export async function decideSpawn(
     ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectSlug)
     ?? 'claude'
   const mode = (request.mode ?? 'tui') as AgentMode
-  const posture = spawnPermissionMode(
+  const posture = agentPermissionMode(
     tool, mode, request.callerPermissionMode, request.permissionMode as PermissionMode | undefined,
   )
   if (!posture.ok) return posture
@@ -135,33 +135,42 @@ export async function decideSpawn(
   const projectSlug = request.callerProjectSlug
   inFlightByCaller.set(request.callerWorkspaceId, inFlight + 1)
   // Register the sidebar row before detaching, then run the create under the
-  // same row lifecycle as a user-initiated create — the spawned worktree shows
-  // provisioning progress in the webapp and a failed spawn leaves a failed
-  // row (dismissable) instead of vanishing silently.
+  // same row lifecycle as a user-initiated create — the spawned worktree
+  // shows provisioning progress in the webapp, and a spawn that fails at any
+  // point, resolving its setup included, leaves a failed row (dismissable)
+  // instead of vanishing silently. It also makes the minted id resolvable
+  // the moment the caller has it: `queue --worktree "$id"` right after the
+  // create finds it here before the create has recorded its row.
   registerProvisioning({
     worktreeId: workspaceId,
     projectSlug,
     tool,
     kind: 'create',
     ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
+    ...(request.branch !== undefined ? { branch: request.branch } : {}),
   })
-  void runProvisioned(workspaceId, (onProgress) =>
-    createWorktree(projectSlug, {
-      tool,
-      initialPrompt: request.prompt,
-      worktreeId: workspaceId,
-      model: request.model,
-      mode,
-      // The caller's posture, not the project's remembered one: a spawned
-      // sibling is the caller's work carried on, and a `plan` or `manual`
-      // inherited from someone's last webapp create would strand it at a
-      // prompt no one will ever answer.
-      permissionMode: posture.permissionMode,
-      ...(request.branch !== undefined ? { branch: request.branch } : {}),
-      ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
-      onProgress,
-    })).then(
-    () => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned worktree ${workspaceId.slice(0, 8)}... in ${projectSlug}`),
+  void runProvisioned(workspaceId, (onProgress) => startWorktree({
+    projectSlug,
+    worktreeId: workspaceId,
+    tool,
+    mode,
+    // The caller's posture, not the project's remembered one: a spawned
+    // sibling is the caller's work carried on, and a `plan` or `manual`
+    // inherited from someone's last webapp create would strand it at a
+    // prompt no one will ever answer.
+    permissionMode: posture.permissionMode,
+    prompt: request.prompt,
+    ...(request.model !== undefined ? { model: request.model } : {}),
+    ...(request.branch !== undefined ? { branch: request.branch } : {}),
+    ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
+    // An agent's choice is not the project's next default.
+    rememberDefaults: false,
+    // Never a spare: a claim hands back the spare's own id, and the caller
+    // already holds this one — `id=$(yaac-mama create …)` is the scriptable
+    // output, and every later command it feeds must find the worktree.
+    claimSpare: false,
+  }, onProgress)).then(
+    (created) => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned worktree ${created.worktreeId.slice(0, 8)}... in ${projectSlug}`),
     (err: unknown) => serverLog(`[spawn] worktree create for ${request.callerWorkspaceId.slice(0, 8)}... failed: ${String(err)}`),
   ).finally(() => {
     const n = (inFlightByCaller.get(request.callerWorkspaceId) ?? 1) - 1
@@ -173,21 +182,25 @@ export async function decideSpawn(
 }
 
 /**
- * The posture a spawn launches in: the one it named, else the caller's own —
- * and never more permissive than the caller's.
+ * The posture something an agent starts runs in — a `yaac-mama create`d
+ * worktree or a `yaac-mama queue`d one: the one it named, else the one it
+ * inherits (the parent's, for a queued worktree; the caller's own
+ * otherwise) — and never more permissive than the caller's.
  *
  * A named posture above the ceiling, or one the tool lacks under `mode`, is
  * refused rather than clamped: the caller said what it wanted, and launching
  * something else is the failure worth being loud about (the create is
  * detached, so this is the last point a refusal can reach it). An unnamed one
- * the tool lacks steps down to the tool's most permissive posture under the
- * ceiling, since inheriting was a default rather than a demand.
+ * above the ceiling or the tool lacks steps down to the tool's most
+ * permissive posture under both, since inheriting was a default rather than
+ * a demand.
  */
-function spawnPermissionMode(
+export function agentPermissionMode(
   tool: AgentTool,
   mode: AgentMode,
   ceiling: PermissionMode,
   requested: PermissionMode | undefined,
+  inherited: PermissionMode = ceiling,
 ): { ok: true; permissionMode: PermissionMode } | { ok: false; error: string } {
   // The row's column is plain text, so a row written by another build can
   // hold a posture this one does not rank. Refused, because it cannot be
@@ -203,7 +216,7 @@ function spawnPermissionMode(
       return {
         ok: false,
         error: `permission mode '${requested}' is more permissive than this worktree's own `
-          + `('${ceiling}'); a spawned worktree may be granted at most that `
+          + `('${ceiling}'); a worktree it starts may be granted at most that `
           + `(${HIERARCHY})`,
       }
     }
@@ -211,9 +224,10 @@ function spawnPermissionMode(
       ? { ok: true, permissionMode: requested }
       : { ok: false, error: `${tool} has no '${requested}' permission mode${where}` }
   }
-  const inherited = nearestPermissionMode(tool, ceiling, mode)
-  return inherited !== undefined
-    ? { ok: true, permissionMode: inherited }
+  const cap = isRankedPermissionMode(inherited) && morePermissive(ceiling, inherited) ? inherited : ceiling
+  const stepped = nearestPermissionMode(tool, cap, mode)
+  return stepped !== undefined
+    ? { ok: true, permissionMode: stepped }
     : {
       ok: false,
       error: `${tool} has no permission mode${where} at or below this worktree's own ('${ceiling}')`,

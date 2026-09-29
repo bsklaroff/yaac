@@ -322,8 +322,11 @@ reports over the event stream described below, and `proxy-refreshed`, a
 cache delta over the object the proxy captures OAuth rotations into.
 `domain/reconcile.ts` is the ordered step list:
 the stale reaper first (so counts reflect just-reaped worktrees by the
-time the prewarm pool runs), the conversation sweep, and title generation
-last, so a just-captured opening message is eligible in the same pass.
+time the prewarm pool runs), then the queued-worktrees backstop (a launch a
+server restart interrupted, or a release it lost — `stopWorktree` launches
+queued worktrees directly, so this rides the resync only), the conversation
+sweep, and title generation last, so a just-captured opening message is
+eligible in the same pass.
 
 The runtime contributes its own steps — its GCs and datapath heals — in
 two groups the mediators splice in: `prePool` before the spare pool sizes

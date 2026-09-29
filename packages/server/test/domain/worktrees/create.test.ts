@@ -12,7 +12,7 @@ import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-ut
 import { installFakeWorktreeDriver, resetWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
-import { setGitIdentity } from '#db'
+import { getWorktreeRow, insertGitCredential, setGitIdentity, setProjectGitCredential, type WorktreeRow } from '#db'
 import {
   getProjectRow,
   recordProject,
@@ -274,5 +274,48 @@ describe('createWorktree git identity', () => {
     // on the server at all.
     await expect(createWorktree('demo', {})).rejects.toThrow(NO_IDENTITY)
     await expect(createWorktree('demo', {})).rejects.toThrow(/Settings/)
+  })
+})
+
+describe('createWorktree base branch', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    await fs.mkdir(projectDir('demo'), { recursive: true })
+    await createTestRepo(repoDir('demo'))
+    await recordProject({ slug: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: '2026-01-01T00:00:00.000Z' })
+    await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
+    const cred = await insertGitCredential({ name: 'gh', kind: 'https', secret: 'ghp_x' })
+    await setProjectGitCredential('demo', cred.id, null)
+  })
+
+  afterEach(async () => {
+    resetWorktreeDriver()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  /** The row as the first provisioning leg sees it — the create is then
+   *  stopped there, since nothing after it bears on what was recorded. */
+  async function rowAtProvisioning(options: Parameters<typeof createWorktree>[1]): Promise<WorktreeRow | undefined> {
+    let row: WorktreeRow | undefined
+    installFakeWorktreeDriver({
+      prepareImage: async () => {
+        row = await getWorktreeRow('demo', 'wt-1')
+        throw new Error('stop here')
+      },
+    })
+    await expect(createWorktree('demo', { worktreeId: 'wt-1', ...options })).rejects.toThrow('stop here')
+    return row
+  }
+
+  it('records the branch it forks from with the row, before anything is provisioned', async () => {
+    // A worktree queued after this one defaults to it, and may be queued
+    // while this one is still provisioning — so it cannot wait on the
+    // checkout. The requested branch, else the clone's default.
+    expect((await rowAtProvisioning({ branch: 'release' }))?.baseBranch).toBe('release')
+    const fallback = (await rowAtProvisioning({}))?.baseBranch
+    expect(fallback).toMatch(/^(main|master)$/)
   })
 })

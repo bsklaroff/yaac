@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this worktree to list the project's worktrees, start a sibling worktree with a prompt, retitle a worktree, stop a worktree (a sibling, or this one), or file worktrees into named groups — via the in-worktree `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac worktree (or "session"), farm a task out to a parallel one, see what else is running, rename/retitle a worktree, stop/shut down/wind down a worktree or this one when its work is done, or organize worktrees into groups.
+description: Ask the yaac server running this worktree to list the project's worktrees, start a sibling worktree with a prompt (now, or queued to start when a worktree stops), retitle a worktree, stop a worktree (a sibling, or this one), or file worktrees into named groups — via the in-worktree `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac worktree (or "session"), queue a follow-up to run after this one, farm a task out to a parallel one, see what else is running, rename/retitle a worktree, stop/shut down/wind down a worktree or this one when its work is done, or organize worktrees into groups.
 ---
 
 You are running **inside a yaac worktree**. The `yaac-mama` command (already on
@@ -12,6 +12,7 @@ same project**. Use it directly — this skill is just the manual.
 ```
 yaac-mama list                                    # worktrees + groups here
 yaac-mama create [--tool T] [--model M] [--permission-mode P] [--mode M] [--branch B] [--group G] "<prompt>"
+yaac-mama queue [--worktree W] [--tool T] [--model M] [--permission-mode P] "<prompt>"
 yaac-mama rename [<worktree>] "<title>"            # omit the worktree to rename yourself
 yaac-mama stop [<worktree>]                        # omit the worktree to stop yourself
 yaac-mama group create "<name>"
@@ -21,8 +22,8 @@ yaac-mama --help
 ```
 
 That list is the whole surface. `yaac-mama` is a **strict subset** of the
-`yaac` CLI, enforced by the server: it observes, labels, makes one new thing,
-and stops one. Stopping is in reach precisely because it is reversible — a
+`yaac` CLI, enforced by the server: it observes, labels, makes one new thing
+(now or queued for later), and stops one. Stopping is in reach precisely because it is reversible — a
 stopped worktree keeps its checkout and its conversation, and the user can
 restart it. There is no delete, no restart, no config. If a task needs one of
 those, ask the user rather than looking for a way around it.
@@ -66,6 +67,23 @@ pass — the server resolves who is calling and answers for that project only.
     here: the id comes back and the worktree then fails to provision.
   - **`--group`**: file the new worktree in this group, creating the group
     if it does not exist. Good for a fan-out you want kept together.
+
+- **`queue "<prompt>"`** — save a worktree to start **when a worktree
+  stops**: by default this one. Prints the queued worktree's id. Settings
+  default from the parent — its tool, current model, permission mode, and the
+  branch it forked from (the child starts from that branch's *latest* tip on
+  origin, not from this worktree's commits: push, and name your branch in the
+  prompt, to hand work over).
+  - **`--worktree`**: what it waits on instead — another worktree in this
+    project, or a queued worktree's id to **chain** after it.
+  - **`--tool`**, **`--model`**, **`--permission-mode`**: as for `create`.
+    The permission mode defaults to the parent's, stepped down to your own
+    when the parent's is more permissive; naming one above yours is refused.
+  - It starts only on a **natural stop** — `yaac-mama stop` or the user
+    stopping the worktree. A worktree that crashes, runs out of memory, or
+    whose agent simply exits does **not** start what is queued after it; that
+    waits in the sidebar for the user.
+  - `list` shows what is queued, indented under what it waits on.
 
 - **`rename [<worktree>] "<title>"`** — set the label the sidebar shows in
   place of a worktree's id. **Omit the worktree to rename yourself**, which is
@@ -113,6 +131,23 @@ pass — the server resolves who is calling and answers for that project only.
   worktree's uncommitted changes, env, or conversation. Write the prompt
   self-contained; if the new worktree must build on work from here, commit and
   push a branch first and tell the prompt to fetch and check it out.
+
+## Queueing a follow-up
+
+The main use of `queue` is "when I'm done, pick up from here": queue the
+follow-up, finish your work (commit, push, report), then `yaac-mama stop`
+yourself as your last act — that stop is what starts it. For a multi-step
+plan whose steps must run one after another, chain them:
+
+```
+a=$(yaac-mama queue "step 2: …")
+yaac-mama queue --worktree "$a" "step 3: …"
+```
+
+A chain moves on only when each link's agent calls `yaac-mama stop` (or the
+user stops it) — tell each link's prompt to stop itself when done, or the
+chain waits there. When a queue or create is refused for its permission mode,
+pass a lower `--permission-mode` rather than retrying the same request.
 
 ## Limits and errors
 

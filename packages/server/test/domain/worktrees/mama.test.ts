@@ -14,11 +14,15 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
     listWorktreeJobs: vi.fn().mockResolvedValue([]),
   }
 })
-vi.mock('#domain/worktrees/create', () => ({ createWorktree: vi.fn() }))
+vi.mock('#domain/worktrees/create', async (importOriginal) => ({
+  ...(await importOriginal<typeof createModule>()),
+  createWorktree: vi.fn(),
+}))
 vi.mock('#domain/worktrees/cleanup', () => ({ cleanupWorktreeDetached: vi.fn() }))
 
 import { listWorktreePods } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
+import type * as createModule from '#domain/worktrees/create'
 import { createWorktree } from '#domain/worktrees/create'
 import type { WorktreeCreateResult } from '#domain/worktrees/create'
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
@@ -26,6 +30,7 @@ import { closeDb } from '#db/client'
 import { createWorktreeGroup, listWorktreeGroupRows } from '#db/group-store'
 import { getProjectWorktreeRows, recordWorktreeCreated } from '#db/worktree-store'
 import { recordProject } from '#db/project-store'
+import { listQueuedWorktreeRows } from '#db/queued-worktree-store'
 import { clearAllProvisioningForTests } from '#domain/worktrees/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/worktrees/list'
 import { runMamaCommand, type MamaCaller } from '#domain/worktrees/mama'
@@ -62,6 +67,11 @@ afterEach(async () => {
 
 /** Let a detached create's .then/.finally chains settle. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+/** Wait for the detached create to reach the (mocked) create — it resolves
+ *  the setup and looks for a spare first, which takes more than a tick. */
+const created = (): Promise<void> =>
+  vi.waitFor(() => { expect(vi.mocked(createWorktree)).toHaveBeenCalled() })
 
 const run = (command: string, body = '', args: Record<string, string> = {}) =>
   runMamaCommand(CALLER, { command, args, body })
@@ -174,7 +184,7 @@ describe('runMamaCommand', () => {
       expect(outcome.ok).toBe(true)
       // The bare id, so `id=$(yaac-mama create "…")` is the working idiom.
       if (outcome.ok) expect(outcome.output).toMatch(/^[0-9a-f-]{36}$/)
-      await settle()
+      await created()
 
       expect(vi.mocked(createWorktree)).toHaveBeenCalledTimes(1)
       const [slug, opts] = vi.mocked(createWorktree).mock.calls[0]
@@ -187,7 +197,7 @@ describe('runMamaCommand', () => {
       expect((await run('create', 'do it', {
         tool: 'claude', model: 'opus', 'permission-mode': 'accept-edits', mode: 'acp', branch: 'feature/x',
       })).ok).toBe(true)
-      await settle()
+      await created()
       expect(vi.mocked(createWorktree).mock.calls[0][1]).toMatchObject({
         tool: 'claude', model: 'opus', permissionMode: 'accept-edits', mode: 'acp', branch: 'feature/x',
       })
@@ -211,7 +221,7 @@ describe('runMamaCommand', () => {
     it('files the new worktree into a group, creating it by name', async () => {
       const outcome = await run('create', 'do it', { group: 'release train' })
       expect(outcome.ok).toBe(true)
-      await settle()
+      await created()
 
       const rows = await listWorktreeGroupRows('proj')
       expect(rows.map((r) => r.name)).toEqual(['release train'])
@@ -224,7 +234,7 @@ describe('runMamaCommand', () => {
     it('reuses an existing group rather than making a second of the same name', async () => {
       const existing = await createWorktreeGroup('proj', 'review', null)
       await run('create', 'do it', { group: 'review' })
-      await settle()
+      await created()
 
       expect(await listWorktreeGroupRows('proj')).toHaveLength(1)
       expect(vi.mocked(createWorktree).mock.calls[0][1].groupId).toBe(existing.groupId)
@@ -235,6 +245,60 @@ describe('runMamaCommand', () => {
       expect(outcome).toEqual({ ok: false, error: 'prompt must not be empty' })
       await settle()
       expect(vi.mocked(createWorktree)).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('queue', () => {
+    beforeEach(async () => {
+      await recordWorktreeCreated({
+        projectSlug: 'proj', worktreeId: 'caller-worktree', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+      await recordWorktreeCreated({
+        projectSlug: 'proj', worktreeId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
+      })
+    })
+
+    it('queues under the caller by default, prints the id, and chains after it', async () => {
+      const first = await output('queue', 'step 2', { tool: 'claude' })
+      expect(first).toMatch(/^[0-9a-f-]{36}$/)
+      const second = await output('queue', 'step 3', { worktree: first.slice(0, 8) })
+
+      const rows = await listQueuedWorktreeRows('proj')
+      expect(rows.find((r) => r.id === first)).toMatchObject({
+        parentWorktreeId: 'caller-worktree', prompt: 'step 2', permissionMode: 'accept-edits', branch: 'main',
+      })
+      expect(rows.find((r) => r.id === second)).toMatchObject({ parentQueuedId: first, prompt: 'step 3' })
+      // Nothing starts until the parent stops.
+      await settle()
+      expect(vi.mocked(createWorktree)).not.toHaveBeenCalled()
+
+      // And list shows the chain, one level deeper per link.
+      const listed = await output('list')
+      expect(listed).toContain('after caller-w (you):')
+      expect(listed).toMatch(new RegExp(`\\n  ${first.slice(0, 8)}  claude  queued  step 2`))
+      expect(listed).toMatch(new RegExp(`\\n    ${second.slice(0, 8)}  claude  queued  step 3`))
+    })
+
+    it('never grants more than the caller has, and refuses rather than queueing', async () => {
+      // Under a looser sibling, its posture is stepped down to the caller's.
+      await output('queue', 'x', { worktree: 'loose-sibling', tool: 'claude' })
+      expect((await listQueuedWorktreeRows('proj'))[0].permissionMode).toBe('accept-edits')
+
+      const refusals: Array<Record<string, string>> = [
+        // Named above the ceiling.
+        { worktree: 'loose-sibling', tool: 'claude', 'permission-mode': 'bypass' },
+        // A tool with nothing at or below it.
+        { tool: 'pi' },
+        // A mode the tool lacks.
+        { tool: 'opencode', 'permission-mode': 'auto' },
+        { 'permission-mode': 'yolo' },
+        { worktree: 'nope' },
+      ]
+      for (const args of refusals) {
+        expect((await run('queue', 'x', args)).ok, JSON.stringify(args)).toBe(false)
+      }
+      expect(await run('queue', '  ')).toMatchObject({ ok: false })
+      expect(await listQueuedWorktreeRows('proj')).toHaveLength(1)
     })
   })
 

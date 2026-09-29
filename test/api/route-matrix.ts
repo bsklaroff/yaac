@@ -138,6 +138,11 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/worktree/mama', body: { command: 'list' },
     why: 'a pod reaches yaac-mama through the egress proxy, not the server',
     k8s: UNSUPPORTED, containerless: 401 },
+  // Queued worktrees are rows and a create request: substrate-neutral.
+  { method: 'POST', path: '/worktree/queue/create', body: { project: 'nope', parent: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/worktree/queue/update', body: { id: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/worktree/queue/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/worktree/queue/run', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/worktree/group/list', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/worktree/group/create', body: { name: 'g' }, k8s: [200, 400], containerless: [200, 400] },
   { method: 'POST', path: '/worktree/group/move', body: { worktreeId: 'nope', group: null }, k8s: [200, 400, 404], containerless: [200, 400, 404] },

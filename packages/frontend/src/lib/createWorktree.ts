@@ -37,6 +37,8 @@ export interface CreateWorktreeOptions {
   model?: string
   mode?: AgentMode
   permissionMode?: PermissionMode
+  /** The agent's opening message, typed into it once it is up. */
+  prompt?: string
 }
 
 export async function createWorktree(
@@ -54,6 +56,7 @@ export async function createWorktree(
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
     ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+    ...(opts.prompt ? { prompt: opts.prompt } : {}),
   }
   return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
 }

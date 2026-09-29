@@ -2,6 +2,7 @@ import { purgeProjectBytes } from './project-purge'
 import {
   deleteProjectAgentSessions,
   deleteProjectEnvVars,
+  deleteProjectQueuedWorktrees,
   deleteProjectRow,
   deleteProjectWorktreeGroups,
   deleteProjectWorktrees,
@@ -40,6 +41,9 @@ export async function removeProject(slug: string): Promise<void> {
   // The sidebar groups those worktrees were filed under have nothing left to
   // file.
   await deleteProjectWorktreeGroups(slug)
+  // And the requests queued to run after them, which have no project to
+  // launch into.
+  await deleteProjectQueuedWorktrees(slug)
   // The project's environment, secrets included. The copy of those secrets
   // the egress path was holding went with the substrate, above.
   await deleteProjectEnvVars(slug)

@@ -536,6 +536,20 @@ export function resolveVacantSelection(args: {
 export type SettingsSection =
   | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile' | 'server'
 
+/**
+ * What the create dialog was opened for. It creates, queues and edits:
+ * `editId` edits that queued entry; otherwise `parent` (a worktree or queued
+ * entry id) opens it with Start set to after that one stops, and neither
+ * opens it on "Now".
+ */
+export interface CreateWorktreeDialogOpts {
+  projectSlug: string
+  parent?: string
+  editId?: string
+  /** Put the cursor in the prompt — Alt+N, then type, then Enter. */
+  focus?: 'prompt'
+}
+
 /** Local-only UI state (not server state — that lives in the snapshot). */
 interface UiState {
   /** Project whose worktrees the sidebar is scoped to (rail selection). */
@@ -711,6 +725,12 @@ interface UiState {
   openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusProject?: string) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
+  /** The create dialog, when open. Mounted once in App and opened from here
+   *  so Alt+N, the row menus and the stop dialog reach it without threading
+   *  props. */
+  createWorktreeDialog: CreateWorktreeDialogOpts | null
+  openCreateWorktree: (opts: CreateWorktreeDialogOpts) => void
+  closeCreateWorktree: () => void
   /** Whether the full-screen deleted-worktrees view is open. Opened from the
    *  sidebar header; scoped to the active project when rendered. */
   stoppedOverlayOpen: boolean
@@ -797,6 +817,17 @@ function openSpecialPane(s: UiState, worktreeId: string, target: string): Partia
 
 const initialSelection = loadSelection()
 
+/**
+ * Whether the window-level shortcut listeners must leave a keypress alone:
+ * the settings pane is recording a rebind, or the create dialog is open. In
+ * the dialog, Alt+N would remount it over what was typed, Alt+D would put a
+ * stop behind it one Enter away, and on macOS Option+N / Option+D are how a
+ * prompt gets its ñ and ∂.
+ */
+export function shortcutsSuspended(state: Pick<UiState, 'recordingShortcut' | 'createWorktreeDialog'>): boolean {
+  return state.recordingShortcut || state.createWorktreeDialog !== null
+}
+
 export const useUiStore = create<UiState>((set) => ({
   activeProjectSlug: initialSelection.projectSlug,
   selectedWorktreeId: initialSelection.worktreeId,
@@ -841,6 +872,9 @@ export const useUiStore = create<UiState>((set) => ({
   })),
   closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null, settingsFocusProject: null }),
   setSettingsSection: (section) => set({ settingsSection: section }),
+  createWorktreeDialog: null,
+  openCreateWorktree: (opts) => set({ createWorktreeDialog: opts }),
+  closeCreateWorktree: () => set({ createWorktreeDialog: null }),
   stoppedOverlayOpen: false,
   stoppedOverlayFocus: null,
   openStoppedOverlay: (worktreeId) => set({

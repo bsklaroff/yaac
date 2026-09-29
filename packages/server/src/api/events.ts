@@ -1,4 +1,10 @@
-import { listActiveWorktrees, listProvisioning, listWorktreeGroups } from '#domain/worktrees'
+import {
+  listActiveWorktrees,
+  listHeldWorktrees,
+  listProvisioning,
+  listQueuedWorktrees,
+  listWorktreeGroups,
+} from '#domain/worktrees'
 import { listProjects } from '#domain/projects'
 import { worktreeDriver } from '#drivers/driver'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#domain/auth'
@@ -17,12 +23,16 @@ export interface WsLike {
  * connecting client needs zero follow-up round-trips.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
-  const [active, worktreeGroups, projects, planUsage, codexPlanUsage] = await Promise.all([
+  const [
+    active, worktreeGroups, projects, planUsage, codexPlanUsage, queuedWorktrees, heldWorktrees,
+  ] = await Promise.all([
     listActiveWorktrees(),
     listWorktreeGroups(),
     listProjects(),
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
+    listQueuedWorktrees(),
+    listHeldWorktrees(),
   ])
   const imageBuilds = worktreeDriver().listImageBuilds()
   // A worktree with a provisioning entry is mid-create/mid-restart (or
@@ -44,6 +54,8 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     // `worktreeCount` is what ProjectSummary still calls it on the wire.
     projects: projects.map(({ worktreeCount, ...p }) => ({ ...p, worktreeCount: worktreeCount })),
     provisioning,
+    queuedWorktrees,
+    heldWorktrees,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     planUsage,

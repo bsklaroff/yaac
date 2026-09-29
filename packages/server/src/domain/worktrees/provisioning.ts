@@ -41,6 +41,10 @@ interface ProvisioningEntry {
   /** The prewarmed spare this create claimed — a different id from the
    *  row's, since a running pod can't be re-keyed. */
   claimedId?: string
+  /** The reference branch a create asked for, when it named one — what a
+   *  worktree queued after this one, before its row exists, defaults to. Not
+   *  on the wire. */
+  branch?: string
   startedAt: number
   /** Monotonic insertion order, the sort tiebreak. `startedAt` (a wall-clock
    *  ms read) can tie or straddle a millisecond between two back-to-back
@@ -64,6 +68,7 @@ export function registerProvisioning(input: {
   groupId?: string
   model?: string
   modelName?: string
+  branch?: string
 }): void {
   entries.set(input.worktreeId, {
     worktreeId: input.worktreeId,
@@ -74,6 +79,7 @@ export function registerProvisioning(input: {
     ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
+    ...(input.branch !== undefined ? { branch: input.branch } : {}),
     startedAt: Date.now(),
     seq: nextSeq++,
   })
@@ -250,6 +256,30 @@ export async function runProvisioned<T>(
     // dropping it here would release a waiter into the middle of that one.
     if (runs.get(worktreeId) === settled) runs.delete(worktreeId)
     settle()
+  }
+}
+
+/**
+ * A create still in flight under its own id — not failed, and not handing a
+ * claimed spare over in its place, so the id it was registered under IS the
+ * worktree's. Answers what it asked for, which a worktree queued after it
+ * inherits before the create has recorded its row.
+ */
+export function inFlightCreate(worktreeId: string): {
+  projectSlug: string
+  tool: AgentTool
+  model?: string
+  branch?: string
+} | undefined {
+  const e = entries.get(worktreeId)
+  if (e === undefined || e.kind !== 'create' || e.error !== undefined || e.claimedId !== undefined) {
+    return undefined
+  }
+  return {
+    projectSlug: e.projectSlug,
+    tool: e.tool,
+    ...(e.model !== undefined ? { model: e.model } : {}),
+    ...(e.branch !== undefined ? { branch: e.branch } : {}),
   }
 }
 

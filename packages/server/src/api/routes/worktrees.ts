@@ -32,15 +32,15 @@ import {
   runMamaCommand,
   toAgentSessionEntry,
   writeWorktreeFile,
-  type WorktreeCreateOptions,
 } from '#domain/worktrees'
 import {
-  createWorktree,
-  resolveCreate,
+  discardQueuedWorktree,
+  queueWorktree,
+  runQueuedWorktree,
+  startWorktree,
   stopWorktree,
-  tryClaimPrewarmed,
+  updateQueuedWorktree,
 } from '#domain/worktrees'
-import { modelDisplayName } from '#domain/auth'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 import {
   createWorktreeGroup,
@@ -55,7 +55,6 @@ import {
   setWorktreeGroupPinned,
   setWorktreeTitle,
 } from '#db'
-import { recordProjectCreate } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { requireDriverFeature } from '#http'
 import { worktreeDriver } from '#drivers/driver'
@@ -66,13 +65,24 @@ import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 // truncate it on the way to the table, and let two distinct long names
 // sharing a prefix resolve to one group.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { MODEL_RE, PERMISSION_MODES, type AgentTool } from '@yaac/shared/types'
+import {
+  AGENT_MODES,
+  AGENT_TOOLS,
+  MAX_PROMPT_LENGTH,
+  MODEL_RE,
+  PERMISSION_MODES,
+} from '@yaac/shared/types'
 
-/** A provisioning row's model fields: the id, and what it is called. */
-function modelLabel(tool: AgentTool, model: string | undefined): { model?: string; modelName?: string } {
-  if (model === undefined) return {}
-  const modelName = modelDisplayName(tool, model)
-  return modelName !== undefined ? { model, modelName } : { model }
+// A queued worktree's settings, as both queue writes take them. Each field
+// present replaces what would otherwise be resolved; none can be null,
+// because an entry never holds a setting it has not decided.
+const queuedSettings = {
+  prompt: z.string().min(1).max(MAX_PROMPT_LENGTH),
+  tool: z.enum(AGENT_TOOLS).optional(),
+  model: z.string().regex(MODEL_RE).max(100).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
+  permissionMode: z.enum(PERMISSION_MODES).optional(),
+  branch: z.string().min(1).max(255).optional(),
 }
 
 export const worktreeApp = new Hono()
@@ -132,69 +142,26 @@ export const worktreeApp = new Hono()
       const body = c.req.valid('json')
       const worktreeId = body.worktreeId ?? randomUUID()
       return streamProvisioned(c, worktreeId, async (onProgress) => {
+        // Resolved before anything is provisioned, so a typo'd group is not a
+        // half-built worktree.
         const groupId = body.group === undefined
           ? undefined
           : (await resolveGroup(body.project, body.group, { create: true })).groupId
-
-        // Every choice resolved here, once: what the request named, else what
-        // this project last used for that agent, else the fallback — the same
-        // answer the webapp's create form shows before submit
-        // (`resolveCreate`). An unnamed mode stays `tui`: only the webapp can
-        // present a chat pane, and it sends the one it remembers.
-        const setup = await resolveCreate(body.project, {
+        return await startWorktree({
+          projectSlug: body.project,
+          worktreeId,
           ...(body.tool !== undefined ? { tool: body.tool } : {}),
           ...(body.model !== undefined ? { model: body.model } : {}),
           ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
           ...(body.mode !== undefined ? { mode: body.mode } : {}),
-        })
-        const { tool } = setup
-        // A person asked for this; it becomes the project's next defaults, from
-        // any client. Only the fields the request named are written, so a
-        // create that took a resolved default never overwrites a pick — and
-        // the agent itself is always recorded, as the one this project was
-        // last created with.
-        await recordProjectCreate(body.project, tool, {
-          ...(body.model !== undefined ? { model: body.model } : {}),
-          ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
-          ...(body.mode !== undefined ? { mode: body.mode } : {}),
-        })
-
-        // Register before the long await so the row shows up instantly and
-        // survives a browser reload (the stream keeps running server-side).
-        registerProvisioning({
-          worktreeId,
-          projectSlug: body.project,
-          tool,
-          kind: 'create',
-          ...(groupId !== undefined ? { groupId } : {}),
-          ...modelLabel(tool, setup.model),
-        })
-
-        // Fast path: claim a prewarmed spare. Spares are warmed as this
-        // project's untouched create, so the usual claim hands the running
-        // agent over as-is; one warmed with a different agent, model or
-        // posture has its agent respawned, and one in the other mode is
-        // passed over (see `tryClaimPrewarmed`). A claim returns the spare's
-        // own id, which lists in place of this row once the create resolves.
-        const claimed = await tryClaimPrewarmed(body.project, worktreeId, setup, onProgress, {
           ...(body.branch !== undefined ? { branch: body.branch } : {}),
           ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
-        })
-        if (claimed) return claimed
-
-        const opts: WorktreeCreateOptions = {
-          worktreeId,
-          onProgress,
-          tool, // resolved default applies when --tool was omitted
-        }
-        if (body.branch) opts.branch = body.branch
-        if (body.prompt !== undefined) opts.initialPrompt = body.prompt
-        if (setup.model !== undefined) opts.model = setup.model
-        opts.mode = setup.mode
-        opts.permissionMode = setup.permissionMode
-        if (groupId !== undefined) opts.groupId = groupId
-        return await createWorktree(body.project, opts)
+          // A person asked for this; it becomes the project's next defaults,
+          // from any client.
+          rememberDefaults: true,
+          claimSpare: true,
+        }, onProgress)
       })
     },
   )
@@ -275,6 +242,51 @@ export const worktreeApp = new Hono()
       await recordAllDeathsSeen(c.req.valid('json').projectSlug)
       return c.body(null, 204)
     },
+  )
+  // Queued worktrees (docs/queued-worktrees.md): create requests saved to
+  // run when their parent — a worktree, or another entry — stops naturally.
+  // JSON rather than a provisioning stream: nothing about queueing is slow,
+  // and a Run now's progress is its provisioning row in the snapshot. The
+  // user's own surface, so no permission ceiling applies here; that limits
+  // agents (`yaac-mama queue`).
+  .post(
+    '/queue/create',
+    zv('json', z.object({
+      project: z.string().min(1),
+      // A worktree id or a queued entry's id (or a unique prefix of either).
+      parent: z.string().min(1),
+      ...queuedSettings,
+    })),
+    async (c) => {
+      const { project, ...request } = c.req.valid('json')
+      return c.json(await queueWorktree(project, request, 'user'))
+    },
+  )
+  .post(
+    '/queue/update',
+    zv('json', z.object({
+      id: z.string().min(1),
+      parent: z.string().min(1).optional(),
+      ...queuedSettings,
+      prompt: queuedSettings.prompt.optional(),
+    })),
+    async (c) => {
+      const { id, ...patch } = c.req.valid('json')
+      return c.json(await updateQueuedWorktree(id, patch))
+    },
+  )
+  .post(
+    '/queue/discard',
+    zv('json', z.object({ id: z.string().min(1) })),
+    async (c) => {
+      await discardQueuedWorktree(c.req.valid('json').id)
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/queue/run',
+    zv('json', z.object({ id: z.string().min(1) })),
+    async (c) => c.json(await runQueuedWorktree(c.req.valid('json').id)),
   )
   // The sidebar-group routes. All take an explicit projectSlug (like
   // /mark-death-seen) rather than resolving a container: a group's members can

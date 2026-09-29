@@ -26,7 +26,7 @@ import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { ACP_ADAPTERS, AGENT_TOOLS, toolSupportsPermissionMode } from '@yaac/shared/types'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
-import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
+import type { AgentSessionEntry, AgentTool, ServerSnapshot } from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
 
@@ -1812,4 +1812,125 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
       watch.ws.close()
     }
   }, 180_000)
+})
+
+/**
+ * Queued worktrees (docs/queued-worktrees.md): what an agent or the user
+ * queues after a worktree starts when that worktree is STOPPED, and waits
+ * under it when it dies instead.
+ *
+ * Last in the file: both cases destroy the parents they create.
+ */
+describe.skipIf(!CAN_RUN)('queued worktrees', () => {
+  /** `yaac-mama` as the worktree `id` runs it, with its own credentials. */
+  async function mamaAs(id: string, ...args: string[]): Promise<string> {
+    const pid = (await tmux(id, 'display-message', '-p', '-t', 'yaac', '#{pane_pid}')).trim()
+    const env = Object.fromEntries((await fs.readFile(`/proc/${pid}/environ`, 'utf8'))
+      .split('\0').filter((e) => e.includes('=')).map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]))
+    const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+    const { stdout } = await execFileAsync('sh', ['-c',
+      `YAAC_MAMA_URL='${env.YAAC_MAMA_URL}' YAAC_MAMA_TOKEN='${env.YAAC_MAMA_TOKEN}' `
+      + `${path.join(process.cwd(), 'worktree-bin', 'yaac-mama')} ${quoted}`,
+    ])
+    return stdout.trim()
+  }
+
+  it('starts the top of a chain when its parent is stopped, with its prompt delivered', async () => {
+    const watch = collectSnapshots(server.lock.port, server.lock.secret)
+    await watch.opened
+    const latest = (): ServerSnapshot => {
+      const snap = watch.latest()
+      if (!snap) throw new Error('no snapshot yet')
+      return snap
+    }
+    let childWorktree: string | undefined
+    try {
+      // Named, not left to the project's remembered default: earlier cases in
+      // this file create with other postures, and this one's is the ceiling
+      // asserted below. Asking above it queues nothing.
+      const parent = await createWorktree('--permission-mode', 'accept-edits')
+      await expect(mamaAs(parent, 'queue', '--tool', 'codex', '--permission-mode', 'bypass', 'x'))
+        .rejects.toThrow(/more permissive than this worktree's own \('accept-edits'\)/)
+      // The fake codex reports its conversation only once a prompt has been
+      // pasted into it, which is what proves the prompt arrived; it logs its
+      // launch arguments, which is where the model and posture show.
+      const child = await mamaAs(
+        parent, 'queue', '--tool', 'codex', '--model', 'gpt-5.5', '--permission-mode', 'read-only', 'hello',
+      )
+      const grandchild = await mamaAs(parent, 'queue', '--worktree', child.slice(0, 8), 'after that')
+      expect(child).toMatch(/^[0-9a-f-]{36}$/)
+      expect(await mamaAs(parent, 'list')).toContain('after that')
+
+      const { exitCode } = await runYaac(serverEnv, 'worktree', 'stop', parent)
+      expect(exitCode).toBe(0)
+
+      await vi.waitFor(() => {
+        childWorktree = latest().worktrees.find((w) => w.prompt === 'hello')?.worktreeId
+        expect(childWorktree).toBeDefined()
+      }, { timeout: 60_000, interval: 250 })
+      const log = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'meta', `${childWorktree}.session-starts.jsonl`)
+      await vi.waitFor(async () => {
+        expect(await fs.readFile(log, 'utf8').catch(() => '')).toMatch(/"id":"thread-\d+"/)
+      }, { timeout: 30_000, interval: 250 })
+      const launches = await fs.readFile(
+        path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `launches-${childWorktree}`), 'utf8',
+      )
+      expect(launches).toContain('--sandbox read-only')
+      expect(launches).toContain('--model gpt-5.5')
+
+      // The grandchild did not start: it waits on the worktree the child
+      // became, for that one's own stop.
+      const entry = latest().queuedWorktrees.find((q) => q.id === grandchild)
+      expect(entry).toMatchObject({ parentWorktreeId: childWorktree })
+      await fetch(`${origin()}/worktree/queue/discard`, {
+        method: 'POST',
+        headers: { ...authHeader(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: grandchild }),
+      })
+    } finally {
+      watch.ws.close()
+      if (childWorktree !== undefined) await runYaac(serverEnv, 'worktree', 'stop', childWorktree)
+    }
+  }, 240_000)
+
+  it('keeps a dead parent\'s child queued and the parent held, until the child is discarded', async () => {
+    const watch = collectSnapshots(server.lock.port, server.lock.secret)
+    await watch.opened
+    const latest = (): ServerSnapshot => {
+      const snap = watch.latest()
+      if (!snap) throw new Error('no snapshot yet')
+      return snap
+    }
+    try {
+      const parent = await createWorktree()
+      const res = await fetch(`${origin()}/worktree/queue/create`, {
+        method: 'POST',
+        headers: { ...authHeader(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: SLUG, parent, prompt: 'never on a crash' }),
+      })
+      expect(res.status).toBe(200)
+      const { id } = await res.json() as { id: string }
+
+      // Out of band: the agent's tmux going away is a death, not a stop.
+      await tmux(parent, 'kill-server').catch(() => undefined)
+      // The reaper notices on its resync, so this can take a minute or more.
+      await vi.waitFor(() => {
+        expect(latest().heldWorktrees.map((h) => h.worktreeId)).toContain(parent)
+      }, { timeout: 180_000, interval: 500 })
+      expect(latest().queuedWorktrees.map((q) => q.id)).toContain(id)
+      expect(latest().worktrees.find((w) => w.prompt === 'never on a crash')).toBeUndefined()
+
+      const discarded = await fetch(`${origin()}/worktree/queue/discard`, {
+        method: 'POST',
+        headers: { ...authHeader(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      expect(discarded.status).toBe(204)
+      await vi.waitFor(() => {
+        expect(latest().heldWorktrees.map((h) => h.worktreeId)).not.toContain(parent)
+      }, { timeout: 10_000, interval: 250 })
+    } finally {
+      watch.ws.close()
+    }
+  }, 300_000)
 })

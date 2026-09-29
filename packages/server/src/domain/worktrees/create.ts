@@ -767,11 +767,14 @@ export interface CreateSetup {
  * webapp that sends the remembered one. The prewarm pool passes
  * `modeFromMemory`, because the webapp is who claims its spares.
  *
- * Only for callers speaking for a person, or warming for one. Everything that
- * reaches `createWorktree` directly — the spawn policy, a restart — resolves
- * nothing from memory (see `launchPermissionMode`). A named posture the tool
- * lacks is refused rather than nudged; a remembered one it lacks falls
- * through to the default, since it was a preference rather than a demand.
+ * Every create path comes through here (`startWorktree`), but only a person
+ * leaves fields to memory: the spawn policy and a queued launch name their
+ * posture and mode outright, so all memory can supply them is a model the
+ * project last chose for that agent. A restart reaches `createWorktree`
+ * directly and resolves nothing from memory (see `launchPermissionMode`). A
+ * named posture the tool lacks is refused rather than nudged; a remembered
+ * one it lacks falls through to the default, since it was a preference
+ * rather than a demand.
  */
 export async function resolveCreate(
   projectSlug: string,
@@ -932,6 +935,13 @@ export async function createWorktree(
   }
 
   const worktreeId = options.worktreeId ?? crypto.randomUUID()
+  // Per-create branch wins over the project's configured default; both fall
+  // back to the remote default branch. Not resolved for a resume, which
+  // reuses its checkout as it stands.
+  const requestedBranch = options.branch ?? config.referenceBranch
+  const refBranch = options.resume === true
+    ? undefined
+    : requestedBranch ?? await getDefaultBranch(repo)
   // The conversations this create will launch, decided here rather than at
   // agent-command time so they can be recorded alongside the worktree row.
   // A worktree's tool and founding ask are read off its first conversation,
@@ -970,13 +980,16 @@ export async function createWorktree(
   // a reap tell it from a stopped worktree once its pod is gone. Every
   // listing filters it out until the claim clears the flag.
   //
-  // `baseBranch` is deliberately not here: it comes from the worktree leg
-  // that runs concurrently with the pod boot, and waiting for it would undo
-  // that overlap. It is reported at the end.
+  // The branch it forks from is recorded with it: a worktree queued after
+  // this one defaults to it, and may be queued while this one is still
+  // provisioning. Every input is a local read — `getDefaultBranch` reads
+  // `origin/HEAD` off the clone, which the fetch below does not move — so
+  // nothing waits on the network. A resume keeps what it recorded.
   await applyWorktreeEvent({
     type: 'worktree-created',
     projectSlug,
     worktreeId,
+    ...(refBranch !== undefined ? { baseBranch: refBranch } : {}),
     permissionMode,
     mode,
     ...(options.model !== undefined ? { model: options.model } : {}),
@@ -1100,27 +1113,26 @@ export async function createWorktree(
       emit(`Reusing existing worktree at ${wtDir}`, options)
       return {}
     }
-    // Per-create branch wins over the project's configured default; both
-    // fall back to the remote default branch. An explicitly requested
-    // branch must exist as a remote-tracking ref (fetchOrigin above brought
-    // down all heads, so a just-pushed branch is already visible).
-    const requested = options.branch ?? config.referenceBranch
-    if (requested && !(await remoteBranchExists(repo, requested))) {
+    // An explicitly requested branch must exist as a remote-tracking ref
+    // (fetchOrigin above brought down all heads, so a just-pushed branch is
+    // already visible).
+    if (requestedBranch && !(await remoteBranchExists(repo, requestedBranch))) {
       const source = options.branch
         ? 'the requested branch'
         : 'referenceBranch in yaac-config.json'
       throw new ServerError(
         'VALIDATION',
-        `branch "${requested}" not found on origin — check ${source}.`,
+        `branch "${requestedBranch}" not found on origin — check ${source}.`,
       )
     }
-    const refBranch = requested ?? await getDefaultBranch(repo)
-    emit(`Creating worktree from ${refBranch}...`, options)
+    // A resume whose checkout is gone recreates it from the default.
+    const base = refBranch ?? requestedBranch ?? await getDefaultBranch(repo)
+    emit(`Creating worktree from ${base}...`, options)
     // addWorktree checks out into the pre-created dir whether or not it is
     // empty; nothing pod-side reads /workspace before launchWithSetup
     // joins this task.
-    await addWorktree(repo, wtDir, `agent/${worktreeId}`, `origin/${refBranch}`)
-    return { upstreamStartPoint: `origin/${refBranch}` }
+    await addWorktree(repo, wtDir, `agent/${worktreeId}`, `origin/${base}`)
+    return { upstreamStartPoint: `origin/${base}` }
   })()
   // Joined inside launchWithSetup (or surfaced by the retry loop); this
   // marker only keeps a failure in another leg from turning a still-running
@@ -1791,23 +1803,6 @@ export async function createWorktree(
     // Unreachable: the loop leaves only by `break` with a handle, or by
     // throwing on its last attempt.
     throw new ServerError('INTERNAL', 'worktree launch reported no handle')
-  }
-
-  // The branch the worktree forked from, now that the (concurrent) checkout
-  // has resolved it. A separate report from the one above so recording the
-  // worktree never had to wait on provisioning; best-effort, since a missing
-  // base costs a sidebar chip and nothing else. A resume keeps what it
-  // already recorded — its worktree was left as-is.
-  if (!options.prewarm) {
-    const { upstreamStartPoint } = await worktreeTask
-    if (upstreamStartPoint !== undefined) {
-      await applyWorktreeEvent({
-        type: 'base-branch-resolved',
-        projectSlug,
-        worktreeId,
-        baseBranch: upstreamStartPoint.replace(/^origin\//, ''),
-      })
-    }
   }
 
   // Not for a spare: nothing attaches to one until it is claimed (spares have

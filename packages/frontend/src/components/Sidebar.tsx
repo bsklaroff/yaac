@@ -16,7 +16,9 @@ import {
 } from '#lib/store'
 import type {
   GitAuthFailure,
+  HeldWorktreeEntry,
   ProvisioningWorktreeEntry,
+  QueuedWorktreeEntry,
   WorktreeGroupSummary,
   WorktreeListEntry,
 } from '@yaac/shared/types'
@@ -126,6 +128,8 @@ export function Sidebar({
   worktrees,
   groups,
   provisioning,
+  queued,
+  held,
   connected,
   gitAuthFailures,
 }: {
@@ -137,6 +141,10 @@ export function Sidebar({
   /** The active project's sidebar groups. */
   groups: WorktreeGroupSummary[]
   provisioning: ProvisioningWorktreeEntry[]
+  /** The active project's queued worktrees, and the stopped worktrees they
+   *  still wait on. */
+  queued: QueuedWorktreeEntry[]
+  held: HeldWorktreeEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
   gitAuthFailures: GitAuthFailure[]
@@ -200,6 +208,8 @@ export function Sidebar({
           worktrees={worktrees}
           groups={groups}
           provisioning={provisioning}
+          queued={queued}
+          held={held}
         />
       </div>
 

@@ -72,7 +72,7 @@ function altShift(code: string): Chord {
  */
 export const SHORTCUTS: ShortcutDef[] = [
   { id: 'new-worktree', label: 'New worktree',
-    description: 'Create a worktree in the active project.', defaultChord: alt('KeyN') },
+    description: 'Open the create dialog in the active project, prompt focused.', defaultChord: alt('KeyN') },
   { id: 'new-shell', label: 'New shell',
     description: 'Open a scratch-shell terminal in the selected worktree.', defaultChord: alt('KeyT') },
   { id: 'delete-worktree', label: 'Stop worktree',

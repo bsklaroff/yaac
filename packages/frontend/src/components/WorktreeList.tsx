@@ -1,4 +1,7 @@
 import {
+  createContext,
+  Fragment,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -11,13 +14,15 @@ import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
 import { Dialog } from '@base-ui/react/dialog'
+import { Menu } from '@base-ui/react/menu'
 import {
   ChevronIcon,
   CloseIcon,
-  GroupAddIcon,
   GroupRemoveIcon,
   LoadingIcon,
+  MoreIcon,
   PinIcon,
+  QueuedIcon,
   RenameIcon,
   RestartIcon,
   TOOL_LABEL,
@@ -25,6 +30,7 @@ import {
 import { agentLabel, worktreeModel } from '#lib/agentLabel'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
+import { StopWorktreeDialog } from '#components/StopWorktreeDialog'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { dismissProvisioning, restartWorktree } from '#lib/createWorktree'
@@ -37,6 +43,8 @@ import {
 } from '#lib/groupApi'
 import { useInlineEdit, useInlineRename } from '#lib/useInlineRename'
 import { getStoppedWorktrees } from '#lib/stoppedApi'
+import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
+import { clip, queuedChildren, queuedTitle } from '#lib/queued'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { useIsMobile } from '#lib/viewport'
@@ -47,8 +55,10 @@ import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 // server will not keep.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import type {
+  HeldWorktreeEntry,
   StoppedWorktreeEntry,
   ProvisioningWorktreeEntry,
+  QueuedWorktreeEntry,
   WorktreeGroupSummary,
   WorktreeListEntry,
 } from '@yaac/shared/types'
@@ -92,8 +102,34 @@ export interface SidebarLayout {
   provisioning: ProvisioningWorktreeEntry[]
   /** Ungrouped worktrees, newest first. Terminating rows sit in place. */
   defaultList: WorktreeListEntry[]
+  /** Ungrouped held worktrees — stopped, with queued worktrees still waiting
+   *  on them — newest first, as stopped rows after the live ones. */
+  defaultHeld: StoppedWorktreeEntry[]
   /** The groups that are shown, newest group first. */
   groups: SidebarGroupSection[]
+  /** Queued worktrees by the id they wait on, each nested under that row. */
+  queuedChildren: Map<string, QueuedWorktreeEntry[]>
+  /** Queued worktrees with no row on screen to nest under — a parent whose
+   *  own create failed — shown at the top of the list. */
+  orphans: QueuedWorktreeEntry[]
+}
+
+/** A held worktree as the stopped row that draws it. */
+function heldAsStopped(h: HeldWorktreeEntry): StoppedWorktreeEntry {
+  return {
+    worktreeId: h.worktreeId,
+    projectSlug: h.projectSlug,
+    tool: h.tool,
+    createdAt: h.stoppedAt,
+    stoppedAt: h.stoppedAt,
+    ...(h.prompt !== undefined ? { prompt: h.prompt } : {}),
+    ...(h.title !== undefined ? { title: h.title } : {}),
+    agentSessions: [],
+    ...(h.deathReason !== undefined ? { deathReason: h.deathReason } : {}),
+    ...(h.deathDetail !== undefined ? { deathDetail: h.deathDetail } : {}),
+    seen: true,
+    ...(h.groupId !== undefined ? { groupId: h.groupId } : {}),
+  }
 }
 
 /**
@@ -122,18 +158,31 @@ export interface SidebarLayout {
  * group are rendered, the rest live in the "Stopped worktrees" overlay. A
  * worktree naming a group that no longer exists falls back to the default
  * list, which is what a snapshot arriving mid-delete looks like.
+ *
+ * A `held` worktree — stopped, with queued worktrees still waiting on it —
+ * is the exception: it keeps a stopped row in its normal place, the default
+ * list included, and holds its group on screen as a live member would, so
+ * what is queued under it stays visible until it has run or been discarded.
+ * Each queued worktree nests under the row it waits on; one whose parent has
+ * no row here goes to the top of the list (`orphans`).
  */
 export function sidebarLayout(
   worktrees: WorktreeListEntry[],
   groups: WorktreeGroupSummary[],
   stopped: StoppedWorktreeEntry[] = [],
   provisioning: ProvisioningWorktreeEntry[] = [],
+  queued: QueuedWorktreeEntry[] = [],
+  held: HeldWorktreeEntry[] = [],
 ): SidebarLayout {
   const known = new Set(groups.map((g) => g.groupId))
   const filedIn = (entry: { groupId?: string }): string | null =>
     entry.groupId !== undefined && known.has(entry.groupId) ? entry.groupId : null
   const live = [...worktrees].sort(byCreatedAt)
-  const ghosts = [...stopped].sort(byCreatedAt)
+  // The stopped listing's row wins over the snapshot's slimmer held entry.
+  const stoppedIds = new Set(stopped.map((d) => d.worktreeId))
+  const heldIds = new Set(held.map((h) => h.worktreeId))
+  const ghosts = [...stopped, ...held.filter((h) => !stoppedIds.has(h.worktreeId)).map(heldAsStopped)]
+    .sort(byCreatedAt)
   // Provisioning rows keep the order they were started in (the caller's merge
   // already sorts them oldest-first): they have no place among the live rows
   // to sort into, and a row moving under the pointer while it provisions is
@@ -146,11 +195,26 @@ export function sidebarLayout(
       members: live.filter((w) => filedIn(w) === group.groupId),
       ghosts: ghosts.filter((d) => filedIn(d) === group.groupId),
     }))
-    .filter((s) => s.group.pinned || s.members.length > 0 || s.provisioning.length > 0)
+    .filter((s) => s.group.pinned || s.members.length > 0 || s.provisioning.length > 0
+      || s.ghosts.some((d) => heldIds.has(d.worktreeId)))
+  const defaultHeld = ghosts.filter((d) => filedIn(d) === null && heldIds.has(d.worktreeId))
+
+  const onScreen = new Set([
+    ...provisioning.map((p) => p.worktreeId),
+    ...live.map((w) => w.worktreeId),
+    ...defaultHeld.map((d) => d.worktreeId),
+    ...sections.flatMap((s) => s.ghosts.map((d) => d.worktreeId)),
+  ])
+  const queuedIds = new Set(queued.map((e) => e.id))
   return {
     provisioning: provisioning.filter((p) => filedIn(p) === null),
     defaultList: live.filter((w) => filedIn(w) === null),
+    defaultHeld,
     groups: sections,
+    queuedChildren: queuedChildren(queued),
+    orphans: queued.filter((e) => e.parentQueuedId !== undefined
+      ? !queuedIds.has(e.parentQueuedId)
+      : e.orphaned === true || !onScreen.has(e.parentWorktreeId ?? '')),
   }
 }
 
@@ -225,12 +289,18 @@ export function WorktreeList({
   worktrees,
   groups,
   provisioning,
+  queued = [],
+  held = [],
 }: {
   projectSlug: string | null
   worktrees: WorktreeListEntry[]
   /** The active project's groups, from the snapshot. */
   groups: WorktreeGroupSummary[]
   provisioning: ProvisioningWorktreeEntry[]
+  /** The active project's queued worktrees, and the stopped worktrees they
+   *  still wait on. */
+  queued?: QueuedWorktreeEntry[]
+  held?: HeldWorktreeEntry[]
 }): JSX.Element {
   // A mid-flight optimistic delete doesn't move a row any more — it greys it
   // where it sits — so the list needs pendingDeleteIds only to keep the
@@ -265,12 +335,24 @@ export function WorktreeList({
     ...(deletedList ?? []),
   ].filter((d) => !activeIds.has(d.worktreeId) && !provisioningIds.has(d.worktreeId))
 
-  const layout = sidebarLayout(worktrees, groups, stopped, provisioning)
-  // Display order of the selectable rows, so a row's × can hand the selection
-  // to the row below it. Same list the Alt+K/J cycle steps through.
+  const layout = sidebarLayout(worktrees, groups, stopped, provisioning, queued, held)
+  // Display order of the selectable rows, so a stop from a row's menu can hand
+  // the selection to the row below it. Same list the Alt+K/J cycle steps through.
   const rowIds = sidebarRowIds(provisioning, worktrees, groups, pendingDeleteIds)
-  const visibleCount = layout.defaultList.length
+  const visibleCount = layout.defaultList.length + layout.defaultHeld.length + layout.orphans.length
     + layout.groups.reduce((n, s) => n + s.members.length + s.ghosts.length, 0)
+  // What a queued row's discard needs to say about the row its children would
+  // move under.
+  const names = new Map<string, QueueParent>([
+    ...provisioning.map((p) => [p.worktreeId, { name: 'New worktree', kind: 'live' }] as const),
+    ...worktrees.map((w) => [w.worktreeId, { name: w.title || w.prompt || 'New worktree', kind: 'live' }] as const),
+    ...held.map((h) => [h.worktreeId, { name: h.title || h.prompt || 'New worktree', kind: 'held' }] as const),
+    ...queued.map((e) => [e.id, { name: queuedTitle(e), kind: 'queued' }] as const),
+  ])
+  const queueContext: QueueContextValue = {
+    children: layout.queuedChildren,
+    parent: (id) => names.get(id) ?? { name: '', kind: 'gone' },
+  }
 
   // --- row drag (move a worktree between the default list and groups) ---
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -379,61 +461,83 @@ export function WorktreeList({
   const shownGroups = layout.groups.map((s) => s.group)
 
   return (
-    <div className="flex-1 overflow-y-auto py-1">
-      {!projectSlug && (
-        <EmptyState
-          compact
-          className="py-10"
-          title="No project selected"
-          description={isMobile
-            ? 'Go back and pick a project.'
-            : 'Pick a project from the rail on the left.'}
-        />
-      )}
-      {projectSlug && visibleCount === 0 && provisioning.length === 0 && (
-        <EmptyState
-          compact
-          className="py-10"
-          title="No worktrees yet"
-          description="Start one with the + above."
-        />
-      )}
-      {layout.provisioning.map((p) => <ProvisioningRow key={p.worktreeId} entry={p} />)}
-
-      {/* The default list is a drop zone in its own right — dragging a row out
-          of a group and onto it files the worktree back under no group. It
-          keeps a placeholder while a drag is in flight so an empty list is
-          still somewhere to drop. */}
-      <div
-        ref={zoneRef(null)}
-        role="group"
-        aria-label="Ungrouped worktrees"
-        className={clsx('py-1', dropTarget(null) && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
-      >
-        {layout.defaultList.map((s) => (
-          <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
-        ))}
-        {drag?.active && layout.defaultList.length === 0 && (
-          <p className="mx-2 rounded-lg border border-dashed border-border px-2.5 py-3 text-center text-xs text-text-faint">
-            Ungrouped
-          </p>
+    <QueueContext.Provider value={queueContext}>
+      <div className="flex-1 overflow-y-auto py-1">
+        {!projectSlug && (
+          <EmptyState
+            compact
+            className="py-10"
+            title="No project selected"
+            description={isMobile
+              ? 'Go back and pick a project.'
+              : 'Pick a project from the rail on the left.'}
+          />
         )}
+        {projectSlug && visibleCount === 0 && provisioning.length === 0 && queued.length === 0 && (
+          <EmptyState
+            compact
+            className="py-10"
+            title="No worktrees yet"
+            description="Start one with the + above."
+          />
+        )}
+        {layout.orphans.map((e) => (
+          <Fragment key={e.id}>
+            <QueuedWorktreeRow entry={e} depth={0} />
+            <QueuedRows parentId={e.id} depth={1} />
+          </Fragment>
+        ))}
+        {layout.provisioning.map((p) => (
+          <Fragment key={p.worktreeId}>
+            <ProvisioningRow entry={p} />
+            <QueuedRows parentId={p.worktreeId} depth={1} />
+          </Fragment>
+        ))}
+
+        {/* The default list is a drop zone in its own right — dragging a row out
+            of a group and onto it files the worktree back under no group. It
+            keeps a placeholder while a drag is in flight so an empty list is
+            still somewhere to drop. */}
+        <div
+          ref={zoneRef(null)}
+          role="group"
+          aria-label="Ungrouped worktrees"
+          className={clsx('py-1', dropTarget(null) && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
+        >
+          {layout.defaultList.map((s) => (
+            <Fragment key={s.worktreeId}>
+              <WorktreeRow worktree={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
+              <QueuedRows parentId={s.worktreeId} depth={1} />
+            </Fragment>
+          ))}
+          {layout.defaultHeld.map((d) => (
+            <Fragment key={d.worktreeId}>
+              <DeletedWorktreeRow entry={d} />
+              <QueuedRows parentId={d.worktreeId} depth={1} />
+            </Fragment>
+          ))}
+          {drag?.active && layout.defaultList.length === 0 && (
+            <p className="mx-2 rounded-lg border border-dashed border-border px-2.5 py-3 text-center text-xs text-text-faint">
+              Ungrouped
+            </p>
+          )}
+        </div>
+
+        {layout.groups.map((section) => (
+          <GroupSection
+            key={section.group.groupId}
+            section={section}
+            shownGroups={shownGroups}
+            drag={rowDrag}
+            rowIds={rowIds}
+            dropTarget={dropTarget(section.group.groupId)}
+            zoneRef={zoneRef(section.group.groupId)}
+          />
+        ))}
+
+        {projectSlug && <StoppedWorktreesButton projectSlug={projectSlug} activeSignature={activeSignature} />}
       </div>
-
-      {layout.groups.map((section) => (
-        <GroupSection
-          key={section.group.groupId}
-          section={section}
-          shownGroups={shownGroups}
-          drag={rowDrag}
-          rowIds={rowIds}
-          dropTarget={dropTarget(section.group.groupId)}
-          zoneRef={zoneRef(section.group.groupId)}
-        />
-      ))}
-
-      {projectSlug && <StoppedWorktreesButton projectSlug={projectSlug} activeSignature={activeSignature} />}
-    </div>
+    </QueueContext.Provider>
   )
 }
 
@@ -622,11 +726,24 @@ function GroupSection({
           {/* Leads the section, as provisioning rows lead the whole list: a
               worktree being restarted has no live row to sit next to, and its
               placeholder belongs where the worktree is filed. */}
-          {provisioning.map((p) => <ProvisioningRow key={p.worktreeId} entry={p} />)}
-          {members.map((s) => (
-            <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={drag} rowIds={rowIds} />
+          {provisioning.map((p) => (
+            <Fragment key={p.worktreeId}>
+              <ProvisioningRow entry={p} />
+              <QueuedRows parentId={p.worktreeId} depth={1} />
+            </Fragment>
           ))}
-          {ghosts.map((d) => <DeletedWorktreeRow key={d.worktreeId} entry={d} />)}
+          {members.map((s) => (
+            <Fragment key={s.worktreeId}>
+              <WorktreeRow worktree={s} shownGroups={shownGroups} drag={drag} rowIds={rowIds} />
+              <QueuedRows parentId={s.worktreeId} depth={1} />
+            </Fragment>
+          ))}
+          {ghosts.map((d) => (
+            <Fragment key={d.worktreeId}>
+              <DeletedWorktreeRow entry={d} />
+              <QueuedRows parentId={d.worktreeId} depth={1} />
+            </Fragment>
+          ))}
         </Collapsible.Panel>
       </Collapsible.Root>
     </div>
@@ -636,7 +753,7 @@ function GroupSection({
 /**
  * Worktree title that fills the row's width, truncating with an ellipsis when it
  * doesn't fit. On row hover it un-clips and marquee-scrolls the full text (the
- * row has already inset its right edge to clear the delete ×). The scroll
+ * row has already inset its right edge to clear its actions menu). The scroll
  * distance is measured live at the hovered width, so titles that do fit stay
  * put and the animation always reveals exactly the hidden tail.
  */
@@ -695,6 +812,7 @@ function WorktreeRow({
   const selectWorktree = useUiStore((s) => s.selectWorktree)
   const readWaiting = useUiStore((s) => s.readWaiting)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [grouping, setGrouping] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -706,9 +824,9 @@ function WorktreeRow({
     handleKeyDown: handleRenameKeyDown,
     handleBlur: handleRenameBlur,
   } = useInlineRename(worktree.worktreeId, worktree.title || worktree.prompt || '')
-  // Touch has no hover, so the row's overlay actions (rename, group, delete)
-  // are always shown on mobile and the marquee never runs — a long title simply
-  // stays truncated, and the pane header shows it in full.
+  // Touch has no hover, so the row's actions menu is always shown on mobile
+  // and the marquee never runs — a long title simply stays truncated, and the
+  // pane header shows it in full.
   const isMobile = useIsMobile()
   const unread = isUnreadWaiting(worktree, readWaiting)
   // The container is being torn down — server-marked, or an optimistic delete
@@ -724,7 +842,7 @@ function WorktreeRow({
   }
 
   // A stopping row is a non-interactive, greyed placeholder: no pulse, no
-  // unread bubble, no delete × — just a spinner and a "stopping…" line. It
+  // unread bubble, no actions menu — just a spinner and a "stopping…" line. It
   // vanishes when the snapshot drops the worktree.
   if (stopping) {
     return (
@@ -816,10 +934,9 @@ function WorktreeRow({
             )}
           >
             {/* Title fills the row; only on hover does it inset to clear the
-                rename + group + delete buttons and marquee-scroll when it's too
-                long to fit. On mobile those buttons never hide, so the inset
-                is permanent. */}
-            <span className="flex items-center gap-2 group-hover:pr-20 max-md:pr-24">
+                actions menu and marquee-scroll when it's too long to fit. On
+                mobile the menu never hides, so the inset is permanent. */}
+            <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
               {/* Braille spinner: the worktree's agent is actively running. The
                   cycling glyph reads as "working" and can't be mistaken for the
                   round unread bubble below (which is a solid, still dot). */}
@@ -843,7 +960,7 @@ function WorktreeRow({
             {metaLine}
           </button>
 
-          {/* Overlaid as a sibling for the same reason as the delete × below:
+          {/* Overlaid as a sibling for the same reason as the actions menu:
               the badge is a button and can't nest inside the row button. The
               wrapper is pointer-inert so only the badge itself takes clicks. */}
           {worktree.blockedHosts.length > 0 && (
@@ -857,46 +974,25 @@ function WorktreeRow({
             </span>
           )}
 
-          {/* Overlaid as siblings (not nested in the row button) and pointer-inert
-              until hover, so they can't swallow clicks meant for selecting the row.
-              Touch has no hover: below md they are always live and always visible,
-              with a bigger target. Also revealed on focus-visible, so keyboard
-              users can see and reach them without a mouse. */}
-          <button
-            onClick={startRename}
-            title="Rename worktree"
-            aria-label="Rename worktree"
-            className="absolute right-14 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-              group-hover:pointer-events-auto group-hover:opacity-100
-              focus-visible:pointer-events-auto focus-visible:opacity-100
-              focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent
-              max-md:right-16 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-          >
-            <RenameIcon size={13} />
-          </button>
-          <button
-            onClick={() => setGrouping(true)}
-            title="Add to group"
-            aria-label="Add to group"
-            className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-              group-hover:pointer-events-auto group-hover:opacity-100
-              max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-          >
-            <GroupAddIcon size={13} />
-          </button>
-          <button
-            onClick={() => setConfirmDelete(true)}
-            title="Stop worktree"
-            aria-label="Stop worktree"
-            className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-              group-hover:pointer-events-auto group-hover:opacity-100
-              max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-          >
-            <CloseIcon size={14} />
-          </button>
+          {/* Overlaid as a sibling (not nested in the row button) and
+              pointer-inert until hover, so it can't swallow clicks meant for
+              selecting the row. Touch has no hover: below md it is always live
+              and visible, with a bigger target. */}
+          <RowMenu
+            label="Worktree actions"
+            items={[
+              { label: 'Rename', onSelect: startRename },
+              { label: 'Move to group…', onSelect: () => setGrouping(true) },
+              {
+                label: 'Queue worktree after this…',
+                onSelect: () => openCreateWorktree({
+                  projectSlug: worktree.projectSlug, parent: worktree.worktreeId, focus: 'prompt',
+                }),
+              },
+              'separator',
+              { label: 'Stop…', onSelect: () => setConfirmDelete(true) },
+            ]}
+          />
         </>
       )}
 
@@ -906,12 +1002,9 @@ function WorktreeRow({
         worktree={worktree}
         shownGroups={shownGroups}
       />
-      <ConfirmDialog
-        open={confirmDelete}
+      <StopWorktreeDialog
+        worktree={confirmDelete ? worktree : null}
         onOpenChange={setConfirmDelete}
-        title="Stop worktree?"
-        description="Stops and removes the worktree's container. The worktree history and worktree will be saved, and can be restarted."
-        confirmLabel="Stop"
         onConfirm={onConfirmDelete}
       />
     </div>
@@ -1122,7 +1215,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
 
       {/* Same overlay-button pattern as live rows: leave the group on the left
           of the action slot, which here restarts instead of deletes. */}
-      <button
+      {entry.groupId !== undefined && <button
         onClick={ungroup}
         title="Remove from group"
         aria-label="Remove from group"
@@ -1132,7 +1225,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
           max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
       >
         <GroupRemoveIcon size={13} />
-      </button>
+      </button>}
       <button
         onClick={() => setConfirmRestart(true)}
         title="Restart worktree"
@@ -1155,5 +1248,189 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
         onConfirm={onConfirmRestart}
       />
     </div>
+  )
+}
+
+/** What a queued row's discard confirmation says about the row its children
+ *  would move under. */
+interface QueueParent {
+  name: string
+  kind: 'live' | 'held' | 'queued' | 'gone'
+}
+
+interface QueueContextValue {
+  /** Queued worktrees by the id they wait on. */
+  children: Map<string, QueuedWorktreeEntry[]>
+  parent: (id: string) => QueueParent
+}
+
+/** Handed through the list rather than threaded through every section and
+ *  row: any row — live, provisioning, held, or queued — can have entries
+ *  nested under it. */
+const QueueContext = createContext<QueueContextValue>({
+  children: new Map(),
+  parent: () => ({ name: '', kind: 'gone' }),
+})
+
+/** The queued worktrees waiting on `parentId`, each followed by its own
+ *  chain, one indent step deeper per link. */
+function QueuedRows({ parentId, depth }: { parentId: string; depth: number }): JSX.Element | null {
+  const { children } = useContext(QueueContext)
+  const entries = children.get(parentId)
+  if (entries === undefined) return null
+  return (
+    <>
+      {entries.map((e) => (
+        <Fragment key={e.id}>
+          <QueuedWorktreeRow entry={e} depth={depth} />
+          <QueuedRows parentId={e.id} depth={depth + 1} />
+        </Fragment>
+      ))}
+    </>
+  )
+}
+
+/** Where a discarded entry's children go, and whether they then run. */
+function discardDescription(entry: QueuedWorktreeEntry, context: QueueContextValue): string {
+  const lost = `“${clip(queuedTitle(entry))}” will not run.`
+  const n = context.children.get(entry.id)?.length ?? 0
+  if (n === 0) return lost
+  const them = n === 1 ? 'The worktree queued after it' : `The ${n} worktrees queued after it`
+  const parent = context.parent(entry.parentWorktreeId ?? entry.parentQueuedId ?? '')
+  const name = `“${clip(parent.name, 40)}”`
+  switch (parent.kind) {
+    case 'live': return `${lost} ${them} will start when ${name} stops instead.`
+    case 'queued': return `${lost} ${them} will wait on ${name} instead.`
+    case 'held': return `${lost} ${them} will move under ${name}, which is stopped — they wait there until you run them.`
+    case 'gone': return `${lost} ${them} will wait at the top of the list until you run them.`
+  }
+}
+
+/**
+ * A queued worktree: a create saved to start when the row above it stops
+ * (docs/queued-worktrees.md). Clicking it edits it; its menu runs it now,
+ * edits it, queues another after it, or discards it. A launch that failed
+ * shows why, in place of its settings, until it is run again.
+ *
+ * Not selectable — there is nothing to open until it starts — so it stays
+ * out of the Alt+J/K cycle (`sidebarRowIds`).
+ */
+function QueuedWorktreeRow({ entry, depth }: { entry: QueuedWorktreeEntry; depth: number }): JSX.Element {
+  const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
+  const context = useContext(QueueContext)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const edit = (): void => openCreateWorktree({ projectSlug: entry.projectSlug, editId: entry.id })
+  const report = (e: unknown): void => setError(e instanceof Error ? e.message : String(e))
+  const failure = error ?? entry.launchError
+
+  return (
+    <div className="group relative mx-2" style={{ paddingLeft: depth * 12 }}>
+      <button
+        type="button"
+        onClick={edit}
+        title={entry.prompt}
+        className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition
+          hover:bg-surface-2/60"
+      >
+        <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
+          <QueuedIcon size={11} className="shrink-0 text-text-faint" />
+          <span className="truncate text-text-dim">{queuedTitle(entry)}</span>
+        </span>
+        <span className="flex items-center gap-2 text-xs text-text-faint">
+          {failure !== undefined
+            ? <span className="truncate text-[#d65858]" title={failure}>{failure}</span>
+            : <span className="truncate">{agentLabel(entry.tool, entry)} · queued</span>}
+          {entry.orphaned === true && <span className="ml-auto shrink-0">parent gone</span>}
+        </span>
+      </button>
+
+      <RowMenu
+        label="Queued worktree actions"
+        items={[
+          {
+            label: 'Run now',
+            onSelect: () => {
+              setError(null)
+              void runQueuedWorktree(entry.id).catch(report)
+            },
+          },
+          { label: 'Edit…', onSelect: edit },
+          {
+            label: 'Queue worktree after this…',
+            onSelect: () => openCreateWorktree({ projectSlug: entry.projectSlug, parent: entry.id, focus: 'prompt' }),
+          },
+          'separator',
+          { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
+        ]}
+      />
+
+      <ConfirmDialog
+        open={confirmDiscard}
+        onOpenChange={setConfirmDiscard}
+        title="Discard queued worktree?"
+        description={discardDescription(entry, context)}
+        confirmLabel="Discard"
+        onConfirm={() => {
+          setConfirmDiscard(false)
+          void discardQueuedWorktree(entry.id).catch(report)
+        }}
+      />
+    </div>
+  )
+}
+
+type RowMenuItem = { label: string; onSelect: () => void } | 'separator'
+
+const MENU_POPUP = 'min-w-[180px] rounded-lg border border-border bg-surface-2 p-1 text-text '
+  + 'shadow-[0_12px_32px_var(--shadow-color)] outline-none'
+const MENU_ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs text-text-dim '
+  + 'outline-none data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
+
+/**
+ * A row's `…` actions menu, overlaid at its top right and revealed on hover
+ * (always, on touch).
+ *
+ * A picked item runs once the menu has finished closing, and the menu then
+ * leaves focus where the item put it: a rename's input, or a dialog it
+ * opened, rather than taking it back to the trigger.
+ */
+function RowMenu({ label, items }: { label: string; items: RowMenuItem[] }): JSX.Element {
+  const picked = useRef<(() => void) | null>(null)
+  return (
+    <Menu.Root
+      onOpenChangeComplete={(open) => {
+        if (open || picked.current === null) return
+        const run = picked.current
+        picked.current = null
+        run()
+      }}
+    >
+      <Menu.Trigger
+        title={label}
+        aria-label={label}
+        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+          group-hover:pointer-events-auto group-hover:opacity-100
+          focus-visible:pointer-events-auto focus-visible:opacity-100
+          data-[popup-open]:pointer-events-auto data-[popup-open]:opacity-100 data-[popup-open]:bg-surface-3
+          max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+      >
+        <MoreIcon size={14} />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="bottom" align="end" sideOffset={4}>
+          <Menu.Popup finalFocus={() => picked.current === null} className={MENU_POPUP}>
+            {items.map((item, i) => item === 'separator'
+              ? <Menu.Separator key={`sep-${i}`} className="my-1 h-px bg-border" />
+              : (
+                <Menu.Item key={item.label} className={MENU_ITEM} onClick={() => { picked.current = item.onSelect }}>
+                  {item.label}
+                </Menu.Item>
+              ))}
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   )
 }

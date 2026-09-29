@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { AuthListResult } from '@yaac/shared/types'
+import { act, render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import type { AuthListResult, QueuedWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
 import type { ProjectBranches } from '#lib/projectApi'
 
 const provision = vi.hoisted(() => vi.fn())
@@ -12,6 +12,12 @@ vi.mock('#lib/settingsApi', () => ({
 }))
 vi.mock('#lib/createWorktree', () => ({
   createWorktree: vi.fn(),
+}))
+vi.mock('#lib/queueApi', () => ({
+  queueWorktree: vi.fn(),
+  updateQueuedWorktree: vi.fn(),
+  runQueuedWorktree: vi.fn(),
+  discardQueuedWorktree: vi.fn(),
 }))
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
@@ -27,8 +33,10 @@ vi.mock('#lib/useProvisionWorktree', () => ({
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
+import { CreateWorktreeDialog } from '#components/CreateWorktreeDialog'
 import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { createWorktree } from '#lib/createWorktree'
+import { queueWorktree, runQueuedWorktree, updateQueuedWorktree } from '#lib/queueApi'
 import { getProjectBranches, setProjectReferenceBranch } from '#lib/projectApi'
 import { getAuthList } from '#lib/settingsApi'
 import { useUiStore } from '#lib/store'
@@ -70,16 +78,54 @@ const BRANCHES: ProjectBranches = {
 }
 
 /** A snapshot for project `proj` with the given create memory. */
-function project(memory: Record<string, unknown> = {}, driver = 'k8s'): unknown {
+function project(memory: Record<string, unknown> = {}, driver = 'k8s', extra: Record<string, unknown> = {}): unknown {
   return {
     driver,
     projects: [{ slug: 'proj', createDefaults: {}, gitCredential: { id: 'c1', name: 'github.com token' }, ...memory }],
+    worktrees: [],
+    queuedWorktrees: [],
+    heldWorktrees: [],
+    provisioning: [],
+    ...extra,
   }
 }
+
+/** A live worktree to queue after: codex on gpt-5.5, forked from dev. */
+const PARENT: WorktreeListEntry = {
+  worktreeId: 'w-parent',
+  projectSlug: 'proj',
+  tool: 'codex',
+  status: 'running',
+  createdAt: '2026-01-01 00:00:01',
+  title: 'Parent work',
+  agentSessions: [{
+    agentSessionId: 'a1', tool: 'codex', mode: 'tui', ordinal: 0, active: true, model: 'gpt-5.5',
+  }],
+  blockedHosts: [],
+  forwardedPorts: [],
+  unforwardedPorts: [],
+  baseBranch: 'dev',
+  permissionMode: 'accept-edits',
+}
+
+const entry = (id: string, extra: Partial<QueuedWorktreeEntry> = {}): QueuedWorktreeEntry => ({
+  id,
+  projectSlug: 'proj',
+  parentWorktreeId: 'w-parent',
+  prompt: `step ${id}`,
+  tool: 'claude',
+  model: 'claude-sonnet-5',
+  mode: 'tui',
+  permissionMode: 'manual',
+  branch: 'release/2.x',
+  createdAt: '2026-01-01 00:00:02',
+  ...extra,
+})
 
 beforeEach(() => {
   useUiStore.setState({
     settingsOpen: false, settingsSection: 'general', settingsFocusTool: null, settingsFocusProject: null,
+    createWorktreeDialog: null,
   })
   vi.clearAllMocks()
   snapshot.mockReturnValue(project())
@@ -92,19 +138,37 @@ beforeEach(() => {
     (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
       void op(sid, () => {})
     })
+  vi.mocked(queueWorktree).mockImplementation((_p, parent, settings) =>
+    Promise.resolve({ id: 'q-new', projectSlug: 'proj', parentWorktreeId: parent, createdAt: '', ...settings }))
+  vi.mocked(updateQueuedWorktree).mockImplementation((id) => Promise.resolve(entry(id)))
+  vi.mocked(runQueuedWorktree).mockResolvedValue({ worktreeId: 'w-run' })
 })
 
 afterEach(cleanup)
 
-/** Render the button and open its popover. */
-async function openMenu(): Promise<void> {
+/** Mount the trigger beside the one dialog it opens, as App does. */
+function mount(): void {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <NewWorktreeButton projectSlug="proj" />
+      <CreateWorktreeDialog />
     </QueryClientProvider>,
   )
+}
+
+/** Render the button and open its dialog. */
+async function openMenu(): Promise<void> {
+  mount()
   fireEvent.click(screen.getByRole('button', { name: 'New worktree' }))
   await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
+}
+
+/** Open the dialog the way a row menu or queued row does. */
+async function openWith(opts: { parent?: string; editId?: string }): Promise<void> {
+  mount()
+  act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', ...opts }))
+  await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
+  await waitFor(() => expect(submitButton().title).not.toBe('Loading…'))
 }
 
 /** Open, and wait until the credential list has landed. */
@@ -113,6 +177,8 @@ async function openReady(): Promise<void> {
   await waitFor(() => expect(createButton().disabled).toBe(false))
 }
 
+const promptInput = (): HTMLTextAreaElement => screen.getByLabelText<HTMLTextAreaElement>('Prompt')
+const submitButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^(Queue|Save)$/ })
 const branchInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Reference branch')
 const modelInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Model')
 const select = (label: string): HTMLSelectElement => screen.getByLabelText<HTMLSelectElement>(label)
@@ -120,7 +186,7 @@ const createButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement
 const option = (label: string, text: string): HTMLOptionElement =>
   [...select(label).options].find((o) => o.textContent?.startsWith(text))!
 
-describe('NewWorktreeButton', () => {
+describe('CreateWorktreeDialog', () => {
   it('opens on the project\'s last agent with what it last used, and creates with all of it', async () => {
     vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
     snapshot.mockReturnValue(project({
@@ -143,7 +209,7 @@ describe('NewWorktreeButton', () => {
     })
     // The provisioning row names the model from its first frame.
     expect(provision.mock.calls[0][6]).toEqual({ model: 'gpt-5.5', modelName: 'GPT-5.5' })
-    expect(screen.queryByLabelText('Agent')).toBeNull() // closed
+    await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull()) // closed
   })
 
   // A missing snapshot would read a containerless server as sandboxed and
@@ -155,6 +221,7 @@ describe('NewWorktreeButton', () => {
     expect(createButton().disabled).toBe(true)
 
     cleanup()
+    act(() => useUiStore.getState().closeCreateWorktree())
     snapshot.mockReturnValue(project({}, 'containerless'))
     await openReady()
     expect(select('Agent').value).toBe('claude')
@@ -228,6 +295,27 @@ describe('NewWorktreeButton', () => {
       expect.objectContaining({ model: 'claude-sonnet-5' }))
   })
 
+  it('closes a suggestion list on Escape, keeping the dialog and its prompt', async () => {
+    await openReady()
+    fireEvent.change(promptInput(), { target: { value: 'keep me' } })
+
+    fireEvent.change(modelInput(), { target: { value: 'sonnet' } })
+    expect(screen.getByText('Sonnet 5')).toBeTruthy()
+    fireEvent.keyDown(modelInput(), { key: 'Escape' })
+    expect(screen.queryByText('Sonnet 5')).toBeNull()
+
+    fireEvent.change(branchInput(), { target: { value: 're' } })
+    expect(screen.getByText('release/2.x')).toBeTruthy()
+    fireEvent.keyDown(branchInput(), { key: 'Escape' })
+    expect(screen.queryByText('release/2.x')).toBeNull()
+
+    expect(useUiStore.getState().createWorktreeDialog).not.toBeNull()
+    expect(promptInput().value).toBe('keep me')
+    // With no list open, Escape is the dialog's again.
+    fireEvent.keyDown(modelInput(), { key: 'Escape' })
+    await waitFor(() => expect(useUiStore.getState().createWorktreeDialog).toBeNull())
+  })
+
   it('takes a model id the catalog does not list', async () => {
     await openReady()
     fireEvent.change(modelInput(), { target: { value: 'claude-next' } })
@@ -246,7 +334,7 @@ describe('NewWorktreeButton', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Set as default branch' }), { key: 'Enter' })
     expect(createWorktree).not.toHaveBeenCalled()
 
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' })
+    fireEvent.keyDown(promptInput(), { key: 'Enter' })
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
       expect.objectContaining({ branch: 'dev', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui' }))
   })
@@ -272,32 +360,43 @@ describe('NewWorktreeButton', () => {
 
     expect(screen.getByText('This project has no git credential')).toBeTruthy()
     // Enter takes the same route as the button.
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' })
+    fireEvent.keyDown(promptInput(), { key: 'Enter' })
 
     expect(provision).not.toHaveBeenCalled()
     const state = useUiStore.getState()
     expect(state.settingsOpen).toBe(true)
     expect(state.settingsSection).toBe('credentials')
     expect(state.settingsFocusProject).toBe('proj')
-    expect(screen.queryByLabelText('Agent')).toBeNull() // closed
+    await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull()) // closed
   })
 
   it('renders a labeled trigger in the cta variant', () => {
-    render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <NewWorktreeButton projectSlug="proj" variant="cta" />
-      </QueryClientProvider>,
-    )
+    render(<NewWorktreeButton projectSlug="proj" variant="cta" />)
     // The icon variant's trigger is icon-only; the CTA carries a visible label.
     expect(screen.getByRole('button', { name: /New worktree/ }).textContent).toContain('New worktree')
   })
 
-  it('does not focus the branch input on open (no distracting cursor blink)', async () => {
-    await openMenu()
-    await waitFor(() => expect(branchInput().value).toBe('main'))
-    // Focus lands on the popup dialog, not the branch input.
-    expect(document.activeElement).not.toBe(branchInput())
-    expect(document.activeElement?.getAttribute('role')).toBe('dialog')
+  // Alt+N and the + button both open here, so "open, type, Enter" is a
+  // create with an opening prompt, and Shift+Enter a second line of it.
+  it('focuses the prompt as it opens, before the dialog\'s own focus handling gets there', () => {
+    // Alt+N then typing straight away is the flow; a key pressed before the
+    // focus lands would go nowhere.
+    mount()
+    act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', focus: 'prompt' }))
+    expect(document.activeElement).toBe(promptInput())
+  })
+
+  it('focuses the prompt, and a typed prompt rides the create', async () => {
+    await openReady()
+    await waitFor(() => expect(document.activeElement).toBe(promptInput()))
+
+    fireEvent.change(promptInput(), { target: { value: 'fix the flaky test' } })
+    fireEvent.keyDown(promptInput(), { key: 'Enter', shiftKey: true })
+    expect(createWorktree).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(promptInput(), { key: 'Enter' })
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
+      expect.objectContaining({ prompt: 'fix the flaky test' }))
   })
 
   it('prefills the branch input with the project default', async () => {
@@ -339,5 +438,120 @@ describe('NewWorktreeButton', () => {
     // The pinned branch becomes the default resolution — pin disables again.
     await waitFor(() => expect((pin as HTMLButtonElement).disabled).toBe(true))
     expect(branchInput().value).toBe('dev')
+  })
+
+  describe('queueing', () => {
+    // A parent's settings are what a child defaults to: its first
+    // conversation's agent and current model, its posture, and the branch it
+    // forked from — every one sent concrete.
+    it('seeds from the parent worktree and queues with every setting concrete', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
+      await openWith({ parent: 'w-parent' })
+
+      expect(select('Start').value).toBe('w-parent')
+      expect(select('Agent').value).toBe('codex')
+      expect(modelInput().value).toBe('GPT-5.5')
+      expect(select('Permissions').value).toBe('accept-edits')
+      await waitFor(() => expect(branchInput().value).toBe('dev'))
+      expect(screen.getByText('latest from origin when it starts')).toBeTruthy()
+
+      // A queued worktree runs unattended, so it needs something to do.
+      expect(submitButton().disabled).toBe(true)
+      fireEvent.change(promptInput(), { target: { value: 'follow up' } })
+      fireEvent.click(submitButton())
+
+      await waitFor(() => expect(vi.mocked(queueWorktree)).toHaveBeenCalledWith('proj', 'w-parent', {
+        prompt: 'follow up', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits', branch: 'dev',
+      }))
+      expect(createWorktree).not.toHaveBeenCalled()
+      await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull())
+    })
+
+    it('re-seeds only untouched fields when Start changes', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
+      await openReady()
+      expect(select('Agent').value).toBe('claude')
+      expect(screen.getByRole('button', { name: 'Create' })).toBeTruthy()
+
+      fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
+      fireEvent.change(select('Start'), { target: { value: 'w-parent' } })
+      // The agent was untouched, so it follows the parent — and a new agent
+      // brings its own memory, so the posture pick goes with the old one.
+      expect(select('Agent').value).toBe('codex')
+      expect(select('Permissions').value).toBe('accept-edits')
+      expect(screen.getByRole('button', { name: 'Queue' })).toBeTruthy()
+
+      fireEvent.change(select('Agent'), { target: { value: 'claude' } })
+      fireEvent.change(select('Start'), { target: { value: '' } })
+      // Picked here, so a different Start leaves it alone.
+      expect(select('Agent').value).toBe('claude')
+    })
+
+    it('surfaces a refused queue and stays open', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT] }))
+      vi.mocked(queueWorktree).mockRejectedValue(new Error('no model is known for that tool'))
+      await openWith({ parent: 'w-parent' })
+      fireEvent.change(promptInput(), { target: { value: 'x' } })
+      fireEvent.click(submitButton())
+      await waitFor(() => expect(screen.getByText('no model is known for that tool')).toBeTruthy())
+      expect(screen.getByLabelText('Agent')).toBeTruthy()
+    })
+  })
+
+  describe('editing a queued worktree', () => {
+    const chain = [
+      entry('q1'),
+      entry('q2', { parentWorktreeId: undefined, parentQueuedId: 'q1' }),
+      entry('q3', { parentWorktreeId: undefined, parentQueuedId: 'q2' }),
+      entry('q4', { prompt: 'sibling' }),
+    ]
+
+    it('opens on the entry\'s own settings and never offers a cycle', async () => {
+      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      snapshot.mockReturnValue(project({}, 'k8s', { worktrees: [PARENT], queuedWorktrees: chain }))
+      await openWith({ editId: 'q2' })
+
+      expect(promptInput().value).toBe('step q2')
+      expect(select('Start').value).toBe('q1')
+      expect(modelInput().value).toBe('Sonnet 5')
+      expect(select('Permissions').value).toBe('manual')
+      expect(branchInput().value).toBe('release/2.x')
+      // Itself and what hangs under it would be a chain that never starts.
+      const offered = [...select('Start').options].map((o) => o.value)
+      expect(offered).toEqual(['', 'w-parent', 'q1', 'q4'])
+      expect(submitButton().textContent).toBe('Save')
+
+      fireEvent.change(select('Start'), { target: { value: 'q4' } })
+      fireEvent.click(submitButton())
+      await waitFor(() => expect(vi.mocked(updateQueuedWorktree)).toHaveBeenCalledWith('q2', {
+        prompt: 'step q2', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'manual',
+        branch: 'release/2.x', parent: 'q4',
+      }))
+      expect(runQueuedWorktree).not.toHaveBeenCalled()
+    })
+
+    it('offers a held parent it already waits on, and "Now" saves then runs', async () => {
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        queuedWorktrees: [entry('q1', { parentWorktreeId: 'w-held' })],
+        heldWorktrees: [{ worktreeId: 'w-held', projectSlug: 'proj', tool: 'claude', title: 'Died', stoppedAt: '' }],
+      }))
+      await openWith({ editId: 'q1' })
+      expect(option('Start', 'After “Died” stops')).toBeTruthy()
+
+      fireEvent.change(select('Start'), { target: { value: '' } })
+      fireEvent.click(submitButton())
+      await waitFor(() => expect(vi.mocked(runQueuedWorktree)).toHaveBeenCalledWith('q1'))
+      // Saved as it stands, without a parent: running it is what "Now" means.
+      expect(vi.mocked(updateQueuedWorktree).mock.calls[0][1]).not.toHaveProperty('parent')
+    })
+
+    it('says so when the entry has already started', async () => {
+      mount()
+      act(() => useUiStore.getState().openCreateWorktree({ projectSlug: 'proj', editId: 'gone' }))
+      await waitFor(() => expect(screen.getByText('Queued worktree gone')).toBeTruthy())
+    })
   })
 })

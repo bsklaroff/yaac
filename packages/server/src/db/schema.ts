@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 
 /**
  * Drizzle schema for the server's on-disk PGlite database — the home for
@@ -411,3 +411,38 @@ export const gitCredentials = snakeCase.table('git_credentials', {
   publicKey: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.name)])
+
+/**
+ * A worktree create request saved to run when its parent stops naturally
+ * (docs/queued-worktrees.md). Not a worktree: no `worktrees` row, checkout
+ * or runtime exists until it launches, and the launch deletes it. Every
+ * setting is stored concrete, so what the sidebar shows is what will run.
+ */
+export const queuedWorktrees = snakeCase.table('queued_worktrees', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectSlug: text().notNull(),
+  /** Exactly one of these two is set: the worktree this entry waits on, or
+   *  the entry it is chained after. Claiming the parent entry's launch
+   *  re-points its children at the launching worktree. */
+  parentWorktreeId: text(),
+  parentQueuedId: uuid(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  prompt: text().notNull(),
+  tool: text().notNull(),
+  model: text().notNull(),
+  mode: text().notNull(),
+  permissionMode: text().notNull(),
+  /** The reference branch to fork from (no `origin/` prefix); fetched fresh
+   *  from origin at launch, so the child starts from its latest tip. */
+  branch: text().notNull(),
+  /** Set by a natural parent stop or Run now; the launcher's work list. */
+  releasedAt: timestamp({ withTimezone: true }),
+  /** The worktree id this entry's in-flight launch is creating. Set by a
+   *  compare-and-set before anything is provisioned; it is the claim. */
+  launchWorktreeId: text(),
+  /** Why the last launch failed; cleared by the next release. */
+  launchError: text(),
+}, (t) => [
+  index().on(t.projectSlug, t.parentWorktreeId),
+  index().on(t.parentQueuedId),
+])

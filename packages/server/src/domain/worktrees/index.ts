@@ -58,7 +58,6 @@ export { dismissWorktreePort, forwardWorktreePort } from './forward-port'
 export { listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'
 export { removeProject } from './project-teardown'
-export { tryClaimPrewarmed } from './prewarm'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export {
   inFlightWorktreeIds,
@@ -68,11 +67,21 @@ export {
   runProvisioned,
 } from './provisioning'
 export {
+  discardQueuedWorktree,
+  listHeldWorktrees,
+  listQueuedWorktrees,
+  queueWorktree,
+  reconcileQueuedWorktrees,
+  runQueuedWorktree,
+  updateQueuedWorktree,
+} from './queued-worktrees'
+export {
   resolveWorktreeInProject,
   resolveWorktreeContainer,
   resolveWorktreeRecord,
 } from './resolve'
 export { restartWorktree } from './restart'
+export { startWorktree } from './start'
 export { rebranchSpare, retoolSpare } from './spare-pool'
 export { runMamaCommand, type MamaCaller } from './mama'
 export { reconcileMamaRequests } from './mama-reconcile'

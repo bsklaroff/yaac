@@ -40,10 +40,9 @@ export interface WorktreeCreated {
   type: 'worktree-created'
   projectSlug: string
   worktreeId: string
-  /** Set only when the branch is known this early, as it is for a claimed
-   *  prewarmed spare. A cold create resolves it while the pod boots and
-   *  reports it separately, so recording the worktree never waits on the
-   *  checkout. */
+  /** The branch it forks from — resolved from local reads before anything
+   *  is provisioned, so a row has it from birth. Absent on a resume, whose
+   *  recorded base is left as it was. */
   baseBranch?: string
   /** This worktree already existed and is being brought back up. Its row
    *  carries a history — title, pin, founding prompt, and how it last died —
@@ -101,7 +100,7 @@ export interface WorktreeLifeStarted {
   logBytes: number
 }
 
-/** The branch a worktree forked from, resolved by the checkout. */
+/** A claimed spare was re-branched: the branch it now forks from. */
 export interface BaseBranchResolved {
   type: 'base-branch-resolved'
   projectSlug: string

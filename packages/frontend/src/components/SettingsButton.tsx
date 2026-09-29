@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type JSX, type Re
 import clsx from 'clsx'
 import { useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
+import { Modal } from '#components/ui/Modal'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
 import {
@@ -128,7 +129,7 @@ export function SettingsButton(
   }, [open, queryClient])
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}>
+    <>
       <button
         onClick={() => openSettings()}
         title="Settings"
@@ -142,121 +143,114 @@ export function SettingsButton(
         {variant === 'row' && <span>Settings</span>}
       </button>
 
-      <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
-          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        {/* Below md the two-column dialog goes full-screen and stacks: the
-            left nav becomes a scrolling row of chips above the content. */}
-        <Dialog.Popup className="fixed left-1/2 top-1/2 flex h-[480px] max-h-[calc(100vh-4rem)] w-[720px]
-          max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border
-          border-hairline bg-surface text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none
-          transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
-          data-[ending-style]:scale-95 data-[ending-style]:opacity-0
-          max-md:inset-0 max-md:left-0 max-md:top-0 max-md:h-full max-md:max-h-none max-md:w-full
-          max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:flex-col
-          max-md:rounded-none max-md:border-0">
-          {/* Left nav */}
-          <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2
-            max-md:w-full max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:border-r-0">
-            <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
-              Settings
-            </Dialog.Title>
-            {visibleSections(buildsImages).map(({ key, label, Icon }) => (
-              <button
-                key={key}
-                onClick={() => setSection(key)}
-                className={clsx(
-                  'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition',
-                  'max-md:h-9 max-md:shrink-0 max-md:whitespace-nowrap',
-                  section === key
-                    ? 'bg-surface-2 font-medium text-text'
-                    : 'text-text-dim hover:bg-surface-2/60 hover:text-text',
-                )}
+      {/* Below md the two-column dialog goes full-screen and stacks: the
+          left nav becomes a scrolling row of chips above the content. */}
+      <Modal
+        open={open}
+        onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}
+        className="flex h-[480px] w-[720px] max-md:flex-col"
+      >
+        {/* Left nav */}
+        <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2
+          max-md:w-full max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:border-r-0">
+          <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
+            Settings
+          </Dialog.Title>
+          {visibleSections(buildsImages).map(({ key, label, Icon }) => (
+            <button
+              key={key}
+              onClick={() => setSection(key)}
+              className={clsx(
+                'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition',
+                'max-md:h-9 max-md:shrink-0 max-md:whitespace-nowrap',
+                section === key
+                  ? 'bg-surface-2 font-medium text-text'
+                  : 'text-text-dim hover:bg-surface-2/60 hover:text-text',
+              )}
+            >
+              <Icon size={13} className="shrink-0" />
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="relative min-w-0 flex-1 overflow-y-auto p-6 max-md:p-4 max-md:pt-10">
+          <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
+            text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
+            aria-label="Close settings">
+            <CloseIcon size={14} />
+          </Dialog.Close>
+
+          {section === 'general' && (
+            <section>
+              <h2 className="text-sm font-semibold">General</h2>
+              <Field
+                label="Theme"
+                hint="Follows your system appearance unless you pick one."
               >
-                <Icon size={13} className="shrink-0" />
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Content */}
-          <div className="relative min-w-0 flex-1 overflow-y-auto p-6 max-md:p-4 max-md:pt-10">
-            <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
-              text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
-              aria-label="Close settings">
-              <CloseIcon size={14} />
-            </Dialog.Close>
-
-            {section === 'general' && (
-              <section>
-                <h2 className="text-sm font-semibold">General</h2>
-                <Field
-                  label="Theme"
-                  hint="Follows your system appearance unless you pick one."
+                <RadioGroup
+                  value={themePref}
+                  onValueChange={(value) => setThemePref(value as ThemePref)}
+                  className="flex flex-col gap-1"
                 >
-                  <RadioGroup
-                    value={themePref}
-                    onValueChange={(value) => setThemePref(value as ThemePref)}
-                    className="flex flex-col gap-1"
-                  >
-                    {THEMES.map((t) => (
-                      <label
-                        key={t.value}
-                        className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
-                          text-text-dim transition hover:text-text"
+                  {THEMES.map((t) => (
+                    <label
+                      key={t.value}
+                      className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
+                        text-text-dim transition hover:text-text"
+                    >
+                      <Radio.Root
+                        value={t.value}
+                        className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
+                          transition data-[checked]:border-accent data-[checked]:bg-accent"
                       >
-                        <Radio.Root
-                          value={t.value}
-                          className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
-                            transition data-[checked]:border-accent data-[checked]:bg-accent"
-                        >
-                          <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
-                        </Radio.Root>
-                        {t.label}
-                      </label>
-                    ))}
-                  </RadioGroup>
-                </Field>
-                <Field
-                  label="Sounds"
-                  hint="Play a chime when a worktree needs your input."
+                        <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
+                      </Radio.Root>
+                      {t.label}
+                    </label>
+                  ))}
+                </RadioGroup>
+              </Field>
+              <Field
+                label="Sounds"
+                hint="Play a chime when a worktree needs your input."
+              >
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={soundEnabled}
+                  aria-label="Sounds"
+                  onClick={() => setSoundEnabled(!soundEnabled)}
+                  className={clsx(
+                    'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+                    soundEnabled ? 'bg-accent' : 'bg-surface-3',
+                  )}
                 >
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={soundEnabled}
-                    aria-label="Sounds"
-                    onClick={() => setSoundEnabled(!soundEnabled)}
+                  <span
                     className={clsx(
-                      'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-                      soundEnabled ? 'bg-accent' : 'bg-surface-3',
+                      'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                      soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
                     )}
-                  >
-                    <span
-                      className={clsx(
-                        'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-                        soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
-                      )}
-                    />
-                  </button>
-                </Field>
-                <GitIdentityField />
-              </section>
-            )}
+                  />
+                </button>
+              </Field>
+              <GitIdentityField />
+            </section>
+          )}
 
-            {section === 'server' && <ServerSettings />}
+          {section === 'server' && <ServerSettings />}
 
-            {section === 'shortcuts' && <ShortcutsPane />}
+          {section === 'shortcuts' && <ShortcutsPane />}
 
-            {section === 'credentials' && <CredentialsPane />}
+          {section === 'credentials' && <CredentialsPane />}
 
-            {section === 'project' && <ProjectSettings />}
+          {section === 'project' && <ProjectSettings />}
 
-            {section === 'userDockerfile' && <UserDockerfilePane />}
-          </div>
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
+          {section === 'userDockerfile' && <UserDockerfilePane />}
+        </div>
+      </Modal>
+    </>
   )
 }
 
