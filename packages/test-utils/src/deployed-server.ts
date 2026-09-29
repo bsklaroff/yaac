@@ -328,11 +328,12 @@ export async function deleteTestServerClusterRbac(namespace: string): Promise<vo
  * names as `YAAC_SERVER_PORT`.
  *
  * Not a detail. `yaac server start|restart` against a Deployment waits for
- * the PUBLISHED origin to answer, and the published origin is
- * `127.0.0.1:<resolveServerPort()>` — that same variable, read in the CLI
- * child. Binding the forward there is what makes the forward this test
- * install's published origin, and what lets those verbs be exercised at all
- * rather than being told the cluster never published a server.
+ * the PUBLISHED origin to answer, and an explicit `YAAC_SERVER_PORT` in the
+ * CLI child names that origin outright, ahead of the kind node's own
+ * mapping (which is the real install's). Binding the forward there is what
+ * makes the forward this test install's published origin, and what lets
+ * those verbs be exercised at all rather than being told the cluster never
+ * published a server.
  *
  * The port is drawn free per test env (see `createYaacTestEnv`), so neither
  * files racing in parallel workers nor another test rig's run on this host
