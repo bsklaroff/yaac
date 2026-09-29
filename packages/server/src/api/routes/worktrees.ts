@@ -36,9 +36,11 @@ import {
   writeWorktreeFile,
 } from '#domain/worktrees'
 import {
+  discardDraftWorktree,
   discardQueuedWorktree,
   queueWorktree,
   runQueuedWorktree,
+  saveDraftWorktree,
   startWorktree,
   stopWorktree,
   updateQueuedWorktree,
@@ -46,6 +48,7 @@ import {
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 import {
   createWorktreeGroup,
+  deleteDraftWorktree,
   deleteWorktreeGroup,
   findWorktreeByMamaToken,
   findWorktreeRow,
@@ -86,6 +89,15 @@ const queuedSettings = {
   mode: z.enum(AGENT_MODES).optional(),
   permissionMode: z.enum(PERMISSION_MODES).optional(),
   branch: z.string().min(1).max(255).optional(),
+}
+
+// The draft worktree a create or queue was made from
+// (docs/draft-worktrees.md). It is deleted once the create or queue has
+// succeeded, so a failed one keeps the draft and its prompt.
+const draftId = z.string().min(1).optional()
+
+async function dropDraft(id: string | undefined): Promise<void> {
+  if (id !== undefined) await deleteDraftWorktree(id)
 }
 
 export const worktreeApp = new Hono()
@@ -140,6 +152,7 @@ export const worktreeApp = new Hono()
       // matching no group is created. Resolved before anything is
       // provisioned, so a typo'd group is not a half-built worktree.
       group: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
+      draftId,
     })),
     async (c) => {
       const body = c.req.valid('json')
@@ -167,7 +180,7 @@ export const worktreeApp = new Hono()
         const groupId = body.group === undefined
           ? undefined
           : (await resolveGroup(body.project, body.group, { create: true })).groupId
-        return await startWorktree({
+        const created = await startWorktree({
           projectSlug: body.project,
           worktreeId,
           ...(body.tool !== undefined ? { tool: body.tool } : {}),
@@ -182,6 +195,8 @@ export const worktreeApp = new Hono()
           rememberDefaults: true,
           claimSpare: true,
         }, onProgress)
+        await dropDraft(body.draftId)
+        return created
       })
     },
   )
@@ -265,10 +280,13 @@ export const worktreeApp = new Hono()
       // A worktree id or a queued entry's id (or a unique prefix of either).
       parent: z.string().min(1),
       ...queuedSettings,
+      draftId,
     })),
     async (c) => {
-      const { project, ...request } = c.req.valid('json')
-      return c.json(await queueWorktree(project, request, 'user'))
+      const { project, draftId: fromDraft, ...request } = c.req.valid('json')
+      const entry = await queueWorktree(project, request, 'user')
+      await dropDraft(fromDraft)
+      return c.json(entry)
     },
   )
   .post(
@@ -296,6 +314,33 @@ export const worktreeApp = new Hono()
     '/queue/run',
     zv('json', z.object({ id: z.string().min(1) })),
     async (c) => c.json(await runQueuedWorktree(c.req.valid('json').id)),
+  )
+  // Draft worktrees (docs/draft-worktrees.md): create-dialog contents kept
+  // for later. A save without an id makes a new draft; with one it replaces
+  // that draft's fields wholesale.
+  .post(
+    '/draft/save',
+    zv('json', z.object({
+      id: z.string().min(1).optional(),
+      project: z.string().min(1),
+      ...queuedSettings,
+      tool: queuedSettings.tool.unwrap(),
+      mode: queuedSettings.mode.unwrap(),
+      permissionMode: queuedSettings.permissionMode.unwrap(),
+      startAfter: z.string().min(1).optional(),
+    })),
+    async (c) => {
+      const { id, project, ...settings } = c.req.valid('json')
+      return c.json(await saveDraftWorktree(project, settings, id))
+    },
+  )
+  .post(
+    '/draft/discard',
+    zv('json', z.object({ id: z.string().min(1) })),
+    async (c) => {
+      await discardDraftWorktree(c.req.valid('json').id)
+      return c.body(null, 204)
+    },
   )
   // The sidebar-group routes. All take an explicit projectSlug (like
   // /mark-death-seen) rather than resolving a container: a group's members can

@@ -424,3 +424,31 @@ export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   index().on(t.projectSlug, t.parentWorktreeId),
   index().on(t.parentQueuedId),
 ])
+
+/**
+ * A worktree create the user closed the create dialog on without running,
+ * and chose to keep (docs/draft-worktrees.md). Pure intent, like groups: no
+ * worktree, checkout or runtime exists for it, and creating from it deletes
+ * it. It holds the dialog's settings as the dialog showed them, so reopening
+ * it puts back what was on screen.
+ */
+export const draftWorktrees = snakeCase.table('draft_worktrees', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectSlug: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  prompt: text().notNull(),
+  /** Model-generated from the prompt; cleared when the prompt changes. */
+  title: text(),
+  tool: text().notNull(),
+  mode: text().notNull(),
+  permissionMode: text().notNull(),
+  /** Null when the dialog had not resolved one yet (catalog or branch list
+   *  still loading) — reopening then takes the default, as a fresh open does. */
+  model: text(),
+  branch: text(),
+  /** The dialog's Start field: the worktree or queued entry it would wait
+   *  on, null for "Now". Not a live reference — a parent that has gone by
+   *  the time the draft is reopened falls back to "Now". */
+  startAfter: text(),
+}, (t) => [index().on(t.projectSlug)])

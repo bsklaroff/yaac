@@ -66,6 +66,7 @@ function renderSidebar(): HTMLElement {
         groups={[]}
         queued={[]}
         held={[]}
+        drafts={[]}
         provisioning={[]}
         connected
         gitAuthFailures={[]}

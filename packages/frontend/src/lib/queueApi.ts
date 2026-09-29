@@ -19,13 +19,17 @@ export interface QueuedSettings {
   branch: string
 }
 
-/** Queue a worktree to start when `parent` (a worktree or entry id) stops. */
+/** Queue a worktree to start when `parent` (a worktree or entry id) stops.
+ *  `draftId` names the draft it was made from, deleted once it is queued. */
 export async function queueWorktree(
   project: string,
   parent: string,
   settings: QueuedSettings,
+  draftId?: string,
 ): Promise<QueuedWorktreeEntry> {
-  return await api.worktree.queue.create.$post({ json: { project, parent, ...settings } })
+  return await api.worktree.queue.create.$post({
+    json: { project, parent, ...settings, ...(draftId !== undefined ? { draftId } : {}) },
+  })
 }
 
 /** Replace an entry's settings, and its parent when `parent` is given. */

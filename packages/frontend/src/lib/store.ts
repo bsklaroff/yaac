@@ -546,6 +546,8 @@ export interface CreateWorktreeDialogOpts {
   projectSlug: string
   parent?: string
   editId?: string
+  /** Reopen a saved draft (docs/draft-worktrees.md) on its fields. */
+  draftId?: string
   /** Put the cursor in the prompt — Alt+N, then type, then Enter. */
   focus?: 'prompt'
 }

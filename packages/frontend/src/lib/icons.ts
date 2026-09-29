@@ -88,6 +88,7 @@ export {
   FileTerminal as FileShellIcon,
   ChevronsDownUp as CollapseAllIcon,
   Clock as QueuedIcon,
+  PencilLine as DraftIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

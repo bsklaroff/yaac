@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertDialog } from '@base-ui/react/alert-dialog'
 import { Dialog } from '@base-ui/react/dialog'
 import clsx from 'clsx'
 import { CloseIcon, PinIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { Modal } from '#components/ui/Modal'
 import { Typeahead } from '#components/ui/Typeahead'
+import { saveDraftWorktree } from '#lib/draftApi'
 import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type ProjectBranches } from '#lib/projectApi'
 import { queueWorktree, runQueuedWorktree, updateQueuedWorktree } from '#lib/queueApi'
 import { clip, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
@@ -20,9 +22,11 @@ import {
   supportedPermissionModes,
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
+import { ServerError } from '@yaac/shared/errors'
 import type {
   AgentMode,
   AgentTool,
+  DraftWorktreeSettings,
   PermissionMode,
   QueuedWorktreeEntry,
   ToolCreateDefaults,
@@ -89,6 +93,30 @@ function entrySeed(e: QueuedWorktreeEntry): Seed {
 const worktreeName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New worktree', 40)
 
+const DRAFT_FIELDS = ['prompt', 'tool', 'mode', 'permissionMode', 'model', 'branch', 'startAfter'] as const satisfies
+  readonly (keyof DraftWorktreeSettings)[]
+
+/** A close that would lose a typed prompt, held while the user decides
+ *  whether to keep it as a draft. */
+interface PendingDraft {
+  projectSlug: string
+  /** The draft the dialog was reopened on, which a save replaces. */
+  id?: string
+  settings: DraftWorktreeSettings
+}
+
+/** Keep `pending` as a draft. One that has gone since the dialog opened
+ *  (created from or discarded elsewhere) is saved anew, so the text always
+ *  has somewhere to go. */
+async function keepDraft(pending: PendingDraft): Promise<void> {
+  try {
+    await saveDraftWorktree(pending.projectSlug, pending.settings, pending.id)
+  } catch (err) {
+    if (pending.id === undefined || !(err instanceof ServerError && err.code === 'NOT_FOUND')) throw err
+    await saveDraftWorktree(pending.projectSlug, pending.settings)
+  }
+}
+
 /**
  * The create dialog — one centered modal for creating a worktree now,
  * queueing one to start after another stops, and editing a queued one
@@ -106,6 +134,10 @@ const worktreeName = (w: { title?: string; prompt?: string }): string =>
  * Enter anywhere but on a button submits, and Shift+Enter in the prompt is a
  * newline, like the chat composer — so Alt+N, type, Enter is a create with
  * an opening prompt.
+ *
+ * Dismissing a create (×, Escape, a click outside) with a prompt typed asks
+ * whether to save it as a draft (docs/draft-worktrees.md); a draft reopens
+ * here, and creating or queueing from it discards it.
  */
 export function CreateWorktreeDialog(): JSX.Element {
   const opts = useUiStore((s) => s.createWorktreeDialog)
@@ -119,12 +151,19 @@ export function CreateWorktreeDialog(): JSX.Element {
     last.current = { opts, key: (last.current?.key ?? 0) + 1 }
   }
   const [busy, setBusy] = useState(false)
+  // What a dismissal right now would lose, kept current by the form.
+  const draftRef = useRef<PendingDraft | null>(null)
+  const [asking, setAsking] = useState<PendingDraft | null>(null)
   const shown = last.current
 
   return (
     <Modal
       open={opts !== null}
-      onOpenChange={(next) => { if (!next && !busy) close() }}
+      onOpenChange={(next) => {
+        if (next || busy) return
+        if (draftRef.current !== null) setAsking(draftRef.current)
+        else close()
+      }}
       initialFocus={opts?.focus === 'prompt' ? promptRef : rootRef}
       className="flex w-[440px] flex-col"
     >
@@ -137,8 +176,16 @@ export function CreateWorktreeDialog(): JSX.Element {
           rootRef={rootRef}
           busy={busy}
           setBusy={setBusy}
+          draftRef={draftRef}
         />
       )}
+      {/* Inside the modal's tree, so it nests over it: Escape here returns
+          to the form rather than dismissing both. */}
+      <SaveDraftDialog
+        pending={asking}
+        onCancel={() => setAsking(null)}
+        onDone={() => { setAsking(null); close() }}
+      />
     </Modal>
   )
 }
@@ -150,6 +197,7 @@ function CreateWorktreeForm({
   rootRef,
   busy,
   setBusy,
+  draftRef,
 }: {
   opts: CreateWorktreeDialogOpts
   onClose: () => void
@@ -157,6 +205,7 @@ function CreateWorktreeForm({
   rootRef: RefObject<HTMLDivElement | null>
   busy: boolean
   setBusy: (busy: boolean) => void
+  draftRef: RefObject<PendingDraft | null>
 }): JSX.Element {
   const { projectSlug } = opts
   const snapshot = useSnapshot()
@@ -168,23 +217,45 @@ function CreateWorktreeForm({
 
   const entries = (snapshot?.queuedWorktrees ?? []).filter((e) => e.projectSlug === projectSlug)
   const editing = opts.editId !== undefined ? entries.find((e) => e.id === opts.editId) : undefined
-  // Read once: the form's fields start from the entry as it was when the
-  // dialog opened, not from whatever a later snapshot says.
+  // Read once: the form's fields start from the entry (or draft) as it was
+  // when the dialog opened, not from whatever a later snapshot says.
   const [initial] = useState(editing)
+  const [draft] = useState(() => (snapshot?.draftWorktrees ?? []).find((d) => d.id === opts.draftId))
+  const from = initial ?? draft
+  // A draft's Start is where it would have waited when it was saved; a
+  // parent that has gone since leaves it starting now.
+  const [draftStart] = useState(() => {
+    const id = draft?.startAfter
+    const known = id !== undefined && [
+      ...(snapshot?.worktrees ?? []).map((w) => w.worktreeId),
+      ...(snapshot?.heldWorktrees ?? []).map((h) => h.worktreeId),
+      ...(snapshot?.provisioning ?? []).map((p) => p.worktreeId),
+      ...entries.map((e) => e.id),
+    ].includes(id)
+    return known ? id : ''
+  })
 
-  const [prompt, setPrompt] = useState(initial?.prompt ?? '')
-  const [start, setStart] = useState(initial !== undefined ? queuedParentId(initial) : opts.parent ?? '')
+  const [prompt, setPrompt] = useState(from?.prompt ?? '')
+  const [start, setStart] = useState(initial !== undefined ? queuedParentId(initial)
+    : draft !== undefined ? draftStart : opts.parent ?? '')
   // null = untouched: the input shows (and a submit uses) the seeded branch.
-  const [branchInput, setBranchInput] = useState<string | null>(initial?.branch ?? null)
+  const [branchInput, setBranchInput] = useState<string | null>(from?.branch ?? null)
   const [pinPending, setPinPending] = useState(false)
   const [pinError, setPinError] = useState<string | null>(null)
   // What was picked in THIS dialog; anything unpicked shows the seed. An
-  // edit starts with every field picked — they are the entry's own.
-  const [toolPick, setToolPick] = useState<AgentTool | undefined>(initial?.tool)
+  // edit or a draft starts with every field picked — they are its own.
+  const [toolPick, setToolPick] = useState<AgentTool | undefined>(from?.tool)
   // Picks belong to the agent they were made for: a Start change that moves
   // the agent to another parent's leaves them behind.
-  const [picked, setPicked] = useState<{ tool?: AgentTool; picks: ToolCreateDefaults }>(initial !== undefined
-    ? { tool: initial.tool, picks: { model: initial.model, mode: initial.mode, permissionMode: initial.permissionMode } }
+  const [picked, setPicked] = useState<{ tool?: AgentTool; picks: ToolCreateDefaults }>(from !== undefined
+    ? {
+      tool: from.tool,
+      picks: {
+        ...(from.model !== undefined ? { model: from.model } : {}),
+        mode: from.mode,
+        permissionMode: from.permissionMode,
+      },
+    }
     : { picks: {} })
   // null = not editing: the model field shows the chosen model's name.
   const [modelQuery, setModelQuery] = useState<string | null>(null)
@@ -281,6 +352,33 @@ function CreateWorktreeForm({
   const branchValue = (branchInput ?? seed?.branch ?? defaultResolved ?? '').trim()
   const isDefault = branchValue === (defaultResolved ?? '')
 
+  // What a dismissal would lose: a typed prompt on a create — never an edit
+  // of a queued entry, which has its own Save — unless it is the reopened
+  // draft exactly as saved.
+  const text = prompt.trim()
+  const current: DraftWorktreeSettings = {
+    prompt: text,
+    tool,
+    mode,
+    permissionMode,
+    ...(model !== '' ? { model } : {}),
+    ...(branchValue !== '' ? { branch: branchValue } : {}),
+    ...(start !== '' ? { startAfter: start } : {}),
+  }
+  const unsaved = opts.editId === undefined && text !== '' && (draft === undefined
+    || DRAFT_FIELDS.some((k) => current[k] !== draft[k]))
+  const pending: PendingDraft | null = unsaved
+    ? { projectSlug, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
+    : null
+  useEffect(() => { draftRef.current = pending })
+  // A reload or a closed tab would lose it too, with nobody asked.
+  useEffect(() => {
+    if (!unsaved) return
+    const hold = (e: BeforeUnloadEvent): void => { e.preventDefault() }
+    window.addEventListener('beforeunload', hold)
+    return () => window.removeEventListener('beforeunload', hold)
+  }, [unsaved])
+
   // Why the submit cannot run right now, or null when it can. Mid-edit model
   // text blocks it: it is a search, not a pick, and submitting the previous
   // model instead would not be what the field shows. A queued worktree
@@ -297,18 +395,32 @@ function CreateWorktreeForm({
 
   const submit = (): void => {
     if (busy) return
+    // Missing credentials send the user to Settings instead. They asked to
+    // create, so a typed prompt is kept as a draft on the way rather than
+    // asked about.
+    const handOff = (open: () => void): void => {
+      if (pending === null) {
+        onClose()
+        open()
+        return
+      }
+      setBusy(true)
+      setError(null)
+      keepDraft(pending)
+        .then(() => { onClose(); open() }, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setBusy(false))
+    }
     if (needsGitAuth) {
-      onClose()
-      openSettings('credentials', undefined, projectSlug)
+      handOff(() => openSettings('credentials', undefined, projectSlug))
       return
     }
     if (!signedIn) {
-      onClose()
-      openSettings('credentials', tool)
+      handOff(() => openSettings('credentials', tool))
       return
     }
     if (blocked !== null) return
-    const text = prompt.trim()
+    // The server deletes a draft this was made from once the create or queue
+    // has succeeded, so a failed one keeps it.
     if (!storesEntry) {
       onClose()
       createWorktree(projectSlug, tool, {
@@ -317,6 +429,7 @@ function CreateWorktreeForm({
         permissionMode,
         mode,
         ...(text !== '' ? { prompt: text } : {}),
+        ...(draft !== undefined ? { draftId: draft.id } : {}),
       }, branchValue && !isDefault ? branchValue : undefined)
       return
     }
@@ -324,7 +437,7 @@ function CreateWorktreeForm({
     setBusy(true)
     setError(null)
     const op = initial === undefined
-      ? queueWorktree(projectSlug, start, settings)
+      ? queueWorktree(projectSlug, start, settings, draft?.id)
       : updateQueuedWorktree(initial.id, {
         ...settings,
         ...(queued && start !== queuedParentId(initial) ? { parent: start } : {}),
@@ -438,7 +551,7 @@ function CreateWorktreeForm({
             query={branchInput ?? seed?.branch ?? defaultResolved ?? ''}
             onQueryChange={(q) => { setBranchInput(q); setPinError(null) }}
             onSelect={(b) => setBranchInput(b)}
-            showList={branchInput !== null && branchInput !== initial?.branch}
+            showList={branchInput !== null && branchInput !== from?.branch}
             // Escape abandons the search, not the dialog and its prompt.
             onDismiss={() => setBranchInput(null)}
             placeholder={branchData ? defaultResolved ?? '' : 'loading branches…'}
@@ -601,5 +714,86 @@ function Row({ label, title, children }: { label: string; title?: string; childr
       <span className="w-[76px] shrink-0 pt-[5px]">{label}</span>
       {children}
     </div>
+  )
+}
+
+/**
+ * Asked when a create with a prompt typed is dismissed: keep it as a draft in
+ * the sidebar, or let it go. Escape (or Keep editing) goes back to the form.
+ * Save takes initial focus, so Escape-then-Enter keeps what was typed.
+ */
+function SaveDraftDialog({
+  pending,
+  onCancel,
+  onDone,
+}: {
+  pending: PendingDraft | null
+  onCancel: () => void
+  onDone: () => void
+}): JSX.Element {
+  const saveRef = useRef<HTMLButtonElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const save = (): void => {
+    if (pending === null) return
+    setBusy(true)
+    setError(null)
+    keepDraft(pending)
+      .then(onDone, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false))
+  }
+  const BUTTON = 'flex h-8 items-center rounded-md px-3 text-xs transition disabled:opacity-50'
+  return (
+    <AlertDialog.Root
+      open={pending !== null}
+      onOpenChange={(next) => { if (!next && !busy) { setError(null); onCancel() } }}
+    >
+      <AlertDialog.Portal>
+        <AlertDialog.Backdrop className="fixed inset-0 bg-black/40 transition-opacity duration-150
+          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
+        <AlertDialog.Popup
+          initialFocus={saveRef}
+          className="fixed left-1/2 top-1/2 w-[400px] max-w-[calc(100vw-2rem)] -translate-x-1/2
+            -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)]
+            outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
+            data-[ending-style]:scale-95 data-[ending-style]:opacity-0"
+        >
+          <AlertDialog.Title className="text-sm font-semibold">
+            {pending?.id !== undefined ? 'Save changes to this draft?' : 'Save as a draft?'}
+          </AlertDialog.Title>
+          <AlertDialog.Description className="mt-1 text-xs leading-relaxed text-text-dim">
+            {pending?.id !== undefined
+              ? 'Discarding keeps the draft as it was saved.'
+              : 'A draft keeps the prompt and settings in the sidebar, to create from later.'}
+          </AlertDialog.Description>
+          {error && <p className="mt-2 text-xs text-[#d65858]">{error}</p>}
+          <div className="mt-5 flex justify-end gap-2">
+            <AlertDialog.Close
+              disabled={busy}
+              className={clsx(BUTTON, 'mr-auto text-text-dim hover:bg-surface-3 hover:text-text')}
+            >
+              Keep editing
+            </AlertDialog.Close>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onDone}
+              className={clsx(BUTTON, 'text-text-dim hover:bg-surface-3 hover:text-text')}
+            >
+              {pending?.id !== undefined ? 'Discard changes' : 'Discard'}
+            </button>
+            <button
+              ref={saveRef}
+              type="button"
+              disabled={busy}
+              onClick={save}
+              className={clsx(BUTTON, 'bg-accent font-medium text-bg hover:brightness-110')}
+            >
+              {busy ? 'Saving…' : pending?.id !== undefined ? 'Save changes' : 'Save draft'}
+            </button>
+          </div>
+        </AlertDialog.Popup>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   )
 }

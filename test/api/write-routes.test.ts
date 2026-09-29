@@ -15,6 +15,7 @@ import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/w
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
 import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
 import { getQueuedWorktreeRow } from '@yaac/server/db/queued-worktree-store'
+import { listDraftWorktrees } from '@yaac/server/domain/worktrees/drafts'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { closeDb } from '@yaac/server/db/client'
 import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
@@ -1129,6 +1130,73 @@ describe('write routes', () => {
       expect((await post('discard', { id: middle })).status).toBe(404)
       // An entry with no prompt would launch an agent nobody is watching.
       expect((await post('create', { project: 'demo', parent: 'parent', prompt: '' })).status).toBe(400)
+    })
+  })
+
+  // Drafts through the routes (docs/draft-worktrees.md): a save without an
+  // id makes one, with an id replaces it, and the snapshot carries them.
+  describe('draft worktree routes', () => {
+    const post = (route: string, body: unknown): Promise<Response> =>
+      Promise.resolve(buildApp({ buildId: 'test' }).request(`/worktree/draft/${route}`, rawInit({
+        method: 'POST', body: JSON.stringify(body),
+      })))
+    const settings = { prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' }
+
+    beforeEach(async () => { await writeProject('demo') })
+
+    it('saves, replaces and discards a draft', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const saved = await (await client.worktree.draft.save.$post({
+        json: { project: 'demo', prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', branch: 'dev' },
+      })).json()
+      expect(saved).toMatchObject({ projectSlug: 'demo', tool: 'codex', mode: 'acp', branch: 'dev' })
+
+      const replaced = await (await client.worktree.draft.save.$post({
+        json: { id: saved.id, project: 'demo', prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan', startAfter: 'w1' },
+      })).json()
+      expect(replaced).toMatchObject({ id: saved.id, tool: 'claude', startAfter: 'w1' })
+      expect(replaced).not.toHaveProperty('branch')
+      expect((await listDraftWorktrees()).map((d) => d.id)).toEqual([saved.id])
+
+      expect((await post('discard', { id: saved.id })).status).toBe(204)
+      expect((await post('discard', { id: saved.id })).status).toBe(404)
+      // A draft that is gone is not silently re-created by a save naming it.
+      expect((await post('save', { id: saved.id, project: 'demo', ...settings })).status).toBe(404)
+      // An empty prompt has nothing to keep.
+      expect((await post('save', { project: 'demo', ...settings, prompt: '' })).status).toBe(400)
+      expect((await listDraftWorktrees())).toEqual([])
+    })
+
+    // The draft goes only once what was made from it exists, so a create
+    // that fails leaves the prompt somewhere.
+    it('drops the draft a create or queue names, once it has succeeded', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const draft = async (): Promise<string> => (await (await client.worktree.draft.save.$post({
+        json: { project: 'demo', prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' },
+      })).json()).id
+      const ids = async (): Promise<string[]> => (await listDraftWorktrees()).map((d) => d.id)
+
+      const failed = await draft()
+      mockCreateWorktree.mockRejectedValueOnce(new ServerError('VALIDATION', 'no github token'))
+      await (await client.worktree.create.$post({ json: { project: 'demo', draftId: failed } })).text()
+      expect(await ids()).toEqual([failed])
+
+      mockCreateWorktree.mockResolvedValueOnce({
+        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+      })
+      await (await client.worktree.create.$post({ json: { project: 'demo', draftId: failed } })).text()
+      expect(await ids()).toEqual([])
+
+      const queued = await draft()
+      expect((await client.worktree.queue.create.$post({
+        json: { project: 'demo', parent: 'nope', prompt: 'p', draftId: queued },
+      })).status).toBe(404)
+      expect(await ids()).toEqual([queued])
+      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+      expect((await client.worktree.queue.create.$post({
+        json: { project: 'demo', parent: 'parent', prompt: 'someday', draftId: queued },
+      })).status).toBe(200)
+      expect(await ids()).toEqual([])
     })
   })
 

@@ -44,6 +44,8 @@ export interface CreateWorktreeOptions {
   permissionMode?: PermissionMode
   /** The agent's opening message, typed into it once it is up. */
   prompt?: string
+  /** The draft this create is made from, deleted once it has succeeded. */
+  draftId?: string
 }
 
 export async function createWorktree(
@@ -62,6 +64,7 @@ export async function createWorktree(
     ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
     ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
     ...(opts.prompt ? { prompt: opts.prompt } : {}),
+    ...(opts.draftId !== undefined ? { draftId: opts.draftId } : {}),
   }
   return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
 }

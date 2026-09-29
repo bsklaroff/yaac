@@ -9,6 +9,7 @@ import { UsageBadge } from '#components/UsageBadge'
 import { WorktreeList } from '#components/WorktreeList'
 import type {
   GitAuthFailure,
+  DraftWorktreeEntry,
   HeldWorktreeEntry,
   ProvisioningWorktreeEntry,
   QueuedWorktreeEntry,
@@ -31,6 +32,7 @@ export function WorktreesScreen({
   provisioning,
   queued,
   held,
+  drafts,
   connected,
   gitAuthFailures,
   onBack,
@@ -47,6 +49,8 @@ export function WorktreesScreen({
    *  still wait on. */
   queued: QueuedWorktreeEntry[]
   held: HeldWorktreeEntry[]
+  /** The active project's draft worktrees. */
+  drafts: DraftWorktreeEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
   gitAuthFailures: GitAuthFailure[]
@@ -91,6 +95,7 @@ export function WorktreesScreen({
         provisioning={provisioning}
         queued={queued}
         held={held}
+        drafts={drafts}
       />
     </>
   )

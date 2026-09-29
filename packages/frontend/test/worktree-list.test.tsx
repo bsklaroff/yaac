@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type {
+  DraftWorktreeEntry,
   HeldWorktreeEntry,
   ProvisioningWorktreeEntry,
   QueuedWorktreeEntry,
@@ -31,12 +32,14 @@ vi.mock('#lib/queueApi', () => ({
   runQueuedWorktree: vi.fn(() => Promise.resolve({ worktreeId: 'w-run' })),
   discardQueuedWorktree: vi.fn(() => Promise.resolve()),
 }))
+vi.mock('#lib/draftApi', () => ({ discardDraftWorktree: vi.fn(() => Promise.resolve()) }))
 // The stop dialog lists what is queued, off the snapshot.
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { WorktreeList } from '#components/WorktreeList'
 import { renameWorktree } from '#lib/createWorktree'
+import { discardDraftWorktree } from '#lib/draftApi'
 import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
 import {
   createWorktreeGroup,
@@ -124,6 +127,7 @@ function renderList(
     provisioning?: ProvisioningWorktreeEntry[]
     queued?: QueuedWorktreeEntry[]
     held?: HeldWorktreeEntry[]
+    drafts?: DraftWorktreeEntry[]
   } = {},
 ): void {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -136,6 +140,7 @@ function renderList(
         provisioning={opts.provisioning ?? []}
         queued={opts.queued ?? []}
         held={opts.held ?? []}
+        drafts={opts.drafts ?? []}
       />
     </QueryClientProvider>,
   )
@@ -366,6 +371,45 @@ describe('WorktreeList', () => {
       )).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
       await waitFor(() => expect(discardQueuedWorktree).toHaveBeenCalledWith('q1'))
+    })
+  })
+
+  describe('draft worktrees', () => {
+    const draft = (id: string, over: Partial<DraftWorktreeEntry> = {}): DraftWorktreeEntry => ({
+      id, projectSlug: 'proj', prompt: `Idea ${id}\nmore detail`, tool: 'codex', mode: 'tui',
+      permissionMode: 'manual', createdAt: '2026-08-10 00:00:00', updatedAt: '2026-08-10 00:00:00', ...over,
+    })
+
+    it('shows no section without drafts, and a collapsible one above everything with them', () => {
+      renderList([entry({ title: 'Live' })])
+      expect(screen.queryByRole('group', { name: 'Drafts' })).toBeNull()
+
+      cleanup()
+      renderList([entry({ title: 'Live' })], {
+        drafts: [draft('d1'), draft('d2', { title: 'Generated title' })],
+      })
+      const section = screen.getByRole('group', { name: 'Drafts' })
+      // Newest first; a generated title wins over the prompt's first line.
+      expect(section.textContent).toMatch(/Generated title.*Idea d1/)
+      const all = document.body.textContent ?? ''
+      expect(all.indexOf('Idea d1')).toBeLessThan(all.indexOf('Live'))
+
+      fireEvent.click(screen.getByRole('button', { name: /Drafts/ }))
+      expect(screen.queryByText('Idea d1')).toBeNull()
+      // Nothing is shown, but the list is not empty either.
+      expect(screen.queryByText('No worktrees yet')).toBeNull()
+    })
+
+    it('reopens the create dialog on click, and discards from its menu', async () => {
+      renderList([], { drafts: [draft('d1')] })
+      expect(screen.queryByText('No worktrees yet')).toBeNull()
+      fireEvent.click(screen.getByText('Idea d1'))
+      expect(useUiStore.getState().createWorktreeDialog)
+        .toEqual({ projectSlug: 'proj', draftId: 'd1', focus: 'prompt' })
+
+      await pickAction('Discard…', 'Draft actions')
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+      await waitFor(() => expect(discardDraftWorktree).toHaveBeenCalledWith('d1'))
     })
   })
 

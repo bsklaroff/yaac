@@ -86,7 +86,7 @@ function stubSnapshot(
 ): void {
   vi.mocked(useSnapshot).mockReturnValue({
     driver: 'k8s',
-    worktrees: [], worktreeGroups: [], stale: [], projects: [], provisioning: [], queuedWorktrees: [], heldWorktrees: [], gitAuthFailures: {},
+    worktrees: [], worktreeGroups: [], stale: [], projects: [], provisioning: [], queuedWorktrees: [], heldWorktrees: [], draftWorktrees: [], gitAuthFailures: {},
     imageBuilds: [],
     planUsage,
     codexPlanUsage,

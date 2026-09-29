@@ -18,6 +18,7 @@ import { Menu } from '@base-ui/react/menu'
 import {
   ChevronIcon,
   CloseIcon,
+  DraftIcon,
   GroupRemoveIcon,
   LoadingIcon,
   MoreIcon,
@@ -43,6 +44,7 @@ import {
 } from '#lib/groupApi'
 import { useInlineEdit, useInlineRename } from '#lib/useInlineRename'
 import { getStoppedWorktrees } from '#lib/stoppedApi'
+import { discardDraftWorktree } from '#lib/draftApi'
 import { discardQueuedWorktree, runQueuedWorktree } from '#lib/queueApi'
 import { clip, queuedChildren, queuedTitle } from '#lib/queued'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
@@ -55,6 +57,7 @@ import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 // server will not keep.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import type {
+  DraftWorktreeEntry,
   HeldWorktreeEntry,
   StoppedWorktreeEntry,
   ProvisioningWorktreeEntry,
@@ -291,6 +294,7 @@ export function WorktreeList({
   provisioning,
   queued = [],
   held = [],
+  drafts = [],
 }: {
   projectSlug: string | null
   worktrees: WorktreeListEntry[]
@@ -301,6 +305,8 @@ export function WorktreeList({
    *  still wait on. */
   queued?: QueuedWorktreeEntry[]
   held?: HeldWorktreeEntry[]
+  /** The active project's draft worktrees. */
+  drafts?: DraftWorktreeEntry[]
 }): JSX.Element {
   // A mid-flight optimistic delete doesn't move a row any more — it greys it
   // where it sits — so the list needs pendingDeleteIds only to keep the
@@ -473,7 +479,8 @@ export function WorktreeList({
               : 'Pick a project from the rail on the left.'}
           />
         )}
-        {projectSlug && visibleCount === 0 && provisioning.length === 0 && queued.length === 0 && (
+        {projectSlug && visibleCount === 0 && provisioning.length === 0 && queued.length === 0
+          && drafts.length === 0 && (
           <EmptyState
             compact
             className="py-10"
@@ -481,6 +488,7 @@ export function WorktreeList({
             description="Start one with the + above."
           />
         )}
+        {drafts.length > 0 && <DraftsSection drafts={drafts} />}
         {layout.orphans.map((e) => (
           <Fragment key={e.id}>
             <QueuedWorktreeRow entry={e} depth={0} />
@@ -1374,6 +1382,83 @@ function QueuedWorktreeRow({ entry, depth }: { entry: QueuedWorktreeEntry; depth
         onConfirm={() => {
           setConfirmDiscard(false)
           void discardQueuedWorktree(entry.id).catch(report)
+        }}
+      />
+    </div>
+  )
+}
+
+/**
+ * The project's draft worktrees (docs/draft-worktrees.md), collapsible, at
+ * the top of the list — above everything that exists, since none of these
+ * does yet. Only rendered when there is at least one.
+ */
+function DraftsSection({ drafts }: { drafts: DraftWorktreeEntry[] }): JSX.Element {
+  const [open, setOpen] = useState(true)
+  return (
+    <div role="group" aria-label="Drafts" className="py-1">
+      <Collapsible.Root open={open} onOpenChange={setOpen}>
+        <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
+          text-text-faint outline-none transition hover:text-text-dim">
+          <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
+          <span>Drafts</span>
+          <span className="text-text-faint/70">{drafts.length}</span>
+        </Collapsible.Trigger>
+        <Collapsible.Panel>
+          {/* Newest first, as everything else in the list is. */}
+          {[...drafts].reverse().map((d) => <DraftWorktreeRow key={d.id} draft={d} />)}
+        </Collapsible.Panel>
+      </Collapsible.Root>
+    </div>
+  )
+}
+
+/** A saved draft: clicking it reopens the create dialog on it; its menu can
+ *  also discard it. Not selectable — there is nothing to open until it is
+ *  created — so it stays out of the Alt+J/K cycle. */
+function DraftWorktreeRow({ draft }: { draft: DraftWorktreeEntry }): JSX.Element {
+  const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const name = draft.title ?? queuedTitle(draft)
+  const open = (): void => openCreateWorktree({ projectSlug: draft.projectSlug, draftId: draft.id, focus: 'prompt' })
+
+  return (
+    <div className="group relative mx-2">
+      <button
+        type="button"
+        onClick={open}
+        title={draft.prompt}
+        className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition
+          hover:bg-surface-2/60"
+      >
+        <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
+          <DraftIcon size={11} className="shrink-0 text-text-faint" />
+          <span className="truncate text-text-dim">{name}</span>
+        </span>
+        <span className="flex items-center gap-2 text-xs text-text-faint">
+          <span className="shrink-0">{relativeAge(draft.updatedAt)}</span>
+          <span className="ml-auto truncate">{agentLabel(draft.tool, draft)}</span>
+        </span>
+      </button>
+
+      <RowMenu
+        label="Draft actions"
+        items={[
+          { label: 'Open…', onSelect: open },
+          'separator',
+          { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
+        ]}
+      />
+
+      <ConfirmDialog
+        open={confirmDiscard}
+        onOpenChange={setConfirmDiscard}
+        title="Discard draft?"
+        description={`“${clip(name)}” will be deleted.`}
+        confirmLabel="Discard"
+        onConfirm={() => {
+          setConfirmDiscard(false)
+          void discardDraftWorktree(draft.id).catch((e: unknown) => console.error('draft discard failed', e))
         }}
       />
     </div>

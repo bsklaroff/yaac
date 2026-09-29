@@ -16,6 +16,7 @@ import {
 } from '#lib/store'
 import type {
   GitAuthFailure,
+  DraftWorktreeEntry,
   HeldWorktreeEntry,
   ProvisioningWorktreeEntry,
   QueuedWorktreeEntry,
@@ -130,6 +131,7 @@ export function Sidebar({
   provisioning,
   queued,
   held,
+  drafts,
   connected,
   gitAuthFailures,
 }: {
@@ -145,6 +147,8 @@ export function Sidebar({
    *  still wait on. */
   queued: QueuedWorktreeEntry[]
   held: HeldWorktreeEntry[]
+  /** The active project's draft worktrees. */
+  drafts: DraftWorktreeEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
   gitAuthFailures: GitAuthFailure[]
@@ -210,6 +214,7 @@ export function Sidebar({
           provisioning={provisioning}
           queued={queued}
           held={held}
+          drafts={drafts}
         />
       </div>
 

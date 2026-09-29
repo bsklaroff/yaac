@@ -29,7 +29,7 @@ function emptySnapshot(): ServerSnapshot {
   return {
     driver: 'k8s',
     worktrees: [], worktreeGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
-    queuedWorktrees: [], heldWorktrees: [],
+    queuedWorktrees: [], heldWorktrees: [], draftWorktrees: [],
     imageBuilds: [],
     planUsage: null,
     codexPlanUsage: null,

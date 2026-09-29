@@ -26,7 +26,7 @@ import { _resetTitleSummarizerForTests } from '#domain/titles/title-summarizer'
 import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { getProjectWorktreeRows, setWorktreeTitle } from '#db/worktree-store'
-import { applyWorktreeEvent } from '#db'
+import { applyWorktreeEvent, insertDraftWorktree, listDraftWorktreeRows, updateDraftWorktree } from '#db'
 import type * as storeModule from '#db/worktree-store'
 import { closeDb } from '#db/client'
 import { execFileAsync } from '#lib/shell'
@@ -357,6 +357,35 @@ describe('reconcileGeneratedTitles', () => {
     release(TITLE)
     await flush()
     expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE, { ifUntitled: true })
+  })
+
+  // A draft is titled from its prompt, straight into its own row, and gets
+  // one fresh attempt per prompt it is saved with.
+  it('titles a draft worktree, and again once its prompt is edited', async () => {
+    await seedCache()
+    const draft = await insertDraftWorktree('p', {
+      prompt: PROMPT, tool: 'claude', mode: 'tui', permissionMode: 'manual',
+    })
+    await insertDraftWorktree('p', { prompt: 'short enough', tool: 'claude', mode: 'tui', permissionMode: 'manual' })
+    await reconcileGeneratedTitles()
+    await flush()
+    expect(inferences()).toHaveLength(1)
+    const titleOf = async (): Promise<string | undefined> =>
+      (await listDraftWorktreeRows()).find((d) => d.id === draft.id)?.title
+    expect(await titleOf()).toBe(TITLE)
+
+    const edited = `${PROMPT}, and document the widget registry`
+    reply = () => Promise.resolve('Document widget registry')
+    await updateDraftWorktree('p', draft.id, { prompt: edited, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
+    await reconcileGeneratedTitles()
+    await flush()
+    await reconcileGeneratedTitles()
+    await flush()
+    expect(inferences()).toHaveLength(2)
+    expect(payloadOf(inferences()[1])).toContain(edited)
+    expect(await titleOf()).toBe('Document widget registry')
+    // Worktree titles go through their own writer; a draft never touches it.
+    expect(mockSetTitle).not.toHaveBeenCalled()
   })
 
   it('keeps a rename that lands while the model is still running', async () => {
