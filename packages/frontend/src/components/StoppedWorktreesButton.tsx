@@ -2,7 +2,8 @@ import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
-import { CloseIcon, DeleteIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
+import { CloseIcon, DeleteIcon, RestartIcon } from '#lib/icons'
+import { agentLabel, worktreeModel } from '#lib/agentLabel'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MasterDetail } from '#components/ui/MasterDetail'
@@ -58,7 +59,7 @@ export function StoppedWorktreesButton({
 
   const q = queryText.trim().toLowerCase()
   const rows = q
-    ? stopped.filter((d) => `${label(d)} ${TOOL_LABEL[d.tool]}`.toLowerCase().includes(q))
+    ? stopped.filter((d) => `${label(d)} ${agentLabel(d.tool, worktreeModel(d))}`.toLowerCase().includes(q))
     : stopped
   // `picked` is a row the user clicked; `selected` is what the detail pane
   // shows. Desktop shows both panes, so the top row stands in there until the
@@ -230,7 +231,7 @@ export function StoppedWorktreesButton({
                                 ? `died ${relativeAge(d.stoppedAt)} — ${describeWorktreeDeathReason(d.deathReason)}`
                                 : d.stoppedAt ? `stopped ${relativeAge(d.stoppedAt)}` : `last active ${relativeAge(d.lastActiveAt ?? d.createdAt)}`}
                             </span>
-                            <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
+                            <span className="ml-auto shrink-0">{agentLabel(d.tool, worktreeModel(d))}</span>
                           </span>
                         </button>
                       </li>
@@ -251,7 +252,7 @@ export function StoppedWorktreesButton({
                         {label(selected)}
                       </h3>
                       <dl className="mt-3 grid shrink-0 grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-text-faint">
-                        <dt>Tool</dt><dd className="text-text-dim">{TOOL_LABEL[selected.tool]}</dd>
+                        <dt>Tool</dt><dd className="text-text-dim">{agentLabel(selected.tool, worktreeModel(selected))}</dd>
                         <dt>Created</dt><dd className="text-text-dim">{relativeAge(selected.createdAt) || '—'}</dd>
                         <dt>Last active</dt><dd className="text-text-dim">{relativeAge(selected.lastActiveAt) || '—'}</dd>
                         <dt>{selected.deathReason ? 'Died' : 'Stopped'}</dt>

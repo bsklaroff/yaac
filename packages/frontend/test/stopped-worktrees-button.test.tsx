@@ -119,6 +119,28 @@ describe('StoppedWorktreesButton', () => {
     expect(screen.getAllByText('Add tests').length).toBeGreaterThan(0)
   })
 
+  it('names the agent with its model in the row, the detail, and the search', async () => {
+    vi.mocked(getStoppedWorktrees).mockResolvedValue([
+      ...TWO,
+      entry({
+        worktreeId: 's3', title: 'Tune cache', tool: 'opencode',
+        agentSessions: [{
+          agentSessionId: 'c3', tool: 'opencode', mode: 'tui', ordinal: 0, active: true,
+          model: 'anthropic/claude-opus-4-8',
+        }],
+      }),
+    ])
+    await open()
+    fireEvent.click(await screen.findByText('Tune cache'))
+    // The same label a live row carries; a worktree that never reported a
+    // model keeps the bare tool name.
+    await waitFor(() => expect(screen.getAllByText('OpenCode · Opus 4.8')).toHaveLength(2))
+    expect(screen.getByText('Codex')).toBeTruthy()
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'opus' } })
+    expect(screen.queryByText('Fix parser')).toBeNull()
+    expect(screen.getAllByText('Tune cache').length).toBeGreaterThan(0)
+  })
+
   it('renders a died row with its cause in the list and detail, and its title in the restart dialog', async () => {
     vi.mocked(getStoppedWorktrees).mockResolvedValue([
       entry({

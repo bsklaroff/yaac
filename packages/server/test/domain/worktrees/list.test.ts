@@ -21,6 +21,7 @@ import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { closeDb } from '#db/client'
 import { recordWorktreeCreated } from '#db/worktree-store'
+import { recordAgentSessions } from '#db/agent-session-store'
 import { recordProject } from '#db/project-store'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 import {
@@ -67,6 +68,11 @@ describe('listActiveWorktrees', () => {
   })
 
   it('renders a stopping pod as a non-interactive stopping row, not stale', async () => {
+    await writeProject('demo')
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'dying' })
+    await recordAgentSessions('demo', 'dying', [
+      { tool: 'claude', agentSessionId: 'dying', model: 'claude-sonnet-5' },
+    ])
     mockListPods.mockResolvedValue([{
       jobName: 'yaac-demo-dying',
       podName: 'yaac-demo-dying-x1',
@@ -88,6 +94,11 @@ describe('listActiveWorktrees', () => {
     // Forced 'running' with no waiting stamp, so no attention badge fires.
     expect(row.status).toBe('running')
     expect(row.waitingSinceMs).toBeUndefined()
+    // Its conversations stay listed, so the row keeps naming its model, but
+    // carry no live status of their own.
+    expect(row.agentSessions).toHaveLength(1)
+    expect(row.agentSessions[0]).toMatchObject({ model: 'claude-sonnet-5' })
+    expect(row.agentSessions[0].status).toBeUndefined()
   })
 
   it('prunes a stopping mark once its pod is gone', async () => {
