@@ -152,113 +152,43 @@ loads it).
 
 ## Workstream 4: projects get an immutable id
 
-**Today.** A project's only identity is its slug: the remote's last path
-segment, lowercased (`domain/projects/add.ts`). Two remotes named `app` get
-the same slug, and removing one frees the slug for the other. Removal
-clears every DB table, but the state *outside* the DB is named by slug and
-cleaned up best-effort:
+Shipped. `projects.id` (uuid, unique, minted at insert, never reused) names
+every per-project object outside the data dir, so a project re-added under a
+freed slug inherits nothing whether or not the old one's removal succeeded.
+The data dir (`global/projects/<slug>/`) and every row keep the slug.
 
-- **Registry build cache.** `yaac-buildcache-<slug>` in the main registry
-  is never removed, only aged out after 168h. A same-slug project's builds
-  `--cache-from` it.
-- **Per-project registry.** It is named
-  `yaac-reg-<slug≤21>-<hash(dataDir/slug)>`, which is deterministic from
-  the slug, and its PVC is named after it. If removal fails,
-  `gcOrphanProjectRegistries` sweeps it only when `projectDir(slug)` does
-  not exist. A re-add before that sweep inherits the old registry, its
-  data, and a policy admitting the new project's pods.
-- **Node-local stores.** `removeNodeLocalProject` runs one pod per node,
-  swallows failures, and returns silently if the builder image is missing.
-  The node-local sweep never removes a whole `projects/<slug>` or
-  `shared-images/<slug>`. A node that missed the cleanup keeps the old
-  image-store generations, and the new project's first generation there is
-  seeded from them with `cp -al`.
-- **Minor residue:**
-  - in-memory throttle maps keyed by slug (`lastRefreshMs`,
-    `lastRegistryGcMs`, prewarm);
-  - the macOS Keychain item for `claudeDir(slug)` (containerless);
-  - the proxy's `git-auth-failures` record.
-- **Labels.** The raw slug goes into the `yaac.project` label with no
-  charset or length check, so a slug over 63 characters, or containing `+`
-  or `%`, breaks label writes today.
+- **Plumbing.** The runtime is handed a `ProjectRef { slug, id }` and never
+  looks the id up: `SubstrateIntent.projectId`, `prepareImage`,
+  `destroyProjectSubstrate`, and `PassContext.projects()`, which now rejects
+  rather than resolving empty. Worktree pods carry `yaac.project-id`, which
+  the image salvage and the registry's NetworkPolicies select on.
+- **Names.** `yaac-reg-<id>` (and its PVC, policies and one-shot pods),
+  `yaac-proj-<id>` for the project layer (formerly a tag in `yaac-base`),
+  `yaac-user-<id>`, `yaac-buildcache-<id>`, and the node-local
+  `projects/<id>/` and `shared-images/<id>/`. The in-memory per-project maps
+  are keyed by id.
+- **Slug hygiene.** `addProject` derives a valid label value
+  (`[a-z0-9._-]`, alphanumeric ends, ≤ 63).
+- **Id-keyed GCs, all permanent.** The `orphan-registry-gc` step removes
+  this install's registries whose id is not live or that carry none; the
+  node-local sweep (`reapNodeLocal`, now also under containerless) removes
+  any project tree no live id holds unless a live pod mounts it; the main
+  registry's GC deletes `yaac-{proj,user,buildcache}-<x>` for a dead `x`
+  unless a workload names one of its tags. `removeProject` drops the
+  Keychain item.
 
-**Design.** Each project row gets a UUID that never changes and is never
-reused. Every per-project object *outside the data dir* is named by it, so
-a new project cannot inherit an old one's objects by construction, whether
-or not cleanup succeeded. The data dir (`projects/<slug>/`) keeps the slug:
-it is removed synchronously and reliably, it is user-visible, and renaming
-it is a migration with no payoff.
-
-1. **Schema.** `projects.id uuid not null unique default
-   gen_random_uuid()`, in migration `add_project_id`. The backfill is the
-   column default. `slug` stays the primary key and every
-   `projectSlug`-keyed table is unchanged, since rows were never the leak.
-   `recordProject` returns the id.
-2. **`project.json` carries the id.** `adoptProjectDirs` adopts it when
-   present and otherwise mints one and writes it back, so a restored or
-   copied project dir keeps its identity. That shim entry (it is
-   deliberately not one-shot) gains a sentence.
-3. **The id reaches the substrate as data.** Drivers never look it up. The
-   launch intent, `ensureProjectRegistry`, `destroyProjectSubstrate`, the
-   store writer, the builder pod and the image-tag builders take a
-   `ProjectRef { slug, id }` where they take a slug today. The slug stays
-   for display, labels and log lines.
-4. **Names built from the id.**
-
-   | Object | Today | After |
-   |---|---|---|
-   | Per-project registry (Service, Deployment, PVC, NetworkPolicies, pods) | `yaac-reg-<slug≤21>-<hash8>` | `yaac-reg-<id>`. At 45 characters it fits every derived name within 63; the `-hosts-` / `-cleanup-` / `-gc-` pods are subdomain names, limited to 253. The install hash goes: a UUID cannot collide across installs sharing a cluster. |
-   | Registry repos | `yaac-user-<slug>`, `yaac-buildcache-<slug>`, project layer in `yaac-base` | `yaac-user-<id>`, `yaac-buildcache-<id>`, `yaac-proj-<id>` (workstream 5 needs these per-project names) |
-   | Node-local project tree | `node-local/projects/<slug>/`, `shared-images/<slug>/` | `node-local/projects/<id>/`, `shared-images/<id>/`. The global `projects/<slug>/` is unchanged. |
-   | In-memory per-project maps | slug | id |
-   | Labels | `yaac.project=<raw slug>` | unchanged key and value, plus `yaac.project-id=<id>` on registry-owned objects so the GCs select by id |
-
-5. **Slug hygiene.** `addProject` sanitizes the derived slug to a valid
-   label value: `[a-z0-9._-]`, alphanumeric at both ends, at most 63
-   characters. It does not refuse. This changes the slug only for names
-   that break label writes today.
-6. **Garbage collection keys on ids, not directories.** Each of these is
-   permanent (it also covers every failed removal), not a shim:
-   - `gcOrphanProjectRegistries` removes registry objects whose
-     `yaac.project-id` is not a live project id, and objects with no id
-     label at all.
-   - The node-local sweep (`buildNodeLocalSweepScript`) is handed the live
-     project-id set, as it is already handed the live worktree set. It
-     removes any `projects/<x>` or `shared-images/<x>` whose `x` is not in
-     it, except a path any live pod mounts. That set is already read from
-     pod specs.
-   - The main-registry GC (`images/main-registry-gc.ts`), which
-     already works on the registry's storage from a pod, also deletes
-     `yaac-{user,proj,buildcache}-<x>` repo dirs whose `x` is not a live
-     id, before its `garbage-collect`.
-   - `removeProject` drops the Keychain item. The `git-auth-failures`
-     record is re-keyed per (project, owner) in multi-user phase 3 and is
-     left alone here: it is a badge, not a capability.
-
-**Upgrade cost, stated plainly.** Existing projects get a fresh id on
-migration, so their id-named objects start empty:
-
-- one cold nested-image cache per nested project;
-- one image rebuild per project with a custom layer, because the repo names
-  change;
-- one cold pnpm store per project under containerless.
-
-The old slug-named objects carry no id label, or sit in no live id's path,
-so the permanent GCs above reap them. The running pods that still mount an
-old node-local path are protected by the live-mount check. No shim entry
-is needed.
-
-**Tests.**
-
-- **Unit `test/db`:** project id minted and stable across
-  `adoptProjectDirs`.
-- **Unit `test/drivers/k8s/cluster`:** registry names built from the id,
-  with every derived name at most 63 characters.
-- **Unit `node-local-sweep`:** the script keeps live ids and live-mounted
-  paths and removes the rest.
-- **e2e (k8s):** remove a nested project, re-add the same URL, and assert
-  that the new registry's catalog is empty and a different registry
-  Service backs it.
+There was no `project.json` left to adopt an id from, so existing projects
+get a fresh id from the migration default and pay the upgrade cost once:
+cold nested caches and one rebuild per custom layer; the GCs above reap the
+slug-named leftovers. Pods started before the upgrade carry no
+`yaac.project-id`, so a running nested worktree loses its project registry
+on the first orphan pass. The old registry is removed, the new one's
+policies do not admit the pod, and its salvage is skipped. It pushes nothing
+and pulls from upstream until it is restarted. A pre-upgrade nested **spare**
+is the same for its whole life, so drain spares across the upgrade.
+Two branches exist only for pre-id objects and are listed in
+docs/legacy-compat-shims.md: the orphan registry sweep's no-id branch, and
+the containerless sweep's running-slug keep.
 
 ---
 
@@ -315,7 +245,7 @@ preferred to the alternatives.
 **The repository layout makes the scopes expressible.** Today the
 *untrusted* project layer is tagged `yaac-base:<projectHash>`, in the same
 repo as the trusted base (`image-builder.ts`). No repo-scoped grant can
-separate the two. Workstream 4 moves it to `yaac-proj-<id>`, so:
+separate the two. Workstream 4 moved it to `yaac-proj-<id>`, so:
 
 | Repo | Written by | Grant |
 |---|---|---|
@@ -491,11 +421,9 @@ scope, because the writer *is* the sandbox.
 
 Each numbered step is one reviewable change.
 
-1. ~~3.1 harvest gate~~, ~~Workstream 2~~, ~~1.1~~, ~~1.2–1.5~~, ~~3.2–3.4~~:
-   shipped.
-2. **Workstream 4.** Schema and `project.json`, then the `ProjectRef`
-   plumbing and names, then the id-keyed GCs.
-3. **Workstream 5.** Repo layout (`yaac-proj-<id>`), then key and minting,
+1. ~~3.1 harvest gate~~, ~~Workstream 2~~, ~~1.1~~, ~~1.2–1.5~~, ~~3.2–3.4~~,
+   ~~Workstream 4~~: shipped.
+2. **Workstream 5.** Repo layout (`yaac-proj-<id>`), then key and minting,
    then the gate and client authfiles in one change, since a gate without
    clients breaks every build.
 
@@ -512,18 +440,14 @@ per-worktree-agent-history can start now.
 
 ## Legacy-compat entries (docs/legacy-compat-shims.md)
 
-- **"`adoptProjectDirs`"** gains: it adopts or mints the project id from
-  `project.json`.
-- Nothing else. The id-keyed GCs in workstream 4 are permanent, because
-  they sweep failed removals as well as pre-upgrade names. The registry
-  gate has no compatibility window (5.5).
+Workstream 4 added "Registries named before project ids" and "Workspaces
+started before project ids". The id-keyed GCs themselves are permanent,
+because they sweep failed removals as well as pre-upgrade names. The
+registry gate has no compatibility window (5.5).
 
 ## Docs to update on ship
 
 - **docs/trust-split-builds.md:** the gate and grants (workstream 5).
-- **docs/nested-containers.md:** registry names and node-store paths by
-  project id; the project-shared-namespace statement from 5.6.
-- **docs/worktree-storage.md:** the node-local tree keyed by project id.
 - **docs/server-git.md:** once worktree-reference-clones lands, not
   before.
 - **docs/plans/multi-user-deployment.md:**
@@ -556,5 +480,3 @@ change that depends on it:
   pull. If it does request it, the gate answers 200 to anonymous `/v2/`,
   and podman is given credentials preemptively through its authfile
   (verify it sends them unprompted).
-- **`gen_random_uuid()`** under the pinned PGlite, for the `add_project_id`
-  default (4).

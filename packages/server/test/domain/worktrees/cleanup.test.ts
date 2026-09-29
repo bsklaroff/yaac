@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as dbModule from '#db'
 
-vi.mock('#db', async (importOriginal) => ({
-  ...(await importOriginal<typeof dbModule>()),
-  applyWorktreeEvent: vi.fn(),
-}))
+vi.mock('#db', async (importOriginal) => {
+  const actual = await importOriginal<typeof dbModule>()
+  return {
+    ...actual,
+    applyWorktreeEvent: vi.fn(),
+    // Real, but replaceable: an unreadable project list is a case of its own.
+    listProjectRows: vi.fn(actual.listProjectRows),
+  }
+})
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -50,8 +55,10 @@ import {
   worktreeStateDir,
 } from '@yaac/shared/project-paths'
 import type { WorktreeEvent } from '#db'
-import { applyWorktreeEvent, closeDb, listProjectWorktreeIds } from '#db'
+import type { NodeLocalLiveSet } from '#drivers/contract'
+import { applyWorktreeEvent, closeDb, listProjectRows, listProjectWorktreeIds } from '#db'
 import { recordWorktreeCreated } from '#db/worktree-store'
+import { recordProject } from '#db/project-store'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
 import {
   handleFixture,
@@ -526,13 +533,13 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   }
 
   /** What the runtime was handed to reap on the node-local side. */
-  let reaped: Array<Map<string, Set<string>>>
+  let reaped: NodeLocalLiveSet[]
 
   /** Install a runtime reporting these workspaces and stray units. */
   function seeRunning(workspaces: RuntimeHandle[], strays: StrayUnit[] = []): void {
     installFakeWorktreeDriver({
       snapshot: () => snapshotFixture(workspaces, strays),
-      reapNodeLocal: (running) => { reaped.push(running); return Promise.resolve() },
+      reapNodeLocal: (live) => { reaped.push(live); return Promise.resolve() },
     })
   }
 
@@ -559,6 +566,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
   afterEach(async () => {
     clearAllProvisioningForTests()
+    await closeDb()
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
@@ -585,13 +593,16 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   // The node-local half is the runtime's: the module dirs and working
   // copies live on whichever node the worktree ran on, which may not be
   // this filesystem. What the domain owns is the live set it hands over —
-  // every project it can see, with the workspaces, the stray units and the
-  // creates in flight, and nothing removed here.
-  it('hands the runtime the live set per project, and removes no node-local dir itself', async () => {
-    const live = await seedModulesDir('proj-a', 'live-1')
-    const dead = await seedModulesDir('proj-a', 'dead-1')
-    const strayOnly = await seedModulesDir('proj-b', 'job-only-1')
-    await fs.mkdir(path.join(dataDir, 'global', 'projects', 'proj-c'), { recursive: true })
+  // every recorded project's id, with the workspaces, the stray units and
+  // the creates in flight, and nothing removed here.
+  it('hands the runtime the live project ids and worktrees, and removes no node-local dir itself', async () => {
+    await recordProject({ slug: 'proj-a', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' })
+    await recordProject({ slug: 'proj-b', remoteUrl: 'https://x/proj-b', addedAt: '2026-01-01' })
+    const ids = (await listProjectRows()).map((r) => r.id)
+    const live = await seedModulesDir(ids[0], 'live-1')
+    const dead = await seedModulesDir(ids[0], 'dead-1')
+    const strayOnly = await seedModulesDir(ids[1], 'job-only-1')
+    const orphan = await seedModulesDir('removed-project', 'x')
     publishInFlight(['creating-1'])
 
     seeRunning(
@@ -604,14 +615,26 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
     await gcOrphanEphemeralModuleDirs()
 
-    expect(reaped).toHaveLength(1)
-    const [running] = reaped
-    expect([...running.keys()].sort()).toEqual(['proj-a', 'proj-b', 'proj-c'])
-    expect(running.get('proj-a')).toEqual(new Set(['live-1', 'job-only-1', 'creating-1']))
-    expect(running.get('proj-b')).toEqual(new Set(['live-1', 'job-only-1']))
-    for (const dir of [live, dead, strayOnly]) {
+    expect(reaped).toEqual([{
+      projectIds: new Set(ids),
+      worktreeIds: new Set(['live-1', 'job-only-1', 'creating-1']),
+    }])
+    for (const dir of [live, dead, strayOnly, orphan]) {
       await expect(fs.access(dir)).resolves.toBeUndefined()
     }
+  })
+
+  // An empty list would tell the runtime that every project's tree is an
+  // orphan, so a list that cannot be read stands the node-local half down.
+  it('hands the runtime nothing when the projects cannot be listed', async () => {
+    vi.mocked(listProjectRows).mockRejectedValueOnce(new Error('db closed'))
+    const dead = await seedWorktreesDir('proj-a', 'dead-1')
+
+    await gcOrphanEphemeralModuleDirs()
+
+    expect(reaped).toHaveLength(0)
+    // The global half does not depend on the list, and still runs.
+    await expect(fs.access(dead)).rejects.toThrow()
   })
 
   it('also removes orphan per-session tmux dirs', async () => {
@@ -654,9 +677,10 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     }
   })
 
-  it('is a no-op when neither projects dir exists, and asks the runtime for nothing', async () => {
+  // No project is live, so every node-local tree is an orphan.
+  it('with no projects, hands the runtime an empty live set', async () => {
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
-    expect(reaped).toHaveLength(0)
+    expect(reaped).toEqual([{ projectIds: new Set(), worktreeIds: new Set() }])
   })
 
   it('spares a session the process is still provisioning', async () => {

@@ -11,13 +11,14 @@ import { listProjectEnvVars, upsertProjectEnvVar } from '#db/project-env-store'
 import { closeDb } from '#db/client'
 import { nodeLocalProjectPath, projectDir } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
+import type { ProjectRef } from '#drivers/contract'
 
 vi.mock('#domain/worktrees/project-purge', () => ({ purgeProjectBytes: vi.fn() }))
 import { purgeProjectBytes } from '#domain/worktrees/project-purge'
 
 /** What the purge was asked to erase, and what the rows looked like when it
  *  was asked — the ordering across the two is half of what this tests. */
-const purged: string[] = []
+const purged: ProjectRef[] = []
 let rowsAtPurge: string[] = []
 
 let tmpDir: string
@@ -30,11 +31,11 @@ beforeEach(async () => {
   installFakeWorktreeDriver()
   purged.length = 0
   rowsAtPurge = []
-  vi.mocked(purgeProjectBytes).mockReset().mockImplementation(async (slug: string) => {
-    purged.push(slug)
+  vi.mocked(purgeProjectBytes).mockReset().mockImplementation(async (project: ProjectRef) => {
+    purged.push(project)
     rowsAtPurge = (await listWorktreeRows()).map((r) => r.worktreeId)
     // Erasing the clone is what the real purge does.
-    for (const root of [projectDir(slug), nodeLocalProjectPath(slug)]) {
+    for (const root of [projectDir(project.slug), nodeLocalProjectPath(project.id)]) {
       await fs.rm(root, { recursive: true, force: true })
     }
   })
@@ -66,10 +67,12 @@ describe('removeProject', () => {
     await recordWorktreeCreated({ projectSlug: 'keeper', worktreeId: 'c' })
     await upsertProjectEnvVar('demo', { name: 'MINE', value: 'x', secret: false })
     await upsertProjectEnvVar('keeper', { name: 'THEIRS', value: 'y', secret: false })
+    const demoId = (await listProjectRows()).find((p) => p.slug === 'demo')?.id
 
     await removeProject('demo')
 
-    expect(purged).toEqual(['demo'])
+    // The purge is handed the row's id: what the runtime's objects are named by.
+    expect(purged).toEqual([{ slug: 'demo', id: demoId }])
     // The bytes go FIRST: while the project's record exists the project
     // exists, so a purge that then failed must not leave a clone nothing can
     // list, remove, or re-add.
@@ -106,6 +109,6 @@ describe('removeProject', () => {
     await writeProject('demo')
     await removeProject('demo')
     await expect(removeProject('demo')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect(purged).toEqual(['demo'])
+    expect(purged.map((p) => p.slug)).toEqual(['demo'])
   })
 })

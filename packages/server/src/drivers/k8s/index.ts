@@ -171,8 +171,8 @@ export function createK8sDriver(): WorktreeDriver {
     salvageImages: (target) => salvageWorkspaceImages(target),
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
-    destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
-    reapNodeLocal: (running) => reapNodeLocal(running),
+    destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
+    reapNodeLocal: (live) => reapNodeLocal(live),
 
     pendingMamaRequests: () => drainPendingMamaRequests(),
     resolveMamaRequests: (results) => proxyClient.postMamaResults(results),

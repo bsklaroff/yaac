@@ -60,6 +60,7 @@ import {
  */
 
 const PROJECT_SLUG = 'trust-split-e2e'
+const PROJECT = { slug: PROJECT_SLUG, id: crypto.randomUUID() }
 
 // Per-run nonce baked into every RUN step: content-hash tags must be new
 // each run, or the registry (which persists across e2e runs) already holds
@@ -306,13 +307,13 @@ describe('trust-split builds', () => {
   it('builds untrusted layers in builder pods with cross-pod step cache', async () => {
     // --- First build: fresh project layer, built in a builder pod. ---
     await writeProjectDockerfile(DOCKERFILE_V1)
-    const chain1 = await resolveImageChain(PROJECT_SLUG, TEST_IMAGE_PREFIX)
+    const chain1 = await resolveImageChain(PROJECT, TEST_IMAGE_PREFIX)
     const projectTag1 = chain1.layers.find((l) => l.name === 'project')?.tag
     expect(projectTag1).toBeTruthy()
 
     // As the server's identity: the guard admits builder pods from the
     // server SA alone, and production's builds run in-cluster as that SA.
-    const final1 = await asServerIdentity(() => ensureImage(PROJECT_SLUG, TEST_IMAGE_PREFIX))
+    const final1 = await asServerIdentity(() => ensureImage(PROJECT, TEST_IMAGE_PREFIX))
     expect(final1).toBe(projectTag1)
     // The product lives in the registry — and only there: the host store
     // never sees a cluster-pod tag.
@@ -328,14 +329,14 @@ describe('trust-split builds', () => {
     await fs.writeFile(path.join(userBuildDir(), 'Dockerfile.user'), DOCKERFILE_USER)
     // A support file next to Dockerfile.user — the COPY source above.
     await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`copied-${NONCE}\n`))
-    const chain2 = await resolveImageChain(PROJECT_SLUG, TEST_IMAGE_PREFIX)
+    const chain2 = await resolveImageChain(PROJECT, TEST_IMAGE_PREFIX)
     const projectTag2 = chain2.layers.find((l) => l.name === 'project')?.tag
     const userTag = chain2.layers.find((l) => l.name === 'user')?.tag
     expect(projectTag2).toBeTruthy()
     expect(projectTag2).not.toBe(projectTag1)
     expect(userTag).toBeTruthy()
 
-    const final2 = await asServerIdentity(() => ensureImage(PROJECT_SLUG, TEST_IMAGE_PREFIX))
+    const final2 = await asServerIdentity(() => ensureImage(PROJECT, TEST_IMAGE_PREFIX))
     expect(final2).toBe(userTag)
     expect(await registryHasTag(projectTag2!)).toBe(true)
     expect(await registryHasTag(userTag!)).toBe(true)
@@ -376,7 +377,7 @@ describe('trust-split builds', () => {
     // Editing a support file re-tags the user layer (context files are
     // part of the content hash) — resolution only, no third build needed.
     await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`edited-${NONCE}\n`))
-    const chain3 = await resolveImageChain(PROJECT_SLUG, TEST_IMAGE_PREFIX)
+    const chain3 = await resolveImageChain(PROJECT, TEST_IMAGE_PREFIX)
     const userTag3 = chain3.layers.find((l) => l.name === 'user')?.tag
     expect(userTag3).toBeTruthy()
     expect(userTag3).not.toBe(userTag)

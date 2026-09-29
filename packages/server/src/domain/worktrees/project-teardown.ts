@@ -10,6 +10,7 @@ import {
   getProjectRow,
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
+import { dropProjectClaudeKeychainItem } from '@yaac/shared/tool-auth'
 
 /**
  * Remove a project: its live worktrees and every byte it owns, then the rows
@@ -27,11 +28,14 @@ import { ServerError } from '@yaac/shared/errors'
  * that depend on it.
  */
 export async function removeProject(slug: string): Promise<void> {
-  if (!await getProjectRow(slug)) {
-    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
-  }
+  const row = await getProjectRow(slug)
+  if (!row) throw new ServerError('NOT_FOUND', `project ${slug} not found`)
 
-  await purgeProjectBytes(slug)
+  await purgeProjectBytes({ slug, id: row.id })
+  // The macOS Keychain item a containerless claude keeps for the project's
+  // tool home, which is named by the home's path and so would otherwise be
+  // found again by the next project of this slug. A no-op anywhere else.
+  dropProjectClaudeKeychainItem(slug)
 
   // Forget the project's worktrees: the deleted listing is driven by rows
   // now, and the worktrees and transcripts they point at went with the dirs

@@ -144,9 +144,8 @@ describe('yaac project (real CLI + real server)', () => {
   })
 
   it('project add lowercases the slug regardless of the URL case', async () => {
-    // The slug is baked into image tags (yaac-user-<slug>:<hash>), which
-    // Docker/Podman require to be all-lowercase, so the slug is forced to
-    // lowercase even when the source URL has caps. The CONFLICT check fires
+    // The slug is stamped on every pod as a label value (projectSlugFor),
+    // so it is lowercased even when the source URL has caps. The CONFLICT check fires
     // after slug derivation but before clone / credential resolution, so we
     // can assert the slug shape via the conflict message.
     await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'myrepo'), { recursive: true })

@@ -86,6 +86,7 @@ export {
   LABEL_NESTED,
   LABEL_PREWARMED,
   LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   LABEL_WORKTREE_ID,
   LABEL_MODE,
   LABEL_TOOL,
@@ -98,6 +99,7 @@ export {
   worktreeIdFromJobName,
   worktreeJobName,
   worktreeIdLabels,
+  worktreePodSelector,
 } from './pods'
 export type { PodInfo } from './pods'
 export {

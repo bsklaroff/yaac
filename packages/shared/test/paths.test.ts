@@ -35,13 +35,15 @@ import {
   globalProjectPath,
   nodeLocalProjectPath,
   serverLocalPath,
-  projectsRoots,
   worktreeStateDir,
   opencodeDataDir,
   cacheVolumeDir,
   imageStoreDir,
 } from '#project-paths'
 import { installTmpDir, serverLogPath, expandTilde, findRepoRoot } from '#paths'
+
+/** A project id, as the node-local tier is keyed by. */
+const PROJECT_ID = '0b6c1f4e-8a2d-4c3b-9e7f-5d1a2b3c4d5e'
 
 describe('findRepoRoot', () => {
   const here = path.dirname(new URL(import.meta.url).pathname)
@@ -228,26 +230,18 @@ describe('storage tiers', () => {
     // runtime is handed their contents instead.
     expect(credentialsDir()).toBe('/tmp/yaac-test/server-local/.credentials')
     expect(globalProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/global/projects/my-repo/repo')
-    expect(nodeLocalProjectPath('my-repo', 'x')).toBe('/tmp/yaac-test/node-local/projects/my-repo/x')
+    expect(nodeLocalProjectPath(PROJECT_ID, 'x')).toBe(`/tmp/yaac-test/node-local/projects/${PROJECT_ID}/x`)
     expect(serverLocalPath('db')).toBe('/tmp/yaac-test/server-local/db')
   })
 
   // Frozen, because a re-rooting would show up here first: these are what a
   // worktree pod mounts and what the layout migration moves.
-  it('puts the node-local caches and working copies under the node-local root', () => {
+  it('puts the node-local caches and working copies under the node-local root, by project id', () => {
     setDataDir('/tmp/yaac-test')
     const node = '/tmp/yaac-test/node-local'
-    expect(cachedPackagesDir('my-repo')).toBe(`${node}/projects/my-repo/.cached-packages`)
-    expect(opencodeDataDir('my-repo', 'abc123')).toBe(`${node}/projects/my-repo/opencode-data/abc123`)
-    expect(imageStoreDir('my-repo')).toBe(`${node}/shared-images/my-repo`)
-  })
-
-  it('enumerates both project trees for a sweep', () => {
-    setDataDir('/tmp/yaac-test')
-    expect(projectsRoots()).toEqual([
-      '/tmp/yaac-test/global/projects',
-      '/tmp/yaac-test/node-local/projects',
-    ])
+    expect(cachedPackagesDir(PROJECT_ID)).toBe(`${node}/projects/${PROJECT_ID}/.cached-packages`)
+    expect(opencodeDataDir(PROJECT_ID, 'abc123')).toBe(`${node}/projects/${PROJECT_ID}/opencode-data/abc123`)
+    expect(imageStoreDir(PROJECT_ID)).toBe(`${node}/shared-images/${PROJECT_ID}`)
   })
 
   it('keeps the per-worktree state dir and the cache volumes global', () => {

@@ -1511,24 +1511,28 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // What a stopped worktree's crashed pod left on the node — an opencode
       // working copy nothing has written for two days — is collected by the
       // real sweep: a root pod pinned to the node, over its hostPath tree.
-      // A copy written just now is a create staging into it, and stays.
-      // Spares every worktree still live in this file.
-      const opencodeData = `${nodeLocalNodePath()}/projects/kitchen/opencode-data`
+      // A copy written just now is a create staging into it, and stays. So
+      // does a live project's tree, while a removed project's (an id no live
+      // project holds) goes whole. Spares every project and worktree still
+      // live in this file.
+      const kitchenTree = `${nodeLocalNodePath()}/projects/${secondPod.projectId!}`
+      const opencodeData = `${kitchenTree}/opencode-data`
+      const removedTree = `${nodeLocalNodePath()}/projects/${randomUUID()}`
       await execFileAsync('podman', ['exec', node, 'sh', '-c',
-        `mkdir -p ${opencodeData}/dead-worktree ${opencodeData}/staging-worktree`
+        `mkdir -p ${opencodeData}/dead-worktree ${opencodeData}/staging-worktree ${removedTree}/.cached-packages`
         + ` && touch ${opencodeData}/dead-worktree/opencode.db ${opencodeData}/staging-worktree/opencode.db`
-        + ` && find ${opencodeData}/dead-worktree -exec touch -d '2 days ago' {} +`])
-      const running = new Map<string, Set<string>>()
-      for (const p of await listWorktreePods()) {
-        const ids = running.get(p.projectSlug) ?? new Set<string>()
-        ids.add(p.worktreeId)
-        running.set(p.projectSlug, ids)
-      }
-      await reapNodeLocal(running)
+        + ` && find ${opencodeData}/dead-worktree ${removedTree} -exec touch -d '2 days ago' {} +`])
+      const pods = await listWorktreePods()
+      await reapNodeLocal({
+        projectIds: new Set([secondPod.projectId!, ...pods.flatMap((p) => p.projectId ?? [])]),
+        worktreeIds: new Set(pods.map((p) => p.worktreeId)),
+      })
       const onNode = (p: string): Promise<boolean> =>
         execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)
       expect(await onNode(`${opencodeData}/dead-worktree`)).toBe(false)
       expect(await onNode(`${opencodeData}/staging-worktree`)).toBe(true)
+      expect(await onNode(kitchenTree)).toBe(true)
+      expect(await onNode(removedTree)).toBe(false)
     }, 360_000)
   })
 
@@ -1874,7 +1878,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // stop must land the database in the checkpoint, empty the node copy,
       // and a restart must come back with the same history — and whatever
       // the node held in the meantime must lose to the checkpoint.
-      const worktreeId = (await findWorktreePod('oc-demo')).worktreeId
+      const { worktreeId, projectId } = await findWorktreePod('oc-demo')
       const node = await podNode(worktreeId)
       // A session created through the in-pod API, so the database holds a
       // row this test can look for after the round trip.
@@ -1884,7 +1888,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const sessionId = (JSON.parse(created.trim()) as { data?: { id?: string }; id?: string })
       const createdId = sessionId.data?.id ?? sessionId.id
       expect(createdId).toBeTruthy()
-      const nodeCopy = `${nodeLocalNodePath()}/projects/oc-demo/opencode-data/${worktreeId}`
+      const nodeCopy = `${nodeLocalNodePath()}/projects/${projectId!}/opencode-data/${worktreeId}`
       const checkpoint = path.join(projectPath, 'opencode-data', worktreeId)
       const onNode = (p: string): Promise<boolean> =>
         execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)

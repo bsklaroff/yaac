@@ -24,7 +24,7 @@ function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> =
     tag: 'yaac-base:abc123',
     layer: 'base',
     action: 'build',
-    projectSlug: 'proj-a',
+    project: { slug: 'proj-a', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' },
     reason: 'prewarm',
     ...overrides,
   })

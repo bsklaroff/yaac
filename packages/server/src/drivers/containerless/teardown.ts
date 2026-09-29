@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
-import { imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
+import path from 'node:path'
+import { imageStoreDir, nodeLocalPath, nodeLocalProjectPath } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { shellQuote } from '#lib/shell'
 import { descendantPids, isSshAgentFor, killPids, runHost } from './host'
@@ -10,12 +11,13 @@ import {
 import {
   findWorkspace,
   forgetWorkspace,
+  listWorkspaces,
   markTerminating,
   removeMarker,
   sshAgentPidOf,
   tmuxPidOf,
 } from './registry'
-import type { TeardownTarget } from '#drivers/contract'
+import type { NodeLocalLiveSet, ProjectRef, TeardownTarget } from '#drivers/contract'
 
 /**
  * Taking a workspace down: the tmux server, whatever survived it, and the
@@ -194,10 +196,45 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
  * cluster objects, no proxy registration — and the "node" is this host,
  * so the tree is one `rm` per root.
  */
-export async function destroyProjectSubstrate(projectSlug: string): Promise<void> {
-  for (const dir of [nodeLocalProjectPath(projectSlug), imageStoreDir(projectSlug)]) {
+export async function destroyProjectSubstrate(project: ProjectRef): Promise<void> {
+  for (const dir of [nodeLocalProjectPath(project.id), imageStoreDir(project.id)]) {
     await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
       serverLog(`[server] containerless: remove ${dir}: ${String(err)}`)
     })
+  }
+}
+
+/** How recently a node-local tree must have been written for the sweep to
+ *  leave it be: a create staging into it ahead of its workspace. */
+const REAP_SLACK_MS = 10_000
+
+/**
+ * See `WorktreeDriver.reapNodeLocal`. The "node" is this host, so the
+ * sweep is a readdir per root, cheap enough to run every pass unthrottled:
+ * a project tree whose name is no live project's id goes — a removal that
+ * failed, or a tree named by slug before projects had ids. There are no
+ * per-worktree leftovers here: opencode opens its global checkpoint
+ * directly.
+ *
+ * Never through a link, at either level: a root that is one (a relocated
+ * cache dir, a mis-pointed root) is not walked, and an entry that is one is
+ * not removed.
+ */
+export async function reapNodeLocal(live: NodeLocalLiveSet): Promise<void> {
+  // Legacy-compat (docs/legacy-compat-shims.md, "Workspaces started before
+  // project ids"): a running workspace's slug keeps its slug-named tree.
+  const kept = new Set([...live.projectIds, ...listWorkspaces().map((w) => w.projectSlug)])
+  const cutoff = Date.now() - REAP_SLACK_MS
+  for (const root of [nodeLocalPath('projects'), nodeLocalPath('shared-images')]) {
+    if (!(await fs.lstat(root).catch(() => null))?.isDirectory()) continue
+    for (const name of await fs.readdir(root).catch((): string[] => [])) {
+      if (kept.has(name)) continue
+      const dir = path.join(root, name)
+      const stat = await fs.lstat(dir).catch(() => null)
+      if (!stat?.isDirectory() || stat.mtimeMs > cutoff) continue
+      await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+        serverLog(`[server] containerless: reap ${dir}: ${String(err)}`)
+      })
+    }
   }
 }

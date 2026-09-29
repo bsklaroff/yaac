@@ -5,7 +5,6 @@ import {
   clientLocalRoot,
   ensureClientLocalRoot,
   ensureDataDir,
-  getNodeLocalProjectsDir,
   getProjectsDir,
   nodeLocalPath,
   nodeLocalProjectPath,
@@ -32,7 +31,6 @@ export {
   clientLocalRoot,
   ensureClientLocalRoot,
   ensureDataDir,
-  getNodeLocalProjectsDir,
   getProjectsDir,
   nodeLocalPath,
   nodeLocalProjectPath,
@@ -152,9 +150,11 @@ export function projectDir(slug: string): string {
  * removal that `rm -rf`s the project tree as the server user would fail on
  * them. The store's own removal goes through a node-side pod instead (the
  * same shape the registry's `certs.d` cleanup uses).
+ *
+ * Keyed by project id, like the rest of the node-local tier.
  */
-export function imageStoreDir(slug: string): string {
-  return nodeLocalPath('shared-images', slug)
+export function imageStoreDir(projectId: string): string {
+  return nodeLocalPath('shared-images', projectId)
 }
 
 /** GLOBAL: the bare git repo. `repo/.git` is mounted into every worktree. */
@@ -213,8 +213,8 @@ export function acpLogDir(slug: string, worktreeId: string): string {
  * process on one disk); a pod keeps its store in its own module dirs
  * instead (docs/containerless-driver.md, docs/worktree-storage.md).
  */
-export function cachedPackagesDir(slug: string): string {
-  return nodeLocalProjectPath(slug, '.cached-packages')
+export function cachedPackagesDir(projectId: string): string {
+  return nodeLocalProjectPath(projectId, '.cached-packages')
 }
 
 /**
@@ -279,8 +279,8 @@ export function opencodeCheckpointDir(slug: string, worktreeId: string): string 
  * the server never opens the file (opencode-status.ts probes the in-pod
  * HTTP API). Unused under containerless.
  */
-export function opencodeDataDir(slug: string, worktreeId: string): string {
-  return nodeLocalProjectPath(slug, 'opencode-data', worktreeId)
+export function opencodeDataDir(projectId: string, worktreeId: string): string {
+  return nodeLocalProjectPath(projectId, 'opencode-data', worktreeId)
 }
 
 /**
@@ -345,13 +345,4 @@ export function worktreeAttachmentsDir(slug: string, worktreeId: string): string
   return path.join(worktreeStateDir(slug, worktreeId), 'attachments')
 }
 
-/**
- * Both `projects/` trees — the slug SOURCE for any sweep that must see
- * every project. Enumerating only the global root would miss a project
- * whose global half is already gone but whose node-local tree (pnpm
- * store, opencode working copy) survives.
- */
-export function projectsRoots(): string[] {
-  return [getProjectsDir(), getNodeLocalProjectsDir()]
-}
 

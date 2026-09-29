@@ -92,7 +92,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
-  LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
   k8sNamespace,
@@ -109,6 +109,7 @@ import { ensureBuilderImage } from '#drivers/k8s/cluster'
 import { imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'
+import type { ProjectRef } from '#drivers/contract'
 
 /** In-pod mount point of a nested worktree's read-only additional store —
  *  the path Dockerfile.nestable's `additionalimagestores` names. Baked as
@@ -158,17 +159,17 @@ export const STORE_REFRESH_RETRY_MS = 5 * 60_000
 /** Deadline for the one-shot removal pod (an `rm -rf` of one directory). */
 export const STORE_REMOVE_TIMEOUT_MS = 60_000
 
-function storeLabels(projectSlug: string): Record<string, string> {
+function storeLabels(projectId: string): Record<string, string> {
   return {
     app: IMAGE_STORE_APP_LABEL,
-    [LABEL_PROJECT]: projectSlug,
+    [LABEL_PROJECT_ID]: projectId,
     [LABEL_STORE_DATA_DIR_HASH]: dataDirHash(),
   }
 }
 
 /** Selector matching this install's store-writer pods for one project. */
-function storeSelector(projectSlug: string): string {
-  return Object.entries(storeLabels(projectSlug)).map(([k, v]) => `${k}=${v}`).join(',')
+function storeSelector(projectId: string): string {
+  return Object.entries(storeLabels(projectId)).map(([k, v]) => `${k}=${v}`).join(',')
 }
 
 /** Generation directory names, shaped so lexical order IS creation order
@@ -190,8 +191,8 @@ const GENERATION_DIR = /^gen-\d{14}-[0-9a-f]{8}$/
  * any error reading the parent: all three mean "mount nothing", which is
  * the pre-store behavior.
  */
-export async function listStoreGenerations(projectSlug: string): Promise<string[]> {
-  const parent = imageStoreDir(projectSlug)
+export async function listStoreGenerations(projectId: string): Promise<string[]> {
+  const parent = imageStoreDir(projectId)
   const names = await fs.readdir(parent).catch(() => [] as string[])
   const complete: string[] = []
   for (const name of names.filter((n) => GENERATION_DIR.test(n)).sort().reverse()) {
@@ -213,14 +214,14 @@ export async function listStoreGenerations(projectSlug: string): Promise<string[
  * specs. A worktree picks up a newer generation the next time it is
  * created.
  */
-export async function nodeImageStoreMount(projectSlug: string): Promise<PodMount | undefined> {
-  const [newest] = await listStoreGenerations(projectSlug)
+export async function nodeImageStoreMount(projectId: string): Promise<PodMount | undefined> {
+  const [newest] = await listStoreGenerations(projectId)
   if (!newest) return undefined
   return {
     // `DirectoryOrCreate`: on a node whose own writer has not produced
     // this generation yet, the pod gets an empty directory and runs its
     // engine cold (see the module doc) rather than sitting in FailedMount.
-    source: { kind: 'hostPath', path: path.join(imageStoreDir(projectSlug), newest), type: 'DirectoryOrCreate' },
+    source: { kind: 'hostPath', path: path.join(imageStoreDir(projectId), newest), type: 'DirectoryOrCreate' },
     mountPath: SHARED_IMAGES_MOUNT,
     readOnly: true,
   }
@@ -535,7 +536,7 @@ const DIFF_SIZE_CHECK_PY = [
  * asks for no capabilities beyond the container default.
  */
 export function buildStoreWriterPodManifest(params: {
-  projectSlug: string
+  projectId: string
   imageRef: string
   nodeName: string
   registryEndpoint: string
@@ -544,14 +545,14 @@ export function buildStoreWriterPodManifest(params: {
   runId: string
   nodeIndex: number
 }): Record<string, unknown> {
-  const { projectSlug, imageRef, nodeName, registryEndpoint, genName, keep, runId } = params
+  const { projectId, imageRef, nodeName, registryEndpoint, genName, keep, runId } = params
   return {
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
-      name: `yaac-store-${storeNameSuffix(projectSlug)}-${params.nodeIndex}-${runId}`,
+      name: `yaac-store-${projectId}-${params.nodeIndex}-${runId}`,
       namespace: k8sNamespace(),
-      labels: storeLabels(projectSlug),
+      labels: storeLabels(projectId),
     },
     spec: {
       nodeName,
@@ -581,7 +582,7 @@ export function buildStoreWriterPodManifest(params: {
         name: 'store',
         // The NODE path: the store's server-side path is under the
         // node-local root, and this pod writes the node's own tree.
-        hostPath: { path: nodeLocalHostPath(imageStoreDir(projectSlug)), type: 'DirectoryOrCreate' },
+        hostPath: { path: nodeLocalHostPath(imageStoreDir(projectId)), type: 'DirectoryOrCreate' },
       }],
     },
   }
@@ -592,7 +593,7 @@ const NODE_POD_PATH = '/node'
 
 /**
  * One-shot pod dropping a project's whole NODE-LOCAL tree from a node: its
- * image store and its `projects/<slug>` (the pnpm store, the opencode
+ * image store and its `projects/<id>` (the pnpm store, the opencode
  * working copies). The store's contents are root-owned, so the server
  * cannot remove them itself — the same reason the store lives outside the
  * project tree (see {@link imageStoreDir}) — and the rest lives on a node
@@ -600,23 +601,23 @@ const NODE_POD_PATH = '/node'
  * so both directories can go in one pass.
  */
 export function buildNodeLocalProjectCleanupPodManifest(params: {
-  projectSlug: string
+  projectId: string
   imageRef: string
   nodeName: string
   runId: string
   nodeIndex: number
 }): Record<string, unknown> {
-  const { projectSlug, imageRef, nodeName, runId } = params
+  const { projectId, imageRef, nodeName, runId } = params
   const root = nodeLocalNodePath()
-  const targets = [imageStoreDir(projectSlug), nodeLocalProjectPath(projectSlug)]
+  const targets = [imageStoreDir(projectId), nodeLocalProjectPath(projectId)]
     .map((p) => `${NODE_POD_PATH}/${path.posix.relative(root, nodeLocalHostPath(p))}`)
   return {
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
-      name: `yaac-store-rm-${storeNameSuffix(projectSlug)}-${params.nodeIndex}-${runId}`,
+      name: `yaac-store-rm-${projectId}-${params.nodeIndex}-${runId}`,
       namespace: k8sNamespace(),
-      labels: storeLabels(projectSlug),
+      labels: storeLabels(projectId),
     },
     spec: {
       nodeName,
@@ -641,18 +642,6 @@ export function buildNodeLocalProjectCleanupPodManifest(params: {
   }
 }
 
-/** Pod-name fragment for a project: a DNS-label-safe slug plus an install-
- *  and slug-keyed hash, so truncation cannot collide (same shape as
- *  `projectRegistryName`). */
-function storeNameSuffix(projectSlug: string): string {
-  const safe = projectSlug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 18)
-  const hash8 = crypto.createHash('sha256')
-    .update(`${dataDirHash()}/${projectSlug}`)
-    .digest('hex')
-    .slice(0, 8)
-  return `${safe}-${hash8}`.replace(/--+/g, '-')
-}
-
 interface RawNodeList {
   items: Array<{ metadata: { name: string } }>
 }
@@ -674,19 +663,18 @@ interface RawPodList {
  * the authoritative "in use" set — a generation is safe to drop exactly
  * when nothing is pointing at it.
  *
- * Matched by the trailing `shared-images/<slug>/<gen>` rather than by the
- * node path outright, so a pod created before the node-local tier moved
- * (mounting the old host spelling) still pins its generation through the
- * upgrade window.
+ * Matched by the trailing `shared-images/<id>/<gen>` rather than by the
+ * node path outright, so the match does not depend on where the install's
+ * node-local root sits.
  *
  * A failure to list is treated as "everything is in use": the cost of
  * keeping a stale generation is disk, the cost of dropping a live one is a
  * worktree whose engine loses its store mid-run.
  */
-async function generationsInUse(projectSlug: string): Promise<string[] | null> {
-  const suffix = `/shared-images/${projectSlug}/`
+async function generationsInUse(projectId: string): Promise<string[] | null> {
+  const suffix = `/shared-images/${projectId}/`
   const pods = await kubectlGetJson<RawPodList>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', `${LABEL_PROJECT}=${projectSlug}`,
+    'get', 'pods', '-n', k8sNamespace(), '-l', `${LABEL_PROJECT_ID}=${projectId}`,
   ]).catch(() => null)
   if (!pods) return null
   const names = new Set<string>()
@@ -706,8 +694,8 @@ async function generationsInUse(projectSlug: string): Promise<string[] | null> {
  *  interleave their GC passes over one directory. */
 const storeEnsureMutex = createKeyedMutex()
 
-/** Last successful (or attempted) refresh per project — module state, so a
- *  server restart makes the next pass eligible again. */
+/** Last successful (or attempted) refresh per project id — module state,
+ *  so a server restart makes the next pass eligible again. */
 const lastRefreshMs = new Map<string, number>()
 
 /** Projects with a refresh in flight, marked synchronously so a reconcile
@@ -739,45 +727,47 @@ export interface EnsureStoreOptions {
  * {@link STORE_REFRESH_RETRY_MS} rather than waiting out the full interval.
  */
 export async function ensureNodeImageStore(
-  projectSlug: string,
+  project: ProjectRef,
   opts: EnsureStoreOptions = {},
 ): Promise<boolean> {
+  const { id } = project
   const now = opts.nowMs ?? Date.now()
-  const last = lastRefreshMs.get(projectSlug)
+  const last = lastRefreshMs.get(id)
   if (!opts.force && last !== undefined && now - last < STORE_REFRESH_INTERVAL_MS) return false
-  if (refreshing.has(projectSlug)) return false
-  refreshing.add(projectSlug)
-  lastRefreshMs.set(projectSlug, now)
+  if (refreshing.has(id)) return false
+  refreshing.add(id)
+  lastRefreshMs.set(id, now)
   try {
-    const wrote = await storeEnsureMutex(projectSlug, () => writeOneStore(projectSlug))
-    if (!wrote) lastRefreshMs.set(projectSlug, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
+    const wrote = await storeEnsureMutex(id, () => writeOneStore(project))
+    if (!wrote) lastRefreshMs.set(id, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
     return wrote
   } catch (err) {
-    serverLog(`[image-store] ${projectSlug}: ${String(err)}`)
-    lastRefreshMs.set(projectSlug, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
+    serverLog(`[image-store] ${project.slug}: ${String(err)}`)
+    lastRefreshMs.set(id, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
     return false
   } finally {
-    refreshing.delete(projectSlug)
+    refreshing.delete(id)
   }
 }
 
 /** Runs one writer pod per node. Returns false when nothing was
  *  published — no registry to read from, or every node's pod failed —
  *  which is what shortens the throttle to {@link STORE_REFRESH_RETRY_MS}. */
-async function writeOneStore(projectSlug: string): Promise<boolean> {
-  const clusterIp = await projectRegistryClusterIp(projectSlug)
+async function writeOneStore(project: ProjectRef): Promise<boolean> {
+  const { slug, id } = project
+  const clusterIp = await projectRegistryClusterIp(id)
   if (!clusterIp) return false
   const imageRef = await ensureBuilderImage()
   const runId = crypto.randomBytes(4).toString('hex')
-  const keep = await generationsInUse(projectSlug)
+  const keep = await generationsInUse(id)
   // Null means the live set is unknown; keep every complete generation
   // rather than risk unmounting one from under a running worktree.
-  const keepNames = keep ?? await listStoreGenerations(projectSlug)
+  const keepNames = keep ?? await listStoreGenerations(id)
 
   // Strays from a run whose server died mid-poll: the per-run name suffix
   // means no later namesake delete collects them.
   await kubectlWithRetry([
-    'delete', 'pod', '-l', storeSelector(projectSlug), '-n', k8sNamespace(), '--ignore-not-found',
+    'delete', 'pod', '-l', storeSelector(id), '-n', k8sNamespace(), '--ignore-not-found',
   ]).catch(() => { /* best effort */ })
 
   // ONE name per run, on every node: the mount a new pod gets is chosen
@@ -787,7 +777,7 @@ async function writeOneStore(projectSlug: string): Promise<boolean> {
   let published = 0
   for (const [nodeIndex, nodeName] of (await listNodeNames()).entries()) {
     const manifest = buildStoreWriterPodManifest({
-      projectSlug,
+      projectId: id,
       imageRef,
       nodeName,
       registryEndpoint: `${clusterIp}:${PROJECT_REGISTRY_PORT}`,
@@ -802,11 +792,11 @@ async function writeOneStore(projectSlug: string): Promise<boolean> {
     })
     const tail = logs.trim().split('\n').slice(-4).join(' | ')
     if (phase !== 'Succeeded') {
-      serverLog(`[image-store] ${projectSlug} on ${nodeName}: pod ${phase}${tail ? `; ${tail}` : ''}`)
+      serverLog(`[image-store] ${slug} on ${nodeName}: pod ${phase}${tail ? `; ${tail}` : ''}`)
       continue
     }
     published += 1
-    serverLog(`[image-store] ${projectSlug} on ${nodeName}: ${genName} ${tail}`)
+    serverLog(`[image-store] ${slug} on ${nodeName}: ${genName} ${tail}`)
   }
   return published > 0
 }
@@ -817,26 +807,26 @@ async function writeOneStore(projectSlug: string): Promise<boolean> {
  * stall behind it — and each is throttled by
  * {@link STORE_REFRESH_INTERVAL_MS}.
  */
-export function reconcileNodeImageStores(projectSlugs: string[]): void {
-  for (const slug of projectSlugs) {
-    void ensureNodeImageStore(slug)
+export function reconcileNodeImageStores(projects: ProjectRef[]): void {
+  for (const project of projects) {
+    void ensureNodeImageStore(project)
   }
 }
 
 /**
  * Drop a project's node-local tree — its image store and its
- * `projects/<slug>` — from every node, at project removal. Best-effort per
- * node: a recreated or unreachable cluster took the tree with the node it
- * lived on.
+ * `projects/<id>` — from every node, at project removal. Best-effort per
+ * node: what a failure leaves, the node-local sweep reaps, since no live
+ * project holds the id.
  */
-export async function removeNodeLocalProject(projectSlug: string): Promise<void> {
+export async function removeNodeLocalProject(projectId: string): Promise<void> {
   const imageRef = await ensureBuilderImage().catch(() => null)
   if (!imageRef) return
   const runId = crypto.randomBytes(4).toString('hex')
   const nodes = await listNodeNames().catch(() => [] as string[])
   for (const [nodeIndex, nodeName] of nodes.entries()) {
     await runPodToCompletion(
-      buildNodeLocalProjectCleanupPodManifest({ projectSlug, imageRef, nodeName, runId, nodeIndex }),
+      buildNodeLocalProjectCleanupPodManifest({ projectId, imageRef, nodeName, runId, nodeIndex }),
       { timeoutMs: STORE_REMOVE_TIMEOUT_MS, pollMs: 500 },
     ).catch(() => { /* node-side residue is harmless */ })
   }

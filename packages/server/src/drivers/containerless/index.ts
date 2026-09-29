@@ -27,6 +27,7 @@ import {
 } from './registry'
 import {
   destroyProjectSubstrate,
+  reapNodeLocal,
   destroyWorkspace,
   detachedTeardownCommand,
 } from './teardown'
@@ -186,10 +187,10 @@ export function createContainerlessDriver(): WorktreeDriver {
 
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
-    destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
+    destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
     // Nothing per-worktree lands in this host's node-local tree: the pnpm
     // store is the project's, and the module dirs live in the checkout.
-    reapNodeLocal: () => Promise.resolve(),
+    reapNodeLocal: (live) => reapNodeLocal(live),
 
     // Empty forever, and NOT because the feature is missing: this pair is
     // the pull transport, which exists so a sandboxed pod — unable to dial

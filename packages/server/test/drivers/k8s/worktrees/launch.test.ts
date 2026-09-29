@@ -86,8 +86,10 @@ import {
 setDataDir('/data/yaac')
 const NODE_ROOT = '/var/lib/yaac/node/ddh0123456789abc'
 
+const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const INTENT = {
   projectSlug: 'proj',
+  projectId: PROJECT_ID,
   workspaceId: 's1',
   tool: 'claude' as const,
   config: {},
@@ -226,7 +228,7 @@ describe('prepareWorkspaceSubstrate', () => {
 
   it('gives a nested workspace the project registry and this node\'s image store', async () => {
     mockStoreMount.mockResolvedValue({
-      source: { kind: 'hostPath', path: path.join(imageStoreDir('proj'), 'gen-7'), type: 'Directory' },
+      source: { kind: 'hostPath', path: path.join(imageStoreDir(PROJECT_ID), 'gen-7'), type: 'Directory' },
       mountPath: '/var/lib/shared-images',
       readOnly: true,
     })
@@ -234,18 +236,21 @@ describe('prepareWorkspaceSubstrate', () => {
     const substrate = await prepareWorkspaceSubstrate({ ...INTENT, nestedContainers: true })
     await launchWorkspace(specOf(substrate, { nestedContainers: true }))
 
-    expect(mockEnsureProjectRegistry).toHaveBeenCalledWith('proj')
+    expect(mockEnsureProjectRegistry).toHaveBeenCalledWith({ slug: 'proj', id: PROJECT_ID })
+    expect(mockStoreMount).toHaveBeenCalledWith(PROJECT_ID)
     // The refresh for the NEXT workspace is fired detached — this pod's
     // generation is already pinned by the mount above.
-    expect(mockEnsureStore).toHaveBeenCalledWith('proj')
+    expect(mockEnsureStore).toHaveBeenCalledWith({ slug: 'proj', id: PROJECT_ID })
     const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
     const store = mounts.find((m) => m.mountPath === '/var/lib/shared-images')
     expect(store).toMatchObject({ readOnly: true })
     // A node-local path, resolved onto the pod's own node tree.
     expect(appliedJob().spec.template.spec.volumes.find((v) => v.name === store?.name)?.hostPath)
-      .toEqual({ path: `${NODE_ROOT}/shared-images/proj/gen-7`, type: 'Directory' })
-    // Plain HTTP registry: the in-pod engine needs the drop-in to pull it.
-    expect(containerEnv().YAAC_REGISTRY_CONF_B64).toEqual(expect.any(String))
+      .toEqual({ path: `${NODE_ROOT}/shared-images/${PROJECT_ID}/gen-7`, type: 'Directory' })
+    // Plain HTTP registry: the in-pod engine needs the drop-in to pull it,
+    // naming the registry the project id names.
+    expect(Buffer.from(containerEnv().YAAC_REGISTRY_CONF_B64, 'base64').toString())
+      .toContain(`location = "yaac-reg-${PROJECT_ID}.yaac.svc.cluster.local:5000"`)
     // And the engine is announced on the POD, not just the Job: the image
     // salvage picks its worktrees out of pod deltas, where the spec env
     // that actually starts the engine (YAAC_NESTED_ENGINE, set by
@@ -266,6 +271,8 @@ describe('launchWorkspace', () => {
     expect(job.metadata.namespace).toBe('yaac')
     expect(job.metadata.labels).toMatchObject({
       'yaac.project': 'proj',
+      // What the project registry's policies select the pod by.
+      'yaac.project-id': PROJECT_ID,
       'yaac.worktree-id': 's1',
       'yaac.data-dir-hash': 'ddh0123456789abc',
       'yaac.tool': 'claude',
@@ -444,9 +451,9 @@ describe('launchWorkspace', () => {
           source: { kind: 'hostPath', path: path.join(claudeDir('proj'), 'settings.json'), type: 'File' },
           mountPath: '/home/yaac/.claude/settings.json',
         },
-        { source: { kind: 'hostPath', path: cachedPackagesDir('proj') }, mountPath: '/home/yaac/.cached-packages' },
+        { source: { kind: 'hostPath', path: cachedPackagesDir(PROJECT_ID) }, mountPath: '/home/yaac/.cached-packages' },
         {
-          source: { kind: 'hostPath', path: path.join(cachedPackagesDir('proj'), 'modules', 's1', 'node_modules') },
+          source: { kind: 'hostPath', path: path.join(cachedPackagesDir(PROJECT_ID), 'modules', 's1', 'node_modules') },
           mountPath: '/workspace/node_modules',
         },
         { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
@@ -463,7 +470,7 @@ describe('launchWorkspace', () => {
     expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe('projects/proj/claude/settings.json')
     // NODE-LOCAL: the pod's own node tree.
     expect(volume(byMount['/home/yaac/.cached-packages'].name)?.hostPath)
-      .toEqual({ path: `${NODE_ROOT}/projects/proj/.cached-packages`, type: 'DirectoryOrCreate' })
+      .toEqual({ path: `${NODE_ROOT}/projects/${PROJECT_ID}/.cached-packages`, type: 'DirectoryOrCreate' })
     // Nothing under the data dir by hostPath any more.
     for (const v of pod.volumes) {
       expect(v.hostPath?.path.startsWith('/data/yaac')).not.toBe(true)
@@ -473,8 +480,8 @@ describe('launchWorkspace', () => {
     const [init] = pod.initContainers ?? []
     expect(init?.name).toBe('node-dirs')
     expect(init?.command.slice(-2)).toEqual([
-      '/node/projects/proj/.cached-packages',
-      '/node/projects/proj/.cached-packages/modules/s1/node_modules',
+      `/node/projects/${PROJECT_ID}/.cached-packages`,
+      `/node/projects/${PROJECT_ID}/.cached-packages/modules/s1/node_modules`,
     ])
     expect(volume('node-root')?.hostPath).toEqual({ path: NODE_ROOT, type: 'DirectoryOrCreate' })
     // ...and a grace period sized for the hook, not for a bare SIGTERM.

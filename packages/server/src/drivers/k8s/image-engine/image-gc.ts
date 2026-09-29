@@ -4,7 +4,7 @@ import { execFileAsync } from '#drivers/k8s/container'
  * GC of the host podman engine's image store, run by `yaac cluster
  * install` — the one command that still builds on this engine. Every
  * content-hash rebuild re-tags under the same
- * repository (`yaac-base:<hash>`, `yaac-user-<slug>:<hash>`, …) and each
+ * repository (`yaac-base:<hash>`, `yaac-tools:<hash>`, …) and each
  * tag pins its whole intermediate layer chain, so the engine accumulates
  * generations without bound (measured: 23 yaac-base tags, ~14GB
  * reclaimable). Policy: keep the newest HOST_GENERATIONS_KEPT tags per
@@ -40,7 +40,7 @@ export const HOST_GENERATIONS_KEPT = 2
 export const HOST_PRUNE_UNTIL = '24h'
 
 /**
- * Repos yaac builds (`yaac-base`, `yaac-tools`, `yaac-user-<slug>`, …) or
+ * Repos yaac builds (`yaac-base`, `yaac-tools`, `yaac-nestable`, …) or
  * stages for a registry push (`localhost:<port>/…`) — minus the e2e
  * suite's `yaac-test-*`, which the header explains.
  */

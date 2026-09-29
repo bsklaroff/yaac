@@ -64,6 +64,9 @@ export async function setProjectGitCredential(
  * carries for a project, and the memory is the server's own.
  */
 export interface ProjectRow extends ProjectMeta {
+  /** The immutable id the substrate names this project's objects by — see
+   *  the `projects.id` column. */
+  id: string
   lastTool?: AgentTool
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
   gitCredentialId: string | null
@@ -90,6 +93,7 @@ function toProjectRow(
   }
   return {
     slug: r.slug,
+    id: r.id,
     remoteUrl: r.remoteUrl,
     addedAt: r.addedAt,
     ...(r.lastTool !== null ? { lastTool: normalizeTool(r.lastTool) } : {}),

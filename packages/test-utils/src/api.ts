@@ -64,14 +64,18 @@ export async function registerTestProject(
  * Give a project a git credential the way the webapp's Settings does: store
  * an HTTPS token under a name, then assign it. Throws on any non-2xx, since
  * a fixture that silently lacks a credential fails far from here.
+ *
+ * Credentials outlive the projects they serve and names are unique, so a
+ * project re-added under the same slug names its credential itself.
  */
 export async function assignTestGitCredential(
   server: SpawnedServer,
   slug: string,
   token: string,
+  name = `${slug} token`,
 ): Promise<void> {
   const client = makeServerApiClient(server)
-  const created = await client.auth.git.credentials.$post({ json: { name: `${slug} token`, token } })
+  const created = await client.auth.git.credentials.$post({ json: { name, token } })
   if (!created.ok) throw new Error(`creating the git credential failed: ${await created.text()}`)
   const { id } = await created.json()
   const assigned = await client.project[':slug']['git-credential'].$put({

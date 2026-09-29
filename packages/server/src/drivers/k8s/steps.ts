@@ -1,6 +1,6 @@
 import { reconcileImageSalvage } from '#drivers/k8s/worktrees'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress'
-import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
+import { gcOrphanProjectRegistries, reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
 import {
   reconcileBuilderPodGc,
   reconcileImagePrewarm,
@@ -21,7 +21,7 @@ import type { DriverReconcileSteps } from '#drivers/contract'
  *
  * Nothing here reads a row or a config file: which projects exist and what
  * each one's config says are questions the layers above own, so the pass
- * hands the answers down (`ctx.projectSlugs()`, `ctx.projectConfig`).
+ * hands the answers down (`ctx.projects()`, `ctx.projectConfig`).
  */
 export function k8sReconcileSteps(): DriverReconcileSteps {
   return {
@@ -35,7 +35,7 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // Before the prewarm pool: a spare's create then joins the
       // already-running builds. Throttled internally.
       { name: 'image-prewarm', triggers: [], run: async (ctx) => {
-        reconcileImagePrewarm(await ctx.projectSlugs(), ctx.projectConfig)
+        reconcileImagePrewarm(await ctx.projects(), ctx.projectConfig)
       } },
     ],
     maintenance: [
@@ -49,14 +49,19 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // collect, which holds that registry read-only for minutes. Fires
       // detached per project and is throttled internally.
       { name: 'image-store', triggers: [], run: async (ctx) => {
-        reconcileNodeImageStores(await ctx.projectSlugs())
+        reconcileNodeImageStores(await ctx.projects())
       } },
       // Blob reclaim in one project registry per pass. It cannot wait for a
       // project to go idle — an active one never does — so it takes a
       // read-only maintenance window instead, and detaches. Throttled
       // internally; after the salvage, so a just-pushed generation is the
       // one that survives the collect.
-      { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
+      { name: 'registry-gc', triggers: [], run: async (ctx) =>
+        reconcileProjectRegistryGc(new Set((await ctx.projects()).map((p) => p.id))) },
+      // Whole registries no live project owns — a removal that failed, or
+      // one named before projects had ids. Throttled internally.
+      { name: 'orphan-registry-gc', triggers: [], run: async (ctx) =>
+        gcOrphanProjectRegistries(new Set((await ctx.projects()).map((p) => p.id))) },
       // Egress registrations whose workspace is gone — the leavings of a
       // teardown that never ran. Throttled internally; reads the pass's
       // own workspace set.
@@ -67,7 +72,7 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // registry no longer holds. Throttled internally and detached; the
       // collect stands down while anything is pushing.
       { name: 'main-registry-gc', triggers: [], run: async (ctx) =>
-        reconcileMainRegistryGc(await ctx.projectSlugs(), ctx.projectConfig) },
+        reconcileMainRegistryGc(await ctx.projects(), ctx.projectConfig) },
     ],
   }
 }
