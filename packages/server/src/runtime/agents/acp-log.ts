@@ -22,36 +22,64 @@
  * `readAcpInFlight`.
  */
 
-import fs from 'node:fs/promises'
+import type { FileHandle } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
+import { acpLogDir } from '@yaac/shared/project-paths'
+import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
   ACP, ACPD, AcpProjection, asRecord, asString, sessionModeId, sessionStateModeId, toContentList,
 } from './acp-protocol'
+import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { serverLog } from '#log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 
-/**
- * Read a conversation's record. A missing file is not an error — a
- * conversation whose agent has not spoken yet simply has no history — so it
- * answers with an empty replay.
- */
-export async function readAcpLog(logPath: string): Promise<AcpEvent[]> {
-  let raw: string
-  try {
-    raw = await fs.readFile(logPath, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      serverLog(`[server] acp log ${logPath}: ${String(err)}`)
-    }
-    return []
-  }
-  return replayAcpLog(raw)
+/** Which conversation's record: acpd names each `<agentSessionId>.jsonl` in
+ *  its worktree's record dir. */
+export interface AcpRecordRef {
+  slug: string
+  worktreeId: string
+  agentSessionId: string
 }
 
 /**
- * Project a recorded stream into the events a pane renders. Exported
- * separately from the file read so the projection can be exercised without a
- * filesystem.
+ * A conversation's record as a file under its worktree's record dir — a dir
+ * the pod writes, so it is read confined to it (`SandboxFile`). Undefined for
+ * an id that is not one: the id is joined into the path, and it comes from
+ * the agent, so it is held to `agentSessionIdSchema` before it is.
+ */
+export function acpRecord(ref: AcpRecordRef): SandboxFile | undefined {
+  if (!agentSessionIdSchema.safeParse(ref.agentSessionId).success) return undefined
+  return { slug: ref.slug, dir: acpLogDir(ref.slug, ref.worktreeId), rel: `${ref.agentSessionId}.jsonl` }
+}
+
+/** The most of a record the whole-file readers below will read. */
+export const MAX_ACP_RECORD_BYTES = 64 * 1024 * 1024
+
+/**
+ * A whole record as text, or undefined when there is none to read. A missing
+ * record is not an error — a conversation whose agent has not spoken yet
+ * simply has no history — and one past the cap is logged and read as
+ * absent, which every caller already degrades from.
+ */
+async function readRecord(ref: AcpRecordRef): Promise<string | undefined> {
+  const file = acpRecord(ref)
+  if (file === undefined) return undefined
+  try {
+    return (await readSandboxFile(file, MAX_ACP_RECORD_BYTES))?.toString('utf8')
+  } catch (err) {
+    serverLog(`[server] acp log ${file.dir}/${file.rel}: ${String(err)}`)
+    return undefined
+  }
+}
+
+async function openRecord(ref: AcpRecordRef): Promise<FileHandle | null> {
+  const file = acpRecord(ref)
+  return file === undefined ? null : openSandboxFile(file)
+}
+
+/**
+ * Project a recorded stream into the events a pane renders — a conversation's
+ * history, from a record read by whoever decides how much of one to read.
  *
  * Every line is tolerated: the record can end mid-write while the agent is
  * streaming, and an adapter that printed something that is not JSON-RPC put it
@@ -69,6 +97,9 @@ export function replayAcpLog(raw: string): AcpEvent[] {
  *  streaming reply reads as streaming, long enough that an idle conversation
  *  costs one open + two small reads a tick. */
 const TAIL_INTERVAL_MS = 150
+
+/** The most a tail reads into memory at once. */
+const TAIL_READ_BYTES = 1024 * 1024
 
 /**
  * How much of the record's head to read to identify the life that wrote it.
@@ -107,7 +138,7 @@ export interface AcpLogTail {
  * not a missing one.
  */
 export function tailAcpLog(
-  logPath: string,
+  record: AcpRecordRef,
   onEvents: (events: AcpEventInit[], reset: boolean) => void,
   opts: { intervalMs?: number } = {},
 ): AcpLogTail {
@@ -123,6 +154,7 @@ export function tailAcpLog(
   let lifeId: string | undefined
   let closed = false
   let first = true
+  let tooLarge = false
   // A restart seen but not yet reported. acpd empties the file before writing
   // a byte, so a pass can land on a record of size 0 — nothing to project, but
   // the caller must still be told to start over, or the next pass's events
@@ -135,14 +167,19 @@ export function tailAcpLog(
     residual = ''
     decoder = new StringDecoder('utf8')
     projection = new AcpProjection()
+    tooLarge = false
   }
 
   const runPass = async (): Promise<void> => {
     if (closed) return
-    let handle
-    try {
-      handle = await fs.open(logPath, 'r')
-    } catch {
+    const handle = await openRecord(record)
+    // The open is several awaits long; a close that landed meanwhile means
+    // nothing read now may be reported.
+    if (closed) {
+      await handle?.close()
+      return
+    }
+    if (handle === null) {
       // No record yet. The first pass still reports, so a pane learns it has
       // an empty history rather than waiting for one.
       if (first) {
@@ -168,18 +205,32 @@ export function tailAcpLog(
       const reset = pendingReset || first
       if (size === pos && !reset) return
 
-      let raw = ''
-      if (size > pos) {
-        const buf = Buffer.alloc(size - pos)
-        const { bytesRead } = await handle.read(buf, 0, buf.length, pos)
-        raw = decoder.write(buf.subarray(0, bytesRead))
-        pos += bytesRead
+      const events: AcpEventInit[] = []
+      // Past the cap every whole-record reader here keeps to, nothing more is
+      // read: the size is the pod's to claim (a sparse file costs it nothing),
+      // and reading to it is the server's memory.
+      if (size > MAX_ACP_RECORD_BYTES) {
+        if (!tooLarge) serverLog(`[server] acp log for ${record.agentSessionId}: past ${String(MAX_ACP_RECORD_BYTES)} bytes, no longer followed`)
+        tooLarge = true
       }
-
-      const lines = (residual + raw).split('\n')
-      // A record being appended to always ends mid-line; hold it for next pass.
-      residual = lines.pop() ?? ''
-      const events = lines.flatMap((line) => projectLine(line, projection))
+      // In windows, so no pass allocates more than one; and each window is
+      // split only once, so a line that never ends costs its length, not its
+      // square.
+      while (!tooLarge && pos < size) {
+        const buf = Buffer.allocUnsafe(Math.min(TAIL_READ_BYTES, size - pos))
+        const { bytesRead } = await handle.read(buf, 0, buf.length, pos)
+        if (bytesRead === 0) break
+        pos += bytesRead
+        const raw = decoder.write(buf.subarray(0, bytesRead))
+        // A record being appended to always ends mid-line; hold it for next pass.
+        const nl = raw.lastIndexOf('\n')
+        if (nl === -1) {
+          residual += raw
+          continue
+        }
+        for (const line of (residual + raw.slice(0, nl)).split('\n')) events.push(...projectLine(line, projection))
+        residual = raw.slice(nl + 1)
+      }
       first = false
       if (events.length > 0 || reset) {
         pendingReset = false
@@ -220,7 +271,7 @@ export function tailAcpLog(
 }
 
 /** The id acpd stamped as the record's first line, if it has one. */
-async function readLifeId(handle: fs.FileHandle): Promise<string | undefined> {
+async function readLifeId(handle: FileHandle): Promise<string | undefined> {
   const buf = Buffer.alloc(LIFE_HEADER_BYTES)
   const { bytesRead } = await handle.read(buf, 0, LIFE_HEADER_BYTES, 0)
   const head = buf.subarray(0, bytesRead).toString('utf8')
@@ -314,16 +365,9 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
  *
  * A missing record means nothing has been said yet, which is not a turn.
  */
-export async function readAcpInFlight(logPath: string): Promise<boolean> {
-  let raw: string
-  try {
-    raw = await fs.readFile(logPath, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      serverLog(`[server] acp log ${logPath}: ${String(err)}`)
-    }
-    return false
-  }
+export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
+  const raw = await readRecord(record)
+  if (raw === undefined) return false
   let pending: string | number | undefined
   for (const line of raw.split('\n')) {
     const msg = parseLine(line)
@@ -369,17 +413,10 @@ export async function readAcpInFlight(logPath: string): Promise<boolean> {
  * of calls — so this returns all of them.
  */
 export async function readAcpPendingPermissions(
-  logPath: string,
+  record: AcpRecordRef,
 ): Promise<Array<string | number>> {
-  let raw: string
-  try {
-    raw = await fs.readFile(logPath, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      serverLog(`[server] acp log ${logPath}: ${String(err)}`)
-    }
-    return []
-  }
+  const raw = await readRecord(record)
+  if (raw === undefined) return []
   // Keyed by the string form so a reply pairs with its request, valued by the
   // original so the answer can be addressed the way the agent asked.
   const open = new Map<string, string | number>()
@@ -427,13 +464,9 @@ const TRUNCATED_PROMPT_TEXT =
  * a reconciler tick, and coupling it to a live connection is the dependency the
  * record exists to break.
  */
-export async function readAcpFirstPrompt(logPath: string): Promise<string | undefined> {
-  let handle
-  try {
-    handle = await fs.open(logPath, 'r')
-  } catch {
-    return undefined
-  }
+export async function readAcpFirstPrompt(record: AcpRecordRef): Promise<string | undefined> {
+  const handle = await openRecord(record)
+  if (handle === null) return undefined
   try {
     const buf = Buffer.alloc(FIRST_PROMPT_SCAN_BYTES)
     const { bytesRead } = await handle.read(buf, 0, FIRST_PROMPT_SCAN_BYTES, 0)
@@ -482,13 +515,9 @@ function promptText(params: unknown): string | undefined {
  * What a reattach seeds its posture from (`AcpConversation.recoverMode`):
  * the session may have moved while no connection was listening.
  */
-export async function readAcpModeId(logPath: string): Promise<string | undefined> {
-  let raw: string
-  try {
-    raw = await fs.readFile(logPath, 'utf8')
-  } catch {
-    return undefined
-  }
+export async function readAcpModeId(record: AcpRecordRef): Promise<string | undefined> {
+  const raw = await readRecord(record)
+  if (raw === undefined) return undefined
   let modeId: string | undefined
   // Requests whose reply moves the mode: a `set_mode` naming it, or a
   // handshake whose reply reports it (undefined here).

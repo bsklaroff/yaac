@@ -5,10 +5,22 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { ensureAgentReporters } from '#runtime/agents/agent-reporters'
 import { seedClaudeSettings } from '#domain/worktrees/seed'
+import { openRoot } from '#lib/confined-fs'
 
 describe('ensureAgentReporters', () => {
   let dir: string
   let homes: { claudeDir: string; codexDir: string; piAgentDir: string; opencodeConfigDir: string }
+  /** The homes as a sandboxing runtime opens them. */
+  const roots = async () => {
+    const dirs = { claude: homes.claudeDir, codex: homes.codexDir, pi: path.dirname(homes.piAgentDir), opencodeConfig: homes.opencodeConfigDir }
+    for (const d of Object.values(dirs)) await fs.mkdir(d, { recursive: true })
+    return {
+      claude: await openRoot(dirs.claude, 'no-links'),
+      codex: await openRoot(dirs.codex, 'no-links'),
+      pi: await openRoot(dirs.pi, 'no-links'),
+      opencodeConfig: await openRoot(dirs.opencodeConfig, 'no-links'),
+    }
+  }
   let calls: string
 
   beforeEach(async () => {
@@ -55,8 +67,7 @@ describe('ensureAgentReporters', () => {
 
   it('puts each reporter where its tool loads it from, beside what is already there', async () => {
     const claudeSettings = path.join(homes.claudeDir, 'settings.json')
-    await fs.mkdir(homes.claudeDir)
-    await seedClaudeSettings(claudeSettings)
+    await seedClaudeSettings((await roots()).claude)
     const settings = JSON.parse(await fs.readFile(claudeSettings, 'utf8')) as Record<string, unknown>
     await fs.writeFile(claudeSettings, JSON.stringify({
       ...settings,
@@ -66,7 +77,7 @@ describe('ensureAgentReporters', () => {
     await fs.mkdir(homes.codexDir, { recursive: true })
     await fs.writeFile(path.join(homes.codexDir, 'hooks.json'), '{ not json')
 
-    await ensureAgentReporters(homes)
+    await ensureAgentReporters(await roots())
 
     // Bare names and `$HOME`-relative homes, because these files are shared
     // by a whole project and read by worktrees of either substrate. The model
@@ -96,7 +107,7 @@ describe('ensureAgentReporters', () => {
     ]
     const before = await Promise.all(files.map((f) => fs.stat(f).then((s) => s.mtimeMs)))
     await new Promise((r) => setTimeout(r, 20))
-    await ensureAgentReporters(homes)
+    await ensureAgentReporters(await roots())
     expect(await Promise.all(files.map((f) => fs.stat(f).then((s) => s.mtimeMs)))).toEqual(before)
     expect(await fs.readdir(path.join(homes.opencodeConfigDir, 'plugins', 'yaac-report'))).toEqual(['index.ts'])
   })
@@ -105,13 +116,23 @@ describe('ensureAgentReporters', () => {
   // fails must not leave its temp file behind in a home every worktree reads.
   it('leaves no temp file behind when a write cannot land', async () => {
     await fs.mkdir(path.join(homes.claudeDir, 'settings.json', 'occupied'), { recursive: true })
-    await expect(ensureAgentReporters(homes)).rejects.toThrow()
+    await expect(ensureAgentReporters(await roots())).rejects.toThrow()
     expect(await fs.readdir(homes.claudeDir)).toEqual(['settings.json'])
+  })
+
+  it('replaces a hooks file planted as a link, never writing through it', async () => {
+    const target = path.join(dir, 'not-a-hooks-file')
+    await fs.writeFile(target, 'keep')
+    await fs.mkdir(homes.codexDir)
+    await fs.symlink(target, path.join(homes.codexDir, 'hooks.json'))
+    await ensureAgentReporters(await roots())
+    expect(await fs.readFile(target, 'utf8')).toBe('keep')
+    expect((await fs.lstat(path.join(homes.codexDir, 'hooks.json'))).isFile()).toBe(true)
   })
 
   // The extension as written, against the API pi 0.84.4 hands it.
   it("reports pi's conversation and model, and ends each conversation as pi does", async () => {
-    await ensureAgentReporters(homes)
+    await ensureAgentReporters(await roots())
     expect(await runModule(path.join(homes.piAgentDir, 'extensions', 'yaac-report.ts'), [
       "const { execFile } = await import('node:child_process')",
       'const on = {}',
@@ -142,7 +163,7 @@ describe('ensureAgentReporters', () => {
   // named as opencode creates it, and a subagent's (`parentID`) is not the
   // pane's.
   it("reports opencode's conversation, model and agent, and ends the conversation on dispose", async () => {
-    await ensureAgentReporters(homes)
+    await ensureAgentReporters(await roots())
     const model = { providerID: 'opencode', id: 'big-pickle' }
     const events = [
       { type: 'session.created', data: { sessionID: 'ses_1', model, agent: 'build' } },
@@ -180,7 +201,7 @@ describe('ensureAgentReporters', () => {
   // did not ask for its own: it keeps the env of whichever pane started it
   // and outlives each TUI, so no pane is its to report on.
   it("reports nothing from opencode's shared background service", async () => {
-    await ensureAgentReporters(homes)
+    await ensureAgentReporters(await roots())
     await runModule(path.join(homes.opencodeConfigDir, 'plugins', 'yaac-report', 'index.ts'), [
       "process.argv.push('serve', '--service')",
       `const events = ${JSON.stringify([{ type: 'session.created', data: { sessionID: 'ses_1' } }])}`,

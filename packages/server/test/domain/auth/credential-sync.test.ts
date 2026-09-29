@@ -138,6 +138,26 @@ describe('harvestToolCredentials', () => {
     })
   })
 
+  it('adopts nothing a sandbox wrote where egress is mediated', async () => {
+    installFakeWorktreeDriver({ kind: 'k8s' })
+    await saveClaudeOAuthBundle(claudeBundle())
+    await saveCodexOAuthBundle(codexBundle())
+    // A pod's own bundle in its tool home, newer by every clock: the proxy is
+    // the only refresh writer there, so this can only have been planted.
+    await writeProjectClaudeCredentials('alpha', claudeBundle({
+      accessToken: 'claude-access-planted', expiresAt: BASE_EXPIRY + HOUR,
+    }))
+    await writeProjectCodexAuth('alpha', codexBundle({
+      accessToken: 'codex-access-planted', lastRefresh: '2026-07-10T00:00:00.000Z',
+    }))
+
+    await harvestToolCredentials()
+    await syncToolCredentialsThrottled()
+
+    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'claude-access-host' } })
+    expect(await loadCodexCredentialsFile()).toMatchObject({ codexOauth: { accessToken: 'codex-access-host' } })
+  })
+
   it('refuses sentinels, older bundles, and a project whose file is unreadable', async () => {
     await saveClaudeOAuthBundle(claudeBundle())
 

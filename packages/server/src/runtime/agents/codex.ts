@@ -1,6 +1,8 @@
-import fs from 'node:fs/promises'
+import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { codexDir } from '@yaac/shared/project-paths'
 import { scanJsonlForward } from './jsonl'
+import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
 import type { PermissionMode } from '@yaac/shared/types'
 
 // ---------------------------------------------------------------------------
@@ -63,8 +65,8 @@ export function classifyCodexTitle(title: string): 'running' | 'waiting' {
  * Reads the beginning of a Codex JSONL session log and returns the text of
  * the first user message, or undefined if none is found.
  */
-export async function getCodexFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
-  return scanJsonlForward(jsonlPath, (entry) => getUserMessageText(entry as CodexEntry))
+export async function getCodexFirstUserMessage(file: SandboxFile): Promise<string | undefined> {
+  return scanJsonlForward(file, (entry) => getUserMessageText(entry as CodexEntry))
 }
 
 /**
@@ -127,18 +129,24 @@ export const CODEX_MODEL_FORMAT = '#{?#{m/r: [|] ,#{pane_title}},#{s/^.* [|] //:
  * spaces to dashes: `GPT-6-Astra` → `gpt-6-astra`), which also leaves a slug
  * unchanged, and a model in no catalog is titled by its slug.
  */
-export async function codexModelSlug(codexHome: string, shown: string): Promise<string> {
+export async function codexModelSlug(slug: string, shown: string): Promise<string> {
   try {
-    const cache = JSON.parse(await fs.readFile(path.join(codexHome, 'models_cache.json'), 'utf8')) as {
+    const home = await openSandboxDir(slug, codexDir(slug))
+    const raw = await home.readFile('models_cache.json', { maxBytes: MODELS_CACHE_MAX_BYTES })
+    const cache = JSON.parse(raw?.toString('utf8') ?? '{}') as {
       models?: Array<{ slug?: unknown; display_name?: unknown }>
     }
-    const slug = cache.models?.find((m) => m.display_name === shown)?.slug
-    if (typeof slug === 'string' && slug !== '') return slug
+    const model = cache.models?.find((m) => m.display_name === shown)?.slug
+    if (typeof model === 'string' && model !== '') return model
   } catch {
     // No cache yet, or one this reader does not understand.
   }
   return shown.toLowerCase().replace(/ /g, '-')
 }
+
+/** Far past any catalog codex caches; the file is in a home the agent can
+ *  write, so it is not read without bound. */
+const MODELS_CACHE_MAX_BYTES = 8 * 1024 * 1024
 
 /** How much of a rollout's end is read for its newest settings. They are
  *  written at every turn's start and on every change, so they sit near the
@@ -181,12 +189,14 @@ export interface CodexPosture {
  * mode is instructions to the model over whatever sandbox is in force, so it
  * restrains nothing the posture is about.
  */
-export async function getCodexPermissionMode(rollout: string): Promise<CodexPosture | undefined> {
-  let handle: fs.FileHandle | undefined
+export async function getCodexPermissionMode(rollout: SandboxFile): Promise<CodexPosture | undefined> {
+  const key = `${rollout.dir}/${rollout.rel}`
+  let handle: FileHandle | null = null
   try {
-    handle = await fs.open(rollout, 'r')
+    handle = await openSandboxFile(rollout)
+    if (handle === null) return undefined
     const { size, mtimeMs } = await handle.stat()
-    const known = rolloutPostures.get(rollout)
+    const known = rolloutPostures.get(key)
     if (known?.size === size && known.mtimeMs === mtimeMs) return known.posture
     const start = Math.max(0, size - ROLLOUT_TAIL_BYTES)
     const buf = Buffer.alloc(size - start)
@@ -202,7 +212,7 @@ export async function getCodexPermissionMode(rollout: string): Promise<CodexPost
       if (permissionMode !== undefined) posture = { permissionMode, atMs: entry.atMs }
       break
     }
-    rolloutPostures.set(rollout, { size, mtimeMs, posture })
+    rolloutPostures.set(key, { size, mtimeMs, posture })
     return posture
   } catch {
     return undefined

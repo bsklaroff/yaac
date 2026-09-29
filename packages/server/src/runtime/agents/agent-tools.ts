@@ -12,8 +12,7 @@
  * ever being classified.
  */
 import path from 'node:path'
-import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES } from '@yaac/shared/types'
-import { codexDir } from '@yaac/shared/project-paths'
+import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, agentSessionIdSchema } from '@yaac/shared/types'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 import { acpAdapterFor, acpPermissionModeFor } from './acp-adapters'
 import { classifyClaudeTitle, claudePermissionMode, getFirstUserMessage } from './claude'
@@ -29,6 +28,7 @@ import {
   opencodePermissionMode,
 } from './opencode'
 import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
+import type { SandboxFile } from './sandbox-fs'
 
 /** What an agent pane is doing, as every display path reads it. */
 export type AgentPaneStatus = 'running' | 'waiting'
@@ -45,15 +45,15 @@ export type AgentPaneStatus = 'running' | 'waiting'
  */
 export async function getAgentSessionFirstMessage(
   tool: AgentTool,
-  transcriptPath: string | undefined,
+  transcript: SandboxFile | undefined,
   jobName?: string,
   agentSessionId?: string,
 ): Promise<string | undefined> {
   if (tool === 'opencode') return jobName ? getSessionOpencodeFirstUserMessage(jobName, agentSessionId) : undefined
-  if (transcriptPath === undefined) return undefined
-  if (tool === 'codex') return getCodexFirstUserMessage(transcriptPath)
-  if (tool === 'pi') return getPiFirstUserMessage(transcriptPath)
-  return getFirstUserMessage(transcriptPath)
+  if (transcript === undefined) return undefined
+  if (tool === 'codex') return getCodexFirstUserMessage(transcript)
+  if (tool === 'pi') return getPiFirstUserMessage(transcript)
+  return getFirstUserMessage(transcript)
 }
 
 /**
@@ -147,17 +147,18 @@ export interface PaneSession {
  * This is the layer that treats the value as untrusted, and it is the only
  * one: the registry records it verbatim, a restart interpolates the id into a
  * launch command as a bare argv word (`--resume <id>`), and the stopped
- * listing stats and parses whatever path it names. So the id is held to a
- * bounded charset no shell reads anything into, starting with a letter or
- * digit so it can never be read as a flag (`codex resume
- * --dangerously-bypass-approvals-and-sandbox`), and a path the reporter could
+ * listing stats and parses whatever path it names. So the id is held to
+ * `agentSessionIdSchema` — a bounded charset no shell or path join reads
+ * anything into, never a flag (`codex resume
+ * --dangerously-bypass-approvals-and-sandbox`) — and a path the reporter could
  * not legitimately have written — absolute, or climbing out of the project —
- * is dropped.
+ * is dropped. Where a recorded path is read, it is also held to the tool's
+ * own home (`resolveProjectPath`).
  */
 export function parsePaneSession(value: string): PaneSession | undefined {
   const [tool, id, ...rest] = value.trim().split('|')
   const rel = rest.join('|')
-  if (!AGENT_TOOLS.includes(tool as AgentTool) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id ?? '')) return undefined
+  if (!AGENT_TOOLS.includes(tool as AgentTool) || !agentSessionIdSchema.safeParse(id).success) return undefined
   const safe = rel !== '' && !path.isAbsolute(rel) && !rel.split(/[\\/]/).includes('..')
   return {
     tool: tool as AgentTool,
@@ -205,7 +206,7 @@ export async function resolveAgentModel(
 ): Promise<string | undefined> {
   const value = observed.trim()
   if (value === '') return undefined
-  return tool === 'codex' ? codexModelSlug(codexDir(projectSlug), value) : value
+  return tool === 'codex' ? codexModelSlug(projectSlug, value) : value
 }
 
 /**

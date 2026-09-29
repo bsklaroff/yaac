@@ -75,7 +75,7 @@ already are it.
   *row* (not the pod), so a stopped worktree answers; `getAgentSessionTranscript`
   in `#domain/worktrees` reads an `acp` conversation's JSONL
   (`projects/<slug>/acp/<worktreeId>/<agentSessionId>.jsonl`) and replays a
-  `tui` claude conversation through `readClaudeTranscriptAsAcp`, refusing
+  `tui` claude conversation through `claudeTranscriptAsAcp`, refusing
   other tools with `NOT_SUPPORTED` and oversized files with `TOO_LARGE`. The
   SPA's `StoppedTranscript` renders it through the same `AcpTranscript`
   component the live chat pane uses. The sharing feature is therefore a

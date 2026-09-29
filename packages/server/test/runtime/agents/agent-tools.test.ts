@@ -114,7 +114,7 @@ describe('getAgentSessionFirstMessage', () => {
       type: 'user',
       message: { role: 'user', content: 'ship the refactor' },
     }) + '\n')
-    await expect(getAgentSessionFirstMessage('claude', jsonl)).resolves.toBe('ship the refactor')
+    await expect(getAgentSessionFirstMessage('claude', { slug: 'demo', dir, rel: 't.jsonl' })).resolves.toBe('ship the refactor')
     await fs.rm(dir, { recursive: true, force: true })
   })
 
@@ -130,7 +130,7 @@ describe('getAgentSessionFirstMessage', () => {
   it('returns undefined for opencode with no live pod to probe', async () => {
     // opencode keeps its history in a container-local sqlite DB, so its first
     // message is an HTTP probe into the running pod and is gone with it.
-    await expect(getAgentSessionFirstMessage('opencode', '/tmp/ignored.jsonl')).resolves.toBeUndefined()
+    await expect(getAgentSessionFirstMessage('opencode', { slug: 'demo', dir: '/tmp', rel: 'ignored.jsonl' })).resolves.toBeUndefined()
   })
 })
 

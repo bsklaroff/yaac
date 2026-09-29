@@ -1,14 +1,15 @@
-import { acpLogDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
-import fs from 'node:fs/promises'
-import path from 'node:path'
+import { ConfinedPathError } from '#lib/confined-fs'
 import {
-  readAcpLog,
-  readClaudeTranscriptAsAcp,
+  acpRecord,
+  claudeTranscriptAsAcp,
+  readSandboxFile,
+  replayAcpLog,
   sessionTranscriptPath,
+  type SandboxFile,
 } from '#runtime/agents'
 import { listWorktreeAgentSessions } from '#db'
-import { absoluteTranscriptPath } from './agent-session-paths'
+import { recordedTranscript } from './agent-session-paths'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /**
@@ -35,8 +36,10 @@ import type { AcpEvent } from '@yaac/shared/acp'
  *    formats nothing here translates yet.
  *
  * A conversation whose file is missing answers with an empty history rather
- * than an error, matching `readAcpLog`: an agent that never spoke has nothing
- * to show, which is not a failure.
+ * than an error: an agent that never spoke has nothing to show, which is not
+ * a failure. So does one whose file is not a plain file under its tool's
+ * home — both are written from inside the sandbox, which can put a link or a
+ * FIFO there, and neither is read through.
  */
 export async function getAgentSessionTranscript(
   projectSlug: string,
@@ -50,9 +53,8 @@ export async function getAgentSessionTranscript(
   }
 
   if (session.mode === 'acp') {
-    const record = path.join(acpLogDir(projectSlug, worktreeId), `${agentSessionId}.jsonl`)
-    await refuseIfTooLarge(record)
-    return readAcpLog(record)
+    const raw = await readTranscript(acpRecord({ slug: projectSlug, worktreeId, agentSessionId }))
+    return raw === null ? [] : replayAcpLog(raw)
   }
 
   if (session.tool !== 'claude') {
@@ -67,11 +69,10 @@ export async function getAgentSessionTranscript(
   // pod, so a worktree whose pod died before that tick has a link with no
   // path, and deriving it from the layout is the only way its conversation is
   // ever read. `stoppedPrompt` falls back for the same reason.
-  const file = absoluteTranscriptPath(session)
+  const file = recordedTranscript(session)
     ?? await sessionTranscriptPath(projectSlug, agentSessionId, session.tool)
-  if (file === undefined) return []
-  await refuseIfTooLarge(file)
-  return readClaudeTranscriptAsAcp(file, agentSessionId)
+  const raw = await readTranscript(file)
+  return raw === null ? [] : claudeTranscriptAsAcp(raw, agentSessionId)
 }
 
 /**
@@ -85,25 +86,22 @@ export async function getAgentSessionTranscript(
  * where reading it hurts.
  *
  * Refusing beats truncating: a conversation silently missing its first half
- * looks exactly like a conversation that started there. It also beats letting
- * the read fail on its own — past 2 GB `readFile` throws, and the reader's
- * missing-file tolerance would turn that into an empty history, which reads
- * as "nothing was ever said".
+ * looks exactly like a conversation that started there. The cap is applied by
+ * the read itself, so a file that grows between a size check and the read
+ * cannot get past it.
  */
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 
-async function refuseIfTooLarge(file: string): Promise<void> {
-  let size: number
+async function readTranscript(file: SandboxFile | undefined): Promise<string | null> {
+  if (file === undefined) return null
   try {
-    size = (await fs.stat(file)).size
-  } catch {
-    // Missing is not too large — the readers answer with an empty history.
-    return
+    return (await readSandboxFile(file, MAX_TRANSCRIPT_BYTES))?.toString('utf8') ?? null
+  } catch (err) {
+    if (!(err instanceof ConfinedPathError) || err.reason !== 'too-large') throw err
+    const mb = (n: number): string => `${String(Math.round(n / (1024 * 1024)))} MB`
+    throw new ServerError(
+      'TOO_LARGE',
+      `this conversation is ${mb(err.size ?? 0)}, past the ${mb(MAX_TRANSCRIPT_BYTES)} a transcript can be shown at`,
+    )
   }
-  if (size <= MAX_TRANSCRIPT_BYTES) return
-  const mb = (n: number): string => `${String(Math.round(n / (1024 * 1024)))} MB`
-  throw new ServerError(
-    'TOO_LARGE',
-    `this conversation is ${mb(size)}, past the ${mb(MAX_TRANSCRIPT_BYTES)} a transcript can be shown at`,
-  )
 }

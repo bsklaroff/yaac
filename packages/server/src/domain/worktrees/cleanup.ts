@@ -23,6 +23,7 @@ import {
   worktreeDir,
   worktreeStateDir,
 } from '@yaac/shared/project-paths'
+import { openRoot } from '#lib/confined-fs'
 import { shellQuote } from '#lib/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
 import type { TeardownTarget } from '#drivers/contract'
@@ -63,22 +64,26 @@ function detachedTeardownSettled(worktreeId: string): Promise<void> {
  * content by now, and an `rm -rf` through a committed `foo -> /anywhere`
  * would be a host-side delete.
  */
-async function checkoutEphemeralPaths(projectSlug: string, worktreeId: string): Promise<string[]> {
-  let root: string
-  try {
-    root = await fs.realpath(worktreeDir(projectSlug, worktreeId))
-  } catch {
-    return []
-  }
+async function checkoutEphemeralPaths(
+  projectSlug: string,
+  worktreeId: string,
+): Promise<Array<{ abs: string; remove: () => Promise<void> }>> {
+  const checkout = await openRoot(worktreeDir(projectSlug, worktreeId), 'inside').catch(() => null)
+  if (checkout === null) return []
   const config = await resolveProjectConfig(projectSlug).catch(() => null)
-  const paths: string[] = []
+  const paths: Array<{ abs: string; remove: () => Promise<void> }> = []
   for (const rel of resolveEphemeralModulesPaths(config)) {
-    const target = path.join(root, rel)
-    const parent = await fs.realpath(path.dirname(target)).catch(() => null)
-    if (parent === null || (parent !== root && !parent.startsWith(root + path.sep))) continue
-    const stat = await fs.lstat(target).catch(() => null)
+    const at = await checkout.parent(rel).catch(() => null)
+    if (at === null) continue
+    const stat = await fs.lstat(at.dir.child(at.name)).catch(() => null)
+    await at.dir.close()
     if (stat === null || stat.isSymbolicLink()) continue
-    paths.push(target)
+    // `remove` goes through the checkout's confined root, so a parent swapped
+    // for a link after this check cannot steer it out. `abs` is for the
+    // detached teardown's `rm -rf`, which runs after the runtime's own delete
+    // and so leans on the pod being gone by then, as the whole-tree deletes
+    // do (`deleteWorktreeState`).
+    paths.push({ abs: path.join(checkout.real, rel), remove: () => checkout.removeTree(rel) })
   }
   return paths
 }
@@ -108,6 +113,11 @@ async function checkoutEphemeralPaths(projectSlug: string, worktreeId: string): 
  * Transcripts are deliberately left. The tool homes are shared across a
  * project, so a worktree resumed into a second worktree would lose its history
  * to the first one's deletion.
+ *
+ * Plain recursive `rm`s over trees a sandbox wrote, which is sound only
+ * because every caller runs this once the pod is gone (its `podGone` gate):
+ * Node's `rm` does not follow a link it meets, and with nothing live left to
+ * swap a directory for one mid-walk, a walk by path cannot be steered out.
  *
  * Every path is still best-effort — a worktree that half-goes-away beats a
  * reap that aborts and leaves the rest for nobody — but the verdict is
@@ -229,8 +239,8 @@ export async function cleanupWorktree(params: {
     // Best-effort, like the script's `|| true`: under a pod this is the
     // mount target, and a node still unwinding the mount answers EBUSY.
     for (const p of await checkoutEphemeralPaths(projectSlug, worktreeId)) {
-      await fs.rm(p, { recursive: true, force: true }).catch((err: unknown) => {
-        serverLog(`[server] remove ${p} at stop: ${String(err)}`)
+      await p.remove().catch((err: unknown) => {
+        serverLog(`[server] remove ${p.abs} at stop: ${String(err)}`)
       })
     }
     await fs.rm(worktreeStateDir(projectSlug, worktreeId), { recursive: true, force: true })
@@ -307,7 +317,7 @@ export async function cleanupWorktreeDetached(params: {
     await runtime.deregisterWorkspace(worktreeId)
 
     const ephemeralModulesRms = (await checkoutEphemeralPaths(projectSlug, worktreeId))
-      .map((dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`)
+      .map((p) => `rm -rf ${shellQuote(p.abs)} 2>/dev/null || true`)
 
     const worktreeDirRm =
       `rm -rf ${shellQuote(worktreeStateDir(projectSlug, worktreeId))} 2>/dev/null || true`

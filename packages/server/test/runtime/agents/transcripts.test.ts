@@ -6,11 +6,11 @@ import {
   setDataDir,
   claudeDir,
   codexDir,
+  piDir,
   piSessionsDir,
 } from '@yaac/shared/project-paths'
 import {
   resolveProjectPath,
-  listPiJsonlFiles,
   piSessionLogs,
   sessionIdFromPiLog,
   sessionTranscriptPath,
@@ -24,6 +24,11 @@ const slug = 'demo'
  *  out here so the test would catch a change to it. */
 function claudeLog(worktreeId: string): string {
   return path.join(claudeDir(slug), 'projects', '-workspace', `${worktreeId}.jsonl`)
+}
+
+/** The same log as the readers name it: under its tool's home. */
+function claudeFile(worktreeId: string) {
+  return { slug, dir: claudeDir(slug), rel: `projects/-workspace/${worktreeId}.jsonl` }
 }
 
 async function write(file: string, body = '{}\n'): Promise<string> {
@@ -55,29 +60,15 @@ describe('transcripts', () => {
     })
   })
 
-  describe('listPiJsonlFiles', () => {
-    it('walks one level of subdirs and sorts by basename', async () => {
-      const dir = piSessionsDir(slug)
-      await write(path.join(dir, '200_b.jsonl'))
-      await write(path.join(dir, '100_a.jsonl'))
-      await write(path.join(dir, 'workspace', '150_c.jsonl'))
-      await write(path.join(dir, 'notes.txt'), 'x')
-      expect((await listPiJsonlFiles(dir)).map((f) => path.basename(f)))
-        .toEqual(['100_a.jsonl', '150_c.jsonl', '200_b.jsonl'])
-    })
-
-    it('returns [] for a missing dir', async () => {
-      expect(await listPiJsonlFiles(path.join(tmpDir, 'nope'))).toEqual([])
-    })
-  })
-
   describe('piSessionLogs', () => {
     it('returns only the logs whose filename carries the session id', async () => {
       await write(path.join(piSessionsDir(slug), '100_sess-1.jsonl'))
       await write(path.join(piSessionsDir(slug), '200_sess-1.jsonl'))
+      await write(path.join(piSessionsDir(slug), 'workspace', '150_sess-1.jsonl'))
       await write(path.join(piSessionsDir(slug), '300_sess-2.jsonl'))
-      expect((await piSessionLogs(slug, 'sess-1')).map((f) => path.basename(f)))
-        .toEqual(['100_sess-1.jsonl', '200_sess-1.jsonl'])
+      // One level of subdirs, sorted by name, which is chronological.
+      expect((await piSessionLogs(slug, 'sess-1')).map((f) => path.basename(f.rel)))
+        .toEqual(['100_sess-1.jsonl', '150_sess-1.jsonl', '200_sess-1.jsonl'])
       expect(await piSessionLogs(slug, 'unknown')).toEqual([])
     })
   })
@@ -85,8 +76,19 @@ describe('transcripts', () => {
   describe('sessionTranscriptPath', () => {
     it('resolves claude by session id, once the file exists', async () => {
       expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toBeUndefined()
-      const claude = await write(claudeLog('sid'))
-      expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toBe(claude)
+      await write(claudeLog('sid'))
+      expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toEqual(claudeFile('sid'))
+    })
+
+    it('finds a claude transcript filed under any cwd, but never through a link', async () => {
+      await write(path.join(claudeDir(slug), 'projects', '-home-x', 'other.jsonl'))
+      expect(await sessionTranscriptPath(slug, 'other', 'claude'))
+        .toEqual({ slug, dir: claudeDir(slug), rel: 'projects/-home-x/other.jsonl' })
+      // A link planted where a conversation would be names nothing.
+      const elsewhere = await write(path.join(tmpDir, 'elsewhere.jsonl'))
+      await fs.mkdir(path.dirname(claudeLog('linked')), { recursive: true })
+      await fs.symlink(elsewhere, claudeLog('linked'))
+      expect(await sessionTranscriptPath(slug, 'linked', 'claude')).toBeUndefined()
     })
 
     it('has none for codex, whose rollout name follows from no id', async () => {
@@ -99,8 +101,9 @@ describe('transcripts', () => {
 
     it('picks pi\'s newest log, since pi names the file itself', async () => {
       await write(path.join(piSessionsDir(slug), '100_sid.jsonl'))
-      const newest = await write(path.join(piSessionsDir(slug), '200_sid.jsonl'))
-      expect(await sessionTranscriptPath(slug, 'sid', 'pi')).toBe(newest)
+      await write(path.join(piSessionsDir(slug), '200_sid.jsonl'))
+      expect(await sessionTranscriptPath(slug, 'sid', 'pi'))
+        .toEqual({ slug, dir: piDir(slug), rel: 'agent/sessions/200_sid.jsonl' })
     })
 
     it('has none for opencode, which leaves no host transcript', async () => {
@@ -112,64 +115,53 @@ describe('transcripts', () => {
     it('reports the mtime, and undefined once the file is gone', async () => {
       const file = await write(claudeLog('sid'))
       await fs.utimes(file, new Date('2026-01-02'), new Date('2026-01-02'))
-      expect(await transcriptLastActiveMs(file)).toBe(Date.parse('2026-01-02'))
+      expect(await transcriptLastActiveMs(claudeFile('sid'))).toBe(Date.parse('2026-01-02'))
 
       await fs.rm(file)
-      expect(await transcriptLastActiveMs(file)).toBeUndefined()
+      expect(await transcriptLastActiveMs(claudeFile('sid'))).toBeUndefined()
     })
   })
 
   describe('toProjectRelative', () => {
     it('strips the project directory, whatever tool wrote the path', () => {
       // One rule for every tool: the tool home is just the first segment.
-      expect(toProjectRelative(slug, claudeLog('sid')))
+      expect(toProjectRelative(claudeFile('sid')))
         .toBe(path.join('claude', 'projects', '-workspace', 'sid.jsonl'))
-      const rollout = path.join(codexDir(slug), 'sessions', '2026', 'rollout-x.jsonl')
-      expect(toProjectRelative(slug, rollout))
+      expect(toProjectRelative({ slug, dir: codexDir(slug), rel: 'sessions/2026/rollout-x.jsonl' }))
         .toBe(path.join('codex', 'sessions', '2026', 'rollout-x.jsonl'))
-      const piLog = path.join(piSessionsDir(slug), '20260101-120000_sid.jsonl')
-      expect(toProjectRelative(slug, piLog))
-        .toBe(path.join('pi', 'agent', 'sessions', '20260101-120000_sid.jsonl'))
     })
 
     it('refuses a path with no project-relative form', () => {
-      // Outside the project tree — the same verdict the in-pod hook reaches
-      // when it writes an empty record.
-      expect(toProjectRelative(slug, '/tmp/elsewhere.jsonl')).toBeNull()
+      expect(toProjectRelative({ slug, dir: '/tmp', rel: 'elsewhere.jsonl' })).toBeNull()
       // Another project's tree is just as much an escape.
-      expect(toProjectRelative(slug, claudeDir('other'))).toBeNull()
+      expect(toProjectRelative({ slug, dir: claudeDir('other'), rel: 't.jsonl' })).toBeNull()
     })
   })
 
   describe('resolveProjectPath', () => {
-    it('rejoins the project directory', () => {
-      expect(resolveProjectPath(slug, path.join('claude', 'projects', 'a.jsonl')))
-        .toBe(path.join(claudeDir(slug), 'projects', 'a.jsonl'))
-    })
-
-    it('round-trips what toProjectRelative produced, for every tool', () => {
-      for (const abs of [
-        claudeLog('sid'),
-        path.join(codexDir(slug), 'sessions', 'rollout-x.jsonl'),
-        path.join(piSessionsDir(slug), '20260101-120000_sid.jsonl'),
-      ]) {
-        const stored = toProjectRelative(slug, abs)
+    it('resolves under the recording tool\'s own home, and round-trips the encoder', () => {
+      const files = {
+        claude: claudeFile('sid'),
+        codex: { slug, dir: codexDir(slug), rel: 'sessions/rollout-x.jsonl' },
+        pi: { slug, dir: piDir(slug), rel: 'agent/sessions/20260101-120000_sid.jsonl' },
+      } as const
+      for (const [tool, file] of Object.entries(files)) {
+        const stored = toProjectRelative(file)
         expect(stored).not.toBeNull()
-        expect(resolveProjectPath(slug, stored ?? '')).toBe(abs)
+        expect(resolveProjectPath(slug, tool as keyof typeof files, stored ?? '')).toEqual(file)
       }
     })
 
-    it('refuses an absolute value', () => {
-      // The column holds project-relative values only; joining an absolute
-      // onto the project dir would fabricate a path that resolves nowhere.
-      expect(resolveProjectPath(slug, '/old/home/t.jsonl')).toBeUndefined()
-    })
-
-    it('refuses a stored value that climbs out of the project directory', () => {
-      // The encoder can never emit this; the guard keeps the pair symmetric
-      // in what it refuses, whatever else ever writes the column.
-      expect(resolveProjectPath(slug, '../../../../etc/passwd')).toBeUndefined()
-      expect(resolveProjectPath(slug, 'claude/../../../etc/passwd')).toBeUndefined()
+    it('refuses what is not under that home: another tool\'s, the project\'s own files, a way out', () => {
+      // A pane names its transcript, and anything in the workspace can set
+      // the pane: a path to known_hosts or the clone's git config is not one.
+      expect(resolveProjectPath(slug, 'claude', 'codex/sessions/r.jsonl')).toBeUndefined()
+      expect(resolveProjectPath(slug, 'claude', 'known_hosts')).toBeUndefined()
+      expect(resolveProjectPath(slug, 'claude', 'repo/.git/config')).toBeUndefined()
+      expect(resolveProjectPath(slug, 'claude', 'claude/../../../etc/passwd')).toBeUndefined()
+      expect(resolveProjectPath(slug, 'opencode', 'opencode-config/x.jsonl')).toBeUndefined()
+      // The column holds project-relative values only.
+      expect(resolveProjectPath(slug, 'claude', '/old/home/t.jsonl')).toBeUndefined()
     })
   })
 })

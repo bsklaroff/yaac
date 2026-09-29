@@ -42,6 +42,8 @@ import {
   PACKAGE_ROOT, claudeDir, codexDir, opencodeConfigDir, piDir,
 } from '@yaac/shared/project-paths'
 import type { WorkspaceMount } from '#drivers/contract'
+import type { PinnedDir } from '#lib/confined-fs'
+import { openSandboxDir } from '#runtime/agents'
 
 /** The dir name this feature ships from, under the package root. It is also
  *  what marks a link in a skills root as one of ours: a link into a dir of
@@ -81,13 +83,16 @@ export function builtinSkillsDir(): string {
  * four regardless of the active one.
  */
 export function sharedSkillRoots(slug: string): string[] {
-  return [
-    path.join(claudeDir(slug), 'skills'),
-    path.join(codexDir(slug), 'skills'),
-    path.join(opencodeConfigDir(slug), 'skills'),
-    path.join(piDir(slug), 'agent', 'skills'),
-  ]
+  return SKILL_HOMES.map(([home, rel]) => path.join(home(slug), rel))
 }
+
+/** Each of those roots as the tool home it is in and its path there. */
+const SKILL_HOMES: ReadonlyArray<readonly [home: (slug: string) => string, rel: string]> = [
+  [claudeDir, 'skills'],
+  [codexDir, 'skills'],
+  [opencodeConfigDir, 'skills'],
+  [piDir, 'agent/skills'],
+]
 
 /** Point discovery + staging at a different builtin-skills dir (tests). Pass
  *  null to restore the packaged default. */
@@ -182,14 +187,26 @@ export async function reconcileSharedSkillRoots(
   srcDir: string, slug: string, delivery: SkillDelivery,
 ): Promise<string[]> {
   const names = await listBuiltinSkills(srcDir)
-  for (const root of sharedSkillRoots(slug)) {
-    await pruneRetiredLinks(root, names)
-    if (names.length === 0) continue // a stripped build: create nothing
-    await fs.mkdir(root, { recursive: true })
-    for (const name of names) {
-      const dest = path.join(root, name)
-      if (delivery === 'link') await linkSkill(path.join(srcDir, name), dest)
-      else await makeMountpoint(dest)
+  for (const [homeOf, rel] of SKILL_HOMES) {
+    // A stripped build creates nothing, and only prunes where there is a root.
+    if (names.length > 0) await fs.mkdir(homeOf(slug), { recursive: true })
+    const home = await openSandboxDir(slug, homeOf(slug)).catch(() => null)
+    if (home === null) continue
+    if (names.length > 0) await home.mkdirp(rel)
+    // Every lstat, rm, symlink and mkdir below goes through the pinned root,
+    // so a pod that swaps the skills dir for a link cannot aim them at
+    // anything else.
+    const root = await home.dir(rel).catch(() => null)
+    if (root === null) continue
+    try {
+      await pruneRetiredLinks(root, names)
+      for (const name of names) {
+        const dest = root.child(name)
+        if (delivery === 'link') await linkSkill(path.join(srcDir, name), dest)
+        else await makeMountpoint(dest)
+      }
+    } finally {
+      await root.close()
     }
   }
   return names
@@ -325,13 +342,11 @@ async function reaimLink(src: string, dest: string): Promise<void> {
 }
 
 /** Remove our links in `root` for skills this install no longer ships. */
-async function pruneRetiredLinks(root: string, names: string[]): Promise<void> {
-  const entries = await fs.readdir(root).catch(() => null)
-  if (!entries) return
+async function pruneRetiredLinks(root: PinnedDir, names: string[]): Promise<void> {
   const shipped = new Set(names)
-  for (const entry of entries) {
+  for (const entry of await fs.readdir(root.self)) {
     if (shipped.has(entry)) continue
-    const abs = path.join(root, entry)
+    const abs = root.child(entry)
     if (await isBuiltinSkillLink(abs)) await fs.rm(abs, { force: true })
   }
 }

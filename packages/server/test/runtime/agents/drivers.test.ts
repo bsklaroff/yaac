@@ -510,6 +510,31 @@ describe('agentDriver', () => {
     expect(seen.at(-2)).toEqual({ kind: 'command-channel', send: null })
   })
 
+  it('records no conversation under an id the agent minted in the wrong shape', async () => {
+    // The id is later joined into record paths and a restart's launch line.
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    const seen: AgentObservation[] = []
+    const driver = agentDriver('acp')
+    connections.push(driver.connect(session, (o) => seen.push(o), {
+      dial: () => stream, commandTimeoutMs: 1_000, log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: '../x; rm -rf ~' } })}\n`)
+
+    await new Promise((r) => setTimeout(r, 100))
+    expect(acpConversation('demo', 'wt-1', '../x; rm -rf ~')).toBeUndefined()
+    for (const o of seen) {
+      if (o.kind === 'live-agents') expect(o.agents.every((a) => a.agentSessionId === undefined)).toBe(true)
+    }
+  })
+
   it('drives an acp conversation end to end: handshake, updates, status, prompt', async () => {
     // claude's adapter answers in its picker's values, which only its own
     // list names.

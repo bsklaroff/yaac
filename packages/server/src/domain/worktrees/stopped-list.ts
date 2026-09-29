@@ -12,7 +12,7 @@ import {
   type AgentSessionLinkRow,
 } from '#db'
 import { toAgentSessionEntry } from './agent-session-entry'
-import { absoluteTranscriptPath } from './agent-session-paths'
+import { recordedTranscript } from './agent-session-paths'
 import { ensureProjectExists } from './list'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
@@ -116,7 +116,7 @@ async function lastActiveMs(
   links: AgentSessionLinkRow[],
 ): Promise<number | undefined> {
   const stamps = await Promise.all(links.map(async (l) => {
-    const recorded = absoluteTranscriptPath(l)
+    const recorded = recordedTranscript(l)
     const fromDisk = recorded === undefined
       ? undefined
       : await transcriptLastActiveMs(recorded)
@@ -153,15 +153,14 @@ async function stoppedPrompt(
   // starting — has a link with no path, and parsing from disk is the only way
   // its prompt is ever recovered. `lastActiveMs` keeps the same fallback for
   // the same reason.
-  const path = absoluteTranscriptPath(first)
+  const transcript = recordedTranscript(first)
     ?? await sessionTranscriptPath(r.projectSlug, r.worktreeId, first.tool)
-  const prompt = await getAgentSessionFirstMessage(first.tool, path)
+  const prompt = await getAgentSessionFirstMessage(first.tool, transcript)
   if (prompt === undefined) return undefined
-  // Back to the column's form before recording it: the fallback above is an
-  // absolute path derived from the tool's layout, and the column takes only
+  // Back to the column's form before recording it: the column takes only
   // project-relative. An unexpressible one is left out, which leaves whatever
   // an earlier pass recorded alone.
-  const stored = path !== undefined ? toProjectRelative(r.projectSlug, path) : null
+  const stored = transcript !== undefined ? toProjectRelative(transcript) : null
   await setAgentSessionCapture(r.projectSlug, first.tool, first.agentSessionId, {
     firstPrompt: prompt,
     ...(stored !== null ? { transcriptPath: stored } : {}),

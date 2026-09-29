@@ -52,5 +52,9 @@ export async function purgeProjectBytes(slug: string): Promise<void> {
     // runtime unavailable — the node-local sweep will catch it
   }
 
+  // A plain recursive `rm` over trees the sandboxes wrote, sound because it
+  // runs after every worktree above was torn down: Node's `rm` follows no
+  // link it meets, and with no pod left to swap a directory for one
+  // mid-walk, a walk by path cannot be steered out.
   await fs.rm(projectDir(slug), { recursive: true, force: true })
 }

@@ -4,7 +4,7 @@
  * transcript.
  *
  * An acp conversation has a record: acpd tees the JSON-RPC stream to disk and
- * `readAcpLog` replays it. A tui conversation has no such thing — the agent
+ * `replayAcpLog` replays it. A tui conversation has no such thing — the agent
  * was driven through a PTY, and the only history it left is claude's own
  * session JSONL. Something has to translate one into the other.
  *
@@ -31,7 +31,6 @@
  * and the same answer under both drivers.
  */
 
-import fs from 'node:fs/promises'
 import { replayAcpLog } from './acp-log'
 import { ACP } from './acp-protocol'
 import { isUuid } from '#lib/uuid'
@@ -56,24 +55,10 @@ import type { SessionStore, SessionStoreEntry } from '@anthropic-ai/claude-agent
 const PLACEHOLDER_SESSION_ID = '00000000-0000-0000-0000-000000000000'
 
 /**
- * A conversation's history, read from claude's own transcript.
- *
- * A missing file is not an error — the same verdict `readAcpLog` reaches for a
- * conversation whose agent never spoke: an empty history, not a failure.
+ * A conversation's history, from claude's own transcript — read by the caller,
+ * which decides where from and how much of it (see `getAgentSessionTranscript`).
  */
-export async function readClaudeTranscriptAsAcp(
-  transcriptPath: string,
-  agentSessionId: string,
-): Promise<AcpEvent[]> {
-  let raw: string
-  try {
-    raw = await fs.readFile(transcriptPath, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      serverLog(`[server] claude transcript ${transcriptPath}: ${String(err)}`)
-    }
-    return []
-  }
+export async function claudeTranscriptAsAcp(raw: string, agentSessionId: string): Promise<AcpEvent[]> {
   return replayAcpLog(await synthesizeAcpRecord(raw, agentSessionId))
 }
 

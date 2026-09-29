@@ -38,7 +38,7 @@ import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { AcpConversation } from './acp-client'
-import { readAcpInFlight, readAcpModeId, readAcpPendingPermissions } from './acp-log'
+import { readAcpInFlight, readAcpModeId, readAcpPendingPermissions, type AcpRecordRef } from './acp-log'
 import { tmuxCmd } from './agent-command'
 import { agentWindowTool } from './agent-tools'
 import {
@@ -59,7 +59,7 @@ import type {
   DrivenWorktree,
   LiveAgent,
 } from './drivers'
-import type { AgentTool, PermissionMode } from '@yaac/shared/types'
+import { agentSessionIdSchema, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 
 /**
  * One conversation's acpd socket, inside the workspace.
@@ -402,12 +402,18 @@ class AcpConnection implements AgentConnection {
         // Only a conversation we can already name has a record to read, and it
         // is exactly those that can be mid-turn: a reattach happens on a
         // conversation yaac already recorded.
-        recoverInFlight: () => readAcpInFlight(this.recordPath(resumeSessionId)),
-        recoverPendingPermissions: () =>
-          readAcpPendingPermissions(this.recordPath(resumeSessionId)),
-        recoverModeId: () => readAcpModeId(this.recordPath(resumeSessionId)),
+        recoverInFlight: () => readAcpInFlight(this.record(resumeSessionId)),
+        recoverPendingPermissions: () => readAcpPendingPermissions(this.record(resumeSessionId)),
+        recoverModeId: () => readAcpModeId(this.record(resumeSessionId)),
       } : {}),
       onSessionId: (agentSessionId) => {
+        // The id is the agent's to mint, and a recorded one is later joined
+        // into paths and a restart's launch line: one of the wrong shape is
+        // not recorded at all, and the conversation runs unnamed.
+        if (!agentSessionIdSchema.safeParse(agentSessionId).success) {
+          this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: not recording malformed id ${JSON.stringify(agentSessionId.slice(0, 200))}`)
+          return
+        }
         entry.agentSessionId = agentSessionId
         // acpd opened the record before the agent had an id to give, so rename
         // it onto the one the conversation will be addressed by from now on.
@@ -463,12 +469,9 @@ class AcpConnection implements AgentConnection {
     }, entry.conversation)
   }
 
-  /** Where acpd is recording one of this worktree's conversations. */
-  private recordPath(agentSessionId: string): string {
-    return path.join(
-      acpLogDir(this.session.slug, this.session.worktreeId),
-      `${agentSessionId}.jsonl`,
-    )
+  /** Which of this worktree's records acpd keeps one conversation in. */
+  private record(agentSessionId: string): AcpRecordRef {
+    return { slug: this.session.slug, worktreeId: this.session.worktreeId, agentSessionId }
   }
 
   private detach(entry: Attached, reason: string): void {
@@ -542,6 +545,11 @@ class AcpConnection implements AgentConnection {
  * the id the agent minted. A rename rather than a copy so acpd's open
  * descriptor keeps writing to the same file, and a no-op on a resume, where the
  * launch name was already the final one.
+ *
+ * Only ever handed an id `onSessionId` has held to `agentSessionIdSchema`.
+ * The rename is by name within one directory, and
+ * `rename` never follows its last segment, so a link planted at either name
+ * is moved or replaced, never written through.
  */
 async function adoptLog(
   session: DrivenWorktree,
