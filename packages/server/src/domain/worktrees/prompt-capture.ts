@@ -1,4 +1,4 @@
-import { getAgentSessionFirstMessage } from '#runtime/agents'
+import { getAgentSessionFirstMessage, type SandboxFile } from '#runtime/agents'
 import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
 import type { AgentTool } from '@yaac/shared/types'
 
@@ -38,13 +38,13 @@ export async function captureFirstPrompt(
   projectSlug: string,
   tool: AgentTool,
   agentSessionId: string,
-  transcriptPath: string | undefined,
+  transcript: SandboxFile | undefined,
   jobName: string | undefined,
 ): Promise<string | undefined> {
   const key = `${projectSlug}/${tool}/${agentSessionId}`
   const cached = known.get(key)
   if (cached !== undefined) return cached
-  const prompt = await getAgentSessionFirstMessage(tool, transcriptPath, jobName, agentSessionId)
+  const prompt = await getAgentSessionFirstMessage(tool, transcript, jobName, agentSessionId)
     .catch(() => undefined)
   if (prompt === undefined) return undefined
   // Stored at the length it will be recorded at, so the copy re-reported on

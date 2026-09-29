@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir, setDataDir, worktreeDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
@@ -321,6 +323,12 @@ describe('readWorktreeFile', () => {
     }
     expect((await refusal(readWorktreeFile('read', 'missing.txt'))).code).toBe('NOT_FOUND')
     expect((await refusal(readWorktreeFile('read', 'sub'))).code).toBe('VALIDATION')
+  })
+
+  it('refuses a FIFO at once rather than waiting for a writer', async () => {
+    await promisify(execFile)('mkfifo', [path.join(dir, 'pipe')])
+    expect(await refusal(readWorktreeFile('read', 'pipe')))
+      .toEqual({ code: 'VALIDATION', message: 'pipe is not a regular file' })
   })
 
   it('gives binary and oversized files no content', async () => {

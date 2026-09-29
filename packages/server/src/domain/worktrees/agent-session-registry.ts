@@ -3,6 +3,7 @@ import { catalogModel } from '#domain/auth'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
+  acpRecord,
   getCodexPermissionMode,
   readAcpFirstPrompt,
   resolveAgentPermissionMode,
@@ -11,8 +12,6 @@ import {
 } from '#runtime/agents'
 import { applyWorktreeEvent, getWorktreeRow, listWorktreeAgentSessions } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
-import path from 'node:path'
-import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import type { AgentSessionLinkRow, DiscoveredSession, WorktreeRow } from '#db'
 import type { LiveAgent } from '#runtime/agents'
@@ -125,15 +124,16 @@ async function describe(
   recorded: AgentSessionLinkRow | undefined,
 ): Promise<DiscoveredSession & { paneId: string }> {
   const { tool, transcriptPath } = agent
-  const record = path.join(acpLogDir(projectSlug, worktreeId), `${agentSessionId}.jsonl`)
+  const record = { slug: projectSlug, worktreeId, agentSessionId }
   const transcript = transcriptPath ?? recorded?.transcriptPath
   const firstPrompt = recorded?.firstPrompt !== undefined ? undefined
     : mode === 'acp' ? await readAcpFirstPrompt(record)
     : await captureFirstPrompt(
       projectSlug, tool, agentSessionId,
-      transcript !== undefined ? resolveProjectPath(projectSlug, transcript) : undefined, jobName,
+      transcript !== undefined ? resolveProjectPath(projectSlug, tool, transcript) : undefined, jobName,
     )
-  const lastActiveMs = mode === 'acp' ? await transcriptLastActiveMs(record) : undefined
+  const recordFile = mode === 'acp' ? acpRecord(record) : undefined
+  const lastActiveMs = recordFile !== undefined ? await transcriptLastActiveMs(recordFile) : undefined
   return {
     tool,
     agentSessionId,
@@ -215,7 +215,7 @@ async function withRolloutModes(
     const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === a.agentSessionId)
     const transcript = a.transcriptPath ?? recorded?.transcriptPath
     const rollout = a.tool === 'codex' && transcript !== undefined
-      ? resolveProjectPath(row.projectSlug, transcript)
+      ? resolveProjectPath(row.projectSlug, 'codex', transcript)
       : undefined
     const read = rollout !== undefined ? await getCodexPermissionMode(rollout) : undefined
     return read !== undefined && read.atMs >= life ? { ...a, reportedMode: read.permissionMode } : a

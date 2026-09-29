@@ -43,12 +43,14 @@ export function normalizeTool(raw: string | undefined): AgentTool {
 export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
 
 /**
- * An agent conversation's id, as a client or a workspace may hand it over —
- * checked before it is ever joined into a path (`acp/<wt>/<id>.jsonl`), since
- * it arrives from outside the server. Every pinned tool's ids fit: UUIDs for
- * claude, codex and pi, `ses_…` for opencode.
+ * An agent conversation's id, as a client, a workspace or an agent may hand it
+ * over — checked before it is ever joined into a path (`acp/<wt>/<id>.jsonl`,
+ * `claude/projects/<cwd>/<id>.jsonl`) or a launch command (`--resume <id>`), since
+ * it arrives from outside the server. A leading letter or digit so it can
+ * never be read as a flag. Every pinned tool's ids fit: UUIDs for claude,
+ * codex and pi, `ses_…` for opencode.
  */
-export const agentSessionIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+export const agentSessionIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
 
 /**
  * How yaac drives a conversation, and therefore how the webapp renders it.

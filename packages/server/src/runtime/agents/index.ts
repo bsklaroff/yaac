@@ -41,11 +41,11 @@ export {
 export { attachAcp } from './acp-bridge'
 export { parkAcpLaunchModel } from './acp-driver'
 export { acpConversation } from './acp-registry'
-export { readAcpFirstPrompt, readAcpLog } from './acp-log'
+export { acpRecord, readAcpFirstPrompt, replayAcpLog } from './acp-log'
 // A tui claude conversation as the events an acp one produces, so a stopped
 // worktree's history reads the same either way. The translation is the ACP
 // adapter's own, run as a library — see the module header.
-export { readClaudeTranscriptAsAcp } from './claude-acp-replay'
+export { claudeTranscriptAsAcp } from './claude-acp-replay'
 export type { AcpConversation } from './acp-client'
 export {
   agentStatusFormat,
@@ -79,6 +79,8 @@ export {
 // on its pane, so a caller following it has to know it is codex anyway.
 export { getCodexPermissionMode } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
+// How the server reads and writes the project dirs an agent can write too.
+export { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 export {
   buildUpstreamExec,
   buildWindowsExec,

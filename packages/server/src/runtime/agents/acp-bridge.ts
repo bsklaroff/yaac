@@ -25,8 +25,6 @@
 
 import { acpConversation } from './acp-registry'
 import { tailAcpLog } from './acp-log'
-import { acpLogDir } from '@yaac/shared/project-paths'
-import path from 'node:path'
 import { serverLog } from '#log'
 import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
 import type { AcpClientMessage, AcpEvent, AcpImage, AcpServerMessage } from '@yaac/shared/acp'
@@ -108,7 +106,7 @@ export function attachAcp(
   let seq = 0
   let detached = false
   const tail = tailAcpLog(
-    path.join(acpLogDir(slug, worktreeId), `${agentSessionId}.jsonl`),
+    { slug, worktreeId, agentSessionId },
     (events, reset) => {
       // Closing the tail stops further passes, but not the one already reading:
       // it checks for closure on entry and its chain serializes rather than

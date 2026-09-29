@@ -103,7 +103,10 @@ mtimes, with `lstat`) is `fetchedAt`.
 ### Confinement
 
 Under k8s the checkout is the sandboxed agent's to shape and the server pod
-can see `server-local/`, so every path is a security boundary. Links are
+can see `server-local/`, so every path is a security boundary. Every access
+goes through the checkout opened as a confined root (`#lib/confined-fs`,
+policy `inside`, `.git` excluded) — the same helper the server uses for the
+tool homes and conversation records a pod can write. Links are
 followed — file links, linked folders along the way, chains — as long as
 where they finally land is inside the worktree (its `.git` counts as
 outside), and that is checked on **what was opened**, not on a string:

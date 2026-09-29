@@ -526,8 +526,9 @@ inert here for reasons rather than by luck:
   when the driver is `containerless`.
 - The two call sites that are not driver-gated stop on their own. Seeding a
   create takes the mediated branch, which writes sentinels and returns before
-  either half runs; the harvest on worktree stop reads project tool homes
-  that hold sentinels, and a sentinel is explicitly not a credential to adopt.
+  either half runs; the harvest on worktree stop returns at once under a
+  mediated runtime, since a pod-writable tool home has nothing legitimate to
+  offer there and a planted bundle must never be adopted install-wide.
 - The Keychain half never applies. It is `darwin`-only, and this server is a
   Linux pod — there is no `security` to spawn and no host tool home to read.
 

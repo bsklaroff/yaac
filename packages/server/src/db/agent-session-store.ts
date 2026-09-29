@@ -27,9 +27,9 @@ export interface AgentSessionRow {
   mode: AgentMode
   createdAt: Date
   /** Project-relative, exactly as the column holds it. A reader that wants
-   *  bytes on disk resolves it against the project directory, which takes
+   *  bytes on disk resolves it against the recording tool's home, which takes
    *  the store's layout knowledge and so happens a layer up
-   *  (`absoluteTranscriptPath` in `#domain/worktrees`). */
+   *  (`recordedTranscript` in `#domain/worktrees`). */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date

@@ -75,12 +75,11 @@ workspace can already write the server's files directly
 - **docs/plans/worktree-reference-clones.md.** That plan delivers the
   read-only `/repo/.git` item from phase 0, and this plan does not repeat
   it (1.6). The two are independent in order. The explorer listing it
-  moves into the workspace no longer touches the checkout from the server,
-  so that call site drops out of the 3.3 table when it lands.
+  moves into the workspace no longer touches the checkout from the server.
 - **docs/plans/per-worktree-agent-history.md.** Its `history/<wt>/`
   converge step, and the server-side transcript copier in its follow-ups,
-  read and write sandbox-writable trees. They must go through the 3.2
-  helper, so workstream 3 lands first.
+  read and write sandbox-writable trees. They must go through
+  `openSandboxDir` / `#lib/confined-fs` (workstream 3).
 
 ---
 
@@ -103,7 +102,7 @@ closing both the pod-plants-hooks and the server-follows-links halves. Two
 things from this plan interact with it:
 
 - the checkout's `.git` stays excluded from the confined-fs `inside` root
-  (3.2), as `files.ts` does today;
+  (workstream 3), as `files.ts` does today;
 - once it lands, the throwaway git dir's link-following caveats in
   docs/server-git.md "What this does not cover" go away.
 
@@ -120,165 +119,34 @@ refuses a live duplicate (docs/worktree-storage.md, "Write discipline").
 
 ## Workstream 3: server I/O on sandbox-writable paths
 
-Under k8s these roots are mounted read-write into every worktree pod of a
-project:
+Shipped:
 
-- the checkout,
-- the tool homes `claude/`, `codex/`, `pi/` and `opencode-config/`,
-- `acp/<worktreeId>/`,
-- the opencode dirs,
-- cache volumes.
+- **No harvest under a mediated runtime.** `harvestToolCredentials` and the
+  standing sweep return at once when `runtimeMediatesEgress()`, so a bundle
+  a pod plants in its tool home is never adopted into the host store.
+- **One confined-fs helper**, `#lib/confined-fs` (`openRoot` with an
+  `inside` or `no-links` policy): descriptor-checked walks, non-blocking
+  leaf opens, capped reads, atomic writes and fd-walk deletes. The file
+  editor (`files.ts`, `inside`, `.git` excluded), `prepareModuleDirs` and
+  the stop-time ephemeral-modules removal go through it for the checkout.
+- **Tool homes and conversation records** are opened through
+  `openSandboxDir` (`#runtime/agents`): `no-links` rooted at the dir itself
+  under a sandboxing runtime, `inside` rooted at the project dir under
+  containerless (`sandboxLinkPolicy`, the one driver-kind branch). Seeding
+  (`seedClaudeJson`, `seedClaudeSettings`, `ensureAgentReporters`), every
+  transcript and record reader, codex's model cache, skills discovery
+  (`SKILL.md` capped at 256 KiB) and `reconcileSharedSkillRoots` use it. A
+  recorded transcript path resolves only under the recording tool's own
+  home (`recordedTranscript`).
+- **Sandbox-supplied ids** — a pane-reported conversation id and an ACP
+  agent's minted `sessionId` — are held to `agentSessionIdSchema` (now
+  also requiring a leading letter or digit) before any path is built.
+- Whole-tree deletes (`deleteWorktreeState`, `purgeProjectBytes`) stay
+  plain `rm`, with their no-live-pod precondition stated where they run.
 
-A pod can replace any leaf, or any directory *below* a mount root, with a
-symlink or a FIFO. It cannot replace the mount root itself. About 40 server
-calls read, write, list or delete under those roots, and about 20 follow
-links. The worst is not a link at all.
-
-### 3.1 Never adopt a credential from a mediated sandbox (fix first)
-
-**Today.** `harvestClaude` and `harvestCodex` (`domain/auth/credential-sync.ts`):
-
-1. read each project's `claude/.credentials.json` and `codex/auth.json`;
-2. skip placeholders;
-3. adopt any bundle that looks newer into the **host credential store**,
-   from which the proxy injects for every worktree of every project.
-
-They run from `stopWorktree` on every stop, and from `syncToolCredentials`
-on the standing reconcile sweep, on both drivers. The module's comment
-assumes that "under a mediated runtime … the harvest half finds nothing".
-
-That holds only while pods behave. A pod that writes a non-placeholder
-bundle with a later `expiresAt` into its tool home gets it adopted
-install-wide:
-
-- the install's Claude or Codex account is replaced by one the attacker
-  chose;
-- or it is replaced by garbage, which is a denial of service for every
-  worktree.
-
-**Design.** Under a mediated runtime the proxy is the only refresh writer
-(docs/worktree-egress.md), so there is nothing legitimate to harvest.
-
-- `harvestToolCredentials`, and the two harvest calls inside
-  `syncToolCredentials`, return immediately when `runtimeMediatesEgress()`.
-- `syncToolCredentials` then does nothing at all under k8s, which its
-  comment already says is the effect.
-- `stopWorktree` keeps its call, since containerless needs it.
-- `seedProjectToolHome` already writes placeholders without reading under
-  mediated egress.
-
-**Tests.** Unit tests in `test/domain/auth/credential-sync.test.ts`, through
-`harvestToolCredentials`:
-
-- a mediated driver plus a newer real-looking bundle in a project home
-  leaves the host store unchanged;
-- a containerless driver still adopts.
-
-### 3.2 One confined-fs helper
-
-`domain/worktrees/files.ts` already implements the right discipline for the
-checkout. It:
-
-- pins the root by realpath;
-- walks segment by segment through `/proc/self/fd/<fd>/<name>` as an
-  `openat` stand-in;
-- opens each directory with `O_DIRECTORY` and checks where the descriptor
-  landed, because gVisor follows a link despite `O_NOFOLLOW` when
-  `O_DIRECTORY` is set;
-- opens leaves with `O_NONBLOCK|O_NOCTTY`, so a FIFO cannot hang it;
-- creates with `O_CREAT|O_EXCL|O_NOFOLLOW`;
-- deletes by fd-walk;
-- falls back to realpath checks where `/proc/self/fd` does not exist
-  (macOS containerless).
-
-`domain/git/run.ts`'s `readOnce` is the leaf-only version, for
-`.git/config`: `O_NOFOLLOW`, `fstat` is-a-file, and a size cap.
-
-**Design.** Lift that into `src/lib/confined-fs.ts`. It must live in `#lib`
-because `runtime/agents` needs it and cannot import domain. It exposes one
-type:
-
-```ts
-type LinkPolicy =
-  | 'inside'    // links allowed if they land inside the root (the checkout)
-  | 'no-links'  // no link anywhere below the root (tool homes, acp logs)
-
-interface ConfinedRoot {
-  open(rel: string, flags: number): Promise<FileHandle> // + O_NONBLOCK|O_NOCTTY, regular-file check
-  readFile(rel: string, opts: { maxBytes: number }): Promise<Buffer | null>
-  readdir(rel: string): Promise<Dirent[]>
-  stat(rel: string): Promise<Stats | null>
-  writeAtomic(rel: string, data: string | Buffer): Promise<void> // O_EXCL|O_NOFOLLOW tmp in pinned parent, rename
-  mkdirp(rel: string): Promise<void>
-  removeTree(rel: string): Promise<void>
-}
-function openRoot(root: string, policy: LinkPolicy, opts?: { exclude?: string[] }): Promise<ConfinedRoot>
-```
-
-- **`files.ts` becomes a client**, with `openRoot(checkout, 'inside',
-  { exclude: ['.git'] })`. Its routes, error mapping and version hashing
-  stay where they are.
-- **Relative names are checked lexically first:** no NUL, not absolute, no
-  `..`. The existing `checkPath` moves into the helper.
-- **The policy is applied, not guessed.** Under containerless there is no
-  sandbox boundary, and yaac itself plants links in the tool homes: the
-  per-worktree history links, and builtin skills linked into the install.
-  So the tool-home callers pick `no-links` under a mediated runtime and
-  `inside` rooted at the project dir otherwise. That choice is one exported
-  function, `sandboxLinkPolicy()`, next to the other tool-home locators in
-  `runtime/agents`, and every call site in 3.3 uses it. It is the only
-  driver-kind branch this workstream adds, and it decides only *whether*
-  confinement applies.
-
-**Tests.** None directly, because it is an internal module of `#lib`.
-Coverage comes through `files.ts`, whose test suite already covers
-link-out cases for the checkout (add a FIFO case there), and through the
-3.3 call sites' own tests. Add the `no-links` cases to the transcript and
-seed tests below.
-
-### 3.3 Call sites
-
-Grouped by what goes wrong today. "Follows" means plain path I/O.
-
-| Group | Calls | Today | Change |
-|---|---|---|---|
-| **Seeding writes into `claude/`** | `seedClaudeSettings`, `seedClaudeJson`, `adoptLegacyClaudeJson` (`domain/worktrees/seed.ts`); `mergeHooks` in `ensureAgentReporters` (`runtime/agents/agent-reporters.ts`), for claude's `settings.json` and codex's `hooks.json` | `readFile` then a plain `writeFile` follow links. A planted `settings.json` link makes every create rewrite the target; a target that is not JSON is replaced by a small object, so the database file or another project's config can be clobbered. `mergeHooks` reads through the link and renames its output over it, copying the target's content into the pod's view. | `openRoot(claudeDir, sandboxLinkPolicy())`, `readFile` with a 1 MiB cap, `writeAtomic`. A link or FIFO in place of the file reads as missing, and the write replaces the link, never its target. |
-| **Transcript and log readers** | `findClaudeTranscript`, `listPiJsonlFiles`, `transcriptLastActiveMs` (`runtime/agents/transcripts.ts`); `scanJsonlForward` (`jsonl.ts`); `readAcpLog*`, `tailAcpLog`, `readAcpFirstPrompt` (`acp-log.ts`); `readClaudeTranscriptAsAcp`; `getAgentSessionTranscript` (`domain/worktrees/transcript.ts`); the discovery sweep, `stopped-list` and `detail` readers | Follow links, so a conversation view can render another project's transcript. Plain `open(… 'r')` blocks on a FIFO: a few planted FIFOs exhaust libuv's four-thread pool and stall every fs call in the server. The forward scan is unbounded. | Readers take a `FileHandle` from the tool's own root (`claude/`, `codex/`, `pi/`, `acp/<wt>/`), never `projectDir`. `transcript.ts`'s 64 MiB cap moves into the `open` / `readFile` call, where the stat-then-read race cannot bypass it. |
-| **Recorded transcript paths** | `resolveProjectPath` / `toProjectRelative` (`runtime/agents/transcripts.ts`) | Confined only to `projectDir`, by text. A pane-reported path can name `known_hosts`, `repo/.git/config` or another worktree's files. | Resolve against the recording tool's own root, and refuse otherwise. Stored `agent_sessions.transcriptPath` values are project-relative and already live under a tool home, so existing rows stay valid. |
-| **Skills discovery** | `subdirs`, `fsReader`, the plugin readers (`domain/skills/discover.ts`); `reconcileSharedSkillRoots` (`domain/skills/builtin.ts`) | `SKILL.md` is read through links (a link named `SKILL.md` exposes any server file through the skills API). Linked subdirs are accepted on purpose. The root `mkdir` / `rm` follows links. | Under a mediated runtime, `no-links` roots per tool skills dir and plugin dir, and `SKILL.md` capped at 256 KiB. Under containerless, `inside` rooted at the project dir: its skill links point into the install and the history dirs, and it has no boundary to defend. `reconcileSharedSkillRoots`'s per-entry `lstat` / `rm` / `symlink` run through the pinned root. |
-| **Checkout housekeeping** | `mkdirMountTarget` (`seed.ts`); `checkoutEphemeralPaths` (`domain/worktrees/cleanup.ts`) | Bespoke realpath-after-mkdir; a check-then-use race. | `openRoot(checkout, 'inside').mkdirp` / `.removeTree`. `mkdirMountTarget` is deleted. |
-| **Whole-tree deletes** | `deleteWorktreeState`, `project-purge.ts` | Node's `rm -rf` does not follow links. Both run with no live pod (`podGone` gate; project purge follows teardown). | No change. Add an assertion comment naming the `podGone` precondition. |
-| **Credential bundles in tool homes** | `readProjectClaudeBundle` / `readProjectCodexBundle`, `writeProject*` (`shared/tool-auth.ts`) | Writes use a random tmp name and rename, so they are safe. Reads follow links but, after 3.1, never run under a mediated runtime. | None. |
-
-Not in scope, because the sandbox cannot write it:
-
-- `worktreeStateDir` staging (builtin skills and the worktree bin) is
-  server-written and mounted read-only.
-- `drivers/k8s/worktrees/changes.ts` runs git inside the pod.
-
-### 3.4 Ids that come from the sandbox
-
-- **A pane-reported conversation `id`** (`parsePaneSession`) is held to
-  `[A-Za-z0-9._-]+` with no length bound, and is later joined into
-  `acp/<wt>/${id}.jsonl` and `claude/projects/*/${id}.jsonl`.
-- **`adoptLog`** (`runtime/agents/acp-driver.ts`) renames to the ACP
-  agent's reply `sessionId`, unchecked.
-- **`/acp/attach`'s `session` query** is covered in 1.1.
-
-All three are checked against one exported schema, `agentSessionIdSchema =
-/^[A-Za-z0-9_-]{1,128}$/`, before any path is built. The pinned tools'
-formats have to be checked before this lands (see Verification). A line
-that fails the check is dropped, not recorded.
-
-**Tests for 3.3 and 3.4.** Unit tests, placed per the sealed-folder rule in
-the file of the barrel function each path runs through:
-
-- `seedProjectToolHome` / create seeding, with `settings.json` as a link
-  out of the root (the target is untouched and the link is replaced);
-- `getAgentSessionTranscript` with a linked transcript (not found) and a
-  FIFO (not found, returns promptly);
-- skills listing with a linked `SKILL.md`;
-- a pane-reported id containing `../`.
+Consequence under containerless: a personal skill that is a link out of the
+project dir is no longer listed by skills discovery (the agent itself still
+loads it).
 
 ---
 
@@ -623,18 +491,16 @@ scope, because the writer *is* the sandbox.
 
 Each numbered step is one reviewable change.
 
-1. **3.1 harvest gate.** A few lines, and the most severe finding.
-2. ~~Workstream 2~~, ~~1.1~~, ~~1.2–1.5~~: shipped.
-3. **3.2 helper, then 3.3 / 3.4 call sites**, one group per change,
-   starting with the seeding writes.
-4. **Workstream 4.** Schema and `project.json`, then the `ProjectRef`
+1. ~~3.1 harvest gate~~, ~~Workstream 2~~, ~~1.1~~, ~~1.2–1.5~~, ~~3.2–3.4~~:
+   shipped.
+2. **Workstream 4.** Schema and `project.json`, then the `ProjectRef`
    plumbing and names, then the id-keyed GCs.
-5. **Workstream 5.** Repo layout (`yaac-proj-<id>`), then key and minting,
+3. **Workstream 5.** Repo layout (`yaac-proj-<id>`), then key and minting,
    then the gate and client authfiles in one change, since a gate without
    clients breaks every build.
 
 1.6 (worktree-reference-clones) follows after workstream 5.
-per-worktree-agent-history starts after step 3.
+per-worktree-agent-history can start now.
 
 ## Dependencies
 
@@ -643,11 +509,6 @@ per-worktree-agent-history starts after step 3.
   cross-project writes, but a re-added slug would then inherit the old
   project's repos and write rights, and moving off slugs later means a
   second rename and rebuild.
-- **3.4 reuses `agentSessionIdSchema`** (`@yaac/shared/types`), which 1.1
-  defined for the `/acp/attach` `session` query.
-- **3.3 relies on 1.2** to leave `cache-volumes/` out of the call-site
-  table: a key without `/` means no mount sits under a server `mkdir`.
-- **3.1** stands alone.
 
 ## Legacy-compat entries (docs/legacy-compat-shims.md)
 
@@ -695,7 +556,5 @@ change that depends on it:
   pull. If it does request it, the gate answers 200 to anonymous `/v2/`,
   and podman is given credentials preemptively through its authfile
   (verify it sends them unprompted).
-- **Agent session id formats** for claude, codex, pi and opencode's ACP
-  ids, against `^[A-Za-z0-9_-]{1,128}$` (3.4).
 - **`gen_random_uuid()`** under the pinned PGlite, for the `add_project_id`
   default (4).

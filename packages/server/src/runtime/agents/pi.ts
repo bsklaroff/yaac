@@ -1,5 +1,6 @@
 import { piSessionLogs } from './transcripts'
 import { scanJsonlForward } from './jsonl'
+import type { SandboxFile } from './sandbox-fs'
 
 /**
  * Status classification + first-message lookup for pi (earendil) sessions.
@@ -87,6 +88,6 @@ export async function getSessionPiFirstUserMessage(
 
 /** One pi log's first user message. Path-based, for a conversation the link
  *  tree already resolved to a file. */
-export async function getPiFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
-  return scanJsonlForward(jsonlPath, (entry) => getUserMessageText(entry as PiMessageEntry))
+export async function getPiFirstUserMessage(file: SandboxFile): Promise<string | undefined> {
+  return scanJsonlForward(file, (entry) => getUserMessageText(entry as PiMessageEntry))
 }

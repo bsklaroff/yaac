@@ -1,5 +1,4 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
+import type { ConfinedRoot } from '#lib/confined-fs'
 
 /**
  * The in-tool halves of agent reporting: what each tool is made to run so it
@@ -189,28 +188,32 @@ export default {
 `
 
 /**
- * Install every tool's reporter into a project's tool homes: claude's hooks
- * into its `settings.json`, codex's into `hooks.json` in its home, pi's
- * extension into its agent dir (what `PI_CODING_AGENT_DIR` names) and
- * opencode's plugin into its config dir. Idempotent, and leaves a file that
- * already holds these bytes untouched.
+ * Install every tool's reporter into a project's tool homes (each opened with
+ * `openSandboxDir`): claude's hooks into its `settings.json`, codex's into
+ * `hooks.json` in its home, pi's extension into its agent dir (what
+ * `PI_CODING_AGENT_DIR` names) and opencode's plugin into its config dir.
+ * Idempotent, and leaves a file that already holds these bytes untouched.
  */
 export async function ensureAgentReporters(homes: {
-  claudeDir: string
-  codexDir: string
-  piAgentDir: string
-  opencodeConfigDir: string
+  claude: ConfinedRoot
+  codex: ConfinedRoot
+  pi: ConfinedRoot
+  opencodeConfig: ConfinedRoot
 }): Promise<void> {
-  await mergeHooks(path.join(homes.claudeDir, 'settings.json'), CLAUDE_HOOKS)
-  await mergeHooks(path.join(homes.codexDir, 'hooks.json'), CODEX_HOOKS)
-  await install(path.join(homes.piAgentDir, 'extensions', 'yaac-report.ts'), PI_EXTENSION)
-  await install(path.join(homes.opencodeConfigDir, 'plugins', 'yaac-report', 'index.ts'), OPENCODE_PLUGIN)
+  await mergeHooks(homes.claude, 'settings.json', CLAUDE_HOOKS)
+  await mergeHooks(homes.codex, 'hooks.json', CODEX_HOOKS)
+  await install(homes.pi, 'agent/extensions/yaac-report.ts', PI_EXTENSION)
+  await install(homes.opencodeConfig, 'plugins/yaac-report/index.ts', OPENCODE_PLUGIN)
 }
 
 interface HookMatcher {
   matcher?: string
   hooks?: Array<{ type?: string; command?: string; timeout?: number }>
 }
+
+/** More than any settings file a person writes; past it, the file is not
+ *  read (and so is replaced) rather than read without bound. */
+const MAX_SETTINGS_BYTES = 1024 * 1024
 
 /**
  * Merge `wanted` into a settings file's `hooks`, in the shape claude's
@@ -220,14 +223,17 @@ interface HookMatcher {
  * writes, whatever theme claude wrote itself) and any user-registered hooks
  * survive, and a file that already carries every entry is left byte-identical.
  * A malformed file is replaced rather than propagated — the tool would ignore
- * it anyway, and what yaac cares about is re-seeded on every create.
+ * it anyway, and what yaac cares about is re-seeded on every create. So is
+ * anything that is not a regular file: a link planted in its place is
+ * replaced, never read through or written through.
  */
-async function mergeHooks(file: string, wanted: Hooks): Promise<void> {
+async function mergeHooks(home: ConfinedRoot, rel: string, wanted: Hooks): Promise<void> {
   let settings: { hooks?: Record<string, HookMatcher[] | undefined>; [key: string]: unknown } = {}
   try {
-    settings = JSON.parse(await fs.readFile(file, 'utf8')) as typeof settings
+    const raw = await home.readFile(rel, { maxBytes: MAX_SETTINGS_BYTES })
+    if (raw !== null) settings = JSON.parse(raw.toString('utf8')) as typeof settings
   } catch {
-    // missing or invalid — start fresh
+    // invalid or oversized — start fresh
   }
   const hooks = { ...settings.hooks }
   const missing = wanted.filter(([event, command]) =>
@@ -237,31 +243,20 @@ async function mergeHooks(file: string, wanted: Hooks): Promise<void> {
     // 3s: codex clamps a SessionEnd hook to it, with a warning on every launch.
     hooks[event] = [...hooks[event] ?? [], { matcher: '*', hooks: [{ type: 'command', command, timeout: 3 }] }]
   }
-  await install(file, JSON.stringify({ ...settings, hooks }, null, 2) + '\n')
+  await install(home, rel, JSON.stringify({ ...settings, hooks }, null, 2) + '\n')
 }
 
-/** Distinguishes the temp files of concurrent writes within one process. */
-let tmpSeq = 0
-
 /**
- * Written through a temp file in the same directory and renamed: each of
- * these has other readers and writers — a tool starting in another worktree
- * of the project, the user editing it, claude rewriting its settings when a
- * theme changes — and a plain write truncates first, so a reader landing in
- * that window sees an empty or invalid file. Our own answer to invalid JSON is
- * "start fresh", so a torn read would compound into discarding the user's
- * settings on the next create. The name is unique per call: two creates in
- * the same project run concurrently.
+ * Written atomically (`writeAtomic`): each of these has other readers and
+ * writers — a tool starting in another worktree of the project, the user
+ * editing it, claude rewriting its settings when a theme changes — and a
+ * plain write truncates first, so a reader landing in that window sees an
+ * empty or invalid file. Our own answer to invalid JSON is "start fresh", so
+ * a torn read would compound into discarding the user's settings on the next
+ * create.
  */
-async function install(file: string, content: string): Promise<void> {
-  if (await fs.readFile(file, 'utf8').then((c) => c === content, () => false)) return
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const tmp = `${file}.${String(process.pid)}.${String(tmpSeq++)}.tmp`
-  await fs.writeFile(tmp, content)
-  try {
-    await fs.rename(tmp, file)
-  } catch (err) {
-    await fs.rm(tmp, { force: true }).catch(() => {})
-    throw err
-  }
+async function install(home: ConfinedRoot, rel: string, content: string): Promise<void> {
+  const current = await home.readFile(rel, { maxBytes: MAX_SETTINGS_BYTES }).catch(() => null)
+  if (current?.toString('utf8') === content) return
+  await home.writeAtomic(rel, content)
 }

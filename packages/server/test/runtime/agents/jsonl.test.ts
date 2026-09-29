@@ -3,14 +3,17 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { scanJsonlForward } from '#runtime/agents/jsonl'
+import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 
 describe('scanJsonlForward', () => {
   let tmpDir: string
   let jsonlPath: string
+  let file: SandboxFile
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jsonl-scan-test-'))
     jsonlPath = path.join(tmpDir, 'session.jsonl')
+    file = { slug: 'demo', dir: tmpDir, rel: 'session.jsonl' }
   })
 
   afterEach(async () => {
@@ -25,7 +28,7 @@ describe('scanJsonlForward', () => {
     await writeLine(JSON.stringify({ type: 'system' }))
     await writeLine(JSON.stringify({ type: 'user', text: 'hello world' }))
 
-    const result = await scanJsonlForward(jsonlPath, (entry) => {
+    const result = await scanJsonlForward(file, (entry) => {
       const parsed = entry as { type?: string; text?: string }
       return parsed.type === 'user' ? parsed.text : undefined
     })
@@ -37,7 +40,7 @@ describe('scanJsonlForward', () => {
     await writeLine(JSON.stringify({ type: 'system', text: 'x'.repeat(12000) }))
     await writeLine(JSON.stringify({ type: 'user', text: 'hello world' }))
 
-    const result = await scanJsonlForward(jsonlPath, (entry) => {
+    const result = await scanJsonlForward(file, (entry) => {
       const parsed = entry as { type?: string; text?: string }
       return parsed.type === 'user' ? parsed.text : undefined
     })
@@ -49,7 +52,7 @@ describe('scanJsonlForward', () => {
     await writeLine('{not-json')
     await writeLine(JSON.stringify({ type: 'user', text: 'hello world' }))
 
-    const result = await scanJsonlForward(jsonlPath, (entry) => {
+    const result = await scanJsonlForward(file, (entry) => {
       const parsed = entry as { type?: string; text?: string }
       return parsed.type === 'user' ? parsed.text : undefined
     })
@@ -57,8 +60,18 @@ describe('scanJsonlForward', () => {
     expect(result).toBe('hello world')
   })
 
+  it('scans a line that never ends in time linear in its length', async () => {
+    // A transcript is the agent's to write: one with no newline must not
+    // cost the event loop the square of its size.
+    await fs.writeFile(jsonlPath, 'x'.repeat(16 * 1024 * 1024) + '\n' + JSON.stringify({ type: 'user', text: 'after' }) + '\n')
+    const started = Date.now()
+    const result = await scanJsonlForward(file, (entry) => (entry as { text?: string }).text)
+    expect(result).toBe('after')
+    expect(Date.now() - started).toBeLessThan(5000)
+  })
+
   it('returns undefined for missing files', async () => {
-    const result = await scanJsonlForward(path.join(tmpDir, 'missing.jsonl'), () => 'value')
+    const result = await scanJsonlForward({ ...file, rel: 'missing.jsonl' }, () => 'value')
     expect(result).toBeUndefined()
   })
 })

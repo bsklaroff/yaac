@@ -1,4 +1,5 @@
 import { scanJsonlForward } from './jsonl'
+import type { SandboxFile } from './sandbox-fs'
 import type { PermissionMode } from '@yaac/shared/types'
 
 /**
@@ -81,8 +82,8 @@ function isCommandMessage(isMeta: boolean | undefined, text: string): boolean {
  * of the first real user message — skipping slash-command and local-command
  * entries — or undefined if none is found.
  */
-export async function getFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
-  return scanJsonlForward(jsonlPath, (entry) => {
+export async function getFirstUserMessage(file: SandboxFile): Promise<string | undefined> {
+  return scanJsonlForward(file, (entry) => {
     const parsed = entry as {
       type: string
       isMeta?: boolean

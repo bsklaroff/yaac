@@ -43,9 +43,14 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
  * hiding it — seeding has to be able to tell a project holding one from a
  * project holding nothing — and every decision here refuses it: it is never
  * adopted as the host's credential, and never counts as a project being "up
- * to date". That is what lets these functions run under either driver: under
- * a mediated one every project reads as having nothing to harvest, and the
- * fan-out below writes sentinels rather than the real bundle.
+ * to date".
+ *
+ * Under a mediated runtime nothing is harvested at all. The proxy is the only
+ * refresh writer there (docs/worktree-egress.md), so a project home has
+ * nothing legitimate to offer — and it is the sandbox's to write: a pod that
+ * put a real-looking bundle with a later expiry there would otherwise get it
+ * adopted install-wide, swapping the account every worktree of every project
+ * runs as for one it chose.
  */
 
 /**
@@ -221,6 +226,7 @@ async function harvestCodex(slugs: string[]): Promise<void> {
 export async function harvestToolCredentials(
   opts: { tool?: 'claude' | 'codex'; slug?: string } = {},
 ): Promise<void> {
+  if (runtimeMediatesEgress()) return
   const slugs = opts.slug !== undefined ? [opts.slug] : await listCredentialProjectSlugs()
   if (slugs.length === 0) return
   if (opts.tool !== 'codex') await harvestClaude(slugs)
@@ -319,17 +325,16 @@ export async function seedProjectToolHome(
  * then heal the projects that are behind it.
  *
  * The standing sweep — driven by the reconcile resync, the containerless
- * attach, and worktree stop. Under a mediated runtime the push half is a
- * no-op (project homes hold sentinels, which never read as a credential) and
- * the harvest half finds nothing, so it costs a few reads and changes
- * nothing; the fan-out below is what keeps sentinels current there.
+ * attach, and worktree stop. Under a mediated runtime it does nothing: there
+ * is nothing to harvest (see the top of this module) and project homes hold
+ * sentinels, so the fan-out below is what keeps them current there.
  */
 async function syncToolCredentials(): Promise<void> {
+  if (runtimeMediatesEgress()) return
   const slugs = await listCredentialProjectSlugs()
   if (slugs.length === 0) return
   await harvestClaude(slugs)
   await harvestCodex(slugs)
-  if (runtimeMediatesEgress()) return
   for (const slug of slugs) {
     try {
       await pushClaude(slug, false)

@@ -6,13 +6,17 @@ import {
   seedClaudeJson,
   seedClaudeSettings,
 } from '#domain/worktrees/seed'
+import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 
 let dir: string
 let file: string
+/** The claude home as a sandboxing runtime opens it. */
+let home: ConfinedRoot
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claudejson-'))
-  file = path.join(dir, 'claude.json')
+  file = path.join(dir, '.claude.json')
+  home = await openRoot(dir, 'no-links')
 })
 
 afterEach(async () => {
@@ -25,7 +29,7 @@ async function read(): Promise<Record<string, unknown>> {
 
 describe('seedClaudeJson', () => {
   it('seeds onboarding + trust flags', async () => {
-    await seedClaudeJson(file, ['/workspace', '/repo'])
+    await seedClaudeJson(home, ['/workspace', '/repo'])
     const j = await read()
     expect(j.hasCompletedOnboarding).toBe(true)
     expect(typeof j.lastOnboardingVersion).toBe('string')
@@ -45,7 +49,7 @@ describe('seedClaudeJson', () => {
     // one of them.
     const wt = path.join(dir, 'projects', 'demo', 'worktrees', 'abc')
     const repo = path.join(dir, 'projects', 'demo', 'repo')
-    await seedClaudeJson(file, [wt, repo])
+    await seedClaudeJson(home, [wt, repo])
     const projects = (await read()).projects as Record<string, unknown>
     expect(projects[wt]).toEqual({ hasTrustDialogAccepted: true })
     expect(projects[repo]).toEqual({ hasTrustDialogAccepted: true })
@@ -58,8 +62,8 @@ describe('seedClaudeJson', () => {
     // its trust.
     const first = path.join(dir, 'worktrees', 'one')
     const second = path.join(dir, 'worktrees', 'two')
-    await seedClaudeJson(file, [first])
-    await seedClaudeJson(file, [second])
+    await seedClaudeJson(home, [first])
+    await seedClaudeJson(home, [second])
     const projects = (await read()).projects as Record<string, unknown>
     expect(projects[first]).toEqual({ hasTrustDialogAccepted: true })
     expect(projects[second]).toEqual({ hasTrustDialogAccepted: true })
@@ -67,7 +71,7 @@ describe('seedClaudeJson', () => {
 
   it('preserves claude-code own keys when merging', async () => {
     await fs.writeFile(file, JSON.stringify({ oauthAccount: { uuid: 'x' }, theme: 'dark' }))
-    await seedClaudeJson(file, ['/workspace', '/repo'])
+    await seedClaudeJson(home, ['/workspace', '/repo'])
     const j = await read()
     expect(j.oauthAccount).toEqual({ uuid: 'x' })
     expect(j.theme).toBe('dark')
@@ -78,7 +82,7 @@ describe('seedClaudeJson', () => {
     await fs.writeFile(file, JSON.stringify({
       customApiKeyResponses: { approved: ['other-key'], rejected: ['nope'] },
     }))
-    await seedClaudeJson(file, ['/workspace', '/repo'])
+    await seedClaudeJson(home, ['/workspace', '/repo'])
     const j = await read()
     const responses = j.customApiKeyResponses as { approved: string[]; rejected: string[] }
     expect(responses.approved).toContain('other-key')
@@ -88,7 +92,7 @@ describe('seedClaudeJson', () => {
 
   it('starts fresh when the existing file is invalid JSON', async () => {
     await fs.writeFile(file, 'not json{')
-    await seedClaudeJson(file, ['/workspace', '/repo'])
+    await seedClaudeJson(home, ['/workspace', '/repo'])
     const j = await read()
     expect(j.hasCompletedOnboarding).toBe(true)
   })
@@ -98,7 +102,7 @@ describe('seedClaudeSettings', () => {
   it('sets skipDangerousModePermissionPrompt, preserving existing settings', async () => {
     const settings = path.join(dir, 'settings.json')
     await fs.writeFile(settings, JSON.stringify({ theme: 'dark' }))
-    await seedClaudeSettings(settings)
+    await seedClaudeSettings(home)
     const j = JSON.parse(await fs.readFile(settings, 'utf8')) as Record<string, unknown>
     expect(j.skipDangerousModePermissionPrompt).toBe(true)
     expect(j.theme).toBe('dark')
@@ -106,14 +110,14 @@ describe('seedClaudeSettings', () => {
 
   it('creates the file when missing', async () => {
     const settings = path.join(dir, 'settings.json')
-    await seedClaudeSettings(settings)
+    await seedClaudeSettings(home)
     const j = JSON.parse(await fs.readFile(settings, 'utf8')) as Record<string, unknown>
     expect(j.skipDangerousModePermissionPrompt).toBe(true)
   })
 
   it('retains transcripts for 100 years instead of the 30-day default', async () => {
     const settings = path.join(dir, 'settings.json')
-    await seedClaudeSettings(settings)
+    await seedClaudeSettings(home)
     const j = JSON.parse(await fs.readFile(settings, 'utf8')) as Record<string, unknown>
     expect(j.cleanupPeriodDays).toBe(36500)
   })
@@ -121,8 +125,21 @@ describe('seedClaudeSettings', () => {
   it('overrides a shorter existing cleanupPeriodDays', async () => {
     const settings = path.join(dir, 'settings.json')
     await fs.writeFile(settings, JSON.stringify({ cleanupPeriodDays: 30 }))
-    await seedClaudeSettings(settings)
+    await seedClaudeSettings(home)
     const j = JSON.parse(await fs.readFile(settings, 'utf8')) as Record<string, unknown>
     expect(j.cleanupPeriodDays).toBe(36500)
+  })
+
+  it('replaces a link planted in its place, leaving what it named untouched', async () => {
+    // A pod can put any link below its tool home; following one would make
+    // every create rewrite (or, for non-JSON, clobber) the file it names.
+    const target = path.join(dir, 'elsewhere.db')
+    await fs.writeFile(target, 'not json, and not yours')
+    const settings = path.join(dir, 'settings.json')
+    await fs.symlink(target, settings)
+    await seedClaudeSettings(home)
+    expect(await fs.readFile(target, 'utf8')).toBe('not json, and not yours')
+    expect((await fs.lstat(settings)).isFile()).toBe(true)
+    expect(JSON.parse(await fs.readFile(settings, 'utf8'))).toMatchObject({ skipDangerousModePermissionPrompt: true })
   })
 })
