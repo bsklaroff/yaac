@@ -51,13 +51,9 @@ describe('buildAgentCmd', () => {
       expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo')
     })
 
-    it('names the conversation it resumes on its pane, then resumes it', () => {
-      // codex fires no SessionStart for a resume until its next turn, so the
-      // launch reports the conversation itself.
+    it('resumes the conversation it is given', () => {
       const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(bare(cmd)).toBe(
-        'yaac-agent-links "$CODEX_HOME" codex sess-1; codex --dangerously-bypass-hook-trust --yolo resume sess-1',
-      )
+      expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo resume sess-1')
     })
 
     it('runs codex in the workspace, trusts the repository, and opens no startup screen', () => {
@@ -110,11 +106,9 @@ describe('buildAgentCmd', () => {
       expect(cmd).toMatch(/ opencode --standalone$/)
     })
 
-    it('names the session it resumes on its pane, and resumes it by id', () => {
-      // opencode names a session only as it creates one, so the launch says
-      // which one the pane holds.
+    it('resumes a session by id', () => {
       const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'ses_1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toMatch(/^yaac-agent-links "" opencode ses_1; OPENCODE_CONFIG_CONTENT=.* opencode --standalone --session ses_1$/)
+      expect(cmd).toMatch(/^OPENCODE_CONFIG_CONTENT=.* opencode --standalone --session ses_1$/)
     })
 
     it('carries a provider/model override in the config, never as a flag', () => {

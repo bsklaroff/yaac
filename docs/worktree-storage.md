@@ -167,7 +167,8 @@ hand-run one does too:
   startup, and again, on the same pane, for the throwaway session it titles a
   conversation in — which has no rollout and an id `codex resume` refuses, so
   a codex report without a rollout is dropped. A resumed conversation fires
-  nothing until its next turn, so a resume launch names it on the pane itself.
+  nothing until its next turn, so a resume launch names it on the pane, in
+  the same tmux command that starts it.
 - pi from an extension, on `session_start` (startup, resume, `/new`), with its
   log.
 - opencode from a plugin, on a top-level `session.created` — opencode creates a
@@ -192,7 +193,10 @@ dies with its pane and a new pod's tmux starts with none, so nothing can
 mistake a previous pod's conversation for a live one; a new conversation is a
 change to the live set, which dirties the reconcile tick. When the watcher has
 not enumerated panes yet the active set is left untouched, so a stream gap
-never reads as "every agent exited". And discovery only ever adds rows: a
+never reads as "every agent exited" — and the `sleep infinity` keepalive a
+session opens on, in the window its agent is respawned into, is not an agent
+pane, so a restart's conversations are not marked inactive before its agents
+are even running. And discovery only ever adds rows: a
 `/clear` leaves the old conversation recorded, inactive, beside the new one.
 
 The one row discovery replaces is the **pin**: the conversation a `tui` create

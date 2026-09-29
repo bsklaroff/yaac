@@ -481,24 +481,28 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   // finds no conversation (`codex resume` kills the window). A worktree whose
   // pane never named a conversation to take the pin's place starts anew.
   const driver = agentDriver(mode)
-  const agentCmds = launching.map((a, i) => ({
-    tool: a.tool,
-    cmd: driver.launchCmd({
+  const agentCmds = launching.map((a, i) => {
+    const resume = options.resume === true
+      && !(SELF_NAMING_TOOLS.includes(a.tool) && a.agentSessionId === worktreeId)
+    return {
       tool: a.tool,
-      agentSessionId: a.agentSessionId,
-      resume: options.resume === true
-        && !(SELF_NAMING_TOOLS.includes(a.tool) && a.agentSessionId === worktreeId),
-      // The window a conversation lands in — the primary keeps the tool's own
-      // name, extras get `<tool>-2`, … . Under acp it doubles as the acpd
-      // socket's name, which is why the driver needs it and the TUI one
-      // ignores it.
-      windowName: agentWindowName(a.tool, i),
-      paths,
-      permissionMode,
-      ...(piProvider !== undefined ? { piProvider } : {}),
-      ...(options.model !== undefined ? { model: options.model } : {}),
-    }),
-  }))
+      ...(resume ? { resumes: a.agentSessionId } : {}),
+      cmd: driver.launchCmd({
+        tool: a.tool,
+        agentSessionId: a.agentSessionId,
+        resume,
+        // The window a conversation lands in — the primary keeps the tool's own
+        // name, extras get `<tool>-2`, … . Under acp it doubles as the acpd
+        // socket's name, which is why the driver needs it and the TUI one
+        // ignores it.
+        windowName: agentWindowName(a.tool, i),
+        paths,
+        permissionMode,
+        ...(piProvider !== undefined ? { piProvider } : {}),
+        ...(options.model !== undefined ? { model: options.model } : {}),
+      }),
+    }
+  })
   emit(`Starting ${toolLabel(tool)}...`, options)
   await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
 

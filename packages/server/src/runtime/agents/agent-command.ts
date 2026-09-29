@@ -261,11 +261,6 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
       ...codexLaunchConfig(spec.paths?.repoGitDir),
     ]
-    // A resume names its own conversation on the pane before codex starts:
-    // codex fires no SessionStart for a resumed conversation until its next
-    // turn, and a conversation no pane names reads inactive, so a second
-    // restart before any prompt would not bring it back.
-    //
     // `-C` names the workspace outright rather than leaving codex to take the
     // pane's cwd: a resume whose cwd differs from the one the conversation
     // recorded stops on a "session or current directory?" screen, which an
@@ -273,7 +268,6 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // on a restart under the other substrate, where the recorded one does not
     // exist.
     return [
-      resume ? `yaac-agent-links "$CODEX_HOME" codex ${worktreeId};` : '',
       'codex',
       spec.paths ? `-C ${spec.paths.workspaceDir}` : '',
       ...config.map((c) => `-c ${doubleQuoted(c)}`),
@@ -341,11 +335,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // one into the next launch. The TUI takes no model or agent flag — both
     // ride in the config (`opencodeConfigArg`) — and refuses an unknown one
     // outright (usage, exit: a dead window), so none is invented here.
-    //
-    // A resume names its conversation on the pane first, as codex's does:
-    // opencode reports a session only as it creates one.
     return [
-      resume ? `yaac-agent-links "" opencode ${worktreeId};` : '',
       opencodeConfigArg(mode, model),
       'opencode --standalone',
       resume ? `--session ${worktreeId}` : '',
