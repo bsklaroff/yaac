@@ -1,19 +1,17 @@
 /*
- * Verifies that a dialog opened from a sidebar row's `…` menu does not hand
- * focus back to that hover-only trigger when it closes — which pinned the
- * `…` visible (focus-visible) on a row the pointer had already left:
+ * Verifies that a dialog opened from a sidebar row's `…` menu does not
+ * return focus to that hover-only trigger when opened by pointer, which
+ * would leave the `…` visible after the pointer leaves:
  *
  *  1. A draft's `…` > Open… (the same RowMenu -> create-dialog path as a
  *     workspace's "Queue workspace after this…"), closed by Escape and by ×,
  *     leaves the trigger unfocused and hidden once the pointer moves away.
- *  2. Its `…` > Discard… > Cancel (ConfirmDialog) does the same, and so
- *     does Discard… picked by press-drag-release (press `…`, release on the
- *     item — a pointer gesture Base UI completes with a programmatic click).
+ *  2. Its `…` > Discard… > Cancel (ConfirmDialog) does the same, including
+ *     when Discard… is picked by press-drag-release.
  *  3. A dialog opened from a focused element still returns focus to it:
  *     the New workspace button, activated by keyboard, is refocused on Escape.
- *  4. By keyboard through the row menu (focus `…`, Enter, arrow to an item,
- *     Enter), Open… and Discard… hand focus back to the `…` trigger on
- *     Escape, visible — a keyboard user keeps their place.
+ *  4. By keyboard through the row menu, Open… and Discard… return focus to
+ *     the `…` trigger on Escape, visibly.
  *  5. A dialog from an ordinary menu item (the project header's Remove
  *     project) returns focus to that menu's trigger, by mouse and keyboard.
  *
@@ -110,8 +108,8 @@ try {
     check(name, !s.focused && s.opacity === '0', JSON.stringify(s))
   }
 
-  // A reopened draft can ask to save changes on an untouched close (the form
-  // seeds asynchronously); that is not what this checks, so answer it.
+  // A reopened draft may ask to save on close (the form fills in
+  // asynchronously); answer it if so.
   const dismiss = async (close) => {
     await close()
     const asked = await Promise.race([
@@ -119,7 +117,7 @@ try {
       question.waitFor({ state: 'visible' }).then(() => true),
     ])
     if (asked) {
-      // By keyboard, so a keyboard flow stays one for :focus-visible.
+      // By keyboard, to keep :focus-visible behavior consistent.
       await question.getByRole('button', { name: 'Discard changes' }).focus()
       await page.keyboard.press('Enter')
       await prompt.waitFor({ state: 'detached' })

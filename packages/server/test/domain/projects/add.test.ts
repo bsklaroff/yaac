@@ -3,10 +3,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// The clone and the host-key fetch are the two things this feature shells
-// out for. Faking them (and only them) keeps every credential lookup, slug
-// derivation, and rollback running for real, with `isGitAuthError` still
-// classifying the failure.
+// Only the clone and the host-key fetch (the two process boundaries) are
+// mocked. Credential lookup, slug derivation, rollback and isGitAuthError
+// run for real.
 const HOST_KEY = 'git.example.com ssh-ed25519 AAAAHOST'
 vi.mock('#domain/git', async (importOriginal) => ({
   ...(await importOriginal<typeof gitModule>()),
@@ -47,8 +46,7 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   token = (await addHttpsCredential({ name: 'default', token: 'ghp_default' })).id
   mockClone.mockReset()
-  // A successful clone leaves a repo behind; mirror that so the rollback
-  // cases have something real to remove.
+  // Leave a repo behind, as a real clone does, for rollback to remove.
   mockClone.mockImplementation(async (_url, dest) => {
     await fs.mkdir(path.join(dest, '.git'), { recursive: true })
   })
@@ -89,15 +87,14 @@ describe('addProject', () => {
 
     expect(project.slug).toBe('repo')
     expect(knownHostsEntry).toBe(HOST_KEY)
-    // The clone is handed the public halves only: the agent signs.
+    // The clone gets only the public key; the ssh-agent signs.
     const credential = { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY }
     expect(mockClone).toHaveBeenCalledWith('git@git.example.com:group/sub/Repo.git', repoDir('repo'), credential)
     expect(await resolveProjectCredential('repo')).toEqual(credential)
   })
 
-  // A label value is `[a-z0-9._-]`, alphanumeric at both ends, at most 63
-  // characters: a name outside that would break every label write, so it
-  // is made into one rather than refused.
+  // The slug is used as a k8s label value: `[a-z0-9._-]`, alphanumeric at
+  // both ends, at most 63 characters. Other names are converted, not refused.
   it('derives a slug that is a valid label value from any repo name', async () => {
     const long = `${'a'.repeat(70)}`
     const cases: Array<[string, string]> = [
@@ -109,7 +106,7 @@ describe('addProject', () => {
     for (const [url, slug] of cases) {
       expect((await addProject(url, token)).project.slug).toBe(slug)
     }
-    // A name that collides only after derivation is refused naming both.
+    // A collision after derivation is refused, naming both.
     await expect(addProject('https://github.com/acme/c++lib!.git', token)).rejects.toMatchObject({
       code: 'CONFLICT',
       message: '"c++lib!" derives project name "c--lib", which already exists',
@@ -143,7 +140,7 @@ describe('addProject', () => {
 
     await addProject('https://github.com/acme/repo.git', token)
 
-    // Placeholders, never the real tokens — the proxy swaps them per request.
+    // Placeholders, not real tokens; the proxy swaps them per request.
     const claude = JSON.parse(
       await fs.readFile(projectClaudeCredentialsFile('repo'), 'utf8'),
     ) as { claudeAiOauth: { accessToken: string } }
@@ -181,7 +178,6 @@ describe('addProject', () => {
 
     await expect(addProject('https://github.com/other/repo.git', token))
       .rejects.toMatchObject({ code: 'CONFLICT' })
-    // The first project's remote is untouched.
     expect((await getProjectRow('repo'))?.remoteUrl).toBe('https://github.com/acme/repo.git')
   })
 
@@ -205,9 +201,8 @@ describe('addProject', () => {
   })
 
   it('rolls the project dir back when anything after the clone fails', async () => {
-    // A file where the claude home goes: the clone succeeds, the setup
-    // after it does not. A dir left with no row could not be listed,
-    // removed or re-added over.
+    // A file where the claude home goes makes setup after the clone fail.
+    // A leftover dir with no row could not be listed, removed or re-added.
     mockClone.mockImplementation(async (_url, dest) => {
       await fs.mkdir(path.join(dest, '.git'), { recursive: true })
       await fs.writeFile(claudeDir('repo'), 'in the way')
@@ -221,7 +216,7 @@ describe('addProject', () => {
 
 describe('registerStagedProject', () => {
   it('records a staged checkout without cloning, and refuses what it cannot record', async () => {
-    // Nothing staged yet: there is no project to record.
+    // Nothing staged yet.
     await expect(registerStagedProject('staged', 'https://github.com/acme/staged.git'))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
 
@@ -233,12 +228,12 @@ describe('registerStagedProject', () => {
 
     await expect(registerStagedProject('staged', 'https://github.com/other/staged.git'))
       .rejects.toMatchObject({ code: 'CONFLICT' })
-    // A slug is one directory under the projects dir, never a path out of it.
+    // A slug must be a single directory name under the projects dir.
     for (const slug of ['..', '../elsewhere', '.hidden']) {
       await expect(registerStagedProject(slug, 'https://github.com/acme/x.git')).rejects.toMatchObject({ code: 'VALIDATION' })
     }
-    // And the remote holds to what `addProject` accepts: it picks the
-    // transport every later fetch may use.
+    // The remote is validated as `addProject` does, since it picks the
+    // transport every later fetch uses.
     await fs.mkdir(path.join(repoDir('local'), '.git'), { recursive: true })
     for (const remote of ['/some/local/path', 'file:///srv/repo.git', 'ext::sh -c evil']) {
       await expect(registerStagedProject('local', remote)).rejects.toMatchObject({ code: 'VALIDATION' })

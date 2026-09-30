@@ -1,24 +1,18 @@
 import { resolveProjectPath, type SandboxFile } from '#runtime/agents'
 import type { AgentSessionLinkRow } from '#db'
 
-/** What resolving takes: the project, workspace and tool the path is recorded
- *  against, and the stored value. Every conversation row satisfies it. */
+/** The row fields needed to resolve a stored transcript path. */
 type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectSlug' | 'workspaceId' | 'tool' | 'transcriptPath'>
 
 /**
- * The transcript a recorded conversation names, or undefined when this
- * install will not read it.
+ * The transcript file a recorded conversation names, or undefined when it
+ * should not be read.
  *
- * The rows hold the column form — project-relative, the one form that stays
- * true wherever the data dir sits — and every reader wants a file it can open
- * under the tool's own home. Turning one into the other needs the disk
- * layout, which is the store's to know and not something a row can answer,
- * so the two forms meet here rather than inside `#db`.
- *
- * The single door, so a caller cannot forget the project or the tool:
- * `resolveProjectPath` refuses a stored value that is not under the recording
- * tool's home or this workspace's history, and every reader degrades the same way on undefined — no
- * prompt, no last-activity.
+ * Rows store the path project-relative, so it stays valid wherever the data
+ * dir is. Resolving it needs the disk layout, which `#db` does not know.
+ * `resolveProjectPath` refuses a path outside the tool's home or this
+ * workspace's history; callers treat undefined as "no prompt, no last
+ * activity".
  */
 export function recordedTranscript(row: RecordedTranscript | undefined): SandboxFile | undefined {
   if (row?.transcriptPath === undefined) return undefined

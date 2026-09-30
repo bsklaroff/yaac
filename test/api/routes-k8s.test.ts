@@ -12,17 +12,12 @@ import {
 /**
  * Every route, against a k8s server.
  *
- * The twin of `routes-containerless.test.ts`, over the SAME table — see
- * `route-matrix.ts` for why the two share one, and for what these assert
- * (the status class a caller sees against an empty server, not behavior;
- * that is `write-routes.test.ts` and the e2e tiers).
+ * The twin of `routes-containerless.test.ts`, over the same table (see
+ * `route-matrix.ts` for what these assert).
  *
- * No driver is installed here: the api project's setup registers the real
- * k8s one at module scope, standing in for the composition root. Several
- * expectations therefore allow 503 alongside 404 — a route that has to reach
- * the substrate answers RUNTIME_UNAVAILABLE when the cluster is not up, and
- * pinning it either way would make this file a cluster-health check rather
- * than a route-parity one.
+ * The project's setup file registers the real k8s driver. Several
+ * expectations allow 503 alongside 404, because a route that reaches the
+ * substrate answers RUNTIME_UNAVAILABLE when no cluster is up.
  */
 
 const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'matrix' })
@@ -54,11 +49,9 @@ describe('every route, k8s', () => {
     })
   }
 
-  // A 501 here means a guard fired on the wrong driver — with one honest
-  // exception, which the matrix has to have declared: the in-workspace
-  // command channel is the containerless half of a pair whose k8s half is
-  // the egress proxy's queue, so it is this substrate that lacks the route.
-  // Anything else refusing is the bug this test exists for.
+  // A 501 here means a guard fired on the wrong driver, unless the matrix
+  // declares it (the in-workspace command channel, which k8s serves through
+  // the egress proxy instead).
   it('refuses only what the matrix declares unsupported here', async () => {
     for (const route of ROUTE_MATRIX) {
       const status = (await request(route)).status

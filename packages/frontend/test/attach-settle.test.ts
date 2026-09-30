@@ -130,11 +130,12 @@ describe('createSettleGate', () => {
     let content = false
     const gate = createSettleGate(onSettle, { hasContent: () => content, timings: TIMINGS })
     gate.onOpen()
-    // Attach preamble only: quiet gap elapses with a blank screen — no reveal.
+    // Only the attach preamble: the quiet gap passes on a blank screen, so
+    // nothing is revealed.
     gate.onData()
     vi.advanceTimersByTime(TIMINGS.quietMs)
     expect(onSettle).not.toHaveBeenCalled()
-    // The agent's first paint arrives: the next quiet gap reveals.
+    // After the agent's first paint, the next quiet gap reveals.
     content = true
     gate.onData()
     vi.advanceTimersByTime(TIMINGS.quietMs)

@@ -1,18 +1,17 @@
 /*
- * Verifies the Changes pane's find (search) input end-to-end in real Chromium:
- *   - Alt+G opens the Changes pane and focuses it (its focusKey), and the
- *     fixed Cmd/Ctrl+F on the pane's root then moves focus into the find
- *     input — including from a terminal, with the pane already open.
- *   - Typing a query filters the file list (path or diff-content match) and
- *     the header switches to an "n of m files" count.
+ * Verifies the Changes pane's find input in real Chromium:
+ *   - Alt+G opens and focuses the Changes pane, and Cmd/Ctrl+F then moves
+ *     focus into the find input, including from a terminal with the pane
+ *     already open.
+ *   - A query filters the file list (by path or diff content) and the header
+ *     shows "n of m files".
  *   - A query matching nothing shows the no-match state.
  *   - Escape clears the query and restores the full list.
  *
- * Needs a running `yaac server` with at least one live session whose workspace
- * has uncommitted changes (the pane diffs the session workspace against its
- * fork base) — e.g. `yaac session create <project>`, then edit files in the
- * pod. Reads the port from $YAAC_DATA_DIR/.server.lock
- * (falling back to ~/.yaac) exactly like .claude/skills/run-yaac/driver.mjs.
+ * Needs a running `yaac server` with a live workspace that has changes
+ * against its fork base (e.g. `yaac workspace create <project>`, then edit
+ * files in it). Reads the port from $YAAC_DATA_DIR/.server.lock (default
+ * ~/.yaac), like .claude/skills/run-yaac/driver.mjs.
  *
  * Run: node test-playwright-scripts/changes-find-input-test.js <query> <no-match-query>
  *   <query>          a string matching a strict subset of the changed files
@@ -81,11 +80,10 @@ async function main() {
   }
 
   await page.goto(`http://127.0.0.1:${lock.port}/`)
-  // Wait for the session's workspace (the pushed /events snapshot) to arrive.
+  // Wait for the workspace to arrive in the /events snapshot.
   await page.waitForTimeout(4000)
 
-  // Alt+G ('Alt+g': a capital G would add shiftKey, which the chord rejects),
-  // then Cmd/Ctrl+F from inside the now-focused pane.
+  // Lowercase 'Alt+g': a capital G adds shiftKey, which the chord rejects.
   await page.keyboard.press('Alt+g')
   const find = page.locator(FIND)
   await find.waitFor({ state: 'visible', timeout: 10_000 })
@@ -101,23 +99,20 @@ async function main() {
   console.log(`  unfiltered header count: ${JSON.stringify(fullCount)}`)
   await shot('changes-find-focused')
 
-  // Typing filters the list down (query is expected to match a strict subset).
   await page.keyboard.type(query)
   await page.waitForTimeout(300)
   const filteredCount = await page.locator('text=/^\\d+ of \\d+ files$/').first().textContent().catch(() => null)
   check(filteredCount !== null, `typing ${JSON.stringify(query)} shows an "n of m files" count`, 'header count did not change')
   console.log(`  filtered header count: ${JSON.stringify(filteredCount)}`)
-  // File rows scoped to the changes pane's scrolling list (aria-expanded alone
-  // also matches popover triggers — the app's dropdowns and the pane's own
-  // base-branch picker): the pane root is the one bg-surface column that
-  // contains the find input, and the file list is its overflow-y-auto child.
+  // Scope file rows to the pane's scrolling list, since aria-expanded also
+  // matches dropdown triggers. The pane is the bg-surface column holding the
+  // find input; the list is its overflow-y-auto child.
   const pane = page.locator('div.bg-surface', { has: page.locator(FIND) }).last()
   const rows = await pane.locator('.overflow-y-auto button[aria-expanded]').count()
   const shown = filteredCount ? Number(filteredCount.split(' ')[0]) : NaN
   check(rows === shown && shown > 0, `file rows match the filtered count (${rows} rows, header says ${shown})`)
   await shot('changes-find-filtered')
 
-  // A hopeless query shows the no-match state.
   await find.fill(noMatchQuery)
   await page.waitForTimeout(300)
   check(
@@ -125,7 +120,6 @@ async function main() {
     'a no-match query shows the empty-filter state',
   )
 
-  // Escape clears the query; the full list comes back.
   await page.keyboard.press('Escape')
   await page.waitForTimeout(300)
   check(await find.inputValue() === '', 'Escape clears the query')
@@ -134,8 +128,8 @@ async function main() {
     'full file list count returns after clearing',
   )
 
-  // With the pane already open and focus in a terminal, Alt+G then
-  // Cmd/Ctrl+F gets back to the input with no mouse.
+  // From a terminal with the pane open, Alt+G then Cmd/Ctrl+F reaches the
+  // input.
   await page.locator('.xterm-helper-textarea').first().focus().catch(() => {})
   await page.keyboard.press('Alt+g')
   await page.waitForTimeout(300)

@@ -24,27 +24,25 @@ async function loadProjectMeta(slug: string): Promise<ProjectMeta> {
 }
 
 /**
- * Cheap existence check that doesn't parse `yaac-config.json`. Used by
- * `config edit` so a malformed config doesn't block opening the editor
- * to fix it — exactly when you need to edit it most.
+ * Existence check that doesn't parse `yaac-config.json`, so a malformed
+ * config can still be opened for editing.
  */
 export async function assertProjectExists(slug: string): Promise<void> {
   await loadProjectMeta(slug)
 }
 
 /**
- * The project's remote, as its row records it — the only source for a URL
- * the server fetches from or picks a credential by. The clone's own
- * `remote.origin.url` is written by pods, so it is never read back.
+ * The project's remote URL from its row: the only source the server uses to
+ * fetch or pick a credential, since pods can write the clone's own
+ * `remote.origin.url`.
  */
 export async function projectRemoteUrl(slug: string): Promise<string> {
   return (await loadProjectMeta(slug)).remoteUrl
 }
 
 /**
- * Resolve the project's config from the per-machine config directory.
- * Mirrors `resolveProjectConfig` but throws NOT_FOUND when the project
- * itself is unknown (the server route relies on this).
+ * The project's config from its config directory, like
+ * `resolveProjectConfig` but throwing NOT_FOUND for an unknown project.
  */
 export async function resolveProjectConfigWithSource(slug: string): Promise<ProjectConfigResult> {
   await loadProjectMeta(slug)

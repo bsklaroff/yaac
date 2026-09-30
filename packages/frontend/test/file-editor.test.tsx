@@ -3,9 +3,8 @@ import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { FileEditor } from '#components/settings/FileEditor'
 
-// Stub the CodeMirror wrapper with a plain textarea — CodeMirror's
-// contenteditable doesn't work under jsdom, and this suite only exercises
-// FileEditor's load/save/dirty lifecycle, not the editor internals.
+// Replace CodeMirror, which doesn't work under jsdom, with a textarea. This
+// suite tests FileEditor's load, save and dirty handling only.
 vi.mock('#components/ui/CodeEditor', () => ({
   CodeEditor: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />

@@ -2,26 +2,17 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import type { Terminal } from '@xterm/xterm'
 
 /**
- * Manages xterm's WebGL renderer for one terminal, bound to whether that
- * terminal is actually visible.
+ * Turns xterm's WebGL renderer on only while its terminal is visible.
  *
- * Why gate on visibility: each terminal that turns on the WebGL renderer holds
- * its own live WebGL2 context, and browsers cap how many contexts a page may
- * keep (~16 in Chrome, fewer in Safari). This app keeps every workspace/pane
- * ever opened mounted — hidden ones held invisible at a frozen rect for
- * instant, resize-free switch-back and a live PTY — so a handful of workspaces'
- * worth of agent + shell panes pile up past the cap. The browser then force-evicts the least-recently-used
- * context (`webglcontextlost`), leaving that terminal a blank canvas that
- * reads as a black box until it's poked back to life — the "scroll up and down
- * to see it again" symptom. A hidden pane is never painted, so WebGL buys it
- * nothing: dropping its context while hidden holds the live count at roughly
- * the visible-pane count, comfortably under the cap. See xterm.js#4379.
+ * Each WebGL terminal holds its own WebGL2 context, and browsers cap how many
+ * a page may keep (~16 in Chrome, fewer in Safari). The app keeps every
+ * opened pane mounted, so the count would pass the cap and the browser would
+ * evict the oldest context, leaving that terminal blank. Hidden panes are
+ * never painted, so they drop their context (see xterm.js#4379).
  *
- * The fallback (xterm's DOM renderer) positions each row on the CSS-pixel grid
- * independently of the device-pixel grid, so at fractional devicePixelRatios
- * it leaves hairline seams between rows in solid-colored output — which is why
- * *visible* panes want WebGL and why the context comes back on show. Call
- * `setVisible` after `term.open()`.
+ * Visible panes need WebGL because xterm's DOM renderer leaves hairline gaps
+ * between rows at fractional devicePixelRatios. Call `setVisible` after
+ * `term.open()`.
  */
 export interface WebglController {
   /** Turn WebGL on when `visible`, free its context when not. Idempotent. */
@@ -31,18 +22,15 @@ export interface WebglController {
 }
 
 /**
- * Give up re-establishing WebGL after this many context losses in quick
- * succession and stay on the DOM renderer, rather than thrashing the GPU to
- * re-create a context the browser keeps evicting. A fresh show resets the
- * count, so a later switch-back tries WebGL again.
+ * After this many context losses in one burst, stay on the DOM renderer
+ * instead of re-creating a context the browser keeps evicting. Showing the
+ * pane again resets the count.
  */
 const MAX_CONTEXT_LOSSES = 3
 
 /**
- * Losses further apart than this are independent incidents (a sleep/wake or
- * GPU reset hours apart), not eviction thrash: the budget refills, so a pane
- * left visible for days isn't permanently downgraded to the DOM renderer by
- * slowly accumulating losses. Only a rapid burst counts toward the cap.
+ * Losses further apart than this start a new burst, so occasional losses
+ * (sleep/wake, GPU reset) on a long-visible pane never reach the cap.
  */
 const LOSS_BURST_WINDOW_MS = 30_000
 
@@ -50,9 +38,8 @@ export function createWebglController(term: Terminal): WebglController {
   let addon: WebglAddon | null = null
   let visible = false
   let disposed = false
-  // Latches when WebGL2 is unavailable (activation throws): never retry.
+  // Set when activation throws (no WebGL2); never retry after that.
   let webglUnavailable = false
-  // Context losses in the current burst (thrash guard above).
   let losses = 0
   let lastLossAt = 0
 
@@ -60,12 +47,8 @@ export function createWebglController(term: Terminal): WebglController {
     if (addon || webglUnavailable || disposed) return
     const next = new WebglAddon()
     next.onContextLoss(() => {
-      // Fired once the context was lost and NOT restored within the addon's
-      // own grace window. Drop the dead addon; if this pane is still visible,
-      // bring WebGL back with a fresh context and repaint — leaving it on the
-      // DOM renderer would reintroduce the hairline row gaps. Bounded by
-      // MAX_CONTEXT_LOSSES per burst so a browser that keeps evicting us
-      // doesn't spin.
+      // The context was lost and not restored. If the pane is still visible,
+      // reload WebGL with a fresh context, up to MAX_CONTEXT_LOSSES per burst.
       next.dispose()
       if (addon === next) addon = null
       if (!visible || disposed) return
@@ -79,9 +62,8 @@ export function createWebglController(term: Terminal): WebglController {
     try {
       term.loadAddon(next)
     } catch {
-      // loadAddon registers the addon before activating it, so unregister the
-      // half-loaded instance rather than leaving it for term.dispose(). A
-      // throw means WebGL2 is unavailable here — don't keep retrying.
+      // loadAddon registers the addon before activating it, so dispose the
+      // half-loaded instance here.
       next.dispose()
       webglUnavailable = true
       console.warn('WebGL2 unavailable: DOM renderer may show hairline gaps between rows')
@@ -102,9 +84,7 @@ export function createWebglController(term: Terminal): WebglController {
       if (visible) {
         losses = 0
         load()
-        // Force a full repaint on show: the context was thrown away while
-        // hidden, so the re-activated renderer must redraw the whole viewport
-        // (and even a DOM-renderer fallback benefits from the clean redraw).
+        // The context was discarded while hidden, so redraw everything.
         term.refresh(0, term.rows - 1)
       } else {
         unload()

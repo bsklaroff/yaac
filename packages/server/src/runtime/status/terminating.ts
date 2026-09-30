@@ -1,18 +1,13 @@
 /**
- * Workspaces whose teardown has been issued but whose pod may not yet carry a
- * Kubernetes deletionTimestamp — the gap between `cleanupWorkspace*` starting
- * and the `kubectl delete` landing. Marking a workspace here lets the display
- * path render it as "terminating…" across that gap and for deletes that
- * originate outside the UI (CLI, the stale reaper), instead of the row
- * flashing a stray `waiting` spell on its way out.
+ * Workspaces whose teardown has started but whose runtime may not show it
+ * yet (e.g. no pod deletionTimestamp). Marking them lets the display render
+ * "terminating…" through that gap, including for stops from the CLI or the
+ * stale reaper, instead of a stray `waiting` spell.
  *
- * In-memory (server-process singleton): a restart drops the marks, which is
- * fine — a genuinely terminating pod still carries its own deletionTimestamp,
- * and `pruneTerminating` clears anything stale.
- *
- * `pruneTerminating` deliberately does NOT notify: it runs inside the
- * display-list build, so the build that prunes a mark already renders the
- * un-greyed row.
+ * In-memory only; a restart drops the marks, which is fine because a
+ * terminating runtime reports it itself and `pruneTerminating` clears stale
+ * marks. `pruneTerminating` does not notify, since it runs inside the
+ * display-list build that already renders the result.
  */
 
 import { notifyWorkspaceListChanged } from '#notify'
@@ -21,23 +16,22 @@ import { notifyWorkspaceListChanged } from '#notify'
 const marks = new Map<string, number>()
 
 /**
- * How long a mark survives without the pod actually disappearing. A *failed*
- * detached delete leaves the pod running and the id marked forever; after this
- * the row un-greys and the stale reaper takes over. Comfortably longer than a
- * normal teardown (pod grace 5s + kubectl delete).
+ * How long a mark lasts without the workspace disappearing. A failed
+ * detached delete would otherwise leave it marked forever; after this the
+ * row un-greys and the stale reaper takes over. Well above a normal
+ * teardown.
  */
 export const TERMINATING_TTL_MS = 60_000
 
-/** Mark a workspace as terminating (idempotent; does not reset the timestamp so
- *  the TTL measures from the first mark). */
+/** Mark a workspace as terminating. Idempotent; keeps the first timestamp
+ *  so the TTL counts from the first mark. */
 export function markWorkspaceTerminating(workspaceId: string, nowMs = Date.now()): void {
   if (!workspaceId) return
   if (marks.has(workspaceId)) return
   marks.set(workspaceId, nowMs)
-  // A mark greys the row, so it is a snapshot input and announces itself
-  // (docs/layered-server.md). Without this a CLI- or reaper-issued stop
-  // showed nothing until the pod's deletionTimestamp delta landed, which
-  // is the whole gap this mark exists to cover.
+  // A mark changes the snapshot, so notify (docs/layered-server.md);
+  // otherwise a CLI or reaper stop would show nothing until the runtime
+  // reported it.
   notifyWorkspaceListChanged()
 }
 
@@ -46,17 +40,15 @@ export function isWorkspaceTerminating(workspaceId: string): boolean {
   return marks.has(workspaceId)
 }
 
-/** Drop a workspace's mark — called when its id is reused (restart) so a fresh
- *  incarnation isn't rendered as terminating. */
+/** Drop a workspace's mark, when its id is reused (restart) so the new
+ *  one is not shown as terminating. */
 export function clearWorkspaceTerminating(workspaceId: string): void {
   if (marks.delete(workspaceId)) notifyWorkspaceListChanged()
 }
 
 /**
- * Forget marks that are no longer meaningful: the pod is gone (teardown
- * finished — the row leaves the list on its own) or the mark has outlived the
- * TTL (a failed teardown that never removed the pod). Called once per
- * display-list build.
+ * Forget marks whose workspace is gone (teardown finished) or that outlived
+ * the TTL (teardown failed). Called once per display-list build.
  */
 export function pruneTerminating(livePodIds: Set<string>, nowMs = Date.now()): void {
   for (const [workspaceId, markedAt] of marks) {

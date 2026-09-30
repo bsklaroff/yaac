@@ -36,10 +36,9 @@ export async function readProjectDockerfile(slug: string): Promise<string> {
 }
 
 /**
- * Write (or clear) the per-project Dockerfile.yaac. Whitespace-only
- * content removes the file so the project reverts to the bundled base.
- * The image changes on the next workspace created for the project: the
- * edit moves the layer's content hash, so its chain rebuilds.
+ * Write the per-project Dockerfile.yaac; whitespace-only content removes it
+ * (reverting to the bundled base). The next workspace create rebuilds, since
+ * the layer's content hash changes.
  */
 export async function writeProjectDockerfile(slug: string, content: string): Promise<void> {
   const filePath = projectDockerfilePath(slug)
@@ -57,11 +56,9 @@ export async function readUserDockerfile(): Promise<string> {
 }
 
 /**
- * Write (or clear) the global user Dockerfile. Whitespace-only content
- * removes the file. A non-empty user Dockerfile always builds atop the
- * resolved project image, so it must be layered (`ARG BASE_IMAGE` +
- * `FROM ${BASE_IMAGE}`) — reject a standalone one at the edge, matching
- * the build-time check in the image builder.
+ * Write the global user Dockerfile; whitespace-only content removes it. It
+ * always builds on top of the project image, so it must be layered (`ARG
+ * BASE_IMAGE` + `FROM ${BASE_IMAGE}`), as the image builder also checks.
  */
 export async function writeUserDockerfile(content: string): Promise<void> {
   const filePath = userDockerfilePath()

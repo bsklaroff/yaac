@@ -51,8 +51,10 @@ function readServerLock() {
   return JSON.parse(fs.readFileSync(p, 'utf8'))
 }
 
-/** The tmux socket of a containerless workspace: its session was started in
- *  the workspace's checkout, whose path ends in the workspace id. */
+/**
+ * The tmux socket of a containerless workspace, found via `ps`: its tmux
+ * server was started in the checkout, whose path ends in the workspace id.
+ */
 function tmuxSocket(workspaceId) {
   const line = execSync('ps -eo args').toString().split('\n')
     .find((l) => l.includes('tmux -S') && l.includes('new-session') && l.includes(workspaceId))

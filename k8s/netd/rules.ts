@@ -1,43 +1,19 @@
 /**
- * The redirect rules netd programs in the node root netns.
- * See docs/workspace-egress.md for the whole datapath.
+ * Renders the nat redirect rules netd programs in the node root netns;
+ * iptables.ts applies them. See docs/workspace-egress.md ("Why DNAT and
+ * not TPROXY") for the design.
  *
- * Shape, and why it is this shape:
- *
- * - **nat, not mangle/TPROXY.** Calico's Felix re-inserts its own jump at
- *   the top of every base chain it manages on each reprogram, so any yaac
- *   rule that has to run *before* `cali-*` is guaranteed to be demoted the
- *   next time Felix resyncs. Measured: after a `calico-node` restart, a
- *   mangle-PREROUTING TPROXY divert and a filter-INPUT accept both landed
- *   below the Calico jumps and every workspace lost egress. `nat`
- *   PREROUTING is uncontended — Calico's `cali-PREROUTING` there is an
- *   empty floating-IP DNAT chain that terminates nothing — so netd
- *   APPENDS and never competes for position. (See docs/plans spike
- *   results.) Because NAT applies only to a flow's first packet and
- *   conntrack replays it, this also removes the whole TPROXY plumbing:
- *   no fwmark, no `-m socket` divert, no policy route, no `accept_local`,
- *   no `src_valid_mark` node fixup.
- *
- * - **One owned chain.** All per-pod rules live in `YAAC_REDIRECT`, jumped
- *   from nat PREROUTING exactly once. Per-pod churn never touches a base
- *   chain, and GC is a flush-and-refill rather than a diff — netd renders
- *   the whole desired chain each pass and only writes when it changed, so
- *   a rule deleted out from under it heals on the next reconcile.
- *
- * - **Interface-keyed.** Each rule matches `-i cali<veth>`, the one
- *   identity a workload cannot forge. Source IP is deliberately NOT the
- *   key.
- *
- * - **World-scoped.** The chain opens with a `-d <podCIDR> -j RETURN` per
- *   cluster pod CIDR, so in-cluster pod-to-pod traffic leaves the chain
- *   before any DNAT rule can see it; ClusterIP traffic is already excluded
- *   because kube-proxy's KUBE-SERVICES DNAT runs earlier and terminates.
- *   Together these scope the redirect to world traffic only. The
- *   exclusions lead the chain rather than riding each DNAT rule as
- *   `! -d`, because iptables allows only ONE destination per rule and a
- *   cluster can allocate pods from several CIDRs.
- *
- * Pure rendering here — the applier executes what these produce.
+ * - nat PREROUTING, appended: Felix keeps its own jumps first in the
+ *   chains it manages, and nat PREROUTING is the one where running after
+ *   Calico is harmless.
+ * - One chain per install (redirectChainName), jumped to once from
+ *   PREROUTING and fully rewritten each time it changes.
+ * - Rules match the arrival interface (`-i <veth>`), never the source IP,
+ *   which a workload could forge.
+ * - The chain starts with a `-d <podCIDR> -j RETURN` per pod CIDR so
+ *   pod-to-pod traffic is never redirected. (iptables allows one `-d` per
+ *   rule, so these can't be folded into each DNAT rule.) ClusterIP traffic
+ *   is already DNAT'd by kube-proxy before reaching this chain.
  */
 
 import { createHash } from 'node:crypto'
@@ -45,19 +21,10 @@ import type { ListenerTrio } from 'yaac-netd/ports'
 import type { PodTarget } from 'yaac-netd/targets'
 
 /**
- * netd's own nat chain, scoped to the install it serves.
- *
- * Per-install, NOT shared: several yaac installs coexist on one node (the
- * real `yaac` one plus an ephemeral `yaac-test-<run-id>` per e2e run),
- * each running its own netd. They render their chain by flush-and-refill,
- * so a shared chain would have each netd continually delete the other's
- * rules — every install's egress would flap. Each gets its own chain and
- * its own appended PREROUTING jump; both jumps run, and neither
- * terminates unless one of its own rules matches.
- *
- * Hashed rather than spelled out because iptables caps a chain name at 28
- * characters and an install namespace can be arbitrarily long. netd logs
- * the mapping at startup so triage can find its chain.
+ * The install's own nat chain name. Each install (e.g. `yaac` and an e2e
+ * `yaac-test-<run-id>`) needs its own chain, since each netd flushes and
+ * refills its chain. The namespace is hashed because iptables limits chain
+ * names to 28 characters; netd logs the name at startup.
  */
 export function redirectChainName(installNamespace: string): string {
   const hash = createHash('sha256').update(installNamespace).digest('hex').slice(0, 8)
@@ -65,13 +32,9 @@ export function redirectChainName(installNamespace: string): string {
 }
 
 /**
- * xt_comment's match struct is a fixed `char[256]` that must be
- * NUL-terminated, so iptables rejects any comment of 256 characters or
- * more — and `iptables-restore` rejects the WHOLE document when one rule
- * is bad, which would stall every redirect update on the node. A synced
- * pod's name can reach that on its own (63-byte namespace + a 253-byte
- * name), so the identity is truncated rather than trusted. The head is
- * kept: it carries the namespace, which is what triage greps for.
+ * iptables rejects comments of 256+ characters, and one bad rule makes
+ * `iptables-restore` reject the whole document. A namespace plus pod name
+ * can exceed that, so comments are truncated.
  */
 const MAX_COMMENT_LEN = 255
 
@@ -83,28 +46,24 @@ export interface RuleRenderInput {
   selected: PodTarget[]
   /** podIP → host veth, from the Calico per-workload routes. */
   vethByPodIp: Map<string, string>
-  /** This install's listener trio — one for every pod (see ports.ts). */
+  /** This install's listener trio, shared by every pod (see ports.ts). */
   trio: ListenerTrio
   /** Address the DNAT aims at — this node, where Envoy listens. */
   nodeIp: string
   /** Every cluster pod CIDR, excluded so pod-to-pod is never redirected. */
   podCidrs: string[]
-  /** Sentinel address git's ssh ProxyCommand dials (never a real host). */
+  /** Sentinel address git's ssh ProxyCommand dials (never a real host).
+   *  Must sit outside every pod CIDR, or the pod-CIDR RETURN rules skip it
+   *  and git-over-SSH silently stops working. */
   sshSentinelIp: string
   /** Port dialed on the sentinel. */
   sshSentinelPort: number
 }
 
 /**
- * The rules of the redirect chain, in order, as iptables argv fragments
- * (without the `-A <chain>` prefix, which the applier adds). Deterministic
- * given the same inputs — that is what lets the applier compare against
- * the live chain and skip identical passes.
- *
- * Every pod's traffic goes to the SAME trio; which egress target it
- * reaches is decided by Envoy from the source pod IP. So this renders no
- * per-target port lookup, and a pod's target changing does not rewrite its
- * rules.
+ * The redirect chain's rules, in order, as iptables argv fragments without
+ * the `-A <chain>` prefix. Output is deterministic so unchanged passes can
+ * be skipped. Every pod goes to the same trio; Envoy picks the target.
  */
 export function renderRedirectRules(input: RuleRenderInput): string[][] {
   const rules: string[][] = []
@@ -114,10 +73,8 @@ export function renderRedirectRules(input: RuleRenderInput): string[][] {
   }
   for (const { pod } of input.selected) {
     const iface = input.vethByPodIp.get(pod.podIp)
-    // No veth yet (Calico has not finished programming the workload, or
-    // the pod is on another node) — emit nothing. The pod then has no
-    // redirect and its NetworkPolicy denies world egress, which is the
-    // fail-closed direction.
+    // No veth yet, or the pod is on another node. Without a rule its
+    // egress is denied by NetworkPolicy.
     if (!iface) continue
     const comment = ruleComment(pod.namespace, pod.name)
     const base = (extra: string[]): string[] => [
@@ -132,8 +89,6 @@ export function renderRedirectRules(input: RuleRenderInput): string[][] {
       ...base(['--dport', '80']),
       '-j', 'DNAT', '--to-destination', `${input.nodeIp}:${input.trio.http}`,
     ])
-    // The ssh tunnel sentinel is a fixed unroutable address outside every
-    // pod CIDR, so the leading exclusions never take it out of the chain.
     rules.push([
       ...base(['-d', input.sshSentinelIp, '--dport', String(input.sshSentinelPort)]),
       '-j', 'DNAT', '--to-destination', `${input.nodeIp}:${input.trio.tunnel}`,
@@ -143,18 +98,10 @@ export function renderRedirectRules(input: RuleRenderInput): string[][] {
 }
 
 /**
- * The `iptables-restore --noflush` document that makes this install's
- * chain exactly the rendered rule set.
- *
- * restore rather than per-rule `-A`/`-D` diffing for two reasons: it is
- * atomic (the whole chain swaps under one kernel transaction, so no pod is
- * ever briefly unredirected mid-update), and it sidesteps iptables' argv
- * normalization — the kernel reports rules back with matches reordered and
- * `-m tcp` inserted, so a textual diff against `-S` output would report
- * spurious drift forever. Declaring the chain and flushing it inside the
- * same document makes this idempotent and self-healing: a rule deleted out
- * from under netd is restored on the next pass, and `--noflush` leaves
- * every other chain (Calico's, kube-proxy's) untouched.
+ * The `iptables-restore --noflush` document that replaces this install's
+ * chain with the rendered rules. A restore is atomic and avoids diffing
+ * against iptables' normalized `-S` output; `--noflush` leaves other
+ * chains alone.
  */
 export function renderNatRestore(chain: string, rules: string[][]): string {
   const quote = (token: string): string => (/[\s"]/.test(token) ? `"${token}"` : token)

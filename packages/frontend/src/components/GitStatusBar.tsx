@@ -7,16 +7,17 @@ import { relativeAge } from '#lib/time'
 import type { WorkspaceGitStatus } from '@yaac/shared/types'
 
 /**
- * The strip above a workspace's panes: how many commits HEAD is ahead of and
- * behind its reference branch, said in words — a bare branch name there reads
- * as the branch you are on. The branch follows the Changes pane's pick, so the
- * two never disagree about what "base" means; without one it is the branch the
+ * Strip above a workspace's panes saying how far HEAD is ahead of and behind
+ * its base branch. The base is the Changes pane's pick, else the branch the
  * workspace forked from.
+ *
+ * The strip always takes its height, even when empty: a row appearing later
+ * would resize the panes below and send a SIGWINCH to the agent's TUI.
  */
 export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Element {
   const pick = useUiStore((s) => s.changesBase[workspaceId])
-  // `dataUpdatedAt` is read so every poll re-renders, even one with an
-  // unchanged answer: that is what moves "fetched 5m ago" along.
+  // Reading `dataUpdatedAt` re-renders on every poll, which keeps
+  // "fetched 5m ago" current.
   const { data, dataUpdatedAt: _polled } = useQuery({
     queryKey: ['git-status', workspaceId, pick ?? null],
     queryFn: () => getWorkspaceGitStatus(workspaceId, pick),
@@ -25,10 +26,6 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
     // A new pick keeps the old line until its answer lands.
     placeholderData: keepPreviousData,
   })
-  // The strip is there from the first frame, empty until there is something
-  // to say: a row appearing later would resize every pane under it, and each
-  // resize is a SIGWINCH to the agent's TUI. On desktop it tucks up into the
-  // header row's bottom padding, so it reads as the title's subtitle.
   return (
     <div className="flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 text-text-dim md:-mt-1.5">
       {data?.base && (
@@ -47,8 +44,7 @@ function commits(n: number): string {
   return `${n} commit${n === 1 ? '' : 's'}`
 }
 
-/** The ref as it was before this bar spoke in sentences: a branch icon and
- *  the name. */
+/** A branch icon and the ref name. */
 function refLabel(ref: string): JSX.Element {
   return (
     <span className="inline-flex items-baseline gap-1 font-mono text-text">

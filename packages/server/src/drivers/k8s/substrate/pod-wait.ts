@@ -4,12 +4,9 @@ import { k8sNamespace } from './kubectl'
 import { JOB_NAME_LABEL } from './pods'
 
 /**
- * Waiting for one workspace pod to become Ready, event-driven: a typed-client
- * list seeds the state, then a watch on the Job's pod label delivers status
- * transitions the moment the apiserver records them — no kubectl child per
- * poll and no fixed poll-interval latency. Workspace-create is the only
- * consumer; the long-lived caches stay on InformerCache (this is a bounded
- * one-shot wait, not a cache).
+ * Wait for one workspace pod to become Ready: list the Job's pod, then
+ * watch it for status changes instead of polling. Used by workspace
+ * create.
  */
 
 /** Outcome of evaluating one pod snapshot against "ready to exec into". */
@@ -19,23 +16,19 @@ export type PodReadyVerdict =
   | { kind: 'pending'; detail: string }
 
 /**
- * Classify a workspace pod's status. Ready means the workspace container
- * reports ready — with no readiness probe that is "running", and the
- * postStart hook (yaac-workspace-init) gates running, so ready implies the
- * in-pod setup finished. Terminal phases and image-pull failures are
- * fatal: content-hash tags are immutable, so a pull failure never
- * self-heals — the bytes are either in the registry or they aren't.
+ * Classify a workspace pod's status. The container has no readiness probe,
+ * and its postStart hook (yaac-workspace-init) runs before it counts as
+ * running, so ready means in-pod setup finished. Terminal phases and image
+ * pull failures are fatal: tags are content hashes, so a failed pull will
+ * not fix itself.
  */
 export function evaluatePodReady(pod: V1Pod): PodReadyVerdict {
   const phase = pod.status?.phase ?? 'Unknown'
-  // containerStatuses[0] is the workspace container (egress is redirected at
-  // the cluster level, so there is no per-pod sidecar to gate on).
+  // The workspace container is the pod's only container.
   const cs = pod.status?.containerStatuses?.[0]
   if (cs?.ready) return { kind: 'ready' }
   if (phase === 'Failed' || phase === 'Succeeded') {
-    // Carry the container's termination detail when there is one — a
-    // failed postStart hook (setup script exited nonzero) lands here with
-    // the kubelet's hook-failure message.
+    // Include the termination detail, e.g. a failed postStart hook.
     const term = cs?.state?.terminated ?? cs?.lastState?.terminated
     const detail = term?.reason
       ? ` (${term.reason}${term.message ? `: ${term.message}` : ''})`
@@ -89,16 +82,14 @@ function realDeps(jobName: string): PodReadyDeps {
   }
 }
 
-/** Cap on one watch episode before re-listing — bounds the lifetime of a
- *  missed event (dropped watch stream that never errors). */
+/** Max watch duration before re-listing, in case a watch silently stalls. */
 const WATCH_EPISODE_MS = 15_000
 
 /**
  * Resolve when the Job's workspace pod is Ready; reject on a terminal state,
- * an image-pull failure, or the deadline. Each round lists (fresh state +
- * resourceVersion), then watches from there; any watch error — including a
- * 410 Gone from an expired resourceVersion — just starts the next round's
- * list. Transient list failures retry inside the deadline.
+ * an image-pull failure, or the deadline. Each round lists, then watches
+ * from the list's resourceVersion. Any watch error (including 410 Gone) or
+ * list failure just starts another round.
  */
 export async function waitForJobPodReady(
   jobName: string,
@@ -125,8 +116,6 @@ export async function waitForJobPodReady(
     try {
       listed = await d.listPods()
     } catch {
-      // Transient apiserver failure — same tolerance the kubectl retry
-      // wrapper gave the old poll loop.
       await new Promise((r) => setTimeout(r, 1_000))
       continue
     }
@@ -148,10 +137,8 @@ export async function waitForJobPodReady(
       d.watchPods(
         listed.resourceVersion,
         (eventType, pod) => {
-          // A DELETED event carries the pod's LAST-KNOWN object — which may
-          // still read ready — for a pod that no longer exists (deleted
-          // out-of-band mid-boot). Never trust it as a verdict; end the
-          // episode so the re-list observes the true (absent) state.
+          // A DELETED event carries the pod's last state, which may still
+          // read ready. Re-list instead of trusting it.
           if (eventType === 'DELETED') {
             lastDetail = 'pod deleted while waiting'
             settle(() => resolve(false))
@@ -163,7 +150,6 @@ export async function waitForJobPodReady(
             settle(() => reject(err as Error))
           }
         },
-        // Watch ended (error, 410, connection drop) — re-list and re-watch.
         () => settle(() => resolve(false)),
       ).then(
         (handle) => {

@@ -2,28 +2,27 @@ import { z } from 'zod'
 import type { CodexOAuthBundle } from '@yaac/shared/types'
 import { mayPresentRefreshToken } from './refresh-guard'
 
-/** Codex's ChatGPT OAuth token endpoint — the same one the CLI (and, through
- *  the proxy, running sessions) hit to refresh. */
+/** Codex's ChatGPT OAuth token endpoint, which the CLI (and running
+ *  workspaces, through the proxy) use to refresh. */
 export const CODEX_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 
 /** Codex's public OAuth client id (PKCE flow, no secret). Baked into the
  *  CLI; refresh grants must present it. */
 export const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 
-/** Codex's proactive-refresh window — the fallback expiry when a refreshed
- *  access token carries no decodable `exp`, matching the proxy's capture. */
+/** Fallback expiry when a refreshed access token has no decodable `exp`
+ *  (Codex's proactive-refresh window, as the proxy's capture uses). */
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 
 const tokenResponseSchema = z.object({
   access_token: z.string().nullish(),
   refresh_token: z.string().nullish(),
-  /** Codex's token response carries an id_token instead of expires_in/scope;
-   *  expiry is derived from the new access token's JWT `exp` claim. */
+  /** Codex returns an id_token instead of expires_in/scope; expiry comes
+   *  from the access token's JWT `exp` claim. */
   id_token: z.string().nullish(),
 })
 
-/** Read the `exp` claim (seconds since epoch) from a JWT and return it as
- *  epoch ms. Null for anything unparseable or missing. */
+/** A JWT's `exp` claim as epoch ms, or null if missing or unparseable. */
 function decodeJwtExpMs(jwt: string): number | null {
   const parts = jwt.split('.')
   if (parts.length < 2) return null
@@ -41,17 +40,12 @@ function decodeJwtExpMs(jwt: string): number | null {
 
 /**
  * One refresh_token grant against Codex's OAuth token endpoint. Returns the
- * refreshed bundle, merged the way the proxy's session-refresh capture
- * merges (fields the response omits keep their stored values). Never throws
- * — null covers every failure.
+ * refreshed bundle, keeping stored values for fields the response omits.
+ * Never throws: null covers every failure. (A stored Codex bundle always has
+ * a refresh token, per codexOAuthBundleSchema.)
  *
- * Unlike Claude's bundle, a stored Codex bundle always carries a refresh
- * token (codexOAuthBundleSchema requires a non-empty one), so there is no
- * bare-access-token case to guard against here.
- *
- * Codex refresh tokens rotate (single-use); the caller only invokes this
- * reactively on a 401, so it never races a running session's own refresh
- * (which keeps the host token fresh through the proxy).
+ * Codex refresh tokens are single-use, so callers invoke this only after a
+ * 401, to avoid racing a running workspace's own refresh through the proxy.
  */
 export async function refreshCodexOAuthBundle(
   bundle: CodexOAuthBundle,

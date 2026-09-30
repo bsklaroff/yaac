@@ -186,11 +186,10 @@ describe('env (configuration)', () => {
       expect(env.workspaceId).toBe('abcd1234')
       vi.stubEnv('YAAC_WORKSPACE_ID', undefined)
       expect(env.workspaceId).toBeUndefined()
-      // An older install's spelling, for a workspace it launched.
+      // The spelling an older install uses for workspaces it launched.
       vi.stubEnv('YAAC_WORKTREE_ID', 'ef012345')
       expect(env.workspaceId).toBe('ef012345')
-      // Blank is unset, so an explicit `YAAC_WORKSPACE_ID=` clears it rather
-      // than reading as "some workspace" to the identity rule.
+      // Blank counts as unset.
       vi.stubEnv('YAAC_WORKSPACE_ID', '  ')
       expect(env.workspaceId).toBeUndefined()
     })
@@ -250,8 +249,7 @@ describe('env (configuration)', () => {
     })
 
     it('throws rather than dropping an entry it cannot read', () => {
-      // A key silently missing from the set is a row that silently stops
-      // opening, which is the failure this refuses to cause.
+      // A dropped key would leave rows that can no longer be decrypted.
       vi.stubEnv('YAAC_SECRETS', 'no-version-here')
       expect(() => env.secrets).toThrow('"<version>:<secret>"')
       vi.stubEnv('YAAC_SECRETS', 'x:value')
@@ -361,9 +359,8 @@ describe('testEnv (test-harness hooks)', () => {
 
   describe('netdImage', () => {
     it('defaults to "yaac-netd" when unset', () => {
-      // e2e servers must set this: with requirePrebuiltImages on, falling
-      // through to the production name demands a tag only a production
-      // install would have pushed.
+      // e2e servers must set this: with requirePrebuiltImages on, the
+      // production name needs a tag only a production install pushes.
       vi.stubEnv('YAAC_NETD_IMAGE', undefined)
       expect(testEnv.netdImage).toBe('yaac-netd')
       vi.stubEnv('YAAC_NETD_IMAGE', 'yaac-test-netd')
@@ -409,8 +406,7 @@ describe('testEnv (test-harness hooks)', () => {
 
   describe('noTokenRefresh', () => {
     it('is true only when its var is exactly "1"', () => {
-      // The suite sets this globally, so an unset case has to be stubbed
-      // rather than assumed — and the exact-"1" rule is what lets the
+      // The suite sets this globally; the exact-"1" rule lets the
       // refresh-grant tests opt back in by stubbing it empty.
       vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', '1')
       expect(testEnv.noTokenRefresh).toBe(true)

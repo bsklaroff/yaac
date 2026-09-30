@@ -1,22 +1,13 @@
-// The public interface of the k8s substrate: the primitives every other
-// folder under `#drivers/k8s` talks to the cluster with. Everything outside
-// this directory imports `#drivers/k8s/substrate`; the SEALED_FOLDERS lint
-// rule stops src from reaching past this file. Modules in here import each
-// other by relative path, which is why they are unaffected by that rule.
+// Public interface of the k8s substrate: the low-level cluster primitives
+// the other `#drivers/k8s` folders use (run kubectl, name a Job, list pods,
+// exec, open a stream, wait for readiness), plus the proxy datapath's names
+// and ports. Nothing here makes decisions about workspaces, images or
+// projects.
 //
-// This is not a feature: nothing here decides anything about workspaces,
-// images or projects. It is the vocabulary every feature uses to talk to the
-// cluster — run a kubectl, name a Job, read the pods, exec into one, open a
-// stream, wait for readiness — plus the datapath's names and ports, which
-// have no imports at all. Being the driver's bottom rather than a layer of
-// its own is what rule 1 of the runtime contract asks for: nothing above
-// `runtime/` may name it.
-//
-// Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/drivers/k8s/substrate/. Two modules are internal whole: the
-// `@kubernetes/client-node` API handles, and the informer registry that
-// wraps a watch in a keyed cache. Both are reached only through the cluster
-// cache and the pod-readiness watch, which is where they are covered.
+// Each name exported here needs a unit test in
+// packages/server/test/drivers/k8s/substrate/. The client-node API handles
+// (client.ts) and the informer registry (informer-cache.ts) are internal;
+// they are covered through the cluster cache and the pod-readiness wait.
 
 export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
 export type { WorkspaceDeltaSource } from './cluster-cache'

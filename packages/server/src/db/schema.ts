@@ -1,20 +1,14 @@
 import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 
 /**
- * Drizzle schema for the server's on-disk PGlite database — the home for
- * non-mounted server/UX state that used to live in ad-hoc JSON files under
- * the data dir. The DB is opened only by the server process and all DB code
- * lives in packages/server (see client.ts).
+ * Drizzle schema for the server's PGlite database, opened only by the server
+ * process (see client.ts).
  *
- * Tables are defined via `snakeCase.table` — drizzle v1's replacement for
- * the old driver/kit `casing` config — so column identifiers derive from
- * the camelCase TS keys (`createdAt` → `created_at`) with no explicit name
- * args, consistently across drizzle-kit generate and runtime queries.
+ * `snakeCase.table` derives column names from the camelCase keys
+ * (`createdAt` → `created_at`) for both drizzle-kit and runtime queries.
  *
- * drizzle-kit loads this file via jiti with plain-Node module resolution,
- * which cannot substitute .ts sources for the workspace's output-form
- * `./src/*.js` import-map targets — keep it free of `#`-subpath and
- * `@yaac/*` imports (drizzle-orm/pg-core + relative paths only).
+ * drizzle-kit loads this file with plain-Node resolution, so keep it free of
+ * `#` and `@yaac/*` imports (drizzle-orm/pg-core and relative paths only).
  */
 
 /** Single-value user preferences, keyed by name (the git identity workspaces
@@ -24,8 +18,7 @@ export const preferences = snakeCase.table('preferences', {
   value: text().notNull(),
 })
 
-/** Keyboard-shortcut rebinds, one row per command id. Rows (not jsonb):
- *  fixed chord shape, per-command upsert, reset = DELETE. */
+/** Keyboard-shortcut rebinds, one row per command id. */
 export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
   commandId: text().primaryKey(),
   code: text().notNull(),
@@ -36,75 +29,59 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
 })
 
 /**
- * Every project yaac has cloned, one row per slug.
+ * Every project yaac has cloned, one row per slug. The clone, config and tool
+ * homes live on the substrate; these rows let the server list projects,
+ * refuse duplicates and 404 unknown slugs without reaching it
+ * (docs/layered-server.md).
  *
- * The clone itself, its config and its tool homes are bytes on the substrate
- * that runs workspaces, and none of them can be reproduced from here. What is
- * here is the ANSWER to "which projects exist" — so the server can list them,
- * refuse a duplicate add, and 404 an unknown slug without asking anything
- * that might be unreachable (docs/layered-server.md).
- *
- * `addedAt` is text, not a timestamp, because it is handed to clients
- * verbatim as an ISO string; parsing and
- * re-serializing it would change the shape of a value nothing computes on.
+ * `addedAt` is text because it is passed to clients verbatim as an ISO
+ * string.
  */
 export const projects = snakeCase.table('projects', {
   slug: text().primaryKey(),
   /**
-   * The project's identity outside the data dir, minted at insert and never
-   * changed or reused: every per-project object the substrate holds (the
-   * push registry, the registry repos, the node-local tree) is named by it,
-   * so a project re-added under a freed slug cannot inherit an old one's
-   * objects whether or not their removal succeeded. The slug stays the key
-   * for rows and the data dir, which are removed reliably.
+   * Immutable id, never reused, that names the project's objects on the
+   * substrate (push registry, registry repos, node-local tree). A project
+   * re-added under a freed slug can't inherit an old project's leftovers.
+   * The slug stays the key for rows and the data dir, which are removed
+   * reliably.
    */
   id: uuid().notNull().unique().defaultRandom(),
   remoteUrl: text().notNull(),
   addedAt: text().notNull(),
   /**
-   * The agent this project was last created with — what a create naming no
-   * tool runs, what the create form opens on, and what the prewarm pool warms
-   * spares with. Null until the first create; `claude` answers then.
-   *
-   * Per project, and server-side rather than in the browser, so the CLI, the
-   * webapp, `yaac-mama` and the spare pool all agree on it.
+   * The agent this project was last created with: the default for a create
+   * naming no tool, the create form, and the prewarm pool. Null (meaning
+   * `claude`) until the first create. Stored server-side so every client
+   * agrees.
    */
   lastTool: text(),
   /**
-   * The reference branch this project was last created from, when the
-   * create named one — what the create form opens on. Only the form reads
-   * it: a create naming no branch takes the remote's default.
+   * The branch the last create named, which the create form opens on. A
+   * create naming no branch uses the remote's default.
    */
   lastBranch: text(),
   /**
-   * The git credential this project's git authenticates with — one per
-   * project, while a credential may serve many (docs/git-credentials.md).
-   * Null until one is assigned, and a project without one cannot create
-   * workspaces. Deleting a credential clears it (and the host key) first;
-   * the foreign key is the backstop against a delete that did not.
+   * The git credential this project uses; one credential may serve many
+   * projects (docs/git-credentials.md). Null until assigned, and a project
+   * without one cannot create workspaces. Deleting a credential clears this
+   * (and the host key) first; the foreign key is a backstop.
    */
   gitCredentialId: uuid().references(() => gitCredentials.id, { onDelete: 'restrict' }),
   /**
-   * The remote's host key, one OpenSSH known_hosts line, when the credential
-   * is an SSH key: fetched (trust on first use) when the key is assigned.
-   * Stale the moment either the credential or the remote changes, so the
-   * two writers of those columns clear or replace it in the same statement.
+   * The remote's host key (one known_hosts line) for an SSH credential,
+   * fetched on first use when the key is assigned. Cleared or replaced in the
+   * same statement whenever the credential or the remote changes.
    */
   knownHostsEntry: text(),
 })
 
 /**
- * The create form's memory, one row per (project, agent): the model,
- * permission posture and UI mode that agent was last created with in this
- * project, so picking them once is enough. Written by the create route from
- * whatever the request named, and read back as the next create's defaults
- * (`resolveCreate` in #domain/workspaces).
- *
- * Per agent because the three are about the agent — a model id means nothing
- * to another tool, and a posture one tool has another may lack. Per project
- * because posture tracks what the code is (a scratch repo vs one that
- * deploys), and the model one reaches for tends to follow it. Each column is
- * null until that field has been picked; the resolver's fallback answers.
+ * Remembered create defaults per (project, agent): the model, permission
+ * mode and agent mode last chosen, read back as the next create's defaults
+ * (#domain/workspaces). Per agent because model ids and permission modes are
+ * tool-specific; per project because they tend to follow the repo. A null
+ * column falls back to the resolver's default.
  */
 export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
   id: uuid().primaryKey().defaultRandom(),
@@ -116,138 +93,93 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
 }, (t) => [uniqueIndex().on(t.projectSlug, t.tool)])
 
 /**
- * Every workspace yaac has ever created, one row per (project, workspace id).
- * This is the spine: the cluster stays authoritative for "is it running",
- * and this table for "did it exist, and what is it". A row is inserted by
- * workspace create — including when it warms a prewarmed spare, which gets a
- * `spare` row the claim later clears — and never deleted by a stop: a
- * `stoppedAt` row IS the stopped-workspace listing, and a restart clears the
- * column again because workspace ids are reused verbatim.
+ * Every workspace yaac has created (see workspace-store.ts). The runtime is
+ * authoritative for whether it is running; this table for whether it exists.
+ * Warming a spare also inserts a row (`spare`). A stop never deletes the row:
+ * rows with `stoppedAt` are the stopped listing, and a restart reuses the id
+ * and clears it. A row matches a checkout that stays on disk while stopped.
  *
- * A row is 1-1 with a checkout, which is why stopping keeps it: teardown
- * never removes `workspaceDir`, so a stopped row is a checkout still on disk,
- * diff and all, waiting to be restarted.
+ * The tool and founding prompt are read from the workspace's first agent
+ * session, so they survive a `/clear` (which starts a second conversation).
  *
- * Neither the tool nor the founding ask lives here: both are read off the
- * workspace's *first* agent session, which is the thing that actually has
- * them. That is also what makes them survive a `/clear` — the new
- * conversation is a second row, so the first one's opening message stays the
- * workspace's label. Session create records that first conversation with this
- * row, so a workspace always has one. `deathReason` / `deathDetail` are set only when
- * the stale reaper — not the user — tore the workspace down, so a reused id
- * can't inherit a stale cause; `deathSeen` tracks whether the user has viewed
- * that detail (the "Stopped workspaces" notification dot), durable across
- * devices and daemon restarts. The death columns keep their name against
- * `stoppedAt` on purpose: every stop stamps the latter, only an abnormal one
- * stamps the former.
+ * Every stop sets `stoppedAt`; `deathReason`/`deathDetail` are set only when
+ * the stale reaper (not the user) stopped it. `deathSeen` records whether the
+ * user viewed that detail (the "Stopped workspaces" dot).
  */
 export const workspaces = snakeCase.table('workspaces', {
   projectSlug: text().notNull(),
-  /** Unique across projects, not just within one: provisioning, the runtime
-   *  registries, the proxy registration and the relay identity are all keyed
-   *  on the id alone, so a second row carrying it would hand one workspace's
-   *  pod another's egress rules and traffic. */
+  /** Unique across projects: provisioning, runtime registries, the proxy and
+   *  the relay are keyed on the id alone, so a duplicate would mix two
+   *  workspaces' egress rules and traffic. */
   workspaceId: text().primaryKey(),
-  /** When the workspace was handed to someone — the insert for a cold
-   *  create, the claim for a prewarmed spare (`claimSpareWorkspace`). */
+  /** When the workspace was handed to someone: the insert for a cold create,
+   *  the claim for a prewarmed spare (`claimSpareWorkspace`). */
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-  /** Display title — user-assigned or model-generated. */
+  /** Display title, user-assigned or model-generated. */
   title: text(),
   /** Branch the workspace forked from (no `origin/` prefix). */
   baseBranch: text(),
-  /** The sidebar group this workspace is filed under; null is the default
-   *  list. Belongs to the workspace, not to one of its lives, so it survives
-   *  a stop and a restart. */
+  /** The sidebar group it is filed under; null means ungrouped. Survives a
+   *  stop and restart. */
   groupId: text(),
   stoppedAt: timestamp({ withTimezone: true }),
   deathReason: text(),
   deathDetail: text(),
   deathSeen: boolean().notNull().default(false),
   /**
-   * An unclaimed prewarmed spare: a checkout, a branch and a pod, but not a
-   * workspace — nobody has been handed it. Every listing filters these out,
-   * and the reaper's desired set excludes them, so a spare is invisible to
-   * the user exactly as it was when it had no row at all. The claim clears
-   * the flag, which is the moment the pod becomes someone's workspace.
-   *
-   * Worth a column rather than an absent row because the startup sweep has
-   * to be able to answer "was this a spare?" once its pod is already gone —
-   * that is what tells an orphaned spare (delete the checkout) from a
-   * stopped workspace (keep it, diff and all).
+   * An unclaimed prewarmed spare: a checkout and runtime not yet handed to
+   * anyone. Listings and the reaper's desired set exclude it; a claim clears
+   * the flag. A row (rather than none) lets the startup sweep tell a dead
+   * spare (delete its checkout) from a stopped workspace (keep it).
    */
   spare: boolean().notNull().default(false),
   /**
-   * When the pod currently hosting this workspace came up. Null when nothing
-   * is hosting it. A **life** is one pod, and it is the boundary that
-   * invalidates handles: `recordWorkspaceLife` stamps this and NULLs every
-   * `workspace_agent_sessions.paneId` in the same transaction, because tmux
-   * pane ids restart at `%0` in a new pod and last life's handle would
-   * otherwise name this life's pane.
+   * When the current runtime (a "life") came up; null when none is running.
+   * `recordWorkspaceLife` sets this and clears every
+   * `workspace_agent_sessions.paneId` in one transaction, since tmux pane
+   * ids restart at `%0` in a new runtime.
    */
   lifeStartedAt: timestamp({ withTimezone: true }),
   /**
-   * The permission posture this workspace's agents run in — a
-   * `PermissionMode`, spelled per tool at launch (claude's
-   * `--permission-mode`, codex's approval/sandbox pair, opencode's permission
-   * config; pi has none and is always `bypass`). Set at create or claim, then
-   * overwritten by each move the running agent reports, up or down
-   * (docs/permission-modes.md, "Following the agent").
+   * The `PermissionMode` this workspace's agents run in, translated per tool
+   * at launch (pi has none and is always `bypass`). Set at create or claim,
+   * then updated whenever the running agent reports a change
+   * (docs/permission-modes.md, "Following the agent"). Stored so a restart
+   * relaunches in the last mode rather than today's default.
    *
-   * Durable rather than a launch-time decision because a workspace outlives
-   * the request that made it: a restart relaunches its agents in the posture
-   * they were last in, rather than re-deriving one from whatever the default
-   * is now.
-   *
-   * Defaults `bypass`, which is what a sandboxed runtime resolves to anyway:
-   * the isolation is what justifies acting unprompted. Read back with a cast;
-   * an unknown value
-   * from a newer build reaching an older one is not worth a runtime guard
-   * here, since the launch path re-checks against the tool.
+   * Defaults to `bypass`, what a sandboxed runtime resolves to. Read back with
+   * a cast; the launch path re-checks the value against the tool.
    */
   permissionMode: text().notNull().default('bypass'),
   /**
-   * The model and the agent mode (`tui` / `acp`) its first agent was launched
-   * with — recorded beside `permissionMode` for the same reason, and what a
-   * spare claim matches a request against: a spare whose launch matches runs
-   * on untouched, anything else has its agent respawned or is passed over.
-   * Null only on rows written before these columns existed.
+   * The model and agent mode (`tui` / `acp`) its first agent launched with.
+   * A spare claim matches a request against these: a match is handed over
+   * as-is, otherwise the agent is respawned or the spare skipped. Null only
+   * on rows older than these columns.
    */
   model: text(),
   mode: text(),
   /**
-   * SHA-256 of the bearer this workspace's `yaac-mama` presents, when its
-   * runtime reaches the server directly (containerless). Null where the
-   * substrate attributes a caller itself — a pod is identified by its source
-   * IP at the proxy and never holds one of these.
+   * SHA-256 of the bearer token this workspace's `yaac-mama` presents, for
+   * containerless workspaces that reach the server directly. Null under k8s,
+   * where the proxy identifies a pod by source IP.
    *
-   * Durable, and NOT re-minted on server restart: the token was handed to a
-   * tmux server that outlives this process, so re-minting would silently
-   * break `yaac-mama` in every workspace that was already running. A workspace
-   * *restart* is a new tmux server and does take a fresh one.
-   *
-   * The hash rather than the token, so the value the agent holds is not also
-   * sitting in the database.
+   * Not re-minted on server restart, since the tmux server holding the token
+   * outlives the server process; a workspace restart gets a new one.
    */
   mamaTokenHash: text(),
 }, (t) => [index().on(t.projectSlug)])
 
 /**
- * A named sidebar group, one row per (project, group id). Purely how a user
- * has chosen to file their workspaces: the sidebar lists ungrouped workspaces
- * first and then one section per group, both in `createdAt` order, and
- * `workspaces.groupId` is the membership.
+ * A named sidebar group, one row per (project, group id); membership is
+ * `workspaces.groupId`. The sidebar lists ungrouped workspaces, then one
+ * section per group, in `createdAt` order.
  *
- * A group is shown when it is pinned or holds at least one live workspace, so
- * the row outlives its members: an unpinned group whose workspaces have all
- * stopped is hidden, not deleted, and restarting one of them brings it back
- * exactly as it was. `pinned` is what keeps a fully-stopped group on screen —
- * a place to restart into rather than a section that vanishes with its last
- * workspace.
+ * A group is shown when pinned or holding a live workspace. An unpinned group
+ * whose workspaces all stopped is hidden, not deleted, and returns when one
+ * restarts.
  *
- * No foreign key to `projects` or from `workspaces.groupId`, matching every
- * other table here; the group store owns the integrity (a move validates the
- * target group, a delete releases its members, project teardown removes the
- * rows).
+ * No foreign keys; group-store.ts maintains integrity.
  */
 export const workspaceGroups = snakeCase.table('workspace_groups', {
   projectSlug: text().notNull(),
@@ -259,21 +191,18 @@ export const workspaceGroups = snakeCase.table('workspace_groups', {
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.groupId] })])
 
 /**
- * One row per agent conversation — a claude/codex/pi/opencode session, keyed
- * by the *tool's own* id rather than yaac's. Distinct from a workspace because
- * a user creates these constantly: every `/clear`, `/resume` and `/compact`,
- * and every `claude` started in a second terminal, is a new one.
+ * One row per agent conversation, keyed by the tool's own session id. A
+ * workspace accumulates many (every `/clear`, `/resume`, `/compact`, or a
+ * second `claude` in another terminal).
  *
- * Project-scoped, not workspace-scoped, because the tool homes yaac mounts
- * (`claudeDir`, `piDir`, `codexDir`) are per project and shared by all its
- * sessions — any session of a project can resume any of its conversations,
- * which is exactly why the link below is many-to-many.
+ * Project-scoped because the tool homes are per project, so any workspace of
+ * a project can resume any of its conversations; hence the many-to-many
+ * link table below.
  *
- * Either way the registry records one from the live agent set: a `tui`
- * conversation's tool names it on its tmux pane, and an `acp` one's id comes
- * back from `session/new`, since the server is the ACP client.
- * `transcriptPath` is null for opencode (no host transcript) and for a
- * conversation whose transcript has since been removed.
+ * The registry records conversations from the live agents: a `tui` tool
+ * names its session on its tmux pane, and an `acp` id comes from
+ * `session/new`. `transcriptPath` is null for opencode (no host transcript)
+ * and once a transcript is removed.
  */
 export const agentSessions = snakeCase.table('agent_sessions', {
   projectSlug: text().notNull(),
@@ -281,50 +210,40 @@ export const agentSessions = snakeCase.table('agent_sessions', {
   agentSessionId: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /**
-   * Which protocol drives this conversation — 'tui' or 'acp' (see AgentMode).
-   * The ONE piece of state the ACP mode adds: a restart has to bring a
-   * conversation back the way it was started, and nothing else on disk says
-   * which that was. Everything else about an ACP conversation (its messages,
-   * its tool calls) is read back from the same transcript a TUI conversation
-   * writes, so it needs no storage here.
+   * Which protocol drives this conversation, 'tui' or 'acp'. A restart must
+   * bring it back the same way, and nothing else records this; ACP messages
+   * are read from the same transcript a TUI conversation writes.
    */
   mode: text().notNull().default('tui'),
-  /** The session's transcript, *relative to the project directory* — never
-   *  absolute, so the row survives the data dir moving (see
-   *  `toProjectRelative`). Null when the tool leaves no transcript, or
-   *  when the path has no home-relative form. */
+  /** The transcript path relative to the project directory, so it survives
+   *  the data dir moving (see `toProjectRelative`). Null when the tool leaves
+   *  no transcript or the path has no project-relative form. */
   transcriptPath: text(),
-  /** This conversation's own first user message (the workspace keeps the
-   *  founding one separately — they differ after a `/clear`). */
+  /** This conversation's first user message. After a `/clear` it differs
+   *  from the workspace's founding prompt (the first conversation's). */
   firstPrompt: text(),
-  /** Transcript mtime at the last reconcile; the stopped listing's
-   *  last-activity, and unknowable once the pod is gone for opencode. */
+  /** Transcript mtime at the last reconcile, shown as last activity in the
+   *  stopped listing. */
   lastActiveAt: timestamp({ withTimezone: true }),
   /**
-   * The model the agent last reported running, verbatim in the tool's own
-   * vocabulary (`claude-opus-5`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`)
-   * — a display value, not one anything relaunches with.
-   *
-   * Overwritten as reported rather than filled once, because a conversation's
-   * model is not a fact about its birth: `/model` mid-session changes it, and
-   * the row is meant to say what the agent is running *now*. Seeded from the
-   * launch; null only for a conversation launched without a model that has
-   * not reported one (see docs/workspace-storage.md for when each tool does).
+   * The model the agent last reported, in the tool's own naming
+   * (`claude-opus-5`, `anthropic/claude-opus-4-8`). Display only; nothing
+   * relaunches with it. Overwritten on each report, since `/model` changes
+   * it. Seeded from the launch; null until known (see
+   * docs/workspace-storage.md for when each tool reports).
    */
   model: text(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.tool, t.agentSessionId] })])
 
 /**
- * Which agent sessions belong to which workspace. Many-to-many: a workspace
- * accumulates conversations over its life, and one conversation can be
- * resumed into a second workspace.
+ * Which agent sessions belong to which workspace (many-to-many: a
+ * conversation can be resumed into another workspace).
  *
- * `active` means *this conversation had a live agent process in this workspace
- * the last time the workspace was observed running*. The registry maintains it
- * from the live pane set while the pod runs, and teardown deliberately leaves
- * it alone — that freeze is what a restart reads back to decide what to bring
- * up again. `ordinal` orders that restore (0 is the primary agent window, the
- * one that keeps the `yaac:<tool>` name); `paneId` is where it was last seen.
+ * `active`: the conversation had a live agent the last time the workspace was
+ * observed running. Maintained from the live pane set while running and left
+ * alone by teardown, so a restart knows what to bring back. `ordinal` orders
+ * the restore (0 is the primary agent window, named `yaac:<tool>`); `paneId`
+ * is where it was last seen.
  */
 export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions', {
   projectSlug: text().notNull(),
@@ -341,24 +260,17 @@ export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions'
 })])
 
 /**
- * A project's environment: the variables every workspace of it launches with,
- * and the secrets the egress proxy injects on its behalf.
+ * A project's environment: variables its workspaces launch with, and secrets
+ * the egress proxy injects. Stored in the DB so clients set them through the
+ * API; a client may have no shell on the server's machine
+ * (docs/remote-hosting.md).
  *
- * Rows rather than config keys because a value has to arrive over the same
- * authenticated API as everything else: a client may have no shell on the
- * server's machine, and under `k8s` that machine is a pod whose environment
- * holds only what its Deployment states (docs/remote-hosting.md).
+ * A uuid key keeps a row's identity across renames; (project, name) is a
+ * unique index the upsert conflicts on.
  *
- * A uuid key rather than the (project, name) pair, so a row keeps its
- * identity when it is renamed; the pair is a unique index, which is what the
- * upsert conflicts on.
- *
- * `value` and `sealedValue` are exclusive: a plain variable stores its value
- * as it is, and a secret stores it encrypted (better-auth's cipher, keyed by
- * `secret-key.ts`) because a secret at rest in a readable column is a secret
- * the database backup publishes. Which one is set follows `secret`, and the store is the only
- * code that sees either — everything above it is handed plaintext or, for a
- * secret it must not learn, nothing at all.
+ * `value` (plain) and `sealedValue` (secret, encrypted with the key from
+ * `secret-key.ts`) are mutually exclusive, following `secret`. Only
+ * project-env-store.ts reads either.
  */
 export const projectEnvVars = snakeCase.table('project_env_vars', {
   id: uuid().primaryKey().defaultRandom(),
@@ -366,14 +278,12 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
   name: text().notNull(),
   /** Plain variables only; null for a secret. */
   value: text(),
-  /** Secrets only; null for a plain variable. Sealed, never the raw value. */
+  /** Secrets only, encrypted; null for a plain variable. */
   sealedValue: text(),
   /**
-   * Whether the workspace is given the value or a sentinel. With mediated
-   * egress a secret's value never enters the workspace at all: the proxy
-   * swaps the sentinel for it in flight, per `rule`. Without one (the
-   * containerless driver has no proxy) the value itself goes in, because a
-   * sentinel would be what the tool actually sent.
+   * With mediated egress (k8s), a secret's workspace gets a sentinel that
+   * the proxy swaps for the value in flight, per `rule`. Containerless has no
+   * proxy, so the real value goes in.
    */
   secret: boolean().notNull().default(false),
   /** `SecretProxyRule` — which hosts, path and header/body param the proxy
@@ -384,43 +294,41 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
 }, (t) => [uniqueIndex().on(t.projectSlug, t.name)])
 
 /**
- * The credentials git authenticates with, by name: an HTTPS token the user
- * pasted, or an SSH key this server GENERATED — the user never brings one,
- * and only ever sees its public half (docs/git-credentials.md). A project
- * names the one it uses (`projects.gitCredentialId`).
+ * Named git credentials: an HTTPS token the user pasted, or an SSH key the
+ * server generated (the user only sees its public half)
+ * (docs/git-credentials.md). A project references one via
+ * `projects.gitCredentialId`.
  *
- * The secret is sealed, and opened only to hand a process something it can
- * authenticate with — the egress proxy, a workspace under the containerless
- * driver, the server's own git — and never written anywhere else.
+ * The secret is encrypted, and decrypted only to hand to something that
+ * authenticates with it: the egress proxy, a containerless workspace, or the
+ * server's own git.
  */
 export const gitCredentials = snakeCase.table('git_credentials', {
   id: uuid().primaryKey().defaultRandom(),
   name: text().notNull(),
   /** 'https' | 'ssh' */
   kind: text().notNull(),
-  /** The token, or the ssh key's 32-byte ed25519 seed as base64; sealed. */
+  /** The token, or the ssh key's 32-byte ed25519 seed as base64; encrypted. */
   sealedSecret: text().notNull(),
-  /** ssh only: the public half as one OpenSSH line, in the clear — it is
-   *  what the user registers with the git host, and a listing must show it
-   *  without opening anything. Its comment is the credential's name. */
+  /** ssh only: the public key as one OpenSSH line, unencrypted so listings
+   *  can show it. Its comment is the credential's name. */
   publicKey: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.name)])
 
 /**
- * A workspace create request saved to run when its parent stops naturally
- * (docs/queued-workspaces.md). Not a workspace: no `workspaces` row, checkout
- * or runtime exists until it launches. A launch that succeeds keeps the
- * entry as a record, pointed at the workspace it became, and every read
- * leaves it out. Every setting is stored concrete, so what the sidebar shows
- * is what will run.
+ * A workspace create request that runs when its parent stops naturally
+ * (docs/queued-workspaces.md). No workspace row, checkout or runtime exists
+ * until launch. A successful launch keeps the entry as a record pointing at
+ * the new workspace, hidden from reads. Settings are stored fully resolved,
+ * so the sidebar shows exactly what will run.
  */
 export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
   projectSlug: text().notNull(),
-  /** Exactly one of these two is set: the workspace this entry waits on, or
-   *  the entry it is chained after. Claiming the parent entry's launch
-   *  re-points its children at the launching workspace. */
+  /** Exactly one is set: the workspace this entry waits on, or the entry it
+   *  is chained after. Claiming a parent entry's launch re-points its
+   *  children at the launching workspace. */
   parentWorkspaceId: text(),
   parentQueuedId: uuid(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -429,29 +337,28 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   model: text().notNull(),
   mode: text().notNull(),
   permissionMode: text().notNull(),
-  /** The reference branch to fork from (no `origin/` prefix); fetched fresh
-   *  from origin at launch, so the child starts from its latest tip. */
+  /** The branch to fork from (no `origin/` prefix), fetched at launch so the
+   *  child starts from its latest tip. */
   branch: text().notNull(),
-  /** The user's title for the workspace it launches; set, it outranks
+  /** The user's title for the launched workspace; wins over
    *  `generatedTitle`. */
   title: text(),
-  /** Model-generated from the prompt; cleared when the prompt changes.
-   *  Without a user title, the workspace it launches carries this one. */
+  /** Generated from the prompt; cleared when the prompt changes. Used when
+   *  there is no user title. */
   generatedTitle: text(),
-  /** The sidebar group it launches into; null is the default list. Chosen
-   *  when it is queued (its parent's group unless named), and cleared when
-   *  the group is deleted. */
+  /** The sidebar group it launches into; null means ungrouped. Defaults to
+   *  the parent's group; cleared when the group is deleted. */
   groupId: text(),
-  /** Set by a natural parent stop or Run now; the launcher's work list. */
+  /** Set by the parent's natural stop or "Run now"; marks it for launch. */
   releasedAt: timestamp({ withTimezone: true }),
-  /** The workspace id this entry's in-flight launch is creating. Set by a
-   *  compare-and-set before anything is provisioned; it is the claim. */
+  /** The workspace id the in-flight launch is creating. Set by
+   *  compare-and-set before provisioning; this is the claim. */
   launchWorkspaceId: text(),
   /** Why the last launch failed; cleared by the next release. */
   launchError: text(),
-  /** The workspace a successful launch created. Set, the entry is history:
-   *  it keeps its claim, so no edit reaches it, and no read returns it. It
-   *  goes with that workspace's row. */
+  /** The workspace a successful launch created. Once set, the entry is only
+   *  a record: it keeps its claim (so edits skip it) and reads exclude it.
+   *  Deleted with that workspace's row. */
   launchedWorkspaceId: text().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
 }, (t) => [
   index().on(t.projectSlug, t.parentWorkspaceId),
@@ -459,11 +366,10 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
 ])
 
 /**
- * A workspace create the user closed the create dialog on without running,
- * and chose to keep (docs/draft-workspaces.md). Pure intent, like groups: no
- * workspace, checkout or runtime exists for it, and creating from it deletes
- * it. It holds the dialog's settings as the dialog showed them, so reopening
- * it puts back what was on screen.
+ * Create-dialog contents the user saved instead of running
+ * (docs/draft-workspaces.md). No workspace, checkout or runtime exists for
+ * it; creating from it deletes it. Settings are stored as the dialog showed
+ * them, so reopening restores the screen.
  */
 export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
@@ -471,21 +377,21 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   prompt: text().notNull(),
-  /** The user's title, carried to what is created from it; set, it turns
-   *  off `generatedTitle`. */
+  /** The user's title for what is created from it; wins over
+   *  `generatedTitle`. */
   title: text(),
-  /** Model-generated from the prompt; cleared when the prompt changes. */
+  /** Generated from the prompt; cleared when the prompt changes. */
   generatedTitle: text(),
   tool: text().notNull(),
   mode: text().notNull(),
   permissionMode: text().notNull(),
-  /** Null when the dialog had not resolved one yet (catalog or branch list
-   *  still loading) — reopening then takes the default, as a fresh open does. */
+  /** Null when the dialog hadn't resolved one yet (still loading); reopening
+   *  then uses the default. */
   model: text(),
   branch: text(),
-  /** The dialog's Start field: the workspace or queued entry it would wait
-   *  on, null for "Now". Not a live reference — a parent that has gone by
-   *  the time the draft is reopened falls back to "Now". */
+  /** The dialog's Start field: the workspace or queued entry to wait on, or
+   *  null for "Now". Not a live reference; a parent that is gone when the
+   *  draft reopens falls back to "Now". */
   startAfter: text(),
   /** The dialog's Group field; cleared when the group is deleted. */
   groupId: text(),

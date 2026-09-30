@@ -27,41 +27,27 @@ import { TOOL_HOME_VARS, overriddenToolHomeVars } from './tool-homes'
 import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
 /**
- * Starting a workspace on the host: its private HOME, the mounts realized
- * as symlinks, and the tmux server that supervises everything in it.
+ * Starting a workspace on the host: its private HOME, mounts realized as
+ * symlinks, and the tmux server that supervises it.
  *
- * The tmux server is the unit. It is what the pod driver's Job is: the thing
- * whose existence means the workspace is up, whose death means it is gone,
- * and which deliberately outlives the yaac server that started it — a `yaac
- * server restart` must not stop anyone's agent.
- *
- * The session's shape is the same one `workspace-bin/yaac-workspace-init`
- * creates in a pod, and has to be: the placeholder window the stale reaper
- * recognizes, the window naming the status watcher parses, and the tmux
- * options the webapp's terminal rendering depends on are all read by
- * driver-neutral machinery that cannot tell the two substrates apart.
+ * The tmux server is the unit (the equivalent of the pod driver's Job): it
+ * existing means the workspace is up, and it outlives a `yaac server
+ * restart`. Its session must match what `workspace-bin/yaac-workspace-init`
+ * creates in a pod (placeholder window, window names, tmux options), since
+ * driver-neutral code reads them.
  */
 
-/** Server-owned environment that must not leak into a workspace: the
- *  agents run as this user, and handing them the server's own wiring
- *  invites a workspace to reconfigure the server that launched it. */
+/** Server settings that must not leak into a workspace, which could use
+ *  them to reconfigure the server. */
 const ENV_DENY_PREFIXES = ['YAAC_']
 
 /**
- * The markers a running claude session stamps on every process it spawns,
- * which the server inherits whenever it was started from inside one (an
- * agent running `yaac server start`). A workspace is not that session's
- * child, and claude acts on them: `CLAUDE_CODE_CHILD_SESSION` turns off
- * transcript saving — its escape hatch, finding the marker in tmux's global
- * environment, needs `$TMUX`, which the launch command unsets — and the
- * messaging pair would address the parent session's inbox.
- *
- * Read from the pinned claude (2.1.282): its Bash tool's env builder adds
- * everything from `CLAUDECODE` through `TRACEPARENT` (the last three only
- * conditionally), and the rest reach a child through claude's own
- * `process.env`. The builder's one other entry, `GIT_EDITOR=true`, is not
- * here because a host `GIT_EDITOR` is a real preference; `workspaceEnvironment`
- * drops only that literal value, and only beside these markers.
+ * Variables a claude session sets on its child processes, inherited if the
+ * server was started from inside one. A workspace must not see them: e.g.
+ * `CLAUDE_CODE_CHILD_SESSION` disables transcript saving, and the messaging
+ * pair would reach the parent session. List taken from the pinned claude.
+ * Claude also sets `GIT_EDITOR=true`, which `workspaceEnvironment` removes
+ * only in that exact case, since a host `GIT_EDITOR` may be a real setting.
  */
 export const AGENT_SESSION_VARS = [
   'CLAUDECODE',
@@ -78,16 +64,12 @@ export const AGENT_SESSION_VARS = [
   'CLAUDE_CODE_MESSAGING_TOKEN',
 ]
 
-/** Host variables that could point a tool somewhere other than the project
- *  dirs staged for this workspace (see `tool-homes` for which of these the
- *  create names outright and which have nothing to name), and the marks of
- *  whatever agent session happened to start the server. */
+/** Host tool-home variables (see `tool-homes`) and agent session markers. */
 const ENV_DENY_KEYS = [...TOOL_HOME_VARS, ...AGENT_SESSION_VARS]
 
 /**
- * The server's environment without its own wiring — what any process it
- * starts as the user inherits: a workspace's, and the npm that installs the
- * agents (`ensureAgentBinary`).
+ * The server's environment minus its own `YAAC_*` settings, for processes
+ * run as the user (workspaces, and the npm that installs agents).
  */
 export function userEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
@@ -100,15 +82,9 @@ export function userEnvironment(): NodeJS.ProcessEnv {
 }
 
 /**
- * The environment a workspace's processes get: the server's own, stripped
- * of its wiring, plus what the caller decided, plus the private HOME.
- *
- * Inheriting the host environment at all is a real decision, not an
- * oversight — a host-run agent needs the user's PATH to find `git`, `node`
- * and the rest of the user's toolchain, and there is no image to have
- * installed them.
- * What is inherited is therefore chosen twice: broadly here, then narrowed
- * by the two deny lists above.
+ * A workspace's environment: the user's (for their PATH and toolchain),
+ * minus the deny lists above, plus the caller's entries and the private
+ * HOME.
  */
 function workspaceEnvironment(
   spec: Pick<WorkspaceSpec, 'env' | 'mounts'>,
@@ -124,18 +100,13 @@ function workspaceEnvironment(
     if (eq <= 0) continue
     env[entry.slice(0, eq)] = remapMountedPath(entry.slice(eq + 1), spec.mounts, paths, home)
   }
-  // After the caller's entries: the private home is this driver's to decide,
-  // and it is what makes the tool-home symlinks below reachable.
+  // After the caller's entries: the tool-home symlinks live in this HOME.
   env.HOME = home
-  // Seeds the tmux SERVER environment (it forks from the first client), so
-  // every pane inherits it — same reason the pod's init script sets it.
+  // The tmux server inherits this from its first client, so every pane has
+  // it.
   env.COLORTERM = 'truecolor'
-  // The helper scripts staged into the workspace's bin dir are only useful
-  // if the workspace can find them — the pod gets that from
-  // `/usr/local/bin` already being on PATH, and here it has to be said. The
-  // pinned agents come next, ahead of the host's own: an agent CLI the user
-  // installed is at whatever version they last updated it to, and yaac's
-  // launch flags are written against the pin (see `AGENT_PACKAGES`).
+  // The workspace's helper scripts, then the pinned agents ahead of any the
+  // user installed, since launch flags target the pinned versions.
   env.PATH = [workspaceBinDir(home), ...agentBinDirs(), env.PATH ?? ''].join(path.delimiter)
   return env
 }
@@ -145,17 +116,11 @@ function gitconfigPathFor(home: string): string {
 }
 
 /**
- * The environment a command the server runs in a workspace gets — `exec`,
- * the streams it dials, the changes diff — and never the server's own: that
- * carries the server's wiring and the host's HOME, so a command run with it
- * reads the SERVER user's configuration instead of the workspace's.
- *
- * The launch's whole copy while this server holds it. After a restart, the
- * floor a launch builds from, with the launch's own entries from the marker
- * laid over it — everything but the credentials, which are never written
- * down. Nothing run this way sends one anywhere: it is tmux, the local git
- * diff, and tools reading their local session data. A workspace the
- * registry has forgotten gets the floor alone.
+ * The environment for commands the server runs in a workspace (`exec`,
+ * streams, the changes diff), so they see the workspace's config, not the
+ * server's. The launch's full copy while held in memory; after a server
+ * restart, rebuilt from the marker, which omits credentials (none of these
+ * commands need them).
  */
 export function workspaceRunEnvironment(jobName: string): NodeJS.ProcessEnv {
   const { projectSlug, workspaceId } = refFromJobName(jobName)
@@ -172,8 +137,8 @@ export function workspaceRunEnvironment(jobName: string): NodeJS.ProcessEnv {
   return env
 }
 
-/** The entries a launch added over the floor, credentials excluded — what
- *  the marker carries (see `WorkspaceMarker.launchEnv`). */
+/** The launch's own env entries minus credentials, for the marker
+ *  (`WorkspaceMarker.launchEnv`). */
 function persistableLaunchEnv(
   env: NodeJS.ProcessEnv,
   spec: Pick<WorkspaceSpec, 'env' | 'secretEnvKeys'>,
@@ -192,54 +157,22 @@ function persistableLaunchEnv(
   return out
 }
 
-/** Where a workspace's own executables go, and what is prepended to its
- *  PATH — the host stand-in for the pod's `/usr/local/bin`. */
+/** The workspace's bin dir, first on its PATH (the pod's `/usr/local/bin`). */
 function workspaceBinDir(home: string): string {
   return path.join(home, '.local', 'bin')
 }
 
 /**
- * A caller's env value that names a path inside one of this workspace's own
- * mounts, translated to the directory that mount actually came from.
+ * Translate an env value naming a path inside a declared mount (callers write
+ * container paths) to the mount's host source directory, not this driver's
+ * symlink to it. The string matters: claude names its macOS Keychain item
+ * after a hash of its config dir, and a per-workspace path would let one
+ * workspace take the credential from its siblings.
  *
- * The caller writes `spec.env` against the container layout, because that is
- * the one filesystem every driver was written against: a tool is pointed at
- * its home inside the mount that carries it, and under a pod that is exactly
- * where the mount put it. Here there is no mount, so the value has to be
- * translated — and the SOURCE is what it translates to, not the symlink this
- * driver made pointing at it.
- *
- * Both name the same files, and the difference is the string. A tool that
- * keys anything on the string it was handed sees a per-workspace home if it
- * gets the link, because the private home is per workspace, and a per-project
- * one if it gets the source, because the staged dir is per project. claude is
- * the case that proves it — its macOS Keychain item is named after a hash of
- * this exact value, and the first token refresh migrates the credential into
- * that item and deletes the file it came from, so a per-workspace name would
- * let one workspace take the credential away from its siblings. Handing over
- * the real directory makes that impossible to get wrong from a call site,
- * instead of correct only where someone remembered.
- *
- * The longest matching mount wins, so a value under a nested mount resolves
- * to the inner one's source rather than the outer's. A mount with no host
- * directory behind it (an emptyDir) has no source to name, so those fall back
- * to wherever this driver put the mount.
- *
- * Read off the mounts the spec DECLARED, not the ones `realizeMount` managed
- * to make, and a nested mount is where that matters: those are skipped here
- * rather than linked, and the destination string for one would resolve
- * through the OUTER mount's link into the outer source — a different
- * directory than the value asked for. The source is the only truthful answer
- * there. Its one sharp edge is that a skipped mount's source is not created,
- * so such a value can name a directory that does not exist yet; no caller
- * writes one today, and the alternative names the wrong directory.
- *
- * Deliberately scoped to a DECLARED mount rather than rewriting anything that
- * looks container-absolute. A project's environment variables are the user's
- * own, and a yaac dev host runs as a user whose home is literally
- * `/home/yaac` — a blanket rewrite would silently redirect a real host path
- * they passed in. A path under a mount this workspace asked for can only have
- * meant this workspace's copy of it.
+ * The longest matching mount wins. emptyDir mounts fall back to where the
+ * driver put them. Only declared mounts are translated, never arbitrary
+ * container-looking paths, since a user's own env values may be real host
+ * paths (a dev host's home can be `/home/yaac`).
  */
 function remapMountedPath(
   value: string,
@@ -258,25 +191,12 @@ function remapMountedPath(
 }
 
 /**
- * Realize one caller-declared mount on a host that has no mount namespaces.
+ * Realize a declared mount as a symlink (a bind mount would need root).
  *
- * The contract anticipates this: "a host-process driver reads a hostPath as
- * a bind or a symlink". A symlink, here — a real bind mount needs root, and
- * asking a developer to run yaac as root to open a workspace is not a trade
- * this mode is for.
- *
- * Which is also the one thing symlinks cannot do that mounts can: NEST. A
- * pod mounts the project's claude dir at `/home/yaac/.claude` and then a
- * builtin skill at `/home/yaac/.claude/skills/<name>` on top of it, and the
- * two compose. Here the first is a symlink into the project's shared dir,
- * so writing the second would reach THROUGH it and leave one workspace's
- * staging in a directory every other workspace of the project reads. Those
- * are skipped and reported rather than written (see `MountOutcome`).
- *
- * A caller that wants a nested path delivered anyway states it as host
- * state instead of as a mount, which is what the shared skills roots are
- * (`reconcileSharedSkillRoots`): per project, because that is what the dir it
- * lands in already is.
+ * Symlinks cannot nest like mounts: a mount under another mount's path would
+ * write through the outer symlink into the project's shared dir. Those are
+ * skipped and reported (`MountOutcome`); callers deliver such paths as host
+ * state instead (e.g. `reconcileSharedSkillRoots`).
  */
 type MountOutcome = 'realized' | 'nothing-to-do' | 'nested' | 'in-workspace'
 
@@ -286,8 +206,7 @@ async function realizeMount(
   home: string,
 ): Promise<MountOutcome> {
   const { mountPath, source } = mount
-  // An emptyDir is scratch the workspace would have created for itself;
-  // on a host every such path is already just a directory.
+  // emptyDir: a plain directory on the host.
   if (source.kind === 'emptyDir') return 'nothing-to-do'
   if (source.kind === 'pvc') {
     throw new ServerError(
@@ -296,57 +215,43 @@ async function realizeMount(
     )
   }
 
-  // Already where the workspace looks for it: the checkout, and the main
-  // clone a pod mounts at the server's own path.
+  // Already in place: the checkout, and the main clone at its own path.
   if (mountPath === paths.workspaceDir || mountPath === '/workspace') return 'nothing-to-do'
   if (mountPath === source.path) return 'nothing-to-do'
 
-  // A mount INTO the checkout is skipped rather than linked. Under a pod
-  // these redirect cache volumes onto storage that is not the pod's
-  // ephemeral disk, and git never sees them because they are mounts. A
-  // symlink is not a mount: git reports it as an untracked file (so it
-  // lands in the review diff, and `git add -A` commits an absolute host
-  // path), and the ephemeral-modules guard — which exists to stop a
-  // committed `foo -> /anywhere` becoming a host-side mkdir — trips on the
-  // driver's own link, which made a stopped workspace unrestartable.
-  //
-  // Nothing is lost that this substrate needs: the checkout is on the
-  // host's own disk, so a cache living in it is exactly where a developer
-  // would put it. (`moduleDirs` never arrive as mounts at all, and stay in
-  // the checkout for the same reason.)
+  // Skip mounts into the checkout: git would see a symlink as an untracked
+  // file (and could commit it), and the ephemeral-modules symlink guard
+  // would reject it. The checkout is on local disk, so a cache can simply
+  // live there.
   if (mountPath.startsWith('/workspace/')
     || mountPath.startsWith(`${paths.workspaceDir}/`)) return 'in-workspace'
 
   const dest = destinationFor(mountPath, paths, home)
   if (dest === null) {
-    // Deliberately loud. The cause is a config asking for something only a
-    // container can give (a sidecar's socket, a path outside the
-    // workspace), and the honest answer is that this mode cannot.
+    // A config asking for something only a container can provide.
     throw new ServerError(
       'VALIDATION',
       `containerless: no host equivalent for a mount at ${mountPath}`,
     )
   }
 
-  // A destination whose own parent is a link this driver made would be
-  // written through it, into shared state (see the note above).
+  // Would write through another mount's symlink into shared state.
   if (await hasSymlinkedAncestor(dest, home)) return 'nested'
 
   await fs.mkdir(path.dirname(dest), { recursive: true })
-  // The source has to exist for a File mount to make sense; a directory
-  // source is created so a first-run tool home is not a dangling link.
+  // Create a directory source so a first-run tool home is not a dangling
+  // link.
   if (source.type === 'Directory' || source.type === 'DirectoryOrCreate' || !source.type) {
     await fs.mkdir(source.path, { recursive: true }).catch(() => { /* exists, or a file */ })
   }
-  // Replace whatever a previous launch left: a symlink is idempotent state,
-  // and a relaunch after a failed attempt must not trip over its own link.
+  // Replace whatever a previous launch left.
   await fs.rm(dest, { recursive: true, force: true }).catch(() => { /* nothing there */ })
   await fs.symlink(source.path, dest)
   return 'realized'
 }
 
-/** Where a container-absolute mount path lands on this host, or null when
- *  it names a filesystem this driver has no answer for. */
+/** Where a container mount path lands on this host, or null if it has no
+ *  host equivalent. */
 function destinationFor(
   mountPath: string,
   paths: { workspaceDir: string },
@@ -354,10 +259,7 @@ function destinationFor(
 ): string | null {
   const inHome = underPrefix(mountPath, '/home/yaac/') ?? underPrefix(mountPath, `${home}/`)
   if (inHome !== null) return path.join(home, inHome)
-  // The pod's `/usr/local/bin` is where the server stages the helper
-  // scripts a workspace's agent can run (`yaac-mama`, the init script).
-  // There is no writable system bin here, so they go in the workspace's own
-  // bin dir, which the launch puts on its PATH.
+  // The pod's `/usr/local/bin` maps to the workspace's own bin dir.
   const inBin = underPrefix(mountPath, '/usr/local/bin/')
   if (inBin !== null) return path.join(workspaceBinDir(home), inBin)
   const inWorkspace = underPrefix(mountPath, '/workspace/')
@@ -366,15 +268,14 @@ function destinationFor(
   return null
 }
 
-/** Whether any directory between `dest` and `home` is a symlink — i.e.
- *  whether writing `dest` would land somewhere other than where it reads. */
+/** Whether any directory between `dest` and `home` is a symlink. */
 async function hasSymlinkedAncestor(dest: string, home: string): Promise<boolean> {
   let dir = path.dirname(dest)
   while (dir.startsWith(home) && dir !== home) {
     try {
       if ((await fs.lstat(dir)).isSymbolicLink()) return true
     } catch {
-      // Does not exist yet, so nothing it could be pointing through.
+      // Does not exist yet.
     }
     dir = path.dirname(dir)
   }
@@ -385,8 +286,7 @@ function underPrefix(value: string, prefix: string): string | null {
   return value.startsWith(prefix) ? value.slice(prefix.length) : null
 }
 
-/** The login shell a workspace's windows run. Falls back through the host's
- *  own preference, since there is no image guaranteeing zsh exists. */
+/** The workspace's shell: `$SHELL`, else zsh, bash, then sh. */
 async function resolveShell(): Promise<string> {
   // eslint-disable-next-line no-process-env -- the workspace's login shell is the host user's own preference, which only the environment states
   for (const candidate of [process.env.SHELL, 'zsh', 'bash']) {
@@ -402,9 +302,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const paths = containerlessWorkspacePaths(jobName)
   const home = workspaceHome(spec.projectSlug, spec.workspaceId)
 
-  // Both before anything is created, and for the same reason: each failure
-  // is otherwise silent or opaque — a socket over the platform's limit
-  // fails inside tmux, and a path with a space runs a `cd` somewhere else.
+  // Before creating anything; both failures are otherwise obscure.
   assertSocketPathsFit(paths)
   assertShellSafePaths(paths)
 
@@ -413,8 +311,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   await fs.mkdir(paths.scratchDir, { recursive: true })
   await fs.mkdir(paths.acpLogDir, { recursive: true })
   await fs.mkdir(paths.acpSockDir, { recursive: true })
-  // 0700: the socket dir is shared with every other workspace's on this
-  // host, and a tmux socket is a full command channel into the workspace.
+  // 0700: a tmux socket gives full control of its workspace.
   await fs.mkdir(tmuxSockDir(), { recursive: true, mode: 0o700 })
 
   await fs.mkdir(workspaceBinDir(home), { recursive: true })
@@ -432,9 +329,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     )
   }
   if (nested > 0) {
-    // Nothing routinely lands here: the one caller that layered over a tool
-    // home (yaac's builtin skills) now writes the host's shared skills roots
-    // directly. A count here means a new caller expects mounts to compose.
+    // Unexpected: it means a caller expects mounts to nest.
     serverLog(
       `[server] containerless ${spec.workspaceId}: skipped ${String(nested)} mount(s) `
       + 'that would nest inside another, writing through it into shared state',
@@ -442,16 +337,8 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   }
 
   const env = workspaceEnvironment(spec, home, paths)
-  // Said out loud, because ignoring a user's environment is otherwise
-  // indistinguishable from honoring it: the agent reads this project's tool
-  // config either way, and only the user knows they had pointed it
-  // somewhere else. Reported per create rather than once at startup because
-  // this is the moment it takes effect, and a create is what the user is
-  // watching. `yaac host check` answers the same question ahead of time.
-  // Only what the workspace actually ends up without: a spec that re-supplies
-  // one of these — a project environment variable of that name — has
-  // overruled the host itself, and announcing a value the agent is about to
-  // receive would be a lie about the one thing this notice exists to report.
+  // Tell the user which host tool-home variables were dropped (unless the
+  // project env set them again), since ignoring them is otherwise silent.
   const overridden = overriddenToolHomeVars().filter((key) => env[key] === undefined)
   if (overridden.length > 0) {
     const message = `Ignoring ${overridden.join(', ')} from this host's environment `
@@ -460,22 +347,14 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     serverLog(`[server] containerless ${spec.workspaceId}: ${message}`)
   }
 
-  // Git identity, trust and authentication, in the workspace's OWN home —
-  // the pod driver writes the same settings from its postStart hook, into a
-  // home that is per-pod for exactly the same reason this one is
-  // per-workspace: a `--global` write must never race another workspace's.
-  //
-  // Authentication is the half a pod does NOT write, because a pod never
-  // holds a credential to write; here the workspace is handed the real one
-  // and this is where it lands (see `git-auth`).
+  // Git identity, trust and auth in the workspace's own HOME, as the pod's
+  // init script writes them (auth only here; see `git-auth`).
   const priorAgentPid = sshAgentPidOf(spec.workspaceId)
   const gitAuth = await realizeGitAuth({
     home,
     credential: spec.gitCredential,
     knownHostsFile: spec.ssh?.knownHostsFile,
     agentSock: paths.sshAgentSock,
-    // A relaunch (a retried create, a restart) must end the agent the last
-    // one left running rather than orphan it holding this workspace's key.
     ...(priorAgentPid !== undefined ? { priorAgentPid } : {}),
   })
   const gitName = env.YAAC_GIT_NAME ?? env.GIT_AUTHOR_NAME
@@ -491,40 +370,24 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   ].join('\n')
   const gitconfigPath = gitconfigPathFor(home)
   await fs.writeFile(gitconfigPath, gitconfig)
-  // After the caller's entries, like HOME above: this is the driver's own
-  // wiring, and a passthrough value cannot be allowed to disarm the host
-  // verification the ssh command carries.
+  // After the caller's entries, so none can disable ssh host verification.
   Object.assign(env, gitAuth.env)
-  // Pinned rather than left to `$HOME` to find: this workspace inherits the
-  // server's environment, and a server started with `GIT_CONFIG_GLOBAL` set
-  // would have everything written above — the identity, the trusted
-  // directories, the credential helper — silently ignored in favor of
-  // whatever that names. Assigned LAST for the same reason, and any filter
-  // this environment grows must leave it alone: strip it and the workspace's
-  // git config goes quiet, with nothing to say it did.
+  // Set explicitly and last, so an inherited `GIT_CONFIG_GLOBAL` cannot make
+  // git silently ignore the config written above.
   env.GIT_CONFIG_GLOBAL = gitconfigPath
 
   const shell = await resolveShell()
   const statusRight = env.YAAC_STATUS_RIGHT ?? ''
 
   spec.onProgress?.('Starting the workspace session...')
-  // The session opens on a `sleep infinity` placeholder rather than the
-  // agent, exactly as the pod's init hook does: the agent is respawned in
-  // once setup finishes, and a fast-failing command here would end the tmux
-  // session before that. The placeholder is also what the stale reaper's
-  // pane probe recognizes as "started but not yet running an agent".
+  // Start on a `sleep infinity` placeholder, as the pod's init script does;
+  // the agent is respawned in after setup, and the stale reaper recognizes
+  // the placeholder. A large -x/-y lets tmux shrink to the client on attach,
+  // which TUIs handle better than growing.
   //
-  // -x/-y are generous so the respawned agent inherits a window larger than
-  // any real terminal; tmux shrinks it to the client on attach, and
-  // shrink-then-render is what TUIs handle reliably.
-  //
-  // `update-environment` is emptied in the same invocation, before any other
-  // client can attach, and is not one of the cosmetic options below: by
-  // default every attach copies the attaching client's SSH_AUTH_SOCK (and a
-  // few others) into the session environment, which every later window and
-  // respawned pane inherits. The liveness watch attaches with the SERVER's
-  // environment, so it alone would hand the panes the host's ssh-agent in
-  // place of this workspace's.
+  // `update-environment` is emptied before any client attaches; otherwise
+  // the liveness watch (attaching with the server's env) would give the
+  // panes the host's SSH_AUTH_SOCK.
   await runHost([
     'tmux', '-S', paths.tmuxSock, '-u',
     'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
@@ -533,12 +396,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'set-option', '-g', 'update-environment', '',
   ], { cwd: paths.workspaceDir, env, timeoutMs: 30_000 })
 
-  // Session UX options, one invocation — the same set the pod's init hook
-  // applies, and for the same reasons (bells reaching the client, CSI-u
-  // extended keys for agent TUIs, RGB passthrough so diffs are readable,
-  // a 10ms escape-time so Esc isn't held for tmux's 500ms default).
-  // `default-shell` is the one addition: a pod has a known shell in its
-  // image and a host does not.
+  // The same UX options as the pod's init script, plus `default-shell`.
   await runHost([
     'tmux', '-S', paths.tmuxSock,
     'set-option', '-g', 'default-shell', shell, ';',
@@ -557,9 +415,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'set-option', '-t', 'yaac', 'status-right', statusRight, ';',
     'bind-key', 'k', 'confirm-before', '-p', 'kill this yaac session? (y/n)', 'kill-server',
   ], { env, timeoutMs: 30_000 }).catch((err: unknown) => {
-    // Cosmetic to a fault: every one of these is a display or input-handling
-    // preference, and a workspace whose bells do not ring is far better than
-    // a create that failed after the session came up.
+    // Cosmetic; do not fail the create.
     serverLog(`[server] containerless ${spec.workspaceId}: tmux options failed: ${String(err)}`)
   })
 
@@ -572,8 +428,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     prewarm: spec.prewarm,
     createdAtMs: Date.now(),
     ...(await tmuxServerPid(paths.tmuxSock, env)),
-    // Recorded so teardown can end the agent holding this workspace's ssh
-    // key. Absent for a project with no SSH remote, which starts none.
+    // So teardown can kill the ssh-agent.
     ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
     launchEnv: persistableLaunchEnv(env, spec, gitAuth.env),
   }
@@ -581,8 +436,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   return rememberWorkspace(marker, env)
 }
 
-/** The tmux server's pid, for the port scan's process-tree walk. Absent
- *  rather than fatal: without it ports simply go unreported. */
+/** The tmux server's pid, for the port scan. Omitted on failure. */
 async function tmuxServerPid(
   sock: string,
   env: NodeJS.ProcessEnv,
@@ -599,37 +453,20 @@ async function tmuxServerPid(
   }
 }
 
-/**
- * Everything a workspace needs standing up around it — which here is
- * nothing.
- *
- * There is no image to build, no egress policy to install and no cluster to
- * prepare; the checkout the caller made IS the substrate. The receipt is
- * still taken and handed back to `launch`, because the contract's shape is
- * what lets a retried launch reuse one preparation, and answering it
- * honestly costs a single object.
- */
+/** See `WorkspaceDriver.prepareSubstrate`. Nothing to prepare here. */
 export function prepareSubstrate(): Promise<{ readonly kind: 'workspace-substrate' }> {
   return Promise.resolve({ kind: 'workspace-substrate' } as const)
 }
 
-/** See `WorkspaceDriver.awaitReady`. The session exists the moment `launch`
- *  resolved — there is no scheduler, no image pull and no kubelet between
- *  the two — so readiness is already proven. */
+/** See `WorkspaceDriver.awaitReady`. Ready once `launch` resolves. */
 export function awaitReady(): Promise<void> {
   return Promise.resolve()
 }
 
-/** Where the workspace's state dir lives, for a teardown that must remove
- *  it. Re-exported so teardown need not reach into `paths` for one name. */
 export { containerlessStateDir }
 
-/**
- * `value` as a git-config value that reads back verbatim: quoted, so `#`,
- * `;` and edge spaces are not comment starts or trimmed, with `\`, `"` and a
- * newline escaped, so a display name can neither break the file nor open a
- * section of its own.
- */
+/** Quote and escape a git-config value so it reads back verbatim and
+ *  cannot break the file. */
 function gitConfigValue(value: string): string {
   return `"${value.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\n')}"`
 }

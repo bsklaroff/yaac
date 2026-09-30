@@ -30,17 +30,11 @@ import { requireDriverFeature } from '#http'
 import { workspaceDriver } from '#drivers/driver'
 
 /**
- * Deliver a project's changed secrets to whatever is running now.
- *
- * A live workspace resolves an injection per request, so an edit reaches it
- * without a restart — but only if the runtime is told. A failure here is
- * reported rather than swallowed, and the message says what DID happen,
- * because the two halves diverge: the row is written either way, so a caller
- * told nothing would read a failed delete as "the credential is gone" while
- * the egress path went on injecting it.
- *
- * The next server start converges it; what the caller needs is to know it
- * has not happened yet.
+ * Send a project's changed secrets to running workspaces, which resolve
+ * injections per request and so pick up edits without a restart. The row is
+ * written either way, so a failure is reported rather than swallowed: a
+ * silent failed delete would leave the proxy injecting the old value. The
+ * next server start fixes it.
  */
 async function syncRunningWorkspaces(slug: string, applied: string): Promise<void> {
   try {
@@ -73,13 +67,12 @@ export const projectApp = new Hono()
     async (c) => {
       const { remoteUrl, gitCredentialId } = c.req.valid('json')
       const result = await addProject(remoteUrl, gitCredentialId)
-      // One more project its runtime serves the credential to.
       await pushCredentialsToRuntime()
       return c.json(result)
     },
   )
-  // A project whose checkout is already staged in the data dir, recorded
-  // without a clone — the test suites' way to add a local repo.
+  // Record a project whose checkout is already staged in the data dir,
+  // without cloning. Tests use this to add a local repo.
   .post(
     '/register',
     zv('json', z.object({ slug: z.string().min(1), remoteUrl: z.string().min(1) })),
@@ -93,8 +86,8 @@ export const projectApp = new Hono()
     await assertProjectExists(c.req.param('slug'))
     return c.body(null, 204)
   })
-  // Assign the project its git credential. The answer is the host key an
-  // SSH key's assignment trusted, for the user to compare.
+  // Assign the project its git credential. For an SSH key, returns the host
+  // key that was trusted so the user can compare it.
   .put(
     '/:slug/git-credential',
     zv('json', z.object({ credentialId: z.uuid() })),
@@ -129,16 +122,16 @@ export const projectApp = new Hono()
     await removeProjectConfig(c.req.param('slug'))
     return c.body(null, 204)
   })
-  // The project's environment: the variables its workspaces launch with, and
-  // the secrets the egress proxy injects. A secret's value is write-only —
-  // it goes in through the PUT and never comes back out of the GET.
+  // The project's environment: variables its workspaces launch with, and
+  // secrets the egress proxy injects. Secret values are write-only: set by
+  // PUT, never returned by GET.
   .get('/:slug/env', async (c) => c.json({ vars: await listProjectEnv(c.req.param('slug')) }))
   .put(
     '/:slug/env',
     zv('json', z.object({
       name: z.string().min(1),
-      // Optional so a secret's rule can be edited without the secret
-      // travelling again; the domain refuses it for a secret that has none.
+      // Optional so a secret's rule can be edited without resending the
+      // value; omitting it is refused for a secret with no stored value.
       value: z.string().optional(),
       secret: z.boolean().optional(),
       rule: z.unknown().optional(),
@@ -163,22 +156,21 @@ export const projectApp = new Hono()
     zv('query', z.object({ refresh: z.string().optional() })),
     async (c) => {
       const slug = c.req.param('slug')
-      // Existence is a row question, answered before the clone is touched —
-      // an unknown slug must 404, not probe a repo dir that isn't there.
+      // Check the row first so an unknown slug 404s instead of probing a
+      // missing repo dir.
       await assertProjectExists(slug)
       const refresh = c.req.valid('query').refresh === '1'
       return c.json(await getProjectBranches(slug, { refresh }))
     },
   )
-  // Personal + plugin + project SKILL.md files a project's agent can use, for
-  // the given tool (default claude). A pure host-side read of each agent's
-  // explicit skill dirs, so it needs no running workspace.
+  // Personal, plugin and project SKILL.md files the given tool (default
+  // claude) can use. Read on the host, so no running workspace is needed.
   .get(
     '/:slug/skills',
     zv('query', z.object({
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
-      // The origin branch project (repo) skills + repo-side plugin settings are
-      // read from (default: the remote's default branch). Host tiers ignore it.
+      // Origin branch to read repo skills and repo plugin settings from
+      // (default: the remote's default branch). Host tiers ignore it.
       branch: z.string().optional(),
     })),
     async (c) => {
@@ -203,8 +195,8 @@ export const projectApp = new Hono()
       return c.json(await getSkillDetail(tool ?? 'claude', slug, id, branch))
     },
   )
-  // Support files living next to Dockerfile.yaac in the project's build
-  // dir — its whole build context (COPY-able, part of the image tag).
+  // Support files next to Dockerfile.yaac in the project's build dir: its
+  // build context, which feeds the image tag.
   .route('/:slug/build-files', buildFilesApp(async (c) => {
     // The generic Context can't see the mount path's :slug, so param() is
     // string | undefined here; the mount guarantees it exists.
@@ -212,10 +204,8 @@ export const projectApp = new Hono()
     await assertProjectExists(slug)
     return projectBuildDir(slug)
   }))
-  // The project's image layer. Both refuse on a runtime that builds no
-  // images, BEFORE the project check: what this server can build is not a
-  // property of the project being asked about, and a 404 for a slug that
-  // happens not to exist would hide the real answer.
+  // The project's image layer. Both check the driver feature before the
+  // project (see `requireDriverFeature`).
   .get('/:slug/dockerfile', async (c) => {
     requireDriverFeature('images')
     await assertProjectExists(c.req.param('slug'))

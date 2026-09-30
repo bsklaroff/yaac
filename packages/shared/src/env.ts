@@ -1,31 +1,19 @@
 import type { AgentTool, DriverKind } from '#types'
 
 /**
- * The single place that reads `process.env` for yaac's own variables. Every
- * other module under `src/` imports `env` / `testEnv` instead of touching
- * `process.env` directly (enforced by the `no-process-env` lint rule, which is
- * disabled only for this file). Each accessor owns the variable's default and
- * validation, so the contract for a knob lives in exactly one place.
+ * The one place under `src/` that reads yaac's own environment variables
+ * (the `no-process-env` lint rule enforces this). Each accessor owns its
+ * variable's default and validation.
  *
- * Accessors are getters (and one method) that read `process.env` on every
- * access — never cached. This is required: tests mutate these vars at runtime
- * (the `testEnv` injection hooks) and `paths.setDataDir()` overrides the data
- * dir, so an eager top-level read would freeze stale values.
+ * Accessors read `process.env` on every access rather than caching, because
+ * tests change these variables at runtime.
  *
- * The two objects are split by *who sets the variable*:
- *   - `env`     — set during real builds or runs (users, operators, the build
- *                 toolchain, or the server itself).
- *   - `testEnv` — set only by the test harness. A few are read in production
- *                 too, but only ever via their built-in defaults; the override
- *                 is the test hook.
- * The split is a documentation/naming convention only — there is no rule
- * restricting who may import `testEnv`, since production reads several of its
- * defaults.
+ * `env` holds variables set by users, operators, the build, or the server.
+ * `testEnv` holds ones only the test harness sets; production still reads
+ * some of them, always at their defaults. The split is naming only.
  *
- * Note: variables read for a different reason than yaac configuration — env
- * forwarded wholesale to a subprocess (`{ ...process.env }`) — intentionally
- * stay at their call sites with an inline `no-process-env` disable. They
- * are not yaac config and don't belong here.
+ * Code that forwards the whole environment to a subprocess
+ * (`{ ...process.env }`) reads it at the call site with an inline disable.
  */
 
 /** Set during real builds or runs (users, operators, the build, or the server). */
@@ -37,10 +25,9 @@ export const env = {
 
   /**
    * `YAAC_GLOBAL_ROOT`, `YAAC_SERVER_LOCAL_ROOT`, `YAAC_NODE_LOCAL_ROOT` —
-   * where the three storage tiers are mounted inside the server pod (the
-   * tier legend in paths.ts). Set by the server Deployment and by nothing
-   * else: on a host the tiers are three folders of the data dir and the
-   * roots resolve there with no override. Unset → `undefined`.
+   * where the three storage tiers are mounted inside the server pod (see
+   * paths.ts). Only the server Deployment sets them; on a host the tiers
+   * are folders of the data dir.
    */
   get globalRootOverride(): string | undefined {
     return nonEmpty(process.env.YAAC_GLOBAL_ROOT)
@@ -88,19 +75,13 @@ export const env = {
   },
 
   /**
-   * `YAAC_BIND_ADDR` — interface the server's HTTP listener binds. Default
-   * loopback, which is the whole security posture of a host-process
-   * install: nothing off this machine can reach the API, so a credential is
-   * optional.
+   * `YAAC_BIND_ADDR` — interface the server's HTTP listener binds. Defaults
+   * to loopback, which is what keeps a host install's API private.
    *
-   * The in-cluster server sets `0.0.0.0`, because a pod's loopback is
-   * reachable by nothing at all — its Service would have no backend. What
-   * replaces the loopback bind there is the pod's ingress NetworkPolicies,
-   * which admit the node addresses and whatever fronts the Service, and
-   * nothing pod-shaped (see docs/server-in-cluster.md): a workspace pod
-   * dialing the server pod directly presents a pod source IP and is
-   * dropped. That makes the policy load-bearing rather than defence in
-   * depth, which is why `yaac cluster check` probes it.
+   * The in-cluster server sets `0.0.0.0` (a pod's loopback is unreachable)
+   * and relies on its ingress NetworkPolicies to drop traffic from other
+   * pods instead; `yaac cluster check` probes them
+   * (docs/server-in-cluster.md).
    */
   get bindAddr(): string {
     const raw = process.env.YAAC_BIND_ADDR
@@ -108,16 +89,11 @@ export const env = {
   },
 
   /**
-   * `YAAC_IN_CLUSTER` — set to `1` by the server Deployment manifest, and
-   * by nothing else.
-   *
-   * The server asks this where a host-side shim exists only because the
-   * process was outside the cluster: the registry is dialed by its Service
-   * DNS name instead of through a `kubectl port-forward`, and `yaac server
-   * start` refuses rather than spawning a second server beside the pod.
-   * Declared by the manifest rather than sniffed from
-   * `KUBERNETES_SERVICE_HOST`, which is also injected into every workspace
-   * pod and into anything else that happens to run in a cluster.
+   * `YAAC_IN_CLUSTER` — set to `1` only by the server Deployment manifest.
+   * It selects the `k8s` driver (`#main/driver-choice`) and the registry's
+   * in-cluster address. Declared explicitly
+   * rather than inferred from `KUBERNETES_SERVICE_HOST`, which every
+   * workspace pod also has.
    */
   get inCluster(): boolean {
     return process.env.YAAC_IN_CLUSTER === '1'
@@ -129,18 +105,14 @@ export const env = {
   },
 
   /**
-   * `YAAC_CNI_VETH_PREFIX` — interface-name prefix the adopted CNI gives
-   * every workload's host-side veth. netd resolves a pod to the veth its
-   * frames arrive on by matching this prefix against the node's per-workload
-   * host routes, and that prefix is what guarantees a malformed routing
-   * table can never make it redirect something that is not a workload.
+   * `YAAC_CNI_VETH_PREFIX` — name prefix the CNI gives each pod's host-side
+   * veth. netd only redirects traffic from interfaces with this prefix, so
+   * it never touches non-workload traffic.
    *
-   * Unset → `cali`, correct wherever Calico does the IPAM (every cluster
-   * `yaac cluster install` builds). Policy-only Calico over the AWS VPC CNI
-   * gives `eni`; other pairings give other names, which is why this is
-   * configuration rather than a constant. `yaac cluster install --byo`
-   * verifies the effective prefix against the node's real routing table and
-   * refuses an adoption where it resolves nothing.
+   * Unset → `cali` (Calico IPAM, as `yaac cluster install` sets up). Other
+   * CNIs use other names, e.g. `eni` for the AWS VPC CNI.
+   * `yaac cluster install --byo` refuses a prefix that matches no route on
+   * the node.
    */
   get cniVethPrefix(): string | undefined {
     const raw = process.env.YAAC_CNI_VETH_PREFIX
@@ -148,20 +120,13 @@ export const env = {
   },
 
   /**
-   * `YAAC_POD_CIDRS` — comma-separated pod CIDRs to add to netd's redirect
-   * exclusion set, for allocations the cluster publishes nowhere else. A VPC
-   * CNI hands out subnet addresses that appear in no Calico IPPool and no
-   * node `spec.podCIDR`, and too NARROW is the dangerous direction here: a
-   * pod IP outside the list is treated as world and its pod-to-pod 443/80
-   * gets redirected into the proxy. So this is unioned with the discovered
-   * sources rather than replacing them.
+   * `YAAC_POD_CIDRS` — comma-separated pod CIDRs added to the ones netd
+   * discovers and excludes from redirection. Needed when the CNI assigns pod
+   * IPs outside any Calico IPPool or node `spec.podCIDR` (e.g. a VPC CNI);
+   * otherwise pod-to-pod 443/80 traffic is sent through the proxy.
    *
-   * Entries that are not a usable dotted-quad v4 CIDR are rejected by the
-   * consumer (`podCidrSources`) — but never *silently*: an entry that simply
-   * vanished would leave the exclusion set narrower than what the operator
-   * believes they set, which is the failure this list exists to prevent.
-   * `--byo` refuses on one; a running server logs it. Raw strings are
-   * returned here so the consumer can name what it rejected.
+   * Returned unvalidated so the consumer (`podCidrSources`) can report each
+   * invalid entry by name instead of dropping it silently.
    */
   get podCidrs(): string[] {
     const raw = process.env.YAAC_POD_CIDRS
@@ -170,17 +135,10 @@ export const env = {
   },
 
   /**
-   * `YAAC_KUBE_PROXY_EXTERNAL` — set to `1` when kube-proxy runs somewhere
-   * `--byo` cannot see it as a pod. k3s is the case that matters: it
-   * runs kube-proxy **in-process inside the kubelet**, so the cluster has
-   * no kube-proxy pod, DaemonSet or label to find — and self-managed k3s is
-   * a primary target, not an exotic one.
-   *
-   * This acknowledges the operator has verified ClusterIP translation is
-   * still kube-proxy's job; it does not weaken anything else. Getting it
-   * wrong costs egress rather than opening it: netd's Envoy simply fails to
-   * dial the proxy's ClusterIP, and the workspace NetworkPolicy still denies
-   * every world-ward destination but the node's listener range.
+   * `YAAC_KUBE_PROXY_EXTERNAL` — set to `1` when kube-proxy does not run as
+   * a pod `--byo` can find, as on k3s (where it runs inside the kubelet).
+   * Setting it wrongly only breaks egress: netd's Envoy cannot reach the
+   * proxy's ClusterIP, and the NetworkPolicy still blocks direct egress.
    */
   get kubeProxyExternal(): boolean {
     return process.env.YAAC_KUBE_PROXY_EXTERNAL === '1'
@@ -222,17 +180,14 @@ export const env = {
   },
 
   /**
-   * `YAAC_WORKSPACE_ID` — the workspace this process runs inside, stamped into
-   * every workspace's environment by `createWorkspace` (both drivers: k8s reads
-   * it off the pod spec, containerless off the tmux server environment).
-   * Undefined for a server running on a user's own machine.
+   * `YAAC_WORKSPACE_ID` — the workspace this process runs inside, set in
+   * every workspace's environment by both drivers. Undefined outside a
+   * workspace; empty counts as unset.
    *
-   * Its reader on the request path is `identify()`: a server in here is
-   * reached through the outer install's port-forward, a direct path that
-   * passes through no `tailscale serve`, so an unproxied request to it is
-   * local whatever Host it names (docs/remote-hosting.md). Empty is treated
-   * as unset so an explicit `YAAC_WORKSPACE_ID=` clears it. A workspace an
-   * older install launched carries it as `YAAC_WORKTREE_ID` instead
+   * `identify()` uses it: a server inside a workspace is reached only
+   * through the outer install's port-forward, so an unproxied request is
+   * local whatever Host it names (docs/remote-hosting.md). Workspaces
+   * launched by older installs set `YAAC_WORKTREE_ID` instead
    * (docs/legacy-compat-shims.md).
    */
   get workspaceId(): string | undefined {
@@ -241,23 +196,11 @@ export const env = {
   },
 
   /**
-   * `YAAC_DRIVER` — which substrate this install runs workspaces on.
-   *
-   * NOT what selects it. Placement does that: the server is a pod under
-   * `k8s` and a host process under `containerless`, so the composition root
-   * reads {@link inCluster} and there is no per-start choice to make
-   * (`#main/driver-choice`). The Deployment states this variable so the
-   * pod's environment says out loud what it is, and the test tiers state it
-   * for the same reason.
-   *
-   * What still READS it is the CLI, before any server exists and before a
-   * data dir necessarily does: whether to point podman at the rootful
-   * engine. `k8s` is the default because that is the install kind with a
-   * container engine behind it.
-   *
-   * A value that is neither throws rather than falling back, so a typo
-   * fails immediately instead of silently answering for the wrong
-   * substrate.
+   * `YAAC_DRIVER` — which substrate this install runs workspaces on. The
+   * server does not use it to pick its driver; that follows from
+   * {@link inCluster} (`#main/driver-choice`). The CLI reads it, before any
+   * server exists, to decide whether to use the rootful podman engine.
+   * Defaults to `k8s`; any other unknown value throws.
    */
   get driver(): DriverKind {
     const raw = (process.env.YAAC_DRIVER ?? '').trim()
@@ -268,10 +211,8 @@ export const env = {
 
   /**
    * `YAAC_RELAY_ADDR` — `host:port` of the proxy's stream relay, stated by
-   * the server Deployment. Unset falls back to the proxy Service's own DNS
-   * name in this install's namespace, which is the same address — so this
-   * exists for an install that puts the proxy somewhere else, not for a
-   * placement the driver still supports.
+   * the server Deployment. Unset → the proxy Service's DNS name in this
+   * install's namespace (the same address).
    */
   get relayAddr(): { host: string; port: number } | undefined {
     const raw = process.env.YAAC_RELAY_ADDR
@@ -287,18 +228,13 @@ export const env = {
 
   /**
    * `YAAC_SECRETS` — the keys the server encrypts stored secrets with, as
-   * `"<version>:<secret>,<version>:<secret>"`. The FIRST entry is the one
-   * new writes are sealed under; the rest exist so an older row still opens,
-   * which is what makes rotation a restart rather than a re-encrypt pass.
+   * `"<version>:<secret>,<version>:<secret>"`. New writes use the first
+   * entry; the rest still decrypt older rows, so rotating a key needs only
+   * a restart. Same format as better-auth's `BETTER_AUTH_SECRETS`.
    *
-   * Unset is the ordinary case: the server generates a key of its own into
-   * the data dir instead (`db/secret-key.ts`). This is for an operator who
-   * wants the key to live in their own secret manager rather than beside the
-   * database — the same shape better-auth's `BETTER_AUTH_SECRETS` has, since
-   * the scheme here is a port of theirs.
-   *
-   * A malformed entry throws rather than being dropped: a key silently
-   * missing from the set is a row that silently stops opening.
+   * Usually unset: the server then generates its own key in the data dir
+   * (`db/secret-key.ts`). A malformed entry throws, since a dropped key
+   * would leave rows that can no longer be decrypted.
    */
   get secrets(): Array<{ version: number; value: string }> | null {
     const raw = process.env.YAAC_SECRETS
@@ -334,10 +270,9 @@ export const env = {
   },
 
   /**
-   * `YAAC_SECRET` — a single encryption key, for an install that has never
-   * rotated one. Alongside `YAAC_SECRETS` it becomes the fallback for a
-   * payload written before versioning (the bare-hex form), which is exactly
-   * the role `BETTER_AUTH_SECRET` plays beside `BETTER_AUTH_SECRETS`.
+   * `YAAC_SECRET` — a single encryption key. When `YAAC_SECRETS` is also
+   * set, it decrypts unversioned (bare-hex) payloads, like
+   * `BETTER_AUTH_SECRET` beside `BETTER_AUTH_SECRETS`.
    */
   get secret(): string | undefined {
     const raw = process.env.YAAC_SECRET?.trim()
@@ -357,9 +292,8 @@ export const env = {
   },
 
   /**
-   * `YAAC_REQUIRE_AUTH` — set at all. Nothing honors it: the server refuses
-   * to start while it is set, because it asked for a credential gate on a
-   * loopback shared with other OS users, and there is no such gate any more
+   * Whether `YAAC_REQUIRE_AUTH` is set to anything. The server refuses to
+   * start when it is, since yaac has no credential gate for it to enable
    * (docs/legacy-compat-shims.md).
    */
   get requireAuthSet(): boolean {
@@ -367,10 +301,10 @@ export const env = {
   },
 
   /**
-   * `YAAC_FORWARD_BIND` — bind address for workspace port-forward listeners.
-   * Default loopback (today's behavior); a remote-hosting server sets its
-   * tailnet IP so forwarded dev servers are reachable from other tailnet
-   * devices. Deployment topology, not project config.
+   * `YAAC_FORWARD_BIND` — bind address for workspace port-forward listeners,
+   * reported to clients as `forwardBindHost`. Defaults to loopback; a
+   * remotely hosted server sets its tailnet IP so other tailnet devices can
+   * reach forwarded ports.
    */
   get forwardBind(): string {
     const raw = process.env.YAAC_FORWARD_BIND
@@ -439,15 +373,11 @@ export const testEnv = {
 
 
   /**
-   * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created workspace
-   * pods from the stale-workspace reaper. workspace-create's retry loop recreates
-   * the Job between attempts and does not start tmux until the last step, so
-   * without a grace period a concurrent reap pass (`reconcileStaleWorkspaces`)
-   * can classify the pod as a zombie — firing
-   * cleanupWorkspaceDetached, which removes the workspace's allowedHosts from the
-   * proxy mid-creation. Default 60_000; a non-finite or negative value falls
-   * back to the default. Tests shrink it to provoke cleanup on workspaces they
-   * just created.
+   * `YAAC_STARTING_GRACE_MS` — how long a new workspace pod is protected
+   * from the stale-workspace reaper. Creation starts tmux last, so without
+   * this a reap pass could treat the pod as a zombie and clean it up
+   * mid-create. Default 60_000 (also used for invalid values); tests shrink
+   * it to trigger cleanup.
    */
   get startingGraceMs(): number {
     const raw = process.env.YAAC_STARTING_GRACE_MS
@@ -457,24 +387,16 @@ export const testEnv = {
   },
 
   /**
-   * `YAAC_TEST_SHARED_DB` — `1` makes `getDb()` hand every data dir one
-   * process-wide in-memory PGlite, wiped when the data dir changes, instead
-   * of opening a fresh on-disk instance per dir.
-   *
-   * Set only by the unit projects' setup file. A unit test's `beforeEach`
-   * creates a temp data dir, and the first `getDb()` against it costs ~2s to
-   * boot PGlite plus ~2s to replay the migrations — dwarfing the assertions
-   * and making the DB-backed files the whole suite's critical path. The
-   * per-dir wipe keeps the isolation those tests actually rely on.
-   *
-   * Never set for api/e2e (they run the real server against a real data dir)
-   * and never in production, where the on-disk WAL is the point.
+   * `YAAC_TEST_SHARED_DB` — `1` makes `getDb()` share one in-memory PGlite
+   * across data dirs, wiped when the data dir changes, instead of opening an
+   * on-disk instance per dir. Set only by the unit projects' setup file:
+   * booting PGlite and running migrations costs ~4s per fresh data dir.
    */
   get sharedTestDb(): boolean {
     return process.env.YAAC_TEST_SHARED_DB === '1'
   },
 
-  /** `YAAC_E2E_NO_ATTACH` — `1` skips the post-provision `kubectl exec -it` attach. */
+  /** `YAAC_E2E_NO_ATTACH` — `1` skips attaching to the terminal after create/restart. */
   get e2eNoAttach(): boolean {
     return process.env.YAAC_E2E_NO_ATTACH === '1'
   },
@@ -487,20 +409,11 @@ export const testEnv = {
   /**
    * `YAAC_E2E_NO_TOKEN_REFRESH` — `1` makes every OAuth refresh grant a no-op.
    *
-   * Set for the whole test suite, and the one env flag here that exists to
-   * prevent damage rather than to shape behavior. A refresh grant ROTATES the
-   * credential, and a suite run inside a proxy-mediated yaac workspace cannot
-   * keep that local: the egress proxy rewrites the `refresh_token` body param
-   * of anything POSTed to a token endpoint to the REAL stored token, without
-   * checking what the request carried — so a test presenting a sentinel, a
-   * fabricated string, or anything else still rotates the outer install's
-   * live credential. The outer store then keeps the token that rotation
-   * spent, and every workspace using it is signed out.
-   *
-   * Blocking the grant is what makes that unreachable, and it is blocked at
-   * the grant rather than at a call site so no future caller can reintroduce
-   * it. The tests that assert refresh BEHAVIOR unset this per-case; they stub
-   * `fetch`, so nothing they do leaves the process.
+   * Set for the whole test suite. Inside a proxied yaac workspace, the
+   * egress proxy replaces any `refresh_token` sent to a token endpoint with
+   * the outer install's real token, so a test refresh would rotate that
+   * token and sign out every workspace using it. Tests of refresh behavior
+   * unset it per case and stub `fetch`.
    */
   get noTokenRefresh(): boolean {
     return process.env.YAAC_E2E_NO_TOKEN_REFRESH === '1'

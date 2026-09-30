@@ -1,35 +1,17 @@
 /**
- * GC of each node's containerd image store — the unpacked copy of the main
- * registry's images, and by far the largest of the stores an image passes
- * through: registries hold compressed blobs, containerd holds every image
- * it ever pulled as overlayfs snapshots (measured: 110 GB of snapshots
- * beside 1 GB of blobs, 107 of 129 images referenced by no container).
+ * GC of each node's containerd image store, which keeps every pulled image
+ * unpacked and is by far the largest image store. The kubelet's image GC
+ * does not help: kind disables it, and other clusters configure it
+ * arbitrarily. See docs/image-gc.md.
  *
- * The kubelet's own image GC is no backstop: kind disables it
- * (`imageGCHighThresholdPercent: 100`), and a cluster yaac did not create
- * may configure it any way at all.
+ * A node drops a yaac image once the main registry no longer has its tag
+ * and no workload uses it, so the registry's retention (main-registry-gc.ts)
+ * decides for both stores. Only `yaac-*` refs with a 16-hex tag under the
+ * main registry host are candidates.
  *
- * Policy: a node drops a yaac content-hash generation once the MAIN
- * REGISTRY no longer holds its tag and no workload references it. That
- * makes the registry's retention (main-registry-gc.ts) the one policy for
- * both stores — what it keeps as current, live or rollback stays warm on
- * the node, so a workspace create never pays a multi-GB pull for an image
- * the install still wants — and it means nothing is ever dropped that a
- * pod could still pull by name.
- *
- * Scoped to refs under the main registry host with a 16-hex tag in a
- * `yaac-*` repo, the same shape the registry retention retires: the
- * digest-pinned mirrors, the kind node's own preloaded images and anything
- * a workspace's nested engine or a project registry put there are never
- * candidates.
- *
- * The node is read from `node.status.images`, which the kubelet caps at
- * its 50 largest images — the ones worth reclaiming; smaller ones surface
- * as the big ones go. The removal runs on the node, through its own
- * `crictl` (entered via PID 1's mount namespace, as the gVisor installer
- * reaches the node's systemctl), with a long timeout: crictl's default is
- * 2 s, and a multi-GB delete under it reports DeadlineExceeded and frees
- * almost nothing.
+ * Images come from `node.status.images` (the kubelet lists the 50 largest).
+ * Removal runs the node's own `crictl` with a long timeout; its 2s default
+ * makes large deletes fail.
  */
 import crypto from 'node:crypto'
 import {
@@ -45,8 +27,7 @@ import { registryHost, registryTagState } from '#drivers/k8s/container'
 import { serverLog } from '#log'
 import { LABEL_SWEEP_DATA_DIR_HASH } from './node-local-sweep'
 
-/** `app` label of the prune pods; with the hash label, what the next
- *  pass's stray delete selects. */
+/** `app` label of the prune pods, used to delete strays. */
 const NODE_IMAGE_GC_APP_LABEL = 'yaac-node-image-gc'
 
 /** Deadline for one node's removals — each can take minutes. */
@@ -68,17 +49,13 @@ interface RawNodeList {
 }
 
 /**
- * The prune pod for one node: root and privileged with the host PID
- * namespace — there is no narrower way to reach the node's CRI socket
- * through the node's own client — pinned by `nodeName`, tolerating every
- * taint.
+ * The prune pod for one node: privileged root with host PID (the only way
+ * to reach the node's CRI through its own client), pinned by `nodeName`,
+ * tolerating every taint.
  *
- * Its image is the digest-pinned UPSTREAM registry:2 (busybox, so it
- * carries nsenter), never a tag in the main registry. A pod this powerful
- * is node root, and a digest ref is not something an overwritten tag can
- * redirect — whatever the registry's write gate lets through, or whoever
- * holds an admin grant. The main registry's hosts writer runs the same ref
- * on every node, so it is already there.
+ * Uses the digest-pinned upstream registry:2 image (busybox, has nsenter)
+ * rather than a main-registry tag, so an overwritten tag can never run as
+ * node root. It is already on every node.
  */
 function buildNodeImageGcPodManifest(params: {
   nodeName: string
@@ -119,12 +96,10 @@ function buildNodeImageGcPodManifest(params: {
 }
 
 /**
- * One pass over every node: remove each yaac generation the registry has
- * retired and no workload references (`inUse`, `repo:tag`). Best-effort
- * throughout — a failure costs disk, never a pod. An image goes only on
- * the registry's own 404 for every one of its tags: a timeout or an error
- * answer is not evidence of retirement, and the pass runs moments after the
- * collect restarted the registry, when slow answers are likeliest.
+ * Remove, on every node, each yaac image the registry has retired and no
+ * workload uses (`inUse`, as `repo:tag`). Best-effort. An image is removed
+ * only if the registry answers 404 for all its tags; errors and timeouts
+ * do not count, since the registry has just restarted after a collect.
  */
 export async function pruneNodeImages(inUse: ReadonlySet<string>): Promise<void> {
   const selector = `app=${NODE_IMAGE_GC_APP_LABEL},${LABEL_SWEEP_DATA_DIR_HASH}=${dataDirHash()}`

@@ -17,9 +17,8 @@ import {
 const execFileAsync = promisify(execFile)
 
 /**
- * The compatibility proof, against real OpenSSH: the key yaac encodes is one
- * `ssh-keygen` reads, and `ssh-add -` loads into a real agent — the two
- * programs the containerless driver and the proxy pod feed it to.
+ * Checks against real OpenSSH that `ssh-keygen` reads the encoded key and
+ * `ssh-add -` loads it into an agent, as both drivers use it.
  */
 
 async function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -37,7 +36,6 @@ describe('generateSshKey', () => {
     expect(key.seed).toHaveLength(32)
     expect(key.publicKey).toMatch(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5[A-Za-z0-9+/=]+ yaac git\.example\.com\/\*$/)
     expect(publicKeyLine(key.seed, 'yaac git.example.com/*')).toBe(key.publicKey)
-    // Fresh entropy every time.
     expect(generateSshKey('x').publicKey).not.toBe(generateSshKey('x').publicKey)
   })
 })
@@ -52,13 +50,12 @@ describe('encodeOpenSshPrivateKey', () => {
       const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
       expect(stdout.trim()).toBe(key.publicKey)
 
-      // An explicit socket: OpenSSH 10 defaults it under $HOME/.ssh/agent,
-      // which a deep $HOME pushes past the Unix-socket path limit.
+      // OpenSSH 10's default socket under $HOME can exceed the path limit.
       const { stdout: agentOut } = await execFileAsync('ssh-agent', ['-c', '-a', path.join(dir, 'agent.sock')])
       const sock = /setenv SSH_AUTH_SOCK (\S+);/.exec(agentOut)![1]
       const pid = /setenv SSH_AGENT_PID (\d+);/.exec(agentOut)![1]
       try {
-        // From stdin, the way both drivers feed it: never a path.
+        // Via stdin, as both drivers do.
         await new Promise<void>((resolve, reject) => {
           const child = spawn('ssh-add', ['-'], { env: { ...process.env, SSH_AUTH_SOCK: sock } })
           child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ssh-add exited ${code}`))))

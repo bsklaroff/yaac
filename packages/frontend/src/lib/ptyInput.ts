@@ -1,22 +1,17 @@
 /**
- * A registry of live terminal panes that can accept synthetic input.
+ * A registry of mounted terminal panes that accept synthetic input.
  *
- * A phone keyboard has no Esc, Tab, Ctrl or arrow keys, and every agent TUI
- * needs all four — so the mobile pane grows an accessory key bar. That bar
- * lives in WorkspaceView's chrome, while the PTY socket is private to the
- * WorkspaceTerminal that owns it, so the two meet here rather than by threading
- * a ref down through the pane layout.
- *
- * The registered sender routes through xterm's own `input()`, which is the
- * same path a real keypress takes (onData → the attach socket) — so a
- * bar-pressed Esc is indistinguishable from a typed one, including while the
- * socket is down.
+ * Phone keyboards lack Esc, Tab, Ctrl and arrow keys, so the mobile pane has
+ * an extra key bar in WorkspaceView. The PTY socket belongs to
+ * WorkspaceTerminal, so the bar sends keys through this registry instead of
+ * a ref threaded through the layout. Senders use xterm's `input()`, the same
+ * path a real keypress takes.
  */
 
 const senders = new Map<string, (data: string) => void>()
 
-/** The registry key for a pane: the same workspace|target pair WorkspaceView
- *  uses for its keep-alive set. */
+/** The registry key for a pane, the same key WorkspaceView's keep-alive set
+ *  uses. */
 export function paneKey(workspaceId: string, target: string): string {
   return `${workspaceId}|${target}`
 }
@@ -25,14 +20,12 @@ export function paneKey(workspaceId: string, target: string): string {
 export function registerPtyInput(key: string, send: (data: string) => void): () => void {
   senders.set(key, send)
   return () => {
-    // Only if we're still the current owner: a remount registers the new
-    // terminal before the old one's cleanup runs.
+    // A remount registers the new terminal before the old one's cleanup.
     if (senders.get(key) === send) senders.delete(key)
   }
 }
 
-/** Feed `data` to a pane as if it had been typed. False when no such pane is
- *  mounted (a stale key, or a pane torn down mid-press). */
+/** Send `data` to a pane as if typed. False when no such pane is mounted. */
 export function sendPtyInput(key: string, data: string): boolean {
   const send = senders.get(key)
   if (!send) return false
@@ -40,8 +33,7 @@ export function sendPtyInput(key: string, data: string): boolean {
   return true
 }
 
-/** Byte sequences for the keys a soft keyboard doesn't have. Values are what
- *  xterm itself emits for those presses, so a TUI can't tell the difference. */
+/** Byte sequences xterm emits for the keys a soft keyboard lacks. */
 export const PTY_KEYS = {
   escape: '\x1b',
   tab: '\t',

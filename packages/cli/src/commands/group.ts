@@ -3,20 +3,17 @@ import { normalizeTitle } from '@yaac/shared/titles'
 import type { WorkspaceGroupSummary, WorkspaceListEntry } from '@yaac/shared/types'
 
 /**
- * `yaac group …` — the named sidebar groups a project's workspaces are filed
- * under, from the terminal.
+ * `yaac group …`: manage the named sidebar groups a project's workspaces are
+ * filed under.
  *
- * Groups are addressed by NAME here, never by the uuid the webapp drags
- * around: a name is the only handle a person (or an agent running
- * `yaac-mama`) has ever seen. The server resolves it (`resolveGroup`),
- * which is also where an ambiguous name is refused rather than guessed.
+ * Groups are addressed by name, since that is all a user (or an agent using
+ * `yaac-mama`) sees. The server resolves names (`resolveGroup`) and refuses
+ * an ambiguous one.
  */
 
 export async function groupCreate(projectSlug: string, name: string): Promise<void> {
-  // Idempotent, like `yaac-mama group create`: the two surfaces have to agree
-  // on what "create a group called X" means, and making a second group with
-  // the same name only manufactures the ambiguity that `move` and `delete`
-  // then have to refuse.
+  // Idempotent, like `yaac-mama group create`. A duplicate name would make
+  // later `move` and `delete` calls ambiguous.
   const { groups } = await api.workspace.group.list.$get({ query: { project: projectSlug } })
   const existing = resolveLocally(groups, name)
   if (existing.length > 0) {
@@ -26,8 +23,7 @@ export async function groupCreate(projectSlug: string, name: string): Promise<vo
   const created = await api.workspace.group.create.$post({
     json: { projectSlug, name },
   })
-  // The name the server stored, not what was typed: it normalizes, so
-  // echoing the input would report a group the table does not hold.
+  // Print the server's normalized name, not the typed one.
   console.log(`Created group "${created.name}" in ${projectSlug} (${created.groupId}).`)
 }
 
@@ -59,15 +55,13 @@ export async function groupMove(
     process.exitCode = 1
     return
   }
-  // No group named returns the workspace to the default list; any name is a
-  // group, created when it matches none (the same bargain `--group` makes on
-  // create — the caller is naming a group, not picking one).
+  // No group (or `--`) returns the workspace to the default list. An unknown
+  // name creates the group, as `--group` does on workspace create.
   const target = group === undefined || group === '--' ? null : group
   const moved = await api.workspace.group.move.$post({
     json: { projectSlug, workspaceId, group: target, create: true },
   })
-  // The name the server resolved, not what was typed: passing an id (which
-  // the ambiguity error asks for) would otherwise echo a uuid back.
+  // Print the resolved name, so a group passed by id doesn't echo a uuid.
   console.log(target === null
     ? `Moved ${workspaceId.slice(0, 8)} out of its group.`
     : `Moved ${workspaceId.slice(0, 8)} into "${moved.name ?? target}".`)
@@ -81,8 +75,6 @@ export async function groupDelete(projectSlug: string, group: string): Promise<v
     process.exitCode = 1
     return
   }
-  // Refused rather than guessed, like every other name resolution here —
-  // and more so, because this one destroys the row it picks.
   if (matches.length > 1) {
     console.error(
       `"${group}" names ${matches.length} groups in ${projectSlug} — pass the group id instead `
@@ -93,19 +85,13 @@ export async function groupDelete(projectSlug: string, group: string): Promise<v
   }
   const match = matches[0]
   await api.workspace.group.delete.$post({ json: { projectSlug, groupId: match.groupId } })
-  // Worth stating: the members are released, not stopped — the delete is safe
-  // precisely because nothing is torn down.
   console.log(`Deleted group "${match.name}". Its workspaces are back in the default list.`)
 }
 
 /**
  * Which project a workspace belongs to, so `yaac group move` can take an id
- * alone. Running workspaces first, then the stopped listing — filing a
- * stopped workspace is a normal thing to do (its group is where it comes back
- * when restarted), so it should not be the case that needs a flag.
- *
- * `--project` remains for the one thing this cannot answer: an id so old it
- * has fallen off the stopped listing's cap.
+ * alone. Checks running workspaces, then stopped ones. `--project` covers a
+ * workspace old enough to have fallen off the stopped listing.
  */
 async function projectOfWorkspace(workspaceId: string): Promise<string | undefined> {
   const matches = (w: { workspaceId: string }): boolean =>
@@ -120,19 +106,10 @@ async function projectOfWorkspace(workspaceId: string): Promise<string | undefin
 }
 
 /**
- * Local name/id match, for the one command that needs an id the server's
- * resolver would not hand back (delete takes a group id).
- *
- * Every match, not the first: names are not unique, and the caller has to be
- * able to tell one hit from several before deleting anything. An exact id is
- * never ambiguous, so it short-circuits.
- *
- * Matched under the same normalization the server stores a name with
- * (`normalizeTitle`), or the two would disagree about what "the same name"
- * means: a typed "release  train" would miss the stored "release train", and
- * the idempotent create above would then make the duplicate it exists to
- * prevent — one `yaac-mama group move` away from an ambiguity nothing can
- * resolve by name.
+ * Find groups by exact id or by name, client-side, for `create` and
+ * `delete`. Returns every name match so callers can detect ambiguity. Names
+ * are compared after `normalizeTitle`, the normalization the server applies
+ * when storing them.
  */
 function resolveLocally(
   groups: WorkspaceGroupSummary[],

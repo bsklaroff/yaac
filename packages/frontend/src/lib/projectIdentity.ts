@@ -1,15 +1,12 @@
 /**
- * A project's visual identity, derived from its slug alone so every surface
- * that shows a project — the desktop rail chip, the mobile projects list —
- * agrees without the server having to store a color.
+ * A project's color and initial, derived from its slug so the desktop rail
+ * and the mobile projects list agree without the server storing anything.
  */
 
 /**
- * Deterministic per-project identity color from the slug. OKLCH (not HSL)
- * so every hue reads at the same perceived lightness/chroma — no hue is
- * harshly bright or muddy — with chroma/lightness tuned to sit calmly in
- * the muted dark palette. The hue is quantized to 24 evenly-spaced steps
- * to keep adjacent projects visually distinct.
+ * A stable color for a project. OKLCH keeps every hue at the same perceived
+ * brightness. The hue is one of 24 evenly spaced steps so neighboring
+ * projects stay distinct.
  */
 export function projectColor(slug: string): string {
   let h = 0

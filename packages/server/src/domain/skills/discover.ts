@@ -1,40 +1,21 @@
 /**
- * Enumerates the skills a project's agent has available by reading the loose
- * `SKILL.md` files under its host-mounted config and repo — no pod, no running
- * workspace required, since those dirs are all on-host.
+ * Lists the skills a project's agent can use by reading `SKILL.md` files
+ * from its host-side config and repo, so no running workspace is needed.
  *
- * Discovery reads the *explicit* directories each agent loads skills from at
- * their known layout, rather than recursively scanning a whole tree: every
- * skill lives at `<root>/<name>/SKILL.md`, so we shallow-`readdir` each skill
- * root and read the one file — never descending into `node_modules`, a
- * plugin's resource dirs, or a marketplace's `.git`. Dispatch is keyed on
- * `AgentTool`; the wire type, route, and UI are agent-agnostic.
+ * Only each agent's known skill roots are read, one level deep
+ * (`<root>/<name>/SKILL.md`), never scanning whole trees.
  *
- * Plugin tiers are gated on the agent's *installed/enabled* set, not on mere
- * on-disk presence: both Claude and Codex clone a marketplace's entire catalog
- * to disk (hundreds of plugins) whether or not you installed them, so listing
- * every dir would surface skills the agent can't actually invoke. Installing a
- * plugin records it in the agent's config — Claude in `enabledPlugins` across
- * its settings.json tiers, Codex in the `[plugins]` table of `config.toml` —
- * and disabling flips it off there while leaving the clone in place. We read
- * that config and keep only the enabled plugins.
+ * Plugin tiers include only enabled plugins: Claude and Codex clone entire
+ * marketplace catalogs to disk, so presence doesn't mean installed. Claude
+ * records enabled plugins in `enabledPlugins` across its settings.json tiers;
+ * Codex in the `[plugins]` table of `config.toml`.
  *
- * Project (repo) tiers are read from `origin/<branch>` rather than the on-disk
- * working tree, matching the branch the changes/diff pane compares against: the
- * base clone's checkout is frozen at clone time and drifts behind origin, and a
- * caller (the skills dialog's branch picker) may want a branch other than the
- * default anyway. `resolveRepoRef` turns the picked branch into an `origin/…`
- * ref via the clone's remote-tracking refs, falling back to the working tree
- * when no such ref exists (a local-only or unfetched repo). Host tiers
- * (personal, plugins, Codex's `config.toml`) are never repo checks, so they
- * always read the on-disk files regardless of branch.
+ * Project (repo) tiers are read from `origin/<branch>` (the main clone's
+ * working tree is stale), falling back to the working tree when no such ref
+ * exists. Host tiers always read from disk.
  *
- * Built-in ("system") tiers come from two places. Codex materializes its
- * `.system/` tier to the host-mounted `~/.codex/skills/.system/`, read on-disk
- * like any other. Claude's bundled skills live only in its binary, so we take
- * their name + description from Anthropic's official commands reference —
- * fetched on server start and cached in memory (see claude-bundled.ts) — and
- * append them as list-only `system` skills.
+ * System tiers: Codex's `.system/` dir on disk, and Claude's bundled skills,
+ * listed from the cached commands reference (see claude-bundled.ts).
  */
 
 import path from 'node:path'
@@ -50,10 +31,9 @@ import { builtinSkillsDir, isBuiltinSkillLink } from './builtin'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from './parse'
 
 /**
- * A source of `<name>/SKILL.md` skill dirs. Abstracted over the backing store
- * so a host directory (`fsReader`) and a project tree at a git ref
- * (`gitReader`) look the same to the scan: `list()` yields the immediate
- * skill-dir names, `read(name)` yields that dir's `SKILL.md` (or null).
+ * A source of `<name>/SKILL.md` skill dirs, backed by a host directory
+ * (`fsReader`) or a git ref (`gitReader`). `list()` yields skill-dir names;
+ * `read(name)` yields that dir's `SKILL.md` or null.
  */
 interface SkillReader {
   source: SkillSource
@@ -63,25 +43,19 @@ interface SkillReader {
   read: (name: string) => Promise<string | null>
 }
 
-/** A discovered skill plus the `SKILL.md` text the detail view renders. A
- *  skill exists only because its `SKILL.md` was read, so the raw text is
- *  always in hand and the detail view never re-reads the store. */
+/** A discovered skill plus its raw `SKILL.md`, for the detail view. */
 interface DiscoveredSkill extends SkillSummary {
   raw: string
 }
 
-/**
- * More than any skill's instructions run to. A `SKILL.md` is read whole into
- * the skills API's answer, and the tool homes are the agent's to write.
- */
+/** Size cap for a `SKILL.md`, which is read whole and may be agent-written. */
 const MAX_SKILL_MD_BYTES = 256 * 1024
 
 /**
- * A directory on the host a reader lists and reads under, confined: the tool
- * homes as `openSandboxDir` opens them (no links at all where a sandbox can
- * write them — so a link named `SKILL.md` cannot hand the skills API any
- * file the server can read), and the install and checkout dirs as `inside`.
- * Null for one that does not exist, which just means no skills.
+ * A confined host directory to read skills under: tool homes opened with
+ * `openSandboxDir` (no links where a sandbox can write, so a planted
+ * `SKILL.md` link can't expose server files), and the install and checkout
+ * dirs as `inside`. Null when missing (no skills).
  */
 type HostRoot = ConfinedRoot | null
 
@@ -93,15 +67,14 @@ function hostDir(dir: string): Promise<HostRoot> {
   return openRoot(dir, 'inside').catch(() => null)
 }
 
-/** A text file under `root`, or null when there is none it will read. */
+/** A text file under `root`, or null if absent or unreadable. */
 async function readText(root: HostRoot, rel: string, maxBytes: number): Promise<string | null> {
   const raw = await root?.readFile(rel, { maxBytes }).catch(() => null)
   return raw?.toString('utf8') ?? null
 }
 
-/** Immediate subdirectory names of `rel` (symlinked dirs included, which a
- *  reader then follows only as far as its root allows), or [] when it is
- *  missing — an absent skills dir just means no skills. */
+/** Immediate subdirectory names of `rel` (including symlinks, followed only
+ *  as far as the root allows), or [] when missing. */
 async function subdirs(root: HostRoot, rel: string): Promise<string[]> {
   const entries = await root?.readdir(rel).catch(() => []) ?? []
   return entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name)
@@ -118,12 +91,9 @@ function fsReader(root: HostRoot, rel: string, source: SkillSource, sourceLabel?
 }
 
 /**
- * A personal-tier reader over one tool's own skills root, minus yaac's own
- * builtin links. Under the containerless driver those roots are where the
- * builtins physically land (builtin.ts), and the `system`/`yaac` reader
- * appended in `discover` already lists every one of them from the install —
- * so without this filter each builtin would be offered twice, the second time
- * under a tier the user never put it in.
+ * A personal-tier reader over one tool's skills root, excluding yaac's
+ * builtin links. Under containerless the builtins are linked into these roots
+ * (builtin.ts), and the `system`/`yaac` reader already lists them.
  */
 function personalReader(root: HostRoot, homeDir: string, rel: string): SkillReader {
   const base = fsReader(root, rel, 'personal')
@@ -181,20 +151,17 @@ async function readRepoFile(repoPath: string, ref: string | null, relPath: strin
 /** More than any settings file or `config.toml` a person writes. */
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
-/** The `origin/<branch>` ref project tiers should read from, or null to fall
- *  back to the working tree. `branch` is the caller's pick; absent, the remote
- *  default (origin/HEAD) is used. Returns null when the branch has no
- *  remote-tracking ref — an unfetched or local-only repo — so discovery
- *  degrades to the on-disk checkout instead of failing. */
+/** The `origin/<branch>` ref for project tiers (`branch` defaults to the
+ *  remote default), or null to use the working tree when there is no such
+ *  remote-tracking ref. */
 async function resolveRepoRef(repoPath: string, branch?: string): Promise<string | null> {
   const target = branch?.trim() || (await getDefaultBranch(repoPath).catch(() => ''))
   if (target && (await remoteBranchExists(repoPath, target))) return `origin/${target}`
   return null
 }
 
-/** Parse a Claude settings.json's `enabledPlugins` map out of raw text, or `{}`
- *  when absent/unparseable. Keys are `<plugin>@<marketplace>`; values are
- *  booleans (installing writes `true`, disabling writes `false`). */
+/** A Claude settings.json's `enabledPlugins` map (`<plugin>@<marketplace>` →
+ *  boolean), or `{}` when absent or unparseable. */
 function parseEnabledPlugins(raw: string | null): Record<string, unknown> {
   if (raw == null) return {}
   try {
@@ -206,13 +173,10 @@ function parseEnabledPlugins(raw: string | null): Record<string, unknown> {
   }
 }
 
-/** The `<plugin>@<marketplace>` ids Claude has enabled for a project, merged
- *  across the user → project → local settings tiers (local wins, matching
- *  Claude's own precedence). The user tier is the host `~/.claude/settings.json`;
- *  the project/local tiers are repo checks, read from `ref` (origin/<branch>)
- *  like the project skills themselves. A plugin counts as installed exactly
- *  when its id is present and truthy here, so plugins that only exist in the
- *  on-disk marketplace clone — never installed — are excluded. */
+/** The `<plugin>@<marketplace>` ids Claude has enabled, merged across the
+ *  user, project and local settings (local wins, as in Claude). The user tier
+ *  is the host `settings.json`; project and local are read from `ref` like
+ *  project skills. */
 async function claudeEnabledPluginIds(slug: string, claude: HostRoot, ref: string | null): Promise<Set<string>> {
   const repo = repoDir(slug)
   const [user, project, local] = await Promise.all([
@@ -229,11 +193,9 @@ async function claudeEnabledPluginIds(slug: string, claude: HostRoot, ref: strin
   return new Set(Object.entries(merged).filter(([, on]) => on).map(([id]) => id))
 }
 
-/** Enabled plugin readers under a Claude-style `plugins/` root, whose
- *  installed layout is `marketplaces/<marketplace>/{plugins,external_plugins}/<plugin>/skills/`.
- *  The `<plugin>` and `<marketplace>` dir names are the same names Claude keys
- *  `enabledPlugins` on, so a dir survives only when `<plugin>@<marketplace>` is
- *  in `enabledIds`. */
+/** Readers for enabled plugins under Claude's
+ *  `plugins/marketplaces/<marketplace>/{plugins,external_plugins}/<plugin>/skills/`,
+ *  keeping only dirs whose `<plugin>@<marketplace>` is in `enabledIds`. */
 async function claudePluginReaders(claude: HostRoot, enabledIds: Set<string>): Promise<SkillReader[]> {
   const out: SkillReader[] = []
   const marketplaces = 'plugins/marketplaces'
@@ -249,12 +211,9 @@ async function claudePluginReaders(claude: HostRoot, enabledIds: Set<string>): P
   return out
 }
 
-/** The plugin names Codex has enabled, read from the `[plugins]` table of its
- *  `config.toml`. Each key is `<plugin>@<marketplace>`; installing writes the
- *  entry and `enabled = false` disables it while leaving it installed. We key
- *  on the base name (before `@`) because the clone under `.tmp/plugins/plugins`
- *  is a single bundled marketplace, so the dir name alone identifies the
- *  plugin. */
+/** Plugin names Codex has enabled, from `[plugins]` in `config.toml` (keys
+ *  `<plugin>@<marketplace>`; `enabled = false` disables). Keyed on the name
+ *  before `@`, since `.tmp/plugins/plugins` holds a single marketplace. */
 async function codexEnabledPluginNames(codex: HostRoot): Promise<Set<string>> {
   let parsed: unknown
   try {
@@ -272,9 +231,8 @@ async function codexEnabledPluginNames(codex: HostRoot): Promise<Set<string>> {
   return out
 }
 
-/** Enabled plugin readers under Codex's marketplace clone at
- *  `.tmp/plugins/plugins/<plugin>/skills/` — a dir survives only when its
- *  plugin is in `enabledNames`. */
+/** Readers for enabled plugins under Codex's
+ *  `.tmp/plugins/plugins/<plugin>/skills/`. */
 async function codexPluginReaders(codex: HostRoot, enabledNames: Set<string>): Promise<SkillReader[]> {
   const out: SkillReader[] = []
   const pluginsDir = '.tmp/plugins/plugins'
@@ -298,12 +256,8 @@ async function claudeReaders(slug: string, ref: string | null): Promise<SkillRea
 async function codexReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
   const dir = codexDir(slug)
   const codex = await toolHome(slug, dir)
-  // `skills/` is read directly (readSkills skips dot-dirs, so the sibling
-  // `.system/` and `.tmp/` aren't picked up as personal skills). Codex's
-  // built-in tier is materialized into `skills/.system/`, read by its own
-  // `system` reader pointed straight at it — the dot-skip only excludes the
-  // immediate skill-dir names, not the reader's root. config.toml is the host
-  // install registry, not a repo check, so its read stays on-disk.
+  // readSkills skips dot-dirs, so `skills/.system/` isn't listed as
+  // personal; a separate `system` reader is rooted at it.
   return [
     personalReader(codex, dir, 'skills'),
     fsReader(codex, 'skills/.system', 'system'),
@@ -318,10 +272,9 @@ async function opencodeReaders(slug: string, ref: string | null): Promise<SkillR
   const claudeHome = claudeDir(slug)
   const claude = await toolHome(slug, claudeHome)
   const repo = repoDir(slug)
-  // opencode has no plugin-skills tier (its plugins are JS modules). Its own
-  // dirs accept both singular `skill/` and plural `skills/`; it also reads the
-  // Claude- and agents-compatible locations. Ordered by precedence so the
-  // dedupe below keeps the winning copy of a same-named skill.
+  // No plugin tier (opencode plugins are JS modules). It reads `skill/` and
+  // `skills/` plus the Claude- and agents-compatible locations, listed in
+  // precedence order for the dedupe.
   return [
     personalReader(cfg, cfgDir, 'skill'),
     personalReader(cfg, cfgDir, 'skills'),
@@ -336,10 +289,8 @@ async function opencodeReaders(slug: string, ref: string | null): Promise<SkillR
 async function piReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
   const repo = repoDir(slug)
   const dir = piDir(slug)
-  // pi's whole `~/.pi` home is mounted per-project (piDir), so its global
-  // `~/.pi/agent/skills` personal tier is host-visible. `~/.agents/skills` is
-  // not mounted, so it isn't reachable. Project skills come from the repo.
-  // `skills` plural only; no plugin tier.
+  // pi's `~/.pi` is per project (piDir), so `agent/skills` is readable;
+  // `~/.agents/skills` is not mounted. No plugin tier.
   return [
     personalReader(await toolHome(slug, dir), dir, 'agent/skills'),
     repoReader(repo, ref, '.pi/skills', 'project'),
@@ -386,7 +337,7 @@ function toSummary(
 async function readSkills(reader: SkillReader): Promise<DiscoveredSkill[]> {
   const out: DiscoveredSkill[] = []
   for (const name of await reader.list()) {
-    if (name.startsWith('.')) continue // hidden tiers (.system) and VCS dirs (.git)
+    if (name.startsWith('.')) continue // e.g. .system, .git
     const raw = await reader.read(name)
     if (raw == null) continue // a subdir without a SKILL.md is not a skill
     const summary = toSummary(raw, {
@@ -400,18 +351,15 @@ async function readSkills(reader: SkillReader): Promise<DiscoveredSkill[]> {
   return out
 }
 
-/** Keep the first skill seen per id — readers are listed in precedence
- *  order, so a native dir wins over a compat dir for the same-named skill. */
+/** Keep the first skill per id; readers are in precedence order. */
 function dedupeById(skills: DiscoveredSkill[]): DiscoveredSkill[] {
   const seen = new Set<string>()
   return skills.filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)))
 }
 
 /**
- * Mark project skills that a same-named personal skill overrides (personal >
- * project). Plugin skills are namespaced and never collide, so they are left
- * untouched. Shadowed skills stay in the list — the viewer surfaces the state
- * rather than hiding them.
+ * Mark project skills overridden by a same-named personal skill. Plugin
+ * skills are namespaced and never collide. Shadowed skills stay listed.
  */
 function markShadowed(skills: DiscoveredSkill[]): void {
   const personalNames = new Set(skills.filter((s) => s.source === 'personal').map((s) => s.name))
@@ -422,24 +370,21 @@ function markShadowed(skills: DiscoveredSkill[]): void {
 
 const SOURCE_ORDER: Record<SkillSource, number> = { personal: 0, plugin: 1, project: 2, system: 3 }
 
-/** Sort rank finer than source alone: within the `system` tier, yaac's own
- *  shipped built-ins (`sourceLabel` `yaac`) sort above the agent's
- *  binary-bundled built-ins so the viewer can head them as two distinct
- *  groups ("yaac built-in" then "<agent> built-in"). */
+/** Sort rank by source, with yaac's built-ins above the agent's bundled
+ *  ones within `system`, so the viewer can show them as two groups. */
 function groupRank(s: SkillSummary): number {
   if (s.source !== 'system') return SOURCE_ORDER[s.source]
   return s.sourceLabel === 'yaac' ? SOURCE_ORDER.system : SOURCE_ORDER.system + 1
 }
 
-/** A short body shown for a list-only bundled skill — we have its name and
- *  description from the docs, but not the full SKILL.md. */
+/** Body shown for a bundled skill, whose full SKILL.md isn't available. */
 const BUNDLED_BODY =
   'Built-in Claude Code skill. This summary is from Claude\'s official commands '
   + 'reference (code.claude.com/docs/en/commands); the full instructions are '
   + 'bundled in the Claude binary and load on demand when the skill runs.'
 
-/** Claude's bundled skills from the in-memory commands-reference cache, as
- *  list-only `system` skills: real name + description, a placeholder body. */
+/** Claude's bundled skills from the cache, as `system` skills with a
+ *  placeholder body. */
 function claudeBundledDiscovered(): DiscoveredSkill[] {
   return getClaudeBundledSkills().map((s): DiscoveredSkill => ({
     id: skillId('system', 'bundled', s.name),
@@ -456,15 +401,11 @@ function claudeBundledDiscovered(): DiscoveredSkill[] {
 async function discover(tool: AgentTool, slug: string, branch?: string): Promise<DiscoveredSkill[]> {
   const ref = await resolveRepoRef(repoDir(slug), branch)
   const readers = await readersFor(tool, slug, ref)
-  // yaac's own bundled skills — shipped in the package and injected into every
-  // tool's personal root at workspace create (see builtin.ts). Read the install
-  // dir directly here, since pod-less discovery can't see the in-pod mounts;
-  // surfaced as `system`/`yaac` for every tool.
+  // yaac's built-ins (builtin.ts), read from the install dir since in-pod
+  // mounts aren't visible here.
   readers.push(fsReader(await hostDir(builtinSkillsDir()), '', 'system', 'yaac'))
   const perReader = await Promise.all(readers.map(readSkills))
   const flat = perReader.flat()
-  // Claude's bundled built-ins live only in the binary; append their published
-  // name+description (list-only `system` skills) from the cached commands ref.
   if (tool === 'claude') flat.push(...claudeBundledDiscovered())
   const all = dedupeById(flat)
   markShadowed(all)
@@ -472,19 +413,17 @@ async function discover(tool: AgentTool, slug: string, branch?: string): Promise
   return all
 }
 
-/** All personal + plugin + project skills available to a project's agent.
- *  `branch` selects the origin branch project (repo) tiers are read from
- *  (default: the remote's default branch). */
+/** Every skill available to a project's agent. `branch` picks the origin
+ *  branch for project tiers (default: the remote's default branch). */
 export async function getProjectSkills(tool: AgentTool, slug: string, branch?: string): Promise<ProjectSkills> {
   const discovered = await discover(tool, slug, branch)
   const skills: SkillSummary[] = discovered.map(({ raw: _raw, ...summary }) => summary)
   return { skills }
 }
 
-/** The full `SKILL.md` for one skill, resolved by re-running discovery and
- *  matching the id — the client never supplies a filesystem path, so there is
- *  no traversal. `branch` must match the one the summary was listed under so the
- *  id resolves against the same tree. */
+/** The full `SKILL.md` for one skill, found by re-running discovery and
+ *  matching the id, so the client never supplies a path. `branch` must match
+ *  the listing's. */
 export async function getSkillDetail(tool: AgentTool, slug: string, id: string, branch?: string): Promise<SkillDetail> {
   const match = (await discover(tool, slug, branch)).find((s) => s.id === id)
   if (!match) throw new ServerError('NOT_FOUND', `skill "${id}" not found`)

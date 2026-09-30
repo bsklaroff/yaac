@@ -61,34 +61,21 @@ import { releaseK8sDriver, startK8sDriver, stopK8sDriver } from '#drivers/k8s/li
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 
 /**
- * The Kubernetes driver's one door: `createK8sDriver`, the whole of what
- * this folder exposes (docs/layered-server.md).
+ * The Kubernetes driver: `createK8sDriver` is the only export of this
+ * folder (docs/layered-server.md). Each workspace is a single-pod Job on
+ * the local cluster.
  *
- * A single-pod Job per workspace, on the local cluster. The barrel is the
- * assembly itself rather than a re-export list because assembling the
- * driver IS the interface: every verb's substance lives in the sealed
- * folder that owns it, and this file only says which one answers what.
- * That is what keeps it untested by design — the functions below carry
- * their own tests in their folders, and the wiring is what every e2e run
- * exercises.
- *
- * It can sit here, above the nine folders that import `#drivers/contract`,
- * precisely because the contract is a bucket of its own below them: the
- * graph runs assembly → folders → contract → nothing, with no cycle to
- * close. Only the composition root imports it, and only to register it
- * (`setWorkspaceDriver`); nothing calls it through this name, so a mediator
- * never pulls the cluster client in.
+ * This file only wires each contract verb to the sealed subfolder that
+ * implements it. It has no unit test: the subfolders test their own
+ * functions, and every e2e run exercises the wiring. Only the composition
+ * root imports it, to register the driver.
  */
 
 /**
- * `exec`, with the relay's nonzero-exit error restated in the contract's
- * vocabulary.
- *
- * The mapping is here rather than in the relay because `RelayExecError` is
- * substrate vocabulary the driver's own internals still branch on; what
- * crosses the contract is the neutral verdict. Everything else — a dial
- * failure, a timeout — propagates as itself, which is exactly the
- * distinction the callers depend on.
+ * `podExec`, with a nonzero exit (`RelayExecError`, which the driver's
+ * internals branch on) mapped to the contract's `WorkspaceExecError`.
+ * Other failures, such as a dial error or timeout, propagate unchanged so
+ * callers can tell them apart.
  */
 async function execInWorkspace(
   jobName: string,
@@ -108,8 +95,6 @@ async function execInWorkspace(
 export function createK8sDriver(): WorkspaceDriver {
   return {
     kind: 'k8s',
-    // Every pod sees the same paths — see `k8sWorkspacePaths` for why the
-    // workspace is not part of the answer.
     workspacePaths: () => k8sWorkspacePaths(),
 
     start: (sinks) => startK8sDriver(sinks),
@@ -141,19 +126,16 @@ export function createK8sDriver(): WorkspaceDriver {
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
-    // The relay addresses streams by workspace id; deriving one from the unit
-    // name is the driver's own naming scheme, so it happens here rather than
-    // in a caller that would be encoding it.
+    // The relay addresses streams by workspace id, not Job name.
     dialCtrl: (jobName, argv) => dialCtrlStream(workspaceIdFromJobName(jobName), argv),
     dialPty: (jobName, argv, size) => dialPtyStream(workspaceIdFromJobName(jobName), argv, size),
     reviveStatusStream: (jobName) => bootStreamd(jobName),
 
     claimSpare: (workspaceId, tool) => claimSpareWorkspace(workspaceId, tool),
 
-    // Whether the image ships a tool and its adapter is settled at build
-    // time, and the caller already refuses a tool that has none. Nothing to
-    // install either: an image that lacks the tool is the wrong image, which
-    // the post-launch window probe reports.
+    // The image decides at build time which tools it ships, so there is
+    // nothing to check or install here. A missing tool surfaces in the
+    // post-launch window probe.
     assertCanLaunch: () => Promise.resolve(),
     ensureRuntimeReachable: () => ensureKubernetes(),
     prepareImage: (opts) => prepareWorkspaceImage(opts),

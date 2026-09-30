@@ -6,10 +6,9 @@ import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '#lib/reconnect'
 export const SNAPSHOT_KEY = ['snapshot'] as const
 
 /**
- * Subscribe to the server's `/events` WebSocket and hydrate the React
- * Query cache from each `snapshot` frame. Same-origin, and identified like
- * any other request to the server. Reconnects with exponential
- * backoff (500ms → 10s cap). Returns whether the socket is connected.
+ * Subscribe to the server's `/events` WebSocket and write each `snapshot`
+ * frame into the React Query cache. Reconnects with backoff (see
+ * `#lib/reconnect`). Returns whether the socket is connected.
  */
 export function useEvents(enabled: boolean): { connected: boolean } {
   const queryClient = useQueryClient()

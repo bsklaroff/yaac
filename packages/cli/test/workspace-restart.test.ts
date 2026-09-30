@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
 
-// The CLI shim's own collaborators. Only the `workspaceRestart` describe below
-// uses these; the pipeline describes drive the server modules directly.
-// Hoisted with the vi.mock calls, which run before any import.
+// Mocks for the `workspaceRestart (CLI shim)` describe only; the others call
+// the server modules directly.
 const { attachSpy, postSpy, consumeSpy } = vi.hoisted(() => ({
   attachSpy: vi.fn().mockResolvedValue(undefined),
   postSpy: vi.fn().mockResolvedValue({}),
@@ -27,11 +26,9 @@ import { clearAllProvisioningForTests } from '@yaac/server/domain/workspaces/pro
 import type { PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 
 /**
- * Unit coverage for the session-restart pipeline: target resolution
- * (live workspace first, recorded row for reaped ones) and the handoff to
- * teardown + create. The real implementations stand behind the
- * boundary so the whole pipeline runs; only its substrate leaves are mocked,
- * so we don't need a cluster.
+ * The server's restart pipeline: target resolution (live pod first, else the
+ * recorded row) and the handoff to teardown + create. Only the substrate
+ * calls are mocked, so no cluster is needed.
  */
 function pod(overrides: Partial<PodInfo> = {}): PodInfo {
   return {
@@ -54,8 +51,7 @@ describe('resolveRestartTarget', () => {
   let listSpy: ReturnType<typeof vi.fn<() => Promise<PodInfo[]>>>
 
   beforeEach(async () => {
-    // The real driver, with only its pod listing mocked: this file is about
-    // the resolve-then-restart pipeline, so nothing in it may be faked.
+    // The real driver; only its pod listing is mocked.
     installRealWorkspaceDriver()
     tmpDir = await createTempDataDir()
     listSpy = vi.fn()
@@ -116,8 +112,7 @@ describe('resolveRestartTarget', () => {
   it('takes the tool from the row, for a tool that leaves no transcript', async () => {
     listSpy.mockResolvedValueOnce([])
     await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'ocsess' })
-    // The tool comes from the workspace's first conversation, which create
-    // records alongside the row — a workspace has no tool of its own.
+    // A workspace's tool is its first conversation's tool.
     await recordAgentSessions('demo', 'ocsess', [
       { tool: 'opencode', agentSessionId: 'ocsess' },
     ])
@@ -134,9 +129,8 @@ describe('resolveRestartTarget', () => {
     expect(info.projectSlug).toBe('demo')
   })
 
-  // The sidebar group is the row's, never the pod's — the substrate knows
-  // nothing about it — and the restart carries it so the provisioning row
-  // renders in that section instead of at the top of the list.
+  // The group lives only on the row. The restart carries it so the
+  // provisioning entry shows in that sidebar section.
   it('carries the group the recorded row is filed under', async () => {
     listSpy.mockResolvedValueOnce([])
     await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'grouped1' })
@@ -196,8 +190,8 @@ describe('restartWorkspace', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
-    // A restart holds its id against the reaper for the whole of itself, so
-    // the entry outlives a case that stopped short of the create returning.
+    // A restart marks its id as provisioning (hidden from the reaper); a case
+    // that stops before create returns leaves the mark behind.
     clearAllProvisioningForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
@@ -218,8 +212,7 @@ describe('restartWorkspace', () => {
       resume: true,
       workspaceId: 'abcd1234',
       tool: 'claude',
-      // Nothing was recorded as active, so there is nothing to resume by id —
-      // the workspace comes back with one fresh conversation.
+      // Nothing recorded as active, so it restarts with one new conversation.
       resumeAgentSessions: [],
     }))
     expect(progress.some((m) => m.includes('Stopping session job yaac-demo-abcd1234'))).toBe(true)
@@ -231,9 +224,8 @@ describe('restartWorkspace', () => {
 
     await restartWorkspace('deadbeef')
 
-    // Still one teardown call, with no Job to delete: the reuse-blocking
-    // marks have to be cleared either way or the fresh session renders as
-    // "stopping…".
+    // Teardown still runs with no Job, to clear the stop marks; otherwise
+    // the new session would render as "stopping…".
     expect(cleanupSpy).toHaveBeenCalledWith({
       jobName: null, projectSlug: 'demo', workspaceId: 'deadbeef',
     })
@@ -245,8 +237,8 @@ describe('restartWorkspace', () => {
   })
 
   it('hands create every active conversation in window order, codex\'s pin included', async () => {
-    // Dropping the pin here would shift conv-2 into the `yaac:codex` primary
-    // window; create is what knows never to `codex resume` it.
+    // Without codex's entry, conv-2 would land in the primary `yaac:codex`
+    // window. create decides not to `codex resume` the pinned one.
     listSpy.mockResolvedValueOnce([])
     await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'cafe1234' })
     const sessions = [
@@ -281,18 +273,14 @@ describe('workspaceRestart (CLI shim)', () => {
   })
 
   it('does not attach a terminal to a restarted acp workspace', async () => {
-    // An ACP workspace's agent window runs acpd, so attaching drops the user
-    // into the supervisor's stdio and sits there — create already refuses for
-    // this reason, and a restart has to refuse identically or the CLI hangs
-    // until the attach times out.
+    // Its tmux window only runs acpd; attaching would hang, as on create.
     consumeSpy.mockResolvedValueOnce({ workspaceId: 'w2', jobName: 'j2', mode: 'acp' })
     await expect(workspaceRestart('w2')).resolves.toBe('w2')
     expect(attachSpy).not.toHaveBeenCalled()
   })
 
   it('attaches when the server reports no mode at all', async () => {
-    // A server that predates the field: tui is what every pre-ACP workspace
-    // ran, so the old behaviour is the right fallback.
+    // An older server omits `mode`; treat it as tui.
     consumeSpy.mockResolvedValueOnce({ workspaceId: 'w3', jobName: 'j3' })
     await expect(workspaceRestart('w3')).resolves.toBe('w3')
     expect(attachSpy).toHaveBeenCalledWith('w3', 'native')

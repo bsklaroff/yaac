@@ -24,10 +24,8 @@ import type {
   WorkspaceListEntry,
 } from '@yaac/shared/types'
 
-// The list body, its groups and its row ordering live in WorkspaceList — the
-// mobile workspaces screen shows the same body without this card's chrome.
-// Re-exported here because these are what the workspace's Alt+K/J cycle and
-// the existing tests reach for.
+// The list body lives in WorkspaceList, shared with the mobile screen.
+// Re-exported for App's Alt+K/J row cycling and the tests.
 export {
   sidebarLayout,
   sidebarRowIds,
@@ -36,17 +34,13 @@ export {
 } from '#components/WorkspaceList'
 
 /**
- * The grab strip on the sidebar's right edge. It sits in the gutter *outside*
- * the card — over the pane's padding, clear of the list's scrollbar — and
- * shows a hairline only on hover/focus so the resting layout is unchanged.
+ * The resize strip on the sidebar's right edge. It sits in the gutter outside
+ * the card, clear of the list's scrollbar, and shows a hairline only on
+ * hover/focus.
  *
- * Pointer capture is what makes the drag survive leaving the strip: every
- * move goes to the handle, so a fast drag across a terminal neither loses the
- * pointer nor lets xterm see it. The body class carries the resize cursor and
- * suppresses selection document-wide for the same reason.
- *
- * The z-10 lifts it over the pane it hangs across; the `isolate` on the card's
- * wrapper is what keeps that local (see below).
+ * Pointer capture keeps a fast drag across a terminal from losing the pointer
+ * or leaking events to xterm. A body class sets the resize cursor and blocks
+ * text selection during the drag.
  */
 function ResizeHandle(): JSX.Element {
   const width = useUiStore((s) => s.sidebarWidth)
@@ -106,22 +100,13 @@ function ResizeHandle(): JSX.Element {
 }
 
 /**
- * The desktop workspace list: a resizable card between the project rail and the
- * pane. Header (project actions + new workspace + hide) and status chits, over
- * the shared WorkspaceList body.
+ * The desktop workspace list: a resizable card between the project rail and
+ * the pane, with a header and status chits over the shared WorkspaceList body.
  *
- * The card keeps the `overflow-hidden` that clips rows to its rounded corners,
- * so the drag handle hangs off an outer wrapper that doesn't clip.
- *
- * `isolate`: the handle's z-10 is a private arrangement between it and the
- * pane, and without a stacking context here it would outrank the whole app.
- * Base UI portals every popup to the end of <body> with no z-index of its own,
- * so the strip painted — and hit-tested — above any popup spilling into the
- * gutter. The new-workspace form does: 240px wide, anchored under a button by
- * the card's right edge, its left column landed under the strip, which lit the
- * resize hairline and swallowed the clicks. Confined, the strip still covers
- * the pane (a portal-free sibling below it in paint order) and every popup
- * clears it.
+ * The card clips rows to its rounded corners, so the resize handle hangs off
+ * an unclipped outer wrapper. That wrapper is `isolate` so the handle's z-10
+ * lifts it over the pane but not over Base UI popups (portaled to <body>),
+ * such as the new-workspace form, which would otherwise lose clicks to it.
  */
 export function Sidebar({
   projectSlug,
@@ -136,8 +121,8 @@ export function Sidebar({
   gitAuthFailures,
 }: {
   projectSlug: string | null
-  /** Active project's git remote ('' until the snapshot hydrates) — the
-   *  remove-project dialog's type-to-confirm text. */
+  /** Active project's git remote ('' until the snapshot loads), typed to
+   *  confirm project removal. */
   projectRemoteUrl: string
   workspaces: WorkspaceListEntry[]
   /** The active project's sidebar groups. */
@@ -185,17 +170,12 @@ export function Sidebar({
               </button>
             </div>
           </div>
-          {/* Status chits sit on their own row below the name so a long project
-              name gets the full width of the header strip above. Collapses to
-              nothing (empty:hidden) when no chit has anything to show. */}
+          {/* Status chits get their own row so a long project name keeps the full
+              header width. Hidden when empty. */}
           <div className="flex items-center gap-2 px-4 pb-2 empty:hidden">
             <UsageBadge />
-            {/* App-scoped, not project-scoped, but it belongs with the other
-                chits: the header strip above is the project's. */}
             <ServerBadge />
             <ImageBuildIndicator projectSlug={projectSlug} />
-            {/* Project-wide: the stored credential is the project's, so the
-                flag lives on the project header, not on individual workspaces. */}
             {projectSlug && gitAuthFailures.length > 0 && (
               <GitAuthFailureBadge
                 projectSlug={projectSlug}

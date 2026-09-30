@@ -10,19 +10,16 @@ type ProvisionOp = (
 ) => Promise<{ workspaceId: string }>
 
 /**
- * Run a workspace provision (create, or restart-from-deleted) with the shared
- * optimistic flow: drop an immediate provisioning row (sidebar + selectable),
- * auto-open it so the creator watches progress in the main pane, and stream
- * progress/error into it until the server snapshot takes over (App prunes the
- * optimistic copy once its `provisioning[]` or `workspaces[]` includes the id).
- * A create that claims a prewarmed spare lists under the spare's id instead;
- * the selection follows it there (`claims` in the store).
+ * Run a workspace create or restart optimistically: add a provisioning row
+ * right away, open it so progress shows in the main pane, and stream
+ * progress or errors into it until the snapshot lists the workspace (App then
+ * drops the optimistic row). A create that claims a prewarmed spare is
+ * listed under the spare's id, and the selection follows it (`claims` in the
+ * store).
  *
- * `groupId` is the sidebar group the row belongs in — a restart passes the
- * stopped workspace's, so the row renders in that section from the first frame
- * rather than at the top of the list until the server's own entry lands.
- * `named` is the model a create launches with, so the row names it from the
- * first frame too.
+ * `groupId` places the row in its sidebar group from the start (a restart
+ * passes the stopped workspace's group). `named` is the model a create
+ * launches with, so the row can show it from the start.
  */
 export function useProvisionWorkspace(): (
   projectSlug: string,
@@ -43,15 +40,13 @@ export function useProvisionWorkspace(): (
   return useCallback((projectSlug, tool, kind, workspaceId, op, groupId, named) => {
     const filed = { ...(groupId !== undefined ? { groupId } : {}), ...named }
     addOptimisticProvisioning({ workspaceId, projectSlug, tool, kind, ...filed, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
-    openWorkspace(projectSlug, workspaceId) // auto-open the locally-initiated provision
+    openWorkspace(projectSlug, workspaceId)
     setProvisionInFlight(workspaceId, true)
     void op(workspaceId, (message) => updateOptimisticProvisioning(workspaceId, { message }))
       .then((res) => {
-        // A create that claimed a prewarmed spare returns the spare's own id
-        // (a running pod's id can't be re-keyed). The server's row usually
-        // said so already; recording it here too covers a row that resolved
-        // before any snapshot carried the claim. The selection follows it
-        // once the spare lists (resolveVacantSelection).
+        // A create that claimed a prewarmed spare returns the spare's id.
+        // The snapshot usually reports the claim first; this covers a create
+        // that finished before any snapshot did.
         if (res.workspaceId !== workspaceId) {
           recordClaim(workspaceId, res.workspaceId)
           removeOptimisticProvisioning(workspaceId)
@@ -60,8 +55,7 @@ export function useProvisionWorkspace(): (
       .catch((e: unknown) => {
         updateOptimisticProvisioning(workspaceId, { error: e instanceof Error ? e.message : 'failed' })
       })
-      // After the claim is recorded, so a selection waiting on this
-      // provision is never let go before it knows where to follow.
+      // After recording the claim, so a waiting selection knows where to go.
       .finally(() => setProvisionInFlight(workspaceId, false))
   }, [
     addOptimisticProvisioning, updateOptimisticProvisioning, removeOptimisticProvisioning,

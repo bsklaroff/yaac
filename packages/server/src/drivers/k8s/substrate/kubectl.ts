@@ -1,24 +1,21 @@
 import { exec, execFile, type ExecFileOptions } from 'node:child_process'
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
-// Install IDENTITY, not storage — the label hash must stay stable when
-// the storage tiers split (see dataDirHash below).
+// Used as the install's identity, not for storage (see dataDirHash).
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getDataDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
 
 /**
- * Output a child may buffer. Node's 1 MiB default is well inside what a
- * `-o json` listing or an exec'd `cat` can print, and overrunning it kills
- * the child and fails the call however healthy the cluster is.
+ * Output a child may buffer. Node's 1 MiB default is too small for a large
+ * `-o json` listing or an exec'd `cat`, and overrunning it fails the call.
  */
 const MAX_EXEC_BUFFER = 64 << 20
 
 const execFileRaw = promisify(execFile)
 const execAsync = promisify(exec)
 
-/** Promisified `execFile`, bounded by {@link MAX_EXEC_BUFFER} rather than
- *  Node's default unless the caller names a bound of its own. */
+/** Promisified `execFile` with {@link MAX_EXEC_BUFFER} as the default. */
 export function execFileAsync(
   file: string,
   args: readonly string[],
@@ -28,34 +25,25 @@ export function execFileAsync(
 }
 
 /**
- * Namespace that holds every yaac kubernetes object (workspace Jobs, the
- * proxy Deployment/Service, the CA ConfigMap, the auth Secret).
- * `YAAC_K8S_NAMESPACE` is a test-only hook so e2e runs can isolate their
- * objects in per-test-file namespaces (see TEST_NAMESPACE in
- * test/helpers/setup.ts).
+ * Namespace that holds every yaac Kubernetes object. Tests override it with
+ * `YAAC_K8S_NAMESPACE` to isolate each run (packages/test-utils/src/setup.ts).
  */
 export function k8sNamespace(): string {
   return testEnv.k8sNamespace
 }
 
 /**
- * Hash of the data dir used as a label value. Kubernetes label values
- * cannot contain `/`, so the raw path (today's `yaac.data-dir` podman
- * label) can't be carried over — the hash keeps the same property of
- * scoping queries to this yaac install while staying label-safe.
- *
- * Hashes the install root, not a storage tier: this is an identity, not a
- * place to put bytes, and it must stay stable when the tiers split.
+ * Hash of the data dir, used as a label value to scope queries to this
+ * install (label values cannot contain `/`). Hashes the install root rather
+ * than a storage tier so it stays stable if storage locations change.
  */
 export function dataDirHash(): string {
   return crypto.createHash('sha256').update(getDataDir()).digest('hex').slice(0, 16)
 }
 
 /**
- * Stderr patterns that indicate a transient kubectl / API-server failure
- * worth retrying. These are NOT "the object is actually gone" — they're
- * apiserver restarts, etcd hiccups, and connection races that usually
- * resolve on their own.
+ * Stderr patterns for transient kubectl / API-server failures (apiserver
+ * restarts, etcd hiccups, connection races) that are worth retrying.
  */
 const TRANSIENT_KUBECTL_PATTERNS = [
   'connection refused',
@@ -70,9 +58,7 @@ const TRANSIENT_KUBECTL_PATTERNS = [
   'temporarily unavailable',
   'too many requests',
   'error dialing backend',
-  // `kubectl exec job/<name>` resolves the job's pod first; during pod
-  // startup/replacement the exec subresource briefly 404s with this even
-  // though the pod is coming up.
+  // `kubectl exec job/<name>` briefly fails with this while the pod starts.
   'unable to upgrade connection',
 ]
 
@@ -88,18 +74,11 @@ export function isNotFoundKubectlError(stderr: string): boolean {
 }
 
 /**
- * kubectl's vocabulary for "this genuinely is not there", as opposed to "I
- * could not ask" — a missing OBJECT (`isNotFoundKubectlError`) or a
- * resource type the cluster does not serve at all, which is the normal
- * shape of a Calico CRD on a provider-managed install.
- *
- * The distinction is load-bearing wherever absence is a FACT with meaning
- * rather than merely a failure: `--byo` reads "no FelixConfiguration"
- * as "Felix runs its iptables defaults" and proceeds, so an RBAC denial or
- * a timeout that collapsed into absence would license exactly the eBPF
- * cluster the gate exists to refuse. Takes the whole error (not just
- * stderr) because callers reach kubectl through different runners, and
- * execFile puts some failures only in `message`.
+ * True when kubectl says the object, or its whole resource type, does not
+ * exist (e.g. a Calico CRD on a provider-managed cluster), as opposed to
+ * failing to ask. Callers such as the `--byo` gates treat absence as a
+ * fact, so an RBAC denial or timeout must not count as absence. Takes the
+ * whole error because execFile puts some failures only in `message`.
  */
 export function isKubectlAbsentError(err: unknown): boolean {
   const text = [
@@ -107,18 +86,12 @@ export function isKubectlAbsentError(err: unknown): boolean {
     err instanceof Error ? err.message : String(err),
   ].join(' ')
 
-  // A failure of the machinery IN FRONT of the object is never the
-  // object's absence, and it can carry the same words: a broken
-  // conversion/admission webhook fails with `Internal error occurred:
-  // failed calling webhook …: service "calico-apiserver" not found`, whose
-  // trailing `not found` is about the WEBHOOK'S service. Classifying that
-  // as absence on the FelixConfiguration read would mean "Felix runs its
-  // iptables defaults" on a cluster whose Felix config was unknowable —
-  // exactly the inversion this predicate exists to prevent. Checked first,
-  // so no later pattern can rescue it.
+  // A broken webhook fails with e.g. `failed calling webhook …: service
+  // "calico-apiserver" not found`. That `not found` is about the webhook,
+  // not the object, so rule it out before the patterns below.
   if (/failed calling webhook|internal error occurred/i.test(text)) return false
 
-  // kubectl's own shapes, anchored rather than matched as bare substrings:
+  // kubectl's messages for absence:
   //   Error from server (NotFound): daemonsets.apps "calico-node" not found
   //   error: the server doesn't have a resource type "felixconfigurations"
   //   error: no matches for kind "FelixConfiguration" in version "…"
@@ -132,14 +105,9 @@ export function isKubectlAbsentError(err: unknown): boolean {
 }
 
 /**
- * The one line of a kubectl failure worth showing a user.
- *
- * kubectl narrates client-go's retries through klog first (`E0806
- * 12:00:00.000000 1234 memcache.go:265] "Unhandled Error" err=...`) and
- * only then prints its own diagnosis ("The connection to the server ... was
- * refused"). Taking the first line yields five near-identical walls of klog
- * across five failed checks and buries the sentence that says what to fix,
- * so klog lines are skipped in favour of the real message.
+ * The one line of a kubectl failure worth showing a user. kubectl prints
+ * klog retry noise (`E0806 12:00:00.000000 1234 memcache.go:265] ...`)
+ * before its own diagnosis, so klog lines are skipped.
  */
 export function kubectlErrorSummary(err: unknown): string {
   const raw = [
@@ -165,10 +133,9 @@ export interface KubectlExecOptions {
 }
 
 /**
- * The shared attempt loop behind both kubectl runners: retry `run` while
- * `stderrOf(err)` matches a transient API-server error, backing off
- * `baseDelay * 2^(attempt-1)` capped at 3200ms. Non-transient failures
- * (and the final attempt) rethrow the original error.
+ * Retry `run` while `stderrOf(err)` looks transient, with exponential
+ * backoff capped at 3200ms. Other failures, and the last attempt, rethrow
+ * the original error.
  */
 export async function retryTransient<T>(
   run: () => Promise<T>,
@@ -194,10 +161,8 @@ export async function retryTransient<T>(
 }
 
 /**
- * Run `kubectl` with retries on transient API-server errors. Non-transient
- * failures throw immediately, preserving the original error. The `-n
- * <namespace>` flag is NOT added implicitly — callers pass it so that
- * cluster-scoped calls (namespaces, version) stay valid.
+ * Run `kubectl` with retries on transient API-server errors. Callers pass
+ * `-n <namespace>` themselves, so cluster-scoped calls work too.
  */
 export async function kubectlWithRetry(
   args: string[],
@@ -231,25 +196,17 @@ function execFileWithInput(
         }
       },
     )
-    // A dead child's stdin raises 'error' (EPIPE), and an unhandled 'error'
-    // on a stream takes the whole process down — the server exiting by
-    // uncaught exception instead of running its shutdown handler, so the
-    // lock file it should have removed outlives it. The child dying before
-    // it reads is normal here rather than exceptional: a shutdown SIGTERMs
-    // the process group, killing these kubectl children while a call is
-    // still writing. The exec callback above already reports the failure
-    // through the promise, so this listener only has to stop the throw.
+    // Writing to a dead child's stdin raises EPIPE, and an unhandled stream
+    // error would crash the server (e.g. during shutdown, which kills these
+    // children mid-write). The exec callback already reports the failure.
     child.stdin?.on('error', () => { /* reported via the exec callback */ })
     child.stdin?.end(input)
   })
 }
 
 /**
- * Async kubectl exec with retries, matching `kubectlWithRetry`'s retry
- * behavior but accepting a full shell command string so callers that rely
- * on shell features (sh -c "...", single-quoted args) don't have to split
- * args manually. Runs in the Node event loop — does not block the server's
- * HTTP server.
+ * Like `kubectlWithRetry`, but takes a full shell command string for
+ * callers that rely on shell quoting.
  */
 export async function shellKubectlWithRetry(
   command: string,
@@ -266,11 +223,7 @@ export async function shellKubectlWithRetry(
   )
 }
 
-/**
- * `kubectl ... -o json` parsed. Returns null when the object is absent
- * instead of throwing, so callers can express "get if exists" without
- * try/catch noise.
- */
+/** `kubectl ... -o json`, parsed; null when the object does not exist. */
 export async function kubectlGetJson<T>(args: string[], opts: KubectlExecOptions = {}): Promise<T | null> {
   try {
     const { stdout } = await kubectlWithRetry([...args, '-o', 'json'], opts)
@@ -282,10 +235,7 @@ export async function kubectlGetJson<T>(args: string[], opts: KubectlExecOptions
   }
 }
 
-/**
- * `kubectl apply -f -` with a manifest object piped on stdin. Server-side
- * idempotent — the canonical "ensure this object exists with this spec".
- */
+/** `kubectl apply -f -` with the manifest piped on stdin. */
 export async function kubectlApply(manifest: object, opts: KubectlExecOptions = {}): Promise<void> {
   await kubectlWithRetry(['apply', '-f', '-'], { ...opts, input: JSON.stringify(manifest) })
 }

@@ -19,35 +19,20 @@ export async function ensureProjectExists(slug: string): Promise<void> {
 }
 
 /**
- * In-flight `listActiveWorkspaces` calls keyed by `projectFilter ?? ''`.
- * The webapp does not poll this — it hydrates from pushed snapshots — but
- * a snapshot rebuild, a CLI read and a route can still overlap, and each
- * call is a full substrate observation. Overlapping ones share a single
- * execution; each entry is cleared when its Promise settles.
+ * In-flight `listActiveWorkspaces` calls by `projectFilter ?? ''`. Each call
+ * is a full substrate observation, so overlapping callers share one.
  */
 const listActiveInflight = new Map<string, Promise<ActiveWorkspacesResult>>()
 
-/**
- * Test-only: drop in-flight state so test cases that mock different
- * underlying behavior don't see each other's shared promise.
- */
+/** Test helper: drop shared in-flight calls between test cases. */
 export function _clearListActiveInflightForTests(): void {
   listActiveInflight.clear()
 }
 
 /**
- * The active-workspace rows the renderer displays, and the stale set the caller
- * is expected to tear down.
- *
- * This is the JOIN. The runtime reports what its substrate can see right now
- * (the runtime's `observe`); everything else here is what only the server knows —
- * the title a user typed, the pin they set, the creation time that has to
- * survive a restart the runtime did not, and the conversations a workspace
- * has hosted with their opening messages. Neither half can answer alone
- * (docs/layered-server.md).
- *
- * Concurrent calls with the same `projectFilter` share one in-flight
- * Promise (see `listActiveInflight`).
+ * Active workspaces for display, plus the stale set the caller should tear
+ * down. Joins what the runtime observes now with recorded rows (title,
+ * group, creation time, conversations) (docs/layered-server.md).
  */
 export async function listActiveWorkspaces(projectFilter?: string): Promise<ActiveWorkspacesResult> {
   const key = projectFilter ?? ''
@@ -61,15 +46,11 @@ export async function listActiveWorkspaces(projectFilter?: string): Promise<Acti
 }
 
 async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveWorkspacesResult> {
-  // Whether a project exists is the server's own record, so it is checked
-  // here rather than derived from the runtime, which only knows what it is running.
   if (projectFilter) await ensureProjectExists(projectFilter)
 
   const report = await observeWorkspaces(projectFilter)
 
-  // Recorded state — prompt, title, base branch, pin — one query per project
-  // for both live and terminating workspaces (the latter keep their title and
-  // pin on the way out).
+  // Rows and conversations are read with one query per project each.
   const rowSlugs = [...new Set(report.workspaces.map((w) => w.projectSlug).filter((v) => !!v))]
   const rowsBySlug = new Map(await Promise.all(
     rowSlugs.map(async (slug) => [slug, await getProjectWorkspaceRows(slug)] as const),
@@ -77,8 +58,6 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
   const rowFor = (w: WorkspaceRuntimeReport): WorkspaceRow | undefined =>
     w.projectSlug && w.workspaceId ? rowsBySlug.get(w.projectSlug)?.get(w.workspaceId) : undefined
 
-  // The conversations inside each workspace, one query per project — the same
-  // shape as the rows above, so a snapshot never pays per row.
   const idsBySlug = new Map<string, string[]>()
   for (const w of report.workspaces) {
     if (!w.projectSlug || !w.workspaceId) continue
@@ -100,22 +79,16 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       workspaceId: w.workspaceId,
       projectSlug: w.projectSlug,
       tool: w.tool,
-      // The recorded creation time, which — unlike the runtime's — survives a
-      // restart. A workspace whose row has not landed yet falls back to what
-      // the runtime saw.
+      // The recorded time survives a runtime restart; fall back if no row yet.
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),
-      // The founding ask is the first conversation's opening message — the
-      // workspace has none of its own.
       prompt: links[0]?.firstPrompt,
       title: row?.title,
       groupId: row?.groupId,
       ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
     }
     if (w.phase === 'terminating') {
-      // A distinct, non-interactive placeholder: no ports, and a forced
-      // `running` so no attention badge fires on a row on its way out. Its
-      // conversations go out without live status, only so the row can keep
-      // naming the model they last answered as.
+      // Non-interactive placeholder: no ports, and `running` so no attention
+      // badge fires. Conversations are kept only to show the model.
       return {
         ...base,
         status: 'running',
@@ -138,8 +111,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
     }
   })
 
-  // Project-wide git credential failures — independent of the workspace set
-  // (a bad token persists with zero running workspaces and blocks new ones).
+  // Project-wide, so reported even with no running workspaces.
   const gitAuthFailures = projectFilter
     ? (report.gitAuthFailures[projectFilter]
       ? { [projectFilter]: report.gitAuthFailures[projectFilter] }
@@ -150,11 +122,10 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
 }
 
 /**
- * A live conversation's own busy/idle, joined onto the runtime's per-handle
- * liveness by the handle this conversation was last seen on — a tmux pane id
- * under `tui`, the acpd window name under `acp`. A conversation with no live
- * handle (the workspace's history) has none, which is how a client tells
- * "still open" from "was open".
+ * A conversation's running/waiting status, matched by the handle it was last
+ * seen on (tmux pane id under `tui`, acpd window name under `acp`).
+ * Undefined for inactive conversations, which lets clients tell "open" from
+ * "was open".
  */
 function liveStatus(
   agents: AgentLiveness[],

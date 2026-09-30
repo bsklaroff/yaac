@@ -3,10 +3,8 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 
 /**
- * Resolve the user's preferred terminal editor, matching git's convention.
- * `$EDITOR` wins, then `$VISUAL`, then `vi` as a last resort. Whitespace
- * is split so values like `EDITOR="code -w"` produce a multi-arg invocation
- * (no shell, so paths can't be misinterpreted as shell metacharacters).
+ * Resolve the user's editor: `$EDITOR`, then `$VISUAL`, then `vi`. The value
+ * is split on whitespace so `EDITOR="code -w"` works without a shell.
  */
 // eslint-disable-next-line no-process-env -- DI seam reading EDITOR/VISUAL; tests inject a fake env.
 export function resolveEditor(env: NodeJS.ProcessEnv = process.env): { cmd: string; args: string[] } {
@@ -16,10 +14,9 @@ export function resolveEditor(env: NodeJS.ProcessEnv = process.env): { cmd: stri
 }
 
 /**
- * Open `filePath` in the user's editor, creating the parent directory
- * first so the editor can save into a fresh location. Inherits stdio so
- * full-screen editors (vim, nano) render normally. Resolves on a clean
- * exit; rejects on spawn error or non-zero exit code.
+ * Open `filePath` in the user's editor with inherited stdio, creating the
+ * parent directory first. Rejects if the editor fails to start or exits
+ * non-zero.
  */
 // eslint-disable-next-line no-process-env -- DI seam; tests inject a fake env.
 export async function editFile(filePath: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {

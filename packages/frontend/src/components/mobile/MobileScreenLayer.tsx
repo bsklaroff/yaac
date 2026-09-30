@@ -2,21 +2,13 @@ import type { JSX, ReactNode } from 'react'
 import clsx from 'clsx'
 
 /**
- * One of the mobile shell's stacked screens.
+ * One of the stacked mobile screens. All screens stay mounted and laid out;
+ * inactive ones use `visibility: hidden` rather than `display: none`, because
+ * WorkspaceView sizes terminals from measured pixels and a zero-size box
+ * would force a resize round-trip on return.
  *
- * All three screens stay mounted and stay *laid out*; only one is visible.
- * That is not an optimization, it is a correctness requirement for the pane:
- * WorkspaceView positions every terminal by measured pixels (a ResizeObserver
- * feeds `computeColumns`, which feeds each pane's absolute rect), so a
- * `display: none` ancestor would collapse every rect to zero and make coming
- * back cost a full resize round-trip to the pod. `visibility: hidden` keeps
- * the box measured — the same trick WorkspaceView already uses for its own
- * off-screen panes.
- *
- * Deliberately not a translated `300vw` strip, tempting as the slide
- * animation is: a transformed ancestor becomes the containing block for
- * `position: fixed` descendants, which would silently relocate any
- * non-portaled overlay inside a screen.
+ * No slide transform: a transformed ancestor becomes the containing block for
+ * `position: fixed` children and would misplace non-portaled overlays.
  */
 export function MobileScreenLayer({
   active,

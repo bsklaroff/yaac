@@ -12,11 +12,9 @@ import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 
 describe('PI_BUSY_MARKERS', () => {
   it('pins the tmux-ERE busy markers the status format searches for', () => {
-    // Encoded into a tmux content-search format by busyStatusFormat
-    // (status-watcher.ts) and validated against a live tmux by
-    // test-playwright-scripts/verify-tmux-status-format.js. The interrupt
-    // hint covers "esc to interrupt" / "esc to cancel" / "esc to stop"; the
-    // working hint covers thinking/working/generating/streaming/running.
+    // Turned into a tmux format by busyStatusFormat (agent-tools.ts);
+    // test-playwright-scripts/verify-tmux-status-format.js checks them
+    // against a live tmux.
     expect(PI_BUSY_MARKERS).toEqual([
       'esc\\s+(to\\s+)?(interrupt|cancel|stop)',
       '\\b(thinking|working|generating|streaming|running)\\b',

@@ -14,8 +14,8 @@ import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { installSecurityContext } from '@yaac/server/drivers/k8s/substrate'
-// Setup values: the nested tier's volume, path and caps, so this pod is
-// shaped like the one buildPodJobManifest emits without re-deriving them.
+// The nested tier's volume, path and caps, so this pod matches what
+// buildPodJobManifest emits.
 import {
   NESTED_ENGINE_CAPS,
   NESTED_GRAPHROOT_ANNOTATIONS,
@@ -31,33 +31,24 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 
 /**
- * The arbitrary-uid pattern, end to end (docs/arbitrary-uid-images.md): a
- * workspace pod running as a uid that appears nowhere in its image must still
- * be `yaac` in every way that matters — own its home, sudo to root, and be
- * found by name.
+ * Arbitrary-uid images end to end (docs/arbitrary-uid-images.md): a
+ * workspace pod running as a uid its image doesn't know must still act as
+ * `yaac`: own its home, sudo to root, and be found by name.
  *
- * This is the only automated evidence the machinery does anything. Every
- * other tier runs on a host whose uid is 1000, which is exactly the number
- * the image bakes, so the whole mechanism is a no-op there and a regression
- * would be invisible until someone installed on macOS. So the pod here is
- * pinned to a uid and gid that belong to NOBODY — not the image's 1000, not
- * group 0 — leaving the supplementary group 0 as the only thing that can
- * make the image's files writable.
+ * Other tiers run on hosts with uid 1000, the uid the image bakes in, so
+ * they never exercise this. Here the uid and gid belong to nobody, leaving
+ * the supplementary group 0 as the only way to write the image's files.
  *
- * It runs the shipped `yaac-workspace-init` as its real postStart hook rather
- * than a copy of the interesting lines, so the passwd rewrite under test is
- * the one a workspace actually gets, and the hook's own `set -eu` means the
- * pod does not reach Ready unless the whole script survived at this uid.
- *
- * Nested, because the engine start is where the rewrite's subtlest property
- * shows up: it chowns the podman socket to `yaac` BY NAME, which lands on
- * the image's uid 1000 instead of on us if the entry were appended rather
- * than replaced.
+ * The pod runs the shipped `yaac-workspace-init` as its postStart hook, and
+ * the script's `set -eu` keeps the pod from reaching Ready if any step fails.
+ * It uses the nested engine because the engine start chowns the podman
+ * socket to `yaac` by name, which only lands on this uid if the init script
+ * replaced the image's passwd entry rather than appending one.
  */
 
 const ARBITRARY_UID = 4321
-// Deliberately not 0 and not the image's 1000: if the pod could write its
-// home through its primary group, this test would pass for the wrong reason.
+// Not 0 and not the image's 1000, so the primary group can't be what makes
+// the home writable.
 const ARBITRARY_GID = 4322
 
 const POD = `yaac-arbitrary-uid-${crypto.randomBytes(4).toString('hex')}`
@@ -110,8 +101,7 @@ async function waitForPodReady(timeoutMs = 300_000): Promise<void> {
     const pod = await kubectlGetJson<RawPod>(['get', 'pod', POD, '-n', k8sNamespace()])
     last = pod?.status?.phase ?? 'Unknown'
     const ready = pod?.status?.conditions?.find((c) => c.type === 'Ready')
-    // Ready is the gate, not Running: the postStart hook holds the Ready
-    // transition, so this waits for yaac-workspace-init to have finished.
+    // The postStart hook holds back Ready, not Running.
     if (ready?.status === 'True') return
     if (last === 'Failed' || last === 'Succeeded') {
       const state = JSON.stringify(pod?.status?.containerStatuses?.[0]?.state ?? {})
@@ -132,8 +122,7 @@ beforeAll(async () => {
   restoreNamespace = useTestNamespace()
   await ensureNamespace()
 
-  // The real staged script, mounted where a workspace pod gets it. Staging
-  // is what a create does, and the File mount is how it lands on PATH.
+  // The real staged script, mounted where a workspace pod gets it.
   const binDir = await e2eMkdtemp('yaac-arbitrary-uid-')
   const staged = await stageWorkspaceBin(workspaceBinDir(), binDir)
   expect(staged).toContain(WORKSPACE_INIT_SCRIPT)
@@ -154,9 +143,6 @@ beforeAll(async () => {
       ...runtimeClassSpec({ nested: true }),
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },
-        // The production identity helper, handed a uid and gid this
-        // cluster's host does not have. `supplementalGroups` is the part
-        // under test and comes from the real helper.
         ...installSecurityContext({ uid: ARBITRARY_UID, gid: ARBITRARY_GID }),
       },
       containers: [{
@@ -193,11 +179,8 @@ beforeAll(async () => {
           name: NESTED_GRAPHROOT_VOLUME,
           emptyDir: { sizeLimit: String(NESTED_GRAPHROOT_SIZELIMIT_BYTES) },
         },
-        // A real workspace gets a hostPath the server pre-created; an
-        // emptyDir stands in, and the kubelet creates it 0777, so the tmux
-        // socket dir needs no fsGroup. Leaving it off keeps this pod's
-        // securityContext identical to what buildPodJobManifest stamps,
-        // bar the two swapped ids.
+        // Stands in for the server's pre-created hostPath. The kubelet
+        // creates it 0777, so no fsGroup is needed.
         { name: 'tmux', emptyDir: {} },
       ],
     },
@@ -216,48 +199,40 @@ afterAll(async () => {
 describe('a workspace pod running as a uid no image knows', () => {
   it('answers to the yaac name, and to nothing else', async () => {
     expect(await ok('id -u')).toBe(String(ARBITRARY_UID))
-    // getpwuid and getpwnam must resolve to each other. The rewrite REPLACES
-    // the image's entry: a second `yaac` line would leave name lookups on
-    // the first, and every `chown yaac` in the pod would miss.
+    // A second `yaac` passwd line would send name lookups to the image's
+    // entry, and every `chown yaac` would miss.
     expect(await ok('id -un')).toBe('yaac')
     expect(await ok('getent passwd yaac')).toContain(`yaac:x:${ARBITRARY_UID}:${ARBITRARY_GID}`)
     expect(await ok('grep -c "^yaac:" /etc/passwd')).toBe('1')
-    // The pod is in group 0 and NOT in the image's own group — group 0 is
-    // doing all the work here.
     expect(await ok('id -G')).toContain('0')
     expect(await ok('id -g')).toBe(String(ARBITRARY_GID))
   })
 
   it('sudos to root and resolves an ssh identity', async () => {
-    // The image's NOPASSWD line names the USER, so this is the passwd
-    // rewrite's most load-bearing consumer: without it the agent cannot
-    // install a package mid-workspace.
+    // The image's NOPASSWD sudoers line names the user, so it needs the
+    // passwd entry.
     expect(await ok('sudo -n id -u')).toBe('0')
-    // ssh does not degrade without a passwd entry — it exits 255 with "No
-    // user exists for uid", which would take out git over ssh entirely.
+    // Without a passwd entry ssh exits 255 ("No user exists for uid").
     await ok('ssh -G github.com >/dev/null')
   })
 
   it('owns its home: the shell, the agent CLIs and their config all work', async () => {
     await ok('touch ~/.arbitrary-uid-probe')
     await ok('mkdir -p ~/.cache/probe/nested && echo hi > ~/.cache/probe/nested/f')
-    // npm writes ~/.npmrc 0600 regardless of umask, so this is a mode the
-    // build had to fix rather than one the umask covered.
+    // npm writes ~/.npmrc 0600 regardless of umask.
     await ok('npm config set fund false')
     await ok('git config --global user.name probe')
     // node and zsh both read the identity through getpwuid, not $HOME.
     expect(await ok('node -e "console.log(require(\'os\').userInfo().username)"')).toBe('yaac')
     expect(await ok('zsh -ic "print -P %n"')).toContain('yaac')
-    // The agent CLIs are the reason the image exists.
     await ok('claude --version')
     await ok('codex --version')
   })
 
   it('leaves no directory in the image that the pod can neither own nor write', async () => {
-    // The class of regression this guards: a tool that picks its own modes
-    // (the Claude installer's 0700 ~/.claude/sessions did) leaves a
-    // directory nothing can write at any uid but the image's own. It builds
-    // fine and works on a uid-1000 host, which is every developer host.
+    // A tool that sets its own modes (e.g. a 0700 ~/.claude/sessions from
+    // the Claude installer) leaves a dir only uid 1000 can write, which no
+    // uid-1000 dev host would notice.
     const stuck = await ok(
       `find "$HOME" -xdev -type d ! -perm -g+w ! -user ${ARBITRARY_UID} -printf '%M %p\\n'`,
       120_000,
@@ -266,19 +241,14 @@ describe('a workspace pod running as a uid no image knows', () => {
   })
 
   it('runs the nested engine, whose socket it is handed by name', async () => {
-    // The engine is started by the hook in the background; the server gates
-    // on `docker version` the same way.
-    // `break`, never `exit`: the exec wrapper appends its own exit-code
-    // marker, and an `exit` here would take the shell down before it printed.
+    // The hook starts the engine in the background. Use `break`, not
+    // `exit`: the exec wrapper prints an exit-code marker after the script.
     await ok(
       'for i in $(seq 1 60); do docker version >/dev/null 2>&1 && break; sleep 2; done; '
       + 'docker version >/dev/null',
       180_000,
     )
-    // `chown yaac /run/podman/podman.sock` runs as root inside the engine
-    // start script and resolves the NAME. It has to land on the uid this
-    // pod is actually running as, which is only true because the rewrite
-    // replaced the image's entry instead of adding one.
+    // The engine start script runs `chown yaac` on the socket by name.
     expect(await ok('stat -c %u /run/podman/podman.sock')).toBe(String(ARBITRARY_UID))
   })
 })

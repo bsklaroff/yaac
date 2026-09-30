@@ -5,64 +5,56 @@ import path from 'node:path'
 import { serverLocalPath } from '@yaac/shared/paths'
 
 /**
- * The one way the server starts git (docs/server-git.md).
+ * The only way the server starts git (docs/server-git.md).
  *
- * A project's main clone is the server's, but until its last linked
- * checkout is converted (`adoptLinkedCheckout`) a legacy pod may still hold
- * its `.git` mounted read-write, so anything git reads from it may have been
- * written by an agent. Git has no switch to ignore a repository's config,
- * and that config can name commands for git to run (filter drivers,
- * fsmonitor, credential helpers) under names only its writer knows. So git
- * never reads it: each call runs against a throwaway git dir holding an
- * allowlisted COPY of the config, read once, with the real object store and
- * refs linked in. A pod rewriting its config mid-call changes nothing,
- * because git never opens that file.
+ * Until a project's last linked checkout is converted
+ * (`adoptLinkedCheckout`), a legacy pod may have its main clone's `.git`
+ * mounted read-write. Git can't be told to ignore a repo's config, and config
+ * can make git run commands (filter drivers, fsmonitor, credential helpers).
+ * So each call runs against a throwaway git dir with an allowlisted copy of
+ * the config, read once, and the real objects and refs linked in; git never
+ * opens the real config.
  */
 
 /** What a call runs against. */
 export type GitTarget =
-  /** The project's clone itself — no work tree. */
+  /** The project's main clone, with no work tree. */
   | { kind: 'repo'; repoPath: string }
   /** A git dir only the server has written and no workspace can see yet (a
-   *  checkout being staged), used as it is. */
+   *  checkout being staged), used directly. */
   | { kind: 'private'; gitDir: string; workTree?: string }
   /** No repository yet (a clone), or one file read with `--file`. */
   | { kind: 'none' }
 
 export interface GitRunOptions {
-  /** The environment the credential needs (ssh command, Tor proxy); the
-   *  full env, as `gitEnvForCredential` builds it. */
+  /** The full env from `gitEnvForCredential` (ssh command, Tor proxy). */
   env?: NodeJS.ProcessEnv
-  /** The remote this call talks to, when it talks to one. Only its
-   *  transport is allowed; every call without one may use none. */
+  /** The remote this call talks to, if any. Only its transport is allowed;
+   *  without it, no transport is. */
   remoteUrl?: string
 }
 
-/** The only keys the copy keeps: what git needs to read the repository at
- *  all. Everything else — every driver, hook, URL, helper and include — is
- *  dropped, so a key git grows later is dropped too. */
+/** The only config keys the copy keeps, the minimum git needs to read the
+ *  repo. Everything else is dropped, including keys future git adds. */
 const KEPT_KEYS = /^(core\.repositoryformatversion|extensions\.(objectformat|refstorage))$/
 
-/** Entries of the real git dir the throwaway one links. No `config` (it is
- *  the copy), no `hooks`, no `modules` (a submodule's git dir brings its
- *  own config), no `gc.pid` (`maintainRepo` runs gc in the throwaway dir,
- *  in the foreground). */
+/** Entries of the real git dir linked into the throwaway one. Excluded:
+ *  `config` (copied), `hooks`, `modules` (submodule git dirs carry their own
+ *  config), and `gc.pid` (`maintainRepo` runs gc in the foreground here). */
 const LINKED = ['objects', 'refs', 'packed-refs', 'logs', 'worktrees', 'info', 'shallow']
-/** The linked directories that must exist for a write to land through the
- *  link: git creates `logs/…` on demand. Not `worktrees`: its absence is
- *  how a converted project is told from one still holding linked
- *  checkouts. */
+/** Linked directories created up front so writes through the link land.
+ *  Not `worktrees`: its absence marks a fully converted project. */
 const ENSURED_DIRS = ['logs', 'info']
 
-/** Pinned on every call, on the command line, which beats any config. */
+/** Set on the command line for every call, overriding any config. */
 const PINS = [
   'core.hooksPath=/dev/null',
   'core.fsmonitor=false',
   'submodule.recurse=false',
   'fetch.recurseSubmodules=false',
   'diff.ignoreSubmodules=all',
-  // No auto gc: one detaches and would outlive the throwaway git dir, and a
-  // default gc prunes objects clones borrow. `maintainRepo` is the one gc.
+  // No auto gc: it detaches and would outlive the throwaway dir, and default
+  // gc prunes objects clones borrow. Only `maintainRepo` runs gc.
   'gc.auto=0',
   'maintenance.auto=false',
   'protocol.allow=never',
@@ -102,11 +94,9 @@ export async function runGit(target: GitTarget, args: string[], opts: GitRunOpti
 }
 
 /**
- * Values of `key` in the repository's config, read from a copy the same way
- * `runGit` reads it — for the data a server reads back out of config
- * (`branch.<name>.merge` when a linked checkout is converted, the
- * never-prune keys), which the copy `runGit` builds does not keep. Empty
- * when the key is unset.
+ * Values of `key` in the repo's config, read from a one-time copy like
+ * `runGit` does. For keys `runGit`'s copy drops (`branch.<name>.merge` during
+ * conversion, the never-prune keys). Empty when unset.
  */
 export async function readRepoConfig(repoPath: string, key: string): Promise<string[]> {
   const scratch = await makeScratchDir()
@@ -122,12 +112,9 @@ export async function readRepoConfig(repoPath: string, key: string): Promise<str
 const scratchBase = (): string => serverLocalPath('run', 'git-shadow')
 
 /**
- * Remove every throwaway git dir, for the server to call once at startup:
- * a server killed mid-call (a roll, an OOM) never ran its `finally`. Only
- * safe where nothing else can be mid-call, which is why it is the server's,
- * under its lock, and not something the first call of any process does — a
- * test process sharing a live server's data dir would sweep that server's
- * dirs out from under it.
+ * Remove every throwaway git dir left by a server killed mid-call. Only the
+ * server calls this, once at startup under its lock; any other process could
+ * delete a live server's dirs.
  */
 export async function clearGitScratch(): Promise<void> {
   await fs.rm(scratchBase(), { recursive: true, force: true })
@@ -140,8 +127,7 @@ async function makeScratchDir(): Promise<string> {
 
 /** Lay out the throwaway git dir for `realGitDir` in `dir`. */
 async function buildGitDir(realGitDir: string, dir: string): Promise<void> {
-  // One read of the real config. Nothing below opens it again, which is
-  // what makes a concurrent write by a pod irrelevant.
+  // Read the real config exactly once; nothing below reopens it.
   const copy = path.join(dir, 'config.src')
   await fs.writeFile(copy, await readOnce(path.join(realGitDir, 'config'), MAX_CONFIG_BYTES))
   const kept = await configEntries(copy, dir)
@@ -156,8 +142,7 @@ async function buildGitDir(realGitDir: string, dir: string): Promise<void> {
   if (objectFormat !== undefined && !/^(sha1|sha256)$/.test(objectFormat)) {
     throw new Error(`unsupported objectformat ${objectFormat}`)
   }
-  // The links below are the files ref backend's layout; a reftable repo
-  // keeps its refs elsewhere, and reading it through them would be wrong.
+  // The links below assume the files ref backend; refuse reftable.
   if (refStorage !== undefined && refStorage !== 'files') {
     throw new Error(`unsupported refstorage ${refStorage}`)
   }
@@ -171,9 +156,8 @@ async function buildGitDir(realGitDir: string, dir: string): Promise<void> {
   await fs.writeFile(path.join(dir, 'HEAD'), head)
 
   for (const name of ENSURED_DIRS) await fs.mkdir(path.join(realGitDir, name), { recursive: true })
-  // A link to an entry that does not exist yet (`packed-refs`, `shallow`)
-  // still works: git's lockfile resolves the link, so a write creates the
-  // real file.
+  // Linking a not-yet-existing entry (`packed-refs`, `shallow`) works: git's
+  // lockfile resolves the link, so a write creates the real file.
   for (const name of LINKED) await fs.symlink(path.join(realGitDir, name), path.join(dir, name))
 }
 
@@ -225,8 +209,8 @@ function transportOf(url: string): string {
   return 'file'
 }
 
-/** The server's own environment minus anything that would point git at a
- *  repository other than the one named here, plus `extra`. */
+/** `extra` (or the server's env) minus variables that would point git at
+ *  another repository. */
 function gitEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // eslint-disable-next-line no-process-env -- the git child needs PATH/HOME/…; `extra` already carries it when given
   const env: NodeJS.ProcessEnv = { ...(extra ?? process.env) }

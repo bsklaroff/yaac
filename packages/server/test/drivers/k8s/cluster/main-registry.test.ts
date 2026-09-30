@@ -2,9 +2,8 @@ import crypto from 'node:crypto'
 import fengari from 'fengari'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// kubectl is the process boundary. Everything inside features/cluster runs
-// for real behind it — including `runPodToCompletion`, which is what drives
-// the node-write pods the hosts.toml leg schedules.
+// kubectl is the process boundary. The cluster folder runs for real behind
+// it, including `runPodToCompletion`, which drives the hosts.toml writer pods.
 vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
@@ -15,14 +14,13 @@ vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-// The node-CIDR probe the ingress lock is rendered from — a live cluster
-// read, so it is stubbed like any other boundary.
+// The node-CIDR probe behind the ingress policy reads the live cluster.
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
 }))
 
-// The registry CLIENT is the other boundary: its reachability probe is an
-// HTTP call over a kubectl port-forward, neither of which a unit run has.
+// The registry client's reachability probe is HTTP over a kubectl
+// port-forward, which a unit run does not have.
 vi.mock('#drivers/k8s/container/registry', () => ({
   REGISTRY_NAMESPACE: 'yaac',
   REGISTRY_SERVICE_NAME: 'yaac-registry',
@@ -84,15 +82,13 @@ function retryArgs(): string[][] {
 }
 
 /**
- * Serve the cluster reads an ensure makes: the live Deployment's storage
- * volume (which the cheap path checks has been converted to the claim), the
- * Service's ClusterIP, the node list the writer pods are pinned to, and the
- * writer pod's own status (which `runPodToCompletion` polls to a terminal
- * phase).
+ * Serve the cluster reads an ensure makes: the grant-key Secret, the live
+ * Deployment's storage volume, the Service's ClusterIP, the node list, and
+ * the writer pod's status.
  *
- * `storage` selects which shape the live Deployment has: `'pvc'` is a
- * converged install, `'hostPath'` one upgrading from the node-local store,
- * and `'absent'` a cluster with no registry Deployment at all.
+ * `storage` picks the live Deployment's shape: `'pvc'` is up to date,
+ * `'hostPath'` still uses the old node-local store, and `'absent'` has no
+ * registry Deployment.
  */
 function serveCluster(opts: {
   clusterIp?: string | null
@@ -129,11 +125,10 @@ function serveCluster(opts: {
 }
 
 /**
- * The gate's own Lua, run for real in fengari (a pure-JS Lua VM) behind a
- * stub of the Envoy `handle` it calls. `verifySignature` is bound to
- * `crypto.verify` over the key the script decoded, so a genuine grant
- * round-trips; `raise` makes it throw instead, as a script bug would.
- * Returns one request runner: the status the gate answered, or `pass`.
+ * Run the gate's Lua in fengari (a pure-JS Lua VM) against a stub of the
+ * Envoy `handle`. `verifySignature` calls `crypto.verify`, so a genuine
+ * grant verifies; `raise` makes it throw, as a script bug would. Returns a
+ * request runner that answers the gate's status, or `pass`.
  */
 function runGate(
   bootstrap: string,
@@ -209,17 +204,14 @@ describe('ensureMainRegistry', () => {
   it('is a no-op when the registry already answers from its claim', async () => {
     mockReachable.mockResolvedValue(true)
     await ensureMainRegistry()
-    // The boot ensure must cost one ping and one read on a healthy install,
-    // not a rollout wait and a node-write pod per node.
+    // On a healthy install the boot check is one ping and one read.
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockRetry).not.toHaveBeenCalled()
   })
 
   it('converts an install still serving from the node hostPath', async () => {
-    // The upgrade is invisible to a reachability check — the OLD registry
-    // answers perfectly well — so the cheap path reads the live Deployment's
-    // storage volume too. Without this the install would stay on its
-    // hostPath forever, serving a store nothing else would ever convert.
+    // The old registry still answers, so the fast path also reads the live
+    // Deployment's volume; otherwise the install would stay on hostPath.
     mockReachable.mockResolvedValue(true)
     serveCluster({ storage: 'hostPath' })
     await ensureMainRegistry()
@@ -232,8 +224,8 @@ describe('ensureMainRegistry', () => {
   })
 
   it('stands the registry up when there is no Deployment to read', async () => {
-    // The check fails SAFE: an absent or unreadable Deployment answers "not
-    // converged", which costs a redundant apply rather than a skipped one.
+    // An absent or unreadable Deployment counts as out of date, so the
+    // worst case is a redundant apply.
     mockReachable.mockResolvedValue(true)
     serveCluster({ storage: 'absent' })
     await ensureMainRegistry()
@@ -244,21 +236,19 @@ describe('ensureMainRegistry', () => {
     mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
     await ensureMainRegistry()
 
-    // The claim precedes the Deployment that mounts it, so the rollout wait
-    // never spends its budget on a pod Pending for a volume that does not
-    // exist yet.
+    // The claim is applied before the Deployment that mounts it, so the
+    // rollout wait never sees a pod Pending on a missing volume.
     expect(applied().map((m) => m.kind)).toEqual([
       'Namespace', 'PersistentVolumeClaim', 'ConfigMap', 'Deployment', 'Service', 'NetworkPolicy', 'Pod',
     ])
 
-    // The namespace carries the privileged Pod Security Standard: it also
-    // holds the node-write pods that hostPath-mount a node's certs.d, which
-    // an adopted cluster's baseline/restricted default would reject.
+    // Privileged Pod Security: the node-write pods hostPath-mount certs.d,
+    // which a baseline/restricted default would reject.
     expect(appliedOfKind('Namespace').metadata.labels)
       .toMatchObject({ 'pod-security.kubernetes.io/enforce': 'privileged' })
 
-    // Everything lands in the DEFAULT namespace, not k8sNamespace() (mocked
-    // to test-ns here): per-run e2e namespaces share one image store.
+    // Everything lands in the fixed `yaac` namespace, not k8sNamespace():
+    // per-run e2e namespaces share one image store.
     const deploy = appliedOfKind('Deployment')
     expect(deploy.metadata).toMatchObject({ name: 'yaac-registry', namespace: 'yaac' })
     expect(deploy.metadata.labels?.app).toBe(MAIN_REGISTRY_APP_LABEL)
@@ -275,22 +265,20 @@ describe('ensureMainRegistry', () => {
         }
       }
     }
-    // Recreate: a rolling overlap would put two pods on one store, and on a
-    // backend enforcing RWO across nodes it would deadlock on the volume.
+    // A rolling update would put two pods on one store, and could deadlock
+    // on an RWO volume across nodes.
     expect(spec.strategy.type).toBe('Recreate')
-    // The registry cannot be the source of its OWN pod's images, so both
-    // name digest-pinned upstreams rather than local mirror tags.
+    // The registry cannot serve its own pod's images, so both containers
+    // use digest-pinned upstream images.
     expect(spec.template.spec.containers.map((c) => c.image))
       .toEqual([REGISTRY_UPSTREAM_IMAGE, ENVOY_UPSTREAM_IMAGE])
     for (const c of spec.template.spec.containers) expect(c.imagePullPolicy).toBe('IfNotPresent')
-    // Trusted infra: runs on runc, above sessions.
+    // Trusted infra: runc, and higher priority than workspace pods.
     expect(spec.template.spec.runtimeClassName).toBeUndefined()
     expect(spec.template.spec.priorityClassName).toBe('yaac-infra')
 
-    // The store belongs to the CLAIM, not to a node — which is what makes
-    // the unpinned Deployment safe: a reschedule takes the volume with it,
-    // so nothing is stranded and nothing swaps underneath a collect. The
-    // absent pin is half the fix, so it is asserted, not assumed.
+    // The store lives on the claim, not a node, so the pod is not pinned:
+    // a reschedule takes the volume with it.
     expect(spec.template.spec.volumes[0].persistentVolumeClaim)
       .toEqual({ claimName: mainRegistryPvcName() })
     expect(spec.template.spec.affinity).toBeUndefined()
@@ -298,23 +286,18 @@ describe('ensureMainRegistry', () => {
 
     const pvc = appliedOfKind('PersistentVolumeClaim')
     expect(pvc.metadata).toMatchObject({ name: mainRegistryPvcName(), namespace: 'yaac' })
-    // Install-keyed, exactly as the retired hostPath was: coexisting
-    // installs must never end up sharing one blob store.
+    // Keyed by install, so coexisting installs never share a blob store.
     expect(pvc.metadata.name).toContain('ddh16')
     expect(pvc.spec).toEqual({
-      // RWO, not RWX: one mounter at a time is guaranteed by replicas 1 +
-      // Recreate, and RWX needs a file class most backends do not ship.
+      // One replica + Recreate means one mounter; RWX needs a file-backed
+      // storage class most clusters lack.
       accessModes: ['ReadWriteOnce'],
       resources: { requests: { storage: MAIN_REGISTRY_STORAGE_SIZE } },
     })
-    // No storageClassName: it must bind through whatever the cluster's
-    // default class is (kind's `standard`, a provider's block class, the
-    // provider's default block class). Naming one would break
-    // every cluster that does not ship it.
+    // No storageClassName: bind through the cluster's default class, since
+    // naming one would break clusters that lack it.
     expect(pvc.spec).not.toHaveProperty('storageClassName')
 
-    // A NORMAL selector-backed Service — no hand-written EndpointSlice, no
-    // host-side address discovery.
     const svc = appliedOfKind('Service')
     expect(svc.metadata).toMatchObject({ name: 'yaac-registry', namespace: 'yaac' })
     expect(svc.spec).toMatchObject({
@@ -323,8 +306,8 @@ describe('ensureMainRegistry', () => {
       ports: [{ name: 'registry', port: 5000, targetPort: 5000, protocol: 'TCP' }],
     })
 
-    // Rolled out before the node write, which is also what guarantees the
-    // writer pod's image is already on the node.
+    // Rolled out before the node write, so the writer pod's image is
+    // already on the node.
     const rollout = retryArgs().find((a) => a[0] === 'rollout')
     expect(rollout).toEqual(expect.arrayContaining([
       'rollout', 'status', 'deployment/yaac-registry', '-n', 'yaac',
@@ -341,10 +324,8 @@ describe('ensureMainRegistry', () => {
     }
     expect(writer.metadata.labels?.[LABEL_MAIN_REGISTRY_NODE_WRITE]).toBe('hosts')
     expect(podSpec.nodeName).toBe('yaac-control-plane')
-    // Tolerates everything: nodeName bypasses the scheduler, but kubelet
-    // still admits and the taint manager still evicts, so a NoExecute taint
-    // (a dedicated sessions pool's) would deny this write to the very nodes
-    // that need it — leaving them unable to pull.
+    // nodeName skips the scheduler, but a NoExecute taint still evicts, so
+    // without this a tainted node would never learn how to pull.
     expect(podSpec.tolerations).toEqual([{ operator: 'Exists' }])
     expect(podSpec.containers[0].image).toBe(REGISTRY_UPSTREAM_IMAGE)
     expect(podSpec.containers[0].command[2])
@@ -352,8 +333,7 @@ describe('ensureMainRegistry', () => {
     expect(podSpec.volumes[0].hostPath.path)
       .toBe('/etc/containerd/certs.d/yaac-registry.yaac.svc.cluster.local:5000')
 
-    // The port-forward this process holds may predate the pod that just
-    // rolled out, so it is dropped before the reachability wait.
+    // This process's port-forward may point at the replaced pod.
     expect(mockInvalidate).toHaveBeenCalled()
   })
 
@@ -375,8 +355,7 @@ describe('ensureMainRegistry', () => {
       }
     }).template
     const [registry, gate] = template.spec.containers
-    // registry:2 answers only on the pod's loopback; the Service port —
-    // every client address, unchanged — is the gate's.
+    // registry:2 listens only on loopback; the Service port is the gate's.
     expect(registry.env).toEqual([{ name: 'REGISTRY_HTTP_ADDR', value: '127.0.0.1:5001' }])
     expect(registry.ports).toBeUndefined()
     expect(gate.name).toBe('gate')
@@ -386,8 +365,7 @@ describe('ensureMainRegistry', () => {
     expect(gate.readinessProbe?.httpGet).toMatchObject({ path: '/v2/', port: 5000 })
     expect(gate.readinessProbe?.httpGet.httpHeaders).toEqual([{ name: 'Authorization', value: 'Basic Og==' }])
 
-    // The gate's config is the ConfigMap it mounts, holding the public
-    // half of the Secret's key and nothing of the private one.
+    // The gate's ConfigMap holds the public key only.
     const cm = appliedOfKind('ConfigMap') as unknown as {
       metadata: { name: string; namespace: string }
       data: Record<string, string>
@@ -484,9 +462,8 @@ describe('ensureMainRegistry', () => {
       policyTypes: ['Ingress'],
     })
     const rules = (np.spec as { ingress: Array<{ from: unknown[]; ports: unknown[] }> }).ingress
-    // The node half is an ipBlock because containerd pulls, the kubelet
-    // probe and the server's port-forward all arrive from the host netns,
-    // which plain NetworkPolicy cannot name any other way.
+    // containerd pulls, the kubelet probe and the server's port-forward
+    // come from the node's network namespace, which only an ipBlock names.
     expect(rules[0].from).toEqual([{ ipBlock: { cidr: '10.89.0.7/32' } }])
     // Builder pods live in per-run namespaces during e2e, so a bare
     // podSelector (this namespace only) would lock them out.
@@ -503,10 +480,9 @@ describe('ensureMainRegistry', () => {
         ? Promise.reject(new Error('timed out waiting for the condition'))
         : Promise.resolve({ stdout: '', stderr: '' })
     ))
-    // Pending vs ImagePullBackOff vs an unbindable claim is the whole
-    // diagnosis, and kubectl's timeout text says none of them. The claim
-    // matters most on a cluster with no DEFAULT StorageClass, where it
-    // presents as a Pending pod with no scheduling reason of its own.
+    // kubectl's timeout text does not say whether the pod is Pending,
+    // ImagePullBackOff or waiting on an unbindable claim (common with no
+    // default StorageClass).
     await expect(ensureMainRegistry()).rejects.toThrow(/kubectl -n yaac get pods,pvc/)
     await expect(ensureMainRegistry()).rejects.toThrow(/no default StorageClass/)
   })
@@ -517,9 +493,8 @@ describe('ensureMainRegistry', () => {
       if (args[0] === 'exec') return Promise.resolve({ stdout: '2\n0\n', stderr: '' })
       return Promise.resolve({ stdout: '', stderr: '' })
     })
-    // The pod runs and never turns Ready, so the fix — which is on the host,
-    // and needs every pod recreated — is the whole message; the generic
-    // Pending/ImagePullBackOff hint would send the user the wrong way.
+    // The fix is on the host and needs every pod recreated, so the generic
+    // Pending/ImagePullBackOff hint is left out.
     const err = await ensureMainRegistry().then(() => null, (e: unknown) => e as Error)
     expect(err?.message).toMatch(/arp_ignore=2/)
     expect(err?.message).toContain('sudo sysctl -w net.core.devconf_inherit_init_net=3')
@@ -554,9 +529,8 @@ describe('ensureMainRegistry', () => {
 
     const writers = applied().filter((m) => m.kind === 'Pod')
     expect(writers.map((p) => (p.spec as { nodeName: string }).nodeName)).toEqual(['node-a', 'node-b'])
-    // Per-run name suffixes mean no later namesake delete collects a pod a
-    // crashed run left behind — hence the label sweep, which the node-write
-    // marker keeps off the registry Deployment's own pod.
+    // Writer pod names are unique per run, so leftovers are swept by label.
+    // The node-write label keeps the sweep off the registry's own pod.
     const sweep = retryArgs().find((a) => a[0] === 'delete' && a[1] === 'pod')
     expect(sweep?.join(' ')).toContain(
       `app=${MAIN_REGISTRY_APP_LABEL},${LABEL_MAIN_REGISTRY_NODE_WRITE}`,
@@ -566,8 +540,7 @@ describe('ensureMainRegistry', () => {
   it('applies everything again under `force`, even when the registry answers', async () => {
     mockReachable.mockResolvedValue(true)
     await ensureMainRegistry({ force: true })
-    // `yaac cluster install` exists to re-write wiring a node
-    // restart may have dropped, so it must not short-circuit.
+    // `yaac cluster install` re-writes wiring a node restart may have lost.
     expect(applied().map((m) => m.kind)).toContain('Deployment')
     expect(applied().map((m) => m.kind)).toContain('Pod')
   })
@@ -585,9 +558,8 @@ describe('ensureMainRegistry', () => {
   it('waits out a restarted node\'s datapath, and fails when the registry never answers', async () => {
     vi.useFakeTimers()
     try {
-      // Right after a node restart the rollout reads done from its stale
-      // status while the pod's sandbox still waits on calico-node: the
-      // dial answers only tens of seconds later.
+      // After a node restart the rollout can report done while the pod's
+      // network is still coming up, so the dial succeeds only later.
       const answersAt = Date.now() + 45_000
       mockReachable.mockImplementation(() => Promise.resolve(Date.now() >= answersAt))
       const recovered = ensureMainRegistry()
@@ -608,9 +580,8 @@ describe('mainRegistryExec', () => {
   it('execs into the registry Deployment and returns stdout', async () => {
     mockRetry.mockResolvedValue({ stdout: 'BUSY\n', stderr: '' })
     await expect(mainRegistryExec(['sh', '-c', 'find /x'], 5_000)).resolves.toBe('BUSY\n')
-    // `deploy/<name>` lets kubectl resolve the pod, so nothing tracks pod
-    // names; the container is named because the gate shares the pod. No
-    // retries, because the collect must not run twice.
+    // The container is named because the gate shares the pod. One attempt
+    // only, so a garbage collect never runs twice.
     expect(mockRetry).toHaveBeenCalledWith(
       ['exec', '-n', 'yaac', 'deploy/yaac-registry', '-c', 'registry', '--', 'sh', '-c', 'find /x'],
       { timeout: 5_000, maxAttempts: 1 },

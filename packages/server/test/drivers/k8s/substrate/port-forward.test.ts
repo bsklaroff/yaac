@@ -9,17 +9,16 @@ interface FakeChild extends EventEmitter {
 }
 
 const spawned: Array<{ file: string; args: string[]; child: FakeChild }> = []
-/** What the next spawned child does: announce a port, die, or stay silent. */
+/** What the next spawned child does. */
 let behavior: 'ready' | 'exit' | 'silent' = 'ready'
 let nextPort = 40000
 /**
- * Whether `kill()` emits `exit` synchronously. A real SIGTERM does NOT —
- * the event lands a tick or more later, which is the window the
- * invalidate → re-resolve race lives in, so the race test flips this off.
+ * Whether `kill()` emits `exit` synchronously. A real SIGTERM does not,
+ * and the race test turns this off to reproduce that.
  */
 let killEmitsExit = true
 
-// kubectl is the process boundary; everything below it runs for real.
+// Mock the kubectl child process; everything else runs for real.
 vi.mock('node:child_process', () => ({
   exec: vi.fn(),
   execFile: vi.fn(),
@@ -69,16 +68,13 @@ describe('resolvePortForward', () => {
 
     expect(first).toEqual({ host: '127.0.0.1', port: 40000 })
     expect(second).toEqual(first)
-    // One long-lived child serves every caller of the key — the whole point
-    // of keying them — and the local port is always ephemeral, so two
-    // installs on one machine never collide.
+    // One child per key, on an ephemeral local port.
     expect(spawned).toHaveLength(1)
     expect(spawned[0].file).toBe('kubectl')
     expect(spawned[0].args).toEqual([
       'port-forward', '-n', 'yaac', 'deploy/yaac-registry', '0:8443',
     ])
-    // Unref'd, child and pipes: a CLI run or a vitest global setup that
-    // touched a forward must still be able to exit.
+    // Unref'd so the process can still exit.
     expect(spawned[0].child.unref).toHaveBeenCalled()
     expect(spawned[0].child.stdout.unref).toHaveBeenCalled()
     expect(spawned[0].child.stderr.unref).toHaveBeenCalled()
@@ -103,8 +99,7 @@ describe('resolvePortForward', () => {
   it('rejects and caches nothing when the child dies during startup', async () => {
     behavior = 'exit'
     await expect(resolvePortForward('a', SPEC)).rejects.toThrow(/exited during startup/)
-    // Nothing memoized: the next attempt gets a fresh child rather than an
-    // address that was never valid.
+    // Nothing cached: the next attempt spawns a fresh child.
     behavior = 'ready'
     await expect(resolvePortForward('a', SPEC)).resolves.toEqual({ host: '127.0.0.1', port: 40001 })
   })
@@ -120,16 +115,10 @@ describe('resolvePortForward', () => {
     await resolvePortForward('registry', SPEC)
     await resolvePortForward('relay', { ...SPEC, target: 'deploy/yaac-proxy' })
 
-    // `exit` fires on no signal, so without this a signalled process
-    // reparents its kubectl to PID 1 — where it has no timeout and squats
-    // an ephemeral port until something dials it. A vitest worker is the
-    // measured case: vitest installs a SIGTERM handler in fork workers only
-    // under profiling flags, so a normal run leaks one per worker.
-    //
-    // The co-listener stands in for an app that handles SIGTERM itself (the
-    // server's graceful shutdown). It also keeps this assertion safe: with
-    // a second handler registered the code under test must NOT re-raise,
-    // which would terminate the worker running this test.
+    // Node's `exit` event does not fire on a signal, so without a signal
+    // handler kubectl would be orphaned. The extra listener stands in for
+    // an app with its own SIGTERM handling; with it present the code must
+    // not re-raise, which would also kill this test's worker.
     const coListener = (): void => {}
     process.on('SIGTERM', coListener)
     try {
@@ -144,8 +133,7 @@ describe('resolvePortForward', () => {
   it('re-resolves after the child exits under it', async () => {
     await resolvePortForward('a', SPEC)
     spawned[0].child.emit('exit', 0)
-    // A forward whose child died must not keep answering with its old port
-    // for the rest of the server run.
+    // A dead child's port is no longer returned.
     await expect(resolvePortForward('a', SPEC)).resolves.toEqual({ host: '127.0.0.1', port: 40001 })
     expect(spawned).toHaveLength(2)
   })
@@ -175,10 +163,7 @@ describe('invalidatePortForward', () => {
   })
 
   it('a killed child\'s late exit cannot strand its live successor', async () => {
-    // A real SIGTERM's `exit` lands after the kill returns, so an
-    // invalidate followed immediately by a re-resolve (restartMainRegistry,
-    // and the reachability heal path) has a live successor cached by the
-    // time the dead child's event fires.
+    // The old child's `exit` arrives after a successor is already cached.
     killEmitsExit = false
     await resolvePortForward('a', SPEC)
     const dead = spawned[0].child
@@ -188,9 +173,7 @@ describe('invalidatePortForward', () => {
 
     dead.emit('exit', null)
 
-    // The successor must still be the cached address AND still be the
-    // child the maps hold: wiping it here would spawn a third forward and
-    // leave the successor unkillable by invalidate or the exit hook.
+    // The successor stays cached and tracked, so no third child spawns.
     await expect(resolvePortForward('a', SPEC)).resolves.toEqual(successor)
     expect(spawned).toHaveLength(2)
     invalidatePortForward('a')

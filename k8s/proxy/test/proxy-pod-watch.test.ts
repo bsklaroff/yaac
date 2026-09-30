@@ -86,8 +86,8 @@ describe('PodWorkspaceIndex', () => {
     // Replacement pod appears first (new IP)…
     idx.apply({ type: 'ADDED', object: pod('10.0.0.2', 'sess-a') })
     expect(idx.resolveIp('sess-a')).toBe('10.0.0.2')
-    // …then the OLD pod's DELETED arrives late: byIp evicts the old IP but
-    // the reverse entry must keep pointing at the live pod.
+    // …then the old pod's DELETED arrives late: the reverse entry must keep
+    // pointing at the live pod.
     idx.apply({ type: 'DELETED', object: pod('10.0.0.1', 'sess-a') })
     expect(idx.resolve('10.0.0.1')).toBeUndefined()
     expect(idx.resolveIp('sess-a')).toBe('10.0.0.2')
@@ -135,9 +135,8 @@ describe('inClusterClient', () => {
   })
 
   it('refuses a config with no namespace rather than guessing one', () => {
-    // Outside a pod there is no ServiceAccount mount, so `loadFromCluster`
-    // leaves the namespace unset — resolving workspaces against the wrong
-    // namespace would silently mis-attribute traffic.
+    // Outside a pod `loadFromCluster` leaves the namespace unset; guessing
+    // one would silently misattribute traffic.
     expect(() => inClusterClient(config())).toThrow(/no in-cluster namespace/)
   })
 })

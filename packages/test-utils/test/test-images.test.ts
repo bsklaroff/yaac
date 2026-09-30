@@ -34,15 +34,14 @@ describe('gcTestImages', () => {
       stderr: '',
     }))
 
-    // s1 is a tag the caller is using, named bare the way the global setup
-    // resolves it; it neither goes nor counts, so s2 and s3 are the two kept.
+    // s1 is in use (named bare, as the global setup resolves it), so it is
+    // kept without counting toward the two; s2 and s3 stay.
     const retired = await gcTestImages(['yaac-test-server:s1'])
     expect(retired).toEqual([])
     mockExecFile.mockClear()
 
-    // Without it, s3 is past the budget. The install's own repos
-    // (yaac-server) are `gcHostImages`' to sweep, however far over budget
-    // they are; nothing is pruned or forced.
+    // Without it, s3 is past the budget. Install repos (yaac-server) are
+    // left to `gcHostImages`.
     expect(await gcTestImages()).toEqual(['localhost/yaac-test-server:s3'])
     const podmanCalls = mockExecFile.mock.calls.map(([, args]) => args)
     expect(podmanCalls.filter((a) => a[0] === 'rmi')).toEqual([['rmi', 'localhost/yaac-test-server:s3']])

@@ -3,9 +3,8 @@ import type http from 'node:http'
 
 /**
  * Tests for the proxy's placeholder-gated Anthropic credential injection.
- * Mirrors the relevant slice of `buildDynamicRules` in
- * podman/proxy-sidecar/proxy.ts — the proxy runs in its own container and
- * can't be imported directly, so we copy the logic under test.
+ * proxy.ts starts listeners on import, so the relevant slice of its
+ * `buildDynamicRules` is copied here.
  */
 
 const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
@@ -40,8 +39,7 @@ function buildAnthropicRules(
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
-  // Tool gate: only a workspace registered as tool=claude may spend the
-  // claude credential (mirrors `workspaceTool.get(workspaceId) === 'claude'`).
+  // Only a workspace registered as tool=claude may use the claude credential.
   if (workspaceTool !== 'claude') return rules
   const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
   const incomingAuth = headerValue(reqHeaders, 'authorization')
@@ -92,8 +90,7 @@ describe('Anthropic credential injection gating', () => {
     })
 
     it('does not inject when the OAuth placeholder is passed in api-key mode', () => {
-      // OAuth placeholder arriving at an api-key-configured proxy is still a
-      // mismatch — only the api-key placeholder gates api-key injection.
+      // Only the api-key placeholder gates api-key injection.
       const rules = buildAnthropicRules('claude', creds, {
         authorization: 'Bearer ' + PLACEHOLDER_ACCESS_TOKEN,
       })

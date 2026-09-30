@@ -4,8 +4,8 @@ import { IS_MAC } from '#lib/platform'
  *  -1 = previous (left/up), 1 = next (right/down). */
 export type CycleDelta = 1 | -1
 
-/** Just the keyboard-event fields matching needs — keeps the matchers pure and
- *  trivial to unit test without synthesizing a full KeyboardEvent. */
+/** The keyboard-event fields matching needs, so tests need not build a full
+ *  KeyboardEvent. */
 export type ShortcutKey = Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'code'>
 
 /**
@@ -22,9 +22,8 @@ export interface Chord {
 }
 
 /**
- * The rebindable commands. The directional cycles are split into prev/next so
- * each direction is independently editable in the settings pane; the move
- * commands likewise split into left/right.
+ * The rebindable commands. Directional commands have one id per direction
+ * so each can be rebound separately.
  */
 export type ShortcutId =
   | 'new-workspace'
@@ -54,21 +53,20 @@ export interface ShortcutDef {
 /** The resolved chord bound to every command. */
 export type BindingMap = Record<ShortcutId, Chord>
 
-/** Alt-only chord for a physical key — the historical default shape. */
+/** Alt plus a physical key: the usual default. */
 function alt(code: string): Chord {
   return { code, alt: true, ctrl: false, meta: false, shift: false }
 }
 
-/** Alt+Shift chord for a physical key — the "move" commands' default shape. */
+/** Alt+Shift plus a physical key: the "move" commands' default. */
 function altShift(code: string): Chord {
   return { code, alt: true, ctrl: false, meta: false, shift: true }
 }
 
 /**
  * The command registry, in match-precedence and display order. Labels and
- * descriptions surface in Settings → Shortcuts. The directional defaults are
- * the vim-style home-row keys (h/j/k/l), leaving the arrow keys free for the
- * terminal.
+ * descriptions appear in Settings → Shortcuts. Directional defaults use
+ * vim's h/j/k/l, leaving the arrow keys to the terminal.
  */
 export const SHORTCUTS: ShortcutDef[] = [
   { id: 'new-workspace', label: 'New workspace',
@@ -105,7 +103,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     defaultChord: altShift('KeyL') },
 ]
 
-/** All shortcut ids, in registry order (which is also match precedence). */
+/** All shortcut ids, in registry order. */
 const SHORTCUT_IDS: ShortcutId[] = SHORTCUTS.map((s) => s.id)
 
 /** The factory-default binding for every command. */
@@ -114,9 +112,8 @@ export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(
 ) as BindingMap
 
 /**
- * The four directional cycle commands. The workspace owns these chords, so the
- * terminal lets them bubble to the window listeners instead of forwarding ESC
- * bytes to the PTY.
+ * The four cycle commands. The terminal lets these chords bubble to the
+ * window listeners instead of sending them to the PTY.
  */
 export const CYCLE_IDS: ReadonlySet<ShortcutId> = new Set<ShortcutId>([
   'prev-workspace', 'next-workspace', 'prev-terminal', 'next-terminal',
@@ -141,16 +138,14 @@ export function chordsEqual(a: Chord, b: Chord): boolean {
     && a.shift === b.shift
 }
 
-/** A command with no chord: what `mergeBindings` leaves when a saved override
- *  claims the command's default. Its empty `code` never matches a keydown. */
+/** No chord, left by `mergeBindings` when an override takes a command's
+ *  default. Its empty `code` never matches. */
 export const UNBOUND: Chord = { code: '', alt: false, ctrl: false, meta: false, shift: false }
 
 /**
- * True when a keydown exactly matches a bound chord — the same physical key and
- * the same four modifier states. Exact modifier equality is what preserves
- * AltGr passthrough for free: a chord bound to Alt-alone won't match a Ctrl+Alt
- * event (AltGr), because `ctrl` differs, so those characters fall through
- * untouched.
+ * True when a keydown matches a chord exactly: the same physical key and
+ * the same four modifiers. Exact matching lets AltGr (reported as Ctrl+Alt)
+ * characters through an Alt-only chord.
  */
 export function chordMatches(binding: Chord, e: ShortcutKey): boolean {
   return binding.code !== ''
@@ -162,9 +157,8 @@ export function chordMatches(binding: Chord, e: ShortcutKey): boolean {
 }
 
 /**
- * The command a keydown triggers under the given bindings, or null for
- * "not ours — let it through". First match in registry order wins (validation
- * keeps two commands from sharing a chord, so at most one ever matches).
+ * The command a keydown triggers, or null to let it through. Validation
+ * keeps chords unique, so at most one matches.
  */
 export function matchShortcut(bindings: BindingMap, e: ShortcutKey): ShortcutId | null {
   for (const id of SHORTCUT_IDS) {
@@ -174,15 +168,13 @@ export function matchShortcut(bindings: BindingMap, e: ShortcutKey): ShortcutId 
 }
 
 /**
- * Take a matched chord's keydown for its command: nothing else — xterm's
- * textarea, the browser — acts on it.
+ * Consume a matched chord's keydown so nothing else (xterm, the browser)
+ * acts on it.
  *
- * On macOS an Option chord on a dead key (Option+N is `˜`, Option+E `´` on a
- * US layout) is a problem preventDefault cannot touch: Chrome hands the key to
- * the input method before the page sees it, so the accent is already on its
- * way as a composition, and it lands on whatever has focus when it arrives —
- * usually the field the command just focused. Such a keydown says so with
- * `key === 'Dead'`, and a composition that starts before the next key event
+ * On macOS an Option chord on a dead key (Option+N is `˜` on a US layout)
+ * still sends its accent as a composition, which preventDefault can't stop,
+ * and it lands in whatever field the command just focused. Such a keydown
+ * has `key === 'Dead'`; a composition that starts before the next key event
  * is discarded.
  */
 export function claimChord(e: KeyboardEvent): void {
@@ -192,16 +184,13 @@ export function claimChord(e: KeyboardEvent): void {
   deadChord = e
   if (straysWatched) return
   straysWatched = true
-  // Chrome sends the accent before the chord's own keyup, and none at all
-  // when nothing editable had focus — so the next key event of any kind ends
-  // the wait, and a later composition (dictation, a mouse-picked candidate)
-  // is the user's.
+  // Chrome sends the accent before the chord's keyup, or not at all when
+  // nothing editable has focus, so the next key event ends the wait.
   for (const type of ['keydown', 'keyup']) {
     window.addEventListener(type, (k) => { if (k !== deadChord) deadChord = null }, true)
   }
   window.addEventListener('compositionstart', discardStray, true)
-  // The stray's own events never reach the field's handlers, so React state
-  // never holds the accent and xterm never forwards it to the PTY.
+  // Hide the accent's events from the field's handlers (React, xterm).
   for (const type of ['compositionupdate', 'compositionend', 'beforeinput', 'input', 'change']) {
     window.addEventListener(type, (ev) => { if (ev.target === stray) ev.stopImmediatePropagation() }, true)
   }
@@ -221,10 +210,8 @@ function discardStray(e: Event): void {
   e.stopImmediatePropagation()
   stray = el
   const { value, selectionStart, selectionEnd } = el
-  // Once the composition has landed: a blur commits it and makes Chrome drop
-  // the input method's pending accent too, then the field goes back to what
-  // it held (selection too), which is what its handlers — having seen none
-  // of it — expect.
+  // After the composition lands, blur to make Chrome drop it, then restore
+  // the field's value and selection.
   setTimeout(() => {
     const focused = document.activeElement === el
     el.blur()
@@ -243,11 +230,9 @@ export function cycleDeltaFor(id: ShortcutId): CycleDelta | null {
 }
 
 /**
- * The target a cycle lands on, given the candidates in display order (the
- * workspace's terminals in tab-strip order, or the sidebar's workspace rows
- * top-to-bottom) and the currently active one. Wraps at both ends; with no
- * (valid) active target it enters the list from the end it's headed toward.
- * Null when there's nothing to switch to.
+ * The target a cycle lands on, given the candidates in display order and the
+ * active one. Wraps at both ends; with no valid active target it starts from
+ * the end it is heading toward. Null when the list is empty.
  */
 export function resolveCycleTarget(
   targets: string[],
@@ -260,8 +245,7 @@ export function resolveCycleTarget(
   return targets[(current + delta + targets.length) % targets.length]
 }
 
-/** Physical `code` values that are modifier keys themselves — a chord can't be
- *  a bare modifier. */
+/** Physical `code` values of the modifier keys themselves. */
 const MODIFIER_CODES = new Set<string>([
   'AltLeft', 'AltRight', 'ControlLeft', 'ControlRight',
   'MetaLeft', 'MetaRight', 'ShiftLeft', 'ShiftRight',
@@ -278,13 +262,10 @@ function platformChord(code: string, isMac: boolean): Chord {
 }
 
 /**
- * The fixed chords a pane handles on its own root: Cmd/Ctrl-S saves in the
- * file pane, Cmd/Ctrl-F opens the file pane's find bar or jumps to the
- * Changes pane's find box, and Cmd/Ctrl =/−/0 size the file pane's text
- * (textSizeStep). None is a registry command — each is part of what its
- * pane is — so they are never rebindable, and they are reserved: the
- * workspace's shortcut listener runs ahead of the panes, so a command bound
- * to one would swallow it.
+ * Fixed chords the panes handle themselves: Cmd/Ctrl-S saves a file,
+ * Cmd/Ctrl-F opens find in the file or Changes pane, and Cmd/Ctrl =/−/0
+ * resize text (textSizeStep). They can't be rebound and are reserved, since
+ * the shortcut listener runs before the panes and would swallow them.
  */
 export function saveChord(isMac = IS_MAC): Chord {
   return platformChord('KeyS', isMac)
@@ -295,10 +276,9 @@ export function findChord(isMac = IS_MAC): Chord {
 
 
 /**
- * The text-size keys every editor shares: Cmd/Ctrl with = or + a step up,
- * − a step down, 0 back to the default; null for anything else. Matched on
- * the character, not the physical key, so the keys labelled +/− work on
- * every layout (on QWERTZ `+` is BracketRight, on AZERTY `-` is Digit6).
+ * The editors' text-size keys: Cmd/Ctrl with = or + steps up, − steps down,
+ * 0 resets; null otherwise. Matched on the character, not the physical key,
+ * so the +/− keys work on every layout.
  */
 export function textSizeStep(
   e: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'metaKey' | 'key'>,
@@ -312,7 +292,7 @@ export function textSizeStep(
     default: return null
   }
 }
-/** Where textSizeStep's keys sit on a US layout — what a chord can name. */
+/** textSizeStep's keys as US-layout codes, for reserving chords. */
 const TEXT_SIZE_CODES = new Set(['Equal', 'Minus', 'Digit0', 'NumpadAdd', 'NumpadSubtract', 'Numpad0'])
 
 /** What a reserved chord is kept for, or null when `chord` is free. */
@@ -328,10 +308,9 @@ function reservedFor(chord: Chord, isMac: boolean): string | null {
 export type ChordValidation = { ok: true } | { ok: false; reason: string }
 
 /**
- * Whether `chord` may be bound to `selfId`. Requires a real modifier
- * (Alt/Ctrl/Meta) so a bare key can't shadow terminal typing, rejects a lone
- * modifier keypress, a reserved chord (save, find), and a chord already bound
- * to a different command.
+ * Whether `chord` may be bound to `selfId`. Requires Alt, Ctrl or Meta so a
+ * bare key can't shadow typing, and rejects a lone modifier, a reserved
+ * chord, and a chord bound to another command.
  */
 export function validateChord(
   chord: Chord,
@@ -357,7 +336,7 @@ export function validateChord(
   return { ok: true }
 }
 
-/** Runtime guard for a Chord shape — overrides arrive from JSON. */
+/** Runtime check for a Chord, since overrides arrive as JSON. */
 export function isChord(value: unknown): value is Chord {
   if (typeof value !== 'object' || value === null) return false
   const c = value as Record<string, unknown>
@@ -369,14 +348,11 @@ export function isChord(value: unknown): value is Chord {
 }
 
 /**
- * A binding map = the defaults overlaid with `overrides`, but only for known
- * ids carrying a well-formed chord that is not reserved. Unknown ids,
- * malformed chords and a claim on a reserved chord (all possible when reading
- * a hand-edited or stale preferences file) are ignored.
+ * The defaults overlaid with `overrides`. Unknown ids, malformed chords and
+ * reserved chords (possible in a stale or hand-edited file) are ignored.
  *
- * An override outranks another command's default it collides with (the
- * default may be newer than the override): that command is left UNBOUND, so
- * the user's own choice keeps working and Settings shows the other as unset.
+ * An override wins over another command's default that uses the same chord;
+ * that command is left UNBOUND and Settings shows it as unset.
  */
 export function mergeBindings(overrides: Record<string, unknown>, isMac = IS_MAC): BindingMap {
   const merged: BindingMap = { ...DEFAULT_BINDINGS }

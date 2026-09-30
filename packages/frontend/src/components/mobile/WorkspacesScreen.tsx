@@ -18,11 +18,9 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * The middle mobile screen: the active project's workspaces, full-bleed.
- *
- * Same body as the desktop sidebar (WorkspaceList), same header affordances —
- * minus the hide-sidebar toggle, which has nothing to hide here, and plus a
- * back chevron to the project list.
+ * The middle mobile screen: the active project's workspaces. Same list and
+ * header actions as the desktop sidebar, with a back button to the projects
+ * screen instead of the hide-sidebar toggle.
  */
 export function WorkspacesScreen({
   projectSlug,
@@ -38,21 +36,18 @@ export function WorkspacesScreen({
   onBack,
 }: {
   projectSlug: string | null
-  /** Active project's git remote ('' until the snapshot hydrates) — the
-   *  remove-project dialog's type-to-confirm text. */
+  /** Active project's git remote ('' until the first snapshot); typed back
+   *  to confirm removing the project. */
   projectRemoteUrl: string
   workspaces: WorkspaceListEntry[]
-  /** The active project's sidebar groups. */
   groups: WorkspaceGroupSummary[]
   provisioning: ProvisioningWorkspaceEntry[]
-  /** The active project's queued workspaces, and the stopped workspaces they
-   *  still wait on. */
   queued: QueuedWorkspaceEntry[]
+  /** Stopped workspaces that queued entries still wait on. */
   held: HeldWorkspaceEntry[]
-  /** The active project's draft workspaces. */
   drafts: DraftWorkspaceEntry[]
   connected: boolean
-  /** The active project's rejected git credentials (project-wide flag). */
+  /** Hosts that rejected the project's git credential. */
   gitAuthFailures: GitAuthFailure[]
   onBack: () => void
 }): JSX.Element {
@@ -67,14 +62,13 @@ export function WorkspacesScreen({
         actions={
           <>
             {!connected && <span className="pr-1 text-xs text-amber-400/80">reconnecting…</span>}
-            {/* Both triggers grow to a finger-sized target below md. */}
             {projectSlug && <SkillsButton projectSlug={projectSlug} />}
             {projectSlug && <NewWorkspaceButton projectSlug={projectSlug} />}
           </>
         }
       />
 
-      {/* Status chits, collapsing to nothing when none has anything to say. */}
+      {/* Status badges; the row hides when all are empty. */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-2 empty:hidden">
         <UsageBadge />
         <ImageBuildIndicator projectSlug={projectSlug} />

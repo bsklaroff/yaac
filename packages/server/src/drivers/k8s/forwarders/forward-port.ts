@@ -7,21 +7,14 @@ import type { Duplex } from 'node:stream'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * Forward a detected-but-unforwarded port for a running workspace, live (the
- * webapp's click-to-forward action, mirroring allowWorkspaceHost).
+ * Forward a detected-but-unforwarded port on a running workspace (the
+ * webapp's click-to-forward action). Only a port in the workspace's current
+ * unforwarded set is accepted, never an arbitrary one.
  *
- * The port must be in the workspace's currently-surfaced unforwarded set —
- * the action can't be driven to forward an arbitrary port, only one whose
- * listener detection observed and the filters allowed.
- *
- * Live is all this is: the forward exists in this server's forwarder registry
- * and is gone when the workspace is recreated. Making it stick is the
- * mediator's half — it writes the project config first, then asks for the
- * fan-out, which forwards the same port on the project's other running
- * workspaces. The siblings are best-effort (one with nothing listening just
- * holds a forward that fails per connection, same as any config-declared
- * forward), while a failure on the named target is an error the user should
- * see.
+ * The forward lives only in this server's in-memory registry. Persisting it
+ * is the caller's job (`#domain/workspaces` writes the project config, then
+ * asks for `fanOutToProject`). The fan-out to the project's other running
+ * workspaces is best-effort; a failure on the target itself is thrown.
  */
 export async function forwardWorkspacePort(
   target: { workspaceId: string; projectSlug: string; jobName: string },
@@ -40,8 +33,6 @@ export async function forwardWorkspacePort(
   )
 
   if (opts.fanOutToProject) {
-    // Just the project's pods — the fan-out has no use for the full
-    // workspace-list snapshot (matching allowWorkspaceHost).
     const pods = await listWorkspacePods(target.projectSlug)
     await Promise.all(
       pods
@@ -61,22 +52,15 @@ export async function forwardWorkspacePort(
 }
 
 /**
- * The near end of one forwarded TCP connection: a `tcp` stream through the
- * pod's streamd, onto the port something inside it is listening on.
+ * Open one forwarded TCP connection: a `tcp` stream through the pod's
+ * streamd to a port inside the workspace. One dial per client connection.
+ * The caller owns the returned stream: `relayDial` hands it back paused, so
+ * the caller resumes it once its reader is attached, and destroys it to
+ * end the connection.
  *
- * One dial per connection — the kubectl shape, and the reason this takes
- * no registry and returns no handle beyond the stream itself. Whoever
- * accepted the connection on the far end owns this one: destroying it is
- * what ends the pair, and resuming it is what starts it — `relayDial`
- * pauses the socket after its handshake so the reply's first bytes cannot
- * outrun the consumer's reader.
- *
- * Only a port the workspace DECLARED (its config's forwards, and any it was
- * told to forward live), or one its detector has surfaced — never an
- * arbitrary one, and so never yaac's own infra range in the pod (the stream
- * daemon, the relay), which is neither. A declared port is dialled whether
- * or not anything is listening on it right now, so a forward survives its
- * dev server restarting.
+ * Only a declared port or one the detector surfaced may be dialled, which
+ * keeps yaac's own in-pod ports unreachable. A declared port is dialled
+ * even if nothing listens yet, so a forward survives a dev server restart.
  */
 export function dialWorkspacePort(
   workspaceId: string,

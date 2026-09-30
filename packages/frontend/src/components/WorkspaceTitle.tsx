@@ -5,31 +5,27 @@ import { oneLine, useInlineRename } from '#lib/useInlineRename'
 export { oneLine }
 
 /**
- * The workspace header's title. Normally a selectable label (so it can be copied)
- * with a pencil affordance just to its right; clicking the pencil turns the
- * label into an inline editor that renames the display title in place — Enter or
- * blur commits, Escape reverts. This replaces the old triple-dot → rename-dialog
- * flow. A blank value clears the title back to the prompt (per `renameWorkspace`).
+ * The workspace header's title: a selectable label with a pencil button that
+ * turns it into an inline editor (Enter or blur commits, Escape reverts). A
+ * blank value clears the title.
  *
- * In the Electron build the wrapper is a window-drag region so leftover header
- * space still drags the window; the interactive children opt out via `.no-drag`,
- * which is also what lets the label's text be selected for copy/paste.
+ * In Electron the wrapper is a window-drag region; the interactive children
+ * opt out with `.no-drag`, which also keeps the label's text selectable.
  */
 export function WorkspaceTitle({ workspaceId, title, prompt }: {
   workspaceId: string
   /** Stored display title; empty when the workspace has none yet. */
   title: string
-  /** First user prompt — shown as the label fallback when there's no title. */
+  /** First user prompt, shown when there's no title. */
   prompt: string
 }): JSX.Element {
-  // What the label shows (and what the editor seeds from), sans the last-ditch
-  // 'New workspace' placeholder — editing an untitled workspace starts from its
-  // prompt so the user tweaks the existing text rather than an empty field.
+  // Editing an untitled workspace starts from its prompt, not the
+  // 'New workspace' placeholder.
   const displayed = title || prompt
   const { editing, setEditing, seed, inputRef, start, handleKeyDown, handleBlur } =
     useInlineRename(workspaceId, displayed)
 
-  // Switching workspaces drops any open editor (the field is seeded on mount).
+  // Switching workspaces closes any open editor.
   useEffect(() => { setEditing(false) }, [workspaceId, setEditing])
 
   return (
@@ -50,9 +46,7 @@ export function WorkspaceTitle({ workspaceId, title, prompt }: {
           <span
             className="no-drag min-w-0 select-text truncate font-medium text-text"
             onCopy={(e) => {
-              // The label is a flex item (a block box), so a triple-click / line
-              // select otherwise copies with stray leading/trailing newlines.
-              // Write the trimmed selection to the clipboard ourselves.
+              // As a flex item, a triple-click would copy stray newlines.
               e.clipboardData.setData('text/plain', (window.getSelection()?.toString() ?? '').trim())
               e.preventDefault()
             }}

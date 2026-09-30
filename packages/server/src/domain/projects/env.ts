@@ -9,30 +9,19 @@ import { assertProjectExists } from './detail'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
 
 /**
- * A project's environment: the variables its workspaces launch with, and the
- * secrets the egress proxy injects on their behalf.
+ * A project's environment: variables its workspaces launch with, and secrets
+ * the egress proxy injects. Validates what the store doesn't: the project
+ * exists, names are shell-legal, and a secret's rule is one the proxy can
+ * act on (a bad rule would otherwise be dropped silently inside the proxy).
  *
- * The mediator over the env rows. It owns three things the store does not:
- * that the project exists, that a name is a name a shell will accept, and
- * that a secret's injection rule says something the proxy can act on — a
- * rule with no hosts, or with both a header and a body param, is a rule that
- * would be silently dropped much later, inside the proxy, with nothing on
- * screen to say why the credential never arrived.
- *
- * What leaves here never carries a secret's value. The one exception is
- * {@link resolveProjectEnv}, which is the create path asking for what to put
- * in a workspace — the question the values exist to answer.
+ * Secret values never leave here, except through {@link resolveProjectEnv}
+ * for workspace create.
  */
 
-/** A shell-legal variable name: what `NAME=value` in an env list can hold. */
+/** A shell-legal variable name. */
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-/**
- * Validate one secret's injection rule, in the vocabulary the proxy speaks.
- *
- * The rule lives in a row rather than a file, but the proxy is the reader
- * either way, so validity is defined by what it can act on.
- */
+/** Validate one secret's injection rule against what the proxy can act on. */
 export function parseSecretProxyRule(name: string, raw: unknown): SecretProxyRule {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new ServerError(
@@ -50,11 +39,10 @@ export function parseSecretProxyRule(name: string, raw: unknown): SecretProxyRul
       throw new ServerError('VALIDATION', `${name}: ${field} must be a string`)
     }
   }
-  // An EMPTY header or body param is the dangerous case, not a harmless one:
-  // the rule builder asks `if (rule.bodyParam)`, so a present-but-blank one
-  // falls through to the default `authorization: Bearer <secret>` — the
-  // credential leaving in a header nobody configured. Absent means "use the
-  // default"; blank means the user picked a field and did not name it.
+  // A blank header or body param is dangerous: the rule builder tests
+  // `if (rule.bodyParam)`, so blank falls through to the default
+  // `authorization: Bearer <secret>`, sending the credential in a header
+  // nobody configured. Absent means "use the default"; blank is an error.
   for (const field of ['header', 'bodyParam'] as const) {
     if (rule[field] !== undefined && (rule[field] as string).trim() === '') {
       throw new ServerError(
@@ -95,12 +83,9 @@ export async function listProjectEnv(slug: string): Promise<ProjectEnvVar[]> {
 }
 
 /**
- * Create or replace one variable.
- *
- * A secret may be saved with no value only when one is already stored — that
- * is how its rule is edited without the secret travelling again. Saving a
- * secret that has never had one would write a row the create path skips,
- * which reads as "saved" and behaves as "absent".
+ * Create or replace one variable. A secret may omit its value only if one is
+ * already stored (to edit just the rule); otherwise the row would look saved
+ * but be skipped at create.
  */
 export async function setProjectEnvVar(slug: string, input: {
   name: string
@@ -131,9 +116,8 @@ export async function setProjectEnvVar(slug: string, input: {
 
   const rule = parseSecretProxyRule(name, input.rule)
   if (input.value === undefined || input.value === '') {
-    // `''` counts as no value, not as an empty one: the legacy importer
-    // stores an unresolvable secret that way, and a rule-only edit on one
-    // must not report success while `resolveProjectEnv` goes on dropping it.
+    // A stored `''` counts as no value, since `resolveProjectEnv` drops it; a
+    // rule-only edit on it must not report success.
     const existing = (await listProjectEnvVars(slug))
       .find((r) => r.name === name && r.secret && r.value !== undefined && r.value !== '')
     if (!existing) {
@@ -152,21 +136,18 @@ export async function removeProjectEnvVar(slug: string, id: string): Promise<voi
   }
 }
 
-/** What a workspace launch needs: the plain variables, and the secrets that
- *  actually have a value behind them. */
+/** What a workspace launch needs: plain variables, and secrets that have a
+ *  value. */
 export interface ResolvedProjectEnv {
   plain: Record<string, string>
   secrets: Record<string, { value: string; rule: SecretProxyRule }>
 }
 
 /**
- * Resolve a project's environment for a workspace create.
- *
- * A secret with no usable value — never supplied, or sealed under a key this
- * install no longer has — is dropped rather than passed through empty: the
- * proxy would inject a blank header, and an upstream rejects that as a bad
- * credential rather than a missing one, which sends whoever debugs it after
- * the wrong thing. Same for a secret with no rule, which nothing would swap.
+ * Resolve a project's environment for a workspace create. A secret with no
+ * usable value (never set, or encrypted under a lost key) or no rule is
+ * dropped rather than injected blank, which upstreams would report as a bad
+ * credential instead of a missing one.
  */
 export async function resolveProjectEnv(slug: string): Promise<ResolvedProjectEnv> {
   const rows = await listProjectEnvVars(slug)

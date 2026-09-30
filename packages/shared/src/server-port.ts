@@ -1,25 +1,15 @@
 import { env } from '#env'
 
 /**
- * Port the server binds on 127.0.0.1 when `yaac server run` is invoked
- * without `--port`. A fixed default — rather than an OS-assigned ephemeral
- * port — keeps the browser-app URL (http://127.0.0.1:<port>/) stable across
- * server restarts so it can be bookmarked. Override per-run with
- * `yaac server run --port <N>`.
+ * The server's default port. Fixed rather than ephemeral so the web app's
+ * URL stays the same across restarts.
  */
 export const DEFAULT_SERVER_PORT = 8787
 
 /**
- * Resolve the port the server should bind, honoring (highest precedence
- * first):
- *   1. an explicit `--port` flag (`optPort`),
- *   2. the `YAAC_SERVER_PORT` environment variable,
- *   3. DEFAULT_SERVER_PORT.
- *
- * `0` is a valid value at every level — it asks the OS for an ephemeral port
- * (used by the test harness). An explicitly-provided value (flag or env) that
- * isn't a valid TCP port throws, so a typo fails loudly instead of silently
- * falling through to the default.
+ * The port to bind: `--port` (`optPort`), else `YAAC_SERVER_PORT`, else
+ * DEFAULT_SERVER_PORT. `0` asks the OS for an ephemeral port. An invalid
+ * explicit value throws.
  */
 export function resolveServerPort(optPort?: number): number {
   if (optPort !== undefined) return assertValidPort(optPort, '--port')
@@ -35,11 +25,7 @@ function assertValidPort(port: number, source: string): number {
   return port
 }
 
-/**
- * True when `err` is a Node `EADDRINUSE` error — the address/port is already
- * bound by another listener. Used to drive the auto-increment search below:
- * an in-use port is skipped, any other bind error is fatal.
- */
+/** True when `err` is a Node `EADDRINUSE` error. */
 export function isAddrInUseError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === 'EADDRINUSE'
 }
@@ -48,15 +34,10 @@ export function isAddrInUseError(err: unknown): boolean {
 export const MAX_PORT_PROBES = 64
 
 /**
- * Bind starting at `startPort`, incrementing past any in-use port until one
- * binds — so the server prefers its configured port but never fails just
- * because it's taken. `bind(port)` must resolve on a successful bind and
- * reject with an `EADDRINUSE` error when the port is busy; its resolved value
- * (e.g. the listening server) is returned for the first port that binds.
- *
- * `startPort` 0 is the OS-ephemeral request — bound once, never incremented.
- * Stops at port 65535, and after MAX_PORT_PROBES attempts. Throws when every
- * probed port is busy, or immediately on any non-`EADDRINUSE` error.
+ * Try `bind` on `startPort`, then each next port while it rejects with
+ * `EADDRINUSE`, and return the first success. Port 0 is tried once. Gives
+ * up after MAX_PORT_PROBES ports or at 65535, and throws at once on any
+ * other error.
  */
 export async function bindWithAutoIncrement<T>(
   startPort: number,

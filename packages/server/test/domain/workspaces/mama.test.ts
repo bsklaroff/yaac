@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// The command handler composes real db and real group resolution — those are
-// what the commands DO. Mocked at the process boundaries only: the substrate
-// listings behind `listActiveWorkspaces` and the teardown resolve, the create
-// a spawn detaches into, and the teardown a stop detaches into.
+// The DB and group resolution are real. Only process boundaries are mocked:
+// pod listing, the create a spawn detaches into, and the teardown a stop
+// detaches into.
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
@@ -48,8 +47,7 @@ let tmpDir: string
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   installRealWorkspaceDriver()
-  // `list` is a join over a project that exists; the caller's own project
-  // always does, since it is where the caller is running.
+  // The caller's project always exists, since the caller runs in it.
   await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
   await recordProject({ slug: 'other', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' })
   clearAllProvisioningForTests()
@@ -69,8 +67,8 @@ afterEach(async () => {
 /** Let a detached create's .then/.finally chains settle. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-/** Wait for the detached create to reach the (mocked) create — it resolves
- *  the setup and looks for a spare first, which takes more than a tick. */
+/** Wait for the detached spawn to reach the mocked create, which takes more
+ *  than a tick. */
 const created = (): Promise<void> =>
   vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalled() })
 
@@ -89,15 +87,14 @@ const output = async (
 
 describe('runMamaCommand', () => {
   it('refuses a command outside the allowlist, naming what is allowed', async () => {
-    // The union IS the subset of the yaac CLI a workspace may reach, and this
-    // is where it is enforced for BOTH transports — the proxy queues
-    // envelopes without knowing what any of them mean.
+    // This is the one place the allowed commands are enforced for both
+    // transports; the proxy queues requests without interpreting them.
     for (const forbidden of ['delete', 'restart', 'workspace-stop', 'config', '']) {
       const outcome = await run(forbidden)
       expect(outcome.ok, forbidden).toBe(false)
       if (!outcome.ok) expect(outcome.error).toContain('unknown command')
     }
-    // The refusal tells the caller what it could have said instead.
+    // The refusal lists the valid commands.
     const outcome = await run('delete')
     if (!outcome.ok) {
       expect(outcome.error).toContain('create')
@@ -106,10 +103,9 @@ describe('runMamaCommand', () => {
   })
 
   it('refuses an option the command does not take, rather than ignoring it', async () => {
-    // Both transports land here, so this is where the two are made to agree:
-    // the proxy shape-checks what it queues, but a containerless workspace
-    // posts straight to the route and never passes through it. Silently
-    // dropping an option would let a request do something other than it said.
+    // A containerless workspace posts straight to the route, bypassing the
+    // proxy's shape check. Silently dropping an option would make a request
+    // do something other than it said.
     const wrong = await run('rename', 'a title', { group: 'nope' })
     expect(wrong.ok).toBe(false)
     if (!wrong.ok) expect(wrong.error).toContain("does not take '--group'")
@@ -122,7 +118,7 @@ describe('runMamaCommand', () => {
     const proto = await run('list', '', { constructor: 'x' })
     expect(proto.ok).toBe(false)
 
-    // What each command DOES take still passes.
+    // Options a command does take still pass.
     await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'caller-workspace' })
     expect((await run('create', 'p', {
       tool: 'claude', model: 'opus', 'permission-mode': 'plan', 'ui-mode': 'acp', branch: 'b', group: 'g', title: 't',
@@ -130,8 +126,7 @@ describe('runMamaCommand', () => {
   })
 
   it('answers rather than throws when a command fails', async () => {
-    // A transport is holding a caller's request open, so every path has to
-    // produce something to answer with.
+    // A transport holds the request open, so every path must answer.
     const outcome = await run('group-move', 'anywhere', { workspace: 'nope' })
     expect(outcome).toEqual({ ok: false, error: "no workspace 'nope' in proj" })
   })
@@ -150,7 +145,7 @@ describe('runMamaCommand', () => {
       expect(text).toContain('caller-workspace'.slice(0, 8))
       expect(text).toContain('(you)')
       expect(text).toContain('review')
-      // The group column is how a reader knows what `group move` would change.
+      // The group column shows what `group move` would change.
       expect(text).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
       expect(group.name).toBe('review')
     })
@@ -183,14 +178,14 @@ describe('runMamaCommand', () => {
     it('starts a workspace in the caller\'s project and returns just the id', async () => {
       const outcome = await run('create', 'write the report')
       expect(outcome.ok).toBe(true)
-      // The bare id, so `id=$(yaac-mama create "…")` is the working idiom.
+      // Just the id, so `id=$(yaac-mama create "…")` works.
       if (outcome.ok) expect(outcome.output).toMatch(/^[0-9a-f-]{36}$/)
       await created()
 
       expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1)
       const [slug, opts] = vi.mocked(createWorkspace).mock.calls[0]
       expect(slug).toBe('proj')
-      // The caller's own tool and posture, absent a request for others.
+      // The caller's tool and permission mode, unless others are requested.
       expect(opts).toMatchObject({ initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto' })
     })
 
@@ -205,8 +200,7 @@ describe('runMamaCommand', () => {
         title: 'Port the lexer',
       })
 
-      // The ceiling is read off the caller's recorded row, which the request
-      // cannot speak for.
+      // The limit comes from the caller's recorded row, not the request.
       const above = await run('create', 'do it', { 'permission-mode': 'bypass' })
       expect(above.ok).toBe(false)
       if (!above.ok) expect(above.error).toContain("more permissive than this workspace's own ('auto')")
@@ -228,8 +222,8 @@ describe('runMamaCommand', () => {
 
       const rows = await listWorkspaceGroupRows('proj')
       expect(rows.map((r) => r.name)).toEqual(['release train'])
-      // Resolved to an id before the create, so the workspace is filed from
-      // the moment its row exists rather than when provisioning finishes.
+      // The group is resolved to an id before the create, so the workspace is
+      // filed as soon as its row exists.
       const [, opts] = vi.mocked(createWorkspace).mock.calls[0]
       expect(opts.groupId).toBe(rows[0].groupId)
     })
@@ -270,8 +264,8 @@ describe('runMamaCommand', () => {
   })
 
   it('creates a named group only for a request that goes through', async () => {
-    // A request refused anywhere — the posture ceiling, an unknown parent, a
-    // user's entry above the caller — must not change the user's sidebar.
+    // A refused request (mode limit, unknown parent, a user's entry above the
+    // caller) must not change the user's sidebar.
     await recordWorkspaceCreated({
       projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
     })
@@ -326,7 +320,7 @@ describe('runMamaCommand', () => {
       await settle()
       expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
 
-      // And list shows the chain, one level deeper per link.
+      // `list` shows the chain, one level deeper per link.
       const listed = await output('list')
       expect(listed).toContain('after caller-w (you):')
       expect(listed).toMatch(new RegExp(`\\n  ${first.slice(0, 8)}  claude  queued  step 2`))
@@ -346,12 +340,12 @@ describe('runMamaCommand', () => {
     })
 
     it('never grants more than the caller has, and refuses rather than queueing', async () => {
-      // Under a looser sibling, its posture is stepped down to the caller's.
+      // Under a more permissive sibling, the mode is capped at the caller's.
       await output('queue', 'x', { 'parent-workspace': 'loose-sibling', tool: 'claude' })
       expect((await listQueuedWorkspaceRows('proj'))[0].permissionMode).toBe('accept-edits')
 
       const refusals: Array<Record<string, string>> = [
-        // Named above the ceiling.
+        // More permissive than the caller.
         { 'parent-workspace': 'loose-sibling', tool: 'claude', 'permission-mode': 'bypass' },
         // A tool with nothing at or below it.
         { ...ME, tool: 'pi' },
@@ -397,8 +391,8 @@ describe('runMamaCommand', () => {
         permissionMode: 'accept-edits', parentWorkspaceId: 'caller-workspace',
       })
 
-      // Options alone leave the prompt; every one create takes is here, and
-      // so is the parent.
+      // Options alone leave the prompt; every create option and the parent
+      // can be edited.
       await output('edit-queued', '', {
         queued: id, 'parent-workspace': 'loose-sibling', model: 'sonnet', 'permission-mode': 'plan',
         'ui-mode': 'acp', branch: 'feature/y', group: 'later', title: 'Lint too',
@@ -412,7 +406,7 @@ describe('runMamaCommand', () => {
 
     it('holds an entry the user queued above the caller to its ceiling', async () => {
       // The user queued this at `bypass`; an agent in `accept-edits` may not
-      // put its own words behind that grant, and it is not quietly lowered.
+      // rewrite its prompt, and the mode is not silently lowered.
       const entry = await queueWorkspace('proj', {
         parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
       }, 'user')
@@ -421,7 +415,7 @@ describe('runMamaCommand', () => {
       if (!refused.ok) expect(refused.error).toContain('more permissive than this workspace')
       expect(await rowOf(entry.id)).toMatchObject({ prompt: 'user wrote this', permissionMode: 'bypass' })
 
-      // Naming one at or below the caller's own is the way through.
+      // Naming a mode at or below the caller's allows the edit.
       await output('edit-queued', 'agent wrote this', { queued: entry.id, 'permission-mode': 'accept-edits' })
       expect(await rowOf(entry.id)).toMatchObject({ prompt: 'agent wrote this', permissionMode: 'accept-edits' })
     })
@@ -459,8 +453,7 @@ describe('runMamaCommand', () => {
       (await getProjectWorkspaceRows(slug)).get(id)?.title
 
     it('renames the CALLER when no workspace is named', async () => {
-      // The common use: an agent that has worked out what it is doing says
-      // so, without first looking up an id it only needs to name itself.
+      // With no workspace named, an agent renames itself.
       const text = await output('rename', 'porting the lexer to rust')
 
       expect(await titleOf('caller-workspace')).toBe('porting the lexer to rust')
@@ -480,13 +473,13 @@ describe('runMamaCommand', () => {
     it('renames a sibling by short id prefix', async () => {
       await output('rename', 'reviewing the PR', { workspace: 'sibling' })
       expect(await titleOf('sibling-workspace')).toBe('reviewing the PR')
-      // The caller is untouched — naming a workspace means that workspace.
+      // The caller is untouched.
       expect(await titleOf('caller-workspace')).toBeUndefined()
     })
 
     it('reports the stored title, not the one that was sent', async () => {
-      // The store trims, collapses whitespace and caps the length, so
-      // echoing the request would tell the caller something untrue.
+      // The store normalizes and caps the title, so the reply shows the
+      // stored value, not the request.
       const text = await output('rename', `  spaced   out  ${'x'.repeat(200)}`)
       const stored = await titleOf('caller-workspace')
       expect(stored).toHaveLength(120)
@@ -522,8 +515,7 @@ describe('runMamaCommand', () => {
     it('stops a sibling by short id prefix, keeping what makes it restartable', async () => {
       const text = await output('stop', '', { workspace: 'sibling' })
 
-      // The teardown is the driver's; what this owns is that the RESOLVED
-      // workspace is the one handed to it.
+      // The resolved workspace is the one handed to the teardown.
       expect(vi.mocked(cleanupWorkspaceDetached)).toHaveBeenCalledTimes(1)
       expect(vi.mocked(cleanupWorkspaceDetached).mock.calls[0][0]).toMatchObject({
         workspaceId: 'sibling-workspace',
@@ -531,14 +523,13 @@ describe('runMamaCommand', () => {
         jobName: 'yaac-proj-sibling-workspace',
       })
       expect(text).toContain('sibling-')
-      // The line has to say this was reversible, or an agent reads a stop as
-      // a delete and never offers the user the restart.
+      // The reply must say a stop is reversible, or an agent may treat it as
+      // a delete.
       expect(text).toContain('checkout is kept')
     })
 
     it('stops the CALLER when no workspace is named', async () => {
-      // The case the command exists for: a workspace spawned to do one job
-      // winding itself down once the job is done.
+      // A workspace stopping itself once its job is done.
       await output('stop')
 
       expect(vi.mocked(cleanupWorkspaceDetached).mock.calls[0][0]).toMatchObject({
@@ -547,9 +538,8 @@ describe('runMamaCommand', () => {
     })
 
     it('reports a workspace that is not running as such, not as unknown', async () => {
-      // The row resolved, so the workspace exists — it just has no unit. The
-      // driver's own NOT_FOUND sends a caller to `yaac workspace list`, which
-      // an agent does not have.
+      // The row exists but there is no unit. The driver's NOT_FOUND points
+      // at `yaac workspace list`, which an agent cannot run.
       vi.mocked(listWorkspacePods).mockResolvedValue([])
 
       const outcome = await run('stop', '', { workspace: 'sibling' })
@@ -574,9 +564,8 @@ describe('runMamaCommand', () => {
       const outcome = await run('stop', '', { workspace: 'sibling' })
 
       expect(outcome.ok).toBe(false)
-      // Told apart from "no such workspace", because the two ask the caller
-      // for different things — and behind a teardown that difference is the
-      // whole message: it holds the right id and typed too little of it.
+      // Distinct from "no such workspace": the caller has the right id and
+      // typed too little of it.
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
       expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
     })
@@ -589,7 +578,7 @@ describe('runMamaCommand', () => {
 
       const rows = await listWorkspaceGroupRows('proj')
       expect(rows).toHaveLength(1)
-      // Pinned, or a memberless group would be listed by nothing.
+      // Pinned, or an empty group would not be listed anywhere.
       expect(rows[0]).toMatchObject({ name: 'release train', pinned: true })
     })
 
@@ -600,9 +589,8 @@ describe('runMamaCommand', () => {
     })
 
     it('reports the name as stored, not as typed', async () => {
-      // The store collapses whitespace, so the typed string is not what the
-      // sidebar will show — and the same typing has to reach the same group
-      // rather than making a second one beside it.
+      // The store collapses whitespace, so the reply shows the stored name,
+      // and the same input must reach the same group.
       const text = await output('group-create', 'release   train')
       expect(text).toContain('"release train"')
 
@@ -611,9 +599,8 @@ describe('runMamaCommand', () => {
     })
 
     it('refuses a name longer than the store keeps', async () => {
-      // Bounded by what the store will hold, not by something larger: a name
-      // accepted and then truncated would let two distinct long names
-      // sharing a prefix resolve to one group.
+      // A name accepted then truncated would let two long names sharing a
+      // prefix resolve to one group.
       const outcome = await run('group-create', 'x'.repeat(MAX_TITLE_LENGTH + 1))
       expect(outcome.ok).toBe(false)
       if (!outcome.ok) expect(outcome.error).toContain(`exceeds ${MAX_TITLE_LENGTH}`)
@@ -644,8 +631,8 @@ describe('runMamaCommand', () => {
     })
 
     it('reports the group’s name when it was addressed by id', async () => {
-      // Passing an id is exactly what the ambiguity error tells an agent to
-      // do, so the line it reads back must not be a uuid.
+      // The ambiguity error tells agents to pass an id, so the reply must
+      // name the group, not echo a uuid.
       const group = await createWorkspaceGroup('proj', 'release train', null)
 
       const text = await output('group-move', group.groupId, { workspace: 'aaaabbbb' })
@@ -677,8 +664,8 @@ describe('runMamaCommand', () => {
       await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'aaaabbbb-3333-4444' })
       const outcome = await run('group-move', 'release', { workspace: 'aaaabbbb' })
       expect(outcome.ok).toBe(false)
-      // The fix is a longer prefix, so the message says so rather than
-      // sending the caller back to `list` for an id it already has.
+      // The message asks for a longer prefix rather than sending the caller
+      // back to `list`.
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
     })
 
@@ -690,15 +677,14 @@ describe('runMamaCommand', () => {
 
   describe('models', () => {
     it('reports every tool, and which the host can actually authenticate', async () => {
-      // No credentials seeded in this data dir, so every tool reads
-      // unconfigured — the answer an agent needs before choosing --tool.
+      // No credentials are seeded, so every tool reads as unconfigured.
       const text = await output('models')
       expect(text).toContain('claude')
       expect(text).toContain('codex')
       expect(text).toContain('opencode')
       expect(text).toContain('pi')
       expect(text).toContain('not configured')
-      // It says which tool the caller itself runs, the known-good default.
+      // It names the caller's own tool, the known-good default.
       expect(text).toContain('codex')
     })
   })

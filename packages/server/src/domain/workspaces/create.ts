@@ -3,7 +3,6 @@ import path from 'node:path'
 import crypto, { createHash } from 'node:crypto'
 import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { buildStatusRight } from '#lib/status-right'
-// Aliased: this module uses a local `env: string[]` for the pod's env vars.
 import { testEnv } from '@yaac/shared/env'
 import { workspaceDriver } from '#drivers/driver'
 import type {
@@ -122,40 +121,32 @@ import {
   type PiProvider,
 } from '@yaac/shared/tool-providers'
 
-/** How long a fresh acp create holds for its conversation's row. */
+/** How long a fresh acp create waits for its conversation's row. */
 const ACP_CONVERSATION_WAIT_MS = 60_000
 
-/** In-pod claude home. The host-side `claudeDir` is mounted here, and
- *  `CLAUDE_CONFIG_DIR` names it — which also puts claude's global config at
- *  `<here>/.claude.json` rather than beside the home dir. */
+/** In-pod claude home, where `claudeDir` is mounted. `CLAUDE_CONFIG_DIR`
+ *  points here, which also puts claude's global config at
+ *  `<here>/.claude.json`. */
 const CLAUDE_CONTAINER_HOME = '/home/yaac/.claude'
-/** The project's per-workspace-shared package cache: pnpm's store, and the
- *  backing dirs of the ephemeral-modules mounts. */
+/** The project's package cache, shared by its workspaces: pnpm's store and
+ *  the backing dirs of the ephemeral-modules mounts. */
 const CACHED_PACKAGES_CONTAINER_DIR = '/home/yaac/.cached-packages'
-/** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
- *  mirroring `~/.claude`), shared by every workspace of the project. */
+/** In-pod pi home, where the project's shared `piDir` is mounted. */
 const PI_CONTAINER_HOME = '/home/yaac/.pi'
-/** In-pod dir pi writes its JSONL session logs to (PI_CODING_AGENT_SESSION_DIR
- *  points here): the workspace's own history, outside the shared home, so a
- *  host realizes it as an ordinary link. */
+/** Where pi writes its JSONL session logs (PI_CODING_AGENT_SESSION_DIR).
+ *  Per-workspace history, kept outside the shared home so containerless can
+ *  realize it as a plain link. */
 const PI_SESSIONS_CONTAINER_DIR = '/home/yaac/.yaac-pi-sessions'
-/** In-pod dir codex keeps its sqlite state in (CODEX_SQLITE_HOME points
- *  here): per workspace like its rollouts, and outside the shared home for the
- *  same reason as pi's. */
+/** Where codex keeps its sqlite state (CODEX_SQLITE_HOME). Per workspace,
+ *  outside the shared home, like pi's sessions. */
 const CODEX_SQLITE_CONTAINER_DIR = '/home/yaac/.codex-sqlite'
 
 /**
- * Each path, plus what it resolves to where that differs — for the places a
- * tool records a directory it was handed and we cannot know whether it
- * recorded the name or the destination.
- *
- * A workspace is launched with the literal path as its cwd, but a data dir
- * reached through a symlink (macOS `/var` -> `/private/var`, which is where
- * a tmp-based data dir lands) gives a tool that resolves its own cwd a
- * different string for the same directory. Naming both costs one map entry
- * and removes the question. Unresolvable paths are dropped rather than
- * fatal: a container path has no meaning on this host, and a directory not
- * created yet resolves on the next create.
+ * Each path plus its realpath where that differs, for places where a tool
+ * records a directory and may store either form. A data dir behind a symlink
+ * (macOS `/var` -> `/private/var`) otherwise gives two strings for one dir.
+ * Paths that do not resolve on this host (container paths, dirs not created
+ * yet) are kept as-is.
  */
 async function withResolved(dirs: readonly string[]): Promise<string[]> {
   const out = new Set(dirs)
@@ -163,7 +154,7 @@ async function withResolved(dirs: readonly string[]): Promise<string[]> {
     try {
       out.add(await fs.realpath(dir))
     } catch {
-      // Not on this filesystem, or not created yet.
+      // Not on this host, or not created yet.
     }
   }
   return [...out]
@@ -175,15 +166,14 @@ function emit(message: string, options: WorkspaceCreateOptions): void {
 }
 
 export interface WorkspaceCreateOptions {
-  /** Pre-generated workspace ID (used by resume to know the Job name upfront). */
+  /** Pre-generated workspace ID (resume uses it to know the job name). */
   workspaceId?: string
   /** Agent tool to run inside the container (default: 'claude'). */
   tool?: AgentTool
   /**
    * Which protocol drives the agent (default: 'tui'). `acp` runs the tool's
-   * ACP adapter under acpd instead of its TUI, and the webapp renders the
-   * conversation as chat rather than attaching a PTY. Validated by the create
-   * route against the tools that have an adapter.
+   * ACP adapter under acpd and the webapp renders a chat pane instead of a
+   * terminal. The create route checks the tool has an adapter.
    */
   mode?: AgentMode
   /**
@@ -198,58 +188,49 @@ export interface WorkspaceCreateOptions {
    */
   resume?: boolean
   /**
-   * The agent sessions to bring up, in window order — what restart reads
-   * back from the frozen active set. Each gets its own tmux window
-   * (`agentWindowName`), the first respawning the placeholder. Empty (the
-   * default) starts one fresh conversation pinned to the workspace id.
+   * Agent sessions to resume, in window order (restart passes the stopped
+   * workspace's active set). Each gets its own tmux window
+   * (`agentWindowName`). Empty (the default) starts one fresh conversation
+   * whose id is the workspace id.
    */
   resumeAgentSessions?: Array<{ agentSessionId: string; tool: AgentTool }>
   /**
-   * Provision a prewarmed spare: stamp the `yaac.prewarmed` pod label so the
-   * workspace is hidden from user-facing views until claimed on a later
-   * `workspace create`. Set by the prewarm reconciler; never by a user create.
+   * Provision a prewarmed spare, hidden from user-facing views until a later
+   * `workspace create` claims it. Set only by the prewarm reconciler.
    */
   prewarm?: boolean
   /**
-   * Initial prompt typed into the agent's tmux pane once the agent window
-   * is up (pasted + submitted, not passed on the agent's command line).
-   * Used by `yaac-mama create` and `workspace create --prompt`.
+   * Prompt pasted and submitted into the agent once its window is up (not
+   * passed on the command line). From `yaac-mama create` and
+   * `workspace create --prompt`.
    */
   initialPrompt?: string
   /**
-   * Model override for the agent's launch command (`--model <model>`): a
-   * model id or alias for claude/codex, `provider/model` for opencode and
-   * pi (see buildAgentCmd). Validated to MODEL_RE by the create route.
-   * Not persisted: a restart resumes with the default model.
+   * Model override for the agent launch: a model id or alias for
+   * claude/codex, `provider/model` for opencode and pi. The create route
+   * validates it. Not persisted: a restart uses the default model.
    */
   model?: string
   /**
-   * Sidebar group to file the new workspace under — an id the caller has
-   * already resolved (`resolveGroup`), never a name. Filed the moment the
-   * row exists rather than when provisioning finishes, so the workspace is in
-   * the group the user asked for for its whole visible life.
+   * Sidebar group id (already resolved, not a name). Applied as soon as the
+   * row exists, so the workspace never shows outside its group.
    */
   groupId?: string
   /**
-   * The user's title for the new workspace, set with its group — before its
-   * founding prompt is recorded, so the title sweep never sees it untitled.
+   * The user's title, set before the first prompt is recorded so the
+   * auto-title sweep never sees the workspace untitled.
    */
   title?: string
   /**
-   * The permission posture this workspace's agents launch in — how much they
-   * may do before stopping to ask.
-   *
-   * Absent means "whatever this project last used, else the driver's
-   * default", which is what every caller with no opinion passes. Present is
-   * an explicit human choice, and is therefore also what the project
-   * remembers for next time. A restart passes the workspace's recorded
-   * answer rather than re-deriving either.
+   * The permission mode the agents launch in. Absent means the project's
+   * last-used mode, else the driver's default. An explicit value is a user
+   * choice, so the project also remembers it. Restart passes the workspace's
+   * recorded mode.
    */
   permissionMode?: PermissionMode
   /**
-   * Called for each user-visible progress message during provisioning.
-   * The HTTP route forwards these to the CLI as NDJSON events so
-   * `yaac workspace create` can show what the server is doing.
+   * Called with each user-visible progress message. The HTTP route streams
+   * them to the CLI as NDJSON events.
    */
   onProgress?: (message: string) => void
 }
@@ -259,44 +240,27 @@ export interface WorkspaceCreateResult {
   jobName: string
   forwardedPorts: PortMapping[]
   tool: AgentTool
-  /** Which driver the pod came up under. Callers that would attach a PTY need
-   *  it: an `acp` workspace's window runs acpd, not a shell. */
+  /** Callers that would attach a PTY need this: an `acp` workspace's window
+   *  runs acpd, not a shell. */
   mode: AgentMode
 }
 
 /**
- * What one workspace's pod costs and may burst to.
- *
- * Policy, and the reason it is stated here rather than inside the runtime:
- * every number is chosen against ordinary developer hardware — how many
- * workspaces should pack onto one machine, and how much one may take before
- * it is taking the machine.
+ * Resource requests and limits for one workspace. This is policy, sized for
+ * ordinary developer hardware, so it lives here rather than in a driver.
  */
 const WORKSPACE_RESOURCES: WorkspaceResources = {
   memoryRequestBytes: 1 * 1024 ** 3,
   memoryLimitBytes: 8 * 1024 ** 3,
-  // 250m per workspace pairs with the 1Gi memory request at 4 GB/core, so
-  // the cpu-imposed ceiling on concurrent workspaces lands beside the
-  // memory-imposed one on ordinary developer hardware (8 cores/32 GB:
-  // 32 workspaces by cpu, 32 by memory) — honest for bin-packing without
-  // becoming the reason a workspace stops scheduling. Real usage is far
-  // below it: an agent session is idle between turns.
+  // Matches the 1Gi memory request at 4 GB/core, so cpu and memory cap
+  // concurrent workspaces at about the same count (32 on 8 cores/32 GB).
   cpuRequestMillis: 250,
-  // 32x the request: high enough that interactive work never reaches it,
-  // low enough that one workspace's parallel burst leaves the node usable.
-  // The number that matters is the fraction of a node this is — half of a
-  // 16-core box — because it caps both the burst and (under gVisor) the
-  // sandbox's stub count. Workspaces doing heavy parallel work (e2e: image
-  // builds, container starts) keep most of their headroom; what they lose
-  // is the ability to take the whole node.
+  // Half a 16-core machine: enough for heavy parallel work, but one
+  // workspace cannot take the whole node.
   cpuLimitMillis: 8000,
-  // Workspaces keep their repo, workspaces and caches on mounts, which are
-  // not ephemeral storage — what lands here is the writable layer, logs,
-  // and the pod-local scratch (the tmux socket dir, the ssh-agent socket
-  // dir, and nested-only the graphroot). 2Gi covers the steady state; the
-  // 16Gi ceiling is a blast-radius bound on a workspace filling the node's
-  // disk, not a budget anyone should hit. A pod's `moduleDirs` are its own
-  // volumes, and the k8s driver adds their budget on top of both.
+  // Repo, checkout and caches are on mounts. This covers the writable layer,
+  // logs and pod-local scratch; the limit only bounds a runaway workspace.
+  // The k8s driver adds the `moduleDirs` volumes' budget on top.
   ephemeralStorageRequestBytes: 2 * 1024 ** 3,
   ephemeralStorageLimitBytes: 16 * 1024 ** 3,
 }
@@ -306,38 +270,33 @@ interface WorkspaceSetupParams {
   projectSlug: string
   workspaceId: string
   tool: AgentTool
-  /** Which driver launches and observes the agents. */
   mode: AgentMode
-  /** The conversations to bring up, in window order — the same list the
-   *  workspace's rows were written from, so the DB can never name one the
-   *  agent did not open. */
+  /** Conversations to bring up, in window order. The same list the rows were
+   *  written from, so the DB never names one the agent did not open. */
   launching: Array<{ agentSessionId: string; tool: AgentTool }>
   /** Pre-validated init windows (validateInitWindows ran in createWorkspace). */
   initWindows: InitWindow[]
   /** pi only — provider whose default model drives `pi --model`. */
   piProvider?: PiProvider
-  /** The permission posture the agents launch in. */
   permissionMode: PermissionMode
   /**
-   * Called the moment the runtime has something running, before any of the
-   * setup that can still fail. What it hands back is the only thing that
-   * can address the new unit for a teardown — so the caller learns of a
-   * half-started workspace even when the failure comes several steps later.
+   * Called as soon as the runtime has launched, before setup that can fail,
+   * so the caller holds the handle needed to tear down a half-started
+   * workspace.
    */
   onLaunched: (handle: RuntimeHandle) => void
   options: WorkspaceCreateOptions
   /**
-   * The concurrent host-side workspace provisioning (fetch → branch checks
-   * → `createCheckout`), started before the Job so the checkout overlaps
-   * pod boot. A rejection (bad branch, fetch failure) is the caller's input
-   * being wrong, not the pod's — surfaced as SetupInputError so the Job
-   * retry loop fails fast instead of recreating the pod against it.
+   * Host-side checkout provisioning (fetch, branch checks, `createCheckout`),
+   * started before launch so it overlaps pod boot. A rejection means bad
+   * input (bad branch, fetch failure), surfaced as SetupInputError so the
+   * retry loop fails fast.
    */
   workspace: Promise<void>
 }
 
-/** Wraps workspace-provisioning failures so the Job retry loop can tell
- *  "the pod setup failed" (retryable) from "the inputs are bad" (not). */
+/** Marks a failure as bad input (not retryable), as opposed to a pod setup
+ *  failure (retryable). */
 class SetupInputError extends Error {
   constructor(readonly inner: unknown) {
     super(inner instanceof Error ? inner.message : String(inner))
@@ -345,13 +304,9 @@ class SetupInputError extends Error {
 }
 
 /**
- * Launch the workspace's runtime and drive the in-pod setup on top of it.
- *
- * One attempt: the caller's retry loop runs it again (having torn the last
- * one down) when what failed was the pod rather than the create's inputs.
- * Everything here is either a wait the runtime answers or a command run
- * inside the workspace — how a workspace becomes a running thing is the
- * runtime's, and nothing below names a substrate object.
+ * Launch the workspace's runtime and run the in-workspace setup. One attempt;
+ * the caller retries (after teardown) when the pod failed rather than the
+ * inputs. Everything here goes through the driver contract.
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
@@ -360,71 +315,44 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   } = params
   const runtime = workspaceDriver()
 
-  // Reject-only view of the workspace leg, raced against the boot waits
-  // below: its failures — unknown branch, git auth —
-  // are the most common user-facing create errors, and before the legs ran
-  // concurrently they surfaced in well under a second. Racing them here
-  // keeps that: a bad input aborts the boot the moment it's known instead
-  // of paying image pull + gVisor boot + the streamd gate first. On
-  // workspace success it never settles, so the races resolve on their pod
-  // wait; the value is read at the join below.
+  // Rejects when checkout provisioning fails and never settles otherwise.
+  // Racing it against the boot waits makes common input errors (unknown
+  // branch, git auth) fail fast instead of after the pod boots.
   const workspaceFailure: Promise<never> = workspace.then(
     () => new Promise<never>(() => { /* success: races resolve on the pod wait */ }),
     (err) => { throw new SetupInputError(err) },
   )
-  // The races may both complete before a late workspace rejection lands (or
-  // never observe it when a wait throws first) — keep that from surfacing
-  // as an unhandled rejection; the join below still reads the real outcome.
+  // Avoid an unhandled rejection if no race observes it; the join below
+  // reads the real outcome.
   workspaceFailure.catch(() => { /* observed via race/join */ })
 
   const handle = await runtime.launch(spec)
   onLaunched(handle)
   const jobName = handle.jobName
-  // Where this workspace's things are, in its own world. Every command
-  // below is addressed inside it, and the answer differs per driver — a pod
-  // sees fixed container paths, a host process sees its own checkout.
   const paths = runtime.workspacePaths(jobName)
-  // Each race can abandon a still-pending wait when the workspace leg
-  // rejects first — pre-mark the waits handled so a later rejection from
-  // an abandoned one (e.g. a timeout against the runtime the retry loop is
-  // already tearing down) can't surface as an unhandled rejection.
+  // Mark the waits handled so one abandoned by a race cannot surface later
+  // as an unhandled rejection.
   const podReady = runtime.awaitReady(handle)
   podReady.catch(() => { /* observed via race */ })
   await Promise.race([podReady, workspaceFailure])
 
-  // First relay contact doubles as the transport readiness gate; every
-  // setup command below rides the relay (single-digit ms per command)
-  // instead of a ~300ms exec through the apiserver.
   const transportReady = runtime.awaitAgentTransport(jobName)
   transportReady.catch(() => { /* observed via race */ })
   await Promise.race([transportReady, workspaceFailure])
 
-  // No ownership fixup is needed for server-created hostPath mounts: the
-  // pod runs as the server's own uid (installSecurityContext). Under gVisor
-  // there is no userns and no idmapped mount, so numeric uids pass through
-  // raw — server-owned dirs are writable as-is.
-
-  // The workspace checkout has been running concurrently with the pod boot;
-  // everything below reads /workspace, so join it now. Its failures are the
-  // create's inputs being bad — never the pod's fault — so they must not
-  // burn Job-recreate retries (SetupInputError fails the retry loop fast).
+  // Everything below reads the checkout, so join it now.
   try {
     await workspace
   } catch (err) {
     throw new SetupInputError(err)
   }
 
-  // Point the checkout's clone at the main clone's objects and bring its
-  // `origin/*` up to the main clone's — one exec (see buildCloneLinkExec).
-  // Run on every launch, on every driver, so the agent starts current.
+  // Link the checkout to the main clone's objects and update its `origin/*`,
+  // on every launch, so the agent starts current.
   await runtime.exec(jobName, buildCloneLinkExec(path.join(repoDir(projectSlug), '.git'), paths))
 
-  // Nested workspaces: the postStart hook started the rootful in-pod engine
-  // in the background (yaac-workspace-init, which also writes the project
-  // registries.conf drop-in from YAAC_REGISTRY_CONF_B64).
-  // Gate on `docker version` here so a broken engine fails the create with
-  // a clear error instead of a confusing "cannot connect to docker" the
-  // first time the agent runs.
+  // yaac-workspace-init starts the in-pod engine in the background. Wait for
+  // it so a broken engine fails the create with a clear error.
   if (spec.nestedContainers) {
     emit('Waiting for the in-pod container engine...', options)
     const deadline = Date.now() + 60_000
@@ -446,19 +374,10 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
 
   }
 
-  // Open the init windows and swap the keepalive placeholder for the real
-  // agent — one exec (see buildWindowsExec). The tmux server, its UX
-  // options, and the placeholder window were configured by the postStart
-  // hook; the placeholder never reaches the user, who attaches after setup
-  // completes.
-  // One command per conversation, from the same list that was recorded with
-  // the workspace row — the two must not diverge, or the DB would name a
-  // conversation the agent never opened.
-  //
-  // Only a *resume* resumes, and never the workspace-id pin of a tool that
-  // mints its own ids: it never ran under the pin, so a resume by that id
-  // finds no conversation (`codex resume` kills the window). A workspace whose
-  // pane never named a conversation to take the pin's place starts anew.
+  // Open the init windows and replace the placeholder window with the agents
+  // (buildWindowsExec). A self-naming tool never ran under the workspace-id
+  // placeholder id, so resuming by it would find nothing (`codex resume`
+  // kills the window); such a conversation starts fresh instead.
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => {
     const resume = options.resume === true
@@ -470,10 +389,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
         tool: a.tool,
         agentSessionId: a.agentSessionId,
         resume,
-        // The window a conversation lands in — the primary keeps the tool's own
-        // name, extras get `<tool>-2`, … . Under acp it doubles as the acpd
-        // socket's name, which is why the driver needs it and the TUI one
-        // ignores it.
+        // Under acp this also names the acpd socket.
         windowName: agentWindowName(a.tool, i),
         paths,
         permissionMode,
@@ -485,34 +401,20 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   emit(`Starting ${toolLabel(tool)}...`, options)
   await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
 
-  // Did the agents actually come up? `respawn-window` says yes even when the
-  // command it ran died instantly, so without this a workspace whose agent
-  // binary is missing or broken reports a clean create and then dies with
-  // nobody told why (the preflight catches the deterministic
-  // missing-from-PATH case; this catches the rest).
-  //
-  // Deliberately not awaited. The probe has to let a doomed command exit
-  // before it looks, and there is nothing left here to overlap that sleep
-  // with — awaiting it would put a second on every create to serve the rare
-  // one that fails. So the create returns now and the verdict lands after,
-  // as a failed provisioning row (see reportAgentLaunchFailure).
-  //
-  // `tui` only: an acp launch is proven by its own transport handshake, and
-  // its one deterministic failure is the adapter check the preflight ran.
+  // Check the agents actually started: `respawn-window` succeeds even when
+  // its command dies instantly. Not awaited, since the probe must wait for a
+  // doomed command to exit; a failure lands later as a failed provisioning
+  // row (reportAgentLaunchFailure). `tui` only: an acp launch is proven by
+  // its transport handshake.
   if (mode === 'tui') {
     const windows = launching.map((a, i) => agentWindowName(a.tool, i))
     void verifyAgentWindowAlive(jobName, windows).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)
       serverLog(`[server] create ${workspaceId}: ${message}`)
-      // ONLY a verdict is reported. The probe deliberately distinguishes
-      // "the agent is not there" from "the probe never got an answer", and
-      // this handler has to honor that split even though it cannot rethrow:
-      // a failed provisioning row hides its workspace from the snapshot, so
-      // filing a relay blip as a dead agent would make a live, working
-      // workspace disappear behind an error until it is dismissed.
+      // Report only a confirmed dead agent. A failed provisioning row hides
+      // the workspace, so a probe that got no answer must not report one.
       if (!(err instanceof AgentLaunchDeadError)) return
-      // A spare has no row and no user watching it; a claim runs this same
-      // probe again, which is where its failure belongs.
+      // A spare has no row; the claim runs this probe again.
       if (options.prewarm === true) return
       void reportAgentLaunchFailure({
         workspaceId,
@@ -540,18 +442,11 @@ function toolLabel(tool: AgentTool): string {
 /**
  * The last step of a create, cold or claimed: hand the agent over.
  *
- * A fresh acp conversation has no row until its agent mints an id
- * (`session/new`), seconds after the window opens, and until then the webapp
- * has no chat pane to open — only a terminal on acpd's log, which it then
- * swaps for the conversation in a column after the init windows. So the
- * create holds until the row exists, keeping this workspace behind its
- * placeholder; a resumed one's rows were written at launch.
- *
- * Then the initial prompt, mode-agnostic: `tui` pastes it into the pane and
- * submits, `acp` sends `session/prompt`. Neither waits for the agent to
- * answer, and a failure is logged rather than thrown — the workspace is whole
- * either way. Not sent to an acp conversation the hold gave up on, which would
- * wait out a second budget for the same handshake.
+ * A fresh acp conversation has no row until the agent answers `session/new`,
+ * and until then the webapp has no chat pane to show. So an acp create waits
+ * for the row. Then the initial prompt is delivered (pasted under `tui`,
+ * `session/prompt` under `acp`) without waiting for a reply. Failures are
+ * logged, not thrown: the workspace is usable either way.
  */
 export async function handOverAgent(input: {
   projectSlug: string
@@ -582,11 +477,9 @@ export async function handOverAgent(input: {
 }
 
 /**
- * Poll until the workspace has a live conversation row, resolving whether one
- * landed. Gives up at the deadline or as soon as the agent's window is gone,
- * and treats a failed read as "not yet": a handshake that never lands is the
- * watcher's to retry, and the workspace is better shown with its terminal than
- * held behind a spinner.
+ * Poll until the workspace has a live conversation row; resolves whether one
+ * appeared. Gives up at the deadline or when the agent's window is gone. A
+ * failed read counts as "not yet"; the status watcher retries the handshake.
  */
 async function awaitConversationRow(
   projectSlug: string,
@@ -598,7 +491,7 @@ async function awaitConversationRow(
   for (let polls = 0; Date.now() < deadline; polls++) {
     const rows = await listActiveAgentSessions(projectSlug, workspaceId).catch(() => [])
     if (rows.length > 0) return true
-    // An exec per probe, so every couple of seconds rather than every poll.
+    // The window probe costs an exec, so run it every 8th poll.
     if (polls % 8 === 7) {
       const dead = await verifyAgentWindowAlive(jobName, [window])
         .then(() => false, (err: unknown) => err instanceof AgentLaunchDeadError)
@@ -615,18 +508,13 @@ async function awaitConversationRow(
 }
 
 /**
- * Does a create that gave up take its checkout with it?
+ * Whether a failed create deletes its checkout: only when this create made
+ * it. Getting this wrong deletes work that exists nowhere else.
  *
- * Only when the checkout is the create's OWN product, which is the whole of
- * the rule and the reason it is written down rather than inlined: getting it
- * backwards deletes work that exists in no other copy.
- *
- * - A *resume* keeps it. That checkout predates this create — it is the work
- *   the user came back for — which is also why db puts a failed resume's
- *   row back as the restart found it instead of deleting it.
- * - A *prewarm* keeps it too, for the opposite reason: its row survives
- *   flagged `spare`, and that flag is exactly what the startup sweep collects
- *   a dead spare's checkout on. Removing it here would only race that sweep.
+ * - A resume keeps it: the checkout predates this create and holds the
+ *   user's work.
+ * - A prewarm keeps it: its row survives flagged `spare`, and the startup
+ *   sweep collects the checkout from that flag.
  */
 export function failedCreateCollectsCheckout(
   options: Pick<WorkspaceCreateOptions, 'resume' | 'prewarm'>,
@@ -635,10 +523,8 @@ export function failedCreateCollectsCheckout(
 }
 
 /**
- * Report that a create gave up, so the server can undo what the matching
- * `workspace-created` started. What "undo" means differs by `resume` and is
- * db's to decide (see `apply-workspace-event.ts`); this half knows only
- * that provisioning failed.
+ * Report that a create gave up so the matching `workspace-created` can be
+ * undone. `#db` decides what undo means for a resume (apply-workspace-event.ts).
  */
 async function reportCreateFailed(
   projectSlug: string,
@@ -651,43 +537,22 @@ async function reportCreateFailed(
     workspaceId,
     resume: options.resume,
   }).catch(() => {
-    // Best-effort: the create is already failing, and the reaper records a
-    // row whose pod never arrived.
+    // Best-effort: the reaper also handles a row whose pod never arrived.
   })
 }
 
 /**
- * The posture a create actually launches in, given what it was asked for.
+ * The permission mode a create launches in: the requested one, else
+ * `defaultPermissionMode` for this driver and tool. No project memory here;
+ * `resolveCreate` handles that for user-initiated creates.
  *
- * What the request named, else `defaultPermissionMode` for this driver and
- * tool. Every caller reaching createWorkspace directly — the spawn policy, a
- * restart — wants exactly this: no project memory, because neither is a
- * person choosing (see `resolveCreate` for the rung that is; the route and the
- * prewarm pool resolve through it before they get here).
+ * A requested mode the tool (or its ACP adapter, which may offer fewer
+ * modes) does not support is refused rather than swapped for a weaker one.
  *
- * A request naming a posture its tool lacks is refused rather than nudged to
- * a neighbour: the caller asked for a restraint, and quietly launching with a
- * weaker one is the failure mode worth being loud about.
- *
- * A `resume` is the exception. Its posture is the row's, not a person's, so
- * it is not refused for being unsupported — a row written by a different
- * build would otherwise make the workspace unrestartable. It launches in the
- * nearest posture the tool has that is no looser, else its strictest
- * (`launchablePermissionMode`): never the driver default, which would turn an
- * old codex `plan` row into `bypass` in a container.
- *
- * The two agent modes do NOT always answer the same way, because a posture is
- * a launch flag for a TUI and an advertised session mode for an adapter, and
- * the adapters offer fewer: codex-acp collapses codex's approval × sandbox
- * grid into three modes, none of them a read-only sandbox. A posture
- * an adapter cannot express is refused here rather than clamped to a
- * neighbour, for the same reason the TUI refuses one: the caller asked for a
- * restraint, and launching with a weaker one is the failure worth being loud
- * about.
- *
- * What an ACP conversation never fails to keep is a posture it WAS given: it
- * tells the adapter (`session/set_mode`) and puts the asks it still makes in
- * front of the user in the chat pane.
+ * A resume is the exception: its mode comes from the row, possibly written by
+ * another build, so it launches in the nearest mode that is no looser
+ * (`launchablePermissionMode`) rather than failing or falling back to the
+ * driver default. See docs/permission-modes.md.
  */
 export function launchPermissionMode(args: {
   tool: AgentTool
@@ -705,9 +570,8 @@ export function launchPermissionMode(args: {
   }
   if (!toolSupportsPermissionMode(tool, requested, agentMode)) {
     const supported = supportedPermissionModes(tool, agentMode).join(', ')
-    // Named only when it is the reason: `codex has no "read-only" permission
-    // mode` sends someone to codex's docs, where the read-only sandbox plainly
-    // exists — it is codex's ACP adapter that has no mode for it.
+    // Name acp when it is the reason: e.g. codex has a read-only sandbox, but
+    // its ACP adapter has no mode for it.
     const where = agentMode === 'acp' ? ' under acp' : ''
     throw new ServerError(
       'VALIDATION',
@@ -717,37 +581,30 @@ export function launchPermissionMode(args: {
   return requested
 }
 
-/** A create with every choice made — what the route launches and what a
+/** A create with every choice resolved: what the route launches and what a
  *  prewarmed spare is warmed as. */
 export interface CreateSetup {
   tool: AgentTool
-  /** Absent only when the catalog has nothing for the tool's provider, and
-   *  the create then launches without `--model`. */
+  /** Absent when the catalog has no model for the tool's provider; the
+   *  agent then launches without `--model`. */
   model?: string
   permissionMode: PermissionMode
   mode: AgentMode
 }
 
 /**
- * What a create runs with, field by field: what the request named, else what
- * this project last used for that agent (`project_tool_defaults`) where it
- * still fits, else the fallback (`resolveToolCreateDefaults`) — and the agent
- * itself is the request's, else the one this project was last created with,
- * else claude.
+ * Resolve a create's settings field by field: the request's value, else what
+ * this project last used for that tool (`project_tool_defaults`) if still
+ * valid, else `resolveToolCreateDefaults`. The tool itself defaults to the
+ * project's last tool, else claude.
  *
- * The mode is the exception: the route leaves an unnamed mode at `tui`, since
- * its other callers (the CLI) can only present a terminal, and it is the
- * webapp that sends the remembered one. The prewarm pool passes
- * `modeFromMemory`, because the webapp is who claims its spares.
+ * Mode is not remembered by default, since CLI callers can only show a
+ * terminal; the webapp sends its remembered mode itself. The prewarm pool
+ * passes `modeFromMemory` because the webapp claims its spares.
  *
- * Every create path comes through here (`startWorkspace`), but only a person
- * leaves fields to memory: the spawn policy and a queued launch name their
- * posture and mode outright, so all memory can supply them is a model the
- * project last chose for that agent. A restart reaches `createWorkspace`
- * directly and resolves nothing from memory (see `launchPermissionMode`). A
- * named posture the tool lacks is refused rather than nudged; a remembered
- * one it lacks falls through to the default, since it was a preference
- * rather than a demand.
+ * A requested permission mode the tool lacks is refused; a remembered one it
+ * lacks falls back to the default. Restart skips this and calls
+ * `createWorkspace` directly.
  */
 export async function resolveCreate(
   projectSlug: string,
@@ -786,7 +643,6 @@ export async function createWorkspace(
   projectSlug: string,
   options: WorkspaceCreateOptions,
 ): Promise<WorkspaceCreateResult> {
-  // Verify project exists
   try {
     await fs.access(projectDir(projectSlug))
   } catch {
@@ -799,24 +655,16 @@ export async function createWorkspace(
 
   const tool: AgentTool = options.tool ?? 'claude'
   const runtime = workspaceDriver()
-  // Whether this runtime intercepts the workspace's outbound traffic — the
-  // one fact every credential decision below turns on. With mediation the
-  // workspace only ever holds sentinels; without it, it holds the real
-  // secrets, because nothing downstream would swap them.
+  // With mediated egress the workspace holds only placeholder credentials
+  // that the proxy swaps; without it, it must hold the real secrets.
   const mediatedEgress = runtime.kind !== 'containerless'
-  // Whether the runtime can layer a per-workspace mount over the per-project
-  // tool homes. One with no mount namespace cannot — its tool homes are links
-  // into the project's dirs, and anything written below one lands in them —
-  // so yaac's own skills reach it as host state (see #domain/skills), and a
-  // workspace's history is linked into the shared homes rather than mounted
-  // over them (see #domain/agent-history).
+  // Whether per-workspace mounts can sit over the shared tool homes. Without
+  // a mount namespace, skills and history are linked into the shared homes
+  // instead (#domain/skills, #domain/agent-history).
   const layersToolHomes = runtime.kind !== 'containerless'
 
   await runtime.ensureRuntimeReachable()
 
-  // Which identity this checkout commits under: the server's setting (see
-  // `getGitIdentity`). The webapp is named first because it is the remedy
-  // every client has.
   const gitUser = await getGitIdentity()
   if (!gitUser) {
     throw new ServerError(
@@ -829,32 +677,23 @@ export async function createWorkspace(
 
   const repo = repoDir(projectSlug)
 
-  // Load project config (local override at ~/.yaac/projects/<slug>/ takes precedence)
   const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
-  // The project's environment: plain variables, and the secrets the egress
-  // path injects. Rows rather than config keys, because a row carries its own
-  // value — a client on another machine cannot write the SERVER's process
-  // environment, and under `k8s` that holds only what the Deployment states
+  // Plain variables plus the secrets the egress path injects. Stored as rows,
+  // since a remote client cannot set the server's own environment
   // (docs/remote-hosting.md).
   const projectEnv = await resolveProjectEnv(projectSlug)
 
-  // The project's row: its remote, and the id every substrate object and
-  // node-local path of the project is named by.
   const projectRow = await getProjectRow(projectSlug)
   if (!projectRow) throw new ServerError('NOT_FOUND', `project ${projectSlug} not found`)
   const { remoteUrl, id: projectId } = projectRow
 
-  // The project's git credential (HTTPS token or SSH key), and its remote
-  // parsed so we know the scheme and host. A project with none cannot
-  // create: a workspace's agent could neither fetch nor push.
+  // Without a git credential the agent could neither fetch nor push.
   const parsedRemote = parseGitRemote(remoteUrl)
   const credential = await resolveProjectCredential(projectSlug)
   if (!credential) throw missingCredentialError(projectSlug)
 
-  // Hard error if the project's remote host isn't in the resolved allowlist —
-  // workspaces would otherwise produce a confusing in-container 403 from the
-  // proxy when the agent tries to fetch.
+  // Fail now rather than let the agent hit a confusing proxy 403 on fetch.
   const allowedHosts = resolveAllowedHosts(config)
   const hostAllowed = allowedHosts.length === 1 && allowedHosts[0] === '*'
     || allowedHosts.some((pattern) => hostMatchesPattern(parsedRemote.host, pattern))
@@ -866,17 +705,9 @@ export async function createWorkspace(
     )
   }
 
-  // nestedContainers shapes the image chain (nestable layer), the pod
-  // spec (nested branch), the proxy allowlist (registry hosts), the
-  // per-project push registry, and the in-pod engine start + readiness
-  // gate.
   const nestedContainers = config.nestedContainers === true
 
-  // The key asks for a container to put a container in, so it means
-  // nothing without the first one. Rejected here rather than degraded:
-  // a project whose config says it needs its own engine gets a workspace
-  // that silently lacks one otherwise, and the failure surfaces much later
-  // as a build command that cannot find docker.
+  // Refuse rather than silently launch a workspace with no container engine.
   if (runtime.kind === 'containerless' && nestedContainers) {
     throw new ServerError(
       'VALIDATION',
@@ -884,24 +715,19 @@ export async function createWorkspace(
     )
   }
 
-  // Init-window names are validated up front so a bad config fails before
-  // any resource is provisioned.
+  // Validate before provisioning anything.
   const initWindows = validateInitWindows(config)
 
   const mode: AgentMode = options.mode ?? 'tui'
-  // And whether THIS runtime can run it: an image either ships the tool and
-  // its adapter or does not, a host installs the pinned one on first use, and
-  // a launch command that execs nothing ends the workspace seconds after a
-  // create that already reported success. An install is narrated through the
-  // create's own progress stream.
+  // Check this runtime can run the tool in this mode (a host installs the
+  // pinned version on first use). Otherwise the workspace would die seconds
+  // after reporting success.
   await runtime.assertCanLaunch({
     tool,
     mode,
     onProgress: (message) => { emit(message, options) },
   })
 
-  // Same discipline for the permission posture, and for the same reason: a
-  // posture the tool cannot take is a launch flag that silently does nothing.
   const permissionMode = launchPermissionMode({
     tool,
     driver: runtime.kind,
@@ -909,10 +735,8 @@ export async function createWorkspace(
     resume: options.resume === true,
     ...(options.permissionMode !== undefined ? { requested: options.permissionMode } : {}),
   })
-  // An unsandboxed workspace running unrestrained, which is a thing worth
-  // saying out loud rather than leaving to the docs: a containerless host is
-  // the user's own machine and credentials, so `bypass` there is not the
-  // "sandbox holds it" bargain it is under k8s.
+  // Warn: containerless has no sandbox, so bypass acts as the user on this
+  // machine.
   if (permissionMode === 'bypass' && runtime.kind === 'containerless') {
     options.onProgress?.(
       'Note: this workspace runs with bypass permissions, and this server has '
@@ -921,47 +745,26 @@ export async function createWorkspace(
   }
 
   const workspaceId = options.workspaceId ?? crypto.randomUUID()
-  // The requested branch, else the remote default. Not resolved for a
-  // resume, which reuses its checkout as it stands.
+  // A resume reuses its checkout as it stands.
   const refBranch = options.resume === true
     ? undefined
     : options.branch ?? await getDefaultBranch(repo)
-  // The conversations this create will launch, decided here rather than at
-  // agent-command time so they can be recorded alongside the workspace row.
-  // A workspace's tool and founding ask are read off its first conversation,
-  // so a workspace with none has neither — and could not be restarted. Making
-  // create the authority (discovery only ever adds to what it wrote) is what
-  // keeps that from depending on a hook firing, which for opencode never
-  // happens at all: no hook fires for it.
+  // Decided here so they are recorded with the workspace row. The tool and
+  // first prompt are read from the first conversation, so a workspace with
+  // none could not be restarted; discovery only adds to this list.
   const launching: Array<{ agentSessionId: string; tool: AgentTool }> =
     options.resumeAgentSessions !== undefined && options.resumeAgentSessions.length > 0
       ? options.resumeAgentSessions
       : [{ agentSessionId: workspaceId, tool }]
 
-  // Record the workspace BEFORE anything is provisioned, so no pod can ever
-  // exist without a row — a rowless pod is invisible to every path that
-  // reads recorded state (titles, groups, the deleted listing, restart)
-  // and there is no safe way to tell one from an unclaimed spare later.
-  // A failure to record therefore fails the create before it has built
-  // anything, and a create that fails later reports that too (see
-  // `reportCreateFailed`).
+  // Record the row before provisioning anything, so no pod exists without
+  // one (a rowless pod is invisible to titles, groups, restart and cannot be
+  // told from a spare). The insert also claims the id: a fresh create reusing
+  // a taken id stops here, before touching that workspace's checkout.
   //
-  // It is also the claim on the id, which is why it precedes even the
-  // checkout's `mkdir`: a fresh create's insert refuses an id that is
-  // already taken, so a create posting a live workspace's id stops here,
-  // before it has touched that workspace's checkout — and every rollback
-  // below undoes only what this create went on to make.
-  //
-  // A prewarmed spare is recorded too, flagged `spare`: it is a checkout, a
-  // branch and a pod from the moment it is warmed, and the flag is what lets
-  // a reap tell it from a stopped workspace once its pod is gone. Every
-  // listing filters it out until the claim clears the flag.
-  //
-  // The branch it forks from is recorded with it: a workspace queued after
-  // this one defaults to it, and may be queued while this one is still
-  // provisioning. Every input is a local read — `getDefaultBranch` reads
-  // `origin/HEAD` off the clone, which the fetch below does not move — so
-  // nothing waits on the network. A resume keeps what it recorded.
+  // A prewarmed spare is recorded flagged `spare`, which listings filter out
+  // and reaping uses to tell it from a stopped workspace. The base branch is
+  // recorded now because a workspace queued after this one defaults to it.
   await applyWorkspaceEvent({
     type: 'workspace-created',
     projectSlug,
@@ -976,30 +779,23 @@ export async function createWorkspace(
 
   const wtDir = workspaceDir(projectSlug, workspaceId)
 
-  // Pre-create the workspace dir so the Job's /workspace hostPath (type
-  // Directory) mounts on first attempt: the Job is applied while the
-  // checkout below may still be running.
+  // Pre-create the checkout dir so its hostPath mount (type Directory)
+  // works while the checkout is still running.
   await fs.mkdir(wtDir, { recursive: true })
-  // The ephemeral-module dirs land *inside* /workspace, so they are
-  // directories on the host workspace. Create them here — before either
-  // provisioning leg starts — rather than leaving them to the pod: the pod
-  // creates them root-owned 0700 whenever it happens to win the race with
-  // the checkout, and either way the checkout must cope with a destination
-  // that is not empty (see createCheckout, which is what makes that legal).
+  // Create the ephemeral-module mount points (inside the checkout) now;
+  // otherwise the pod may create them root-owned 0700. createCheckout copes
+  // with the non-empty destination.
   const moduleDirs = await prepareModuleDirs(wtDir, resolveEphemeralModulesPaths(config))
 
-  // File it under its group now that the row exists, before provisioning
-  // takes its tens of seconds: the group is where the user expects to watch
-  // this workspace come up, not where it lands once it already has.
+  // Set group and title now, so the workspace shows in its group while it
+  // provisions.
   if (options.groupId !== undefined) {
     await setWorkspaceGroup(projectSlug, workspaceId, options.groupId)
   }
   if (options.title !== undefined) await setWorkspaceTitle(projectSlug, workspaceId, options.title)
 
-  // The life this create is starting, stamped after the row exists (it is an
-  // UPDATE) and before any handle can be recorded — a life is exactly the
-  // boundary that invalidates the previous one's handles, and stamping it
-  // clears them in the same transaction.
+  // Start a new life after the row exists and before any handle is
+  // recorded; this clears the previous life's handles.
   await applyWorkspaceEvent({
     type: 'workspace-life-started',
     projectSlug,
@@ -1007,25 +803,13 @@ export async function createWorkspace(
   })
 
   if (!options.prewarm) {
-    // The workspace's tool and founding ask are read off this, so it is
-    // recorded with the row rather than left to discovery. An initial prompt
-    // is the first conversation's opening message by definition — the user
-    // typed it before the agent had said anything.
-    //
-    // A FRESH acp create is the one case that cannot do this: an ACP
-    // conversation's id is minted by the agent (`session/new`), so there is
-    // nothing to record until the handshake answers, seconds later. The
-    // registry writes the row then, first prompt and all. A resumed acp
-    // workspace is unaffected — its ids are exactly what was frozen at
-    // teardown — which is why the guard is on the ids being real, not on the
-    // mode alone.
+    // Record the conversations now rather than leave them to discovery. A
+    // fresh acp create cannot: the agent mints the id in `session/new`, and
+    // the registry records it then. A resumed acp workspace already has ids.
     if (mode === 'tui' || (launching.length > 0 && options.resumeAgentSessions !== undefined)) {
-      // Under `acp` the handle is knowable here, and recording it is what makes
-      // a restart resume rather than start over: the driver reads it back to
-      // address the conversation, and without it the fresh acpd handshake mints
-      // a NEW workspace and silently abandons the history this row exists to
-      // preserve. A tmux pane id (`tui`) genuinely is not knowable until the
-      // pane exists, so that stays for the registry to fill in.
+      // Under acp the handle (window name) is known now and must be recorded,
+      // or the restart's acpd handshake starts a new conversation. A tui pane
+      // id is unknown until the pane exists; the registry fills it in.
       await applyWorkspaceEvent({
         type: 'sessions-launched',
         projectSlug,
@@ -1038,10 +822,7 @@ export async function createWorkspace(
           ...(i === 0 && options.initialPrompt !== undefined
             ? { firstPrompt: options.initialPrompt }
             : {}),
-          // Named from the launch so the pane can say what is answering
-          // before the agent first has; the transcript's own spelling takes
-          // over once it does. A fresh conversation only — a resumed one
-          // already carries what it last answered as.
+          // Lets the pane show the model before the agent reports one.
           ...(i === 0 && options.resume !== true && options.model !== undefined
             ? { model: options.model }
             : {}),
@@ -1050,16 +831,13 @@ export async function createWorkspace(
     }
   }
 
-  // A checkout an older install left linked is converted to a clone by the
-  // workspace leg below, which must not happen under a workspace that still
-  // has it — and a restart whose teardown did not land (a delete that timed
-  // out or never took) arrives here with the old one still up. Asked now,
-  // before this create launches one of its own under the same id.
+  // A legacy linked checkout is converted to a clone below, which must not
+  // happen while the previous runtime (whose teardown may not have finished)
+  // still uses it.
   if (options.resume) {
     const linked = await fs.lstat(path.join(wtDir, '.git')).then((st) => !st.isDirectory(), () => false)
       || await fs.lstat(path.join(wtDir, '.git.linked')).then(() => true, () => false)
     if (linked && await runtime.find(workspaceId) !== undefined) {
-      // Put back as the stopped workspace it was, as any failed resume is.
       await reportCreateFailed(projectSlug, workspaceId, options)
       throw new ServerError(
         'CONFLICT',
@@ -1069,16 +847,10 @@ export async function createWorkspace(
   }
 
   // ── Concurrent provisioning ─────────────────────────────────────────
-  // The independent legs of provisioning run concurrently: image
-  // ensure+push (podman + registry), fetch + workspace checkout (network +
-  // disk), cluster-side ensures (proxy, registry, proxy registration), and
-  // host-side fs prep. The workspace leg deliberately outlives the join
-  // below — launchWithSetup joins it after pod-Ready, so the checkout
-  // also overlaps the pod's image pull and gVisor boot.
+  // Image, checkout, substrate and host fs prep run concurrently. The
+  // checkout leg is joined later, inside launchWithSetup, so it also
+  // overlaps pod boot.
 
-  // A runtime that runs no images is asked for none: the whole leg drops
-  // out rather than resolving a ref the launch would carry and ignore.
-  // `spec.image` is optional for exactly this case.
   const imageTask: Promise<string | undefined> = runtime.kind === 'containerless'
     ? Promise.resolve(undefined)
     : runtime.prepareImage({
@@ -1086,14 +858,10 @@ export async function createWorkspace(
       nestedContainers,
       onProgress: (m) => emit(m, options),
     })
-  // The join below is what reads it; this marker only keeps a failure in
-  // another leg from turning it into an unhandled rejection.
   imageTask.catch(() => { /* awaited at the join */ })
 
   const workspaceTask = (async (): Promise<void> => {
-    // Test-only: e2e fixtures pre-populate the bare repo, so skip the
-    // host-side fetch (which would try to reach the real remote from the
-    // server process — outside the proxy's reach).
+    // e2e fixtures pre-populate the repo, so the fetch is skipped there.
     if (!testEnv.e2eSkipFetch) {
       emit('Fetching latest from remote...', options)
       try {
@@ -1112,43 +880,28 @@ export async function createWorkspace(
       }
     }
 
-    // Create the workspace (or reuse an existing one when resuming). The
-    // wtDir itself was pre-created above, holding the /workspace mount
-    // points; a populated workspace is recognized by its `.git` — or by the
-    // `.git.linked` a conversion that crashed mid-swap leaves instead.
+    // An existing checkout has `.git`, or `.git.linked` if a conversion
+    // crashed mid-swap.
     const exists = (name: string): Promise<boolean> =>
       fs.access(path.join(wtDir, name)).then(() => true, () => false)
     if (options.resume && (await exists('.git') || await exists('.git.linked'))) {
-      // A checkout an older install made is converted to a clone first; a
-      // no-op for one that already is.
+      // Converts a legacy linked checkout to a clone; no-op otherwise.
       await adoptLinkedCheckout(repo, wtDir, workspaceId, remoteUrl, new Set((await listProjectWorkspaceIds(projectSlug)).keys()))
       emit(`Reusing existing workspace at ${wtDir}`, options)
       return
     }
-    // An explicitly requested branch must exist as a remote-tracking ref
-    // (fetchOrigin above brought down all heads, so a just-pushed branch is
-    // already visible).
     if (options.branch && !(await remoteBranchExists(repo, options.branch))) {
       throw new ServerError('VALIDATION', `branch "${options.branch}" not found on origin.`)
     }
     // A resume whose checkout is gone recreates it from the default.
     const base = refBranch ?? options.branch ?? await getDefaultBranch(repo)
     emit(`Creating workspace from ${base}...`, options)
-    // createCheckout checks out into the pre-created dir whether or not it
-    // is empty; nothing pod-side reads /workspace before launchWithSetup
-    // joins this task.
     await createCheckout(repo, wtDir, { branch: `agent/${workspaceId}`, baseBranch: base, remoteUrl })
   })()
-  // Joined inside launchWithSetup (or surfaced by the retry loop); this
-  // marker only keeps a failure in another leg from turning a still-running
-  // workspace leg into an unhandled rejection.
   workspaceTask.catch(() => { /* awaited later */ })
 
-  // The substrate half: the egress registration and the image plumbing
-  // the in-pod engine pulls through. Started here so its cold start
-  // overlaps the image build, the checkout and the fs prep; what it stands up
-  // belongs to the WORKSPACE, so the retry loop below reuses it rather than
-  // preparing again per attempt.
+  // Egress registration and registry plumbing. It belongs to the workspace,
+  // so the retry loop below reuses it across attempts.
   const substrateTask = runtime.prepareSubstrate({
     projectSlug,
     projectId,
@@ -1165,11 +918,8 @@ export async function createWorkspace(
   substrateTask.catch(() => { /* awaited at the join */ })
 
   const prepTask = (async () => {
-    // Load every tool's stored credential, not just the active tool's: pods
-    // are provisioned tool-agnostically (a prewarmed spare can be retooled to
-    // any agent at claim time), so the env placeholders and per-project
-    // placeholder refreshes cover each tool that has credentials, each
-    // gated on its own credential's kind.
+    // Every tool's credential, not just the active one's: a prewarmed spare
+    // can be switched to any tool when claimed.
     const [claudeAuth, codexAuth, opencodeAuth, piAuth] = await Promise.all([
       loadToolAuthEntry('claude'),
       loadToolAuthEntry('codex'),
@@ -1188,103 +938,57 @@ export async function createWorkspace(
     const pi = piDir(projectSlug)
     const cachedPackages = cachedPackagesDir(projectId)
 
-    // The GLOBAL dirs the pod mounts, created here so they exist before
-    // the Job is applied: a global mount is a subPath of the claim, and a
-    // subPath that is missing when the pod starts is created root-owned by
-    // the kubelet. The NODE-LOCAL ones (`opencodeData`, `cachedPackages`)
-    // are deliberately NOT made here — they live on the workspace's node,
-    // which the server's filesystem may not reach; the driver creates
-    // them where the pod lands (the k8s init container, the containerless
-    // link).
+    // Create the shared dirs the pod mounts before launch, or the kubelet
+    // creates missing subPaths root-owned. Node-local dirs (`opencodeData`,
+    // `cachedPackages`) may not be reachable from here; the driver creates
+    // them where the workspace runs.
     await fs.mkdir(claude, { recursive: true })
     await fs.mkdir(codex, { recursive: true })
     await fs.mkdir(opencodeConfig, { recursive: true })
-    // The GLOBAL checkpoint of this workspace's opencode history: what a
-    // pod restores its working copy from and checkpoints back into, and
-    // what a containerless workspace opens outright.
+    // Checkpoint of this workspace's opencode history. A pod restores from
+    // and saves back to it; containerless uses it directly.
     await fs.mkdir(opencodeCheckpoint, { recursive: true })
-    // Per-project pi home (mounted at PI_CONTAINER_HOME); pi creates the
-    // agent/workspaces subdir under it on first run.
     await fs.mkdir(pi, { recursive: true })
-    // This workspace's conversations: every tool's history, made before the
-    // workspace mounts it and moved into the shape this runtime reaches —
-    // mounted over the tool homes, or linked into them. A workspace restarted
-    // on the other driver finds its conversations where this one needs them.
+    // Put every tool's history for this workspace in the layout this driver
+    // uses (mounted over the tool homes, or linked into them).
     await convergeAgentHistory(projectSlug, workspaceId, { layers: layersToolHomes })
-    // One workspace's ACP conversation records, written by acpd inside the pod
-    // and read by the server from here — including after the pod is gone,
-    // which is why they sit under the project rather than the workspace dir
-    // (teardown prunes that one). Only `acp` workspaces have any, so a `tui` pod
-    // carries neither the directory nor the mount.
+    // acpd's conversation records. Kept under the project dir (which
+    // teardown does not prune) so the server can read them after the pod is
+    // gone. Only `acp` workspaces get the dir and mount.
     const acpLogs = mode === 'acp' ? acpLogDir(projectSlug, workspaceId) : undefined
     if (acpLogs !== undefined) await fs.mkdir(acpLogs, { recursive: true })
-    // Images pasted into a terminal pane (`saveWorkspaceAttachment`): made now
-    // so the read-only mount below has a server-owned directory to bind.
+    // Pasted images (`saveWorkspaceAttachment`); must exist for its mount.
     const attachments = workspaceAttachmentsDir(projectSlug, workspaceId)
     await fs.mkdir(attachments, { recursive: true })
 
-    // SSH remotes: the workspace talks git over SSH with no private key
-    // inside the container, which needs a host key to verify against. That
-    // half is here — the project-scoped known_hosts is written host-side
-    // from the host key its credential was assigned with. How that file, the
-    // forwarded agent and the tunnel reach the pod is the runtime's (all
-    // three are properties of its own egress path), so only the path
-    // travels on the spec.
+    // SSH remotes need a known_hosts file, written from the host key the
+    // credential was assigned with. How it reaches the workspace is the
+    // driver's concern.
     let sshKnownHostsFile: string | undefined
     if (credential.kind === 'ssh') {
-      // GLOBAL: written under the project dir by the server, read in-pod.
       sshKnownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
       await writeKnownHostsFile([credential.knownHostsEntry], sshKnownHostsFile)
     }
 
-    // Bring the per-project credential files up to what this workspace should
-    // launch with. Both tools regardless of the active one, so a prewarmed
-    // spare stays retoolable at claim time.
-    //
-    // WHICH bundle is written turns on whether the runtime mediates egress.
-    // With a proxy, a sentinel goes in and the real token never enters the
-    // workspace — the proxy swaps it in flight. Without one there is
-    // nothing to do the swapping, so a placeholder would simply be what the
-    // agent tried to authenticate with; the real bundle goes in instead.
-    // That is the containerless bargain: no sandbox, so nothing is withheld
-    // from what runs inside it (docs/containerless-driver.md).
-    //
-    // Unmediated, that write is a convergence rather than an overwrite — the
-    // project's own file may hold a token a running workspace refreshed, which
-    // is NEWER than the host store's, and stamping the host copy over it
-    // would spend the project's rotation and log those workspaces out
-    // (#domain/auth's credential-sync).
+    // Write every tool's per-project credential files. With mediated egress
+    // they hold placeholders the proxy swaps; without it, the real
+    // credentials (docs/containerless-driver.md), merged so a token a running
+    // workspace refreshed is not overwritten (#domain/auth).
     await seedProjectToolHome(projectSlug, { mediatedEgress })
 
-    // Seed every tool's host-side config, not just the active tool's — the
-    // dirs are all mounted into every pod anyway, and a retooled spare must
-    // find its config in place. All writes are cheap and idempotent.
-
-    // `.claude.json`: claude resolves `<$CLAUDE_CONFIG_DIR or the home
-    // dir>/.claude.json` with no fallback probe of the other, so naming the
-    // config dir — which every create does — puts it INSIDE the claude home
-    // on both substrates. Seed claude-code's onboarding state so the
-    // first-run wizard — theme picker then login — is skipped. The injected
-    // placeholder credential authenticates the agent; without these flags
-    // the user is forced to log in inside every workspace.
-    //
-    // The trusted roots are named in the shape the agent will see them: a
-    // pod's mount points, or the real checkout when there is no mount
-    // namespace to put one anywhere else.
-    //
-    // Every write below lands in a home the pod mounts read-write, so each
-    // goes through a confined root: a link planted in place of a file is
-    // replaced, never followed to whatever it names.
+    // Seed every tool's config (a retooled spare needs it too). Claude gets
+    // onboarding state so it skips the first-run wizard and login, and its
+    // trusted roots as the agent will see them. The homes are writable by
+    // the workspace, so writes go through a sandboxed dir handle that
+    // replaces a planted symlink rather than following it.
     const claudeHome = await openSandboxDir(projectSlug, claude)
     await seedClaudeJson(
       claudeHome,
       mediatedEgress ? ['/workspace'] : await withResolved([wtDir]),
     )
     await seedClaudeSettings(claudeHome)
-    // Point every tool at the reporters that name its conversation, model and
-    // mode on its pane (the scripts are staged from workspace-bin onto the
-    // workspace's PATH below). Best-effort: without them the agents still
-    // run, and only what yaac learns about them is lost.
+    // Hook up the reporters that publish each agent's conversation, model and
+    // mode on its pane. Best-effort: agents still run without them.
     await (async () => ensureAgentReporters({
       claude: claudeHome,
       codex: await openSandboxDir(projectSlug, codex),
@@ -1292,12 +996,10 @@ export async function createWorkspace(
       opencodeConfig: await openSandboxDir(projectSlug, opencodeConfig),
     }))().catch(() => {})
 
-    // Pre-create cacheVolumes host dirs so they're server-owned rather than
-    // root-owned via DirectoryOrCreate — the in-container yaac user carries
-    // the server's uid, so server-owned means yaac-writable.
+    // Pre-create cacheVolumes dirs so they are server-owned (and so writable
+    // in-pod) rather than root-owned. None may overlap the main clone's
+    // mount.
     const cacheVolumeEntries = Object.entries(config.cacheVolumes ?? {})
-    // The main clone is mounted at the server's own path (see the mounts
-    // below), which a cache volume must not overlap.
     const repoMount = `${repo}/.git`
     for (const [key, p] of cacheVolumeEntries) {
       if (p === repoMount || p.startsWith(`${repoMount}/`) || repoMount.startsWith(`${p}/`)) {
@@ -1308,26 +1010,19 @@ export async function createWorkspace(
       await fs.mkdir(cacheVolumeDir(projectSlug, key), { recursive: true })
     }
 
-    // yaac's own bundled skills, delivered the way this substrate can. A pod
-    // gets a fresh per-workspace copy staged under the workspace dir and mounted
-    // read-only over every tool's personal skills root below — never written
-    // into the persisted per-project config dirs, so nothing goes stale there.
-    // A containerless workspace has no mount namespace to layer that over its
-    // tool homes (which are links into those very dirs), so the skills are
-    // linked into the project's shared skills roots once instead.
+    // yaac's bundled skills: a pod gets a per-workspace copy mounted
+    // read-only into each tool's skills root; containerless links them into
+    // the project's shared skills roots instead.
     const builtinSkillsStaging = path.join(workspaceStateDir(projectSlug, workspaceId), 'builtin-skills')
     const builtinSkillNames = layersToolHomes
       ? await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
       : await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'link')
 
-    // In-session helper commands (yaac-mama, and the yaac-workspace-init
-    // postStart hook): staged like the builtin skills and File-mounted
-    // read-only onto /usr/local/bin in the pod.
+    // In-workspace helper commands (yaac-mama, yaac-workspace-init), staged
+    // like the skills.
     const workspaceBinStaging = path.join(workspaceStateDir(projectSlug, workspaceId), 'bin')
     const workspaceBinNames = await stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging)
-    // The postStart hook is mandatory — without it the pod boots with no
-    // git identity, tmux server, or streamd. The other workspace-bin scripts
-    // are optional helpers; this one missing means a broken install.
+    // Without the init script the pod has no git identity, tmux or streamd.
     if (!workspaceBinNames.includes(WORKSPACE_INIT_SCRIPT)) {
       throw new ServerError(
         'INTERNAL',
@@ -1335,14 +1030,10 @@ export async function createWorkspace(
       )
     }
     if (layersToolHomes && builtinSkillNames.length > 0) {
-      // Pre-create each tool's skills root AND every per-skill mountpoint
-      // (server-owned) before the pod mounts a skill at `<root>/<name>`.
-      // Anything the kubelet has to create instead it creates root:root: a
-      // root-owned `skills/` dir blocks the non-root agent from adding personal
-      // skills beside ours, and a root-owned leaf survives the pod, holding the
-      // name against a later containerless run that delivers by link and cannot
-      // clear it. Best-effort: a permission hiccup must never fail workspace
-      // creation — the skill still mounts either way.
+      // Pre-create the skills roots and per-skill mountpoints server-owned;
+      // the kubelet would create them root-owned, blocking the agent's own
+      // skills and a later containerless run. Best-effort: the skills mount
+      // either way.
       await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'mountpoint')
         .catch((err: unknown) => {
           serverLog(`[server] create ${workspaceId}: skills roots: ${String(err)}`)
@@ -1365,39 +1056,20 @@ export async function createWorkspace(
     cachedPackages, acpLogs, attachments,
   } = prep
 
-  // Build container env. Unlike the podman create API (whose Env field
-  // replaced the image ENV wholesale), kubernetes env vars overlay the
-  // image's — so no image-inspect merge step is needed.
   const env: string[] = []
-  // Which of those carry a credential — see `WorkspaceSpec.secretEnvKeys`.
-  // Named whether or not the value is a sentinel: a name is not a secret,
-  // and the list is then the same on every substrate.
+  // Names of vars that carry a credential (`WorkspaceSpec.secretEnvKeys`),
+  // listed even when the value is a placeholder.
   const secretEnvKeys: string[] = []
 
-  // The workspace this pod runs. Read by the zsh prompt in Dockerfile.default,
-  // and — load-bearing — by a yaac started in here: its presence is what tells
-  // that inner server it is reached through the outer install's forward, so
-  // an unproxied request to it is local whatever Host it names (see
-  // `identify`). Pushed first, and the project's own variables are applied
-  // after it and win, so a project with a `YAAC_WORKSPACE_ID` set to empty
-  // puts the strict rule back on inside its own workspaces. That is the
-  // explicit-clear semantics working as written, not a hole — but it is the
-  // one setting that unstamps this.
+  // Read by the zsh prompt and by a yaac server started inside the
+  // workspace, which then treats unproxied requests as local (`identify` in
+  // web-auth.ts). Project variables come after and can override it.
   env.push(`YAAC_WORKSPACE_ID=${workspaceId}`)
 
-  // How this workspace's `yaac-mama` reaches the server, where it has to
-  // carry its own way in.
-  //
-  // Only without mediated egress: with a proxy, the workspace addresses the
-  // magic host and the proxy attributes it by source pod IP, so a pod is
-  // given no credential and no server address at all — and must not be, since
-  // the pod is exactly what the boundary exists to hold things back from.
-  // A host process has no such boundary and no proxy to speak through, so it
-  // posts to the server directly and proves which workspace it is with a
-  // bearer minted here (docs/containerless-driver.md).
+  // Without a proxy (which identifies a pod by its IP), `yaac-mama` calls the
+  // server directly and authenticates with a token minted here
+  // (docs/containerless-driver.md).
   if (!mediatedEgress && !options.prewarm) {
-    // 256 bits from the CSPRNG rather than a v4 uuid's 122: this is a bearer
-    // whose only job is to be unguessable, and the extra entropy is free.
     const mamaToken = crypto.randomBytes(32).toString('hex')
     await setWorkspaceMamaTokenHash(
       projectSlug,
@@ -1406,42 +1078,26 @@ export async function createWorkspace(
     )
     env.push(`YAAC_MAMA_TOKEN=${mamaToken}`)
     secretEnvKeys.push('YAAC_MAMA_TOKEN')
-    // Baked at launch rather than looked up per call: the tmux server holds
-    // this env for its whole life, which outlives the yaac server that made
-    // it. A restart on the SAME port (the default, and what a plain
-    // `yaac server restart` does) keeps it valid; one moved to a different
-    // port leaves the workspace's yaac-mama pointing at nothing until the
-    // workspace itself is restarted.
+    // Fixed at launch: if the server later moves to another port, yaac-mama
+    // breaks until the workspace restarts.
     const lock = await readLock()
     if (lock) env.push(`YAAC_MAMA_URL=http://127.0.0.1:${lock.port}`)
   }
 
-  // The project's plain environment variables.
   for (const [name, value] of Object.entries(projectEnv.plain)) {
     env.push(`${name}=${value}`)
   }
 
-  // Proxied secrets. With a proxy, only a sentinel goes in and the egress
-  // path holds the value; with none, the sentinel would be what the tool
-  // actually sent, so the value itself goes in. Same question the egress
-  // path is handed the answer to, so it is resolved once either way.
+  // Proxied secrets: a placeholder with mediated egress, else the value.
   for (const [name, { value }] of Object.entries(projectEnv.secrets)) {
     env.push(`${name}=${mediatedEgress ? 'placeholder' : value}`)
     secretEnvKeys.push(name)
   }
 
-  // Add placeholder env vars so no tool prompts for login inside the
-  // container. The proxy injects the real credentials on API calls. All
-  // tools' vars go in (each gated on its own credential's kind) because the
-  // pod spec is immutable and a prewarmed spare may be retooled at claim
-  // time. The vars are only sentinels: the proxy swaps a placeholder for
-  // whichever host it is being sent to, without regard to the workspace's tool,
-  // so carrying another tool's placeholder does grant access to its
-  // credential — a deliberate widening (see k8s/proxy/proxy.ts). What keeps
-  // the proxy off a user's own traffic is the sentinel match, not the tool.
-  // With a proxy the sentinel is what travels and the real key never enters
-  // the workspace; without one the key itself has to, or the agent
-  // authenticates with the literal word "placeholder".
+  // API-key env vars for every tool (a spare may be retooled at claim), so
+  // no tool prompts for login. With mediated egress these are placeholders
+  // the proxy swaps by destination host, regardless of the workspace's tool
+  // (see k8s/proxy/proxy.ts); without it they are the real keys.
   const apiKeyFor = (real: string): string => mediatedEgress ? PLACEHOLDER_API_KEY : real
   if (toolAuthByTool.claude?.kind === 'api-key') {
     env.push(`ANTHROPIC_API_KEY=${apiKeyFor(toolAuthByTool.claude.apiKey)}`)
@@ -1450,11 +1106,7 @@ export async function createWorkspace(
   // Claude OAuth: Claude Code reads the placeholder bundle from the mounted
   // .claude/.credentials.json, so no env var is needed.
   if (toolAuthByTool.opencode?.kind === 'api-key') {
-    // opencode is api-key only. It reads the chosen provider's env var (every
-    // provider is a first-class models.dev provider, so no opencode.json block
-    // is needed) and sends the key to that provider's host, which the proxy
-    // swaps for the real key. The env var + host come from the generated
-    // provider table.
+    // opencode is api-key only and reads the provider's env var.
     const info = opencodeProviderInfo(toolAuthByTool.opencode.opencodeProvider)
     env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.opencode.apiKey)}`)
     secretEnvKeys.push(info.envVar)
@@ -1464,28 +1116,17 @@ export async function createWorkspace(
     secretEnvKeys.push('OPENAI_API_KEY')
   }
   if (toolAuthByTool.pi?.kind === 'api-key') {
-    // pi is api-key only. It reads the chosen provider's env var and sends the
-    // key to that provider's host, which the proxy swaps for the real key
-    // (whichever of Authorization: Bearer / x-api-key carries the sentinel).
-    // The env var + host come from the generated provider table.
+    // pi is api-key only and reads the provider's env var.
     const info = piProviderInfo(toolAuthByTool.pi.piProvider)
     env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.pi.apiKey)}`)
     secretEnvKeys.push(info.envVar)
   }
-  // Codex OAuth: Codex reads the placeholder bundle from the mounted
-  // .codex/auth.json. Setting OPENAI_API_KEY would risk steering Codex
-  // into api-key mode instead of ChatGPT OAuth.
+  // Codex OAuth reads the mounted .codex/auth.json. Setting OPENAI_API_KEY
+  // could switch codex to api-key mode.
 
-  // GitHub CLI (`gh`) auth: when the project's remote is an HTTPS GitHub repo,
-  // hand `gh` a placeholder GH_TOKEN so it treats itself as logged in. The
-  // proxy swaps the placeholder for the workspace's real HTTPS git token on
-  // api.github.com requests (see buildDynamicRules in the proxy), reusing the
-  // PAT yaac already manages — no separate `gh auth login`. An SSH remote has
-  // no HTTPS token to inject, so gh stays unauthenticated there.
-  //
-  // Skipped when the user already wires a GitHub token themselves — a
-  // GH_TOKEN variable, or a proxied secret named GH_TOKEN/GITHUB_TOKEN — so
-  // their configuration wins.
+  // For an HTTPS GitHub remote, give `gh` the project's git token (a
+  // placeholder the proxy swaps on api.github.com, if mediated) so it is
+  // logged in. Skipped if the user set their own GH_TOKEN/GITHUB_TOKEN.
   const userWiresGithubToken = env.some((e) => e.startsWith('GH_TOKEN='))
     || projectEnv.secrets.GH_TOKEN !== undefined
     || projectEnv.secrets.GITHUB_TOKEN !== undefined
@@ -1496,147 +1137,85 @@ export async function createWorkspace(
     secretEnvKeys.push('GH_TOKEN')
   }
 
-  // Pin opencode to the baked-in version by stopping its startup update
-  // check. The image pins a release (dockerfiles/Dockerfile.tools) because
-  // the launch command is written against its flags and config; without
-  // this a pod would upgrade itself off that pin on launch (and hit the
-  // egress proxy doing it). Set unconditionally (only opencode reads it) so
-  // a spare retooled to opencode gets it.
+  // Keep opencode and claude on their pinned versions, since launch commands
+  // are written against those versions' flags. Set for every tool so a
+  // retooled spare has them.
   env.push('OPENCODE_DISABLE_AUTOUPDATE=1')
-  // The same for claude, whose native install updates itself in the
-  // background (verified against 2.1.282).
   env.push('DISABLE_AUTOUPDATER=1')
 
-  // Point pi at its session-log dir and codex at its sqlite home, both in the
-  // workspace's own history, where the host reads pi's transcripts from
-  // (first-message / status); pi resumes by `--session-id` (buildAgentCmd).
-  // Skip pi's startup version check so a fresh pod doesn't stall on a network
-  // probe. Set unconditionally (only their tools read them) so a spare
-  // retooled to either gets them.
-  //
-  // Name each tool's home outright rather than leaving it to be derived from
-  // `$HOME`, so what a workspace resolves is stated instead of inferred.
-  //
-  // Written against the container layout like every other path here, on both
-  // substrates. A pod's tool homes ARE these paths, so the value is already
-  // true there; a runtime with no mount namespace translates each to the
-  // directory its mount came from, which is the project's own (see the
-  // containerless driver's `remapMountedPath`). One spelling, and the
-  // per-project property belongs to the translation rather than to whoever
-  // writes the next call site — which matters because the difference is
-  // invisible: both spellings name the same files, and only a tool that keys
-  // something on the STRING can tell them apart. claude does, naming its
-  // macOS Keychain item after a hash of this exact value.
-  //
-  // Set, not merely inherited-and-hoped-for: under containerless a host value
-  // for any of these is cleared on the way in (`TOOL_HOME_VARS`), and a pod
-  // never had one to inherit. opencode is absent because it has no such
-  // variable — its homes are reached `$HOME`-relative.
+  // Name each tool's home explicitly, in container paths. Containerless
+  // translates them to the project's dirs (`remapMountedPath` in its
+  // launch.ts) and clears any host value (`TOOL_HOME_VARS`). The exact string
+  // matters: claude names its macOS Keychain item after a hash of it.
+  // opencode has no such variable. Pi's version check is skipped so a fresh
+  // workspace does not stall on a network probe.
   env.push(`CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_HOME}`)
   env.push(`CODEX_HOME=${CODEX_CONTAINER_HOME}`)
   env.push(`PI_CODING_AGENT_DIR=${PI_CONTAINER_HOME}/agent`)
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push(`CODEX_SQLITE_HOME=${CODEX_SQLITE_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
-  // pnpm's content-addressed store, one per project rather than one per
-  // workspace — on a host, where every workspace is a process on one disk.
-  // `.cached-packages` is linked into every workspace, and the checkout's
-  // `node_modules` on the same filesystem hardlinks into it, so a workspace's
-  // dependencies cost their directory entries and nothing more; a private
-  // HOME left to pnpm's default would hold a full store per workspace — a
-  // copy of every dependency that the checkout's hardlinked `node_modules`
-  // keeps alive after the HOME is torn down at stop. Under both names,
-  // because a host runs whatever pnpm is on its PATH: 11 reads `pnpm_config_`
-  // and ignores `npm_config_` for this key, and every 10.x does the reverse
-  // (probed 9.15 through 11.1).
-  //
-  // Not under a pod, and that is WHETHER the feature applies: pnpm 11 keeps
-  // the store's index in one SQLite database in WAL mode, which needs every
-  // writer on one kernel, and every pod is its own sandbox — workspaces
-  // installing at once corrupt a shared one. A pod's runtime puts a store
-  // in each workspace's own module dirs instead (`moduleDirs`).
+  // Containerless: one pnpm store per project, so each workspace's
+  // `node_modules` hardlinks into it instead of holding a full copy. Set
+  // under both names since pnpm 11 reads only `pnpm_config_` and 10.x only
+  // `npm_config_`. Pods cannot share one: pnpm 11's SQLite (WAL) index needs
+  // all writers on one kernel. A pod keeps its store in its `moduleDirs`.
   if (runtime.kind === 'containerless') {
     env.push(`pnpm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
     env.push(`npm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
   }
 
-  // Port forwarding: ask the runtime which host port each of the config's
-  // ports is offered at, BEFORE the launch, because the answer is stamped
-  // into the workspace's own status bar below. A declaration and nothing
-  // more — the server binds no listener on either substrate — so the
-  // runtime holds these for the workspace's lifetime and drops them when
-  // `deleteSession` or the stale-workspace reaper deregisters it.
+  // Decide each forwarded port's host port before launch, since the status
+  // bar shows them. Only a declaration: clients hold the listeners
+  // (docs/port-forward-tunnel.md).
   const forwardedPorts = runtime.declareForwards(workspaceId, config.portForward ?? [])
   for (const { containerPort, hostPort } of forwardedPorts) {
     emit(`Offering host port ${hostPort} -> container port ${containerPort}`, options)
   }
 
-  // Inputs for the postStart setup script (yaac-workspace-init): git
-  // identity, the initial agent window name, the tmux status line (embeds
-  // the host ports declared just above), and the nested-engine switches.
+  // Inputs for yaac-workspace-init.
   env.push(`YAAC_TOOL=${tool}`)
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
   env.push(`YAAC_GIT_EMAIL=${gitUser.email}`)
   env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(projectSlug, workspaceId, forwardedPorts)}`)
   if (nestedContainers) env.push('YAAC_NESTED_ENGINE=1')
 
-  // Every mount is a DECLARATION against a tier helper's host path, and
-  // the driver realizes each tier its own way: the k8s driver resolves a
-  // GLOBAL path into a subPath of the `yaac-global` claim and a NODE-LOCAL
-  // one into the pod's own node tree (created by its init container), the
-  // containerless driver symlinks either. What drives each choice is the
-  // storage tier the path already declares in project-paths.ts, so this
-  // list invents no second classification:
-  //   GLOBAL     — the server and the workspace pod must see the same bytes.
-  //   NODE-LOCAL — never has to leave the node it was written on.
-  //   emptyDir   — the subset of NODE-LOCAL that nothing outside the pod
-  //                ever opens and nothing needs after it dies: the tmux
-  //                socket dir, and codex's helper dirs (codexHomeMounts).
+  // Mounts are declared against host paths; each driver realizes them its
+  // own way (k8s: subPaths of the global claim or node-local dirs;
+  // containerless: symlinks). A path's storage tier (global or node-local)
+  // comes from project-paths.ts. emptyDir is for pod-local scratch.
   //
-  // opencode's data is the one place the list branches on the driver kind
-  // — WHETHER the working-copy feature applies, which is the one kind of
-  // branch the layering allows. Under a pod the tool works on a node-local
-  // copy of its history and checkpoints it to the global tier (SQLite is
-  // unusable on a network filesystem); a host process's disk is local, so a
-  // copy would be a copy of itself, and the workspace opens the checkpoint
-  // directly.
+  // Under k8s, opencode works on a node-local copy of its history (SQLite
+  // fails on a network filesystem) and checkpoints it to the global tier.
+  // Containerless opens the checkpoint directly.
   const opencodeMounts: WorkspaceMount[] = runtime.kind === 'containerless'
     ? [{ source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_DATA }]
     : [
-      // NODE-LOCAL: the working copy, restored by the init script.
       { source: { kind: 'hostPath', path: opencodeData }, mountPath: CONTAINER_OPENCODE_DATA },
-      // GLOBAL: where the copy is checkpointed to.
       { source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_CHECKPOINT },
     ]
   const history = (part: AgentHistoryPart): string => agentHistoryDir(projectSlug, workspaceId, part)
   const mounts: WorkspaceMount[] = [
-    // GLOBAL.
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
-    // GLOBAL, read-only, at the path the server sees it at: the clone in
-    // /workspace borrows its objects through an alternates line naming that
-    // path, and refreshes its `origin/*` from it (docs/server-git.md).
+    // Read-only, at the server's own path: the checkout's alternates file
+    // names this path (docs/server-git.md).
     { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: `${repo}/.git`, readOnly: true },
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
-    // Tool-agnostic on purpose: an ACP record belongs to the protocol, not to
-    // whichever agent happens to speak it.
     ...(acpLogs !== undefined
       ? [{ source: { kind: 'hostPath' as const, path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR }]
       : []),
-    // GLOBAL, server-written: the agent only reads what a paste names.
     { source: { kind: 'hostPath', path: attachments }, mountPath: CONTAINER_ATTACHMENTS_DIR, readOnly: true },
     ...codexHomeMounts(runtime.kind, codex),
     ...opencodeMounts,
-    // GLOBAL.
     { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
     { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
-    // GLOBAL: the workspace's own history. The two with an env override sit
-    // outside every tool home, so both runtimes realize them as they are.
+    // Per-workspace history. These two are outside every tool home, so both
+    // drivers can mount them as-is.
     { source: { kind: 'hostPath', path: history('codex-sqlite') }, mountPath: CODEX_SQLITE_CONTAINER_DIR },
     { source: { kind: 'hostPath', path: history('pi') }, mountPath: PI_SESSIONS_CONTAINER_DIR },
-    // The rest are where the tools look inside their shared homes, so they
-    // are layered over them, with the project's shared auto-memory put back on
-    // top of the conversations mount. A runtime that cannot layer reaches
-    // the same directories through links the create planted in the homes.
+    // The rest sit inside the shared tool homes, so they are layered over
+    // them, with claude's shared project memory put back on top. Without
+    // layering, convergeAgentHistory links them instead.
     ...(layersToolHomes
       ? [
         { source: { kind: 'hostPath' as const, path: history('claude') }, mountPath: `${CLAUDE_CONTAINER_HOME}/projects` },
@@ -1648,39 +1227,25 @@ export async function createWorkspace(
         { source: { kind: 'hostPath' as const, path: history('codex') }, mountPath: `${CODEX_CONTAINER_HOME}/sessions` },
       ]
       : []),
-    // NODE-LOCAL, and a host's only: the project's pnpm store (see the
-    // store env above). A pod keeps its store in its own module dirs, and a
-    // tree every pod of the project could write would be a channel between
-    // them with nothing left to carry.
+    // Containerless only: the project's pnpm store (see the env above).
     ...(runtime.kind === 'containerless'
       ? [{ source: { kind: 'hostPath' as const, path: cachedPackages }, mountPath: CACHED_PACKAGES_CONTAINER_DIR }]
       : []),
-    // Pod-local: the tmux server socket. A UNIX socket only rendezvouses
-    // within the kernel that bound it, and every consumer (attach, the
-    // `tmux -C` status stream, the liveness probe) reaches tmux through
-    // `kubectl exec` inside this pod — so there is nothing to share and
-    // nothing to keep once the pod is gone.
+    // The tmux socket; every client reaches it from inside the pod.
     { source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR },
-    // GLOBAL: the point of a cache volume is that the NEXT workspace gets the
-    // warm cache, wherever it is scheduled.
+    // Global, so the next workspace gets the warm cache wherever it runs.
     ...cacheVolumeEntries.map(([key, containerPath]): WorkspaceMount => ({
       source: { kind: 'hostPath', path: cacheVolumeDir(projectSlug, key) },
       mountPath: containerPath,
     })),
-    // GLOBAL: server-staged trees (skills, workspace bin), written
-    // host-side and read in-pod. The skills are mounted only where a mount
-    // is what delivers them; without layering they are already on disk.
+    // Server-staged skills and helper commands. Without layering the skills
+    // are already linked in.
     ...(layersToolHomes ? builtinSkillMounts(builtinSkillsStaging, builtinSkillNames) : []),
     ...workspaceBinMounts(workspaceBinStaging, workspaceBinNames),
   ]
 
-  // Git auth for the workspace's OWN git, and the last of the credential
-  // decisions `mediatedEgress` turns on. With a proxy the workspace holds
-  // nothing and the injection happens in flight; without one it would hold
-  // nothing and have no way to authenticate at all, since the checkout's
-  // `origin` is deliberately tokenless (cloneRepo strips it) and every
-  // server-side git call re-injects per invocation. The resolved credential
-  // therefore goes in, the same bargain as the OAuth bundles and GH_TOKEN.
+  // Without a proxy to inject auth, the workspace's git needs the real
+  // credential: the checkout's `origin` URL carries no token.
   let gitCredential: WorkspaceGitCredential | undefined
   if (!mediatedEgress) {
     gitCredential = credential.kind === 'https'
@@ -1700,15 +1265,11 @@ export async function createWorkspace(
     mounts,
     moduleDirs,
     resources: WORKSPACE_RESOURCES,
-    // In-workspace setup (git identity, tmux server + options, the agent
-    // transport, the nested engine) runs from here, so the runtime can hold
-    // "ready" until it is done and no per-command round trips are paid.
-    // Prewarmed spares take this same path.
+    // In-workspace setup (git identity, tmux, agent transport, nested
+    // engine); the runtime reports ready only after it finishes.
     postStartExec: [`/usr/local/bin/${WORKSPACE_INIT_SCRIPT}`],
-    // A pod checkpoints its opencode working copy on the way out and
-    // empties it, so a cleanly stopped workspace leaves nothing on its node
-    // (the script is a no-op for any other tool's pod). Not under
-    // containerless, which keeps no working copy.
+    // A pod checkpoints and clears its opencode working copy on stop, so it
+    // leaves nothing on its node. Containerless keeps no working copy.
     ...(runtime.kind === 'containerless'
       ? {}
       : { preStopExec: [`/usr/local/bin/${OPENCODE_CHECKPOINT_SCRIPT}`, 'stop'] }),
@@ -1719,13 +1280,10 @@ export async function createWorkspace(
     onProgress: (m) => emit(m, options),
   }
 
-  // Retry the whole launch + setup so that if the runtime dies immediately
-  // after it starts we begin fresh, instead of futilely retrying individual
-  // commands against a dead workspace.
+  // Retry launch + setup as a whole, so a runtime that dies right after
+  // starting is replaced rather than retried command by command.
   const maxStartAttempts = 3
-  // Set by the first attempt that got as far as a started unit — what a
-  // teardown has to address, and the runtime is the only thing that can
-  // name it.
+  // What a teardown must address, once an attempt has launched.
   let target: TeardownTarget | undefined
   let handle: RuntimeHandle | undefined
 
@@ -1743,46 +1301,20 @@ export async function createWorkspace(
       handle = await launchWithSetup(setupParams)
       break
     } catch (err) {
-      // A workspace-provisioning failure (bad branch, fetch error) is not
-      // the workspace's fault — relaunching would just re-await the same
-      // rejected promise, so fail fast with the original error.
+      // Bad input fails fast; relaunching would hit the same error.
       const lastAttempt = err instanceof SetupInputError || attempt >= maxStartAttempts
 
-      // Always take the half-started unit down. Otherwise a workspace left
-      // running (tmux up, but a later command failed) is picked up by the
-      // listing as a bogus waiting workspace, and a relaunch would collide
-      // with the attempt that just failed.
-      //
-      // `unitOnly` for everything that is coming back. A further attempt
-      // launches from the substrate this create already prepared, so
-      // tearing that down between attempts would break the next one. A
-      // create that gave up while KEEPING its checkout (a resume, a spare)
-      // passes it too, for the adjacent reason: its row survives, so the
-      // workspace is still named and the runtime's own sweeps collect the
-      // rest on their schedule. A fresh create that gave up owns
-      // everything it made and its row is about to go, so it takes the
-      // whole teardown — otherwise the registration and the nested cluster
-      // outlive the only thing that named them.
+      // Always tear down the half-started unit, or it would list as a bogus
+      // workspace and collide with a relaunch. Keep the prepared substrate
+      // (`unitOnly`) when retrying, or when the row survives (resume,
+      // spare). A fresh create that gave up tears down everything, since its
+      // row is about to go.
       const unitOnly = !lastAttempt || !failedCreateCollectsCheckout(options)
 
-      // `launch` reports what it started through `onLaunched`, so a
-      // rejection that lands AFTER the apply did — the API server took the
-      // Job, the response was lost, and the retries then failed against a
-      // network that stayed down — leaves nothing here naming the unit.
-      // Ask the runtime rather than assume there is none: it is the
-      // authority on what exists, and the checkout removal below gates on
-      // nothing running over /workspace. Assuming nothing is would rm it
-      // out from under a pod that is coming up.
-      //
-      // The verdict is what that gate reads. `false` covers a unit still in
-      // its grace period AND a runtime that could not be reached at all —
-      // the same condition that hides a unit hides its absence, so an
-      // unreachable runtime is never read as "nothing is there".
-      //
-      // Only a unit of THIS project is taken down. The id's insert already
-      // made this create its only owner, so a foreign unit here would mean
-      // the substrate holds something the rows never granted — not this
-      // create's to destroy either way.
+      // If `launch` failed after the unit was created, `onLaunched` never
+      // ran, so ask the runtime what exists. `podGone` gates the checkout
+      // removal below; an unreachable runtime counts as not gone. Only a
+      // unit of this project is torn down.
       let podGone: boolean
       try {
         target ??= await workspaceDriver().findForTeardown(workspaceId, { spares: options.prewarm === true })
@@ -1798,43 +1330,17 @@ export async function createWorkspace(
         emit(`Session startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
         continue
       }
-      // Let the declared host ports go, so the next create can be offered
-      // the same numbers rather than walking past a workspace that never
-      // came up.
+      // Free the declared host ports for the next create.
       await workspaceDriver().deregisterWorkspace(workspaceId)
         .catch(() => { /* best-effort; the reaper covers what this misses */ })
       if (!options.prewarm) {
-        // The staged checkout goes with the failed create. Nothing else
-        // would collect it: the rollback below erases the row, and every
-        // sweep that could name a leftover works from rows. What is removed
-        // is this create's own product — a checkout freshly made from
-        // `origin/<refBranch>`, holding at worst init-command build output
-        // and an unprompted agent's boot state, since the last step that can
-        // fail a create is the agent launch and prompt delivery after it is
-        // explicitly non-fatal.
-        //
-        // Only for a FRESH create. A resume keeps its workspace: that
-        // checkout predates this create and holds the work the user means
-        // to come back to, which is also why its rollback records a stop
-        // instead of deleting the row.
-        //
-        // Chained off the checkout leg rather than run here, because the two
-        // race in one direction that matters. The leg is usually the very
-        // thing that failed — then it has settled and this runs at once —
-        // but a POD-side failure (image pull, never Ready, all attempts
-        // burned) arrives while it can still be mid-fetch, and `createCheckout`
-        // re-creates its destination before checking out. Deleting first
-        // would leave a complete checkout staged *after* the rm: precisely
-        // the orphan this exists to prevent. Waiting for the leg inline would
-        // instead queue the caller's error behind a stuck fetch, so the
-        // create fails fast and the removal follows the leg.
-        //
-        // Each step gates the next on having happened, as on the claim path.
-        // A delete that timed out leaves a pod in its grace period still
-        // writing to /workspace, and a failed rm leaves bytes; either way the
-        // row stays, because it is the last name those bytes have. What stays
-        // is not lost — the stale reaper turns a row whose pod never arrived
-        // into an ordinary stopped workspace the user can see and delete.
+        // A fresh create deletes its own checkout (see
+        // failedCreateCollectsCheckout); no row-based sweep would find it
+        // once the row is gone. Chained after the checkout leg, which may
+        // still be running after a pod-side failure and would otherwise
+        // recreate the dir after the delete. Each step runs only if the
+        // previous one succeeded; if the row stays, the stale reaper turns it
+        // into a stopped workspace the user can delete.
         if (failedCreateCollectsCheckout(options)) {
           void workspaceTask
             .catch(() => { /* the failure is already the caller's */ })
@@ -1857,8 +1363,7 @@ export async function createWorkspace(
     throw new ServerError('INTERNAL', 'workspace launch reported no handle')
   }
 
-  // Not for a spare: nothing attaches to one until it is claimed (spares have
-  // no status watcher), so the claim is what hands its agent over instead.
+  // A spare's agent is handed over when it is claimed.
   if (options.prewarm !== true) {
     await handOverAgent({
       projectSlug,
@@ -1873,7 +1378,6 @@ export async function createWorkspace(
 
   return {
     workspaceId,
-    // The runtime's own name for what it started — never derived here.
     jobName: handle.jobName,
     forwardedPorts,
     tool,

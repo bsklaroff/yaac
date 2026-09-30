@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#domain/projects'
-// Bounds the cases below sit either side of. Not under test here.
+// Size limits the cases below test around.
 import { MAX_UPLOAD_FILE_BYTES } from '#domain/projects/build-files'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
@@ -17,8 +17,8 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true })
 })
 
-/** A file whose reported size is `bytes` but which occupies no disk — lets a
- *  case stand a build dir up against the 512MB context cap for free. */
+/** A sparse file of `bytes` size that uses no disk, for testing against the
+ *  build-context size cap cheaply. */
 async function sparseFile(rel: string, bytes: number): Promise<void> {
   const fh = await fs.open(path.join(root, rel), 'w')
   try {

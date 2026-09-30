@@ -14,14 +14,9 @@ export function hashBuffer(buf: Buffer): string {
 }
 
 /**
- * Fold per-file `(rel, contentHash)` entries into one digest that
- * depends only on the set of files and their contents:
- *  - order-independent — entries are sorted by `rel` first, so the
- *    filesystem's readdir order can't change the result;
- *  - unambiguous across relpaths — `rel` and `hash` are written with
- *    NUL delimiters, so `{rel:'a', hash:'bc'}` and `{rel:'ab', hash:'c'}`
- *    can't fold to the same digest.
- * Deterministic across machines given the same inputs.
+ * Combine per-file entries into one digest that depends only on the set of
+ * files and their contents: entries are sorted by `rel`, and fields are
+ * NUL-delimited so different splits of path and hash cannot collide.
  */
 export function combineHashes(entries: HashEntry[]): string {
   const sorted = [...entries].sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))
@@ -36,12 +31,9 @@ export function combineHashes(entries: HashEntry[]): string {
 }
 
 /**
- * Recursively collect `(rel, contentHash)` for every file under
- * `rootDir`, skipping any directory whose basename is in `skipDirs`. A
- * missing `rootDir` yields `[]` (an input tree may not exist on a
- * partial checkout). `rel` paths are POSIX-style; when `prefix` is set
- * each `rel` is prefixed with `"<prefix>/"`, which namespaces multiple
- * roots so identical relpaths across them stay distinct once combined.
+ * Hash every file under `rootDir`, skipping directories named in
+ * `skipDirs`. A missing `rootDir` yields `[]`. `prefix` is prepended to
+ * each `rel` so entries from several roots stay distinct when combined.
  */
 export async function collectFileHashes(
   rootDir: string,

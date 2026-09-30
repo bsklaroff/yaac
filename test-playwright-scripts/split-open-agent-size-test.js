@@ -2,26 +2,23 @@
 /*
  * split-open-agent-size-test.js
  *
- * Verifies that a session opening straight into a side-by-side split does NOT
- * leave the agent's tmux window stuck wider than its pane. The webapp view's
- * window follows its client under `window-size latest` (pty-bridge
- * attachArgs); on a fresh session the agent pane first attaches at full width,
- * then the terminals query splits the layout and shrinks the pane. The window
- * must follow that shrink rather than stay wide — its output clipped on the
- * right and its bottom prompt wrong — until the next resize ("stays wrong
- * until I act").
+ * Verifies that a session opening straight into a side-by-side split does not
+ * leave the agent's tmux window wider than its pane. The webapp view's window
+ * follows its client under `window-size latest` (attachArgs in
+ * pty-bridge.ts). On a fresh session the agent pane first attaches at full
+ * width, then a split shrinks it; the window must follow the shrink instead
+ * of staying wide (output clipped on the right) until the next resize.
  *
- * A regression shows up as the agent (claude) tmux window width != the client
- * xterm cols after the split settles, while a post-split shell window is the
- * correct (narrow) width.
+ * A regression shows as the agent (claude) tmux window being wider than the
+ * client's xterm cols after the split settles.
  *
- * Flow: create a fresh session, open the webapp in tiles mode selecting it,
- * split the agent pane during its cold boot (POST a scratch shell), let it
- * settle, then read the pod's tmux window widths via kubectl and compare to
- * the client grid. Screenshot -> /tmp/yaac-shots/split-open-agent-size.png.
- * Prints PASS/FAIL.
+ * Flow: create a session, open the webapp in tiles mode on it, split during
+ * the agent's cold boot (POST a scratch shell), wait, then read the pod's
+ * tmux window widths via kubectl and compare with the client grid.
+ * Screenshot -> /tmp/yaac-shots/split-open-agent-size.png. Prints PASS/FAIL.
  *
- * Run (needs a wired cluster + running server; creates and deletes one session):
+ * Run (needs a wired cluster + running server; creates and deletes one
+ * session):
  *   node test-playwright-scripts/split-open-agent-size-test.js
  */
 import { execSync, spawn } from 'node:child_process'
@@ -55,7 +52,7 @@ const podsNow = () => sh(`kubectl get pods -n ${ns} -o name`).split('\n').filter
 
 async function main() {
   const before = new Set(podsNow())
-  // `session create` attaches to tmux and never returns — run it detached.
+  // `session create` attaches to tmux and never returns, so run it detached.
   const proj = process.env.PROJECT || 'yaac'
   const child = spawn('yaac', ['session', 'create', proj], { detached: true, stdio: 'ignore' })
   child.unref()
@@ -77,7 +74,7 @@ async function main() {
     await ctx.addInitScript(() => { try { localStorage.setItem('yaac.viewmode.v1', 'tiles') } catch {} })
     const page = await ctx.newPage()
     await page.goto(`${origin}/?project=${proj}&session=${sid}`)
-    // Split ASAP so the width shrink hits while the agent is still cold-booting.
+    // Split early so the shrink lands while the agent is still booting.
     await sleep(300)
     await page.evaluate(async (id) => { await fetch(`/session/${id}/terminals`, { method: 'POST' }) }, sid)
     await sleep(8000)
@@ -87,15 +84,14 @@ async function main() {
     })
     fs.mkdirSync('/tmp/yaac-shots', { recursive: true })
     await page.screenshot({ path: '/tmp/yaac-shots/split-open-agent-size.png' })
-    // Read the pod's tmux window widths WHILE the client is attached.
+    // Read widths while the client is still attached.
     const rows = sh(`kubectl exec -n ${ns} ${pod} -- tmux -S /tmp/yaac-tmux/server list-windows -a -F '#{session_name} #{window_name} #{window_width}'`)
       .split('\n').map((l) => l.trim()).filter(Boolean)
     const claude = rows.filter((l) => / claude /.test(` ${l} `) || / claude$/.test(l))
       .map((l) => Number(l.split(' ').pop()))
     const worst = Math.max(...claude)
     console.log(`client agent cols=${cols}; tmux claude window widths=${JSON.stringify(claude)}`)
-    // The agent window must match the client grid (allow ±1 for rounding), not
-    // remain at the pre-split full width.
+    // Allow +1 col for rounding.
     pass = cols != null && claude.length > 0 && worst <= cols + 1
     console.log(pass ? 'PASS: agent window matches the split pane' : `FAIL: agent window stuck wide (${worst} > ${cols})`)
   } finally {

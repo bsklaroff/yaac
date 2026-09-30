@@ -4,10 +4,9 @@
  *      ("Up to date with origin/main · fetched 5m ago", "3 commits ahead of
  *      origin/main", ...), with a branch icon before the ref, and agrees with
  *      GET /workspace/:id/git-status.
- *   2. The pane area never changes height while the bar loads: the strip is
- *      laid out from the first frame, so no pane refits (and no SIGWINCH
- *      reaches the agent's TUI) when its answer lands.
- *   3. The sidebar row no longer carries the base-branch label.
+ *   2. The pane area never changes height while the bar loads, so no pane
+ *      refits and no SIGWINCH reaches the agent's TUI.
+ *   3. The sidebar row has no base-branch label.
  * Leaves a screenshot in SCREENSHOT_DIR.
  *
  * Needs a running `yaac server` with one live workspace. Run `pnpm build &&
@@ -59,7 +58,7 @@ function check(ok, label, detail = '') {
   if (!ok) failures.push(label)
 }
 
-/** The sentence the bar starts with — the fetch age follows it. */
+/** The sentence the bar starts with; the fetch age follows. */
 function expectedLine({ base, comparison: c }) {
   const n = (k) => `${k} commit${k === 1 ? '' : 's'}`
   if (!c) return `No branch named ${base} to compare with`
@@ -87,8 +86,7 @@ async function main() {
 
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } })
-  // Record every height the pane area takes once it holds a pane — before
-  // the snapshot lands there is no workspace, so nothing there to resize.
+  // Record every height the pane area takes once it holds a pane.
   await page.addInitScript(() => {
     window.__wsHeights = []
     const sample = () => {

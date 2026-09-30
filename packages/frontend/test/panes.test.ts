@@ -5,11 +5,9 @@ import { CHANGES_TARGET } from '#lib/changesApi'
 import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
 /**
- * Which panes a workspace has. This is what decides whether a kept-alive pane
- * is holding a live connection or an invisible retry loop: a chat pane stays
- * mounted when it goes off-screen, so nothing else ever takes one down, and
- * the answers here are the only thing standing between an ended conversation
- * and a socket the server refuses for the rest of the workspace's life.
+ * Which panes a workspace has. Chat panes stay mounted while hidden, so
+ * `paneStillLive` is what unmounts an ended conversation's pane; otherwise
+ * it would keep retrying a socket the server refuses.
  */
 
 function session(over: Partial<AgentSessionEntry> = {}): AgentSessionEntry {
@@ -34,18 +32,16 @@ function workspace(sessions: AgentSessionEntry[]): WorkspaceListEntry {
 const tui = workspace([session({ mode: 'tui' })])
 /** An `acp` workspace mid-conversation. */
 const acp = workspace([session({ agentSessionId: 'conv-a' })])
-/** The seconds after an ACP workspace is created, before its agent has
- *  answered `session/new` — in the snapshot with nothing to show yet. */
+/** An ACP workspace whose agent hasn't answered `session/new` yet. */
 const booting = workspace([])
 
 describe('acpPaneTargets', () => {
   it('names the live conversations and nothing else', () => {
     const mixed = workspace([
       session({ agentSessionId: 'conv-a' }),
-      // Ended: restorable on a restart, but there is no agent behind it now.
+      // Ended: no agent is behind it now.
       session({ agentSessionId: 'conv-b', active: false, ordinal: 1 }),
-      // A TUI agent is a terminal, not a chat pane — and a row recorded
-      // before modes existed carries no `mode` at all and is likewise `tui`.
+      // A TUI agent is a terminal, not a chat pane.
       session({ agentSessionId: 'conv-c', mode: 'tui', ordinal: 2 }),
       session({ agentSessionId: 'conv-d', mode: undefined, ordinal: 3 }),
     ])
@@ -57,9 +53,8 @@ describe('acpPaneTargets', () => {
 
 describe('defaultPaneTarget', () => {
   it('opens the chat pane of an acp workspace and the terminal of a tui one', () => {
-    // This is also what the eager warm-up pre-attaches, so answering `agent`
-    // for an ACP workspace would warm a PTY onto acpd's log and leave the
-    // conversation — the thing a click actually reveals — cold.
+    // The warm-up attaches this pane, so an ACP workspace must answer its
+    // chat pane, not acpd's `agent` window.
     expect(defaultPaneTarget(acp)).toBe('acp:conv-a')
     expect(defaultPaneTarget(tui)).toBe('agent')
   })
@@ -81,26 +76,23 @@ describe('defaultPaneTarget', () => {
 describe('paneStillLive', () => {
   it('drops a conversation that has ended, and keeps the ones that have not', () => {
     expect(paneStillLive(acp, 'acp:conv-a')).toBe(true)
-    // The pane is kept mounted while hidden, so this answer is the only thing
-    // that unmounts it — otherwise it retries a refused socket forever.
+    // An ended conversation's pane is no longer live.
     expect(paneStillLive(workspace([session({ agentSessionId: 'conv-a', active: false })]),
       'acp:conv-a')).toBe(false)
-    // Same for a conversation the workspace has simply never heard of.
+    // Nor is an unknown conversation's.
     expect(paneStillLive(acp, 'acp:conv-z')).toBe(false)
   })
 
   it('drops the raw agent pane of an acp workspace, whose window is acpd log', () => {
-    // The warm-up opens one during the booting window above; once a
-    // conversation appears, that hidden PTY has to go with it.
+    // The warm-up may open `agent` while booting; once a conversation
+    // appears, that pane must go.
     expect(paneStillLive(booting, 'agent')).toBe(true)
     expect(paneStillLive(acp, 'agent')).toBe(false)
     expect(paneStillLive(tui, 'agent')).toBe(true)
   })
 
   it('leaves every pane it does not own alone', () => {
-    // A terminal window is the terminals poll's business, and preview/changes
-    // are the user's — an ACP workspace's shells must not be swept up with its
-    // agent pane.
+    // Other panes are managed elsewhere and always count as live here.
     for (const wt of [acp, tui, booting]) {
       expect(paneStillLive(wt, '%12')).toBe(true)
       expect(paneStillLive(wt, PREVIEW_TARGET)).toBe(true)

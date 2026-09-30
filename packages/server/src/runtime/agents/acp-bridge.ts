@@ -1,26 +1,16 @@
 /**
- * The `/acp/attach` bridge: one browser pane ⇄ one live ACP conversation.
+ * The `/acp/attach` bridge: one browser pane to one live ACP conversation.
+ * Shaped like the PTY bridge (a disposable per-client view onto an agent
+ * that outlives it), with these differences:
  *
- * Deliberately the same shape as the PTY bridge, because it plays the same
- * role — a per-client, disposable view onto an agent that outlives it. The
- * differences are all consequences of the payload being structured events
- * rather than bytes:
+ *  - Frames are JSON text (`AcpServerMessage` / `AcpClientMessage`).
+ *  - Attaching replays: `hello` carries the conversation record so far, and
+ *    the same record tail feeds all later content. The live subscription
+ *    adds only turn boundaries and errors, which the record cannot carry.
+ *  - Detaching only unsubscribes; the driver's connection owns the
+ *    conversation (which is why acpd exists).
  *
- *  - Every frame is JSON text (`AcpServerMessage` / `AcpClientMessage`), not
- *    binary, so the pane never parses a wire format.
- *  - Attaching *replays*: xterm keeps its own scrollback in the browser, but a
- *    chat pane reconnecting to an existing conversation has nothing until the
- *    server hands it one. `hello` carries the record's contents as of the
- *    attach, and the same tail feeds everything after it — content has one
- *    source, and the live subscription contributes only turn boundaries and
- *    errors, which the record cannot carry.
- *  - Detaching is free. A PTY attach creates and kills a tmux view session;
- *    here the conversation is owned by the driver's connection and a closing
- *    socket unsubscribes and nothing more. That is the whole reason acpd
- *    exists.
- *
- * Several panes may attach to one conversation at once (two tabs), which the
- * subscription set handles without any of them being special.
+ * Several panes (tabs) may attach to one conversation at once.
  */
 
 import { acpConversation } from './acp-registry'
@@ -29,8 +19,8 @@ import { serverLog } from '#log'
 import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
 import type { AcpClientMessage, AcpEvent, AcpImage, AcpServerMessage } from '@yaac/shared/acp'
 
-/** The minimal socket this bridge needs — structurally the same object the
- *  PTY bridge takes, without coupling the two features. */
+/** The socket this bridge needs; same shape as the PTY bridge's, kept
+ *  separate so the features stay decoupled. */
 export interface AcpSocket {
   send(data: string): void
   close(code?: number, reason?: string): void
@@ -44,15 +34,11 @@ function toText(data: Buffer | ArrayBuffer | Buffer[]): string {
 }
 
 /**
- * A prompt's images, checked the way the terminal's upload route checks a
- * file: by what the bytes are, not by the type the pane declared, and against
- * the same cap — for the message as a whole, since the model's request limit
- * and the record both take all of them at once. A string names the first
- * refusal — the message is then dropped whole rather than sent without the
- * image the user meant to send.
- *
- * What goes on is the base64 of the bytes checked, not the pane's string:
- * decoding skips characters that are not base64, so the two can differ.
+ * Validate a prompt's images like the terminal upload route does: by
+ * sniffing the bytes, not the declared type, with the size cap applied to
+ * the whole message. Returns the first refusal as a string, and the message
+ * is then dropped rather than sent without the image. The re-encoded bytes
+ * are forwarded, since base64 decoding skips invalid characters.
  */
 function promptImages(raw: unknown): AcpImage[] | string {
   if (raw === undefined) return []
@@ -72,10 +58,9 @@ function promptImages(raw: unknown): AcpImage[] | string {
 }
 
 /**
- * Attach `sock` to the conversation, or close it with an error when there is
- * none live. "None live" is a normal state, not a fault: the workspace may
- * still be booting, or its connection may be mid-respawn — so the pane is told
- * plainly and retries, exactly as `WorkspaceTerminal` does on a dropped PTY.
+ * Attach `sock` to the conversation, or close it if none is live. That is
+ * normal (the workspace may be booting or reconnecting); the pane retries,
+ * like `WorkspaceTerminal` does on a dropped PTY.
  */
 export function attachAcp(
   slug: string,
@@ -98,23 +83,19 @@ export function attachAcp(
     return
   }
 
-  // Content comes from the record and nothing else. The socket carries the
-  // RPC half but not a rendered message, because the two carry the same
-  // `session/update` notifications and ACP gives notifications no identity —
-  // joining them at an unknown point would duplicate the overlap or drop it.
-  // One source has no join, so there is nothing here to get wrong.
+  // All content comes from the record. The live socket carries the same
+  // `session/update` notifications, but ACP gives them no ids, so merging
+  // the two sources would duplicate or drop the overlap.
   let seq = 0
   let detached = false
   const tail = tailAcpLog(
     { slug, workspaceId, agentSessionId },
     (events, reset) => {
-      // Closing the tail stops further passes, but not the one already reading:
-      // it checks for closure on entry and its chain serializes rather than
-      // aborts, so a pass that started before the pane left still reports.
+      // A read already in progress still reports after close.
       if (detached) return
       if (reset) {
-        // A fresh read of the whole record — the first pass, or a new agent
-        // life that truncated it. Either way the pane replaces what it holds.
+        // The first read, or a new agent life that truncated the record:
+        // the pane replaces what it holds.
         seq = 0
         send({
           type: 'hello',
@@ -122,14 +103,9 @@ export function attachAcp(
           busy: conversation.isBusy,
           events: events.map((event) => ({ ...event, seq: seq++ }) as AcpEvent),
         })
-        // What the record cannot carry and a subscription cannot catch up on:
-        // the handshake's own reports that this conversation is not running the
-        // way it was asked to. They are made before any pane can exist — the id
-        // a pane attaches by is minted by the same handshake — so a pane that
-        // only subscribed would never hear that its `accept-edits` workspace is
-        // running in the adapter's looser default. Sent after `hello` because
-        // hello replaces what the pane holds, and re-sent on a later reset for
-        // the same reason.
+        // Standing notices from the handshake (e.g. the adapter running in a
+        // looser mode than requested) predate any pane, so replay them after
+        // every `hello`.
         for (const notice of conversation.standingNotices) {
           send({ type: 'event', event: { ...notice, seq: seq++ } as AcpEvent })
         }
@@ -139,39 +115,28 @@ export function attachAcp(
     },
   )
 
-  // Turn boundaries and errors are the only events the record cannot carry:
-  // they describe what is happening now, not what was said. Disjoint from the
-  // tail's output, so the two streams can never deliver the same thing twice.
-  // Flushed behind the record first, or a turn would appear to end above the
-  // last words of the answer it ended.
+  // Turn boundaries and errors come from the live subscription; they never
+  // overlap the record. Flush the record first so a turn does not appear
+  // to end before its last words.
   const unsubscribe = conversation.subscribe((event) => {
     void tail.flush()
       .catch(() => { /* the next pass retries */ })
       .then(() => {
-        // The flush is a file read, so the pane can leave between an event and
-        // its delivery — and unsubscribing cannot recall a send already on its
-        // way. A prompt is the common case: it starts a turn, and the boundary
-        // that announces it is still in flight when the tab closes.
+        // The pane may have left during the flush.
         if (detached) return
         send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent })
       })
   })
-  // This conversation object will never speak again, and the pane is bound to
-  // *it* rather than to the name it attached by — so the socket goes with it.
-  // The replacement the driver registers under the same `acp:<id>` is a
-  // different object: it delivers its turn boundaries to its own subscribers,
-  // and a cancel sent down here would reach a closed peer. Only a re-attach
-  // rebinds, and a re-attach starts with the socket closing. The pane's backoff
-  // handles the rest — a workspace restarting has nothing to attach to for a
-  // while, which is the same "not live yet" a booting one reports below.
+  // The pane is bound to this conversation object. When it closes, close
+  // the socket too: a replacement under the same `acp:<id>` is a different
+  // object, and the pane re-attaches to it with backoff.
   const unsubscribeClose = conversation.onClosed(() => {
     send({ type: 'health', connected: false })
     sock.close(1011, 'conversation closed')
   })
 
   sock.onMessage((data, isBinary) => {
-    // The pane speaks JSON only. A binary frame is a client bug, not a
-    // protocol variant — dropping it beats forwarding garbage to the agent.
+    // The pane sends JSON only; drop binary frames.
     if (isBinary) return
     let msg: AcpClientMessage
     try {
@@ -184,10 +149,8 @@ export function attachAcp(
       return
     }
     if (msg.type === 'permission' && typeof msg.requestId === 'string') {
-      // The answer goes to the agent; what comes BACK to the pane is the
-      // recorded reply, which the tail projects as `permission-resolved`. So
-      // there is nothing to echo here, and a pane that retires its card on the
-      // event rather than on the click cannot get ahead of the agent.
+      // Nothing to echo: the recorded reply comes back through the tail as
+      // `permission-resolved`, so the pane cannot get ahead of the agent.
       conversation.answerPermission(
         msg.requestId,
         typeof msg.optionId === 'string' ? msg.optionId : undefined,
@@ -197,15 +160,13 @@ export function attachAcp(
     if (msg.type === 'prompt' && typeof msg.text === 'string') {
       const images = promptImages(msg.images)
       if (typeof images === 'string') {
-        // Said to the pane, which is waiting for this message's echo and would
-        // otherwise wait until the socket dropped.
+        // Tell the pane, which is waiting for this message's echo.
         send({ type: 'event', event: { type: 'error', message: `message not sent: ${images}`, seq: seq++ } })
         return
       }
       const text = msg.text.trim() === '' ? '' : msg.text
       if (text === '' && images.length === 0) return
-      // Not awaited: the turn's progress is the event stream's business, and
-      // the socket must stay responsive to a cancel while it runs.
+      // Not awaited, so the socket stays responsive to a cancel.
       void conversation.prompt(text, images).catch((err: unknown) => {
         serverLog(`[server] acp attach ${workspaceId}/${agentSessionId}: prompt failed: ${String(err)}`)
       })

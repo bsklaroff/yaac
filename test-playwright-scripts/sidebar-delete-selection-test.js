@@ -1,27 +1,24 @@
 /*
- * Verifies where the selection lands when the open workspace is deleted from
- * the sidebar, in real Chromium against the running server.
+ * Verifies where the selection lands when the open workspace is deleted,
+ * in Chromium against the running server.
  *
- *  1. Deleting the selected workspace selects the row BELOW it — not the first
- *     waiting one, not the top row.
- *  2. Deleting the bottom row falls back to the row above it, skipping the
- *     row left behind as a greyed "stopping…" placeholder by step 1 (a
- *     terminating row isn't selectable, so it can't inherit the selection).
- *  3. A workspace that vanishes from under the open pane — deleted by the CLI
- *     here, the stale reaper in the wild — hands the pane to the topmost
- *     remaining row instead of leaving a dead one on screen. There is no
- *     neighbour to walk to in that case: nothing local knows it is going.
+ *  1. A workspace that disappears from under the open pane (stopped by the
+ *     CLI here, by the stale reaper in practice) hands the pane to the
+ *     topmost remaining row. Nothing local knew it was going, so there is no
+ *     neighbour to pick.
+ *  2. Deleting the selected workspace in the app selects the row below it.
+ *  3. Deleting the bottom row falls back to the row above, skipping rows
+ *     still shown as greyed "stopping…" placeholders, which can't be
+ *     selected.
  *
- * Selection is read from the URL, which `persistSelection` mirrors on every
- * change (?project=…&workspace=<id>) — an unambiguous readout that doesn't
- * depend on which class marks the selected row.
+ * The selection is read from the URL (?project=…&workspace=<id>), which
+ * `persistSelection` keeps in sync.
  *
  * Needs a running `yaac server` with at least FOUR live workspaces in the
- * selected project (`yaac workspace create <project>` ×4), and it DELETES three
- * of them — run it against workspaces you are willing to lose. Reads the port
- * from $YAAC_DATA_DIR/.server.lock and drives the app the
- * server serves out of `dist/`, so run `pnpm build` + `yaac server restart`
- * first or you are testing the frontend as it was.
+ * selected project (`yaac workspace create <project>` x4). It DELETES three
+ * of them, so use workspaces you can lose. Reads the port from
+ * $YAAC_DATA_DIR/.server.lock and drives the app served from `dist/`, so run
+ * `pnpm build` + `yaac server restart` first.
  *
  * Run: node test-playwright-scripts/sidebar-delete-selection-test.js
  */
@@ -73,7 +70,7 @@ try {
   await rows.first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.waitForTimeout(3000)
 
-  // Row order top-to-bottom, as ids: click each row and read the URL back.
+  // Record row order as ids by clicking each row and reading the URL.
   const ids = []
   const count = await rows.count()
   if (count < 4) throw new Error(`need at least 4 workspace rows, found ${count}`)
@@ -84,11 +81,8 @@ try {
   }
   console.log(`sidebar rows, top to bottom: ${ids.join(', ')}`)
 
-  // Rows are addressed by id, not by index: a terminating row disappears the
-  // moment the server's cleanup lands, so an index captured a step ago can
-  // point at a different workspace by the time it is used. Clicking a row
-  // selects it, which is how its index is identified — and the last click is
-  // always the row about to be acted on.
+  // Find rows by id, not index: a stopping row disappears once cleanup
+  // finishes, which shifts indexes. Leaves the target row selected.
   const selectRow = async (id) => {
     const n = await rows.count()
     for (let i = 0; i < n; i++) {
@@ -112,20 +106,18 @@ try {
     return selectedId(page)
   }
 
-  // 1. A workspace deleted outside the app, with its pane open: no neighbour
-  //    can inherit, so the top row takes over.
+  // 1. Stopped outside the app while open: the top row takes over.
   await selectRow(ids[1])
   check('middle row selected', selectedId(page), ids[1])
   execSync(`yaac workspace stop ${ids[1]}`, { stdio: 'ignore' })
   check('workspace vanished -> topmost row', await awaitSelectionChange(ids[1]), ids[0])
 
-  // 2. Deleting the open workspace in the app hands the selection downward.
+  // 2. Deleted in the app: the row below takes over.
   await deleteSelectedRow(ids[2])
   check('delete selected -> row below', selectedId(page), ids[3])
 
-  // 3. ids[3] is now both selected and the bottom row, and everything between
-  //    it and the top row is a greyed "stopping…" placeholder. The fallback
-  //    goes up, and a terminating row can't take the selection.
+  // 3. ids[3] is selected and at the bottom, with only stopping rows between
+  //    it and the top row, so the selection goes up to ids[0].
   await deleteSelectedRow(ids[3])
   check('delete bottom row -> row above, skipping the stopping ones', selectedId(page), ids[0])
 

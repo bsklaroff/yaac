@@ -4,12 +4,9 @@ import type { AcpEvent } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
 /**
- * One conversation's history, fetched rather than streamed.
- *
- * The live pane gets its events over a socket, which needs a running
- * workspace; this is the same events over a plain GET, which does not. That is
- * what lets a stopped workspace show what was actually said instead of only the
- * question that started it.
+ * One conversation's history over a plain GET. The live pane streams events
+ * over a socket, which needs a running workspace; this lets a stopped
+ * workspace show its conversation too.
  */
 
 /** A conversation with no readable history — see `transcriptViewable`. */
@@ -18,27 +15,20 @@ export const TRANSCRIPT_UNAVAILABLE = Symbol('transcript unavailable')
 export type TranscriptResult = AcpEvent[] | typeof TRANSCRIPT_UNAVAILABLE
 
 /**
- * Whether a conversation has a transcript worth asking for.
- *
- * Decided from the row the listing already carries, so a conversation the
- * server would refuse costs no round trip: an `acp` one was recorded as it
- * happened, and a `tui` claude one is replayed from claude's own transcript.
- * Everything else keeps its history somewhere the server cannot read once the
- * workspace is gone — opencode's is a sqlite database inside the container.
+ * Whether the server can return a transcript for this conversation, decided
+ * locally to skip a request it would refuse. `acp` conversations are
+ * recorded, and claude keeps its own transcript. Other tools keep history
+ * where the server can't read it once the workspace is gone.
  */
 export function transcriptViewable(session: AgentSessionEntry): boolean {
   return session.mode === 'acp' || session.tool === 'claude'
 }
 
 /**
- * A conversation's events, or `TRANSCRIPT_UNAVAILABLE` when this install
- * cannot produce them.
- *
- * Both refusals degrade to the same answer rather than an error: a 501 is a
- * tool whose history is not readable, and a 404 is an older server that does
- * not serve this route at all (the same version-skew posture the stopped
- * listing takes). Neither is worth a failed pane — the view falls back to the
- * founding prompt.
+ * A conversation's events, or `TRANSCRIPT_UNAVAILABLE`. A 501 (history not
+ * readable for this tool) and a 404 (an older server without this route)
+ * both return that instead of an error, and the view shows the first
+ * prompt instead.
  */
 export async function getSessionTranscript(
   workspaceId: string,

@@ -11,9 +11,8 @@ import {
 import { loadClaudeCredentialsFile, loadCodexCredentialsFile } from '@yaac/shared/tool-auth'
 import { CLAUDE_STUB, CODEX_STUB } from '@yaac/test-utils/fixtures'
 
-// Only consulted when the YAAC_E2E_*_LOGIN_CLI hook is unset. Mocked to
-// "not installed" so no test can ever spawn a real vendor CLI, whatever the
-// machine has.
+// Consulted only when the YAAC_E2E_*_LOGIN_CLI hook is unset. Mocked to "not
+// installed" so no test can spawn a real vendor CLI.
 vi.mock('#cli-resolve', async (importOriginal) => {
   const actual = await importOriginal<typeof cliResolveModule>()
   return { ...actual, resolveToolCliPath: () => null }
@@ -71,8 +70,7 @@ describe('tool login sessions', () => {
     process.env.FAKE_LOGIN_MODE = 'need-input'
     const started = await startToolLogin('claude')
 
-    // The CLI's own paste prompt is filtered from the presented output (the
-    // webapp renders its own box), so readiness is the printed URL.
+    // The CLI's paste prompt is filtered from the output, so wait for the URL.
     await vi.waitFor(() => {
       expect(getToolLogin(started.id).output).toContain('oauth/authorize')
     }, { timeout: 10_000, interval: 25 })

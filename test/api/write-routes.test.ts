@@ -59,8 +59,8 @@ vi.mock('@yaac/server/domain/workspaces/project-teardown', () => ({
   removeProject: vi.fn(),
 } satisfies Partial<typeof projectRemoveModule>))
 
-// The install flow's post-exit verification resolves the CLI on the real
-// machine — mocked so the route tests pass regardless of what's installed.
+// The install flow's post-exit check looks for the CLI on this machine;
+// mocked so the tests don't depend on what is installed.
 vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
   const actual = await vi.importActual<typeof cliResolveModule>('@yaac/auth-daemon/cli-resolve')
   return {
@@ -93,10 +93,9 @@ import {
 } from '@yaac/auth-daemon/tool-install'
 
 /**
- * Wire an in-process "loopback" auth agent into the hub: ops dispatch to
- * the real local login/install managers and a pump pushes their views
- * back, so the routes get full end-to-end coverage without a WebSocket.
- * Returns a teardown that must run in afterEach.
+ * Wire an in-process auth agent into the hub: ops go to the real local
+ * login/install managers and their views are pushed back, so the routes are
+ * covered end to end without a WebSocket. Returns a teardown for afterEach.
  */
 function installLoopbackAgent(): () => void {
   const tracked = new Map<string, 'login' | 'install'>()
@@ -149,9 +148,8 @@ const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
   scopes: ['user:inference'],
 }
 
-// Raw-request helper for the edge-case tests that intentionally send
-// payloads the RPC client's type layer would reject (missing fields,
-// malformed JSON, out-of-enum values).
+// For payloads the typed RPC client would reject (missing fields, malformed
+// JSON, out-of-enum values).
 function rawInit(init: RequestInit = {}): RequestInit {
   const headers = new Headers(init.headers ?? {})
   if (init.body !== undefined) headers.set('content-type', 'application/json')
@@ -290,7 +288,7 @@ describe('write routes', () => {
         expect.objectContaining({ name: 'API_KEY', secret: true, hasValue: true }),
         expect.objectContaining({ name: 'NODE_ENV', value: 'development', secret: false }),
       ])
-      // Write-only by design: the value goes in and never comes back out.
+      // Write-only: the value is never returned.
       expect(JSON.stringify(vars)).not.toContain('sekrit')
     })
 
@@ -339,8 +337,7 @@ describe('write routes', () => {
     })
 
     it('refuses a half-identity, a non-address, a control character or an overlong value', async () => {
-      // Committing as a name with no email is not a lesser identity — git
-      // refuses it — so neither is this.
+      // git refuses to commit with a name but no email.
       const app = buildApp({ buildId: 'test' })
       for (const body of [
         { name: 'Ada', email: '' },
@@ -599,9 +596,9 @@ describe('write routes', () => {
       expect(body.error.code).toBe('VALIDATION')
     })
 
-    // A person's create becomes the project's next defaults: the agent, and
-    // whatever the request named for it — per agent, so one agent's picks
-    // never move another's. A field left out keeps what was picked before.
+    // A create sets the project's next defaults: the agent, plus the fields
+    // the request named, stored per agent. Omitted fields keep their
+    // previous values.
     it('remembers the agent and what the request named for it', async () => {
       await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
       mockCreateWorkspace.mockResolvedValue({
@@ -616,7 +613,6 @@ describe('write routes', () => {
       }
 
       await create({ tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' })
-      // pi's only posture is bypass; remembering it moves nothing but pi.
       await create({ tool: 'pi', permissionMode: 'bypass' })
       expect(await getProjectRow('demo')).toMatchObject({
         lastTool: 'pi',
@@ -626,13 +622,13 @@ describe('write routes', () => {
         },
       })
 
-      // A bare create runs the last agent with what it last used — except
-      // the mode, which only the webapp (which sends it) can present.
+      // A bare create reuses the last agent and its settings, except the
+      // mode, which only the webapp sends.
       await create({ tool: 'claude' })
       expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({
         tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'tui',
       })
-      // ...and records nothing but the agent, so the picks stand.
+      // ...and records only the agent.
       expect((await getProjectRow('demo'))?.createDefaults.claude)
         .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' })
     })
@@ -684,8 +680,8 @@ describe('write routes', () => {
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
-            // Streamed verbatim, and the CLI reads it: an acp workspace must
-            // not get a PTY attached after a create or a restart.
+            // The CLI reads this so it doesn't attach a PTY to an acp
+            // workspace.
             mode: 'tui',
           },
         },
@@ -737,9 +733,8 @@ describe('write routes', () => {
       expect(mockCreateWorkspace).toHaveBeenCalledWith('demo', expect.objectContaining({ workspaceId: id }))
     })
 
-    // A workspace id is claimed once. Reusing a live one used to re-stamp its
-    // row and then, when the create failed on the existing branch, tear the
-    // live workspace down as if it were the create's own.
+    // Reusing a live id would overwrite its row, and a failed create would
+    // then tear down the live workspace as if it were its own.
     it('answers 409 for an id a workspace already holds, touching nothing', async () => {
       const id = '22222222-2222-4222-8222-222222222222'
       await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: id, baseBranch: 'main' })
@@ -833,8 +828,7 @@ describe('write routes', () => {
         })
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      // A prefix, as the CLI sends what a user typed: the route resolves it
-      // and keys the restart on the full id.
+      // The CLI sends a prefix as typed; the route resolves the full id.
       const res = await client.workspace.restart.$post({
         json: {
           workspaceId: 'sess',
@@ -853,8 +847,8 @@ describe('write routes', () => {
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
-            // Streamed verbatim, and the CLI reads it: an acp workspace must
-            // not get a PTY attached after a create or a restart.
+            // The CLI reads this so it doesn't attach a PTY to an acp
+            // workspace.
             mode: 'tui',
           },
         },
@@ -875,8 +869,6 @@ describe('write routes', () => {
       ])
     })
 
-    // One restart at a time: a second on a workspace still coming up is
-    // refused, not run alongside it on the same id.
     it('answers 409 for a workspace already provisioning', async () => {
       await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-z' })
       registerProvisioning({ workspaceId: 'sess-z', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
@@ -912,10 +904,9 @@ describe('write routes', () => {
     })
   })
 
-  // The sidebar's groups, end to end through the routes: what the webapp
-  // creates, drags between and deletes has to come back on the snapshot the
-  // same way, and a stale group id has to fail rather than file a workspace
-  // where nothing lists it.
+  // Sidebar groups through the routes. Changes must show on the snapshot,
+  // and a stale group id must fail rather than file a workspace where
+  // nothing lists it.
   describe('workspace group routes', () => {
     const client = (): ReturnType<typeof makeTestApiClient> =>
       makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -984,8 +975,8 @@ describe('write routes', () => {
     })
 
     it('404s a group created around a workspace that is not there', async () => {
-      // Otherwise the group row lands with no member — invisible in the
-      // sidebar, and so undeletable from it.
+      // Otherwise the group has no member, so the sidebar never shows it and
+      // it can't be deleted.
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
@@ -996,10 +987,8 @@ describe('write routes', () => {
     })
 
     it('rejects a group name longer than the store keeps', async () => {
-      // The store normalizes to MAX_TITLE_LENGTH, so accepting a longer name
-      // would truncate it on the way to the table — and two distinct names
-      // sharing their first MAX_TITLE_LENGTH characters would then resolve
-      // to one group.
+      // The store truncates to MAX_TITLE_LENGTH, so two long names with the
+      // same prefix would become one group.
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
@@ -1023,9 +1012,8 @@ describe('write routes', () => {
     })
   })
 
-  // Queued workspaces through the routes (docs/queued-workspaces.md). The
-  // create a launch runs is mocked, as it is for /workspace/create; what is
-  // real is everything that decides what it runs and when.
+  // Queued workspaces through the routes (docs/queued-workspaces.md). Only
+  // the create a launch runs is mocked.
   describe('queued workspace routes', () => {
     const client = (): ReturnType<typeof makeTestApiClient> =>
       makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1064,8 +1052,8 @@ describe('write routes', () => {
 
       // A launch still in flight: a second Run now loses the claim.
       let finish!: () => void
-      // It records the workspace's row, as the real create does — the launched
-      // entry keeps a foreign key to it.
+      // Records the workspace row like the real create; the launched entry
+      // has a foreign key to it.
       mockCreateWorkspace.mockImplementation((slug, opts) => new Promise((resolve) => {
         finish = () => {
           void recordWorkspaceCreated({ projectSlug: slug, workspaceId: opts.workspaceId ?? 'x' }).then(() =>
@@ -1145,8 +1133,8 @@ describe('write routes', () => {
       expect((await listDraftWorkspaces())).toEqual([])
     })
 
-    // The draft goes only once what was made from it exists, so a create
-    // that fails leaves the prompt somewhere.
+    // The draft is deleted only after the create succeeds, so a failed
+    // create keeps the prompt.
     it('drops the draft a create or queue names, once it has succeeded', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const draft = async (): Promise<string> => (await (await client.workspace.draft.save.$post({
@@ -1159,8 +1147,8 @@ describe('write routes', () => {
       await (await client.workspace.create.$post({ json: { project: 'demo', draftId: failed } })).text()
       expect(await ids()).toEqual([failed])
 
-      // Untitled, what is made from a draft keeps the title generated for it —
-      // while it is still the draft's prompt.
+      // An untitled create keeps the draft's generated title while the
+      // prompt is unchanged.
       await setDraftWorkspaceTitle(failed, 'someday', 'Someday')
       mockCreateWorkspace.mockResolvedValueOnce({
         workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
@@ -1303,8 +1291,8 @@ describe('write routes', () => {
     })
 
     it('deletes, but answers RUNTIME_UNAVAILABLE when the runtime could not be told', async () => {
-      // A delete is how a leak is dealt with: "done" must not be said while
-      // the proxy still holds the credential.
+      // Deleting is how a leaked credential is revoked, so success must not
+      // be reported while the proxy still holds it.
       const { id } = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockRejectedValue(new Error('apiserver down'))
       try {
@@ -1561,7 +1549,6 @@ describe('write routes', () => {
     })
   })
 
-  // Ensure the helper path fixtures don't leak if we add them later.
   it('write routes do not touch state before invocation', async () => {
     expect(await fs.readdir(getProjectsDir()).catch(() => [])).toEqual([])
     expect(projectDir('never')).toContain('never')

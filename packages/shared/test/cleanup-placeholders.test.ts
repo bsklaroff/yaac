@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import type * as childProcessModule from 'node:child_process'
 
-// The Keychain is reached by running `security`, so that is where this is
-// cut — the cleanup itself runs for real, including which service name it
-// asks for, which is the part that has to be right.
+// Only the `security` process (the Keychain) is mocked; the cleanup runs for
+// real, including the service names it asks for.
 const execFileSyncMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => string>())
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof childProcessModule>()),
@@ -77,12 +76,10 @@ describe('cleanupProjectClaudePlaceholders', () => {
   })
 
   it('clears the macOS Keychain item too, not just the file', async () => {
-    // On macOS the file is only half of it. A containerless workspace runs
-    // claude with CLAUDE_CONFIG_DIR set to the project's claude dir, and on
-    // its first token refresh claude migrates the credential into the
-    // Keychain item that dir names and deletes the file. Unlinking alone
-    // would then leave a working credential behind while reporting the
-    // account signed out.
+    // A containerless workspace runs claude with CLAUDE_CONFIG_DIR set to
+    // the project's claude dir. On macOS, claude's first token refresh moves
+    // the credential into a Keychain item named for that dir and deletes the
+    // file, so deleting the file alone would leave a working credential.
     const realPlatform = process.platform
     Object.defineProperty(process, 'platform', { value: 'darwin' })
     try {
@@ -99,8 +96,8 @@ describe('cleanupProjectClaudePlaceholders', () => {
       // One per project, each named after that project's own config dir.
       expect(deleted).toContain(claudeKeychainService(claudeDir('alpha')))
       expect(deleted).toContain(claudeKeychainService(claudeDir('beta')))
-      // Never the un-suffixed host service — that is the user's own claude
-      // install, which signing out of yaac must not touch.
+      // Never the unsuffixed service, which belongs to the user's own claude
+      // install.
       expect(deleted).not.toContain('Claude Code-credentials')
     } finally {
       Object.defineProperty(process, 'platform', { value: realPlatform })
@@ -120,7 +117,6 @@ describe('cleanupProjectClaudePlaceholders', () => {
     // Bare project dir, no claude/ subdir.
     await fs.mkdir(projectDir('skeletal'), { recursive: true })
     await cleanupProjectClaudePlaceholders()
-    // Should not have created the claude dir or file.
     expect(await fileExists(claudeDir('skeletal'))).toBe(false)
   })
 
@@ -138,7 +134,6 @@ describe('cleanupProjectClaudePlaceholders', () => {
     // Remove the projects dir created by createTempDataDir.
     await fs.rm(`${tmpDir}/projects`, { recursive: true, force: true })
     await cleanupProjectClaudePlaceholders()
-    // should not throw
   })
 })
 

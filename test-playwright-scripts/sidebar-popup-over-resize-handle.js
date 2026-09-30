@@ -1,13 +1,11 @@
-// Verifies that a portaled popup wins the sidebar's gutter with a real mouse:
-// the new-workspace popover, anchored under the "+" in the sidebar header, is
-// wide enough to spill over the resize strip that lives in the gutter, and the
-// strip (absolutely positioned at z-10) used to paint and hit-test above it —
-// hovering the popup raised the resize hairline and the press never reached the
-// form. The `isolate` on the sidebar's wrapper is what confines that z-10, so
-// Base UI's portaled layers (which carry no z-index of their own) clear it.
-// Checks the overlap is real, that the point hit-tests to the popup, that a
-// press there neither resizes nor closes it, that dropping the `isolate` brings
-// the bug back, and that the strip still drags once the popup is closed.
+// Verifies with a real mouse that a portaled popup sits above the sidebar's
+// resize strip. The new-workspace popover (under the "+" in the sidebar
+// header) spills over the strip in the gutter. The strip is positioned at
+// z-10; `isolate` on the sidebar wrapper confines that z-index so Base UI's
+// portaled layers, which have no z-index, stay on top.
+// Checks: the popup overlaps the strip, the overlap point hit-tests to the
+// popup, a press there neither resizes nor closes it, removing `isolate`
+// lets the strip win again, and the strip still drags with the popup closed.
 //
 // Run: node test-playwright-scripts/sidebar-popup-over-resize-handle.js
 // Needs: a running yaac server serving a current build (pnpm build +
@@ -66,13 +64,11 @@ async function main() {
   const handle = page.locator('[aria-label="Resize sidebar"]')
   await handle.waitFor({ state: 'visible', timeout: 15_000 })
 
-  // Open the new-workspace popover from the sidebar header.
   await page.locator('aside [title="New workspace"]').first().click()
   const popup = page.locator('[role="dialog"]').filter({ hasText: 'New workspace' }).first()
   await popup.waitFor({ state: 'visible', timeout: 10_000 })
   await page.waitForTimeout(250) // opening transition
 
-  // The whole premise: the popup's left column really does cover the strip.
   const geom = await page.evaluate(() => {
     const strip = document.querySelector('[aria-label="Resize sidebar"]').getBoundingClientRect()
     const pop = document.querySelector('[role="dialog"]').getBoundingClientRect()
@@ -86,7 +82,7 @@ async function main() {
   check('the popup overlaps the resize strip', overlapX > 0 && overlapY > 0,
     `${overlapX.toFixed(1)}×${overlapY.toFixed(1)}px`)
 
-  // A point inside that overlap: mid-strip, a little below the popup's top.
+  // A point in the overlap, a little below the popup's top.
   const px = Math.max(geom.strip.x, geom.pop.x) + Math.min(overlapX, 8) / 2
   const py = geom.pop.top + 20
 
@@ -101,8 +97,7 @@ async function main() {
   check('the popup hit-tests above the strip', topmost.inPopup && !topmost.inStrip, JSON.stringify(topmost))
   check('the sidebar wrapper is a stacking context', topmost.isolation === 'isolate')
 
-  // Hovering the overlap must not light the strip's hairline (its only visible
-  // state is group-hover / focus-visible on the inner rule).
+  // The hairline is the strip's only hover feedback.
   await page.mouse.move(px, py)
   await page.waitForTimeout(150)
   const hairlineLit = await handle.evaluate((el) => {
@@ -112,8 +107,6 @@ async function main() {
   check('hovering the popup leaves the resize hairline dark', !hairlineLit)
   await page.screenshot({ path: path.join(SHOT_DIR, 'popup-over-handle-1-hover.png') })
 
-  // A press at that point belongs to the popup, so it must not start a drag
-  // (which would leave the resizing class on <body>) and must not close it.
   const widthBefore = await page.locator('aside').first().evaluate((el) => el.getBoundingClientRect().width)
   await page.mouse.down()
   await page.mouse.move(px + 60, py, { steps: 8 })
@@ -125,7 +118,7 @@ async function main() {
     !(await page.evaluate(() => document.body.classList.contains('col-resizing'))))
   check('the popup is still open', await popup.isVisible())
 
-  // Drop the isolation and the old bug is back — proof this is what fixes it.
+  // Without `isolate`, the strip should win the hit test.
   await page.addStyleTag({ content: 'aside { isolation: auto !important }' })
   await page.waitForTimeout(100)
   const withoutIsolation = await page.evaluate(([x, y]) => (
@@ -137,7 +130,6 @@ async function main() {
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.waitForTimeout(2000)
 
-  // The strip itself still drags with no popup open.
   const box = await handle.boundingBox()
   const before = await page.locator('aside').first().evaluate((el) => el.getBoundingClientRect().width)
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)

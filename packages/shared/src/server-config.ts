@@ -6,18 +6,12 @@ import type { DriverKind, Principal } from '#types'
  * Which yaac server this machine's clients talk to, and what kind of
  * install this data dir is (`~/.yaac-client/server.json`, 0600).
  *
- * `url` is the selected server and `enabled` is the switch that deselects
- * it without forgetting it; `saved` remembers every server ever configured
- * so clients (the desktop shell's picker, `yaac remote on`) can switch
- * back without re-entering one. The machine has one selection at a time —
- * `saved` is history, not contexts.
- *
- * There is no other way to reach a server. A server on this machine is
- * registered here by `yaac server start` exactly as an in-cluster one is by
- * `yaac cluster install` (`registerServer` below), so no client has a local
- * case: an origin is the whole of "how do I reach the server". Who the
- * caller IS is not a credential this file holds — the server derives it
- * from the request (docs/remote-hosting.md).
+ * `url` is the selected server; `enabled` deselects it without forgetting
+ * it; `saved` lists every server ever configured so clients can switch
+ * back. Both `yaac server start` and `yaac cluster install` register their
+ * server here (`registerServer`), so clients always reach a server by its
+ * origin. The file holds no credential: the server identifies the caller
+ * from the request (docs/remote-hosting.md, docs/server-selection.md).
  */
 export interface SavedServer {
   url: string
@@ -28,39 +22,29 @@ export interface ServerConfig {
   enabled: boolean
   saved: SavedServer[]
   /**
-   * Which substrate this INSTALL runs — not which substrate the selected
-   * server runs. Top-level rather than per-entry because its readers ask
-   * about this data dir ("is there a host server to start, or a Deployment
-   * to converge?"), which does not change when the selection points at
-   * another machine. A remote server's driver is not recorded at all; its
-   * snapshot reports it live.
+   * Which substrate this data dir's install runs, not the selected server's
+   * (which may be on another machine and reports its own driver).
    */
   driver?: DriverKind
   /**
-   * Who this k8s install IS: a random id minted by its first `yaac cluster
-   * install`, and stamped on its server Deployment and on every volume it
-   * provisions. A data-dir path cannot be the identity — `/root/.yaac` or
-   * `/home/ubuntu/.yaac` is every install on every machine like this one —
-   * so re-adopting a volume, refusing a foreign Deployment and the byo
-   * uninstall all key on this instead.
+   * Random id minted by the first `yaac cluster install` and stamped on its
+   * Deployment and volumes. Data-dir paths repeat across machines, so volume
+   * re-adoption, foreign-Deployment refusal and byo uninstall key on this.
    */
   installId?: string
   /**
-   * The cluster a k8s install is in, as the uid of its `kube-system`
-   * namespace — stable for a cluster's life and distinct across clusters,
-   * where a context name is a local label (`default`,
-   * `kubernetes-admin@kubernetes`) that a KUBECONFIG switch can reuse for
-   * another cluster. Every host-side verb that touches the cluster refuses
-   * when the current context's cluster is another one. Absent on a file
-   * written before it was recorded, which goes unchecked until the next
-   * install writes it (docs/legacy-compat-shims.md).
+   * The uid of the install's cluster's `kube-system` namespace. Unlike a
+   * context name, it cannot be reused by another cluster, so host-side
+   * cluster commands refuse when the current context points elsewhere.
+   * Missing from older files until the next install
+   * (docs/legacy-compat-shims.md).
    */
   clusterUid?: string
-  /** The context the install ran through: only the hint a refusal gives. */
+  /** The kube context the install used; shown in refusal messages. */
   kubeContext?: string
   /**
-   * The install is `--byo`: a cluster yaac did not create, which `yaac
-   * cluster delete` must refuse and whose nodes nothing here may exec into.
+   * The install is `--byo`: yaac did not create the cluster, so
+   * `yaac cluster delete` refuses and nothing here execs into its nodes.
    */
   byo?: boolean
 }
@@ -77,20 +61,14 @@ function installFields(cfg: InstallRecord | null): InstallRecord {
   return out as InstallRecord
 }
 
-/**
- * CLIENT-LOCAL: which server this machine's clients talk to. Nothing but
- * clients ever reads it — under the k8s driver the server is a pod, and a
- * pod has no business knowing the origin its callers dial it on.
- */
+/** CLIENT-LOCAL: read only by clients, never by the server. */
 export function serverConfigPath(): string {
   return clientLocalPath('server.json')
 }
 
 /**
- * Absent, unparseable, or wrong-shaped file → null (no server configured).
- * The selected server is always folded into `saved`, so callers can treat
- * `saved` as the complete known-servers list. Fields this reader does not
- * know are dropped, and go on the next write.
+ * Null for an absent or malformed file. The selected server is always
+ * included in `saved`. Unknown fields are dropped.
  */
 export async function readServerConfig(): Promise<ServerConfig | null> {
   try {
@@ -103,8 +81,7 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
       .filter((s: unknown): s is SavedServer =>
         !!s && typeof s === 'object' && typeof (s as Record<string, unknown>).url === 'string')
       .map((s) => ({ url: s.url }))
-    // The empty url is `clearServerConfig`'s "nothing selected, but this is
-    // still a k8s install" state — not a server to remember.
+    // An empty url means nothing is selected (see clearServerConfig).
     if (cfg.url !== '' && !saved.some((s) => s.url === cfg.url)) {
       saved.unshift({ url: cfg.url })
     }
@@ -136,12 +113,9 @@ export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
 }
 
 /**
- * Forget every configured server (`yaac remote unset`), keeping the record
- * of what kind of install this is.
- *
- * Not a delete: `driver` shares this file, and dropping it would leave a
- * k8s install unable to refuse a host `yaac server start` — two writers on
- * one data dir. With nothing left to record, the file goes.
+ * Forget every configured server (`yaac remote unset`) but keep the install
+ * record, so a k8s install still refuses a host `yaac server start`. The
+ * file is deleted only when there is no install record.
  */
 export async function clearServerConfig(): Promise<void> {
   const install = installFields(await readServerConfig())
@@ -153,10 +127,9 @@ export async function clearServerConfig(): Promise<void> {
 }
 
 /**
- * Validate and canonicalize a server URL to a bare http(s) origin.
- * The server serves at the origin root (tailscale serve mounts there
- * too), so paths/queries are a configuration mistake — reject rather
- * than silently strip.
+ * Validate and canonicalize a server URL to a bare http(s) origin. The
+ * server is always at the origin root, so a path or query is rejected as a
+ * mistake rather than stripped.
  */
 export function normalizeServerUrl(raw: string): string {
   let url: URL
@@ -176,8 +149,8 @@ export function normalizeServerUrl(raw: string): string {
 
 /**
  * A config with `url` as the selected server, moved to the front of
- * `saved`. The other saved servers and the install's `driver` carry over
- * from `existing`.
+ * `saved`. Other saved servers and the install record carry over from
+ * `existing`.
  */
 export function withServerSelected(existing: ServerConfig | null, url: string): ServerConfig {
   const others = (existing?.saved ?? []).filter((s) => s.url !== url)
@@ -192,12 +165,10 @@ export function withServerSelected(existing: ServerConfig | null, url: string): 
 const PROBE_TIMEOUT_MS = 5000
 
 /**
- * The server answered, and it will not say who this device is: it reached
- * the server through `tailscale serve` with no user identity (a tagged
- * device, or Funnel), or by a name that is not loopback without going
- * through `serve` at all. The message is the server's own, which says
- * which. Distinguished from every other probe failure because retrying
- * does not help — the fix is on the tailnet, not here.
+ * The server answered but refused to identify this device, e.g. a request
+ * via `tailscale serve` with no user identity, or a non-loopback name that
+ * bypassed `serve`. The message is the server's. Retrying does not help;
+ * the fix is on the tailnet.
  */
 export class IdentityRejectedError extends Error {
   constructor(message: string) {
@@ -207,13 +178,10 @@ export class IdentityRejectedError extends Error {
 }
 
 /**
- * Verify a server end to end: the origin answers /health, and /whoami
- * identifies this device (/health is public — only /whoami proves the
- * server will take this device's requests). Returns the server's build id
- * so callers can warn on skew, and who the server says this device is;
- * throws a prescriptive error on any failure, and an
- * `IdentityRejectedError` specifically when the server refused to
- * identify the caller.
+ * Check that the origin answers /health and that /whoami identifies this
+ * device (/health is public, so only /whoami proves access). Returns the
+ * build id, for skew warnings, and the caller's principal. Throws
+ * `IdentityRejectedError` when the server refuses to identify the caller.
  */
 export async function probeServer(origin: string): Promise<{ buildId: string; principal: Principal }> {
   let health: Response
@@ -237,21 +205,18 @@ export async function probeServer(origin: string): Promise<{ buildId: string; pr
 }
 
 /**
- * Point this machine's clients at the server that was just stood up, and
- * record which kind of install stood it up. `yaac server start` calls it
- * for the host server it spawned, `yaac cluster install` for the
- * Deployment it applied — the one registration both substrates share.
+ * Select a just-started server and record the install's driver. Called by
+ * `yaac server start` and `yaac cluster install`.
  */
 export async function registerServer(origin: string, driver: DriverKind): Promise<void> {
   await writeServerConfig({ ...withServerSelected(await readServerConfig(), origin), driver })
 }
 
 /**
- * Merge `patch` into this data dir's install record, leaving the selection
- * as it is (or empty, on a data dir with none yet); an `undefined` value
- * drops the field. `yaac cluster install` records who and where the
- * install is BEFORE it changes anything, so a run that fails halfway has
- * already claimed what it made, and the next run recognizes it.
+ * Merge `patch` into the install record, leaving the selection alone; an
+ * `undefined` value drops the field. `yaac cluster install` calls this
+ * before changing anything, so a rerun after a failure recognizes what the
+ * failed run created.
  */
 export async function recordInstall(patch: InstallRecord): Promise<void> {
   const existing = await readServerConfig()

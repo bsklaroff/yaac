@@ -18,27 +18,24 @@ import { encodeOpenSshPrivateKey, generateSshKey, withKeyComment } from '#lib/ss
 import type { GitCredentialSummary } from '@yaac/shared/types'
 import type { HttpsCredentialEntry, SshCredentialEntry } from '#drivers/contract'
 
-/**
- * Parse a git remote URL. Two forms are supported:
- *   - https://<host>/<path>[.git]
- *   - SCP-style: [user@]<host>:<path>[.git]
- * `<path>` may be any depth — a single segment (e.g. Gerrit-style `repo`) or
- * a deeper path (e.g. `group/sub/repo`). Throws on ssh://, http://, explicit
- * ports, or unparseable input. A trailing slash on `<path>` is stripped —
- * left in, `path.split('/').pop()` (used to derive the project slug) would
- * return an empty string instead of the repo name.
- */
 export interface ParsedGitRemote {
   scheme: 'https' | 'ssh'
   host: string
   path: string
 }
 
-// The path may not open with `/` (`scheme://`) or `:` (`helper::`): git reads
-// both as a transport rather than an ssh host, and a recorded remote picks
-// the transport every later clone and fetch runs — `ext::` runs a command.
+// The path may not start with `/` (`scheme://`) or `:` (`helper::`): git
+// would read either as a transport, and `ext::` runs a command.
 const SCP_REGEX = /^(?:([\w._-]+)@)?([\w.-]+):(?![/:])(.+)$/
 
+/**
+ * Parse a git remote URL in one of two forms:
+ *   - https://<host>/<path>[.git]
+ *   - SCP-style: [user@]<host>:<path>[.git]
+ * `<path>` may be any depth. Throws on ssh://, http://, explicit ports, or
+ * unparseable input. A trailing slash is stripped so the last path segment
+ * (used for the project slug) is the repo name.
+ */
 export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   if (remoteUrl.startsWith('ssh://')) {
     throw new Error(
@@ -91,10 +88,9 @@ export async function addHttpsCredential(params: { name: string; token: string }
 }
 
 /**
- * Generate an SSH key under a name and seal it (docs/git-credentials.md).
- * The answer is the public half, for the user to register with their git
- * host before a project uses the key — nothing is fetched from any host
- * here, since the key is not tied to one until it is assigned.
+ * Generate and store an SSH key under a name (docs/git-credentials.md).
+ * Returns the public key for the user to register with their git host. No
+ * host is contacted until the key is assigned to a project.
  */
 export async function generateSshCredential(params: { name: string }): Promise<{ id: string; publicKey: string }> {
   const name = validName(params.name)
@@ -106,9 +102,9 @@ export async function generateSshCredential(params: { name: string }): Promise<{
 }
 
 /**
- * Rename a credential. For a key that also re-comments its public line —
- * which authenticates nothing, so a copy already registered with a host
- * keeps working under its old comment.
+ * Rename a credential. For a key this also changes the public key's comment,
+ * which doesn't affect authentication, so copies registered with a host keep
+ * working.
  */
 export async function renameCredential(id: string, rawName: string): Promise<void> {
   const name = validName(rawName)
@@ -119,10 +115,9 @@ export async function renameCredential(id: string, rawName: string): Promise<voi
 }
 
 /**
- * Replace a credential with a new secret of its kind — a pasted token, or a
- * freshly generated key — keeping its name and every project assigned to
- * it. A key's answer is its new public half, which the user registers with
- * the git host before those projects' git works again.
+ * Replace a credential's secret (a pasted token, or a newly generated key),
+ * keeping its name and project assignments. For a key, returns the new
+ * public key, which the user must register with the git host.
  */
 export async function replaceCredential(
   id: string,
@@ -149,10 +144,10 @@ export async function removeCredential(id: string): Promise<void> {
 }
 
 /**
- * Check a credential can authenticate `remoteUrl`, and resolve it for git:
- * the kind must match the remote's scheme, the secret must open, and an ssh
- * key gets the remote's host key — fetched here, trust on first use, and
- * handed back so the caller can store it and show it.
+ * Check a credential fits `remoteUrl` and resolve it for git: its kind must
+ * match the remote's scheme and its secret must decrypt. For an ssh key, the
+ * remote's host key is fetched (trust on first use) and returned so the
+ * caller can store and show it.
  */
 export async function resolveCredentialForRemote(
   credentialId: string,
@@ -190,7 +185,7 @@ function sshCredential(cred: GitCredentialRow, knownHostsEntry: string): Resolve
   return { kind: 'ssh', id: cred.id, publicKey: cred.publicKey ?? '', knownHostsEntry }
 }
 
-/** Assign a project its git credential; answers the host key it trusted. */
+/** Assign a project its git credential; returns the trusted host key. */
 export async function assignProjectCredential(
   slug: string,
   credentialId: string,
@@ -203,11 +198,9 @@ export async function assignProjectCredential(
 }
 
 /**
- * Whether a project's assignment is one git can use as it stands: the
- * credential exists, its kind is the remote's scheme, and a key has the
- * host key it was assigned with. Anything else — a remote that changed
- * under it included — reads as no credential, so the project asks for one
- * rather than failing somewhere less visible.
+ * Whether a project's credential is usable as is: it exists, its kind matches
+ * the remote's scheme, and an ssh key has a host key. Anything else (such as
+ * a changed remote) counts as no credential, so the user is asked for one.
  */
 function usableAssignment(row: ProjectRow, cred: GitCredentialRow | undefined): cred is GitCredentialRow {
   if (!cred) return false
@@ -240,9 +233,8 @@ export async function resolveProjectCredential(slug: string): Promise<ResolvedGi
   if (row?.gitCredentialId == null) return null
   const cred = await getGitCredential(row.gitCredentialId)
   if (!usableAssignment(row, cred)) return null
-  // An unreadable secret resolves to nothing rather than to a credential
-  // git would fail with at the remote, where the cause is invisible; the
-  // store has already said which row.
+  // An undecryptable secret resolves to null rather than failing obscurely
+  // at the remote; the store already logged which row.
   const secret = await cred.openSecret()
   if (secret === undefined) return null
   return cred.kind === 'https'
@@ -250,7 +242,7 @@ export async function resolveProjectCredential(slug: string): Promise<ResolvedGi
     : sshCredential(cred, row.knownHostsEntry ?? '')
 }
 
-/** The error a project with no usable credential answers a create with. */
+/** The create error for a project with no usable credential. */
 export function missingCredentialError(slug: string): ServerError {
   return new ServerError(
     'VALIDATION',
@@ -259,9 +251,9 @@ export function missingCredentialError(slug: string): ServerError {
 }
 
 /**
- * The private key of an ssh credential, in the form `ssh-add -` reads — for
- * a workspace on a substrate with no proxy to sign for it, which loads it
- * into an agent of its own. Opened here and handed on, never written.
+ * An ssh credential's private key in `ssh-add -` format, for a workspace
+ * with no proxy to sign for it (it loads the key into its own agent). Never
+ * written to disk.
  */
 export async function sshKeyMaterial(credentialId: string): Promise<string> {
   const cred = await getGitCredential(credentialId)
@@ -273,13 +265,9 @@ export async function sshKeyMaterial(credentialId: string): Promise<string> {
 }
 
 /**
- * Every credential with a masked preview and the projects that use it.
- *
- * An ssh row's preview is its public key: that is the half the user needs
- * to see, and the only half there is to show. Each row is opened here — a
- * user-initiated listing is the right place — so one the secret key no
- * longer opens is marked as needing replacement rather than listed like a
- * good one.
+ * Every credential with a masked preview and the projects using it. An ssh
+ * key's preview is its public key. Each secret is decrypted here so one that
+ * no longer decrypts is marked for replacement.
  */
 export async function listCredentialSummaries(): Promise<GitCredentialSummary[]> {
   const [creds, rows] = await Promise.all([listGitCredentials(), listProjectRows()])
@@ -301,10 +289,9 @@ export async function listCredentialSummaries(): Promise<GitCredentialSummary[]>
 }
 
 /**
- * The git half of what the runtime is handed: each credential with the
- * projects entitled to it, so an egress path can give it to a workspace of
- * those projects and no other. Opens every secret, because that is what it
- * is for; a row that will not open, or that no project can use, is left out.
+ * The git credentials handed to the runtime, each with the projects allowed
+ * to use it, so egress gives it only to those projects' workspaces. Rows
+ * that don't decrypt or that no project can use are left out.
  */
 export async function runtimeGitCredentials(): Promise<{ git: HttpsCredentialEntry[]; ssh: SshCredentialEntry[] }> {
   const [creds, rows] = await Promise.all([listGitCredentials(), listProjectRows()])

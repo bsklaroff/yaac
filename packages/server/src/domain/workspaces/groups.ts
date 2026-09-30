@@ -5,14 +5,9 @@ import { ServerError } from '@yaac/shared/errors'
 import type { WorkspaceGroupSummary } from '@yaac/shared/types'
 
 /**
- * Every sidebar group, projected onto the wire — the snapshot's groups half,
- * beside `listActiveWorkspaces`' workspaces half.
- *
- * Unfiltered, and deliberately unjoined: whether a group is *shown* depends on
- * whether it has a live member, and the client holding the workspace list can
- * answer that without the server re-deriving it. Membership travels on the
- * workspace entries (`groupId`), not as a list here, so the two halves can
- * never disagree about which workspace is in which group.
+ * Every sidebar group in wire form, for the snapshot. Membership is carried
+ * on the workspace entries (`groupId`), and the client decides which groups
+ * to show, so the two cannot disagree.
  */
 export async function listWorkspaceGroups(
   projectFilter?: string,
@@ -27,33 +22,18 @@ export async function listWorkspaceGroups(
   }))
 }
 
-/** The group a caller's name or id landed on. */
 export interface ResolvedGroup {
   groupId: string
   name: string
 }
 
 /**
- * Resolve what a human (or an agent) typed into a group: an exact group
- * id first, then a name match, case-insensitively and under the same
- * normalization a group is stored with.
+ * Resolve a group id or name: exact id first (the sidebar sends ids), then a
+ * case-insensitive normalized name. A name matching two groups is refused
+ * rather than guessed. Returns the name too, for callers that report it.
  *
- * Id-before-name is what lets one route serve both the sidebar — which holds
- * ids and means them exactly — and a person typing "review", whose id is
- * something they have never seen. A name that lands on two groups is refused
- * rather than guessed: both are equally what was asked for, and filing a
- * workspace in the wrong one is silent.
- *
- * The NAME travels back beside the id because every surface that reports a
- * move renders it, and the caller may well have passed an id — the ambiguity
- * error tells it to. This is the one place that knows which row was picked,
- * so no renderer has to echo what was typed or look the name up again.
- *
- * `create` is for the callers that are naming a group rather than picking
- * one (`--group` on a create, `yaac-mama create --group`, a queue or queue
- * update — the create dialog's "+ New group"): the group is
- * theirs to bring into being, and demanding they create it first would make
- * every such call two round trips and a race.
+ * `create` makes the group if no match exists, for callers naming a new
+ * group (`--group` on create, `yaac-mama create --group`, queueing).
  */
 export async function resolveGroup(
   projectSlug: string,

@@ -1,49 +1,28 @@
 import { execFileAsync } from '#drivers/k8s/container'
 
 /**
- * GC of the host podman engine's image store, run by `yaac cluster
- * install` — the one command that still builds on this engine. Every
- * content-hash rebuild re-tags under the same
- * repository (`yaac-base:<hash>`, `yaac-tools:<hash>`, …) and each
- * tag pins its whole intermediate layer chain, so the engine accumulates
- * generations without bound (measured: 23 yaac-base tags, ~14GB
- * reclaimable). Policy: keep the newest HOST_GENERATIONS_KEPT tags per
- * yaac-built repository, untag the rest, then prune dangling images —
- * retirement un-pins an old generation's chain, the prune cascades it
- * away. Intermediates of kept generations have tagged descendants, so
- * they are never dangling and the podman build cache survives.
+ * GC of the host podman image store, run by `yaac cluster install` (the
+ * only command that builds on the host engine). Each rebuild adds a new
+ * content-hash tag to the same repo, and each tag pins its layer chain, so
+ * old generations pile up. This keeps the newest HOST_GENERATIONS_KEPT tags
+ * per yaac repo, untags the rest, then prunes dangling images. Layers of
+ * kept tags are never dangling, so the build cache survives.
  *
- * Scoped to repos yaac builds or stages (YAAC_IMAGE_REPO): digest-pinned
- * upstream mirrors (registry, podman/stable, envoy) are
- * single-tag and must never be touched. The e2e suite's `yaac-test-*`
- * images are out of scope too: an install never builds them, and a test
- * run's global setup may be mid-build or mid-push on them — from another
- * checkout or test rig sharing this engine — when an install sweeps. The
- * suite retires its own with the same pass (`retireStaleGenerations`),
- * at a moment it knows no run is using them (`@yaac/test-utils/test-images`).
- *
- * Sweeping at install time rather than on a server tick is what keeps it
- * honest about generations still in use: the registry, not this store, is
- * where a running cluster resolves images, and the process doing the
- * retiring is the same one that just rebuilt what it wants to keep.
+ * Digest-pinned upstream mirrors are never touched. Neither are the e2e
+ * suite's `yaac-test-*` images, which another test rig on the same engine
+ * may be building; the suite retires those itself
+ * (`@yaac/test-utils/test-images`). See docs/image-gc.md.
  */
 
-/** Tagged generations kept per repo: current + one rollback/in-flight. */
+/** Tagged generations kept per repo: the current one plus one more. */
 export const HOST_GENERATIONS_KEPT = 2
 
-/**
- * Age floor for the dangling prune, so it can never touch an in-flight
- * `podman build`'s freshly committed intermediates. Retired generations'
- * chains are weeks old and go immediately; host churn is slow enough
- * (unlike the shared store's) that a day of extra retention is cheap.
- */
+/** Minimum age for the dangling prune, so it never removes the fresh
+ *  intermediate layers of a build still in progress. */
 export const HOST_PRUNE_UNTIL = '24h'
 
-/**
- * Repos yaac builds (`yaac-base`, `yaac-tools`, `yaac-nestable`, …) or
- * stages for a registry push (`localhost:<port>/…`) — minus the e2e
- * suite's `yaac-test-*`, which the header explains.
- */
+/** Repos yaac builds or stages for a registry push, excluding the e2e
+ *  suite's `yaac-test-*`. */
 const YAAC_IMAGE_REPO = /^(localhost(:\d+)?\/)?yaac-(?!test-)/
 
 export interface ImageLsRow {
@@ -65,11 +44,9 @@ export function parseImageLsRows(stdout: string): ImageLsRow[] {
 }
 
 /**
- * The tags to retire: rows arrive newest-first (`--sort created`), so
- * everything past the per-repo budget in a matching repo is a stale
- * generation. Other repos are never candidates, and neither is a tag in
- * `protect` (bare `repo:tag` or `localhost/`-qualified) — it is neither
- * retired nor counted against the budget.
+ * The tags to retire: in each repo matching `repoPattern`, everything past
+ * the newest `keep` (rows arrive newest first). Tags in `protect`, bare or
+ * `localhost/`-qualified, are skipped and don't count toward `keep`.
  */
 export function selectStaleGenerationTags(
   rows: ImageLsRow[],
@@ -91,9 +68,8 @@ export function selectStaleGenerationTags(
 
 /**
  * Untag every generation past the newest `keep` in each repo matching
- * `repoPattern`, sparing the tags in `protect`. No `-f` — a tag whose
- * image is in use by a container, or mid-build as a FROM, fails its rmi
- * and is retried next sweep. Returns the tags actually retired.
+ * `repoPattern`, sparing `protect`. Uses `rmi` without `-f`, so an image in
+ * use fails and is left for the next sweep. Returns the tags retired.
  */
 export async function retireStaleGenerations(
   repoPattern: RegExp,
@@ -110,7 +86,6 @@ export async function retireStaleGenerations(
       await execFileAsync('podman', ['rmi', ref])
       retired.push(ref)
     } catch {
-      // in use or raced by a concurrent rmi — leave it for the next sweep
     }
   }
   return retired

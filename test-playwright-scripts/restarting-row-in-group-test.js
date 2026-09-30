@@ -1,27 +1,16 @@
 /*
- * Verifies that restarting a workspace leaves its "Restarting workspace" row
- * INSIDE the sidebar group the workspace is filed under, rather than lifting it
- * to the top of the sidebar for the duration of the restart.
+ * Verifies that a restarting workspace's "Restarting workspace" row stays
+ * inside its sidebar group rather than moving to the top of the sidebar.
  *
- * A workspace is out of the snapshot while its container is recreated, so that
- * placeholder is the only thing standing in for it — and where it stands is
- * where the reader takes the workspace to be.
+ * Two passes, since the row comes from two places:
  *
- * Two passes, because the row has two authors and only the second one can be
- * checked in jsdom:
+ *   clicked: the ghost row's restart button and confirmation. The row starts
+ *     as the client's optimistic entry and is replaced by the server's.
+ *   server: the restart is POSTed from this script, so every frame comes
+ *     from the server's snapshot. This shows the server's provisioning entry
+ *     carries the group, which the optimistic copy could hide.
  *
- *   clicked — the real path: the ghost row's restart button, its confirmation,
- *     and the streaming provision. The row starts as the client's optimistic
- *     entry and is replaced mid-restart by the server's snapshot one.
- *   server  — the restart is POSTed from this script instead, so the browser
- *     never makes an optimistic row: every frame on screen comes from the
- *     server's snapshot. This is what proves the SERVER's provisioning entry
- *     carries the group — a groupless one would park the row at the top of
- *     the list, and the clicked pass can hide that behind its own optimistic
- *     copy if the restart is quick.
- *
- * Both passes sample the sidebar for the whole life of the placeholder, so a
- * row that jumps at the handover is caught wherever the handover lands.
+ * Both passes sample the sidebar for the placeholder's whole life.
  *
  * Needs a running `yaac server` built from the source under test (`pnpm build`
  * + `yaac server restart`), and a project with a sidebar group holding TWO
@@ -76,7 +65,7 @@ const GROUP = process.env.GROUP_NAME ?? 'Reviews'
 const lock = readServerLock()
 const origin = process.env.APP_URL ?? `http://127.0.0.1:${lock.port}`
 
-/** The loopback API — the same door `yaac` itself uses. */
+/** The loopback API, as the `yaac` CLI uses it. */
 async function api(pathname, body) {
   const res = await fetch(`${origin}${pathname}`, {
     ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }),
@@ -94,10 +83,8 @@ function check(name, cond, detail = '') {
 }
 
 /**
- * The sidebar as the reader sees it: the group's section by aria-label, its
- * rows, and every row in the list. Read in the page because "inside the
- * section" is a DOM containment question — a row at the top of the sidebar and
- * a row in the section read identically by text.
+ * The group's section (by aria-label), its rows, and every sidebar row.
+ * Read in the page, since containment cannot be told from text alone.
  */
 function sidebarShape(groupName) {
   const text = (el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
@@ -157,8 +144,7 @@ function report(label, samples) {
   const jumped = samples.filter((s) => (s.all ?? [])[0]?.startsWith('Restarting workspace'))
   check(`${label}: it never reaches the top of the sidebar`,
     jumped.length === 0, `${jumped.length}/${samples.length} frames on top`)
-  // Rows, not the section's own header — which is a `.group.relative` too, and
-  // counting it would let a section holding nothing but the live row pass.
+  // Rows only; the section header is also a `.group.relative`.
   const rowsOf = (s) => (s.section ?? []).filter((t) => !t.startsWith(GROUP))
   check(`${label}: the group holds both the placeholder and its live member`,
     samples.every((s) => rowsOf(s).length >= 2), JSON.stringify(rowsOf(samples[0])))
@@ -188,8 +174,7 @@ try {
   const openGhosts = async () => {
     const trigger = section.getByRole('button', { name: 'Group actions' }).first()
     await trigger.waitFor({ state: 'attached', timeout: 30_000 })
-    // The header, not the section: its centre is over a row, and the `…` is
-    // pointer-inert until the header itself is hovered.
+    // Hover the header: the `…` ignores the pointer until then.
     await section.locator('button[aria-expanded]').first().hover()
     await trigger.click()
     const show = page.getByRole('menuitem', { name: 'Show stopped workspaces' })
@@ -205,8 +190,7 @@ try {
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row')
   check('the stopped member is a ghost row in the group', true)
 
-  // The row actions are `pointer-events-none` until the row is hovered, and
-  // Playwright hit-tests before it moves the mouse — so hover the row first.
+  // Row actions ignore the pointer until the row is hovered.
   const ghost = section.locator('.group.relative').filter({ hasText: 'stopped' }).first()
   await ghost.hover()
   await ghost.locator('[aria-label="Restart workspace"]').click()
@@ -220,8 +204,8 @@ try {
   await api('/api/workspace/stop', { workspaceId: subject.workspaceId })
   await openGhosts()
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row again')
-  // Exactly what the webapp posts, minus the browser: projectSlug + tool, the
-  // pair that makes the route register the row before it resolves anything.
+  // What the webapp posts: projectSlug and tool, which make the route
+  // register the row first.
   const streamed = api('/api/workspace/restart', {
     workspaceId: subject.workspaceId, projectSlug: PROJECT, tool: subject.tool,
   }).then((res) => res.text())

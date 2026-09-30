@@ -7,56 +7,32 @@ import { containerlessWorkspacePaths } from './paths'
 import type { WorkspaceChanges } from '@yaac/shared/types'
 
 /**
- * Running a command inside a workspace, which on this substrate means
- * running it on the host in the workspace's checkout with the workspace's
- * environment.
- *
- * The environment matters more than it looks: it carries `HOME` (the
- * per-workspace home the tool configs are symlinked into) and the agent
- * credentials, so a command run without it would read the SERVER user's
- * configuration instead of the workspace's (see `workspaceRunEnvironment`).
+ * Running commands "inside" a workspace: on the host, in its checkout, with
+ * its environment. The environment carries the per-workspace `HOME` and
+ * agent credentials; without it a command would read the server user's
+ * config (see `workspaceRunEnvironment`).
  */
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
-/** See `WorkspaceDriver.exec`. */
+/** See `WorkspaceDriver.exec`. There is no transport to retry, so
+ *  `maxAttempts` does not apply. */
 export async function execInWorkspace(
   jobName: string,
   cmd: string,
-  opts?: { timeout?: number; maxAttempts?: number },
+  opts?: { timeout?: number },
 ): Promise<{ stdout: string; stderr: string }> {
-  const paths = containerlessWorkspacePaths(jobName)
-  const attempts = Math.max(1, opts?.maxAttempts ?? 1)
-  let lastErr: unknown
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await runHost(['sh', '-c', cmd], {
-        // The checkout may not exist yet on the very first setup command;
-        // falling back keeps that a command failure rather than a spawn one.
-        cwd: paths.workspaceDir,
-        env: workspaceRunEnvironment(jobName),
-        timeoutMs: opts?.timeout ?? DEFAULT_TIMEOUT_MS,
-      })
-    } catch (err) {
-      lastErr = err
-      // A retry is only ever for the transport, and there is no transport
-      // here worth retrying: a nonzero exit is a verdict about the
-      // workspace, and re-running the command would just repeat it.
-      break
-    }
-  }
-  throw lastErr
+  return await runHost(['sh', '-c', cmd], {
+    cwd: containerlessWorkspacePaths(jobName).workspaceDir,
+    env: workspaceRunEnvironment(jobName),
+    timeoutMs: opts?.timeout ?? DEFAULT_TIMEOUT_MS,
+  })
 }
 
-/**
- * One run at a time per workspace: the runs share a single index file, and
- * two overlapping `git add -A` calls would collide on its lock.
- */
+/** One run per workspace at a time: runs share one git index file. */
 const changesMutex = createKeyedMutex()
 
-/** See `WorkspaceDriver.changes`. Host git in the workspace's own checkout —
- *  there is no path translation to do, because the checkout the agent sees
- *  is the one the server made. */
+/** See `WorkspaceDriver.changes`. Runs host git in the checkout. */
 export function getWorkspaceChanges(
   jobName: string,
   base?: string,
@@ -76,14 +52,8 @@ export function getWorkspaceChanges(
   })
 }
 
-/**
- * See `WorkspaceDriver.awaitAgentTransport`. Poll until the workspace's tmux
- * server answers.
- *
- * There is no daemon between the server and the workspace here — the
- * transport IS the tmux socket — so this waits for the thing every later
- * command will address rather than for a separate relay to come up.
- */
+/** See `WorkspaceDriver.awaitAgentTransport`. Polls until the workspace's
+ *  tmux server answers, since there is no separate transport. */
 export async function awaitAgentTransport(
   jobName: string,
   opts?: { timeoutMs?: number },

@@ -2,10 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { buildApp } from '#main/server'
 import { asTailnet } from '@yaac/test-utils/api'
 
-// Drives the full middleware chain wired in buildApp (hostHeaderCheck →
-// denyBrowserCors → originHeaderCheck → fetchSiteCheck → identify) against
-// `/api/whoami`, exercising how the guards compose. Unit-level: buildApp needs
-// no cluster.
+// Drives buildApp's full middleware chain against `/api/whoami` to test how
+// the guards combine.
 describe('auth middleware chain (buildApp)', () => {
   afterEach(() => vi.unstubAllEnvs())
 

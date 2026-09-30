@@ -4,17 +4,14 @@ import { getProjectsDir, workspacesDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 
 /**
- * Move each project's checkouts from `worktrees/`, where an install from
- * before workspaces were named keeps them, to `workspaces/`, leaving
- * `worktrees` as a relative link to the new dir. The link is what keeps a
- * workspace launched before the upgrade working: its pod's mount, its cwd,
- * its recorded marker paths and the linked checkouts' git admin dirs all
- * spell the old path (docs/legacy-compat-shims.md).
+ * Move each project's legacy `worktrees/` dir to `workspaces/`, leaving
+ * `worktrees` as a relative link so workspaces launched before the upgrade
+ * keep working: their mounts, cwd, marker paths and git admin dirs use the
+ * old path (docs/legacy-compat-shims.md).
  *
- * The link is made first, beside the dir, and renamed into place last, so
- * a start that dies partway leaves either the dir (redone from scratch) or
- * the waiting link (moved in) — never a moved dir with no link. A project
- * it cannot move is logged and left, not fatal to the start.
+ * The link is created beside the dir and renamed into place last, so a start
+ * that dies partway never leaves a moved dir without its link. A project that
+ * can't be moved is logged and skipped.
  */
 export async function moveLegacyWorkspacesDirs(): Promise<void> {
   const root = getProjectsDir()

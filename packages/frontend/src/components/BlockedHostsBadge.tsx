@@ -5,11 +5,10 @@ import { BlockedIcon, ChevronIcon, LoadingIcon } from '#lib/icons'
 import { allowBlockedHost } from '#lib/blockedHostsApi'
 
 /**
- * Blocked-host count badge; clicking it opens a popover listing the hosts.
- * Each host row expands to two actions — allow it for just this running workspace,
- * or permanently for the project (persisted to yaac-config.json). Renders its
- * own <button>, so inside clickable rows mount it as an overlaid sibling (like
- * the sidebar row's actions menu), never nested in the row button.
+ * Blocked-host count badge that opens a popover listing the hosts. Each host
+ * can be allowed for this workspace or permanently for the project (saved to
+ * yaac-config.json). Renders its own <button>, so inside a clickable row mount
+ * it as an overlaid sibling, not nested in the row's button.
  */
 export function BlockedHostsBadge({
   hosts,
@@ -18,7 +17,7 @@ export function BlockedHostsBadge({
   className,
 }: {
   hosts: string[]
-  /** The workspace these hosts were blocked for — the target of the allow action. */
+  /** The workspace these hosts were blocked for. */
   workspaceId: string
   iconSize: number
   /** Positioning and the context-appropriate hover highlight for the trigger. */
@@ -26,7 +25,6 @@ export function BlockedHostsBadge({
 }): JSX.Element {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
-  // Rendered under the expanded row only, and cleared on any row toggle.
   const [error, setError] = useState<string | null>(null)
 
   async function allow(host: string, persist: boolean): Promise<void> {
@@ -34,8 +32,7 @@ export function BlockedHostsBadge({
     setError(null)
     try {
       await allowBlockedHost(workspaceId, host, { persist })
-      // The server pushes a fresh snapshot that drops the now-allowed host, so
-      // the row disappears on its own; just collapse it in the meantime.
+      // The next snapshot drops the allowed host from the list.
       setExpanded(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

@@ -1,14 +1,8 @@
 /**
- * Parses `SKILL.md` frontmatter — the YAML block between the leading `---`
- * fences — with the `yaml` library. Locating the fenced block is a simple text
- * split (what every frontmatter reader does); the block's contents are handed
- * to a real YAML parser rather than parsed by hand.
- *
- * Claude Code loads a skill even when its frontmatter is malformed (the body
- * still works, the metadata is just empty), so a parse error is swallowed:
- * malformed frontmatter degrades to an empty map plus the raw body, never a
- * throw. A frontmatter block that isn't a YAML mapping (a bare scalar or list)
- * is likewise treated as no metadata.
+ * Parses `SKILL.md` frontmatter (the YAML block between leading `---`
+ * fences). Claude Code loads a skill even with malformed frontmatter, so
+ * parse errors and non-mapping blocks yield empty metadata rather than a
+ * throw.
  */
 
 import { parse as parseYamlRaw } from 'yaml'
@@ -17,8 +11,8 @@ import { parse as parseYamlRaw } from 'yaml'
 const parseYaml = parseYamlRaw as (src: string) => unknown
 
 export interface ParsedSkillMd {
-  /** The frontmatter mapping — arbitrary YAML values (strings, numbers,
-   *  booleans, lists, nested maps like `metadata:`). Empty when absent/invalid. */
+  /** The frontmatter mapping (any YAML values). Empty when absent or
+   *  invalid. */
   frontmatter: Record<string, unknown>
   /** Markdown after the frontmatter block (or the whole input if none). */
   body: string
@@ -45,8 +39,8 @@ export function parseSkillMd(raw: string): ParsedSkillMd {
   return { frontmatter, body }
 }
 
-/** Stringify one YAML value for display: primitives directly, maps/arrays as
- *  JSON. Keeps `no-base-to-string` happy and never yields "[object Object]". */
+/** Stringify one YAML value for display: primitives directly, maps and
+ *  arrays as JSON (never "[object Object]"). */
 function stringify(v: unknown): string {
   if (v == null) return ''
   if (typeof v === 'string') return v

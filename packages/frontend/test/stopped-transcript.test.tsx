@@ -8,18 +8,15 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
 import type * as transcriptApiModule from '#lib/transcriptApi'
 
 /**
- * A stopped workspace's conversation, in the pane that used to show only the
- * question that started it.
- *
- * The fetch is mocked at the api module and the rendering is real, because the
- * thing worth holding here is what a reader is offered: the conversation when
- * there is one, which conversation when there are several, and the founding
- * ask when the tool left nothing readable behind.
+ * The stopped-workspace pane's conversation view. The fetch is mocked at the
+ * api module and rendering is real, so the tests check what the reader sees:
+ * the conversation, a picker when there are several, and the founding prompt
+ * when the tool left nothing readable.
  */
 
 vi.mock('#lib/transcriptApi', async (importOriginal) => ({
-  // The viewability predicate is a pure decision about a row, and the pane
-  // branches on it — mocking it would mock the behavior under test.
+  // Keep the real viewability predicate: the pane branches on it, so mocking
+  // it would mock the behavior under test.
   ...await importOriginal<typeof transcriptApiModule>(),
   getSessionTranscript: vi.fn(),
 }))
@@ -100,9 +97,8 @@ describe('StoppedTranscript', () => {
   })
 
   it('does not blame the tool for a workspace whose conversations are not listed yet', () => {
-    // The optimistic row of a workspace stopped a moment ago: its real
-    // conversations are still in flight, so "this tool keeps no history"
-    // would be both wrong and permanent-sounding.
+    // A workspace stopped a moment ago: its conversations are still loading,
+    // so "this tool keeps no history" would be wrong.
     renderPane({ sessions: [], prompt: 'what changed?' })
 
     expect(screen.getByText('what changed?')).toBeTruthy()
@@ -110,22 +106,20 @@ describe('StoppedTranscript', () => {
   })
 
   it('falls back to the founding ask when the server cannot produce a transcript', async () => {
-    // A 501 from a tool the server won't read, or a 404 from a server too old
-    // to serve the route at all: either way the pane degrades to what it
-    // always showed rather than to an error.
+    // A 501 (a tool the server won't read) or a 404 (a server too old for the
+    // route) falls back to the founding prompt rather than an error.
     vi.mocked(getSessionTranscript).mockResolvedValue(TRANSCRIPT_UNAVAILABLE)
     renderPane({ prompt: 'port it' })
 
     expect(await screen.findByText('port it')).toBeTruthy()
-    // ...but it must not blame claude, whose history this install can read
-    // perfectly well. Landing here for a viewable conversation means the
-    // server is too old to serve the route, which resolves on its own.
+    // ...but must not blame claude, whose history is readable. Landing here
+    // for a viewable conversation means the server is too old for the route.
     expect(screen.queryByText(/keeps its history inside the workspace/)).toBeNull()
   })
 
   it('passes on the server\'s reason when it refuses to show a conversation', async () => {
-    // A conversation too large to answer with is refused by name; a generic
-    // "could not be read" would leave the user with nothing to act on.
+    // A too-large conversation is refused with a specific reason; a generic
+    // "could not be read" would give the user nothing to act on.
     vi.mocked(getSessionTranscript).mockRejectedValue(
       new ServerError('TOO_LARGE', 'this conversation is 300 MB, past the 64 MB a transcript can be shown at'),
     )
@@ -141,11 +135,9 @@ describe('StoppedTranscript', () => {
   })
 
   it('shows an unanswered permission ask as one, without buttons that cannot work', async () => {
-    // A workspace can be stopped while its agent sits blocked on a question, so
-    // this is an ordinary thing to find in a transcript. There is no socket
-    // behind it any more, and a live-looking Allow that silently does nothing
-    // would be worse than saying plainly that the question outlived its
-    // conversation.
+    // A workspace can be stopped while its agent waits on a question. Nothing
+    // can answer it now, so the pane says so instead of showing an Allow
+    // button that does nothing.
     vi.mocked(getSessionTranscript).mockResolvedValue([
       {
         type: 'permission-request',
@@ -158,7 +150,7 @@ describe('StoppedTranscript', () => {
     renderPane()
 
     expect(await screen.findByText(/never answered/i)).toBeTruthy()
-    // The call is still shown — it is what the question was about.
+    // The tool call the question was about is still shown.
     expect(screen.getByText('rm -rf build')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Allow Once' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()

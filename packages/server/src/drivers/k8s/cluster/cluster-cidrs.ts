@@ -3,20 +3,11 @@ import { env } from '@yaac/shared/env'
 import { serverLog } from '#log'
 
 /**
- * The CIDR literals the policies need.
- *
- * Plain NetworkPolicy can name pods and namespaces by label, but it has
- * no way to say "the node's network namespace" or "the apiserver" — its
- * only non-selector peer is `ipBlock`. That matters here: netd's Envoy
- * delivers redirected egress from the host netns, so the node's addresses
- * become concrete ones, resolved at apply time. Keeping the resolution in one module
- * (rather than inline in each ensure function) is what stops the policies
- * from disagreeing about what "the node" is.
- *
- * Everything is `/32`: the node set and the apiserver endpoint set are
- * both small and enumerable, and a wider block would silently admit
- * anything else sharing the subnet — on the local backend that subnet is
- * the podman network, which also hosts the registry container.
+ * CIDR literals for the network policies and netd. NetworkPolicy can only
+ * name the node's network namespace (where netd's Envoy delivers from) by
+ * `ipBlock`, so node addresses are resolved here, in one place. Node
+ * addresses are `/32`s: a wider block would admit everything on the subnet,
+ * including the registry container on the local podman network.
  */
 
 interface RawNodeList {
@@ -27,10 +18,8 @@ interface RawNodeList {
 }
 
 /**
- * Calico publishes each node's overlay tunnel address as a node
- * annotation. Host-originated traffic to a pod on ANOTHER node leaves
- * through the tunnel and is sourced from that address, not the node's
- * InternalIP — so a policy naming only InternalIPs denies it.
+ * Node annotations holding Calico's tunnel address. Host traffic to a pod on
+ * another node is sourced from it, not the InternalIP.
  */
 const CALICO_TUNNEL_ANNOTATIONS = [
   'projectcalico.org/IPv4IPIPTunnelAddr',
@@ -57,15 +46,10 @@ export function resetClusterCidrCache(): void {
 }
 
 /**
- * Every node's InternalIP as a `/32` — how the policies name the host
- * network namespace. Three flows arrive from there: netd's Envoy dialing
- * the proxy, the kubelet's readiness probes, and containerd pulling from
- * a project registry.
- *
- * Throws when no address resolves rather than returning an empty list: an
- * empty `ipBlock` set would render a policy that silently denies the
- * redirect delivery path, which presents as "all workspaces lost egress"
- * with no obvious cause.
+ * Every node's InternalIP (and Calico tunnel address) as a `/32`: how the
+ * policies admit traffic from the host netns (netd's Envoy, kubelet probes,
+ * containerd pulls). Throws if none resolve, since an empty set would
+ * silently cut off all workspace egress.
  */
 export async function nodeIpBlocks(): Promise<string[]> {
   if (nodeCidrCache) return nodeCidrCache
@@ -75,10 +59,7 @@ export async function nodeIpBlocks(): Promise<string[]> {
     .flatMap((n) => n.status?.addresses ?? [])
     .filter((a) => a.type === 'InternalIP' && a.address)
     .map((a) => `${a.address!}/32`)
-  // Plus each node's overlay tunnel address: on a multi-node cluster the
-  // host netns reaches a pod on another node through the tunnel, and the
-  // packet arrives sourced from there. Same-node delivery keeps working
-  // off the InternalIP above, which is why this only shows up multi-node.
+  // Tunnel addresses matter only on multi-node clusters.
   const tunnels = items.flatMap((n) =>
     CALICO_TUNNEL_ANNOTATIONS
       .map((key) => n.metadata?.annotations?.[key])
@@ -99,14 +80,8 @@ export async function nodeIpBlocks(): Promise<string[]> {
 export const FALLBACK_POD_CIDR = '10.244.0.0/16'
 
 /**
- * A dotted-quad CIDR, which is all the v4 nat rules can express — with
- * every octet and the mask actually in range.
- *
- * The range check is not pedantry: these strings become `-d <cidr>` in the
- * `iptables-restore` document netd applies, and `iptables-restore` rejects
- * the WHOLE document on one bad line. A `999.1.1.1/99` that reached the
- * renderer would stall every redirect update on the node, not just its own
- * rule.
+ * A valid IPv4 CIDR. Range-checked because one bad line makes
+ * `iptables-restore` reject netd's whole rule set.
  */
 function isIpv4Cidr(value: string): boolean {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(value)
@@ -119,49 +94,31 @@ function normalize(cidrs: string[]): string[] {
   return [...new Set(cidrs.filter(isIpv4Cidr))].sort()
 }
 
-/** The entries `normalize` would throw away — what the caller must report. */
+/** The entries `normalize` drops, for the caller to report. */
 function rejected(cidrs: string[]): string[] {
   return [...new Set(cidrs.filter((c) => !isIpv4Cidr(c)))].sort()
 }
 
 /**
- * Every CIDR the cluster allocates pod IPs from — netd's exclusion list,
- * which is what keeps pod-to-pod traffic out of the redirect.
+ * Every CIDR pods get IPs from: netd's exclusion list, which keeps
+ * pod-to-pod traffic out of the redirect. A list that is too narrow is the
+ * dangerous case (pod-to-pod 443/80 would go to the proxy), so all sources
+ * are unioned:
  *
- * Sourced in preference order, because no single source is right
- * everywhere:
- *
- *  0. **Explicit config** (`YAAC_POD_CIDRS`). For a cluster yaac did not
- *     build, whose IPAM publishes its allocations nowhere the two sources
- *     below can read: an AWS VPC CNI hands out VPC subnet addresses that
- *     appear in no IPPool and no `spec.podCIDR`. Named first because it is
- *     the only source an operator controls, but it ADDS rather than
- *     overrides — see the too-narrow note below.
- *  1. **Calico IPPools**, including `disabled` ones — that flag stops new
- *     allocations, not existing ones. The authority wherever Calico does
- *     the IPAM, which is every cluster `yaac cluster install` builds. Calico
- *     allocates /26 blocks from anywhere in its pool, so a pod's IP
- *     routinely falls outside its own node's `spec.podCIDR` — that field
- *     describes the kubeadm allocation Calico is not using.
- *  2. **`spec.podCIDR` across ALL nodes.** For clusters whose CNI does use
- *     the kubeadm per-node allocation. Every node, not the first one: on a
- *     multi-node cluster each holds a different slice.
- *  3. **kind's default.** Only when nothing above answers, which no
- *     cluster yaac installs into leaves true.
- *
- * Too NARROW is the dangerous direction — a pod IP outside the list is
- * treated as world and its pod-to-pod 443/80 gets redirected into the
- * proxy — so this unions its sources rather than picking a winner, and
- * never widens a CIDR it was given.
+ *  - `YAAC_POD_CIDRS`, for clusters whose IPAM publishes nothing readable
+ *    (e.g. AWS VPC CNI).
+ *  - Calico IPPools, including disabled ones (which still hold live IPs).
+ *    Calico is the IPAM on every cluster yaac builds, and its IPs often
+ *    fall outside the node's `spec.podCIDR`.
+ *  - `spec.podCIDR` of every node, for CNIs that use it.
+ *  - kind's default, only if nothing else answers.
  */
 export async function clusterPodCidrs(): Promise<string[]> {
   if (podCidrCache) return podCidrCache
   const { configured, pools, nodes, droppedConfigured } = await podCidrSources()
   if (droppedConfigured.length > 0) {
-    // The adopt gate refuses on these; here — the per-apply path on a
-    // running server — the redirect still has to be programmed, so this is
-    // the loudest available signal that the exclusion set is narrower than
-    // what was configured.
+    // `--byo` refuses on these; here the redirect must still be applied,
+    // so log loudly.
     serverLog(
       `[netd] ignoring unusable YAAC_POD_CIDRS entries: ${droppedConfigured.join(', ')} `
       + '— pods addressed from them will be treated as world and redirected',
@@ -173,41 +130,27 @@ export async function clusterPodCidrs(): Promise<string[]> {
 }
 
 /**
- * The three sources above, kept apart and unnormalized-into-one.
- *
- * `clusterPodCidrs` unions them; the `--byo` gate needs to know
- * WHICH answered, because "only node spec.podCIDR answered" on a cluster
- * yaac did not build is the shape where the exclusion set is most likely
- * too narrow — and too narrow means pod-to-pod 443/80 gets redirected into
- * the proxy. Uncached on purpose: this runs once per adoption, and the
- * cache exists for the per-apply path.
+ * The pod CIDR sources, kept separate for the `--byo` gate, which needs to
+ * know which answered (only `spec.podCIDR` on a foreign cluster suggests
+ * the list is too narrow). Uncached; it runs once per adoption.
  */
 export async function podCidrSources(): Promise<{
   configured: string[]
   pools: string[]
   nodes: string[]
-  /**
-   * `YAAC_POD_CIDRS` entries that are not a usable v4 CIDR. Reported, never
-   * merely dropped: a typo'd entry that vanishes leaves the exclusion set
-   * NARROWER than the operator believes it set, which is the dangerous
-   * direction — the pods in that range get redirected into the proxy.
-   */
+  /** Invalid `YAAC_POD_CIDRS` entries, reported so a typo does not
+   *  silently narrow the exclusion set. */
   droppedConfigured: string[]
-  /**
-   * Sources whose read FAILED for a reason other than genuine absence —
-   * an RBAC denial scoped to `ippools` alone, say, which would otherwise
-   * present as "Calico publishes no pool" and silently narrow the set.
-   * Absence stays a fact: a cluster without Calico serves no IPPool CRD,
-   * and that is a source that does not exist rather than one we could not
-   * read. `--byo` refuses on anything listed here.
-   */
+  /** Sources whose read failed for a reason other than not existing (e.g.
+   *  RBAC denial), which would otherwise silently narrow the set. `--byo`
+   *  refuses on these. */
   unreadable: Array<{ source: string; cause: string }>
 }> {
   const configured = normalize(env.podCidrs)
   const droppedConfigured = rejected(env.podCidrs)
   const unreadable: Array<{ source: string; cause: string }> = []
 
-  /** A source read, distinguishing "not served" from "could not ask". */
+  /** Read a source, telling "not served" from "could not read". */
   const read = async <T>(source: string, args: string[]): Promise<T | null> => {
     try {
       return await kubectlGetJson<T>(args)
@@ -219,16 +162,11 @@ export async function podCidrSources(): Promise<{
     }
   }
 
-  // `ippools` is a Calico CRD; on a cluster without Calico it is not served
-  // at all, which is a missing source and not an error.
+  // Not served at all on a cluster without Calico.
   const pools = await read<RawIpPoolList>(
     'Calico IPPools', ['get', 'ippools.crd.projectcalico.org'],
   )
-  // Disabled pools count. `disabled: true` stops NEW allocations; every pod
-  // already holding an address from that pool keeps it, so a cluster
-  // adopted mid-pool-migration still has live pod IPs in there. Excluding
-  // them from the redirect is what the list is for, and a pool that is
-  // disabled and fully drained costs nothing but a RETURN rule.
+  // Disabled pools included: existing pods keep their addresses.
   const poolCidrs = normalize((pools?.items ?? []).map((p) => p.spec?.cidr ?? ''))
 
   const nodes = await read<RawPodCidrNodeList>('node spec.podCIDR', ['get', 'nodes'])

@@ -7,8 +7,8 @@ export interface WorkspaceMonitorOptions {
 export async function workspaceMonitor(projectSlug?: string, options: WorkspaceMonitorOptions = {}): Promise<void> {
   const intervalSec = Math.max(1, parseInt(options.interval ?? '5', 10))
 
-  // Swallow all keyboard input so typed characters don't corrupt the display.
-  // Ctrl+C still exits because we handle it explicitly.
+  // Swallow keyboard input so it doesn't corrupt the display. Raw mode
+  // disables the default Ctrl+C, so handle it here.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true)
     process.stdin.resume()
@@ -17,15 +17,14 @@ export async function workspaceMonitor(projectSlug?: string, options: WorkspaceM
     })
   }
 
-  // Clear the screen once on startup, then overwrite in place
+  // Clear once, then redraw in place each tick to avoid flashing.
   process.stdout.write('\x1B[2J')
 
   while (true) {
-    // Move cursor to top-left without clearing (avoids flash)
     process.stdout.write('\x1B[H')
 
-    // Wrap stdout.write so every newline also erases to end-of-line first.
-    // Without this, shorter lines leave stale characters from the previous render.
+    // Erase to end of line before each newline so shorter lines don't leave
+    // stale characters from the previous render.
     const origWrite = process.stdout.write.bind(process.stdout)
     process.stdout.write = function (this: NodeJS.WriteStream, str: string | Uint8Array, ...rest: never[]) {
       if (typeof str === 'string') {
@@ -42,7 +41,7 @@ export async function workspaceMonitor(projectSlug?: string, options: WorkspaceM
       process.stdout.write = origWrite
     }
 
-    // Clear from cursor to end of screen (remove stale lines from previous render)
+    // Clear any leftover lines below.
     process.stdout.write('\x1B[J')
 
     await new Promise((resolve) => setTimeout(resolve, intervalSec * 1000))

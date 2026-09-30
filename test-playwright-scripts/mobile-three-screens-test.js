@@ -7,25 +7,16 @@
  *  1. The desktop rail and sidebar are gone; a projects list is the root view.
  *  2. Tapping a project shows its workspace list; tapping a workspace shows the
  *     pane. Both back chevrons (and the browser's own back button) unwind it.
- *  3. All three screens stay MOUNTED the whole time — only one is visible.
- *     This is the load-bearing one: WorkspaceView positions its terminals by
- *     measured pixels, so an unmounted or display:none pane would collapse
- *     every rect to zero and cost a resize round-trip to the pod on return.
- *     Asserted by measuring the hidden pane layer's box (non-zero, full
- *     viewport) while another screen is showing.
+ *  3. All three screens stay mounted and full size, with only one visible.
+ *     WorkspaceView sizes terminals from measured pixels, so a collapsed
+ *     pane would force a resize on return.
  *  4. The pane is in tabs mode with the accessory key bar (esc/tab/^C/arrows)
- *     under it, and the workspace-row actions (pin, delete) are visible without
- *     a hover, which touch cannot produce.
- *  5. Widening back to 1400px restores the desktop three-column layout with
- *     the same pane element still mounted (a phone rotating into landscape
- *     must not tear down its terminals).
+ *     below it, and row actions (pin, delete) show without hover.
+ *  5. Widening to 1400px restores the desktop layout with the same pane
+ *     element still mounted (rotating to landscape keeps the terminals).
  *
- * jsdom can't answer any of this — it has no layout — so this script is the
- * only real check on the mobile shell's geometry.
- *
- * Drives the Vite dev server (`pnpm frontend:dev`, port 1420), which serves
- * live source and proxies /auth,/project,/events,... to the running yaac
- * server. Loopback needs no credential.
+ * Uses the Vite dev server (`pnpm frontend:dev`, port 1420), which proxies
+ * API calls to the running yaac server.
  *
  * Run: node test-playwright-scripts/mobile-three-screens-test.js
  * (set SCREENSHOT_DIR to capture each screen; defaults to /tmp/yaac-shots).
@@ -64,8 +55,10 @@ const APP_URL = process.env.APP_URL ?? 'http://localhost:1420'
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const PHONE = { width: 390, height: 844 }
 
-/** Measure every stacked screen layer: which is visible, and how big its box
- *  is (a hidden-but-mounted layer must still measure full-viewport). */
+/**
+ * Measure every stacked screen layer: whether it is visible, and its size
+ * (a hidden layer must still be full viewport size).
+ */
 function layerReport() {
   return () => {
     const shell = document.querySelector('#root > div > div > div')
@@ -95,19 +88,15 @@ try {
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
   await page.goto(`${APP_URL}/`)
-  // Model a genuine cold load: no persisted screen *and* a bare URL. Both
-  // matter — persistSelection mirrors the selection into the query string on
-  // every change, and with nothing persisted a `?workspace=` reads as a shared
-  // link and correctly opens the pane. Reloading in place would race that
-  // mirror and make the next check flap.
+  // A cold load: nothing persisted and a bare URL. A leftover
+  // `?workspace=` would open the pane as a shared link would.
   await page.evaluate(() => localStorage.removeItem('yaac.mobilescreen.v1'))
   await page.goto(`${APP_URL}/`)
   await page.waitForTimeout(4000)
 
   // ---- 1. projects screen is the root, and the desktop chrome is gone ----
   check('no desktop sidebar at phone width', await page.locator('aside').count() === 0)
-  // The projects screen is layer 0; scope every query to it so the two hidden
-  // layers behind it can't answer for it.
+  // Scope queries to layer 0 so the hidden layers cannot match.
   const shell = page.locator('#root > div > div > div')
   const projectsLayer = shell.locator('> div').nth(0)
   const addProject = projectsLayer.getByText('Add project', { exact: true })
@@ -142,13 +131,10 @@ try {
     await page.getByLabel('Back to projects').isVisible(), projectName)
   await page.screenshot({ path: path.join(SHOTS, 'mobile-2-workspaces.png') })
 
-  // Row actions must be reachable with no hover.
   const workspacesLayer = shell.locator('> div').nth(1)
   const pin = workspacesLayer.getByLabel('Move to background').first()
   const del = workspacesLayer.getByLabel('Stop workspace').first()
-  // Wait for the list to actually settle before deciding whether this env has
-  // workspaces — the snapshot arrives over the events socket, and a fixed sleep
-  // silently downgrades the whole pane section to "skipped" when it's slow.
+  // Wait for the snapshot before deciding whether any workspace exists.
   await Promise.race([
     del.waitFor({ state: 'visible', timeout: 20_000 }),
     workspacesLayer.getByText('No workspaces yet').waitFor({ state: 'visible', timeout: 20_000 }),
@@ -167,9 +153,7 @@ try {
 
   // ---- 3. tap a workspace -> the pane ----
   if (hasRows) {
-    // A *live* workspace row — the one carrying a delete action. Provisioning
-    // rows render above the sections and would open the placeholder overlay
-    // instead of the pane.
+    // A live workspace row (it has a delete action), not a provisioning row.
     await workspacesLayer
       .locator('.group.relative.mx-2:has([aria-label="Stop workspace"]) > button')
       .first().tap()

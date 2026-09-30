@@ -7,14 +7,10 @@ import { testEnv } from '#env'
 const BUILD_ID_FILENAME = '.build-id'
 
 /**
- * Top-level dist/ dirs that are runtime-READ data, not server code: the
- * server re-reads dockerfiles on every image-chain resolution and k8s/
- * image build contexts on every build, so a running server picks up
- * edits to them with no restart. Excluded from the buildId so a
- * dockerfile-only rebuild doesn't read as a version mismatch — `pnpm
- * watch` would otherwise bounce the server on every Dockerfile save,
- * severing in-flight workspace creates (each one's k8s Job survives as a
- * half-provisioned zombie pod).
+ * Top-level dist/ dirs the server re-reads at runtime rather than code, so
+ * a running server picks up edits without a restart. Excluded from the
+ * build id so editing a Dockerfile does not make `pnpm watch` restart the
+ * server mid-create.
  */
 const RUNTIME_DATA_DIRS = new Set(['dockerfiles', 'k8s'])
 
@@ -23,16 +19,12 @@ export function buildIdPath(rootDir: string = PACKAGE_ROOT): string {
 }
 
 /**
- * Recursive content hash of the code shipped in `rootDir`. Used to
- * detect a server running from a different install than the CLI that's
- * trying to talk to it: the build script writes this into
- * `dist/.build-id`, the server echoes it into `.server.lock`, and the
- * CLI respawns the server on mismatch.
+ * Content hash of the code in `rootDir`, used to detect a server running a
+ * different build than the CLI. The build writes it to `dist/.build-id`,
+ * and the server reports it in its lock and response headers.
  *
- * Must be deterministic across machines and filesystems, so entries are
- * sorted by POSIX-style relpath. The `.build-id` file itself is
- * excluded — otherwise writing the hash would invalidate it — as are
- * the `RUNTIME_DATA_DIRS`, which don't affect server behavior.
+ * Entries are sorted by POSIX relative path so the hash is the same on
+ * every machine. Skips `.build-id` itself and {@link RUNTIME_DATA_DIRS}.
  */
 export async function computeBuildId(rootDir: string): Promise<string> {
   const entries: Array<{ rel: string; hash: string }> = []
@@ -72,17 +64,9 @@ async function collect(
 }
 
 /**
- * Read the build-id written by `scripts/write-build-id.ts`. Resolves
- * relative to `PACKAGE_ROOT` which in bundled builds is `dist/`.
- *
- * Honors `YAAC_BUILD_ID` as a test-injection override (matches the
- * `YAAC_SERVER_URL` pattern used elsewhere) so
- * that tests running directly from source — where no `dist/.build-id`
- * exists — can still exercise the server startup path. Production
- * never sets this var.
- *
- * Throws if the file is missing or empty — a broken install should
- * fail loudly rather than silently letting a stale server keep running.
+ * Read the build id written by `scripts/write-build-id.ts`, or
+ * `YAAC_BUILD_ID` when set (tests running from source have no
+ * `.build-id`). Throws if the file is missing or empty.
  */
 export async function readBuildId(rootDir: string = PACKAGE_ROOT): Promise<string> {
   const envOverride = testEnv.buildIdOverride

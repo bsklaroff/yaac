@@ -53,7 +53,8 @@ describe('convertLinkedCheckouts', () => {
     await convertLinkedCheckouts()
     expect(await isClone(STOPPED)).toBe(true)
     expect(await isClone(RUNNING)).toBe(false)
-    // The running one still owns an admin dir, so the main clone stays as is.
+    // The running workspace still has an admin dir, so the main clone is
+    // left as is.
     expect(await fs.readdir(admins)).toEqual([RUNNING])
 
     installFakeWorkspaceDriver({ list: () => Promise.resolve([]) })

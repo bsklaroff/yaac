@@ -15,11 +15,10 @@ import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
 
 /**
- * `yaac auth server` lifecycle. The auth server is a pure outbound
- * client: no listening socket, just a pid lock, one WebSocket to the
- * main server, and the local vendor login/install subprocesses. Its one
- * write path is `PUT /auth/:tool` — captured credentials always travel
- * over the authenticated RPC channel, never through the relay socket.
+ * `yaac auth server` lifecycle. The auth server only makes outbound
+ * connections: it holds a pid lock, one WebSocket to the yaac server, and the
+ * local vendor login/install subprocesses. Captured credentials are sent with
+ * the authenticated `PUT /auth/:tool` call, never over the relay socket.
  */
 
 function log(line: string): void {
@@ -34,13 +33,11 @@ export async function runAuthDaemon(): Promise<void> {
     return
   }
 
-  // Pure client: the broker repairs nothing on a version mismatch and only
-  // needs the server to be live — and when the desktop .app spawns us, our
-  // build id may legitimately differ from the running server's.
+  // No version check: when the desktop app spawns this daemon, its build id
+  // may differ from the server's.
   const target = await resolveServerTarget()
 
-  // Completed logins land on the (possibly remote) main server, not on
-  // this machine's data dir.
+  // Completed logins are saved on the (possibly remote) server.
   setToolLoginPersistence(async (tool, result) => {
     const client = getApiClient()
     await client.auth[':tool'].$put({
@@ -49,13 +46,9 @@ export async function runAuthDaemon(): Promise<void> {
     })
   })
 
-  // The other thing this machine knows that the server cannot: who the user
-  // is, per their git config. Seeded here because the auth server is what
-  // runs on a laptop even when the CLI is not being used — the desktop app
-  // starts it — so a webapp-only user still gets an
-  // identity without typing one. Never overwrites (see the helper), and
-  // never fatal: a server that already has one, or a machine with no git
-  // config, are both ordinary.
+  // Seed the server's git identity from this machine's git config. The
+  // desktop app starts the auth server, so webapp-only users get one too.
+  // Never overwrites an existing identity, and failure is not fatal.
   try {
     const identity = await seedGitIdentityFromShell()
     if (identity) log(`git identity: ${identity.name} <${identity.email}>`)
@@ -71,7 +64,7 @@ export async function runAuthDaemon(): Promise<void> {
   const shutdown = (signal: string): void => {
     log(`${signal} — shutting down`)
     connection.stop()
-    // Kill any in-flight vendor CLIs so they don't outlive the broker.
+    // Kill in-flight vendor CLIs so they don't outlive the daemon.
     killAllToolLogins()
     killAllToolInstalls()
     void removeAuthDaemonLock().finally(() => process.exit(0))
@@ -79,7 +72,6 @@ export async function runAuthDaemon(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'))
   process.on('SIGINT', () => shutdown('SIGINT'))
 
-  // Keep the process alive: the WebSocket and timers do the work.
   await new Promise<void>(() => { /* runs until signalled */ })
 }
 
@@ -91,14 +83,8 @@ export async function startAuthDaemon(): Promise<void> {
     return
   }
   await spawnAuthDaemonDetached()
-  // The daemon writes its lock only after a full process boot (from source, a
-  // cold tsx transpile of the dependency tree) plus the `resolveServerTarget()`
-  // round-trip — ~6s from spawn on an idle machine, and more under load. The
-  // old 5s budget sat under that, so this reported failure while a perfectly
-  // healthy daemon was still starting: the lock landed ~1s AFTER the throw,
-  // leaving a running auth server behind a nonzero exit. Waiting longer is
-  // free in the success path (the loop returns the moment the lock appears);
-  // it only delays reporting a daemon that genuinely never starts.
+  // The lock appears only after a full boot (a cold tsx transpile when run
+  // from source) plus the server round-trip, about 6s or more under load.
   const startTimeoutMs = AUTH_DAEMON_BOOT_TIMEOUT_MS
   const deadline = Date.now() + startTimeoutMs
   while (Date.now() < deadline) {
@@ -142,7 +128,7 @@ export async function statusAuthDaemon(): Promise<void> {
   }
   console.log(`auth server: running (pid ${lock.pid})`)
   console.log(`target:      ${lock.baseUrl}`)
-  // The authoritative "connected" signal lives on the main server.
+  // Only the server knows whether the daemon's socket is connected.
   try {
     const target = await resolveServerTarget()
     const res = await fetch(`${target.baseUrl}/api/auth/agent`, { signal: AbortSignal.timeout(3000) })

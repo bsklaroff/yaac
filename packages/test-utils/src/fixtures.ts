@@ -4,9 +4,8 @@ import { fileURLToPath } from 'node:url'
 const dir = path.dirname(fileURLToPath(import.meta.url))
 
 /**
- * Absolute paths to the fake vendor CLIs used to drive tool login/install
- * flows in tests, resolved relative to this package so callers don't hardcode
- * `__dirname` walks that break when a test file moves.
+ * Absolute paths to the fake vendor CLIs that drive tool login/install flows
+ * in tests.
  */
 export const CLAUDE_STUB = path.join(dir, 'fake-claude-login.cjs')
 export const CODEX_STUB = path.join(dir, 'fake-codex-login.cjs')

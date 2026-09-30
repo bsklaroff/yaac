@@ -9,10 +9,10 @@ export interface ConfigGitIdentityOptions {
  * `yaac config git-identity`: print the git identity the server's workspaces
  * commit under, or set it with `--name` and `--email`.
  *
- * It is a server setting, so this edits the server's answer, never this
- * machine's git config. The auth server seeds it from that config when it
- * starts; this is how to set it without one — a server driven only from a
- * shell, or a fake identity for a test install.
+ * This is a server setting; it never touches this machine's git config. The
+ * auth daemon seeds it from the local git config when it starts, so this
+ * command is for servers without one (driven only from a shell, or a test
+ * install that wants a fake identity).
  */
 export async function configGitIdentity(options: ConfigGitIdentityOptions): Promise<void> {
   const { name, email } = options

@@ -19,9 +19,8 @@ vi.mock('#runtime/agents/agent-tools', async (importOriginal) => {
   }
 })
 
-// The join under test reads the recorded rows alongside the real
-// observation half, so the leaf mocks above drive it end to end — only the
-// substrate is stubbed.
+// Only the substrate and first-message lookup are stubbed; the listing joins
+// real rows with the real status store.
 import { listWorkspacePods, type PodInfo } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import type * as agentToolsModule from '#runtime/agents/agent-tools'
@@ -79,7 +78,7 @@ describe('listActiveWorkspaces waitingSinceMs (store projection)', () => {
     expect(first.workspaces[0].status).toBe('waiting')
     expect(first.workspaces[0].waitingSinceMs).toBe(1_000)
 
-    // Time moves on; the spell (and the projected stamp) does not.
+    // The waiting stamp stays at when the wait began.
     vi.setSystemTime(60_000)
     const second = await listFresh()
     expect(second.workspaces[0].waitingSinceMs).toBe(1_000)

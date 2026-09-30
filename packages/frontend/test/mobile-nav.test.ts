@@ -10,10 +10,9 @@ beforeEach(() => {
 })
 
 /**
- * The mobile shell's navigation contract. The regression this whole design
- * exists to prevent is the auto-select one: App fills the pane on the user's
- * behalf the moment a project has a workspace, and if that counted as
- * navigation, opening a project would fling you straight past its list.
+ * Mobile screen navigation. App auto-selects a workspace when a project
+ * opens; that must not count as navigation, or opening a project would skip
+ * its workspace list.
  */
 describe('mobile screen navigation', () => {
   it('a project tap moves to that project’s workspace list', () => {
@@ -92,9 +91,8 @@ describe('mobile screen persistence', () => {
   })
 
   it('lets a stored screen win over the URL, which every visit mirrors into', () => {
-    // persistSelection puts the selection in the query string on every change,
-    // so after any use the params are always there — on their own they would
-    // drag every reload back to the pane.
+    // The URL always has the params after any use, so a saved screen must
+    // win over them.
     persistMobileScreen('workspaces')
     window.history.replaceState({}, '', '/?project=p&workspace=s1')
     expect(loadMobileScreen()).toBe('workspaces')

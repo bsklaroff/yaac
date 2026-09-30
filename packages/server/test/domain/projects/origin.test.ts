@@ -12,10 +12,10 @@ import { fetchProjectOrigin, refreshProjectOrigins } from '#domain/projects'
 import { execFileAsync } from '#lib/shell'
 
 /**
- * A project whose remote is a repo on this disk, one running workspace whose
- * checkout is a real clone of the main clone, and a driver whose `exec` runs
- * the in-workspace command as a host shell in that checkout — what it is for
- * a host workspace.
+ * Fixture: a project whose remote is a local repo, one running workspace
+ * whose checkout is a real clone of the main clone, and a driver whose `exec`
+ * runs the command in a host shell in that checkout, as it does for a
+ * containerless workspace.
  */
 
 let tmp: string
@@ -67,7 +67,7 @@ describe('refreshProjectOrigins', () => {
       expect(await tip(workspaceDir(SLUG, WT), 'origin/main')).toBe(await tip(source, 'main'))
     }, { timeout: 10_000, interval: 50 })
 
-    // Fetched just now: the next pass leaves it be.
+    // Fetched moments ago, so the next pass skips it.
     await commit('too soon')
     await refreshProjectOrigins(snapshotFixture([running]))
     await new Promise((r) => setTimeout(r, 300))
@@ -86,7 +86,7 @@ describe('fetchProjectOrigin', () => {
       expect(await tip(workspaceDir(SLUG, WT), 'origin/main')).toBe(await tip(source, 'main'))
     }, { timeout: 10_000, interval: 50 })
     await new Promise((r) => setTimeout(r, 300))
-    // One workspace, at most two rounds however many fetches asked.
+    // The burst coalesces into at most two rounds.
     expect(execs.length).toBeGreaterThanOrEqual(1)
     expect(execs.length).toBeLessThanOrEqual(2)
   })

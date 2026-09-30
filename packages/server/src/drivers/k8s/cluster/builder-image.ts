@@ -5,18 +5,11 @@ import {
 import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
 
 /**
- * Digest-pinned upstream image the sandboxed builder pods run — podman +
- * coreutils, mirrored into the local registry like the cluster's other
- * pinned upstreams (the digest IS the pin; no content-hash tag). Pinned
- * near the workspace engines' podman major so store metadata stays
- * compatible. Never the workspace's own image: its binaries are
- * user-customizable and must not run yaac-driven builds.
- *
- * It sits here rather than beside the builder pods it runs because the
- * mirroring is install-time substrate work — the same shape as registry:2,
- * Envoy and the gVisor installer's curl — while the pods themselves are a
- * server-side feature (#drivers/k8s/images) that only ever looks the tag
- * up.
+ * The digest-pinned podman image the sandboxed builder pods run, mirrored
+ * into the local registry at install like the other pinned upstreams. Its
+ * podman version tracks the workspace engines' so store metadata stays
+ * compatible. Never the workspace's own image, whose binaries the user
+ * controls. The builder pods themselves are in `#drivers/k8s/images`.
  */
 export const BUILDER_UPSTREAM_IMAGE =
   'quay.io/podman/stable@sha256:25d49cf990843962043942db172c7ef5c6f85012384aada7976aec65906ae209'

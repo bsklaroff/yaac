@@ -32,8 +32,7 @@ async function readOverlay(): Promise<YaacConfig> {
   return JSON.parse(await fs.readFile(overlayPath(), 'utf8')) as YaacConfig
 }
 
-/** Seed the stored overlay directly, bypassing the validating writer — the
- *  starting state each read-modify-write case builds on. */
+/** Seed the stored overlay directly, bypassing the validating writer. */
 async function seedOverlay(raw: string): Promise<void> {
   await fs.mkdir(projectConfigDir(slug), { recursive: true })
   await fs.writeFile(overlayPath(), raw)

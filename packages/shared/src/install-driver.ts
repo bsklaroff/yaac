@@ -2,21 +2,10 @@ import { readServerConfig } from '#server-config'
 import type { DriverKind } from '#types'
 
 /**
- * Which substrate this data dir runs, as recorded by whichever side stood
- * the server up (`registerServer` in `#server-config`, called by `yaac
- * server start` and by `yaac cluster install`).
- *
- * CLIENT-LOCAL: the choice belongs to this install, not to a project, and
- * it is not something a workspace's state should carry — and the only
- * process that has to ACT on it is a client, which is why it may not live
- * where a k8s server (a pod) would be the one holding it.
- *
- * Recorded rather than derived because the answer decides what a CLIENT
- * should do about a server it cannot reach — a containerless install can be
- * started (`yaac server start`), while a k8s one has to be converged (`yaac
- * cluster install`), and spawning a host process against a k8s data dir is
- * precisely the wrong move. The desktop shell asks this, and it may import
- * nothing but `@yaac/shared`.
+ * The substrate this data dir's install runs, as recorded in `server.json`
+ * by `yaac server start` or `yaac cluster install` (`registerServer`).
+ * Clients use it to decide how to bring up an unreachable server: start a
+ * host process (containerless) or run `yaac cluster install` (k8s).
  */
 export async function recordedDriver(): Promise<DriverKind | undefined> {
   return (await readServerConfig())?.driver

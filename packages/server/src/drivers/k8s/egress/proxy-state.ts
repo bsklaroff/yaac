@@ -2,13 +2,12 @@ import { getActiveClusterCache } from '#drivers/k8s/substrate'
 import type { GitAuthFailure, RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**
- * What the proxy reports, read off the `ClusterCache`'s watch-fed view of
- * the objects it writes: the blocked-host and git-auth-failure records in
- * `yaac-proxy-state`, and the OAuth rotations it captured in
- * `yaac-proxy-refreshed`. Synchronous reads of a cache the informer keeps
- * current; the delta on either is what notifies the snapshot or dirties
- * the pass (`k8s/lifecycle.ts`). Empty outside a server, where no cache
- * runs — exactly what a runtime that mediates no egress answers.
+ * Synchronous reads of what the proxy reports, taken from the
+ * `ClusterCache`'s watched copies of the objects it writes: blocked hosts
+ * and git auth failures in `yaac-proxy-state`, and captured OAuth rotations
+ * in `yaac-proxy-refreshed`. Changes to either are handled in
+ * `k8s/lifecycle.ts`. Outside a server no cache runs, so every read is
+ * empty.
  */
 
 /** The blocked hostnames the proxy has recorded for one workspace. */

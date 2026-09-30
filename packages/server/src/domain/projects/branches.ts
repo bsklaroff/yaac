@@ -12,18 +12,18 @@ export interface ProjectBranches {
 }
 
 /**
- * Branch data for the new-workspace picker. Reads local remote-tracking refs
- * (instant); `refresh` runs a credentialed fetch first so a just-pushed
- * branch appears — the frontend shows the instant list and re-fetches with
- * refresh in the background. A branch named by the CLI or `yaac-mama
- * --branch` need not be listed: the create re-fetches and validates it.
+ * Branch data for the new-workspace picker, from local remote-tracking refs.
+ * `refresh` fetches first so a just-pushed branch appears; the frontend shows
+ * the fast list, then refreshes in the background. A branch passed via the
+ * CLI or `yaac-mama --branch` need not be listed, since create fetches and
+ * validates it.
  */
 export async function getProjectBranches(slug: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
   const repo = repoDir(slug)
 
   if (opts.refresh) {
-    // No credential (or a local-path remote, in test fixtures) fetches
-    // unauthenticated rather than failing the refresh.
+    // With no credential (or a local-path remote in tests) the fetch is
+    // unauthenticated.
     try {
       await fetchProjectOrigin(slug)
     } catch (err) {

@@ -1,16 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ProxyEventStream, type ProxyChangeSource } from '#drivers/k8s/egress/proxy-events'
 
+/**
+ * The server's side of the proxy change stream. Only the dial is faked, so
+ * line framing, dispatch, catch-up and reconnect policy run for real.
+ */
+
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 /**
- * The server's half of the proxy change stream. Mocked at the process
- * boundary — the dial — so the line framing, the dispatch, the catch-up and
- * the respawn policy all run for real.
+ * A fake `fetch` response whose body yields `lines`, then closes or hangs.
+ * Aborting the signal errors the body, as fetch does.
  */
-
-/** A fake `fetch` response whose body yields `lines` and then behaves as
- *  `end` says. Aborting the signal errors the body, exactly as fetch does. */
 function responseOf(
   lines: string[],
   opts: { status?: number; end?: 'close' | 'hang' } = {},
@@ -50,9 +51,8 @@ afterEach(() => {
 })
 
 /**
- * Run the stream until it has slept `stopAfterSleeps` times (i.e. survived
- * that many reconnect cycles), then stop it. Returns the delays it asked
- * for, which is how the backoff policy is observed.
+ * Run the stream until it has slept `stopAfterSleeps` times (reconnect
+ * cycles), then stop it. Returns the requested delays, to observe backoff.
  */
 async function run(
   open: (signal: AbortSignal) => Promise<Response>,
@@ -80,9 +80,7 @@ async function run(
   started = stream
   streams.push(stream)
   stream.start()
-  // Real timer ticks, not setImmediate: the idle deadline is a real
-  // setTimeout, so a loop that only drains microtasks would finish before
-  // it could ever fire.
+  // Real timer ticks, so the real idle-deadline setTimeout can fire.
   for (let i = 0; i < 400 && delays.length < limit; i++) {
     await new Promise((r) => setTimeout(r, 1))
   }
@@ -91,27 +89,23 @@ async function run(
 }
 
 describe('ProxyEventStream', () => {
-  // A queued request dirties a pass: the drain is what answers the pod
-  // holding its response open.
   it('turns a queued request into a reconcile trigger', async () => {
     await run(responseOf(['{"type":"mama"}\n{"type":"mama"}\n']))
     // Plus the one catch-up drain on connect.
     expect(changes).toEqual(['mama-requests', 'mama-requests', 'mama-requests'])
   })
 
-  // Attaching says nothing about what queued while we were away, so the
-  // stream assumes something did. One catch-up per connect is what makes a
-  // dropped connection cost latency instead of a lost request.
+  // Requests may have queued while disconnected, so every connect drains
+  // once. A dropped connection then costs latency, not a lost request.
   it('fires a catch-up drain on every connect', async () => {
     const delays = await run(responseOf([]), { stopAfterSleeps: 2 })
     expect(delays).toHaveLength(2)
     expect(changes).toEqual(['mama-requests', 'mama-requests'])
   })
 
-  // Pings exist so silence is distinguishable from death; they are not a
-  // change. Garbage is ignored rather than fatal — a newer proxy may send
-  // event types this server has never heard of. The proxy's records travel
-  // as objects now, so a state event from an older proxy is nothing either.
+  // Pings only prove the stream is alive. Unknown types are ignored, since
+  // a newer proxy may send types this server does not know; `blocked-hosts`
+  // is a type older proxies send.
   it('ignores pings, unknown types, retired types and unparseable lines', async () => {
     await run(responseOf(['{"type":"ping"}\n{"type":"from-the-future"}\n{"type":"blocked-hosts"}\nnot json\n\n']))
     expect(changes).toEqual(['mama-requests'])
@@ -123,12 +117,9 @@ describe('ProxyEventStream', () => {
     expect(changes).toEqual(['mama-requests', 'mama-requests', 'mama-requests'])
   })
 
-  // Bounded so a wedged proxy can't outpace the resync by much: this is the
-  // whole window in which proxy-owned state is stale.
-  //
-  // A proxy that ACCEPTS and immediately closes is the case this guards:
-  // treating a bare attach as success would reset the backoff every cycle
-  // and hot-loop at the base delay forever.
+  // The cap bounds how long proxy state can be stale. A proxy that accepts
+  // and immediately closes must not reset the backoff, or the stream would
+  // hot-loop at the base delay.
   it('backs off exponentially to a cap when connections deliver nothing', async () => {
     const delays = await run(responseOf([]), { stopAfterSleeps: 8 })
     expect(delays[0]).toBe(250)
@@ -138,19 +129,16 @@ describe('ProxyEventStream', () => {
     expect(Math.max(...delays)).toBe(5000)
   })
 
-  // Carrying traffic is what proves the connection was real, so that — not
-  // attaching — is what earns the reset. A healthy proxy pings, so a stream
-  // that merely goes quiet still reconnects promptly.
+  // Receiving data, not just connecting, resets the backoff. A healthy
+  // proxy pings, so this happens promptly.
   it('resets the backoff once a stream delivers something', async () => {
     const delays = await run(responseOf(['{"type":"ping"}\n']), { stopAfterSleeps: 4 })
     expect(delays).toEqual([250, 250, 250, 250])
   })
 
-  // The dial is the bare fetch, so nothing else bounds it. A relay that
-  // accepts the connection but never returns headers is precisely the hang
-  // the idle deadline exists for — but that timer is only armed once the
-  // stream is live, so without a connect deadline the await would never
-  // return and the stream would be dead for the rest of the server's life.
+  // The idle deadline is armed only once the stream is live, so a peer
+  // that accepts but never sends headers needs a separate connect deadline,
+  // or the stream would hang forever.
   it('reconnects when the dial itself hangs before returning headers', async () => {
     const delays = await run(
       (signal) => new Promise<Response>((_resolve, reject) => {
@@ -159,13 +147,11 @@ describe('ProxyEventStream', () => {
       { stopAfterSleeps: 2, connectDeadlineMs: 10 },
     )
     expect(delays).toEqual([250, 500])
-    // Never attached, so nothing is claimed to have caught up.
+    // Never connected, so no catch-up drain.
     expect(changes).toEqual([])
   })
 
-  // Including a 404 — an unreachable route is a dead stream like any other,
-  // and nothing is claimed to have caught up on a connection that never
-  // attached.
+  // A 404 is a dead stream too, and a failed connect fires no catch-up.
   it.each([404, 500])('treats status %i as a stream death', async (status) => {
     const delays = await run(responseOf([], { status }), { stopAfterSleeps: 1 })
     expect(delays).toEqual([250])
@@ -178,21 +164,19 @@ describe('ProxyEventStream', () => {
     expect(changes).toEqual([])
   })
 
-  // A tunnel can wedge without TCP noticing — an exec relay whose apiserver
-  // stopped answering looks exactly like an idle stream. The proxy's pings
-  // are what make the difference observable, and this is what acts on it.
+  // A connection can wedge without TCP noticing. The proxy's pings make
+  // that visible as silence past the idle deadline.
   it('reconnects when a held-open stream goes quiet past the idle deadline', async () => {
     const delays = await run(responseOf([], { end: 'hang' }), {
       stopAfterSleeps: 1,
       idleDeadlineMs: 10,
     })
     expect(delays).toEqual([250])
-    // It got as far as attaching, so the catch-up fired.
+    // It connected, so the catch-up fired.
     expect(changes).toEqual(['mama-requests'])
   })
 
-  // The held-open request keeps an exec relay (and a kubectl child) alive,
-  // so shutdown has to actually end it.
+  // The held-open request keeps a connection alive, so stop must end it.
   it('stops for good once stopped', async () => {
     let opens = 0
     const stream = new ProxyEventStream((s) => changes.push(s), {
@@ -207,7 +191,7 @@ describe('ProxyEventStream', () => {
     for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r))
     expect(opens).toBe(after)
 
-    // And a start() after stop() does not resurrect it.
+    // start() after stop() does not restart it.
     stream.start()
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
     expect(opens).toBe(after)

@@ -7,24 +7,18 @@ import { serverLog } from '#log'
 import type { SecretProxyRule } from '@yaac/shared/types'
 
 /**
- * A project's environment variables and proxied secrets.
+ * A project's environment variables and proxied secrets. Secret values are
+ * encrypted and decrypted only here, so callers deal in plaintext and can't
+ * forget either step.
  *
- * The one place a secret's value is sealed and opened. Everything above this
- * module hands over and receives plaintext, so no caller can forget to
- * encrypt and none has to remember to decrypt — the same reasoning that keeps
- * `getDb` off the barrel applies to the cipher.
+ * The cipher is better-auth's `symmetricEncrypt`/`symmetricDecrypt`
+ * (XChaCha20-Poly1305, keyed by the SHA-256 of a secret string, with a
+ * versioned envelope that supports key rotation).
  *
- * The cipher itself is better-auth's `symmetricEncrypt`/`symmetricDecrypt`:
- * XChaCha20-Poly1305 under a managed nonce, keyed by the SHA-256 of a secret
- * string, with a `$ba$<version>$` envelope that lets a key be rotated by
- * naming the superseded key beside the new one. Theirs rather than ours
- * because a cipher is exactly the thing not to write twice.
- *
- * A value that will not open is reported, not thrown: a retired key version
- * or a replaced key file leaves rows that are still listed (so the user can
- * see which secrets need re-entering) but resolve to nothing (so a workspace
- * launches without them rather than with an empty header, which fails
- * upstream as a bad credential rather than a missing one).
+ * A value that fails to decrypt (retired or replaced key) is logged, not
+ * thrown. The row is still listed so the user can re-enter it, but has no
+ * value, so a workspace launches without it rather than with an empty
+ * header.
  */
 
 /** One row, with a secret's value already opened. */
@@ -40,8 +34,8 @@ export interface ProjectEnvVarRow {
   unreadable: boolean
 }
 
-/** What a caller may write. `value` absent leaves the stored one alone,
- *  which is how a secret's rule is edited without re-entering the secret. */
+/** What a caller may write. Omitting `value` keeps the stored one, so a
+ *  secret's rule can be edited without re-entering the secret. */
 export interface ProjectEnvVarInput {
   name: string
   value?: string
@@ -84,12 +78,9 @@ export async function listProjectEnvVars(projectSlug: string): Promise<ProjectEn
 }
 
 /**
- * Create or replace one variable, matched on (project, name).
- *
- * Writing a secret with no `value` keeps the sealed one — the rule is
- * editable without the secret having to travel again — but changing a plain
- * variable into a secret without one is refused by the caller above, since
- * there would be nothing to seal.
+ * Create or replace one variable, matched on (project, name). A secret
+ * written without `value` keeps its encrypted value. (The caller refuses
+ * turning a plain variable into a secret without a value.)
  */
 export async function upsertProjectEnvVar(
   projectSlug: string,
@@ -104,10 +95,8 @@ export async function upsertProjectEnvVar(
     rule: input.rule ?? null,
     updatedAt: new Date(),
   }
-  // A secret's plaintext column is nulled and a plain one's sealed column is,
-  // so the pair can never disagree about which holds the value — including
-  // when a variable changes kind, which is exactly when a leftover would be a
-  // plaintext copy of something now stored sealed.
+  // Null the unused column (plaintext for a secret, encrypted for a plain
+  // var), so a variable that changes kind never leaves a plaintext copy.
   const written = input.secret
     ? { value: null, ...(sealed !== undefined ? { sealedValue: sealed } : {}) }
     : { value: input.value ?? '', sealedValue: null }
@@ -136,7 +125,7 @@ export async function deleteProjectEnvVar(projectSlug: string, id: string): Prom
   return rows.length > 0
 }
 
-/** Drop every variable of a project — project teardown, beside its rows. */
+/** Delete every variable of a project, on project removal. */
 export async function deleteProjectEnvVars(projectSlug: string): Promise<void> {
   const db = await getDb()
   await db.delete(projectEnvVars).where(eq(projectEnvVars.projectSlug, projectSlug))

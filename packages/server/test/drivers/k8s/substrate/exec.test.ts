@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// The folder's process boundary is the kubectl child process, so the shell
-// runner and its transient-error retries run for real underneath.
+// Only the kubectl child process is faked, so the shell runner and its
+// retries run for real.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execMock = vi.fn<(command: string, opts: unknown) => Promise<ExecResult>>()

@@ -13,32 +13,23 @@ import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluste
 import type { ProjectRef, TeardownTarget } from '#drivers/contract'
 
 /**
- * How the k8s runtime destroys what it was holding for a workspace — the
- * mechanics half of a stop (docs/layered-server.md).
+ * How the k8s driver destroys a workspace's cluster objects
+ * (docs/layered-server.md). Bookkeeping (terminating mark, stop record,
+ * status eviction, on-disk dirs) stays with the domain mediator. The step
+ * order matters: each later step removes something an earlier one needs.
  *
- * What the mediator keeps is everything that is bookkeeping ABOUT the
- * workspace: the terminating mark, the stop record, the status eviction,
- * and which directories a workspace owns on disk. What is here is the
- * sequence over cluster objects, and the sequence is the substance — every
- * ordering below exists because a later step destroys the evidence or the
- * reachability an earlier one needed.
- *
- * Two shapes, because the callers differ. `destroyWorkspace` waits and
- * reports whether the unit really went away, for a caller that is about to
- * delete the workspace's files. `detachedTeardownCommand` answers the same
- * teardown as a shell command, for a caller that must return before it
- * finishes; the two are written to compose with each other, since a
- * teardown interrupted half way is resumed by re-issuing it.
+ * `destroyWorkspace` waits and reports whether the unit is gone, for a
+ * caller about to delete the workspace's files. `detachedTeardownCommand`
+ * is the same teardown as a shell command for callers that must return
+ * first. Both are idempotent, so an interrupted teardown is resumed by
+ * re-issuing it.
  */
 
 /**
- * Stop routing for a workspace: its host port-forwards come down as one
- * set, then its egress registration goes (its failures are swallowed
- * there — a datapath hiccup must never hold up a teardown).
- *
- * Split out of `destroyWorkspace` because a DETACHED teardown wants exactly
- * this half in-process — both parts are fast, and the forwarders are this
- * process's own state, which a detached script could not touch.
+ * Stop routing to a workspace: close its port-forwards, then remove its
+ * egress registration (whose failures are swallowed so they never block a
+ * teardown). Separate from `destroyWorkspace` because a detached teardown
+ * runs this part in-process; the forwarders are this process's state.
  */
 export async function deregisterWorkspace(workspaceId: string): Promise<void> {
   stopWorkspaceForwarders(workspaceId)
@@ -46,19 +37,14 @@ export async function deregisterWorkspace(workspaceId: string): Promise<void> {
 }
 
 /**
- * Salvage the image layers a nested workspace built into its project's
- * registry, before the pod (and the graphroot tmpfs holding them) is
- * destroyed.
+ * Push a nested workspace's image layers to its project's registry before
+ * the pod and its graphroot tmpfs are destroyed.
  *
- * Best-effort and self-gating — the in-pod survey does nothing in a pod
- * that carries no engine, so a non-nested or already-dead workspace costs
- * one probe — and never throws: losing a salvage costs a rebuild, and must
- * not strand a teardown. Unlike the mid-life reconciler it does not filter
- * on the nested label: the gate that decides is the in-pod one.
- *
- * The registry is named by the project id the pod carries, so the pod is
- * looked up for it; a pod with none predates ids, and there is no registry
- * of its project to salvage into.
+ * Best-effort and never throws: a lost salvage only costs a rebuild. The
+ * in-pod survey decides whether there is anything to do (a pod with no
+ * engine costs one probe), so unlike the periodic salvage this does not
+ * check the nested label. The registry is named by the pod's project id,
+ * so a pod without one is skipped.
  */
 export async function salvageWorkspaceImages(target: TeardownTarget): Promise<void> {
   const pods = getActiveClusterCache()?.workspacePods()
@@ -79,32 +65,22 @@ const UNIT_DELETE_TIMEOUT = '30s'
 const DETACHED_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
 
 /**
- * Tear a workspace's runtime down and wait for it to really be gone.
+ * Tear down a workspace's runtime and wait until it is gone. In order:
  *
- * The order is the point:
+ * 1. Deregister, so nothing routes to or holds ports for the dying pod.
+ * 2. Salvage images, which execs into the pod that step 3 deletes.
+ * 3. Delete the Job with `--cascade=foreground --wait`. Both flags are
+ *    needed: with the default background cascade, `--wait` returns once the
+ *    Job is gone while the pod keeps running (and writing to /workspace)
+ *    through its grace period.
  *
- * 1. Deregister first, so nothing routes traffic to (or holds host ports
- *    against) a workspace that is dying.
- * 2. Salvage second, because it EXECS INTO the pod and step 3 destroys it.
- * 3. Delete the Job `--cascade=foreground --wait`. Both halves are needed
- *    and only the pair is enough: under kubectl's default background
- *    propagation the API server drops the Job and returns while the GC
- *    deletes the pod behind it, so `--wait` alone would return with the pod
- *    still running — and still writing into /workspace — for its whole
- *    grace period. The pod's terminationGracePeriodSeconds covers the
- *    graceful stop, so no separate stop step is needed.
+ * Resolves `false` if step 3 could not confirm the pod is gone. Callers
+ * about to remove the workspace's files check this; the stale reaper later
+ * resumes the teardown for the leftover Job.
  *
- * Resolves `false` when step 3 could not confirm the pod was gone — a
- * timeout, or a delete that failed outright. That verdict is what a caller
- * about to remove the workspace's files gates on; the leftover Job is swept
- * by the stale reaper, which resumes the (idempotent) teardown.
- *
- * `unitOnly` skips step 1, and what it protects is RECEIPT COHERENCE for a
- * caller that is about to launch again. A create prepares its substrate
- * once and reuses that receipt across attempts, so the registration has to
- * outlive any one attempt: deregistering would leave the next attempt
- * reaching nothing. Step 3 is the whole of it, and step 3 is exactly what a
- * failed attempt left behind.
+ * `unitOnly` skips step 1 for a create retrying after a failed attempt: the
+ * create reuses one substrate receipt across attempts, so its registration
+ * must survive.
  */
 export async function destroyWorkspace(
   target: TeardownTarget,
@@ -129,39 +105,26 @@ export async function destroyWorkspace(
 }
 
 /**
- * The same teardown as a shell command, for a caller that must return
- * before it finishes.
- *
- * Every line is idempotent and error-tolerant, which is what lets a
- * teardown be resumed by simply re-issuing the whole script — the reaper
- * does exactly that for a delete whose in-memory mark was lost.
- *
- * Deliberately NOT the whole of a teardown: the caller appends the
- * removals it owns, and must have awaited `deregisterWorkspace` and
- * `salvageWorkspaceImages` first — neither can be expressed here, and the
- * salvage in particular has to reach into a pod this command destroys.
+ * The Job delete as a shell command, for callers that must return before
+ * it finishes. Idempotent and error-tolerant, so the reaper can resume a
+ * lost teardown by re-issuing it. The caller appends its own removals and
+ * must first await `deregisterWorkspace` and `salvageWorkspaceImages`.
  */
 export function detachedTeardownCommand(target: TeardownTarget): string {
-  // Foreground cascade, waited: the caller removes the session dir next,
-  // and that dir is the source of the pod's File mounts — the preStop
-  // hook's own script among them — so the delete has to outlast the pod,
-  // not just the Job object, which means outlasting the hook's whole grace
-  // period. The timeout keeps a stuck pod from holding the removals
-  // hostage; they run either way.
+  // Wait for the pod itself, through its preStop grace period: the caller
+  // next removes the session dir that backs the pod's file mounts,
+  // including the preStop script. The timeout keeps a stuck pod from
+  // blocking those removals.
   return `kubectl delete job ${target.unitName} -n ${k8sNamespace()}`
     + ` --ignore-not-found --cascade=foreground --wait=true --timeout=${DETACHED_DELETE_TIMEOUT}`
     + ' 2>/dev/null || true'
 }
 
 /**
- * Everything the runtime holds for a whole project once its workspaces are
- * gone: the per-project push registry, the node-local image stores, and
- * the secret values the egress proxy was handed.
- *
- * Each part is independently best-effort, because they fail for unrelated
- * reasons and none is recoverable by another — a registry that could not
- * be reached must not stop the node stores from going, and a stale store
- * is a cache nothing will ever mount again.
+ * Remove what the runtime holds for a project once its workspaces are gone:
+ * the push registry, node-local image stores, and the egress proxy's secret
+ * values. Each step is best-effort on its own, since they fail for
+ * unrelated reasons.
  */
 export async function destroyProjectSubstrate(project: ProjectRef): Promise<void> {
   try {

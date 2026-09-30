@@ -14,32 +14,29 @@ import {
 } from './proxy-constants'
 
 /**
- * The server side of the stream relay (docs/stream-relay.md): every
- * steady-state byte between the server and a workspace pod — terminal PTYs,
- * the status watcher's tmux control stream, forwarded TCP, one-shot pod
- * commands — rides a plain TCP connection through the proxy's relay
- * listener into the pod's streamd, entirely off the apiserver. kubectl
- * exec survives only where streamd cannot be gated on — `bootStreamd`,
- * the teardown-time image-salvage survey — and for non-workspace infra pods.
+ * Server side of the stream relay (docs/stream-relay.md). All steady-state
+ * traffic between the server and a workspace pod (terminal PTYs, the status
+ * watcher's tmux control stream, forwarded TCP, one-shot commands) goes over
+ * a plain TCP connection through the proxy's relay listener to the pod's
+ * streamd, bypassing the apiserver. kubectl exec is used only where
+ * streamd may not be running (`bootStreamd`, the teardown-time image-salvage
+ * survey) and for non-workspace pods.
  *
- * Wire shape per stream: one relay auth line
- * `{token: <proxyAuthSecret>, workspaceId}`, then one streamd handshake
- * line `{token: <per-workspace HMAC>, kind, ...params}`, then streamd's
- * `{ok}` reply line, then the payload. Both lines are pipelined in one
- * write; the relay is a dumb splice after its auth line.
+ * Each stream starts with a relay auth line
+ * `{token: <proxyAuthSecret>, workspaceId}` and a streamd handshake line
+ * `{token: <per-workspace HMAC>, kind, ...params}`, sent together. streamd
+ * replies `{ok}`, then the payload follows. After the auth line the relay
+ * just splices bytes.
  */
 
 /** Dial + handshake deadline for a new stream. */
 const DIAL_TIMEOUT_MS = 15_000
 /**
- * Floor on a `podExec` budget, and so on the dial deadline derived
- * from it. A dial deadline is a statement about the TRANSPORT — which
- * every workspace's streams share — not about how fast one caller wants an
- * answer, and the two must not be the same number. The stale reaper's
- * tmux probes ask for 2s (features/status/liveness.ts); a dial that
- * crosses the apiserver, the proxy and a pod dial can legitimately take
- * longer than that on a host busy building images, and a probe's
- * impatience must never be read as a dead relay.
+ * Minimum `podExec` budget, and so minimum dial deadline. The dial deadline
+ * describes the shared transport, not one caller's patience: the stale
+ * reaper's tmux probes ask for 2s (runtime/status/liveness.ts), but a dial
+ * through the proxy can take longer on a host busy building images, and a
+ * slow dial must not be mistaken for a dead relay.
  */
 const MIN_EXEC_TIMEOUT_MS = 5_000
 /** Reply-line cap (it is one small JSON object). */
@@ -58,19 +55,10 @@ export function _resetRelayCacheForTests(): void {
 }
 
 /**
- * Where this install's relay listens: the proxy's Service, in-cluster.
- *
- * A plain pod-to-pod dial, because the server is a pod of the same
- * namespace (docs/server-in-cluster.md) and the proxy's ingress policy
- * admits its selector on this port. `YAAC_RELAY_ADDR` is what the
- * Deployment states it as, and it is honoured verbatim so a differently
- * shaped install can point the relay somewhere else without touching code.
- *
- * The default is derived rather than required, so a server started by hand
- * against a cluster whose proxy sits where it always does still resolves —
- * and a server that is NOT in the cluster gets a name that does not
- * resolve, which is the honest answer for a placement this driver no
- * longer has.
+ * The relay address: the proxy's Service, dialed pod-to-pod since the
+ * server runs in the same namespace (docs/server-in-cluster.md).
+ * `YAAC_RELAY_ADDR`, set by the Deployment, overrides it. The default lets
+ * a server started by hand against a standard install still resolve.
  */
 function resolveRelayAddr(): RelayAddr {
   if (env.relayAddr) return env.relayAddr
@@ -80,9 +68,9 @@ function resolveRelayAddr(): RelayAddr {
 }
 
 /**
- * The install's proxy auth secret — the relay bearer and the HMAC key for
- * per-workspace stream tokens. Read once per server run (it is generated
- * once per cluster and never rotated in place).
+ * The install's proxy auth secret: the relay bearer token and the HMAC key
+ * for per-workspace stream tokens. Read once per server run; it is never
+ * rotated in place.
  */
 async function relaySecret(): Promise<string> {
   if (cachedSecret) return cachedSecret
@@ -105,19 +93,17 @@ export async function podStreamToken(workspaceId: string): Promise<string> {
   return crypto.createHmac('sha256', secret).update(workspaceId).digest('hex')
 }
 
-/** Transport-level failure (relay unreachable, refused handshake,
- *  timeout, a reply that never arrived) — never a verdict on the
- *  command's outcome, unlike RelayExecError. Whether the command
- *  nonetheless *ran* is `afterDispatch`. */
+/**
+ * Transport failure (relay unreachable, handshake refused, timeout, missing
+ * reply). Unlike RelayExecError it says nothing about the command's outcome.
+ */
 export class RelayDialError extends Error {
   constructor(
     message: string,
     /**
-     * True when the transport failed AFTER the command was handed to
-     * streamd — a reply-read timeout, or the socket dropping mid-read.
-     * The pod may well have run the command, so re-issuing it is a
-     * *re-run*, not a retry: `podExec` stops retrying on these, and
-     * a caller whose command isn't idempotent is spared a duplicate.
+     * True when the transport failed after streamd received the command
+     * (reply timeout, socket drop). The command may have run, so `podExec`
+     * does not retry, sparing non-idempotent commands a duplicate run.
      */
     readonly afterDispatch = false,
   ) {
@@ -126,15 +112,11 @@ export class RelayDialError extends Error {
 }
 
 /**
- * Open one stream to a workspace's streamd: dial the relay, pipeline the
- * relay auth line + streamd handshake line, await streamd's `{ok}` reply.
- * Resolves with the connected socket, paused, with any bytes past the
- * reply line unshifted. Rejects with RelayDialError on any failure.
- *
- * Every stream dials the proxy Service independently, so one stream's
- * failure is one stream's failure — there is no shared child process left
- * for a bad dial to condemn, and no `sawReplyBytes` bookkeeping deciding
- * whether to condemn it.
+ * Open one stream to a workspace's streamd: dial the relay, send the auth
+ * and handshake lines, and wait for streamd's `{ok}` reply. Resolves with
+ * the socket paused, with any bytes past the reply line unshifted. Rejects
+ * with RelayDialError on any failure. Each stream dials independently, so
+ * one failure affects only that stream.
  */
 export async function relayDial(
   workspaceId: string,
@@ -152,11 +134,8 @@ export async function relayDial(
 
   return new Promise<net.Socket>((resolve, reject) => {
     const socket = net.connect(addr.port, addr.host)
-    // Nagle would hold a small write back waiting for more, and every stream
-    // that cares about latency here already coalesces deliberately (the
-    // output batcher at both ends, the keystroke batcher in the browser). All
-    // it can add on top of that is delay — up to a delayed-ACK interval per
-    // write, spending the batcher's whole 8ms budget in the kernel.
+    // Latency-sensitive callers already batch their writes, so Nagle would
+    // only add delay.
     socket.setNoDelay(true)
     let settled = false
     let buf = Buffer.alloc(0)
@@ -201,9 +180,8 @@ export async function relayDial(
       socket.removeListener('data', onData)
       socket.removeAllListeners('error')
       socket.removeAllListeners('close')
-      // Keep a no-op error listener so an error firing before the consumer
-      // attaches its own can't crash the process; consumers' listeners
-      // coexist with it.
+      // Keep a no-op error listener so an error before the consumer attaches
+      // its own cannot crash the process.
       socket.on('error', () => { /* consumer-owned */ })
       socket.pause()
       const rest = buf.subarray(nl + 1)
@@ -214,11 +192,12 @@ export async function relayDial(
   })
 }
 
-// ── One-shot commands (the containerExec replacement for workspace pods) ──────
+// ── One-shot commands ──────────────────────────────────────────────────────
 
-/** The remote command ran and exited nonzero — a conclusive verdict about
- *  the pod (unlike RelayDialError). Mirrors child_process error fields
- *  (`stderr`, `code`) so existing message/classification code ports over. */
+/**
+ * The command ran and exited nonzero: a conclusive result about the pod,
+ * unlike RelayDialError. Carries child_process-style `code` and `stderr`.
+ */
 export class RelayExecError extends Error {
   constructor(
     message: string,
@@ -253,30 +232,25 @@ function readAll(socket: net.Socket, timeoutMs: number): Promise<Buffer> {
 
 export interface RelayExecOptions {
   /**
-   * Overall deadline (dial + run). Default 30s. Widen it for a command
-   * that legitimately runs long — the *dial* stays capped at
-   * DIAL_TIMEOUT_MS regardless, so a long budget can't turn a hung
-   * transport into a multi-minute stall. Narrowing it past
-   * MIN_EXEC_TIMEOUT_MS has no effect: below that the number stops being
-   * a preference and starts being a verdict on the shared relay.
+   * Overall deadline (dial + run). Default 30s. The dial is capped at
+   * DIAL_TIMEOUT_MS regardless, so a long budget cannot turn a hung
+   * transport into a long stall. Values below MIN_EXEC_TIMEOUT_MS are
+   * raised to it.
    */
   timeout?: number
-  /** Dial-failure retries. Neither a clean nonzero exit nor a failure
-   *  past dispatch is retried — in both cases the command ran. Default 3. */
+  /**
+   * Dial-failure retries. Default 3. Nonzero exits and failures after
+   * dispatch are never retried, since the command ran.
+   */
   maxAttempts?: number
 }
 
 /**
- * Run a shell command inside a workspace pod via its streamd — the drop-in
- * replacement for `containerExec` on workspace pods. `cmd` is a
- * shell-formatted command tail (executed as `sh -c <cmd>` in the pod —
- * one shell pass, like the host-shell pass `containerExec` gave it).
- * Resolves `{stdout, stderr}` on exit 0; throws RelayExecError on a
- * nonzero exit and RelayDialError when the pod was never reached.
- *
- * Retries cover only the dial: once streamd has the command, a failure
- * (nonzero exit, or a `afterDispatch` transport drop) is final, so a
- * non-idempotent command can't be issued twice behind the caller's back.
+ * Run a shell command in a workspace pod through its streamd (as
+ * `sh -c <cmd>`). Resolves `{stdout, stderr}` on exit 0; throws
+ * RelayExecError on a nonzero exit and RelayDialError when the pod was not
+ * reached. Only the dial is retried: once streamd has the command, any
+ * failure is final so a non-idempotent command is never run twice.
  */
 export async function podExec(
   jobName: string,
@@ -290,9 +264,8 @@ export async function podExec(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const started = Date.now()
     try {
-      // The dial gets its own (bounded) deadline: `timeout` is the budget
-      // for the COMMAND, and letting it govern the dial too would make a
-      // hung transport cost `timeout` per attempt before anyone notices.
+      // `timeout` budgets the command; the dial gets its own shorter cap so
+      // a hung transport fails fast on each attempt.
       const socket = await relayDial(
         workspaceId,
         { kind: 'exec', cmd: ['sh', '-c', cmd] },
@@ -311,25 +284,16 @@ export async function podExec(
       try {
         result = JSON.parse(body.toString('utf8')) as typeof result
       } catch {
-        // Dispatched: streamd answered the handshake, so whatever came
-        // back (truncated, empty, garbage) followed a command that ran.
+        // streamd accepted the handshake, so the command may have run.
         throw new RelayDialError('malformed exec result', true)
       }
       const { exitCode, stdout = '', stderr = '', signal, spawnFailed } = result
-      // Only a command that RAN AND EXITED is a verdict about the pod, and
-      // the difference deletes workspaces: a RelayExecError reads as `dead`
-      // at the reaper, which tears the workspace down in the same pass. Three
-      // results say the command did not get that far, and each would
-      // otherwise land as a nonzero exit — a signal kill reports no code (so
-      // the `?? 1` in streamd stands in for one), a spawn failure fabricates
-      // 127, and a truncated result carries no code at all. In-pod memory
-      // pressure produces the first two AND downs the status stream that
-      // would otherwise have answered liveness without any probe, so they
-      // arrive together rather than independently.
-      //
-      // `afterDispatch` on all three: the command may have run, so a retry
-      // could issue a non-idempotent one twice. They surface as transport
-      // failures, which every consumer keeps rather than reaps.
+      // Only a real exit is a verdict about the pod: the reaper treats a
+      // RelayExecError as `dead` and tears the workspace down. A signal
+      // kill, a spawn failure, or a result with no exit code (all common
+      // under in-pod memory pressure) are reported as transport failures
+      // instead, which callers keep rather than reap. They are marked
+      // `afterDispatch` because the command may have run.
       if (spawnFailed) {
         throw new RelayDialError(`streamd could not spawn the command in ${jobName}: ${stderr.trim()}`, true)
       }
@@ -360,10 +324,9 @@ export async function podExec(
 // ── Stream adapters (sync facades over the async dial) ─────────────────────
 
 /**
- * Child-process-shaped surface over a `ctrl` stream — the contract's
- * `StreamChild`. The facade exists synchronously; writes made before the
- * dial completes are buffered, and a dial failure surfaces as an 'error'
- * event.
+ * The contract's `StreamChild` over a `ctrl` stream. Returned synchronously;
+ * writes before the dial completes are buffered, and a dial failure is
+ * emitted as 'error'.
  */
 export function dialCtrlStream(workspaceId: string, argv: string[]): StreamChild {
   const emitter = new EventEmitter()
@@ -412,10 +375,9 @@ export function dialCtrlStream(workspaceId: string, argv: string[]): StreamChild
 }
 
 /**
- * PTY-shaped surface over a `pty` stream (structurally the pty-bridge's
- * PtyLike). Frames are decoded/encoded with the shared codec; `kill()`
- * with no signal drops the stream (streamd kills the child on socket
- * close), `kill(name)` sends an in-band signal frame.
+ * PTY-like surface over a `pty` stream (matches pty-bridge's PtyLike).
+ * `kill()` with no signal drops the stream, and streamd kills the child on
+ * socket close; `kill(name)` sends an in-band signal frame.
  */
 export interface StreamPty {
   onData(cb: (data: string) => void): void
@@ -469,11 +431,9 @@ export function dialPtyStream(
           socket.destroy()
           return
         }
-        // Consecutive data frames in one chunk dispatch as ONE callback:
-        // each callback becomes a WebSocket message to the browser, and a
-        // redraw burst split across frames should reach the terminal as a
-        // single write it can paint atomically (streamd batches at the
-        // source; this collapses whatever TCP re-fragments en route).
+        // Merge consecutive data frames into one callback (one WebSocket
+        // message) so a redraw split by TCP reaches the terminal as a single
+        // write.
         let text = ''
         const flushText = (): void => {
           if (text === '') return
@@ -503,8 +463,8 @@ export function dialPtyStream(
       socket.resume()
     },
     () => {
-      // No error channel on the PTY surface — a failed dial is an exit;
-      // the frontend's reconnect loop owns the retry.
+      // The PTY surface has no error channel, so a failed dial is an exit;
+      // the frontend's reconnect loop retries.
       if (!killed) emitExit(1)
     },
   )
@@ -529,16 +489,14 @@ export function dialPtyStream(
 // ── streamd lifecycle ──────────────────────────────────────────────────────
 
 /**
- * Start (or restart) streamd in a workspace pod — the one steady-state
- * kubectl exec that remains, because it is what heals a crashed streamd
- * when no stream can reach the pod. Idempotent: a second daemon exits on
- * EADDRINUSE. Used by workspace-create's setup and the status watcher's
+ * Start (or restart) streamd in a workspace pod over kubectl exec, which
+ * works even when no stream can reach the pod. Idempotent: a second daemon
+ * exits on EADDRINUSE. Used by workspace setup and the status watcher's
  * self-heal.
  */
 export async function bootStreamd(
   jobName: string,
-  /** Deadline for the kubectl exec. Callers on a budget (waitForStreamd)
-   *  pass what is left of theirs so the heal can't overrun it. */
+  /** Deadline for the kubectl exec; waitForStreamd passes its remaining budget. */
   opts: { timeout?: number } = {},
 ): Promise<void> {
   await containerExec(
@@ -556,24 +514,16 @@ export interface WaitForStreamdDeps {
 }
 
 /**
- * Gate on a workspace pod's streamd answering the relay — workspace-create's
- * "in-pod setup done" signal, and the prewarm claim's readiness gate
- * before it mutates a spare. The pod's postStart hook (yaac-workspace-init)
- * starts streamd last, so a successful relay exec proves the git config and
- * tmux server it configured are in place, and every setup command that
- * follows can ride the relay instead of kubectl exec.
+ * Wait until a workspace pod's streamd answers over the relay. Used as the
+ * "in-pod setup done" signal on create and before a prewarm claim mutates a
+ * spare. yaac-workspace-init starts streamd last, so a successful exec
+ * proves git config and tmux are in place.
  *
- * Dial failures are retried until the deadline: right after pod-Ready the
- * proxy may not have observed the pod IP yet, and streamd's node process
- * takes a beat to bind. Halfway through the budget, `bootStreamd` re-runs
- * the daemon via kubectl exec once — the same self-heal the status watcher
- * uses — so a streamd that failed to start in the hook still recovers.
- *
- * The heal is checked BEFORE the deadline gives up, and its kubectl exec
- * is capped at what remains of the budget. Otherwise a short budget (the
- * claim path's 10s) could both overrun — the boot's own timeout is not
- * the caller's — and expire on a probe cycle that straddles the halfway
- * mark, throwing without ever attempting the one thing that heals it.
+ * Dial failures are retried until the deadline, since the proxy may not
+ * know the pod IP yet right after Ready. Once, at the halfway mark or at
+ * expiry (whichever is first reached), `bootStreamd` restarts the daemon,
+ * capped at the remaining budget, so a streamd that failed to start still
+ * recovers even under a short budget.
  */
 export async function waitForStreamd(
   jobName: string,
@@ -593,14 +543,12 @@ export async function waitForStreamd(
       await d.exec(jobName, 'true', { maxAttempts: 1, timeout: 5_000 })
       return
     } catch (err) {
-      // A non-dial error means the pod ran the command — streamd is up but
-      // something else is wrong; surface it.
+      // A non-dial error means streamd is up but the command failed.
       if (!(err instanceof RelayDialError)) throw err
       const expired = Date.now() >= deadline
       if (!healed && (expired || Date.now() >= deadline - timeoutMs / 2)) {
         healed = true
-        // Bounded by what's left, but never zero: an expired budget still
-        // buys one boot + one probe, which beats giving up un-healed.
+        // Never zero: even an expired budget gets one boot and one probe.
         await d.boot(jobName, { timeout: Math.max(1_000, deadline - Date.now()) })
           .catch(() => { /* dial loop keeps trying */ })
         continue

@@ -51,8 +51,7 @@ afterEach(() => {
   document.body.className = ''
 })
 
-/** The sidebar with no project selected — enough chrome to carry the handle,
- *  none of the project-scoped menus. */
+/** The sidebar with no project selected: the handle, without project menus. */
 function renderSidebar(): HTMLElement {
   render(
     <QueryClientProvider client={new QueryClient({
@@ -101,11 +100,10 @@ describe('sidebar resize', () => {
     expect(width()).toBe(DEFAULT_SIDEBAR_WIDTH + 40)
   })
 
-  // jsdom paints nothing, so this can only hold the class in place: the
-  // handle's z-10 has to stay confined to the sidebar, or it outranks the
-  // popups Base UI portals to <body> and steals the clicks of any that spill
-  // into the gutter (test-playwright-scripts/sidebar-popup-over-resize-handle.js
-  // is what checks the layering itself, in a real browser).
+  // The handle's z-10 must stay inside the sidebar's stacking context, or it
+  // would cover popups portaled to <body>. jsdom can only check the class;
+  // test-playwright-scripts/sidebar-popup-over-resize-handle.js checks the
+  // real layering.
   it('keeps the handle stacked inside the sidebar', () => {
     const handle = renderSidebar()
     const aside = handle.closest('aside') as HTMLElement
@@ -158,7 +156,7 @@ describe('sidebar resize', () => {
     expect(loadSidebarWidth()).toBe(DEFAULT_SIDEBAR_WIDTH)
     localStorage.removeItem('yaac.sidebarwidth.v1')
     expect(loadSidebarWidth()).toBe(DEFAULT_SIDEBAR_WIDTH)
-    // A width written by a build with wider bounds still comes back usable.
+    // An out-of-range saved width is clamped.
     localStorage.setItem('yaac.sidebarwidth.v1', '4000')
     expect(loadSidebarWidth()).toBe(MAX_SIDEBAR_WIDTH)
   })

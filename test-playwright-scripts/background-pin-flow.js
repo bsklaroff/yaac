@@ -1,21 +1,19 @@
 /*
- * Verifies the sidebar "Background" pinned-session flow end-to-end against a
- * running yaac server with at least one active session:
- *   1. pin the session via the row's pin button -> a "Background" section
- *      appears below Running holding the row;
- *   2. unpin via the same toggle -> the row returns to its status group and
- *      the Background section disappears;
- *   3. pin again, delete the session -> the row stays in Background through
- *      terminating and then renders as a deleted placeholder with a restart
- *      action (and the "Deleted sessions" entry point still lists it);
- *   4. restart from the sidebar -> a provisioning row replaces it and the
- *      revived session lands back in Background (the pin survived).
+ * Verifies the sidebar "Background" pinned-workspace flow against a running
+ * yaac server with at least one running workspace:
+ *   1. pinning a row moves it into a "Background" section below Running;
+ *   2. unpinning returns it to its status group and removes the section;
+ *   3. pinned again and stopped, the row stays in Background while
+ *      terminating, then shows as a "deleted" placeholder with a restart
+ *      action (and is listed under "Deleted sessions");
+ *   4. restarting from the sidebar shows a provisioning row, and the
+ *      workspace comes back in Background.
  * Screenshots land in /tmp/yaac-shots/bg-*.png.
  *
  * Run: node test-playwright-scripts/background-pin-flow.js
- * Needs a running server (pnpm watch / yaac server start) and one active
- * session (yaac session create yaac). The session is deleted and restarted
- * by the script; it is left running (pinned) at the end.
+ * Needs a running server (`pnpm watch` or `yaac server start`) and one
+ * running workspace (`yaac workspace create <project>`). The script stops
+ * and restarts it, leaving it running and pinned.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -65,8 +63,8 @@ async function main() {
   }
   const sidebar = () => page.locator('aside')
   const sectionHeader = (label) => sidebar().locator('button', { hasText: label }).first()
-  // The Collapsible.Panel following a section's trigger — resolves rows by
-  // walking up from the trigger to the Collapsible.Root.
+  // A section's rows, found by walking up from its trigger to the
+  // Collapsible.Root.
   const sectionRows = (label) =>
     sidebar().locator(`xpath=//button[.//span[text()="${label}"]]/following-sibling::div`)
 
@@ -104,13 +102,12 @@ async function main() {
   await sectionRows('Background').locator('div.group').first().hover()
   await page.locator('[aria-label="Delete session"]').first().click()
   await page.locator('button', { hasText: 'Delete' }).last().click()
-  // Terminating placeholder stays inside Background.
+  // The terminating row stays in Background.
   await sectionRows('Background').locator('text=terminating…').waitFor({ state: 'visible', timeout: 15_000 })
   await shot('bg-4-terminating')
   console.log('DELETE: terminating placeholder stays in Background')
 
-  // Once the container is gone the row becomes a deleted placeholder with a
-  // restart action. Teardown can take a while.
+  // Once teardown finishes (can be slow) the row gets a restart action.
   const restartButton = page.locator('[aria-label="Restart session"]').first()
   await restartButton.waitFor({ state: 'attached', timeout: 120_000 })
   await sectionRows('Background').locator('text=deleted').first().waitFor({ state: 'visible', timeout: 15_000 })
@@ -126,8 +123,7 @@ async function main() {
   await page.locator('button', { hasText: 'Restart' }).last().click()
   await page.locator('text=Restarting session').first().waitFor({ state: 'visible', timeout: 15_000 })
   await shot('bg-6-restarting')
-  // The revived session must land back in Background (the pin survived the
-  // delete + restart). Provisioning + container boot can take minutes.
+  // The pin survives the restart, which can take minutes.
   await sectionRows('Background').locator('div.group', { hasText: 'ago' }).first()
     .waitFor({ state: 'visible', timeout: 300_000 })
   await shot('bg-7-restarted-still-pinned')

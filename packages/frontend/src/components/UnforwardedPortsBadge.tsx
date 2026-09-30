@@ -5,19 +5,16 @@ import { ChevronIcon, LoadingIcon, PortIcon } from '#lib/icons'
 import { forwardDetectedPort, dismissDetectedPort } from '#lib/portsApi'
 
 /**
- * Detected-port badge for servers listening inside the workspace that aren't
- * forwarded; clicking it opens a popover listing the ports. Each row expands
- * to three actions — forward for just this running workspace, forward
- * permanently for the project (persisted to yaac-config.json), or dismiss the
- * offer. The exposure host shown in the header is the server-reported one
- * (`forwardBindHost` on the snapshot — YAAC_FORWARD_BIND), NOT the page
- * origin: this line is the informed-consent claim, and the page can be
- * reached by a different name than the forwarder binds (e.g. an SSH tunnel
- * to a server whose forwarder binds its tailnet IP). What forwarding a port
- * does is make the server OFFER it; a client holds the listener
- * (docs/port-forward-tunnel.md). Mirrors BlockedHostsBadge: renders its
- * own <button>, so inside clickable rows mount it as an overlaid sibling,
- * never nested in the row button.
+ * Badge for ports listening inside the workspace that are not forwarded. Its
+ * popover lists them; each row can forward for this workspace, forward for
+ * the project (saved to yaac-config.json), or dismiss the offer. Forwarding
+ * makes the server offer the port; a client holds the listener
+ * (docs/port-forward-tunnel.md).
+ *
+ * The header shows the server's bind host (`forwardBindHost`), not the page
+ * origin, because the page may be reached by another name (e.g. an SSH
+ * tunnel). Like BlockedHostsBadge it renders its own <button>, so mount it
+ * beside a clickable row, never inside it.
  */
 export function UnforwardedPortsBadge({
   ports,
@@ -37,7 +34,7 @@ export function UnforwardedPortsBadge({
 }): JSX.Element {
   const [expanded, setExpanded] = useState<number | null>(null)
   const [pending, setPending] = useState<number | null>(null)
-  // Rendered under the expanded row only, and cleared on any row toggle.
+  // Shown under the expanded row; cleared on any row toggle.
   const [error, setError] = useState<string | null>(null)
 
   async function act(port: number, action: () => Promise<void>): Promise<void> {
@@ -45,8 +42,7 @@ export function UnforwardedPortsBadge({
     setError(null)
     try {
       await action()
-      // The server pushes a fresh snapshot that drops the handled port, so
-      // the row disappears on its own; just collapse it in the meantime.
+      // The next snapshot drops the port; collapse the row until then.
       setExpanded(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

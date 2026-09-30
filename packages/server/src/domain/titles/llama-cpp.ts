@@ -1,21 +1,16 @@
 /**
- * Pinned llama.cpp runtime for local model inference. Fetches the
- * platform's CPU release archive from GitHub once (the ensurePinnedBinary
- * download-and-pin convention: ~/.cache/yaac, pinned tag, curl | tar),
- * fetches GGUF models into `<dataDir>/models`, and runs one-shot greedy
- * completions via the `llama-completion` binary. Each completion is a
- * short-lived subprocess, so nothing stays resident between calls.
+ * Pinned llama.cpp runtime for local model inference. Downloads the
+ * platform's CPU release archive from GitHub once into ~/.cache/yaac, fetches
+ * GGUF models into `<dataDir>/models`, and runs one-shot greedy completions
+ * with `llama-completion` (a short-lived subprocess per call).
  *
- * The tag is pinned (not "latest") deliberately: T5 encoder-decoder
- * support in llama.cpp is not CI-protected upstream and has regressed
- * silently before, so bumps must re-verify title output quality.
+ * The tag is pinned because T5 encoder-decoder support is not tested
+ * upstream and has regressed silently; re-check title quality when bumping.
  *
- * Extraction is followed by a smoke check, because "the file is there" and
- * "the file runs" are different questions here: the archive's binaries link
- * against the system OpenMP runtime, which it does not bundle. A host
- * without it downloads and extracts perfectly and then fails every single
- * inference — so the check runs once per setup and turns that into one loud,
- * backed-off setup error instead of a silent per-session failure forever.
+ * After extraction a smoke check runs the binary, since the archive links
+ * against a system OpenMP runtime it doesn't ship. Without the check, such a
+ * host would fail every inference silently instead of reporting one setup
+ * error.
  */
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -27,8 +22,8 @@ import { serverLocalPath } from '@yaac/shared/paths'
 /** Pinned llama.cpp release tag; CPU archives exist for linux/macOS × x64/arm64. */
 export const LLAMA_CPP_TAG = 'b9940'
 
-/** The one system library the ubuntu CPU archive links against but does not
- *  ship. Absent, the loader kills every binary in the release before `main`. */
+/** The system library the ubuntu CPU archive links against but doesn't ship.
+ *  Without it, no binary in the release starts. */
 const OPENMP_SONAME = 'libgomp.so.1'
 
 async function fileExists(p: string): Promise<boolean> {
@@ -46,14 +41,10 @@ export function llamaCppDir(): string {
 }
 
 /**
- * Ensure the pinned llama.cpp release is present AND runnable, downloading
- * it once (~10-16MB from github.com). Returns the `llama-completion` binary
- * path. The archive's shared libraries live beside the binaries, so the whole
- * extracted directory is kept. Extraction goes through a tmp dir with a
- * final rename, so a torn download never half-populates the target.
- *
- * Throws when the runtime cannot be made to run, so setup failure is one
- * loud, backed-off error rather than an inference failure per session.
+ * Ensure the pinned llama.cpp release is present and runnable, downloading
+ * it once (~10-16MB) via a tmp dir and rename so a torn download never
+ * half-populates the target. Returns the `llama-completion` path. Throws if
+ * the runtime can't run, so the caller reports one backed-off setup error.
  */
 export async function ensureLlamaCpp(): Promise<string> {
   const dir = llamaCppDir()
@@ -74,17 +65,16 @@ export async function ensureLlamaCpp(): Promise<string> {
 }
 
 /**
- * Loader environment for the release: its shared libraries sit beside the
- * binaries instead of on the system search path, so every invocation has to
- * point the loader at that directory (LD_ on linux, DYLD_ on macOS).
+ * Loader environment for the release, whose shared libraries sit beside the
+ * binaries rather than on the system search path.
  */
 function llamaEnv(dir: string): NodeJS.ProcessEnv {
   // eslint-disable-next-line no-process-env -- env forwarded wholesale to the subprocess, adding the loader path for the archive's bundled shared libs
   return { ...process.env, LD_LIBRARY_PATH: dir, DYLD_LIBRARY_PATH: dir }
 }
 
-/** Run the cheapest thing the binary can do. `undefined` means it loads;
- *  otherwise the loader/runtime failure, which names the missing library. */
+/** Run `--version`. Returns undefined if the binary loads, else the error
+ *  message (which names any missing library). */
 async function runFailure(bin: string): Promise<string | undefined> {
   try {
     await execFileAsync(bin, ['--version'], {
@@ -98,15 +88,12 @@ async function runFailure(bin: string): Promise<string | undefined> {
 }
 
 /**
- * Verify the extracted runtime actually executes, repairing the one failure
- * that is fixable without root: a host missing the OpenMP runtime. The
- * library is fetched from the distro's own mirror and dropped beside the
- * archive's bundled `.so`s, where `llamaEnv` already points the loader — a
- * user-owned cache write, no `sudo` and no system state touched.
+ * Verify the runtime executes. A missing OpenMP runtime is repaired without
+ * root by fetching the library from the distro mirror into the archive
+ * directory, where `llamaEnv` points the loader.
  *
- * Anything else (or a host with no apt) throws, which is the point: the
- * caller's backoff then reports one actionable setup error and retries
- * later, so a manual install is picked up without a server restart.
+ * Anything else throws; the caller's backoff reports one actionable error
+ * and retries later, so a manual install is picked up without a restart.
  */
 async function ensureRuntimeRuns(bin: string): Promise<void> {
   const failure = await runFailure(bin)
@@ -120,8 +107,7 @@ async function ensureRuntimeRuns(bin: string): Promise<void> {
         return
       }
     } catch {
-      // Fall through to the actionable error below — a host without apt, or
-      // an index too stale to resolve the package, is not recoverable here.
+      // No apt, or a stale index: fall through to the error below.
     }
     throw new Error(
       `llama.cpp cannot load ${OPENMP_SONAME} and it could not be fetched automatically. `
@@ -148,9 +134,8 @@ async function vendorOpenMpRuntime(dir: string): Promise<void> {
 }
 
 /**
- * Ensure a GGUF model is present under `<dataDir>/models`, downloading it
- * once (tmp + rename, so a torn download is never mistaken for a model).
- * SERVER-LOCAL: the title model is loaded by the server's own llama.cpp.
+ * Ensure a GGUF model is present under the server-local `<dataDir>/models`,
+ * downloading it once (tmp + rename, so a torn download is never used).
  */
 export async function ensureGgufModel(url: string, filename: string): Promise<string> {
   const modelsDir = serverLocalPath('models')

@@ -7,11 +7,11 @@ import { CodeEditor } from '#components/ui/CodeEditor'
 import { COUNT_DEBOUNCE_MS } from '#components/ui/FindPanel'
 import { COUNT_TIMEOUT_MS, countMatches, type QuerySpec } from '#lib/matchCount'
 
-/** A pattern the fake worker never finishes — a regex that backtracks forever. */
+/** A regex that backtracks forever; the fake worker never answers it. */
 const HANGS = '(a|aa)+b'
 
-/** jsdom has no Worker: this one counts with the real `countMatches`, a tick
- *  later, and never answers for HANGS. */
+/** jsdom has no Worker. This one runs the real `countMatches` a tick later,
+ *  and never answers for HANGS. */
 class FakeWorker {
   onmessage: ((e: MessageEvent) => void) | null = null
   private terminated = false
@@ -69,7 +69,7 @@ describe('FindPanel', () => {
     await settle()
     expect(status()).toBe('1 result')
 
-    // Replace all is an edit like any other: the owner hears of it.
+    // Replace all calls onChange like any edit.
     onChange.mockClear()
     fireEvent.click(screen.getByRole('button', { name: 'Show replace' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Replace' }), { target: { value: 'pin' } })
@@ -84,15 +84,15 @@ describe('FindPanel', () => {
     await settle()
     expect(status()).toBe('Invalid pattern')
 
-    // A regex that never finishes is killed, and stays out of the editor —
-    // its highlighter and next/previous would run it on this thread.
+    // A regex that never finishes is killed and not passed to the editor,
+    // which would run it on the main thread.
     fireEvent.change(find(), { target: { value: HANGS } })
     await settle(COUNT_DEBOUNCE_MS + COUNT_TIMEOUT_MS)
     expect(status()).toBe('Too slow to count')
     expect(getSearchQuery(view.state).search).not.toBe(HANGS)
 
-    // Escape closes the bar and goes no further: a dialog around the editor
-    // dismisses on a document-level Escape.
+    // Escape closes the bar without reaching the document, where it would
+    // close a surrounding dialog.
     const outside = vi.fn()
     document.addEventListener('keydown', outside)
     fireEvent.keyDown(find(), { key: 'Escape', code: 'Escape', keyCode: 27 })

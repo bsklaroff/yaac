@@ -15,27 +15,19 @@ import { serverLog } from '#log'
 import type { YaacConfig } from '@yaac/shared/types'
 
 /**
- * Event-driven reconciler. Steps run when something they watch changes,
- * not on a fixed clock — two lanes feed one serialized pass executor:
+ * Event-driven reconciler. Two sources mark work dirty for one serialized
+ * pass executor:
  *
- * - changes: the convergence signals (workspace pods/Jobs,
- *   namespaces and their pods/services, the set of live conversations,
- *   driver-stream health, and what the egress proxy reports over its
- *   event stream) mark their sources dirty; a pass runs after a short
- *   debounce so event storms coalesce.
- * - resync: a 60s mark that runs EVERY step — the safety net for a missed
- *   event, and the driver for the internally-throttled hygiene steps
- *   (image prewarm/GC, salvage, builder-pod GC).
+ * - changes: convergence signals (workspace pods/Jobs, namespaces and their
+ *   pods/services, live conversations, driver-stream health, egress proxy
+ *   events). A pass runs after a short debounce so bursts coalesce.
+ * - resync: every 60s, run every step. This covers missed events and drives
+ *   the self-throttled hygiene steps (image prewarm/GC, salvage, builder-pod
+ *   GC).
  *
- * There is no poll lane. Every source that had one now has an edge, and
- * the resync is what makes losing an edge cost latency rather than
- * correctness — which is the same reason the informer relists.
- *
- * Passes never overlap (steps share module state) and preserve the step
- * order below; each pass isolates step errors. Substrate steps share one
- * point-in-time view (`TickSnapshot`), created lazily so only a pass that
- * actually runs a substrate step takes one — the first triggered step
- * takes the view, and every later step in the pass sees the same instant.
+ * Passes never overlap (steps share module state) and run steps in order,
+ * isolating each step's errors. Steps in a pass share one point-in-time
+ * `RuntimeSnapshot`, created lazily by the first step that asks for it.
  */
 export interface ReconcilerDeps {
   signal: AbortSignal
@@ -95,8 +87,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         wake = null
       }
       if (signal.aborted) break
-      // Let an event storm (a seeding informer, a multi-pod teardown)
-      // coalesce into one pass instead of one pass per delta.
+      // Debounce so a burst of events becomes one pass.
       await sleep(debounceMs, signal)
       if (signal.aborted) break
       const taken = new Set(dirty)
@@ -113,28 +104,17 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         resync,
         signal,
         snapshot: () => (snapshot ??= workspaceDriver().snapshot(resync)),
-        // Which projects exist is a row question, so it is resolved once here
-        // and handed down — a runtime step never reads db itself. An
-        // unreadable list REJECTS, standing each consumer down for the pass:
-        // the orphan collectors keep only what a live project owns, so an
-        // empty answer would read as "collect everything".
+        // Resolved here so runtime steps never read the db. A failed read
+        // rejects rather than returning empty, because the orphan
+        // collectors would treat an empty list as "collect everything".
         projects: () => (projects ??= listProjectRows()
           .then((rows) => rows.map(({ slug, id }) => ({ slug, id })))),
-        // Memoized per project rather than per pass, since a pass reads a
-        // handful of different ones. Same reason as the one above: which
-        // config a project has is answered by the layers that own disk, so
-        // a runtime step is handed the answer.
-        //
-        // NO catch here either. A project with no config file resolves
-        // `undefined`, which genuinely means "all defaults". A config file
-        // that EXISTS and cannot be read
-        // (malformed JSON, an invalid field, a mid-edit save) rejects, and
-        // the rejection must reach the step: a consumer handed `{}` there
-        // would build the wrong artifact and succeed at it — a
-        // nestedContainers project's chain without its nestable layer — and
-        // then push it. Rejecting stands that step down for the pass with a
-        // log line, the way a failed `desiredWorkspaces()` read stands the
-        // reaper down, and the next pass retries a fixed file.
+        // Memoized per project. No catch: a missing config resolves
+        // `undefined` (all defaults), but an unreadable one (malformed,
+        // invalid, mid-save) must reject. Returning `{}` instead would let
+        // a step build and push the wrong image (e.g. a nestedContainers
+        // chain without its nestable layer). The step skips this pass and
+        // the next pass retries.
         projectConfig: (slug) => {
           let pending = projectConfigs.get(slug)
           if (!pending) {
@@ -143,15 +123,11 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
           }
           return pending
         },
-        // A plain read rather than a memoized one: the marks are in-memory
-        // and a pass that starts before a stop lands must see the mark the
-        // moment it appears, not a value frozen at pass start.
+        // Not memoized: a stop that lands mid-pass must be seen at once.
         terminating: (workspaceId) => isWorkspaceTerminating(workspaceId),
       }
       for (const step of steps) {
-        // Stop starting steps as soon as shutdown signals — an in-flight
-        // step still completes (the shutdown path bounds the drain), but we
-        // don't pile more work behind a signal the server has already seen.
+        // On shutdown, finish the in-flight step but start no more.
         if (signal.aborted) return
         if (!resync && !step.triggers.some((t) => triggers.has(t))) continue
         try {

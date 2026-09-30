@@ -5,31 +5,29 @@
 #   scripts/yaac-backup.sh restore <archive.tgz> [-d target-dir] [--force]
 #
 # The data dir is the only durable state a yaac install has: the PGlite
-# database, .credentials/, the project git clones and per-session
-# workspaces, and the agent homes and transcripts. Everything in Kubernetes
-# and podman is rebuilt from it — `yaac cluster delete` says so explicitly —
-# so restoring is "unpack, then re-run `yaac cluster install`". (The proxy
-# MITM CA lives in the cluster, so a restore mints a new one.)
+# database, .credentials/, the project git clones and workspaces, and the
+# agent homes and transcripts. Kubernetes and podman state is rebuilt from
+# it, so restoring means unpacking and re-running `yaac cluster install`.
+# The proxy MITM CA lives in the cluster, so a restore mints a new one.
 #
-# Three things this CANNOT capture, reported by `dump` and reprinted by
-# `restore`:
+# Three things this cannot capture, reported by `dump` and `restore`:
 #   1. The cluster itself. Re-run `yaac cluster install` on the new host.
 #   2. ssh private keys. .credentials/github.json stores a privateKeyPath
 #      pointing anywhere on the host; the key file is not in the data dir.
 #      Likewise any host path named by `bindMounts` in a yaac-config.json.
 #   3. ~/.gitconfig (git identity).
 #
-# And one it drops on purpose: projects/*/sessions, per-session state that
-# does not outlive the pod it belonged to — including the yaac-in-yaac data
-# dirs. See the exclusion list in `cmd_dump` for what that costs.
+# Per-session state (projects/*/sessions) is dropped on purpose; see the
+# exclusion list in `cmd_dump`.
 #
-# Restore to the SAME absolute path. Every yaac object in the cluster is
-# labelled with sha256(dataDir) (dataDirHash, packages/server/src/platform/k8s/kubectl.ts),
-# and per-project registry names hash it too. A different path means the
-# server cannot see its own cluster objects.
+# Restore to the same absolute path. Every yaac cluster object is labelled
+# with a hash of the data dir path (dataDirHash in
+# packages/server/src/drivers/k8s/substrate/kubectl.ts), and per-project
+# registry names use it too, so a different path hides the server's own
+# cluster objects.
 #
-# This script is standalone POSIX sh with no repo or node dependency, so it
-# can be copied to a bare host to run the restore half.
+# Standalone POSIX sh with no repo or node dependency, so it can be copied
+# to a bare host for the restore.
 set -eu
 
 usage() {
@@ -59,14 +57,10 @@ default_data_dir() {
   fi
 }
 
-# The server holds the PGlite dir single-writer and checkpoints on close, so a
-# hot copy of db/ can capture a torn write-ahead log. Liveness here matches
-# isLockLive()'s cheap half: the lock exists and its pid is alive.
-#
-# `kill -0` reports failure with EPERM for a process owned by another uid, so
-# a server running as a different user reads as "not running". Acceptable for
-# a single-user tool: the data dir it is serving is not one you could read to
-# archive anyway.
+# A copy of db/ taken while the server runs can capture a torn write-ahead
+# log. Liveness matches the cheap half of isLockLive(): the lock exists and
+# its pid is alive. `kill -0` fails for another user's process, but that
+# user's data dir would not be readable anyway.
 server_is_live() {
   lock="$1/.server.lock"
   [ -f "${lock}" ] || return 1
@@ -75,8 +69,8 @@ server_is_live() {
   kill -0 "${pid}" 2>/dev/null
 }
 
-# Report host state the archive cannot contain. Deliberately a grep, not a
-# parse: this is a "go look at these" list, not an input to anything.
+# Report host state the archive cannot contain. A rough grep is enough:
+# the output is a checklist for a human.
 report_external_state() {
   dir="$1"
   gh="${dir}/.credentials/github.json"
@@ -128,33 +122,19 @@ cmd_dump() {
     echo "warning: dumping a live install; db/ may be inconsistent" >&2
   fi
 
-  # Always dropped: dead process state. The locks name a pid and port that
-  # will not exist on the new host, and login-* are mkdtemp scratch dirs
-  # from OAuth flows.
+  # Dropped: the locks (their pid and port won't exist on the new host),
+  # login-* OAuth scratch dirs, and projects/*/sessions, which holds the
+  # staged skills and bin for pods that won't survive a restore. The
+  # workspaces themselves (projects/*/workspaces) are kept.
   #
-  # projects/*/sessions goes too. It is per-session state yaac's own cleanup
-  # and orphan GC remove wholesale, and the pod it belonged to does not
-  # survive a restore anyway: the tmux socket is dead without its kernel,
-  # and the staged skills/bin are re-copied on the next create. Workspaces
-  # are NOT in here — they are the sibling projects/*/workspaces, always
-  # kept.
-  #
-  # An inner yaac running in a workspace keeps its own data dir under that
-  # workspace's checkout, so back it up from inside the workspace if you
-  # need its state.
-  #
-  # cache/ and models/ are re-fetched rather than carried: the Calico
-  # manifest by `yaac cluster install` (checksum-verified), and the ~333MB
-  # title-gen GGUF on first use — that one needs huggingface.co egress, so
-  # an air-gapped host has no titles until it can reach it.
+  # cache/ and models/ are re-fetched: the Calico manifest by
+  # `yaac cluster install`, and the ~333MB title-gen model on first use
+  # (which needs huggingface.co access).
   set -- --exclude=./.server.lock --exclude=./.auth-daemon.lock --exclude='./login-*' \
     --exclude=./cache --exclude=./models
-  # One literal exclude per project rather than `./projects/*/sessions`.
-  # tar's exclude patterns default to --no-anchored --wildcards
-  # --wildcards-match-slash, so that `*` spans `/` and the pattern also
-  # matches any directory named `sessions` at any depth — silently deleting
-  # a `src/sessions/` from a user's checked-out code. A pattern with no
-  # wildcard is compared literally, which is exactly what we want here.
+  # One literal exclude per project, not `./projects/*/sessions`: tar's
+  # default wildcard matching is unanchored and lets `*` span `/`, so that
+  # pattern would also drop any `sessions/` dir inside a user's checkout.
   for sess in "${dir}"/projects/*/sessions; do
     [ -d "${sess}" ] || continue
     slug="$(basename "$(dirname "${sess}")")"
@@ -163,8 +143,7 @@ cmd_dump() {
 
   meta="$(mktemp -d)"
   trap 'rm -rf "${meta}"' EXIT
-  # Provenance, so restore can flag a path change rather than silently
-  # producing an install whose dataDirHash no longer matches its cluster.
+  # Recorded so restore can warn when the data dir path changes.
   cat > "${meta}/.yaac-dump-meta" <<EOF
 origin_data_dir=${dir}
 origin_host=$(hostname 2>/dev/null || echo unknown)
@@ -198,9 +177,7 @@ cmd_restore() {
   [ -f "${archive}" ] || { echo "no such archive: ${archive}" >&2; exit 1; }
   [ -n "${target}" ] || target="$(default_data_dir)"
 
-  # Member name varies by tar flavour: GNU stores it bare, others normalise
-  # to a ./ prefix. Try both rather than depend on --wildcards, which bsdtar
-  # spells differently.
+  # GNU tar stores the member name bare, others with a ./ prefix.
   origin="$( { tar -xzOf "${archive}" .yaac-dump-meta 2>/dev/null ||
     tar -xzOf "${archive}" ./.yaac-dump-meta 2>/dev/null || true; } |
     sed -n 's/^origin_data_dir=//p')"
@@ -227,28 +204,23 @@ cmd_restore() {
     fi
   fi
 
-  # Unpack into a sibling and rename into place, so an interrupted restore
-  # never leaves a half-populated data dir that the server would happily
-  # start against (migrations run, missing state gets recreated). The
-  # sibling shares a filesystem with the target, so the rename is atomic.
+  # Unpack into a sibling dir and rename it into place (atomic on one
+  # filesystem), so an interrupted restore never leaves a half-populated
+  # data dir the server would start against.
   staging="${target}.restore-tmp"
   rm -rf "${staging}"
   mkdir -p "$(dirname "${target}")" "${staging}"
   trap 'rm -rf "${staging}"' EXIT
-  # -p restores the recorded modes instead of masking them through the umask:
-  # db/ and .credentials/ are 0700, the credential and token files 0600.
-  # Without it a umask 022 extract makes every stored token world-readable.
-  # -o (--no-same-owner) because both GNU tar and bsdtar restore the archived
-  # uid when extracting as root: under sudo that would chown everything to
-  # the origin host's uid, while pods here run as *this* server's uid.
-  # Files must belong to whoever runs the server.
+  # -p keeps the recorded modes (0700 dirs, 0600 token files) instead of
+  # applying the umask, which would make tokens world-readable. -o keeps
+  # files owned by the user running the restore; as root, tar would
+  # otherwise restore the origin host's uid.
   echo "restoring ${archive} -> ${target}"
   tar -xzpof "${archive}" -C "${staging}"
   rm -f "${staging}/.yaac-dump-meta"
 
-  # Replace rather than merge: unpacking over a populated dir would leave
-  # everything the archive does not contain, producing a hybrid the restored
-  # DB knows nothing about (projects deleted before the dump reappearing).
+  # Replace rather than merge, so files the restored DB knows nothing about
+  # don't survive.
   if [ "${occupied}" -eq 1 ]; then
     aside="${target}.replaced-$(date +%Y%m%d-%H%M%S)"
     mv "${target}" "${aside}"

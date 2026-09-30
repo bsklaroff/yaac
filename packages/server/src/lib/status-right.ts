@@ -2,15 +2,11 @@ import { shellEscape } from './shell'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * The workspace status bar: what it says, and the command that sets it.
- *
- * Vocabulary rather than mechanism, which is why it is here. The bar reaches
- * a workspace three ways — the launch stamps `YAAC_STATUS_RIGHT` for the
- * postStart hook, the restore rewrites it over the contract's `exec` after a
- * server restart, and the reactive port-forward refreshes it from inside the
- * driver — and it must not change shape between them. Each caller runs the
- * command over whatever transport it already holds; only the strings are
- * shared.
+ * The workspace tmux status bar text. It is set in three places (the
+ * launch's `YAAC_STATUS_RIGHT` for postStart, the restore after a server
+ * restart, and the port-forward refresh inside the driver), so the format
+ * is defined once here and each caller runs the command over its own
+ * transport.
  */
 export function buildStatusRight(
   projectSlug: string,
@@ -24,12 +20,9 @@ export function buildStatusRight(
 }
 
 /**
- * The in-workspace command that sets the bar to `value`.
- *
- * The socket is a parameter because which one a workspace's tmux listens on
- * is the driver's answer (`WorkspacePaths.tmuxSock`) and `#lib` sits below
- * the driver seam — so the caller, which already holds the paths, passes it
- * down rather than this module reaching up for it.
+ * The in-workspace command that sets the bar to `value`. The tmux socket
+ * is passed in because it comes from the driver (`WorkspacePaths.tmuxSock`),
+ * which `#lib` cannot import.
  */
 export function setStatusRightCmd(value: string, tmuxSock: string): string {
   return `tmux -S ${tmuxSock} set-option -t yaac status-right '${shellEscape(value)}'`

@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-// The substrate is the boundary this file mocks, and the only one: every
-// function under test runs for real against it, which is the point — this is
-// where the server's vocabulary meets Kubernetes', and a translation that
-// drifts is invisible to any test that stubs the lookup itself.
+// Only the substrate is mocked, so the mapping from pods to workspaces runs
+// for real.
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
   listWorkspaceJobs: vi.fn(),
@@ -71,10 +69,8 @@ describe('findWorkspace', () => {
       workspaceId: 'abc123def456',
       projectSlug: 'proj',
       jobName: 'yaac-proj-abc123',
-      // Normalized here so nothing above has to know that a pod carries a
-      // raw label string. No `declaredTool`: 'Claude' is not one of the tool
-      // names yaac knows, so it resolves to something runnable without
-      // counting as a declaration a spawn could inherit.
+      // 'Claude' is not a known tool name, so it runs as claude but sets no
+      // `declaredTool` for spawned workspaces to inherit.
       tool: 'claude',
       mode: 'tui',
       running: true,
@@ -91,8 +87,7 @@ describe('findWorkspace', () => {
     expect(await findWorkspace('nope')).toBeUndefined()
   })
 
-  // Prefix expansion is domain's, over rows; unit names are this driver's
-  // own. And an unclaimed spare is not a workspace at all.
+  // Prefix matching happens in domain; unclaimed spares are not workspaces.
   it('matches the exact workspace id only, and never a spare', async () => {
     mockList.mockResolvedValue([pod()])
     for (const input of ['abc123', '', 'yaac-proj-abc123', 'yaac-proj-abc123-xyz']) {
@@ -109,8 +104,7 @@ describe('findWorkspace', () => {
     })
   })
 
-  // The whole point of the cache: a polled endpoint resolves without paying
-  // for a `kubectl get pods` subprocess.
+  // Polled endpoints resolve without a live listing.
   it('answers from the informer cache without listing, when asked to', async () => {
     mockCache.mockReturnValue(healthyCache([pod()]))
     const found = await findWorkspace('abc123def456', { preferCache: true })
@@ -118,9 +112,8 @@ describe('findWorkspace', () => {
     expect(mockList).not.toHaveBeenCalled()
   })
 
-  // A pod reaches the cache via a watch event, so a just-created workspace
-  // can be missing from it for a moment. Concluding "not found" there would
-  // break the PTY attach that runs immediately after a create.
+  // A just-created pod may not be cached yet, and the terminal attach
+  // right after create must still find it.
   it('falls back to a live listing when the cache does not have it yet', async () => {
     mockCache.mockReturnValue(healthyCache([]))
     mockList.mockResolvedValue([pod()])
@@ -129,8 +122,6 @@ describe('findWorkspace', () => {
     expect(mockList).toHaveBeenCalledTimes(1)
   })
 
-  // An unseeded or disconnected informer cannot be trusted for presence
-  // either, so it is bypassed entirely rather than consulted.
   it('ignores an unhealthy cache and lists live', async () => {
     mockCache.mockReturnValue({
       healthy: () => false,
@@ -141,8 +132,7 @@ describe('findWorkspace', () => {
     expect(found?.jobName).toBe('yaac-proj-abc123')
   })
 
-  // Without the flag the cache is not consulted at all: a restart and a
-  // detail render must not read a sub-second-stale tool label.
+  // Restart and detail views must not read a slightly stale tool label.
   it('does not consult the cache unless asked', async () => {
     mockCache.mockReturnValue(healthyCache([pod()]))
     mockList.mockResolvedValue([pod({ jobName: 'yaac-proj-live' })])
@@ -150,8 +140,7 @@ describe('findWorkspace', () => {
     expect(found?.jobName).toBe('yaac-proj-live')
   })
 
-  // Distinct from "no match": a caller with a recorded row to fall back on
-  // catches this, and one without lets it through to the client.
+  // Distinct from "no match", so callers with a DB row can fall back.
   it('surfaces a listing failure as RUNTIME_UNAVAILABLE', async () => {
     mockList.mockRejectedValue(new Error('connection refused'))
     await expect(findWorkspace('abc123def456')).rejects.toMatchObject({
@@ -161,9 +150,8 @@ describe('findWorkspace', () => {
 })
 
 describe('findWorkspaceForTeardown', () => {
-  // A failed warm tears its own spare down, so a teardown that asks for
-  // spares reaches one — and a stop, which does not, never does, not even
-  // through the spare's Job.
+  // A failed prewarm tears down its own spare; a stop must never reach one,
+  // even through its Job.
   it('reaches a spare by its exact id only when asked for spares', async () => {
     mockList.mockResolvedValue([pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
     mockJobs.mockResolvedValue([
@@ -217,8 +205,7 @@ describe('countWorkspaces', () => {
     expect(await countWorkspaces()).toEqual({ foo: 2, bar: 1 })
   })
 
-  // Unlike `listWorkspaces`, a count is a display detail: an unreachable
-  // substrate reports zero rather than failing the listing that wanted it.
+  // A count is display-only, so an unreachable substrate reports zero.
   it('reports nothing when the substrate is unavailable', async () => {
     mockList.mockRejectedValue(new Error('connection refused'))
     expect(await countWorkspaces()).toEqual({})
@@ -227,8 +214,7 @@ describe('countWorkspaces', () => {
 })
 
 describe('countProjectWorkspaces', () => {
-  // Spares included, unlike `countWorkspaces`: a project's own detail page
-  // reports what the substrate is running for it, warmed or not.
+  // Includes spares, unlike `countWorkspaces`.
   it('counts one project’s pods, and zero when the substrate is unavailable', async () => {
     mockList.mockResolvedValue([pod(), pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
     expect(await countProjectWorkspaces('proj')).toBe(2)

@@ -1,10 +1,9 @@
 /*
- * Probe: what actually lands on the clipboard when you select+copy the session
- * header title. Issue observed in the app: copying the title yields the text
- * with a leading AND trailing newline. Hypothesis: the title <span> is a direct
- * flex child, so it's "blockified" (display:block), and copying a block box's
- * text adds boundary newlines. This drives real Chromium to compare candidate
- * DOM structures and see which one copies as a clean single line.
+ * Checks what lands on the clipboard when the workspace header title is
+ * selected and copied. A title <span> that is a direct flex child is
+ * blockified, and copying a block's text can add leading and trailing
+ * newlines. This compares candidate DOM structures in real Chromium to find
+ * one that copies as a single clean line.
  *
  * Structures compared (title text = "My session title"):
  *   A current   flex > span.truncate[text]                 (span is a flex item)
@@ -97,9 +96,7 @@ async function tripleClickCopy(page, id) {
   return await readClipboardAfterCopy(page)
 }
 
-// Realistic user selection: drag across the title from just left of the first
-// glyph to a bit past where short title text ends (~150px in), staying on the
-// same visual row.
+// Realistic user selection: drag across the title (~150px) on one row.
 async function dragCopy(page, id) {
   const b = await boxOf(page, id)
   const y = b.y + b.height / 2
@@ -111,8 +108,8 @@ async function dragCopy(page, id) {
 }
 
 async function main() {
-  // Clipboard API needs a secure context; http://127.0.0.1 qualifies (data:
-  // URLs are opaque origins and expose no navigator.clipboard).
+  // The Clipboard API needs a secure context; http://127.0.0.1 qualifies,
+  // a data: URL does not.
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(HTML)

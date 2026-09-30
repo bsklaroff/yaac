@@ -5,11 +5,10 @@
  */
 
 /**
- * The most image bytes one message may carry, after the browser has
- * downscaled them: a terminal upload whole, or every image of a chat message
- * together. The model APIs cap an image at about this and a request at a few
- * times it, and a chat image is recorded in the conversation's record for
- * good, so anything bigger is refused rather than stored.
+ * Max image bytes per message after browser downscaling: one terminal
+ * upload, or all images of a chat message together. Roughly the model
+ * APIs' per-image limit; chat images are also kept in the conversation log
+ * permanently.
  */
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
@@ -32,9 +31,8 @@ function ascii(bytes: Uint8Array, at: number, text: string): boolean {
 }
 
 /**
- * What image `bytes` actually are — PNG, JPEG, GIF or WebP, the types every
- * agent yaac runs accepts — read from the magic bytes rather than from
- * whatever type the sender declared. Undefined for anything else.
+ * Detect PNG, JPEG, GIF or WebP (the types every supported agent accepts)
+ * from the magic bytes, ignoring the declared type. Undefined otherwise.
  */
 export function sniffImage(bytes: Uint8Array): { mimeType: string; ext: string } | undefined {
   const match = SIGNATURES.find((s) => s.test(bytes))

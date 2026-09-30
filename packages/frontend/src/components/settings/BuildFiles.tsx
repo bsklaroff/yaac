@@ -16,12 +16,10 @@ function formatSize(bytes: number): string {
 }
 
 /**
- * Manager for one build dir's support files (the Dockerfile's build
- * context): a file list with per-row delete, click-to-edit via FileEditor,
- * a new-file input, and file/folder upload buttons. Scope comes from the
- * injected `filesApi` (per-project or global user), so both settings
- * sections render this same component. `title` prefixes the expanded
- * editor's overlay title.
+ * Manages one build dir's support files (the Dockerfile's build context):
+ * list, delete, edit, create, and upload files or folders. `filesApi` picks
+ * the scope (one project or the global user layer). `title` prefixes the
+ * expanded editor's title.
  */
 export function BuildFiles({ filesApi, title }: {
   filesApi: BuildFilesApi
@@ -116,7 +114,7 @@ export function BuildFiles({ filesApi, title }: {
     }
   }
 
-  // Stable per selection — FileEditor reloads when `load` changes identity.
+  // FileEditor reloads when `load` changes identity, so key it on the file.
   const load = useCallback(async (): Promise<string> => {
     if (!selected) return ''
     const file = await filesApi.read(selected)
@@ -228,9 +226,8 @@ export function BuildFiles({ filesApi, title }: {
           onChange={(e) => onPickFiles(e.currentTarget, (f) => f.webkitRelativePath || f.name)}
         />
       </div>
-      {/* The OS picker can't be forced to display dotfiles from a web page,
-          so point at the escape hatches. Folder uploads traverse the picked
-          dir programmatically, so its hidden files come through regardless. */}
+      {/* A web page cannot make the OS picker show dotfiles, so tell the
+          user how. Folder uploads include hidden files anyway. */}
       <p className="text-[10px] leading-relaxed text-text-faint">
         Dotfiles are hidden in the file picker — press{' '}
         <kbd className="font-mono">⌘⇧.</kbd> (macOS) or <kbd className="font-mono">Ctrl+H</kbd>{' '}

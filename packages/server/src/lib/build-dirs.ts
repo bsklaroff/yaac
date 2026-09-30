@@ -2,15 +2,9 @@ import path from 'node:path'
 import { projectConfigDir, serverLocalPath } from '@yaac/shared/project-paths'
 
 /**
- * Where an image build context lives, and what the Dockerfile in it is
- * called — the vocabulary shared by everyone who touches one: the build
- * engine that ships the context to podman, the readers and writers of the
- * Dockerfile, and the routes that let a user edit the support files beside
- * it.
- *
- * In `#lib` because those callers sit on both sides of the domain/runtime
- * line and none of them owns the answer (`#lib/build-context`, the file
- * walk that reads one of these dirs, is here for the same reason).
+ * Where image build contexts live and what their Dockerfiles are called.
+ * Used by the build engine, the Dockerfile readers and writers, and the
+ * build-files routes, which sit on both sides of the domain/runtime line.
  */
 
 /** Basename of the per-project Dockerfile inside its build dir. */
@@ -29,10 +23,9 @@ export function projectBuildDir(slug: string): string {
 }
 
 /**
- * Global user image build dir (`~/.yaac/build/`): the build context for
- * Dockerfile.user, same containment rule as `projectBuildDir`.
- * SERVER-LOCAL: a build context the server hands to the build engine; no
- * pod ever mounts it.
+ * Global user image build dir: the build context for Dockerfile.user, with
+ * the same containment rule as `projectBuildDir`. Server-local; no pod
+ * mounts it.
  */
 export function userBuildDir(): string {
   return serverLocalPath('build')

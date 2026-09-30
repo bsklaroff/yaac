@@ -2,14 +2,9 @@ import type { ComponentType, JSX, ReactNode } from 'react'
 import clsx from 'clsx'
 
 /**
- * Centered empty-state block: a soft icon badge, a title, an optional line of
- * help text, and an optional action (e.g. a New-workspace button). The outer
- * layout — full-height and centered for a pane, or inset at the top of a
- * list — is left to the caller via `className`.
- *
- * `compact` drops the icon badge and shrinks the type for tight spots (e.g.
- * the sidebar list), so it stays a quiet note rather than competing with a
- * full hero empty state shown elsewhere at the same time.
+ * Centered empty-state block: icon, title, optional hint and optional action.
+ * The caller positions it via `className`. `compact` drops the icon and
+ * shrinks the text for tight spots such as the sidebar list.
  */
 export function EmptyState({
   icon: Icon,

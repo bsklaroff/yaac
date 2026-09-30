@@ -1,6 +1,6 @@
 /**
- * Uniform error taxonomy the server returns on every non-2xx response.
- * Every code surfaces as the message of a `ServerError`.
+ * The error codes the server returns in every non-2xx response body.
+ * Clients receive them as a `ServerError`.
  */
 export type ErrorCode =
   | 'NOT_FOUND'
@@ -42,19 +42,12 @@ export function defaultStatus(code: ErrorCode): number {
     case 'AUTH_AGENT_DISCONNECTED': return 503
     case 'UNAUTHENTICATED': return 401
     case 'BAD_HOST': return 403
-    // 501: the request is well-formed and the route exists, but THIS server
-    // has no such feature — a containerless server asked to build an image.
-    // Distinct from 404 (which would say the route is unknown) and from 400
-    // (which would blame the caller for asking).
+    // This server's driver lacks the feature (e.g. image builds under
+    // containerless).
     case 'NOT_SUPPORTED': return 501
-    // 400: the request names a tool this host has not installed. Its own
-    // code rather than a VALIDATION, because a client can act on it — the
-    // webapp offers to run the install and retry — and nothing about the
-    // request was malformed.
+    // A tool this host has not installed; the webapp offers to install it.
     case 'MISSING_TOOL': return 400
-    // 413: the thing asked for exists but is too big to answer with. Said out
-    // loud rather than truncated, because a silently shortened answer is
-    // indistinguishable from a complete one.
+    // Refused rather than silently truncated.
     case 'TOO_LARGE': return 413
     case 'INTERNAL': return 500
   }

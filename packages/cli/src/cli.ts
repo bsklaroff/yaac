@@ -19,19 +19,13 @@ import { workspaceAgents } from '#commands/workspace-agents'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
-/* eslint-disable no-restricted-syntax -- Every `import()` below is a deliberate
-   deferral, not a hoisting oversight: the repo bans dynamic import to keep
-   import graphs static and readable, but this file is the one place where the
-   graph IS the cost. See the note below for what each deferral buys. */
+/* eslint-disable no-restricted-syntax -- The repo bans dynamic import, but
+   here every `import()` defers a costly module graph. See the note below. */
 
 // `#commands/cluster-*`, `@yaac/server/main/*` and the k8s substrate are
-// deliberately absent from this import list: they are loaded inside the
-// actions that need them. Reaching any of them pulls
-// `@kubernetes/client-node` — 967 ESM files behind one barrel, ~2.2s to
-// evaluate — and the CLI is an HTTP client that needs none of it to parse
-// `--version`, reject a bad flag, or run any of the commands that just talk
-// to a running server. Every static import here is on the critical path of
-// *every* invocation, so keep the expensive ones dynamic.
+// imported inside the actions that need them. Each pulls in
+// `@kubernetes/client-node` (about 2s to load), which most commands never
+// use. Every static import here slows down every invocation.
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { configGitIdentity } from '#commands/config-git-identity'
 import { authFake } from '#commands/auth-fake'
@@ -46,16 +40,10 @@ import type { WorkspaceMonitorOptions } from '#commands/workspace-monitor'
 import type { ForwardOptions } from '#commands/forward'
 
 /**
- * Reject a `cluster install`/`delete` invocation the flags and environment
- * already condemn, printing the same message the command itself would.
- * Returns true when it did, and the action must return without loading the
- * command.
- *
- * This exists purely so a rejection stays cheap. The guards are the
- * command's own (arg-guards.ts, which imports nothing but `env`), and the
- * command re-runs them — but reaching the command means evaluating
- * `@kubernetes/client-node` and the cluster feature graph, ~3s to tell
- * someone they typed `--nodes three`.
+ * Reject a `cluster install`/`delete` invocation whose flags or environment
+ * are invalid, printing the command's own message. Returns true when it did,
+ * and the action must then return. Runs the command's guards (arg-guards.ts)
+ * early so a typo doesn't cost loading the kubernetes client first.
  */
 function rejectClusterArgs(command: 'install' | 'delete', options: ClusterInstallArgs = {}): boolean {
   const message = clusterArgError(command, options)
@@ -66,23 +54,14 @@ function rejectClusterArgs(command: 'install' | 'delete', options: ClusterInstal
 }
 
 /**
- * Which substrate the RUNNING server uses, or undefined when none answers.
- *
- * Asked rather than assumed, because a stray `YAAC_DRIVER` in this shell
- * says nothing about the server that is genuinely running. `/health` is
- * auth-exempt, so this needs no credential; a server that does not answer
- * falls back to what this data dir last recorded, which is also the only
- * answer available to `cluster install` — which legitimately runs before
- * any server exists.
+ * Which substrate the running server uses, from its auth-exempt `/health`,
+ * or undefined when none answers. A `YAAC_DRIVER` in this shell says nothing
+ * about the running server. The origin comes from `server.json` like every
+ * other command, not from the lock's port, which for an in-cluster server is
+ * the port inside its pod.
  */
 async function runningServerDriver(): Promise<string | undefined> {
   try {
-    // Resolved the way every other command resolves it: the registered
-    // origin in `server.json`, which `yaac server start` and `yaac cluster
-    // install` write. Never rebuilt from the lock's port — a lock written by
-    // the IN-CLUSTER server carries the port it binds inside its pod, and
-    // `127.0.0.1:<that>` on this machine is some other listener entirely,
-    // quite possibly another yaac.
     const { resolveServerTarget } = await import('@yaac/shared/server-api')
     const target = await resolveServerTarget()
     const res = await fetch(`${target.baseUrl}/api/health`, {
@@ -98,28 +77,14 @@ async function runningServerDriver(): Promise<string | undefined> {
 
 /**
  * Run `yaac server start|stop|restart|logs` against a server that is a
- * Deployment, and report whether it did.
+ * Deployment, and report whether it did. The k8s server runs in the cluster
+ * (docs/server-in-cluster.md), so these verbs scale and roll the Deployment.
+ * On a byo install `logs` also goes through the cluster, since the log is not
+ * on this machine.
  *
- * The k8s driver's server runs IN the cluster (docs/server-in-cluster.md),
- * so these verbs are a scale and a rollout rather than a spawn and a
- * SIGTERM — and spawning a host server beside the pod would be the worst of
- * the available wrong answers, since both would then hold the same data dir.
- * `logs` reads through the cluster on a byo install for the same reason in
- * the other direction: the log is on the server-local claim, which there is
- * not on this machine at all.
- *
- * The cluster is asked rather than a marker file consulted: "is there a
- * server Deployment?" is the actual question, it needs no new state to
- * drift, and it degrades correctly on an install whose server is still a
- * host process (no Deployment → false → the host path runs unchanged).
- *
- * That degradation is only sound for a real "no". `serverDeploymentExists`
- * distinguishes absent (false) from could-not-ask (throws), and the two
- * must not be collapsed: an unset kubeconfig, a kubectl off PATH or an
- * apiserver blip would otherwise read as "no Deployment" and send a k8s
- * install down the host path — where `stop` clears a live pod's lock and
- * `start` spawns a second server onto its data dir. On a k8s install the
- * unanswerable question is a refusal, not a fallback.
+ * Returns false (take the host path) only when the cluster says there is no
+ * Deployment. If the cluster can't be asked, this throws: falling back would
+ * let `start` put a second server on the same data dir.
  */
 async function runDeployedServerVerb(
   verb: 'start' | 'stop' | 'restart' | 'logs',
@@ -127,14 +92,11 @@ async function runDeployedServerVerb(
 ): Promise<boolean> {
   const { recordedDriver } = await import('@yaac/shared/install-driver')
   if (await recordedDriver() !== 'k8s') return false
-  // A kind install's server-local claim is a hostPath into this machine's
-  // data dir: its log is read off the disk, whatever state the pod is in.
+  // A kind install's log is on a hostPath in this machine's data dir.
   const { readServerConfig } = await import('@yaac/shared/server-config')
   if (verb === 'logs' && !(await readServerConfig())?.byo) return false
   const install = await import('@yaac/server/drivers/k8s/install')
-  // Before the cluster is asked anything: a foreign cluster with no server
-  // Deployment would otherwise answer "no" and send the verb down the host
-  // path, whose answers ("server is not running") are about the wrong cluster.
+  // Checked first, or another cluster would answer "no Deployment".
   const refusal = await install.foreignClusterRefusal()
   if (refusal) throw new Error(refusal)
   let deployed: boolean
@@ -167,15 +129,12 @@ async function runDeployedServerVerb(
 }
 
 /**
- * Refuse a `yaac cluster …` command on an install that runs no cluster.
- * Returns true when it did, and the action must return without loading the
- * command — which also keeps the k8s cluster graph (and the kubernetes
- * client with it) out of a containerless install's CLI entirely.
+ * Refuse a `yaac cluster …` command on a containerless install. Returns true
+ * when it did, and the action must then return without loading the command.
+ * Asks the running server first, then falls back to the recorded driver
+ * (all `cluster install` has before any server exists).
  */
 async function rejectClusterOnContainerless(): Promise<boolean> {
-  // The running server first, then this shell's explicit choice, then what
-  // the install last ran. Only the last of those is available to `cluster
-  // setup`, which legitimately runs before any server exists.
   const { recordedDriver } = await import('@yaac/shared/install-driver')
   const running = await runningServerDriver()
   const kind = running ?? await recordedDriver()
@@ -206,21 +165,16 @@ async function rejectForeignCluster(): Promise<boolean> {
   return true
 }
 
-// On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
-// here so every command — `cluster install` (kind inherits our env) and the
-// image build/push paths — targets the same engine. No-op on macOS and nested,
-// and skipped entirely on a containerless install, which has no engine to
-// point at and no images to build.
+// On Linux, point every command (and kind, which inherits our env) at the
+// rootful podman engine via CONTAINER_HOST. No-op on macOS and nested.
 if (env.driver === 'k8s') ensureRootfulPodmanHost()
 
-/**
- * Show subcommand options nested under each subcommand in help output.
- */
 /** commander's accumulator for a repeatable option. */
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value]
 }
 
+/** Help output with each subcommand's options nested under it. */
 function nestedHelp(cmd: Command, helper: Help): string {
   const termWidth = helper.padWidth(cmd, helper)
   const output: string[] = []
@@ -354,9 +308,8 @@ cluster
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
     if (await rejectClusterOnContainerless()) return
-    // No cluster guard: byo refuses outright, and kind deletes its cluster
-    // by name, never through the current context — and a cluster whose
-    // apiserver no longer answers is exactly the one to delete.
+    // No foreign-cluster guard: kind deletes its cluster by name, not via
+    // the current context, and byo refuses delete outright.
     if (rejectClusterArgs('delete')) return
     const { clusterDelete } = await import('#commands/cluster-delete')
     await clusterDelete(options)
@@ -534,9 +487,8 @@ config
   .option('--email <email>', 'Git user.email to set')
   .action(configGitIdentity)
 
-// Top-level, not under `workspace`: with no session named it forwards for
-// every running one, which is the resident-forwarder shape the desktop
-// app runs in its tray.
+// Top-level, not under `workspace`: with no workspace named it forwards all
+// running ones, as the desktop app does from its tray.
 program
   .command('forward')
   .description('Bind the ports a workspace offers on this machine, tunnelling each connection to the server')

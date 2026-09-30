@@ -44,17 +44,8 @@ import {
 } from '#tool-auth-interactive'
 
 /**
- * Parse a provider for a write path, where neither a missing nor an
- * unrecognized id may be coerced: the provider determines which env var the
- * key is seeded under and which host the proxy swaps it on, so storing a
- * guess scopes the credential to a vendor the key does not belong to. Both
- * cases throw, with the message saying which happened.
- */
-/**
- * Rejected values are echoed back to help the caller spot a typo, but the
- * field is a free-form string on the wire — a mis-pasted api key can land in
- * it, and from there into the response body and any logs. Echo enough to
- * identify a typo'd provider id and no more.
+ * Shorten a rejected value before echoing it. The field is free-form, so a
+ * mis-pasted api key could land in it and then in responses and logs.
  */
 function truncateForMessage(value: string): string {
   return value.length > 16 ? `${value.slice(0, 16)}…` : value
@@ -71,10 +62,9 @@ function providerError(tool: 'opencode' | 'pi', value: string | undefined): Serv
 }
 
 /**
- * A dropped credential is otherwise indistinguishable from never having
- * configured the tool — `yaac auth list` just shows it signed out, and the
- * session fails later as an opaque in-container login prompt. Say so at the
- * point of the drop, naming the repair, so the cause is visible.
+ * Warn when a stored credential is ignored. Otherwise it would look like the
+ * tool was never configured, and the session would fail later at an
+ * in-container login prompt.
  */
 function warnDroppedCredential(tool: 'opencode' | 'pi', raw: unknown): void {
   const detail = typeof raw === 'string' && raw
@@ -86,6 +76,10 @@ function warnDroppedCredential(tool: 'opencode' | 'pi', raw: unknown): void {
   )
 }
 
+/**
+ * Parse a provider on a write path. A missing or unknown id throws rather
+ * than being guessed, since the provider decides where the key is sent.
+ */
 function requireOpencodeProvider(value: string | undefined): OpencodeProvider {
   const provider = parseOpencodeProvider(value)
   if (!provider) throw providerError('opencode', value)
@@ -102,17 +96,16 @@ function requirePiProvider(value: string | undefined): PiProvider {
 export const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 export const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 /**
- * Placeholder api-key seeded into session containers (via ANTHROPIC_API_KEY or
- * OPENAI_API_KEY). The proxy only swaps the inbound credential header on
- * api.anthropic.com / api.openai.com when it equals this value — requests
- * carrying a user-supplied key pass through unchanged.
+ * Placeholder api key seeded into workspace containers (as ANTHROPIC_API_KEY
+ * or OPENAI_API_KEY). The proxy swaps the credential header on
+ * api.anthropic.com / api.openai.com only when it equals this value, so a
+ * user-supplied key passes through unchanged.
  */
 export const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
 /**
- * Placeholder GH_TOKEN seeded into session containers so the GitHub CLI (`gh`)
- * treats itself as logged in. The proxy swaps it for the session's real HTTPS
- * git token on api.github.com requests carrying this sentinel; gh traffic with
- * a user-supplied token passes through unchanged.
+ * Placeholder GH_TOKEN seeded into workspace containers so `gh` treats itself
+ * as logged in. The proxy swaps it for the real HTTPS git token on
+ * api.github.com; a user-supplied token passes through unchanged.
  */
 export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 
@@ -125,9 +118,7 @@ function isClaudeOAuthBundle(v: unknown): v is ClaudeOAuthBundle {
   return claudeOAuthBundleSchema.safeParse(v).success
 }
 
-/**
- * Read the yaac-managed Claude credentials file.
- */
+/** Read the yaac-managed Claude credentials file. */
 export async function loadClaudeCredentialsFile(): Promise<ClaudeCredentialsFile | null> {
   try {
     const raw = await fs.readFile(claudeCredentialsPath(), 'utf8')
@@ -147,16 +138,10 @@ export async function loadClaudeCredentialsFile(): Promise<ClaudeCredentialsFile
 }
 
 /**
- * Write a credentials file atomically: same-directory temp file, then
- * rename. These files are read concurrently and continuously — the
- * plan-usage poller, every session registration, the proxy's injection
- * path — and a plain `writeFile` truncates in place, so a reader that
- * lands mid-write sees an empty or half-written file and concludes there
- * are no credentials. `rename(2)` within a directory is atomic, so a
- * reader sees either the old file or the new one.
- *
- * 0600 on the temp file, not just the final one: the bytes are
- * bearer-equivalent from the moment they hit disk.
+ * Write a credentials file atomically (temp file, then rename). These files
+ * are read constantly, and a reader landing mid-write on a plain `writeFile`
+ * would see no credentials. The temp file is 0600 too, since its bytes are
+ * secret from the moment they hit disk.
  */
 async function writeCredentialsFileAtomic(filePath: string, contents: string): Promise<void> {
   const tmp = `${filePath}.tmp-${randomBytes(6).toString('hex')}`
@@ -207,9 +192,7 @@ export async function saveCodexCredentialsFile(creds: CodexCredentialsFile): Pro
   )
 }
 
-/**
- * Save a full Codex OAuth bundle (with refresh token + expiry + id_token).
- */
+/** Save a full Codex OAuth bundle (refresh token, expiry, id_token). */
 export async function saveCodexOAuthBundle(bundle: CodexOAuthBundle): Promise<void> {
   await saveCodexCredentialsFile({
     kind: 'oauth',
@@ -225,11 +208,8 @@ export async function loadOpencodeCredentialsFile(): Promise<OpencodeCredentials
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      // The provider must be recorded and still exist in the registry. A file
-      // missing one (written before the field existed) or naming an id a regen
-      // retired reads as unconfigured rather than being coerced to a default —
-      // that would inject this key on a vendor the user never chose. Re-running
-      // `yaac auth` repairs it.
+      // A missing or retired provider reads as unconfigured rather than
+      // defaulting, which could send the key to the wrong vendor.
       const provider = parseOpencodeProvider(
         typeof o.provider === 'string' ? o.provider : undefined,
       )
@@ -260,7 +240,6 @@ export async function loadPiCredentialsFile(): Promise<PiCredentialsFile | null>
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      // Missing or unknown stored provider → unusable, as for opencode above.
       const provider = parsePiProvider(typeof o.provider === 'string' ? o.provider : undefined)
       if (!provider) {
         warnDroppedCredential('pi', o.provider)
@@ -294,22 +273,14 @@ export async function loadToolCredentialBundle(): Promise<ToolCredentialBundle> 
 }
 
 /**
- * Load the stored auth entry for a specific tool.
- * Returns null if no credentials are configured.
- */
-/**
- * Generic in the tool so a literal argument narrows the result:
- * `loadToolAuthEntry('pi')` yields the pi variant, whose `piProvider` is
- * required, and callers need no fallback for a field this function guarantees.
- * Passing a non-literal `AgentTool` yields the whole union, which callers then
- * narrow on `entry.tool` as usual.
+ * Load the stored auth entry for a tool, or null if none is configured.
+ * A literal argument narrows the result, e.g. `loadToolAuthEntry('pi')`
+ * returns the pi variant with its required `piProvider`.
  */
 export async function loadToolAuthEntry<T extends AgentTool>(
   tool: T,
 ): Promise<Extract<ToolAuthEntry, { tool: T }> | null> {
-  // Each branch below builds the variant matching its own literal `tool`, but
-  // that correspondence is beyond what TS infers across the branches, so the
-  // result is asserted once here rather than at every return.
+  // TS can't infer that each branch returns its own tool's variant.
   return loadToolAuthEntryInner(tool) as Promise<Extract<ToolAuthEntry, { tool: T }> | null>
 }
 
@@ -357,18 +328,15 @@ export async function saveToolAuth(
   tool: AgentTool,
   apiKey: string,
   kind: ToolAuthKind,
-  /** Provider id for provider-scoped tools (opencode/pi) — required for them,
-   *  and validated against that tool's registry: a missing or unrecognized id
-   *  throws rather than storing a credential scoped to the wrong vendor.
-   *  Ignored for claude/codex. */
+  /** Required for opencode/pi and validated against that tool's registry;
+   *  ignored for claude/codex. */
   provider?: string,
 ): Promise<void> {
   const savedAt = new Date().toISOString()
   if (tool === 'claude') {
     if (kind === 'oauth') {
-      // OAuth without a bundle can't be refreshed — callers should use
-      // saveClaudeOAuthBundle. Fall back to a minimal bundle with an already-
-      // expired timestamp so the proxy will force a refresh on first use.
+      // Without a full bundle (saveClaudeOAuthBundle) there is no refresh
+      // token; an expired timestamp makes the proxy refresh on first use.
       await saveClaudeCredentialsFile({
         kind: 'oauth',
         savedAt,
@@ -385,10 +353,8 @@ export async function saveToolAuth(
     return
   }
   if (tool === 'opencode') {
-    // opencode supports api-key only. OAuth payloads are rejected at the
-    // persistToolAuthPayload boundary; if we get here with kind='oauth',
-    // store as api-key defensively so the proxy still has something to
-    // inject.
+    // opencode and pi are api-key only (persistToolAuthPayload rejects
+    // OAuth), so any kind is stored as an api key.
     await saveOpencodeCredentialsFile({
       kind: 'api-key',
       provider: requireOpencodeProvider(provider),
@@ -398,8 +364,6 @@ export async function saveToolAuth(
     return
   }
   if (tool === 'pi') {
-    // pi is api-key only in yaac (OAuth rejected at persistToolAuthPayload);
-    // store defensively as api-key so the proxy still has a key to inject.
     await savePiCredentialsFile({
       kind: 'api-key',
       provider: requirePiProvider(provider),
@@ -408,15 +372,13 @@ export async function saveToolAuth(
     })
     return
   }
-  // Codex OAuth without a bundle can't be refreshed — callers should use
-  // saveCodexOAuthBundle. Store as api-key so the proxy still injects
-  // the token until the user re-runs `yaac auth update`.
+  // Codex OAuth without a full bundle (saveCodexOAuthBundle) can't be
+  // refreshed, so the token is stored as an api key until the user re-runs
+  // `yaac auth update`.
   await saveCodexCredentialsFile({ kind: 'api-key', savedAt, apiKey })
 }
 
-/**
- * Save a full Claude OAuth bundle (with refresh token + expiry + scopes).
- */
+/** Save a full Claude OAuth bundle (refresh token, expiry, scopes). */
 export async function saveClaudeOAuthBundle(bundle: ClaudeOAuthBundle): Promise<void> {
   await saveClaudeCredentialsFile({
     kind: 'oauth',
@@ -425,9 +387,7 @@ export async function saveClaudeOAuthBundle(bundle: ClaudeOAuthBundle): Promise<
   })
 }
 
-/**
- * Remove stored auth for a specific tool. Returns true if an entry was present.
- */
+/** Remove stored auth for a tool. Returns true if an entry was present. */
 export async function removeToolAuth(tool: AgentTool): Promise<boolean> {
   const target =
     tool === 'claude' ? claudeCredentialsPath() :
@@ -444,17 +404,13 @@ export async function removeToolAuth(tool: AgentTool): Promise<boolean> {
 }
 
 /**
- * Persist the result of a login flow into the HOST STORE. For Claude OAuth
- * this stores the full bundle (with refresh token + expiry) so the credential
- * can be refreshed later.
+ * Persist a login result into the host store, keeping the full OAuth bundle
+ * so it can be refreshed.
  *
- * The host store only — reaching every project's tool home is a separate step
- * (`fanOutToolCredentials` in `#domain/auth`) that this module cannot take,
- * because what belongs in a project home depends on whether the runtime
- * mediates egress: a sentinel where a proxy will swap it, the real bundle
- * where nothing would. That is a fact about the registered driver, which is
- * above this layer. Callers on the server side go through
- * `PUT /auth/:tool`, which does both in order.
+ * Copying it into each project's tool home is a separate step
+ * (`fanOutToolCredentials` in `#domain/auth`), because whether a project
+ * gets a placeholder or the real bundle depends on the driver. On the
+ * server, `PUT /auth/:tool` does both.
  */
 export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult): Promise<void> {
   if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
@@ -465,10 +421,8 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
     await saveCodexOAuthBundle(result.codexBundle)
     return
   }
-  // Selected per tool rather than `piProvider ?? opencodeProvider`: collapsing
-  // the two typed fields widens them back to a bare string, and ids like
-  // `openrouter` exist in both registries — so a producer that filled the
-  // wrong tool's field would pass validation against the wrong registry.
+  // Not `piProvider ?? opencodeProvider`: ids like `openrouter` exist in
+  // both registries, so the wrong tool's field could pass validation.
   const provider = tool === 'opencode' ? result.opencodeProvider
     : tool === 'pi' ? result.piProvider
     : undefined
@@ -476,9 +430,8 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
 }
 
 /**
- * Validate and persist a tool-auth payload the CLI sent after running
- * the native login flow locally. Throws `VALIDATION` for anything we
- * don't recognize.
+ * Validate and persist a tool-auth payload the CLI sent after running the
+ * native login flow locally. Throws `VALIDATION` for anything unrecognized.
  */
 export async function persistToolAuthPayload(tool: AgentTool, payload: unknown): Promise<void> {
   if (tool !== 'claude' && tool !== 'codex' && tool !== 'opencode' && tool !== 'pi') {
@@ -496,9 +449,8 @@ export async function persistToolAuthPayload(tool: AgentTool, payload: unknown):
     await persistToolLogin(tool, {
       apiKey: p.apiKey,
       kind: 'api-key',
-      // An unrecognized provider is rejected here rather than coerced: this is
-      // the wire boundary, so a typo'd or retired id should surface to the
-      // caller instead of silently scoping the key to the default vendor.
+      // An unknown provider is rejected here, at the wire boundary, rather
+      // than defaulted.
       opencodeProvider: tool === 'opencode' ? requireOpencodeProvider(providerRaw) : undefined,
       piProvider: tool === 'pi' ? requirePiProvider(providerRaw) : undefined,
     })
@@ -533,10 +485,9 @@ export async function persistToolAuthPayload(tool: AgentTool, payload: unknown):
 }
 
 /**
- * Build the placeholder bundle written into a project's `.claude/.credentials.json`.
- * Real tokens are replaced with sentinels; non-secret fields (expiresAt, scopes,
- * subscriptionType) are preserved so Claude Code inside the container sees a
- * plausible bundle and doesn't prompt for login.
+ * Build the placeholder bundle for a project's `.claude/.credentials.json`.
+ * Tokens become sentinels; non-secret fields (expiresAt, scopes,
+ * subscriptionType) are kept so Claude Code doesn't prompt for login.
  */
 export function buildPlaceholderBundle(bundle: ClaudeOAuthBundle): ClaudeOAuthBundle {
   return {
@@ -548,9 +499,7 @@ export function buildPlaceholderBundle(bundle: ClaudeOAuthBundle): ClaudeOAuthBu
   }
 }
 
-/**
- * Write a placeholder `.credentials.json` to a single project's Claude dir.
- */
+/** Write a placeholder `.credentials.json` to one project's Claude dir. */
 export async function writeProjectClaudePlaceholder(
   slug: string,
   bundle: ClaudeOAuthBundle,
@@ -564,15 +513,9 @@ export async function writeProjectClaudePlaceholder(
 }
 
 /**
- * Write the REAL Claude OAuth bundle into a project's `.credentials.json`.
- *
- * The placeholder writer above exists because a workspace's egress is
- * mediated: the sentinel never leaves the pod, and the proxy swaps it for
- * this bundle on the way out. A runtime with no proxy has no such swap, so
- * the agent needs the real thing — and gets it, on disk, in a directory it
- * can read. That is the containerless bargain stated plainly (see
- * docs/containerless-driver.md): no sandbox, so no secret is held back
- * from what runs in it.
+ * Write the real Claude OAuth bundle into a project's `.credentials.json`,
+ * for a runtime with no proxy to swap a placeholder
+ * (docs/containerless-driver.md).
  */
 export async function writeProjectClaudeCredentials(
   slug: string,
@@ -586,20 +529,13 @@ export async function writeProjectClaudeCredentials(
 }
 
 /**
- * Whether a bundle is one of the sentinels a mediated runtime seeds rather
- * than a credential that could authenticate anything.
- *
- * Read before ever adopting a project-local bundle as the host's. Three
- * different situations produce one, and all three must be refused: a project
- * seeded for a proxied runtime, a data dir flipped from k8s to containerless
- * before anything re-seeded it, and a yaac-in-yaac install whose "real"
- * credentials ARE the outer proxy's sentinels by design (see
- * `buildFakeClaudeOAuthBundle`). Adopting one would overwrite a working host
- * credential with a string that authenticates nothing.
- *
- * The access token alone decides it. A placeholder bundle keeps real
- * non-secret fields (expiry, scopes, account id), so those say nothing about
- * whether the secret half is a sentinel.
+ * Whether a bundle is a placeholder rather than a real credential. Checked
+ * before adopting a project-local bundle as the host's, which would
+ * otherwise overwrite a working credential. Placeholders come from projects
+ * seeded for a proxied runtime, a data dir switched from k8s to
+ * containerless, or a yaac-in-yaac install (see
+ * `buildFakeClaudeOAuthBundle`). Only the access token is checked, since a
+ * placeholder keeps the real non-secret fields.
  */
 export function isPlaceholderClaudeBundle(bundle: ClaudeOAuthBundle): boolean {
   return bundle.accessToken === PLACEHOLDER_ACCESS_TOKEN
@@ -611,24 +547,16 @@ export function isPlaceholderCodexBundle(bundle: CodexOAuthBundle): boolean {
 }
 
 /**
- * Read back the Claude credential a project's tool home currently holds —
- * whatever the agent that ran there last wrote.
+ * Read the Claude credential a project's tool home holds, in claude's native
+ * shape. With no proxy the agent refreshes its own token, so the project
+ * home holds the live credential.
  *
- * The counterpart to `writeProjectClaudeCredentials`, and the reason it
- * exists: under a runtime with no proxy the agent refreshes its own token,
- * so the project home (not the host store) is where the live credential
- * ends up. Reads claude's NATIVE shape, because claude wrote it.
+ * On macOS claude moves the credential into the Keychain item its
+ * `CLAUDE_CONFIG_DIR` names on first refresh and deletes the file, so the
+ * Keychain item wins over any file. Elsewhere only the file is read.
  *
- * Two places one can be, and the Keychain wins. On macOS claude migrates the
- * credential into the item its `CLAUDE_CONFIG_DIR` names on first refresh and
- * deletes the file it came from, so a file still sitting there is by
- * definition the older of the two. Elsewhere the scoped read is a no-op and
- * the file is the only answer.
- *
- * Reports what is THERE, sentinels included — null means the project has no
- * parseable credential at all. Whether a sentinel counts as one is the
- * caller's question, not this reader's: harvesting must refuse it, while
- * deciding whether a project still needs seeding must be able to see it.
+ * Placeholders are returned too; null means no parseable credential. The
+ * caller decides whether a placeholder counts.
  */
 export async function readProjectClaudeBundle(slug: string): Promise<ClaudeOAuthBundle | null> {
   const fromKeychain = readScopedClaudeKeychainPayload(claudeKeychainService(claudeDir(slug)))
@@ -638,22 +566,12 @@ export async function readProjectClaudeBundle(slug: string): Promise<ClaudeOAuth
 }
 
 /**
- * Read back the Codex credential a project's tool home currently holds — the
- * counterpart to `writeProjectCodexAuth`, for the same reason its Claude twin
- * above exists, and reporting sentinels the same way. File-only on every
- * platform: codex keeps no Keychain item.
+ * Read the Codex credential a project's tool home holds, like
+ * `readProjectClaudeBundle` (codex uses no Keychain).
  *
- * A file with no `last_refresh` reads as stamped at the epoch rather than at
- * now. `extractCodexOAuthBundle` synthesizes "now" for a missing stamp, which
- * is right where the answer describes a credential just captured from a login
- * — but here the stamp is a CLOCK that decides which of two credentials
- * supersedes the other, and a synthesized one would rank a stamp-less file
- * newest on every read and let it overwrite the live credential. Ranking it
- * oldest instead means it can never win, and therefore never propagates: the
- * epoch is only ever compared, never written back anywhere.
- *
- * Neither codex nor yaac's own writer omits the field, so this is a guard on
- * a shape neither produces rather than a case anything reaches today.
+ * A file with no `last_refresh` is dated at the epoch, not now: the stamp
+ * decides which of two credentials is newer, so a missing one must never
+ * win. Neither codex nor yaac omits the field; this is only a guard.
  */
 export async function readProjectCodexBundle(slug: string): Promise<CodexOAuthBundle | null> {
   const raw = await fs.readFile(projectCodexAuthFile(slug), 'utf8').catch(() => null)
@@ -676,8 +594,7 @@ function hasCodexRefreshStamp(raw: string): boolean {
 }
 
 /**
- * Every tracked project slug. A missing projects dir reads as none, matching
- * `forEachProject` — a server with no projects yet is not an error.
+ * Every tracked project slug. A missing projects dir reads as none.
  */
 export async function listCredentialProjectSlugs(): Promise<string[]> {
   try {
@@ -688,20 +605,14 @@ export async function listCredentialProjectSlugs(): Promise<string[]> {
 }
 
 /**
- * Drop a project's scoped Claude Keychain item so the file becomes the
- * credential claude reads again.
+ * Drop a project's scoped Claude Keychain item so claude reads the file
+ * again. Claude prefers the Keychain item, so a freshly written file would
+ * otherwise be ignored. Creating an item instead would mean guessing the
+ * account name claude uses. On its next refresh claude moves the file back
+ * into a new item.
  *
- * The write half of the macOS story, done by subtraction. Pushing a fresh
- * bundle into a project whose credential has migrated to the Keychain cannot
- * work by writing the file alone — claude prefers the item, so the new file
- * would be ignored. Rather than mint an item (whose account name is claude's
- * to choose, and a wrong guess leaves a duplicate claude ignores), remove the
- * stale one: with no item to prefer, claude reads the file that was just
- * written, and its next refresh migrates that back into a fresh item.
- *
- * Scoped-only by construction — `deleteScopedClaudeKeychainItem` refuses the
- * un-suffixed service, so this can never log the user's own claude install
- * out. A no-op off darwin and when no item exists.
+ * `deleteScopedClaudeKeychainItem` refuses the unsuffixed service, so the
+ * user's own claude install is never touched. A no-op off darwin.
  */
 export function dropProjectClaudeKeychainItem(slug: string): void {
   deleteScopedClaudeKeychainItem(claudeKeychainService(claudeDir(slug)))
@@ -732,20 +643,18 @@ async function forEachProject(
 }
 
 /**
- * After a successful Claude OAuth login, seed every existing project's
- * `.claude/.credentials.json` with a placeholder bundle. Fresh projects get
- * seeded on `project add`.
+ * After a Claude OAuth login, seed every existing project's
+ * `.claude/.credentials.json` with a placeholder. New projects are seeded on
+ * `project add`.
  */
 export async function fanOutClaudePlaceholders(bundle: ClaudeOAuthBundle): Promise<void> {
   await forEachProject((slug) => writeProjectClaudePlaceholder(slug, bundle), 'failed to seed placeholder creds')
 }
 
 /**
- * Build the placeholder Codex bundle written into a project's `auth.json`.
- * Only `accessToken` and `refreshToken` get sentineled — `idTokenRawJwt`,
- * `expiresAt`, `lastRefresh`, and `accountId` stay real so Codex's Rust
- * deserializer accepts the bundle and so the top-level `account_id` drives
- * the correct `ChatGPT-Account-Id` header on api.openai.com.
+ * Build the placeholder Codex bundle for a project's `auth.json`. Only the
+ * access and refresh tokens become sentinels; the other fields stay real so
+ * Codex accepts the bundle and sends the right `ChatGPT-Account-Id`.
  */
 export function buildCodexPlaceholderBundle(bundle: CodexOAuthBundle): CodexOAuthBundle {
   return {
@@ -759,11 +668,8 @@ export function buildCodexPlaceholderBundle(bundle: CodexOAuthBundle): CodexOAut
 }
 
 /**
- * Write a placeholder Codex `auth.json` to a single project's codex dir.
- * The on-disk shape matches Codex's `AuthDotJson` deserializer: `auth_mode:
- * "chatgpt"`, `tokens.id_token` as a plain JWT string, plus `access_token`,
- * `refresh_token`, `account_id`, and a top-level `last_refresh`. Codex
- * re-parses the JWT claims at load time.
+ * Write a placeholder Codex `auth.json` to one project's codex dir, in the
+ * shape Codex's `AuthDotJson` deserializer expects.
  */
 export async function writeProjectCodexPlaceholder(
   slug: string,
@@ -789,10 +695,8 @@ export async function writeProjectCodexPlaceholder(
 }
 
 /**
- * Write the REAL Codex `auth.json` into a project's codex dir — the
- * unmediated twin of `writeProjectCodexPlaceholder`, for a runtime with no
- * proxy to swap a sentinel (see `writeProjectClaudeCredentials`). Same
- * on-disk shape, real tokens.
+ * Write the real Codex `auth.json` into a project's codex dir, for a runtime
+ * with no proxy (see `writeProjectClaudeCredentials`).
  */
 export async function writeProjectCodexAuth(
   slug: string,
@@ -817,8 +721,8 @@ export async function writeProjectCodexAuth(
 }
 
 /**
- * After a successful Codex OAuth login, seed every existing project's
- * `codex/auth.json` with a placeholder bundle.
+ * After a Codex OAuth login, seed every existing project's
+ * `codex/auth.json` with a placeholder.
  */
 export async function fanOutCodexPlaceholders(bundle: CodexOAuthBundle): Promise<void> {
   await forEachProject((slug) => writeProjectCodexPlaceholder(slug, bundle), 'failed to seed Codex placeholder')
@@ -833,22 +737,13 @@ async function unlinkIgnoreMissing(filePath: string): Promise<void> {
 }
 
 /**
- * Remove every tracked project's claude credential — both places one can be.
+ * Remove every tracked project's claude credential, file and Keychain item,
+ * so running workspaces stop using a revoked credential. Used by
+ * `auth clear` and the webapp's sign-out.
  *
- * Used by `auth clear` (the CLI and the webapp's sign-out reach the same
- * door) to make sure running workspaces don't keep using a credential the
- * user has just revoked: a placeholder the proxy will no longer swap for a
- * real token, or — under a runtime with no proxy — the real bundle itself.
- *
- * The file is only half of it on macOS. A containerless workspace runs claude
- * with `CLAUDE_CONFIG_DIR` set to the project's claude dir, and claude
- * prefers the Keychain there: on its first token refresh it migrates the
- * credential into the item that dir names and deletes the file it came from.
- * So by the time anyone clears auth, the live token may exist ONLY in the
- * Keychain, and unlinking alone would leave a working credential behind
- * while reporting the account signed out. The item is per project because
- * the config dir is, and `deleteScopedClaudeKeychainItem` refuses the
- * un-suffixed service, so the user's own claude install is never touched.
+ * On macOS claude may have moved the live token into the project's scoped
+ * Keychain item (see `readProjectClaudeBundle`), so deleting the file
+ * alone is not enough. The user's own claude install is never touched.
  */
 export async function cleanupProjectClaudePlaceholders(): Promise<void> {
   await forEachProject(async (slug) => {

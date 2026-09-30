@@ -7,21 +7,15 @@ import { serverLog } from '#log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
 /**
- * Convergence: everything push-fed, and the wiring between the driver that
- * observes and the machinery that interprets.
+ * Wires the driver's observations into the driver-neutral machinery. The
+ * status watchers (`#runtime/status`) need recorded conversations and
+ * permission modes from `#db`, and the forwarder restore needs project
+ * config from `#domain`, neither of which a driver may import, so the
+ * composition root supplies them.
  *
- * What is left here after the driver took its own attach is the part that
- * is genuinely the composition root's — the two things a driver may not
- * reach for itself. The status watchers are driver-neutral machinery
- * (`#runtime/status`), and they need a workspace's recorded conversations,
- * which is a row; so main constructs them, feeds them the workspace set the
- * driver reports, and passes the db lookup down. Same for the forwarder
- * restore: machinery, over a project-config reader that is domain's.
- *
- * Two of the pass's trigger sources are raised here rather than by the
- * driver, and that is the point of them — a conversation appearing and a
- * driver connection dropping are in-workspace facts no watch of any
- * substrate can see.
+ * Two reconcile triggers are raised here rather than by the driver, since
+ * no substrate watch can see them: a conversation appearing, and a driver
+ * connection dropping.
  */
 
 export type ChangeSource = ReconcileTrigger
@@ -34,56 +28,44 @@ function fireChange(source: ReconcileTrigger): void {
 }
 
 /**
- * Attach: start the driver, and wire what it reports into the machinery.
+ * Start the driver and wire what it reports into the machinery.
  *
- * `onAttached` fires once really attached, which is not necessarily before
- * this resolves — a driver may defer attaching until first use. The
- * reconcile loop starts from that callback rather than from the return, so
- * a substrate that defers is not woken by the loop's first pass.
+ * `onAttached` fires once actually attached, which may be after this
+ * resolves if the driver defers attaching. The reconcile loop starts from
+ * that callback so its first pass does not force an early attach.
  */
 export async function attachConvergence(opts: {
   onAttached: () => void
 }): Promise<void> {
-  // The ACP driver needs a workspace's already-recorded conversations to
-  // re-address a live agent (and to `session/load` after a restart), and
-  // which conversation sits on a handle is a row.
+  // The ACP driver needs a workspace's recorded conversations to
+  // re-address a live agent or `session/load` after a restart.
   const manager = new StatusWatcherManager({
     recordedSessions: (session) =>
       recordedConversationHandles(session.slug, session.workspaceId),
-    // And its posture, which for `acp` is not a launch argument but something
-    // the adapter is told over the protocol — so the connection needs it, and
-    // only the row knows it.
-    //
-    // A missing row answers `undefined` rather than a default. It is not
-    // evidence that this workspace runs unrestrained, and treating it as such
-    // would auto-answer asks the row might well have said to forward — so the
-    // absence is passed on as the absence it is.
+    // For `acp` the permission mode is sent over the protocol, so the
+    // connection needs it. A missing row yields `undefined`, not a default:
+    // assuming an unrestricted mode could auto-answer asks the user should
+    // have seen.
     permissionMode: async (session) =>
       (await findWorkspaceRow(session.workspaceId))?.permissionMode,
   })
   statusWatchers = manager
 
-  // A conversation appearing, going, or learning its id is a change the
-  // reconcile steps owe work on, and no watch below can see it: for `acp`
-  // the id comes from the in-pod handshake, well after the substrate
-  // deltas that created the window have gone quiet. Without this the
-  // workspace's conversation rows — and so the webapp's chat pane — wait
-  // for the 60s resync.
+  // A conversation appearing, ending or learning its id needs reconcile
+  // work, and no substrate watch sees it (for `acp` the id arrives from the
+  // in-pod handshake). Without this, conversation rows and the chat pane
+  // would wait for the 60s resync.
   onLiveAgentsChanged(() => fireChange('live-agents'))
-  // Losing a driver connection retires the "stream healthy ⇒ tmux alive"
-  // shortcut for that workspace, which is precisely when the stale reaper's
-  // own probes are worth running. In-workspace tmux death is not a
-  // substrate event, so without this the reaper would have nothing to
-  // wake it.
+  // Once a driver connection drops, a healthy stream no longer implies
+  // tmux is alive, so wake the stale reaper to run its own probes.
   onStreamHealthLost(() => fireChange('status-streams'))
 
   await workspaceDriver().start({
     trigger: fireChange,
     workspacesChanged: (workspaces: RuntimeHandle[]) => manager.sync(workspaces),
-    // A server restart loses the in-memory forwarder registry while
-    // running workspaces keep their tmux `status-right` advertising ports
-    // that aren't actually forwarded anymore. Rebuild them before anything
-    // watches, so the displayed port mapping matches reality.
+    // A restart loses the in-memory forwarder registry while running
+    // workspaces still advertise their ports in tmux `status-right`.
+    // Rebuild forwarders before anything watches.
     recover: async () => {
       try {
         await restoreAllWorkspaceForwarders(
@@ -98,24 +80,20 @@ export async function attachConvergence(opts: {
 }
 
 /**
- * Stop everything push-fed, synchronously: the driver's watches and
- * streams, and the per-workspace status watchers over them.
- *
- * Separate from `releaseConvergence` because the reconcile loop drains
- * between the two — the watches must be down before the drain, and the
- * forwarders must survive it (a reap tick still tears its workspace down).
+ * Stop the driver's watches and streams and the status watchers over them.
+ * Separate from `releaseConvergence` because the reconcile loop drains in
+ * between: watches must stop before the drain, but forwarders must survive
+ * it (a reap in the drain still tears its workspace's forwards down).
  */
 export function stopConvergence(): void {
-  // Before the driver's own stop: each watcher holds a long-lived stream
-  // that the driver's transport is underneath.
+  // Stop watchers first; their streams run over the driver's transport.
   statusWatchers?.stopAll()
   statusWatchers = null
   workspaceDriver().stop()
 }
 
-/** Release what was borrowed from the host — the driver's forwarders and
- *  control tunnel. After the reconcile drain, because a reap tick in that
- *  drain still tears its workspace's forwards down. */
+/** Release the driver's forwarders and control tunnel. Called after the
+ *  reconcile drain, since a reap in the drain still uses them. */
 export function releaseConvergence(): void {
   workspaceDriver().release()
 }

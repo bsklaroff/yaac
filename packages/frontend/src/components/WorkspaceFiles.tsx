@@ -68,9 +68,8 @@ function fileIcon(path: string): { Icon: typeof FileIcon; className: string } {
 }
 
 /**
- * One row of the tree. `path` is the path as displayed — under a folder
- * link it runs through the link, and that is what opening it sends: the
- * server follows the link.
+ * One row of the tree. `path` is the displayed path, which may run through a
+ * folder symlink; the server follows the link when it is opened.
  */
 interface Row {
   path: string
@@ -97,19 +96,17 @@ type Editing =
   | { kind: 'file' | 'folder'; parent: string }
   | { kind: 'rename'; path: string }
 
-/**
- * The file explorer (docs/file-editor.md): a workspace's files as a tree
- * built from one gitignore-aware listing, a filter that doubles as
- * quick-open, a "show ignored" toggle, git status colors, and create /
- * rename / delete through an inline input and a context menu. Ephemeral like
- * Changes — torn down off-screen, so a hidden explorer lists nothing — with
- * its view state kept in the store.
- */
-/** The listing's answer for a workspace that is not running. */
+/** The listing's error for a workspace that is not running. */
 function isStopped(err: unknown): boolean {
   return err instanceof ServerError && err.code === 'CONFLICT'
 }
 
+/**
+ * The file explorer (docs/file-editor.md): a tree from one gitignore-aware
+ * listing, a filter that doubles as quick-open, a "show ignored" toggle, git
+ * status colors, and create / rename / delete. Unmounted off-screen; view
+ * state lives in the store.
+ */
 export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.Element {
   const queryClient = useQueryClient()
   const { data, isLoading, isError, error, refetch } = useQuery({
@@ -142,9 +139,8 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
   const matches = useMemo(() => (find ? filterPaths(searchable, find, MAX_MATCHES) : []), [searchable, find])
   const ignoredFiles = useMemo(() => new Set(data?.ignored ?? []), [data?.ignored])
 
-  // The open-files shortcut raises filesFindPending after opening the pane; the
-  // mounted pane consumes it by focusing its filter, which makes Alt-E, a
-  // few letters and Enter a quick-open.
+  // The open-files shortcut (Alt-E) sets filesFindPending; the pane focuses
+  // its filter in response, making Alt-E, a few letters, Enter a quick-open.
   const findPending = useUiStore((s) => s.filesFindPending)
   const setFindPending = useUiStore((s) => s.setFilesFindPending)
   const findRef = useRef<HTMLInputElement | null>(null)
@@ -217,8 +213,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
           setEditing(null)
           return
         }
-        // The panes showing it remount under the new path, which would drop
-        // any text they have not saved — so that text lands first.
+        // Affected panes remount under the new path, so save their text first.
         const affected = openUnder(editing.path)
         if (!(await flushFileSavers(affected.map((p) => fileKey(workspaceId, p))))) {
           setEditError('Resolve unsaved changes first.')
@@ -252,9 +247,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
   const doDelete = async (row: Row): Promise<void> => {
     setConfirmDelete(null)
     const affected = openUnder(row.path)
-    // What the affected panes hold goes with the files — the confirm said so
-    // — and a pending autosave must not run after the delete: it would only
-    // be refused, but it has no business trying.
+    // Drop the affected panes' unsaved text and pending autosaves.
     discardFileSavers(affected.map((p) => fileKey(workspaceId, p)))
     try {
       await deleteWorkspaceEntry(workspaceId, row.path)
@@ -318,8 +311,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
     )
   }
   if (isError && isStopped(error)) {
-    // The listing is read by the checkout's own git, inside the running
-    // workspace; a stopped one's files still open from the tabs they are in.
+    // Listing needs the workspace running; open tabs still work when stopped.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
         <span>Start the workspace to browse its files.</span>
@@ -423,7 +415,6 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
                 return
               }
               if (e.key !== 'Escape') return
-              // First Escape clears the filter, a second one leaves the box.
               e.stopPropagation()
               if (find !== '') setFind('')
               else e.currentTarget.blur()
@@ -503,8 +494,8 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
           <ContextMenu.Trigger
             ref={listRef}
             onContextMenuCapture={() => setContextRow(null)}
-            // A click on empty space clears the selection, so the header's
-            // New file / New folder land at the root again.
+            // Clicking empty space clears the selection, so New file / New
+            // folder target the root.
             onClick={(e) => { if (e.target === e.currentTarget) setSelected(null) }}
             onScroll={(e) => setPaneView(viewKey, { scroll: e.currentTarget.scrollTop })}
             className="min-h-0 flex-1 overflow-y-auto py-0.5"
@@ -642,7 +633,7 @@ function TreeRowView({
       )}
       {children && (
         <div className="relative">
-          {/* The guide line down the open folder's children, under its chevron. */}
+          {/* Guide line down the open folder's children. */}
           <span
             aria-hidden
             className="pointer-events-none absolute inset-y-0 w-px bg-border/60"
@@ -655,8 +646,8 @@ function TreeRowView({
   )
 }
 
-/** The children of a folder the listing leaves out — an ignored one, or a
- *  link into one — fetched when it is first expanded. */
+/** Children of a folder the listing omits (ignored, or a link), fetched on
+ *  first expand. */
 function LazyRows({ workspaceId, parent, render }: {
   workspaceId: string
   parent: Row

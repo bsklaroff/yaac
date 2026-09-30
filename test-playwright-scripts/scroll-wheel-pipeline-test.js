@@ -2,36 +2,31 @@
 /*
  * scroll-wheel-pipeline-test.js
  *
- * Verifies the two tmux-scroll optimizations end-to-end in a real headless
- * Chromium against a real tmux, without needing a cluster or a session:
+ * Verifies two tmux-scroll optimizations end-to-end in headless Chromium
+ * against a real tmux, with no cluster or session:
  *
- *   1. streamd output micro-batching (dockerfiles/streamd/batcher.js): the
- *      same wheel gesture must produce fewer, larger pty data messages from
- *      the workspace streamd than from the pre-change copy baked into the
- *      session image at /opt/yaac/streamd.
- *   2. frontend wheel pacing (packages/frontend/src/lib/wheel-pacing.ts,
- *      bundled from source at runtime): a fast flick's wheel reports must be
- *      released at a bounded per-frame rate with a capped backlog, so the
- *      pane stops scrolling when the gesture stops.
+ *   1. streamd output batching (dockerfiles/streamd/batcher.js): one wheel
+ *      gesture should produce fewer, larger pty messages from the workspace
+ *      streamd than from the pre-batching copy at /opt/yaac/streamd.
+ *   2. Frontend wheel pacing (packages/frontend/src/lib/wheel-pacing.ts,
+ *      bundled from source): a fast flick's wheel reports are sent at a
+ *      bounded per-frame rate with a capped backlog, so scrolling stops when
+ *      the gesture stops.
  *
- * The reproduced pipeline is xterm.js (the real @xterm/xterm bundle, with
- * tmux `mouse on` driving SGR wheel reports) <-WS-> an in-script bridge that
- * mimics the server's per-frame WS forwarding and adds LINK_DELAY_MS of
+ * Pipeline: xterm.js (tmux `mouse on` sends SGR wheel reports) <-WS-> an
+ * in-script bridge that forwards like the server and adds LINK_DELAY_MS of
  * one-way latency <-frame codec-> streamd `pty` stream -> `tmux attach`.
- * Three configs isolate the changes: old streamd + stock wheel (shipped
- * baseline), new streamd + stock wheel (batching alone), new streamd + paced
- * wheel (the full change). The old-vs-new half needs a session image
- * predating the batcher: when /opt/yaac/streamd already ships batcher.js the
- * baseline config and its checks are SKIPped (old == new proves nothing).
- * Prints per-config metrics and PASS/FAIL:
- *   - bytes(old) ≈ bytes(new-unpaced) while messages drop (batching merges,
- *     never adds);
- *   - paced report rate is bounded (≤ ~2/frame + backlog) and few reports
- *     trail the gesture end;
- *   - every config really scrolls (copy-mode history visible on screen).
+ * Three configs: old streamd + stock wheel (baseline), new streamd + stock
+ * wheel (batching alone), new streamd + paced wheel (both). If
+ * /opt/yaac/streamd already ships batcher.js, the baseline and its checks
+ * are skipped, since old and new would be identical.
  *
- * Run (inside a yaac dev session; needs tmux and /opt/yaac/streamd for the
- * old daemon + prebuilt node-pty):
+ * Checks: batching cuts message count without inflating bytes; the paced
+ * report rate is bounded and few reports trail the gesture; every config
+ * actually scrolls into history.
+ *
+ * Run (inside a yaac dev session; needs tmux, and /opt/yaac/streamd for the
+ * old daemon and its prebuilt node-pty):
  *   node test-playwright-scripts/scroll-wheel-pipeline-test.js
  */
 import { execSync } from 'node:child_process'
@@ -67,7 +62,7 @@ const QUIET_MS = 1200
 const sh = (cmd) => execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'] }).toString()
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-// ── Stage the new streamd where its node-pty resolves (prebuilt in-pod) ─────
+// Stage the new streamd beside the baked copy's prebuilt node-pty.
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'scroll-pipeline-'))
 const NEW_STREAMD = path.join(stage, 'new')
 fs.mkdirSync(NEW_STREAMD)
@@ -77,7 +72,6 @@ for (const f of ['streamd.js', 'framing.js', 'batcher.js']) {
 fs.copyFileSync(path.join(OLD_STREAMD, 'package.json'), path.join(NEW_STREAMD, 'package.json'))
 fs.symlinkSync(path.join(OLD_STREAMD, 'node_modules'), path.join(NEW_STREAMD, 'node_modules'))
 
-// ── Bundle the real wheel-pacing source for the browser ─────────────────────
 const esbuildDir = fs.readdirSync(path.join(WORKSPACE, 'node_modules/.pnpm'))
   .find((d) => d.startsWith('esbuild@'))
 const esbuild = require(path.join(WORKSPACE, 'node_modules/.pnpm', esbuildDir, 'node_modules/esbuild'))
@@ -89,15 +83,14 @@ const pacingBundle = (await esbuild.build({
   globalName: 'WheelPacing',
 })).outputFiles[0].text
 
-// ── Per-variant tmux + streamd daemons ──────────────────────────────────────
+// One tmux server + streamd daemon per variant.
 const daemons = {} // variant -> { port, sock, close }
 async function startVariant(variant, moduleDir) {
   const { createStreamd } = await import(path.join(moduleDir, 'streamd.js'))
   const sock = path.join(stage, `tmux-${variant}.sock`)
   sh(`tmux -S ${sock} -f /dev/null new-session -d -s bench -x 200 -y 50`)
   sh(`tmux -S ${sock} set-option -g history-limit 50000 \\; set-option -g mouse on \\; set-option -g status off`)
-  // No trailing `clear`: its E3 erase wipes the very scrollback the wheel
-  // gesture needs to reveal.
+  // No trailing `clear`: it would wipe the scrollback the test scrolls into.
   sh(`tmux -S ${sock} send-keys -t bench "seq -f 'history line %g :: abcdefghijklmnopqrstuvwxyz 0123456789' 1 ${HISTORY_LINES}" Enter`)
   const daemon = createStreamd({ token: 'bench', port: 0, host: '127.0.0.1' })
   const port = await daemon.listen()
@@ -112,12 +105,11 @@ async function startVariant(variant, moduleDir) {
 }
 await startVariant('old', OLD_STREAMD)
 await startVariant('new', NEW_STREAMD)
-await sleep(3000) // let both seq fills finish
+await sleep(3000) // let both `seq` fills finish
 
-// The frame codec (identical old/new; use the workspace copy).
+// The frame codec is the same in old and new.
 const { FrameParser, encodeFrame, FRAME_DATA } = await import(path.join(NEW_STREAMD, 'framing.js'))
 
-// ── Harness page ─────────────────────────────────────────────────────────────
 const PAGE = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/xterm.css">
 <style>html,body{margin:0;height:100%;background:#000}#t{height:100%}</style>
@@ -181,8 +173,8 @@ const server = http.createServer((req, res) => {
   }
 })
 
-// WS bridge: one message per pty data frame (as the production bridge sends),
-// with LINK_DELAY_MS of one-way delay each direction (FIFO timers keep order).
+// WS bridge: one message per pty data frame, as the server sends, delayed
+// LINK_DELAY_MS each way (FIFO timers keep order).
 const { WebSocketServer } = require('ws')
 const wss = new WebSocketServer({ server })
 wss.on('connection', (ws, req) => {
@@ -228,15 +220,14 @@ const httpPort = await new Promise((resolve) => {
   server.listen(0, '127.0.0.1', () => resolve(server.address().port))
 })
 
-// ── Drive one config in the browser and collect its metrics ─────────────────
+// Drives one config in the browser and collects its metrics.
 async function runConfig(browser, { variant, pacing, label }) {
   // Configs sharing a variant share its tmux server: leave copy mode so each
-  // run scrolls from the same bottom-of-history baseline.
+  // run starts from the bottom.
   try { sh(`tmux -S ${daemons[variant].sock} send-keys -t bench -X cancel`) } catch { /* not in copy mode */ }
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
   await page.goto(`http://127.0.0.1:${httpPort}/?variant=${variant}&pacing=${pacing ? 1 : 0}`)
   await page.waitForFunction(() => window.__m.ready, { timeout: 10_000 })
-  // Wait for the attach redraw to go quiet.
   await page.waitForFunction(() => {
     const m = window.__m
     return m.recv.length > 0 && performance.now() - m.recv[m.recv.length - 1].t > 800
@@ -245,9 +236,8 @@ async function runConfig(browser, { variant, pacing, label }) {
     const failed = await page.evaluate(() => window.__m.pacingFailed === true)
     if (failed) throw new Error('patchWheelPacing reported missing internals')
   }
-  // One hard flick, dispatched in-page: CDP mouse.wheel round-trips are
-  // ~30ms each, far slower than a real gesture's event rate. Synthetic
-  // WheelEvents hit the same xterm listener (and the same custom handler).
+  // Dispatch the flick in-page: CDP mouse.wheel takes ~30ms per event, far
+  // slower than a real gesture. Synthetic WheelEvents hit the same handlers.
   await page.evaluate(async (events) => {
     const m = window.__m
     m.recv = []
@@ -277,7 +267,7 @@ async function runConfig(browser, { variant, pacing, label }) {
   const r = await page.evaluate(() => {
     const m = window.__m
     const topLine = window.__term.buffer.active.getLine(0)?.translateToString(true) ?? ''
-    // Peak send rate over any 100ms window (the pacing bound check).
+    // Peak send count over any 100ms window.
     const times = m.sent.map((s) => s.t).sort((a, b) => a - b)
     let peak100 = 0
     for (let i = 0; i < times.length; i++) {
@@ -298,7 +288,6 @@ async function runConfig(browser, { variant, pacing, label }) {
       tailMs: m.recv.length
         ? Math.round(m.recv[m.recv.length - 1].t - m.gestureEnd) : 0,
       topLine: topLine.slice(0, 40),
-      // Scrolled = the top row shows a history line well above the tail.
       scrolled: (() => {
         const n = /history line (\d+)/.exec(topLine)
         return n !== null && Number(n[1]) < 7900
@@ -311,8 +300,8 @@ async function runConfig(browser, { variant, pacing, label }) {
   return { label, ...r }
 }
 
-// A baked streamd that already ships the batcher IS the "new" behavior:
-// comparing it against the workspace copy would silently assert old == new.
+// A baked streamd that already has the batcher is the new behavior, so an
+// A/B against it would prove nothing.
 const oldIsPreBatching = !fs.existsSync(path.join(OLD_STREAMD, 'batcher.js'))
 
 const browser = await pw.chromium.launch()

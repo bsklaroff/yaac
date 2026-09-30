@@ -1,10 +1,8 @@
 import type { JSX } from 'react'
 import { PTY_KEYS, paneKey, sendPtyInput } from '#lib/ptyInput'
 
-/** The keys a phone keyboard doesn't have, in the order a TUI needs them:
- *  dismiss, complete, interrupt, then navigate. Labels stay ASCII apart from
- *  the arrows — neither the UI sans nor the terminal mono stack carries ⇧
- *  (U+21E7), which renders as tofu. */
+/** Keys a phone keyboard lacks: dismiss, complete, interrupt, navigate.
+ *  Labels are ASCII apart from the arrows; our fonts have no ⇧ glyph. */
 const KEYS: { label: string; data: string; aria: string; wide?: boolean }[] = [
   { label: 'esc', data: PTY_KEYS.escape, aria: 'Escape', wide: true },
   { label: 'tab', data: PTY_KEYS.tab, aria: 'Tab', wide: true },
@@ -17,20 +15,12 @@ const KEYS: { label: string; data: string; aria: string; wide?: boolean }[] = [
 ]
 
 /**
- * Accessory keys for a terminal pane on a phone.
+ * Esc, Tab, Ctrl and arrow keys for a `tui` terminal pane on a phone, whose
+ * soft keyboard has none of them.
  *
- * A soft keyboard has no Esc, Tab, Ctrl or arrows, and every agent TUI is
- * driven with all four — so without this a `tui` workspace is readable on a
- * phone but not usable. (An `acp` workspace needs none of it: its pane is a
- * chat composer, see docs/agent-modes.md.)
- *
- * The bar is a sibling of the measured workspace rather than an overlay, so
- * the space it takes comes out of the terminal's height and the PTY's row
- * count follows — nothing ends up hidden behind it.
- *
- * `onPointerDown`+`preventDefault` rather than `onClick`: a tap that moves
- * focus out of xterm's hidden textarea would dismiss the soft keyboard, and
- * the whole point is to press these *while* typing.
+ * The bar sits beside the terminal rather than over it, so the terminal's
+ * rows shrink to fit. Keys fire on pointerdown with `preventDefault` so the
+ * tap does not move focus out of xterm and close the soft keyboard.
  */
 export function TerminalKeyBar({
   workspaceId,

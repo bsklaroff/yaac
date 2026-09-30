@@ -5,8 +5,7 @@ import os from 'node:os'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir, codexDir } from '@yaac/shared/project-paths'
 import { agentDriver, type AgentObservation, type DrivenWorkspace } from '#runtime/agents/drivers'
-// A bound, imported rather than duplicated: a test that hard-codes the budget
-// passes against a driver that changed it.
+// Imported so the test follows any change to the bound.
 import { MAX_FAST_ATTACH_ATTEMPTS } from '#runtime/agents/acp-driver'
 import {
   _resetAcpRegistryForTests,
@@ -26,20 +25,14 @@ import { _ACP_PROFILES } from '#runtime/agents/acp-adapters'
 import type { PermissionMode } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 
-/** What a pi conversation runs when the create named no model: the
- *  authenticated provider's own default, which is also what picks the api-key
- *  the egress proxy swaps. */
+/** A pi conversation's model when none is named: the provider's default. */
 const PI_DEFAULT_MODEL = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
 
 /**
- * The driver seam, exercised the way the status watcher exercises it: connect,
- * feed the pod's side of the wire, and assert the observations that come back.
- *
- * Mocking is at the contract boundary only — the driver's dial and its
- * one-shot exec — so the real ControlModeClient, the real JSON-RPC peer, the
- * real ACP translation and the real conversation state machine all run. That is what
- * makes one test per mode enough to cover the protocol modules underneath
- * them; none of them is mocked out.
+ * Drives each agent driver as the status watcher does: connect, feed the
+ * pod's side of the stream, and assert the observations. Only the driver's
+ * dial and exec are mocked; tmux control mode, JSON-RPC and ACP handling run
+ * for real.
  */
 
 const podExec = vi.fn<WorkspaceDriver['exec']>()
@@ -60,9 +53,8 @@ class FakeStream implements StreamChild {
     this.killed = true
     return true
   }
-  /** Deliver bytes as if the pod sent them. A relay stream hands over raw
-   *  Buffers on TCP read boundaries, so tests that care about decoding pass
-   *  Buffers; the rest pass strings for readability. */
+  /** Deliver bytes as if the pod sent them. Pass a Buffer to test decoding
+   *  across chunk boundaries. */
   feed(data: string | Buffer): void {
     for (const cb of this.dataCbs) cb(data)
   }
@@ -76,7 +68,7 @@ class FakeStream implements StreamChild {
   }
 }
 
-/** Wait for the driver to send `cmd`, then answer it empty, as tmux does. */
+/** Wait for the driver to send `cmd`, then answer it with no output. */
 async function answer(stream: FakeStream, cmd: string): Promise<void> {
   await vi.waitFor(() => expect(stream.writes.join('')).toContain(cmd))
   stream.feed('%begin 1 1 1\n%end 1 1 1\n')
@@ -91,11 +83,7 @@ const session: DrivenWorkspace = {
 
 const connections: Array<{ close(): void }> = []
 
-/**
- * Collect a conversation's events. The conversation retains nothing now — its
- * history is the record acpd writes — so a test that wants to assert on the
- * stream has to watch it.
- */
+/** Collect a conversation's events; it keeps no history itself. */
 function collect(conversation: AcpConversation): AcpEventInit[] {
   const events: AcpEventInit[] = []
   conversation.subscribe((e) => events.push(e))
@@ -103,10 +91,8 @@ function collect(conversation: AcpConversation): AcpEventInit[] {
 }
 
 /**
- * Write the record acpd would have left for a conversation. A reattaching
- * connection has no other way to learn what the agent it just took over is
- * doing — see the reattach tests below — so a test about that has to put one
- * on disk.
+ * Write the log acpd would have left, which is how a reattaching connection
+ * learns what the agent is doing.
  */
 async function record(agentSessionId: string, lines: unknown[]): Promise<void> {
   const dir = acpLogDir(session.slug, session.workspaceId)
@@ -117,23 +103,22 @@ async function record(agentSessionId: string, lines: unknown[]): Promise<void> {
   )
 }
 
-/** acpd stamps every record with the life that wrote it. */
+/** The run header acpd writes first in every log. */
 const lifeLine = {
   jsonrpc: '2.0',
   method: '_acpd/life',
   params: { id: 'life-1', startedAt: '2026-01-01T00:00:00.000Z' },
 }
 
-/** The record a handshake that left the session in `modeId` writes — what a
- *  real reattach always finds, and all it has to tell its posture by. */
+/** The log of a handshake that left the session in `modeId`, which is how a
+ *  reattach learns the posture. */
 const recordMode = (agentSessionId: string, modeId: string): Promise<void> => record(agentSessionId, [
   lifeLine,
   { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
   { jsonrpc: '2.0', id: 'h-1', result: { sessionId: agentSessionId, modes: { currentModeId: modeId } } },
 ])
 
-/** A prompt as the record holds it: the client's own request, carrying the id
- *  its reply will arrive under. */
+/** A prompt as logged: the client's request, with the id its reply will use. */
 const promptLine = (agentSessionId: string, id: string, text: string): unknown => ({
   jsonrpc: '2.0',
   id,
@@ -148,8 +133,7 @@ const helloLine = (firstAttach: boolean): string =>
 const statuses = (seen: AgentObservation[]): string[] =>
   seen.flatMap((o) => (o.kind === 'status' ? [o.status] : []))
 
-/** A permission ask's params, in the shape the pinned claude adapter sends:
- *  the call being asked about, and one option per answer. */
+/** A permission ask's params, as the pinned claude adapter sends them. */
 const askParams = {
   sessionId: 'acp-1',
   toolCall: { toolCallId: 'call-1', title: 'rm -rf build', kind: 'execute' },
@@ -159,15 +143,11 @@ const askParams = {
   ],
 }
 
-/** The agent asking, as a line off the wire. */
+/** The agent's permission request, as a wire line. */
 const permissionAsk = (id: number): string =>
   `${JSON.stringify({ jsonrpc: '2.0', id, method: 'session/request_permission', params: askParams })}\n`
 
-/**
- * A connection reattached to a live conversation under a given posture — the
- * state every permission test starts from, since an ask can only arrive at an
- * agent that is already running.
- */
+/** A connection reattached to a running conversation under a given posture. */
 async function attachedUnder(
   permissionMode: PermissionMode,
   agentSessionId: string,
@@ -217,59 +197,43 @@ describe('agentDriver', () => {
       paths: workspacePathsFixture(),
       permissionMode: 'bypass' as const,
     }
-    // TUI: the tool's own binary, pinned to the conversation id.
+    // TUI: the tool's own binary.
     expect(agentDriver('tui').launchCmd(spec)).toContain('claude --permission-mode bypassPermissions')
     expect(agentDriver('tui').launchCmd(spec)).toContain('--session-id conv-1')
 
-    // ACP: acpd supervising the adapter, with the socket named for the window
-    // — that name is the conversation's handle everywhere else.
+    // ACP: acpd supervising the adapter, its socket named for the window.
     const acp = agentDriver('acp').launchCmd(spec)
     expect(acp).toContain('node /opt/yaac/acpd/main.js')
     expect(acp).toContain('--sock /tmp/yaac-acp/claude-2.sock')
     expect(acp).toContain('-- claude-agent-acp')
-    // The adapter's own cwd, named rather than inherited: acpd is shared by
-    // both runtimes and cannot know where a checkout lives, and a wrong one
-    // fails the spawn as if the binary were missing.
+    // Explicit cwd: acpd cannot know where the checkout is.
     expect(acp).toContain('--cwd /workspace')
-    // The record is named for the CONVERSATION, not the window: a window name
-    // is a slot, and a restart that drops an earlier conversation shifts the
-    // others down a slot, which under slot-naming would truncate one
-    // conversation's history onto another's file.
+    // The log is named for the conversation, not the window, since window
+    // names can shift between restarts.
     expect(acp).toContain('--log /home/yaac/.yaac-acp/conv-1.jsonl')
-    // Still no resume flag — resuming is `session/load`, a protocol call made
-    // after connecting, not a launch argument.
+    // Resuming is a `session/load` call after connecting, not a flag.
     expect(acp).not.toContain('resume')
-    // A single-quoted respawn-window wrapper carries it, so no quotes.
+    // Embedded in a single-quoted respawn-window, so no quotes.
     expect(acp).not.toContain("'")
-    // The adapter reads no flags, so a model reaches it through the one
-    // environment variable it resolves one from.
+    // The adapter takes no flags, so the model goes in an env var.
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
     expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 node /)
     expect(withModel).not.toContain('--model')
   })
 
   it('offers a mode id for exactly the postures create will let through', () => {
-    // The two halves of a posture actually being honored. Create refuses a
-    // posture outside the ACP column, and the adapter is told the mode id for
-    // one that is in it — so a posture in the column with NO mode id has to be
-    // carried some other way, and the profile is where that is said: opencode's
-    // ride `OPENCODE_PERMISSION` at launch (asserted in the launch case below),
-    // and pi has no permission system at all.
-    //
-    // The profiles are read here as a policy constant, not as a unit under
-    // test: what drives them is the launch command and the handshakes in this
-    // same describe.
+    // Create refuses postures outside the ACP-supported set, and the adapter
+    // gets a mode id for the rest. Postures without a mode id are carried
+    // another way (opencode's launch config) or not at all (pi).
     for (const tool of AGENT_TOOLS) {
       const withModeId = SUPPORTED_PERMISSION_MODES[tool].filter(
         (m) => _ACP_PROFILES[tool].modeIds[m] !== undefined,
       )
-      // Never a mode id for a posture create would refuse: that would be one
-      // reachable only by a caller who bypassed the refusal.
+      // No mode id for a posture create would refuse.
       const supported = ACP_SUPPORTED_PERMISSION_MODES[tool]
       expect(withModeId.filter((m) => !supported.includes(m)), tool).toEqual([])
     }
-    // The carried-elsewhere cases, stated so a silent change to either table
-    // has to be deliberate.
+    // The postures carried some other way, pinned explicitly.
     expect(SUPPORTED_PERMISSION_MODES.claude.filter((m) => _ACP_PROFILES.claude.modeIds[m] === undefined))
       .toEqual([])
     expect(_ACP_PROFILES.opencode.modeIds).toEqual({ plan: 'plan' })
@@ -288,9 +252,8 @@ describe('agentDriver', () => {
         ...over,
       } as never)
 
-    // codex-acp takes no flags at all: a model is merged into the codex
-    // session config through the environment, and the browser login is shut
-    // off because nothing in a workspace could open one.
+    // codex-acp takes no flags: the model goes through the environment, and
+    // browser login is disabled since a workspace cannot open one.
     const codex = spec('codex')
     expect(codex).toContain('NO_BROWSER=1 node /opt/yaac/acpd/main.js')
     expect(codex).toContain('-- codex-acp')
@@ -298,25 +261,22 @@ describe('agentDriver', () => {
     expect(spec('codex', { model: 'gpt-5.2-codex' }))
       .toContain('CODEX_CONFIG="{\\"model\\":\\"gpt-5.2-codex\\"}"')
 
-    // opencode IS its own adapter, and its posture is the same config document
-    // the TUI is launched with, built by the same function — one table, both
-    // modes.
+    // opencode is its own adapter, with the same posture config as its TUI.
     const opencode = spec('opencode')
     expect(opencode).toContain('-- opencode acp')
     expect(opencode).toContain('OPENCODE_CONFIG_CONTENT=')
     expect(opencode).toContain('\\"effect\\":\\"allow\\"')
     expect(spec('opencode', { permissionMode: 'plan' })).toContain('\\"effect\\":\\"ask\\"')
-    // No model in it, even when one was asked for: opencode's ACP path ignores
-    // the config's `model`, so it is named over the protocol instead.
+    // opencode's ACP mode ignores the config's `model`; it is set over the
+    // protocol instead.
     expect(spec('opencode', { model: 'opencode/big-pickle' })).not.toContain('big-pickle')
 
-    // pi-acp takes neither: its model is a protocol call after the handshake.
+    // pi-acp takes neither; its model is set after the handshake.
     const pi = spec('pi')
     expect(pi).toContain('-- pi-acp')
     expect(pi.slice(0, pi.indexOf('node '))).toBe('')
 
-    // Every one of them still travels inside a single-quoted respawn-window
-    // wrapper, so none may contain a quote of its own.
+    // All are embedded in a single-quoted respawn-window.
     for (const cmd of [codex, opencode, pi]) expect(cmd).not.toContain("'")
   })
 
@@ -330,33 +290,30 @@ describe('agentDriver', () => {
       log: () => { /* quiet */ },
     }))
 
-    // tmux's unsolicited attach banner, then the pane enumeration reply.
+    // tmux's attach banner, then the pane listing reply.
     stream.feed('%begin 1 100 0\n%end 1 100 0\n%session-changed $0 yaac\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
     stream.feed('%begin 1 101 1\n%7\tclaude\t0\t\n%end 1 101 1\n')
     await answer(stream, "refresh-client -B 'session-7:%7:#{=1024;s/[^ -~]//:@yaac-session}'")
     await answer(stream, "refresh-client -B 'status-7:%7:#{pane_title}'")
-    // Another subscription per agent pane follows what its tool reports: the
-    // model option claude's hooks set the moment `/model` lands, and the
-    // permission mode they set as a change takes hold — each filtered and
-    // bounded by tmux itself, since anything in the workspace can set them and
-    // tmux would otherwise pass a newline straight into this stream.
+    // Each agent pane also subscribes to the model and permission mode its
+    // tool's hooks report. tmux filters and bounds the values, since the
+    // workspace can set them to anything, including newlines.
     await answer(stream,
       "refresh-client -B 'report-7:%7:#{=128;s/[^ -~]//:@yaac-model}|#{=32;s/[^A-Za-z-]//:@yaac-permission-mode}'")
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
-    // The conversation's handle is its pane id; it names no conversation yet.
+    // The handle is the pane id; no conversation id yet.
     expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] })
     expect(seen.some((o) => o.kind === 'command-channel' && o.send !== null)).toBe(true)
 
-    // A pushed subscription value is classified against the pane's own tool.
+    // Classified by the pane's own tool.
     stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
     expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'running' })
     stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
     expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'waiting' })
 
-    // Nothing reported yet is not a model; a report, and then a switch, each
-    // republish the live set with it.
+    // A report, and then a switch, each republish the live set.
     const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
     const before = agentSets().length
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : \n')
@@ -370,15 +327,14 @@ describe('agentDriver', () => {
     }))
     expect(agentSets().length).toBe(before + 2)
 
-    // The mode rides the same push, in claude's own words — which posture it
-    // stands for is decided where the workspace's row is, not here.
+    // The mode arrives in claude's own terms; mapping it to a posture happens
+    // elsewhere.
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|acceptEdits\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
       agents: [{ handle: '%7', tool: 'claude', model: 'claude-sonnet-5', reportedMode: 'acceptEdits' }],
     }))
-    // An unchanged push is not a change, and an empty half leaves the last
-    // report standing.
+    // An unchanged push is ignored; an empty half keeps the last value.
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|\n')
     expect(agentSets().length).toBe(before + 3)
   })
@@ -391,9 +347,8 @@ describe('agentDriver', () => {
     }))
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
-    // The agent window, already naming its conversation, and a scratch
-    // shell: the shell gets the session subscription alone — no status and no
-    // posture of its own.
+    // An agent window and a scratch shell; the shell gets only the session
+    // subscription.
     stream.feed('%begin 1 101 1\n%7\tclaude\t0\tclaude|conv-a|claude/projects/-workspace/conv-a.jsonl\n'
       + '%9\tNew Shell\t0\t\n%end 1 101 1\n')
     expect(stream.writes.join('')).toContain(
@@ -409,16 +364,14 @@ describe('agentDriver', () => {
     const push = (pane: string, value: string): void =>
       stream.feed(`%subscription-changed session-${pane} $0 @0 0 %${pane} : ${value}\n`)
 
-    // Read with the listing, so the very first live set already names it: one
-    // published before the subscription's first push would name nothing, and
-    // read as every agent having exited.
+    // Taken from the listing, so the first live set already names the
+    // conversation.
     expect(agentSets()).toEqual([{
       kind: 'live-agents',
       agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' }],
     }])
 
-    // codex, run by hand in the shell, names its own conversation there — a
-    // live conversation all the same.
+    // codex started by hand in the shell also counts.
     push('9', 'codex|thread-1|codex/sessions/rollout-thread-1.jsonl')
     await vi.waitFor(() => expect(latest()).toEqual({
       kind: 'live-agents',
@@ -428,9 +381,8 @@ describe('agentDriver', () => {
       ],
     }))
 
-    // The shell's codex quit; the agent window names only its own tool's
-    // conversation (a respawned pane keeps a retooled spare's old option), and
-    // a value no reporter could have written is no conversation at all.
+    // The shell's codex quit. The agent window only counts its own tool's
+    // conversation, and malformed values count as none.
     push('9', '')
     push('7', 'pi|pi-1|')
     await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
@@ -440,8 +392,7 @@ describe('agentDriver', () => {
     }))
     push('7', 'claude|$(rm -rf ~)|')
     await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
-    // A restart puts the id on a launch command as a bare word, where a
-    // leading dash would be a flag.
+    // Ids go on a launch command line, where a leading dash is a flag.
     push('7', 'claude|conv-c|')
     push('7', 'claude|--dangerously-skip-permissions|')
     await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
@@ -457,17 +408,14 @@ describe('agentDriver', () => {
     const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
 
-    // The keepalive sits in the agent's window before the agent does, and is
-    // no agent: published as one it would name no conversation, and mark
-    // every conversation the launch recorded inactive.
+    // The placeholder in the agent window before launch is not an agent.
     await vi.waitFor(() => expect(listings()).toBe(1))
     stream.feed('%begin 1 101 1\n%7\tclaude\t1\t\n%end 1 101 1\n')
     await answer(stream, "refresh-client -B 'boot-7:%7:#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}'")
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     expect(agentSets()).toEqual([])
 
-    // A respawn announces nothing but that: the agent, already naming the
-    // conversation its launch resumed, is then enumerated.
+    // After the respawn signal the agent pane is listed again.
     stream.feed('%subscription-changed boot-7 $0 @0 0 %7 : 0\n')
     await vi.waitFor(() => expect(listings()).toBe(2))
     stream.feed('%begin 1 102 1\n%7\tclaude\t0\tclaude|conv-a|\n%end 1 102 1\n')
@@ -478,8 +426,7 @@ describe('agentDriver', () => {
       { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a' }] },
     ]))
 
-    // A watched pane's own push outranks any later listing of it, which can
-    // be older than the push: tmux would never push that value again.
+    // A pane's push wins over a later listing, which may be older.
     stream.feed('%subscription-changed session-7 $0 @0 0 %7 : claude|conv-b|\n')
     stream.feed('%window-add @1\n')
     await vi.waitFor(() => expect(listings()).toBe(3))
@@ -490,9 +437,9 @@ describe('agentDriver', () => {
   })
 
   it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
-    // codex can run nothing on a model switch, but it retitles the pane: the
-    // format cuts the model's display name out of the title, and codex's own
-    // cached catalog maps it back to the slug the rest of yaac speaks.
+    // codex has no hook for a model switch, but retitles the pane. The model's
+    // display name is cut from the title and mapped back to its slug via
+    // codex's cached catalog.
     const stream = new FakeStream()
     const seen: AgentObservation[] = []
     connections.push(agentDriver('tui').connect({ ...session, tool: 'codex' }, (o) => seen.push(o), {
@@ -506,15 +453,13 @@ describe('agentDriver', () => {
     await answer(stream, "refresh-client -B 'report-2:%2:#{?#{m/r: [|] ,")
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
 
-    // No cache — api-key auth and a failed fetch never write one — but the
-    // title still shows a display name from codex's bundled catalog, so the
-    // catalogs' own spelling rule stands in.
+    // Without a cached catalog, the catalog naming rule is applied in reverse.
     stream.feed('%subscription-changed report-2 $0 @0 0 %2 : GPT-6-Astra\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'gpt-6-astra' }],
     }))
 
-    // With one, the cache is asked first — for a name the rule would get wrong.
+    // With a cache, it is checked first.
     await fs.mkdir(codexDir('demo'), { recursive: true })
     await fs.writeFile(path.join(codexDir('demo'), 'models_cache.json'), JSON.stringify({
       models: [
@@ -530,7 +475,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'odd-slug' }],
     }))
-    // A model the catalog does not list is titled by its slug already.
+    // An unlisted model is already titled by its slug.
     stream.feed('%subscription-changed report-2 $0 @0 0 %2 : my-made-up-model\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'my-made-up-model' }],
@@ -547,13 +492,13 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
 
     stream.emitExit()
-    // Retry policy is the watcher's; the driver only reports the fact.
+    // The watcher owns retries; the driver only reports.
     expect(seen.some((o) => o.kind === 'down')).toBe(true)
     expect(seen.at(-2)).toEqual({ kind: 'command-channel', send: null })
   })
 
   it('records no conversation under an id the agent minted in the wrong shape', async () => {
-    // The id is later joined into record paths and a restart's launch line.
+    // The id ends up in file paths and launch commands.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     const seen: AgentObservation[] = []
@@ -578,8 +523,7 @@ describe('agentDriver', () => {
   })
 
   it('drives an acp conversation end to end: handshake, updates, status, prompt', async () => {
-    // claude's adapter answers in its picker's values, which only its own
-    // list names.
+    // claude's adapter reports picker values, named only in its own list.
     const modelChoices = [
       { value: 'default', name: 'Default (recommended)' },
       { value: 'opus[1m]', name: 'Opus 5.5' },
@@ -593,20 +537,16 @@ describe('agentDriver', () => {
       dial: () => stream, commandTimeoutMs: 1_000, log: () => {},
     }))
 
-    // The window enumeration is the health probe; only agent windows count
-    // (`init` is an init-command window, not a conversation).
+    // Only agent windows count (`init` runs init commands).
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
-    // The driver writes nothing until acpd greets it, so "attached" is the
-    // registry entry appearing — under its handle, since no id exists yet.
+    // Registered under its handle, since no id exists yet.
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
-    // acpd's greeting starts the handshake.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
 
     const init = stream.sent().find((m) => m.method === 'initialize')!
-    // yaac declines fs/terminal: the agent is in the container, on the real
-    // /workspace, and serves itself.
+    // No fs/terminal capabilities: the agent has the real files itself.
     expect((init.params as { clientCapabilities: unknown }).clientCapabilities).toEqual({
       fs: { readTextFile: false, writeTextFile: false },
       terminal: false,
@@ -621,10 +561,7 @@ describe('agentDriver', () => {
       result: { sessionId: 'acp-1', configOptions: [{ id: 'model', currentValue: 'opus[1m]', options: modelChoices }] },
     })}\n`)
 
-    // The conversation id the agent minted is published — this is what the
-    // registry records, replacing the TUI mode's hook and its log entirely —
-    // and so is the model the reply said the session opened with, in the
-    // adapter's own vocabulary and under the name its list gives it.
+    // The agent's conversation id and initial model are published.
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
@@ -632,21 +569,18 @@ describe('agentDriver', () => {
     }))
 
     const events = collect(acpConversation('demo', 'wt-1', 'acp-1')!)
-    // A prompt turn: status is exact, not scraped from a spinner.
+    // Status comes from the protocol, not from a spinner.
     await driver.deliverPrompt(session, 'claude', 'hello there')
     await vi.waitFor(() => expect(seen).toContainEqual({ kind: 'status', handle: 'claude', status: 'running' }))
     const prompt = stream.sent().find((m) => m.method === 'session/prompt')!
     expect(prompt.params).toEqual({ sessionId: 'acp-1', prompt: [{ type: 'text', text: 'hello there' }] })
 
-    // Agent output is deliberately NOT observed here: `session/update`
-    // notifications reach a pane through acpd's record, not this socket, so a
-    // conversation emits only what the record cannot carry — the turn
-    // boundaries. What the record produces is covered in acp-log.test.ts.
+    // Agent output reaches panes through acpd's log (acp-log.test.ts); the
+    // conversation itself emits only turn boundaries.
     const update = (u: unknown): string =>
       `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-1', update: u } })}\n`
     stream.feed(update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'on it' } }))
-    // A switch mid-conversation (a `/model` typed into the chat) is pushed the
-    // moment the adapter reports it, with no answer from the new model needed.
+    // A `/model` switch is published as soon as the adapter reports it.
     stream.feed(update({
       sessionUpdate: 'config_option_update',
       configOptions: [
@@ -687,8 +621,7 @@ describe('agentDriver', () => {
     expect(load.params).toMatchObject({ sessionId: 'acp-old', cwd: '/workspace' })
     expect(stream.sent().some((m) => m.method === 'session/new')).toBe(false)
 
-    // The reply names the model the session holds — here in the `models`
-    // shape — and that is published with the conversation.
+    // The reply's model (in the `models` shape) is published.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: load.id, result: { models: { currentModelId: 'claude-fable-5' } } })}\n`)
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
@@ -706,8 +639,7 @@ describe('agentDriver', () => {
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
-    // acpd says this agent has already spoken to someone: re-running
-    // `initialize` against a live process is undefined, so nothing is sent.
+    // Already initialized, so `initialize` is not sent again.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
     await new Promise((r) => setTimeout(r, 50))
@@ -716,11 +648,8 @@ describe('agentDriver', () => {
   })
 
   it('recovers a turn the previous connection started, and ends it on the orphan reply', async () => {
-    // The agent outlives the connection watching it, so a reattach — after a
-    // relay drop, a streamd self-heal, a server restart — can land mid-turn.
-    // ACP cannot say so: a turn is running iff YOUR `session/prompt` is
-    // unanswered, and this connection sent none. acpd's record is the only
-    // thing that knows, because it holds both directions of the dialogue.
+    // A reattach can land mid-turn. ACP cannot report that, since this
+    // connection sent no prompt, so the log (which has both directions) is used.
     await record('acp-live', [
       lifeLine,
       promptLine('acp-live', 'old-1', 'refactor the thing'),
@@ -743,8 +672,7 @@ describe('agentDriver', () => {
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-live')!
-    // Subscribed before the greeting, which is where a pane that stayed open
-    // across the drop sits: it must not miss the boundary it never sent.
+    // Subscribed before hello, like a pane that stayed open across the drop.
     const events = collect(conversation)
 
     stream.feed(helloLine(false))
@@ -752,21 +680,16 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'status', handle: 'claude', status: 'running',
     }))
-    // Nothing was guessed in the meantime. A sweep publishing `waiting` for a
-    // conversation that had not classified itself is what painted a working
-    // agent idle — every 20s, for as long as the turn ran.
+    // No guessed `waiting` status before the log was read.
     expect(statuses(seen)).toEqual(['running'])
-    // A pane has no `user` event of its own for this turn, so the turn
-    // beginning has to be announced rather than inferred.
+    // The pane sent no prompt for this turn, so `turn-start` is announced.
     expect(events.map((e) => e.type)).toEqual(['turn-start'])
 
-    // And the recovered turn is interruptible: cancel guards on the
-    // conversation believing itself busy, so it used to be a silent no-op here.
+    // The recovered turn can be cancelled.
     conversation.cancel()
     expect(stream.sent().some((m) => m.method === 'session/cancel')).toBe(true)
 
-    // The reply carries the dead connection's request id, so it arrives as an
-    // orphan — which is what ends the turn recovery started.
+    // The reply to the old connection's request ends the recovered turn.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } })}\n`)
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'status', handle: 'claude', status: 'waiting',
@@ -775,9 +698,7 @@ describe('agentDriver', () => {
   })
 
   it('classifies a reattach as waiting when the record shows the turn was answered', async () => {
-    // The reply can land while nothing is attached — acpd holds nothing for an
-    // absent client — in which case no orphan ever arrives and the record is
-    // the only evidence the turn finished.
+    // The reply arrived while nothing was attached, so only the log shows it.
     await record('acp-done', [
       lifeLine,
       promptLine('acp-done', 'old-1', 'what changed?'),
@@ -794,15 +715,12 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-done')).toBeDefined())
     stream.feed(helloLine(false))
 
-    // Still classified, rather than left unclassified forever: an idle
-    // conversation nobody publishes is one the sidebar cannot show either.
+    // Still published, so the sidebar can show it.
     await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting']))
   })
 
   it('reads a turn whose agent died as ended, not as still running', async () => {
-    // The bound on "last prompt unanswered ⇒ in flight": a turn whose agent
-    // exited has no reply and never will, so without acpd's exit line the scan
-    // would pin the conversation `running` with nothing left to release it.
+    // acpd's exit line ends an unanswered turn.
     await record('acp-dead', [
       lifeLine,
       promptLine('acp-dead', 'old-1', 'do the thing'),
@@ -823,10 +741,8 @@ describe('agentDriver', () => {
   })
 
   it('holds a prompt sent straight after a reattach behind the turn it recovered', async () => {
-    // The recovered turn is running at the adapter but was never put in the
-    // queue — nothing in this connection started it. Dispatching over it would
-    // overlap two turns at an adapter that assumes one, and the first reply
-    // back would end the wrong one.
+    // Sending now would overlap two turns, and the first reply would end the
+    // wrong one.
     await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'the running turn')])
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
@@ -844,7 +760,7 @@ describe('agentDriver', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(false)
 
-    // The orphan ends the recovered turn, which is what releases the queue.
+    // The old reply ends the recovered turn and releases the queue.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } })}\n`)
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(true))
     expect((stream.sent().find((m) => m.method === 'session/prompt')!
@@ -852,9 +768,8 @@ describe('agentDriver', () => {
   })
 
   it('lets a reply that beats the record scan settle the status, rather than stranding it busy', async () => {
-    // Recovery is a file read, so anything that resolves the status first knows
-    // something newer than the record does. A late `true` overwriting it would
-    // pin a conversation busy with no event left to release it.
+    // Anything that settles the status before the log is read is newer than
+    // the log, so the scan must not overwrite it.
     await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'go')])
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
@@ -867,8 +782,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
 
     stream.feed(helloLine(false))
-    // Same tick as the greeting: the scan cannot have answered yet, because it
-    // has not been off the event loop.
+    // Same tick as hello, so the log scan has not finished.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } })}\n`)
 
     await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting']))
@@ -883,8 +797,7 @@ describe('agentDriver', () => {
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: () => stream,
-      // A reattach needs the recorded id: without one the conversation cannot
-      // be addressed at all and the driver tears it down (covered below).
+      // A reattach needs the recorded id (without one, see below).
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
       log: () => {},
     }))
@@ -894,28 +807,24 @@ describe('agentDriver', () => {
     stream.feed(permissionAsk(99))
 
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 99)).toBe(true))
-    // allow_always over allow_once: a session behind gVisor and an egress
-    // allowlist is constrained by the sandbox, not by a prompt nobody sees.
+    // allow_always over allow_once: the sandbox is the real constraint.
     expect(stream.sent().find((m) => m.id === 99)!.result)
       .toEqual({ outcome: { outcome: 'selected', optionId: 'yes-always' } })
   })
 
   /**
-   * The heart of an enforced posture: the ask is held open, the conversation
-   * says it is waiting on a person rather than working, and the answer that
-   * finally comes back is the user's.
+   * The ask is held open, the conversation reports `waiting`, and the user's
+   * answer is what reaches the agent.
    */
   it('parks a permission ask for the user under a posture that is not bypass', async () => {
     const { stream, seen } = await attachedUnder('accept-edits', 'acp-1')
     const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
 
     stream.feed(permissionAsk(99))
-    // Nothing is answered on the agent's behalf — that is the whole posture.
     await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
     expect(stream.sent().some((m) => m.id === 99)).toBe(false)
 
-    // A blocked turn is `busy` at the protocol level but is not working, and
-    // the sidebar dot, the chime and the tray badge all read this one field.
+    // Busy at the protocol level, but shown as waiting everywhere.
     await vi.waitFor(() => expect(conversation.status).toBe('waiting'))
     expect(statuses(seen).at(-1)).toBe('waiting')
 
@@ -926,7 +835,7 @@ describe('agentDriver', () => {
     expect(conversation.isAwaitingPermission).toBe(false)
   })
 
-  /** A `session/update` notification, as a line off the wire. */
+  /** A `session/update` notification, as a wire line. */
   const updateLine = (agentSessionId: string, update: Record<string, unknown>): string =>
     `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: agentSessionId, update } })}\n`
 
@@ -935,10 +844,9 @@ describe('agentDriver', () => {
     o.kind === 'live-agents' ? o.agents.flatMap((a) => (a.reportedMode !== undefined ? [a.reportedMode] : [])) : [])
 
   /**
-   * An adapter can move a session by itself — claude's announces EnterPlanMode
-   * and a plan-exit answer as a `current_mode_update` — and the mode it is in
-   * from then on is what it answers asks by, and what the workspace's row is
-   * told about.
+   * An adapter can change mode itself (claude reports entering or leaving
+   * plan mode as `current_mode_update`). Asks are then answered by the new
+   * mode, and it is reported upward.
    */
   it('publishes a mode the adapter moves to, and answers its asks by it', async () => {
     const { stream, seen } = await attachedUnder('bypass', 'acp-1')
@@ -947,16 +855,14 @@ describe('agentDriver', () => {
     stream.feed(updateLine('acp-1', { sessionUpdate: 'current_mode_update', currentModeId: 'plan' }))
     await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('plan'))
 
-    // The row said bypass, but this session is in plan mode now: its ask to
-    // leave it is the user's to answer.
+    // The row says bypass, but the session is now in plan mode.
     stream.feed(permissionAsk(99))
     await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
     expect(stream.sent().some((m) => m.id === 99)).toBe(false)
   })
 
-  // A plan-exit ask's options ARE mode ids: "yes, and bypass permissions"
-  // moves the session up, and from then on this conversation answers its asks
-  // the way the adapter now runs.
+  // A plan-exit ask's options are mode ids, so answering one can loosen the
+  // session's mode.
   it('follows a mode the adapter moves up to, as well as down', async () => {
     const { stream, seen } = await attachedUnder('plan', 'acp-1')
     const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
@@ -982,10 +888,8 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 6)).toBe(true))
   })
 
-  // A reattach runs no handshake, so the mode its session is in is the one its
-  // own record last shows — possibly moved while no server was listening. It
-  // answers by that, whichever way it differs from the row, and reports it so
-  // the row catches up.
+  // A reattach runs no handshake, so it takes the mode from the log (which
+  // may have changed while no server was attached) and reports it.
   it('answers a reattach by the mode its own record shows, and reports it', async () => {
     await recordMode('acp-1', 'default')
     await record('acp-2', [
@@ -1005,9 +909,8 @@ describe('agentDriver', () => {
     raised.stream.feed(permissionAsk(8))
     await vi.waitFor(() => expect(raised.stream.sent().some((m) => m.id === 8)).toBe(true))
 
-    // A record whose mode stands for no posture leaves nothing to answer by —
-    // and the row is no stand-in, since it may hold ANOTHER conversation's
-    // raise. So every ask is the person's.
+    // A mode that maps to no posture: every ask goes to the user. The row is
+    // not used, since another conversation may have changed it.
     await recordMode('acp-3', 'build')
     const unknown = await attachedUnder('bypass', 'acp-3')
     unknown.stream.feed(permissionAsk(9))
@@ -1015,10 +918,8 @@ describe('agentDriver', () => {
     expect(unknown.stream.sent().some((m) => m.id === 9)).toBe(false)
   })
 
-  // opencode's modes are agents, not postures, so an opencode conversation
-  // answers by the posture it launched in — read at launch. The row it came
-  // from moves with every other conversation in the workspace, and one taking
-  // "yes, and bypass permissions" must not start answering this one's asks.
+  // opencode's modes are agents, not postures, so it keeps the posture it
+  // launched with, even if another conversation later changes the row.
   it('answers by the posture it launched in where its mode names none', async () => {
     const stream = new FakeStream()
     let row: PermissionMode = 'accept-edits'
@@ -1044,7 +945,7 @@ describe('agentDriver', () => {
     })}\n`)
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-oc')?.status).toBe('waiting'))
 
-    // Another conversation's raise lands on the row, and a sweep picks it up.
+    // Another conversation raises the row's posture.
     row = 'bypass'
     const before = reads
     await vi.waitFor(() => expect(reads).toBeGreaterThan(before + 1))
@@ -1075,11 +976,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('agent-full-access'))
   })
 
-  /**
-   * The posture an ask is answered by belongs to the conversation, not the
-   * workspace: each adapter holds its own mode, so one conversation entering
-   * plan mode says nothing about another still bypassing permissions.
-   */
+  /** Each conversation answers asks by its own adapter's mode. */
   it('keeps each conversation on its own posture', async () => {
     await recordMode('acp-a', 'bypassPermissions')
     await recordMode('acp-b', 'bypassPermissions')
@@ -1103,8 +1000,7 @@ describe('agentDriver', () => {
     a.feed(updateLine('acp-a', { sessionUpdate: 'current_mode_update', currentModeId: 'plan' }))
     a.feed(permissionAsk(1))
     b.feed(permissionAsk(2))
-    // The other conversation's adapter still bypasses permissions, so its ask
-    // is answered for the user as before.
+    // The other conversation still bypasses, so its ask is auto-answered.
     await vi.waitFor(() => expect(b.sent().some((m) => m.id === 2)).toBe(true))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-a')!.isAwaitingPermission).toBe(true))
     expect(a.sent().some((m) => m.id === 1)).toBe(false)
@@ -1122,8 +1018,7 @@ describe('agentDriver', () => {
     expect(stream.sent().find((m) => m.id === 7)!.result)
       .toEqual({ outcome: { outcome: 'cancelled' } })
 
-    // Two panes can hold the same card; the loser's click must not become a
-    // second reply to an agent that has already moved on.
+    // A second pane's answer to the same ask is ignored.
     conversation.answerPermission('7', 'yes-always')
     await new Promise((r) => setTimeout(r, 20))
     expect(stream.sent().filter((m) => m.id === 7)).toHaveLength(1)
@@ -1132,7 +1027,6 @@ describe('agentDriver', () => {
   it('releases a parked ask when the turn is cancelled, rather than stranding the promise', async () => {
     const { stream } = await attachedUnder('manual', 'acp-1')
     const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
-    // A turn has to be running for `cancel` to do anything.
     void conversation.prompt('go').catch(() => {})
     await vi.waitFor(() => expect(conversation.isBusy).toBe(true))
     stream.feed(permissionAsk(11))
@@ -1140,9 +1034,7 @@ describe('agentDriver', () => {
 
     conversation.cancel()
 
-    // ACP puts resolving outstanding asks on the client when it cancels. The
-    // parked promise is a request the peer is awaiting a handler for, so
-    // leaving it would strand both the agent and the served request.
+    // ACP requires the client to resolve outstanding asks on cancel.
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 11)).toBe(true))
     expect(stream.sent().find((m) => m.id === 11)!.result)
       .toEqual({ outcome: { outcome: 'cancelled' } })
@@ -1151,10 +1043,8 @@ describe('agentDriver', () => {
   })
 
   it('answers an ask that arrived before a reconnect, rather than stranding the agent', async () => {
-    // acpd buffers nothing for an absent client, so an ask delivered to the
-    // previous connection is not replayed to this one. The record is the only
-    // evidence it happened, and the agent's own id is what makes it answerable
-    // from a connection that never received it.
+    // acpd does not replay asks, so this one is recovered from the log and
+    // answered by the agent's own id.
     await record('acp-held', [
       lifeLine,
       promptLine('acp-held', 'old-1', 'do the thing'),
@@ -1163,7 +1053,7 @@ describe('agentDriver', () => {
     const { stream, seen } = await attachedUnder('manual', 'acp-held')
     const conversation = acpConversation('demo', 'wt-1', 'acp-held')!
 
-    // Recovered from the record: waiting on a person, not working.
+    // Recovered from the log.
     await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
     await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('waiting'))
 
@@ -1175,12 +1065,8 @@ describe('agentDriver', () => {
   })
 
   it('lands an answer clicked before recovery knew which ask it was for', async () => {
-    // The registry publishes a conversation the moment it is built, and a
-    // reattaching pane replays the pending card straight from the record — but
-    // recovery only names the outstanding asks after acpd's greeting and two
-    // file reads. A click in that window has a real ask behind it, and
-    // discarding it would leave the agent blocked with a dead card until the
-    // workspace restarted.
+    // A pane can show the pending ask (from the log) before the conversation
+    // has recovered it. An answer in that window must still be delivered.
     await record('acp-held', [
       lifeLine,
       promptLine('acp-held', 'old-1', 'do the thing'),
@@ -1197,7 +1083,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-held')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-held')!
 
-    // Answered BEFORE the greeting that starts recovery — the window itself.
+    // Answered before hello starts recovery.
     conversation.answerPermission('42', 'yes-always')
     stream.feed(helloLine(false))
 
@@ -1208,9 +1094,8 @@ describe('agentDriver', () => {
   })
 
   it('forwards an ask when the posture could not be read, rather than granting it', async () => {
-    // The asymmetry the whole feature turns on: a needless prompt costs a
-    // click, a needless approval is silent and irreversible. So "not known
-    // yet" — a failed row read, or no row — must never reach the auto-answer.
+    // A needless prompt costs a click; a wrong approval cannot be undone. So
+    // an unknown posture never auto-answers.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -1257,22 +1142,16 @@ describe('agentDriver', () => {
       },
     })}\n`)
 
-    // Forwarding asks decides who answers; the mode decides which questions
-    // get asked at all, so a posture that never reaches the adapter is not
-    // being enforced.
+    // The mode decides which asks happen at all, so it must be sent.
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
     expect(stream.sent().find((m) => m.method === 'session/set_mode')!.params)
       .toEqual({ sessionId: 'acp-1', modeId: 'plan' })
   })
 
   it('reads an adapter that announces its modes as config options, not a modes block', async () => {
-    // opencode v2 answers `session/new` with `configOptions` only — a `mode`
-    // select whose option values are its agent ids — and no `modes` block at
-    // all. Reading one shape would leave a `plan` create in `build`: the gate
-    // would find nothing advertised, skip `session/set_mode`, and post a
-    // standing notice where the restraint should be. The ask-to-act rules from
-    // the launch config would still apply, but not the plan agent's `edit
-    // deny`, so the workspace would be editable.
+    // opencode v2 offers modes only as a `mode` config option (values are
+    // agent ids), with no `modes` block. Missing it would leave a `plan`
+    // workspace in `build`, able to edit.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -1309,9 +1188,7 @@ describe('agentDriver', () => {
   })
 
   it('leaves a mode alone when the adapter is already in it', async () => {
-    // The guard that makes the case above meaningful: a posture whose mode the
-    // adapter already holds sends nothing, so a record with no
-    // `session/set_mode` is not evidence that a posture was dropped.
+    // A missing `session/set_mode` then does not mean a posture was dropped.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -1343,13 +1220,11 @@ describe('agentDriver', () => {
   })
 
   it('names the model over the protocol for an adapter that takes it no other way', async () => {
-    // pi's adapter has no `--model`, and pi's model id names its PROVIDER —
-    // which decides the api-key the egress proxy swaps. A pi conversation that
-    // never sends one authenticates against whatever pi's shared settings hold.
+    // pi's adapter has no `--model`, and the model decides the provider (and
+    // so which api key the proxy injects).
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'pi\n', stderr: '' })
-    // The launch is what knows the workspace's provider default; the handshake
-    // is where it can be delivered.
+    // The launch knows the provider default; the handshake delivers it.
     agentDriver('acp').launchCmd({
       tool: 'pi',
       agentSessionId: 'wt-1',
@@ -1372,20 +1247,16 @@ describe('agentDriver', () => {
     const created = stream.sent().find((m) => m.method === 'session/new')!
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'pi-1' } })}\n`)
 
-    // As the `model` config option: pi-acp's `session/set_model` is not routed,
-    // and answers "Method not found".
+    // Via the `model` config option; pi-acp does not implement `session/set_model`.
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
     const setModel = stream.sent().find((m) => m.method === 'session/set_config_option')!
     expect(setModel.params).toEqual({ sessionId: 'pi-1', configId: 'model', value: PI_DEFAULT_MODEL })
     expect(stream.sent().some((m) => m.method === 'session/set_model')).toBe(false)
-    // pi advertises thinking levels rather than postures, so there is no mode
-    // for `bypass` to be — and sending one would be rejected outright.
+    // pi's modes are thinking levels, so no mode is set.
     expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
 
-    // A model the adapter will not take is survived and said out loud: the
-    // conversation runs the adapter's own default, which for pi means a
-    // provider whose api key the egress proxy never swapped — a workspace that
-    // fails at its first turn for a reason nothing else would explain.
+    // A rejected model is reported to the pane: pi's default model may use a
+    // provider whose key the proxy does not inject.
     const events: AcpEventInit[] = []
     acpConversationByHandle('demo', 'wt-1', 'pi')!.subscribe((e) => events.push(e))
     stream.feed(`${JSON.stringify({
@@ -1397,9 +1268,8 @@ describe('agentDriver', () => {
   })
 
   it('forwards an adapter question under bypass when the adapter has no permissions to waive', async () => {
-    // pi has no permission system: what arrives on `session/request_permission`
-    // are its extensions' own questions, so auto-answering would answer FOR the
-    // user rather than spare them a prompt they waived.
+    // pi has no permission system; its permission requests are extension
+    // questions the user must answer.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'pi\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -1422,8 +1292,7 @@ describe('agentDriver', () => {
       method: 'session/request_permission',
       params: { options: [{ optionId: 'yes', kind: 'allow_once' }, { optionId: 'no', kind: 'reject_once' }] },
     })}\n`)
-    // Nothing answers it: the conversation holds the request open for a person,
-    // which is what its status says.
+    // Held open for the user.
     await vi.waitFor(() => expect(
       acpConversationByHandle('demo', 'wt-1', 'pi')!.status,
     ).toBe('waiting'))
@@ -1431,16 +1300,9 @@ describe('agentDriver', () => {
   })
 
   it('reports a mode it could not set to the pane, and keeps the conversation', async () => {
-    // `bypassPermissions` is withheld by an adapter running as root outside a
-    // sandbox, and `auto` by a model with no classifier. Setting one throws at
-    // the adapter, and losing the conversation over it would be worse than
-    // running in its default — which is then the conversation's posture, and
-    // the workspace's.
-    //
-    // But it is NOT silent. An adapter's default is not always at least as
-    // strict as what was asked (codex-acp's is `agent`, where a reviewer model
-    // approves most actions), so a conversation running in one has to say so
-    // where the person who chose the posture will see it: the pane.
+    // An adapter may refuse a mode (e.g. `bypassPermissions` as root outside a
+    // sandbox). The conversation continues in the adapter's default, but the
+    // pane is told, since that default may be looser than what was asked.
     const stream = new FakeStream()
     const events: AcpEventInit[] = []
     const seen: AgentObservation[] = []
@@ -1451,7 +1313,7 @@ describe('agentDriver', () => {
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
-    // Subscribed before the handshake runs, because the report is part of it.
+    // Subscribe before the handshake, which makes the report.
     acpConversationByHandle('demo', 'wt-1', 'claude')!.subscribe((e) => events.push(e))
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -1469,18 +1331,14 @@ describe('agentDriver', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
 
-    // The pane is told which mode it is actually in — and only that. What
-    // happens to the asks from here varies (bypass answers them itself, and
-    // codex's fallback has a reviewer model answering most), so the message
-    // deliberately promises nothing about them.
+    // The message names the actual mode and promises nothing about asks.
     const reported = events.filter((e) => e.type === 'error')
     expect(reported.length).toBe(1)
     expect((reported[0] as { message: string }).message).toContain('bypassPermissions')
     expect((reported[0] as { message: string }).message).toContain('default')
     expect((reported[0] as { message: string }).message).not.toContain('forwarded')
 
-    // And the conversation still works — in the mode it is actually in, which
-    // is reported upward and answers its asks: `default` asks the person.
+    // The actual mode is reported and used; `default` asks the user.
     await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('default'))
     const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
     stream.feed(permissionAsk(3))
@@ -1489,12 +1347,8 @@ describe('agentDriver', () => {
   })
 
   it('reports a mode the adapter REFUSED, which is where a codex workspace runs loose', async () => {
-    // The exposed cell, and the reason this path reports rather than only
-    // logs: codex-acp's own default is `agent` — a reviewer model approving
-    // most actions — not the codex CLI's `read-only` preset. So an
-    // `accept-edits` conversation whose `session/set_mode` is refused runs
-    // LOOSER than the create asked for, and the log is not where the person
-    // who asked is looking.
+    // codex-acp's default `agent` mode is looser than `accept-edits`, so a
+    // refused `session/set_mode` must be reported to the pane.
     const stream = new FakeStream()
     const events: AcpEventInit[] = []
     podExec.mockResolvedValue({ stdout: 'codex\n', stderr: '' })
@@ -1523,7 +1377,6 @@ describe('agentDriver', () => {
       },
     })}\n`)
 
-    // Advertised, so it is asked for — and refused.
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
     const setMode = stream.sent().find((m) => m.method === 'session/set_mode')!
     expect(setMode.params).toEqual({ sessionId: 'acp-1', modeId: 'read-only' })
@@ -1534,11 +1387,9 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(events.some((e) => e.type === 'error')).toBe(true))
     const message = (events.find((e) => e.type === 'error') as { message: string }).message
     expect(message).toContain('read-only')
-    // Names the mode it is actually in, which is the whole point: `agent` is
-    // not what was asked for and not stricter than it.
+    // Names the mode actually in effect.
     expect(message).toContain('agent')
-    // The conversation survives it — losing a workspace over a posture would be
-    // worse than running in the adapter's default and saying so.
+    // The conversation survives.
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined()
   })
 
@@ -1551,9 +1402,8 @@ describe('agentDriver', () => {
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
-    // acpd says the agent already handshook, but nothing recorded which
-    // conversation it holds — so every `session/prompt` would name a session
-    // id we do not have. Tearing down lets the next sweep retry.
+    // Already initialized, but no recorded session id to address it by, so
+    // tear down and let the next sweep retry.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
     await vi.waitFor(() => {
       expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeUndefined()
@@ -1564,20 +1414,14 @@ describe('agentDriver', () => {
     const streams: FakeStream[] = []
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      // The settled cadence, set far beyond this test's patience: a re-dial
-      // that waited for it would leave a fresh ACP workspace showing acpd's
-      // log instead of a chat pane for a full sweep, which is the bug this
-      // covers. The first sweep DOES lower the cadence to this — the window
-      // is there and the dial did not throw — so nothing but the drop itself
-      // can put the connection back on the fast one.
+      // A long settled interval, so only the fast retry after a drop can make
+      // the second dial happen in time.
       heartbeatIntervalMs: 60_000,
       log: () => {},
       dial: () => {
         const stream = new FakeStream()
         streams.push(stream)
-        // tmux spawns acpd a moment before acpd binds, so the first dial into
-        // a brand-new window usually finds nothing listening: socat exits and
-        // the stream closes. The second finds a live socket.
+        // The first dial into a new window often beats acpd's bind and closes.
         if (streams.length === 1) setTimeout(() => stream.emitExit(), 0)
         return stream
       },
@@ -1593,12 +1437,11 @@ describe('agentDriver', () => {
     vi.useFakeTimers()
     try {
       connections.push(agentDriver('acp').connect(session, () => {}, {
-        // Far apart, so the two cadences are unambiguous in the counts below.
+        // Far apart, so the two intervals are distinguishable.
         heartbeatIntervalMs: 600_000,
         log: () => {},
         dial: () => {
-          // acpd is gone but tmux kept its window: every dial finds nothing
-          // and exits, forever. Fast retries must not be forever with it.
+          // acpd is gone but its window remains, so every dial fails.
           const stream = new FakeStream()
           streams.push(stream)
           setTimeout(() => stream.emitExit(), 0)
@@ -1606,13 +1449,11 @@ describe('agentDriver', () => {
         },
       }))
 
-      // The fast attempts are spent and then stop, rather than costing an exec
-      // and a dial every second for the life of the pod.
+      // Fast retries stop after the limit.
       await vi.advanceTimersByTimeAsync(60_000)
       expect(streams.length).toBe(MAX_FAST_ATTACH_ATTEMPTS)
 
-      // Given up on the fast cadence, NOT on the window: a settled sweep still
-      // re-dials it, so an acpd that comes back is picked up.
+      // The settled interval still re-dials, in case acpd comes back.
       await vi.advanceTimersByTimeAsync(600_000)
       expect(streams.length).toBe(MAX_FAST_ATTACH_ATTEMPTS + 1)
     } finally {
@@ -1622,11 +1463,8 @@ describe('agentDriver', () => {
 
   it('decodes a multi-byte character split across two socket reads', async () => {
     await recordMode('acp-1', 'bypassPermissions')
-    // The relay delivers raw Buffers on TCP read boundaries, which land
-    // wherever the network puts them. Decoded per chunk, a character split
-    // across two reads becomes replacement characters in both halves — and
-    // because the split can only fall inside a JSON string, the line still
-    // parses and the corruption is silent.
+    // A character split across two chunks must not be decoded per chunk,
+    // which would silently corrupt a JSON string.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -1637,8 +1475,6 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
 
-    // A permission request, which the client must parse to answer — so a
-    // mangled line shows up as a question that never gets a reply.
     const line = Buffer.from(`${JSON.stringify({
       jsonrpc: '2.0',
       id: 'perm-🚀-1',
@@ -1655,10 +1491,8 @@ describe('agentDriver', () => {
   })
 
   it('queues a second prompt instead of overlapping turns', async () => {
-    // ACP adapters assume one turn at a time, and nothing upstream enforces
-    // it — an Enter mid-turn reaches the conversation. Overlapping would also
-    // corrupt its own bookkeeping: the FIRST reply would end the turn while
-    // the second still streamed, reporting `waiting` for a working agent.
+    // ACP adapters assume one turn at a time; overlapping would also let the
+    // first reply end the second turn.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     const seen: AgentObservation[] = []
@@ -1675,9 +1509,7 @@ describe('agentDriver', () => {
     void conversation.prompt('second').catch(() => {})
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(true))
 
-    // One turn on the wire at a time. The user's own messages are not asserted
-    // here — they reach a pane through acpd's record, which orders them by
-    // when each request was actually sent.
+    // One turn on the wire at a time.
     expect(stream.sent().filter((m) => m.method === 'session/prompt')).toHaveLength(1)
 
     const first = stream.sent().find((m) => m.method === 'session/prompt')!
@@ -1690,10 +1522,8 @@ describe('agentDriver', () => {
   })
 
   it('drops a duplicate reply instead of ending the turn it is not about', async () => {
-    // Only a FOREIGN id is a cross-connection orphan meaning "the previous
-    // turn ended". An unknown id carrying this connection's own prefix is a
-    // duplicate of something already resolved, and reading it as a turn end
-    // would mark a live turn finished while the agent keeps streaming.
+    // Only an id from another connection means "the previous turn ended". An
+    // unknown id with this connection's prefix is a duplicate.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     const seen: AgentObservation[] = []
@@ -1710,7 +1540,6 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(true))
     const sent = stream.sent().find((m) => m.method === 'session/prompt')!
 
-    // A second copy of a reply this connection already resolved.
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: sent.id, result: { stopReason: 'end_turn' } })}\n`)
     await vi.waitFor(() => expect(conversation.isBusy).toBe(false))
     void conversation.prompt('next').catch(() => {})
@@ -1718,7 +1547,7 @@ describe('agentDriver', () => {
 
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: sent.id, result: { stopReason: 'end_turn' } })}\n`)
     await new Promise((r) => setTimeout(r, 30))
-    // The duplicate named the FIRST turn; the second is still running.
+    // The second turn is still running.
     expect(conversation.isBusy).toBe(true)
   })
 
@@ -1733,8 +1562,7 @@ describe('agentDriver', () => {
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
 
-    // An adapter that prints a banner to stdout must not take the
-    // conversation down with it — the peer still answers what comes after.
+    // Non-JSON output on stdout must not break the conversation.
     stream.feed('warning: something to stderr-ish\n')
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
     stream.feed(`${JSON.stringify({

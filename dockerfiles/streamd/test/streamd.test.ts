@@ -1,6 +1,5 @@
-// In-process tests for streamd (the in-pod stream daemon): handshake
-// auth, each stream kind, and the framing codec — it is just a TCP
-// server, so the whole protocol is exercised over loopback sockets.
+// In-process tests for streamd: handshake auth, each stream kind, and the
+// framing codec, all over loopback sockets.
 import net from 'node:net'
 import { describe, it, expect, afterEach } from 'vitest'
 // Untyped plain-JS modules (they run under bare node in the pod).
@@ -80,8 +79,7 @@ describe('framing codec', () => {
       encodeFrame(FRAME_EXIT, { code: 3 }),
     ]
     const wire = Buffer.concat(frames)
-    // Feed one byte at a time — the parser must buffer partial headers
-    // and payloads.
+    // One byte at a time, so partial headers and payloads are buffered.
     const parser = new FrameParser() as { feed(b: Buffer): Array<{ type: number; payload: Buffer }> }
     const out: Array<{ type: number; payload: Buffer }> = []
     for (let i = 0; i < wire.length; i++) {
@@ -148,10 +146,8 @@ describe('exec streams', () => {
   })
 
   it('marks a command it could not spawn, so 127 cannot read as not-installed', async () => {
-    // The server treats a nonzero exit as a verdict about the pod, and acts
-    // on it — a probe that "exited 127" reaps a workspace or reports a tool
-    // missing from the image. A command that never ran says nothing about
-    // either, and 127 alone cannot tell the two apart.
+    // The server acts on a 127 (e.g. reporting a tool missing), so a
+    // command that never ran must be distinguishable.
     const port = await startDaemon()
     const { socket } = await handshake(port, {
       token: TOKEN, kind: 'exec', cmd: ['/nonexistent/binary'],
@@ -161,8 +157,7 @@ describe('exec streams', () => {
   })
 
   it('reports the signal when the command is killed rather than exiting', async () => {
-    // Without it the server sees `code ?? 1` and reads a killed probe as a
-    // conclusive failure of what it was probing for.
+    // Otherwise the server reads a killed probe as a real failure.
     const port = await startDaemon()
     const { socket } = await handshake(port, {
       token: TOKEN, kind: 'exec', cmd: ['sh', '-c', 'kill -KILL $$'],

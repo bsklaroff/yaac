@@ -184,10 +184,9 @@ describe('patchWheelPacing', () => {
     expect(patchWheelPacing({ _core: {} } as unknown as Terminal)).toBeNull()
   })
 
-  // Canaries for the pinned dependency (same convention as selection.test.ts):
-  // the patch reaches into private xterm internals, so an upgrade that
-  // renames or mangles them must fail here rather than silently reverting
-  // scrolling to unpaced reports.
+  // Canary (as in selection.test.ts): the patch uses private xterm internals,
+  // so an upgrade that renames them must fail here instead of silently
+  // reverting to unpaced scrolling.
   it('still finds the private names in the shipped xterm bundle', () => {
     const require = createRequire(import.meta.url)
     const bundle = readFileSync(require.resolve('@xterm/xterm'), 'utf8')

@@ -174,8 +174,8 @@ async function main() {
   const tint = (rel) => page.locator(`button[title="${rel}"] span.truncate`).getAttribute('class')
   check((await tint('pw-b.ts'))?.includes('3fb950'), 'an untracked file is green')
 
-  // 6. Create, rename, delete. The header's New file creates in the selected
-  // folder, so select a root-level row first.
+  // 6. Create, rename, delete. New file uses the selected folder, so select
+  // a root-level row first.
   await page.locator('button[title="pw-b.ts"]').click()
   await page.getByRole('button', { name: /^Files$/ }).first().click()
   await page.locator('[aria-label="New file"]').click()

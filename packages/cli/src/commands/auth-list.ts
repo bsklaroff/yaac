@@ -4,7 +4,7 @@ import { AGENT_TOOLS, type AgentTool, type ToolAuthSummary } from '@yaac/shared/
 export async function authList(): Promise<void> {
   const result = await api.auth.list.$get()
 
-  // By name: the name is what `yaac project add <url> <credential>` takes.
+  // Listed by name, since that is what `yaac project add` takes.
   console.log('Git credentials:')
   if (result.gitCredentials.length === 0) {
     console.log('  (none configured — add one in the web app\'s Settings)')

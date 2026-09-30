@@ -13,7 +13,7 @@ let dataDir: string
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(testTmpBase(), 'yaac-attachments-'))
   setDataDir(dataDir)
-  // What a launch makes, beside the mount that shows it to the workspace.
+  // A launch creates this directory along with its mount into the workspace.
   await fs.mkdir(workspaceAttachmentsDir('proj', 'wt-1'), { recursive: true })
   installFakeWorkspaceDriver({
     find: () => Promise.resolve(handleFixture({

@@ -1,20 +1,16 @@
 /*
  * Verifies pasting and dropping images into agent panes in real Chromium
- * (docs/agent-modes.md, "Images") — the parts jsdom cannot answer, since it
- * decodes no images and has no xterm:
+ * (docs/agent-modes.md, "Images"):
  *
- *   1. A terminal pane claims an image paste before xterm sees it, uploads a
- *      downscaled copy (a 3000x2000 screenshot lands at most 1568 px on its
- *      long edge), and pastes the path back — which claude turns into an
- *      `[Image #N]` attachment.
- *   2. A paste that carries text is still xterm's: the text reaches the pane.
- *   3. An image dropped on the terminal takes the same path.
- *   3b. So does a real Ctrl+Shift+V with an image on the system clipboard —
- *      the chord browsers run as paste-as-plain-text, whose own paste event
- *      carries no image, so the pane reads the clipboard for it.
- *   4. The chat composer shows a pasted image as a removable thumbnail, sends
- *      it with the message, and the conversation shows it in the user's turn
- *      once the echo lands — with the composer emptied.
+ *   1. A terminal pane intercepts an image paste, uploads a copy downscaled
+ *      to at most 1568px on its long edge, and pastes the path, which claude
+ *      turns into an `[Image #N]` attachment.
+ *   2. A paste carrying text still goes to xterm.
+ *   3. An image dropped on the terminal is handled like a paste.
+ *   3b. So is Ctrl+Shift+V with an image on the clipboard: the browser's
+ *      paste event has no image then, so the pane reads the clipboard.
+ *   4. The chat composer shows a pasted image as a removable thumbnail and
+ *      sends it; it then appears in the user's turn and the composer empties.
  *
  * Needs a running containerless `yaac server` with two live claude workspaces
  * of one project: a terminal one and a chat one, e.g. `yaac project add
@@ -72,8 +68,7 @@ function check(ok, label, detail = '') {
   if (!ok) failures.push(label)
 }
 
-/** Poll with `page.evaluate` rather than `waitForFunction`: the served app's
- *  CSP forbids the `new Function` that API compiles its predicate with. */
+/** Poll with `page.evaluate`; `waitForFunction` is blocked by the app's CSP. */
 async function eventually(fn, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -92,9 +87,8 @@ const screenText = (page) => page.evaluate(() => [...(window.__xterms ?? [])].ma
 }).join('\n'))
 
 /**
- * Dispatch a paste (or drop) carrying a freshly drawn PNG of `w`x`h`, and/or
- * text, at `selector` — built in the page, since a DataTransfer cannot cross
- * the protocol boundary.
+ * Dispatch a paste (or drop) with a `w`x`h` PNG and/or text at `selector`,
+ * built in the page since a DataTransfer cannot be passed in.
  */
 async function fire(page, { selector, kind, w, h, text }) {
   await page.evaluate(async ({ selector, kind, w, h, text }) => {
@@ -156,8 +150,7 @@ async function main() {
     await page.locator('.xterm').first().waitFor({ timeout: 30_000 })
     await eventually(async () => (await screenText(page)).includes('❯'), 60_000)
     await page.locator('.xterm').first().click()
-    // Start from an empty input: a rerun finds its predecessor's attachments
-    // still in it, and claude numbers images per session.
+    // Clear the input: a rerun may find earlier attachments there.
     const images = async () => ((await screenText(page)).match(/\[Image #\d+\]/g) ?? []).length
     if (await images() > 0) await page.keyboard.press('Control+C')
     await eventually(async () => (await images()) === 0)
@@ -165,8 +158,7 @@ async function main() {
     const upload = page.waitForResponse((r) => r.url().endsWith('/attachments') && r.request().method() === 'POST')
     await fire(page, { selector: ':focus', kind: 'paste', w: 3000, h: 2000 })
     check(await eventually(async () => (await images()) === 1), 'a pasted image becomes a claude [Image #N]')
-    // The file the pane was answered with — a rerun finds its predecessor's
-    // uploads still there, so nothing about the directory says which is new.
+    // The uploaded file's path (earlier runs' uploads may still exist).
     const answered = await (await upload).json().catch(() => ({}))
     const uploaded = answered.path && path.join(attachments, path.basename(answered.path))
     check(uploaded !== undefined && fs.existsSync(uploaded), 'the image was uploaded to the workspace')
@@ -206,8 +198,7 @@ async function main() {
       await eventually(() => page.locator('[aria-label="Remove image"]').count().then((n) => n === 1)),
       'a pasted image shows as one removable thumbnail',
     )
-    // Counted from here: a conversation reused across runs replays its
-    // earlier images too.
+    // Count from here: a reused conversation replays earlier images.
     const sentImages = () => page.locator('.whitespace-pre-wrap img').count()
     const before = await sentImages()
     await box.fill('reply with just the word ok')

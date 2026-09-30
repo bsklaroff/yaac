@@ -23,12 +23,7 @@ import {
 } from '#tool-providers'
 import { testEnv } from '#env'
 
-/**
- * Auto-detect the auth kind from a token string.
- * - Anthropic OAuth tokens start with "sk-ant-oat"
- * - opencode is OpenRouter api-key only in v1
- * - Everything else defaults to 'api-key'
- */
+/** A claude token starting with "sk-ant-oat" is OAuth; anything else is an api key. */
 export function detectAuthKind(tool: AgentTool, token: string): ToolAuthKind {
   if (tool === 'claude') {
     if (token.startsWith('sk-ant-oat')) return 'oauth'
@@ -69,12 +64,10 @@ export function extractClaudeOAuthBundle(raw: string): ClaudeOAuthBundle | null 
 const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials'
 
 /**
- * The macOS Keychain service name claude CLI stores its OAuth credentials
- * under. With no custom config dir it is the plain "Claude Code-credentials";
- * when CLAUDE_CONFIG_DIR is set, the CLI (observed in 2.1.201) appends
- * "-<first 8 hex chars of sha256(configDir)>" so each config home gets its
- * own item. The hash input is the raw env value NFC-normalized — not a
- * resolved path — so callers must pass the exact string they put in the env.
+ * The macOS Keychain service name the claude CLI stores OAuth credentials
+ * under. With CLAUDE_CONFIG_DIR set, the CLI (as of 2.1.201) appends
+ * "-<first 8 hex of sha256(configDir)>". The hash is of the NFC-normalized
+ * env value, not a resolved path, so pass the exact string set in the env.
  */
 export function claudeKeychainService(configDir?: string): string {
   if (!configDir) return CLAUDE_KEYCHAIN_SERVICE
@@ -86,10 +79,8 @@ export function claudeKeychainService(configDir?: string): string {
 }
 
 /**
- * On macOS, Claude Code stores OAuth credentials in the Keychain.
- * Fetch them via `security find-generic-password`. Exported for the server's
- * web sign-in flow, which watches the scratch config dir's own item (see
- * `claudeKeychainService`). Non-darwin: null.
+ * Read a claude Keychain item via `security find-generic-password`. Null
+ * when missing or not on macOS.
  */
 export function readClaudeKeychainPayload(
   service: string = CLAUDE_KEYCHAIN_SERVICE,
@@ -108,17 +99,9 @@ export function readClaudeKeychainPayload(
 }
 
 /**
- * Read one of the Keychain items yaac's own claude invocations create.
- *
- * The scoped twin of `readClaudeKeychainPayload`, and the refusal is the
- * whole point: a caller passing a service name it computed from a config dir
- * must never end up reading the USER's own claude install, which is what the
- * un-suffixed service names. Callers that legitimately want the host item
- * (the scratch-login watcher) call `readClaudeKeychainPayload` directly.
- *
- * Missing items and non-darwin read as null, so a caller treats "no item" and
- * "not a platform that has one" the same way — which is correct for both:
- * the credential is then wherever else it can be, or nowhere.
+ * Read a Keychain item created by one of yaac's own claude invocations.
+ * Refuses the unsuffixed service, which belongs to the user's own claude
+ * install. Null when missing or not on macOS.
  */
 export function readScopedClaudeKeychainPayload(service: string): string | null {
   if (service === CLAUDE_KEYCHAIN_SERVICE) return null
@@ -126,15 +109,11 @@ export function readScopedClaudeKeychainPayload(service: string): string | null 
 }
 
 /**
- * Delete one of the Keychain items yaac's own claude invocations create —
- * live OAuth tokens must not linger in items nothing reads anymore.
- *
- * Two callers, both scoped by a `CLAUDE_CONFIG_DIR` of yaac's choosing: a
- * scratch login's item, once its credentials have been persisted or the flow
- * abandoned, and a project's item on `auth clear`. Refuses the un-suffixed
- * host service so no caller bug can ever log the user's own claude install
- * out — which is the whole reason a caller may pass a service name in
- * without checking it first. Missing items and non-darwin are no-ops.
+ * Delete a Keychain item created by one of yaac's own claude invocations
+ * (a finished or abandoned scratch login, or a project's item on
+ * `auth clear`) so live tokens do not linger. Refuses the unsuffixed
+ * service so the user's own claude install is never logged out. Missing
+ * items and non-macOS are no-ops.
  */
 export function deleteScopedClaudeKeychainItem(service: string): void {
   if (process.platform !== 'darwin' || service === CLAUDE_KEYCHAIN_SERVICE) return
@@ -145,14 +124,13 @@ export function deleteScopedClaudeKeychainItem(service: string): void {
       { stdio: 'ignore', timeout: 5000 },
     )
   } catch {
-    // never created (login failed before the CLI wrote it) — nothing to clean
+    // item never created
   }
 }
 
 /**
- * Decode a JWT's middle segment (payload) and return `exp` as unix epoch ms.
- * Returns null for malformed JWTs or missing `exp`. No dep on a JWT library —
- * this is two base64url decodes and a JSON parse, all in a try/catch.
+ * A JWT's `exp` as unix epoch ms, or null if malformed or missing. Does not
+ * verify the signature.
  */
 export function decodeJwtExp(jwt: string): number | null {
   try {
@@ -171,12 +149,10 @@ export function decodeJwtExp(jwt: string): number | null {
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 
 /**
- * Parse a raw Codex `auth.json` blob into a full OAuth bundle. Returns null
- * unless `auth_mode` is the ChatGPT mode (case-insensitive — codex-cli 0.121+
- * writes `"chatgpt"` lowercase, older versions used `"ChatGPT"`) and the
- * nested tokens are all present. Computes `expiresAt` from the access_token
- * JWT `exp`, falling back to now + 28d so the proxy still treats the bundle
- * as live.
+ * Parse a Codex `auth.json` into an OAuth bundle. Null unless `auth_mode`
+ * is ChatGPT (compared case-insensitively, as versions differ) and all
+ * tokens are present. `expiresAt` comes from the access token's `exp`, or
+ * now + 28d so the proxy still treats the bundle as live.
  */
 export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
   let parsed: unknown
@@ -215,35 +191,21 @@ export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
   }
 }
 
-/**
- * Result of running the tool's native login CLI.
- */
+/** Credentials captured by a tool login. */
 export interface ToolLoginResult {
   apiKey: string
   kind: ToolAuthKind
-  /** Present when Claude OAuth login succeeded — the full bundle. */
   claudeBundle?: ClaudeOAuthBundle
-  /** Present when Codex OAuth login succeeded — the full bundle. */
   codexBundle?: CodexOAuthBundle
-  /** opencode only — backend the captured api-key authenticates against. */
+  /** opencode only: the provider the api key is for. */
   opencodeProvider?: OpencodeProvider
-  /** pi only — provider the captured api-key authenticates against. */
+  /** pi only: the provider the api key is for. */
   piProvider?: PiProvider
 }
 
 /**
- * The login-capture shortcuts that need no relayed flow: the e2e hook
- * (serialized bundle) and opencode's api-key prompt. Returns null for
- * claude/codex without a hook — those sign in through the relayed
- * auth-daemon flow (src/commands/relayed-login.ts), which persists the
- * bundle itself.
- */
-/**
- * Resolve an e2e provider hook: unset takes the tool's default (so a test that
- * only wants the default branch need not set it), but a value that is set and
- * unrecognized is a broken test rather than a request for the default —
- * silently substituting it would green a run that never exercised the branch
- * it named.
+ * Resolve an e2e provider hook. Unset means the tool's default; an unknown
+ * value throws so a test never silently runs the wrong branch.
  */
 function hookProvider<T extends string>(
   tool: 'opencode' | 'pi',
@@ -259,13 +221,13 @@ function hookProvider<T extends string>(
   return provider
 }
 
+/**
+ * The logins that need no relayed flow: the e2e login hook (a JSON bundle
+ * for claude/codex, a raw api key for opencode/pi) and the opencode/pi
+ * api-key prompt. Returns null for claude/codex without a hook; those sign
+ * in through the relayed flow (packages/cli/src/commands/relayed-login.ts).
+ */
 export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | null> {
-  // Test-only hook: e2e-cli can't drive the native `claude login` /
-  // `codex login` OAuth flow end-to-end, so these env vars short-circuit
-  // with a JSON-serialised bundle. The CLI → server persistence path is
-  // still exercised exactly as in production. opencode skips the native
-  // CLI entirely (OpenRouter api-key only), so its hook payload is a
-  // bare api-key string.
   const hookRaw = testEnv.toolLoginHook(tool)
   if (hookRaw) {
     if (tool === 'claude') {
@@ -277,17 +239,12 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
       return { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle }
     }
     if (tool === 'pi') {
-      // pi: the env var holds a raw api-key; an optional sibling var picks the
-      // provider so e2e can drive any provider branch without a TTY.
       return {
         apiKey: hookRaw,
         kind: 'api-key',
         piProvider: hookProvider('pi', testEnv.piProviderHook, parsePiProvider, PI_DEFAULT_PROVIDER),
       }
     }
-    // opencode: the env var holds a raw api-key; an optional sibling var
-    // picks the provider (defaults to openrouter) so e2e can drive the
-    // NeuralWatt branch without a TTY.
     return {
       apiKey: hookRaw,
       kind: 'api-key',
@@ -296,8 +253,6 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
   }
 
   if (tool === 'opencode' || tool === 'pi') {
-    // No native login flow — both are api-key only and we don't shell out to
-    // a vendor `auth login` for them.
     return promptForApiKey(tool)
   }
 
@@ -305,14 +260,11 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
 }
 
 /**
- * The `PUT /auth/:tool` request body: how a client (the CLI's api-key
- * path, or the auth server after a completed login) ships captured
- * credentials to the server.
+ * The `PUT /auth/:tool` request body carrying captured credentials. For
+ * opencode/pi, `provider` is validated by the server; a missing or unknown
+ * id is rejected rather than defaulted.
  */
 export type ToolAuthPayload =
-  // `provider` is a raw wire string (opencode/pi), validated server-side
-  // against that tool's registry — a missing or unknown id is rejected, never
-  // coerced to a default.
   | { kind: 'api-key'; apiKey: string; provider?: string }
   | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
 
@@ -331,9 +283,7 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
     return {
       kind: 'api-key',
       apiKey: result.apiKey,
-      // No fallback: an omitted provider must reach the server's validation
-      // rather than being stamped with a default here, which would hide the
-      // exact producer bug that validation exists to catch.
+      // No default here, so the server's validation catches a missing one.
       provider: result.opencodeProvider,
     }
   }
@@ -348,11 +298,9 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
 }
 
 /**
- * Prompt for which provider an opencode/pi api-key authenticates against. Both
- * tools support 100+ / dozens of providers (a numbered menu is out), so the
- * user types the provider id; "?" lists them all and a bare Enter takes the
- * default. Re-prompts on an unrecognized id. Returns a raw string — the caller
- * coerces it with the tool's `parse*Provider`.
+ * Ask which provider an opencode/pi api key is for. There are too many for
+ * a numbered menu, so the user types an id; "?" lists them and Enter takes
+ * the default. Re-prompts on an unknown id.
  */
 async function promptForProvider<T extends string>(
   rl: readline.Interface,
@@ -368,19 +316,13 @@ async function promptForProvider<T extends string>(
       for (const p of list) console.log(`  ${p.id}  —  ${p.label}`)
       continue
     }
-    // The loop only exits on a registry entry, so the id is a T by
-    // construction — callers need no second parse.
     const match = list.find((p) => p.id === answer)
     if (match) return match.id as T
     console.log(`Unknown provider "${answer}". Type "?" to see the full list.`)
   }
 }
 
-/**
- * Prompt the user to paste their API key directly. For opencode/pi, first asks
- * which provider the key belongs to so the session and proxy know which env
- * var / host to use.
- */
+/** Prompt the user to paste an API key, asking for the provider first on opencode/pi. */
 export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   let opencodeProvider: OpencodeProvider | undefined

@@ -7,14 +7,10 @@ export interface InProcessServer {
 }
 
 /**
- * Boot an in-process server for tests. The server listens on a real
- * 127.0.0.1 socket so the CLI's HTTP client exercises the production
- * code path, but we skip the lock file entirely by pointing the client
- * at us via the `YAAC_SERVER_URL` env var.
- *
- * Nothing is converged — `attachConvergence` is the server's own startup
- * step and is deliberately not run here, so the routes answer from the
- * substrate and the disk directly, with no informer caches or watchers.
+ * Boot an in-process server on a real 127.0.0.1 socket, found by the
+ * client through `YAAC_SERVER_URL` rather than a lock file. Startup's
+ * `attachConvergence` is not run, so there are no informer caches or
+ * watchers.
  */
 export async function bootInProcessServer(): Promise<InProcessServer> {
   const app = buildApp({ buildId: 'test' })

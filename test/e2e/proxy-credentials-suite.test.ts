@@ -42,26 +42,25 @@ import type { CredentialBundle } from '@yaac/server/drivers/contract'
 const execFileAsync = promisify(execFile)
 
 /**
- * End-to-end coverage of how the proxy is told and how it reports — the
- * objects (docs/workspace-egress.md "What the proxy is told, and how"),
- * driven from the host through the driver's own writers, with one echo
- * pod and one bare workspace pod shared by every case:
+ * The Kubernetes objects that configure the proxy and that it reports
+ * through (docs/workspace-egress.md, "What the proxy is told, and how"),
+ * written by the driver's own writers. One echo pod and one bare workspace
+ * pod are shared by every case:
  *
- * - the credentials Secret is what injects (an api key, a git token), and
- *   rewriting it without a tool signs that tool out of a running workspace;
- *   a git token reaches only workspaces of the projects it is assigned to
- * - the ssh keys reach the agent through the same Secret
- * - a refresh a workspace drives is captured into `yaac-proxy-refreshed`,
- *   and a burst of them spends the credential upstream once
- * - a blocked host lands in `yaac-proxy-state`, and widening the
- *   registration object prunes it
- * - the pod is replaceable: delete it, and the replacement serves the same
- *   CA, the same registration and the same credentials with no server
- *   action — the case that proves the proxy is stateless.
+ * - the credentials Secret drives injection (api key, git token); removing
+ *   a tool from it signs that tool out, and a git token reaches only its
+ *   assigned projects
+ * - ssh keys reach the proxy's agent through the same Secret
+ * - a workspace-driven refresh is captured into `yaac-proxy-refreshed`, and
+ *   a burst of them spends the credential upstream once
+ * - a blocked host lands in `yaac-proxy-state` until the registration is
+ *   widened
+ * - a replacement proxy pod serves the same CA, registration and
+ *   credentials with no server action, so the proxy is stateless
  */
 
 const ECHO_PORT = 8080
-/** Never-routable TEST-NET-1 addresses the redirect must intercept. */
+/** Never-routable TEST-NET-1 address the redirect must intercept. */
 const FAKE_IP = '192.0.2.10'
 const MITM_HOST = 'api.anthropic.com'
 /** claude's claude.ai connectors send the same OAuth bearer here. */
@@ -91,8 +90,10 @@ interface TestKey {
   knownHostsEntry: string
 }
 
-/** A client key the way the server makes one, plus a host keypair whose
- *  public half becomes the known_hosts entry for `host`. */
+/**
+ * A client key made the way the server makes one, plus a host keypair
+ * whose public half becomes the known_hosts entry for `host`.
+ */
 async function makeTestKey(dir: string, host: string, name: string): Promise<TestKey> {
   const key = generateSshKey(`yaac ${name}`)
   const publicKeyPath = path.join(dir, `${name}.pub`)
@@ -197,8 +198,10 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
   return { host: `${name}.${ns}.svc` }
 }
 
-/** A bare workspace pod: the workspace label, the proxy-CA mount, and DNS
- *  pointed at the proxy. No sidecars — egress is redirected at the node. */
+/**
+ * A bare workspace pod: workspace label, proxy-CA mount, and DNS pointed at
+ * the proxy. Egress is redirected at the node, so no sidecars.
+ */
 async function startWorkspacePod(name: string, workspaceId: string, proxyHost: string): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
@@ -242,9 +245,10 @@ function echoedOf(out: string): Echoed {
   return JSON.parse(out.slice(0, out.lastIndexOf('EXIT:'))) as Echoed
 }
 
-/** Poll a curl until `accept` is satisfied — the objects reach the proxy
- *  within its watch latency, and a pod's first requests race endpoint
- *  programming. */
+/**
+ * Retry a curl until `accept` holds: object changes reach the proxy after
+ * a watch delay, and a new pod's first requests can beat its networking.
+ */
 async function curlUntil(
   pod: string,
   curlArgs: string,
@@ -327,8 +331,8 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     restoreNamespace = useTestNamespace()
     tempDataDir = await createTempDataDir()
     keyDir = await e2eMkdtemp('yaac-proxy-creds-')
-    // The credentials object before the proxy, so the pod boots with it —
-    // and with claude signed OUT, which the first case relies on.
+    // Write credentials before the proxy starts, with claude signed out
+    // (the first case relies on that).
     await ensureNamespace()
     await syncProxyCredentials({
       ...EMPTY,
@@ -367,22 +371,19 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   })
 
   it('forwards the placeholder untouched until the Secret carries a credential, then injects it', async () => {
-    // Signed out: the sentinel travels as itself — the proxy never invents
-    // a credential.
+    // Signed out, so the placeholder passes through unchanged.
     const before = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
       (r) => r.exit === 0)
     expect(before.exit, before.out).toBe(0)
     expect(echoedOf(before.out).headers['x-api-key']).toBe(PLACEHOLDER_API_KEY)
-    // The git token was there from the start, assigned to the workspace's
-    // project and gated on its registered remote: an HTTPS request to that
-    // host carries it as Basic.
+    // The git token is assigned to this project, so a request to its
+    // remote carries it as Basic auth.
     const git = await curlInPod(podName, gitProbe)
     expect(git.exit, git.out).toBe(0)
     expect(echoedOf(git.out).headers.authorization)
       .toBe('Basic ' + Buffer.from('x-access-token:ghp-real-token').toString('base64'))
 
-    // Sign in: the object is rewritten, the proxy's informer applies it,
-    // and the next request from the same pod carries the real key.
+    // Sign in by rewriting the Secret; the same pod then gets the real key.
     await syncProxyCredentials({
       ...EMPTY,
       claude: { kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-real-key' },
@@ -391,14 +392,13 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     const after = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
       (r) => r.exit === 0 && echoedOf(r.out).headers['x-api-key'] === 'sk-ant-real-key')
     expect(echoedOf(after.out).headers['x-api-key']).toBe('sk-ant-real-key')
-    // A request that never carried the sentinel passes through unmodified.
+    // A request without the placeholder is not modified.
     const own = await curlInPod(podName, probeArgs(`-H 'x-api-key: my-own-key'`))
     expect(echoedOf(own.out).headers['x-api-key']).toBe('my-own-key')
   }, 180_000)
 
   it('serves a chain a strict X.509 verifier accepts', async () => {
-    // Python 3.13+ verifies with VERIFY_X509_STRICT by default; the base
-    // image's 3.12 has the flag, so set it explicitly.
+    // Python 3.13+ sets VERIFY_X509_STRICT by default; the image has 3.12.
     const script = [
       'import socket, ssl',
       `c = ssl.create_default_context(cafile='${CA_PATH}')`,
@@ -429,17 +429,16 @@ describe('proxy credentials suite (objects in, objects out)', () => {
         projects: [{ slug: 'creds-suite', host: `git.${i === 0 ? 'a' : 'b'}.example`, knownHostsEntry: k.knownHostsEntry }],
       })),
     })
-    // Two hosts, so the known_hosts rewrite accumulates entries; the
-    // upload is the regression case for ssh-add's `~` lookup (it must be
-    // handed the file with -H, or it never finds the host key).
+    // Two hosts, so known_hosts has several entries. ssh-add must be given
+    // the file with -H or it never finds the host key.
     await syncProxyCredentials(withKeys([keyA, keyB]))
     const loaded = await pollUntil(agentFingerprints, (f) => f.includes(keyA.fingerprint) && f.includes(keyB.fingerprint))
     expect(loaded).toEqual(expect.arrayContaining([keyA.fingerprint, keyB.fingerprint]))
 
-    // Replace semantics: an emptied list empties the agent…
+    // An empty list empties the agent...
     await syncProxyCredentials(EMPTY)
     expect(await pollUntil(agentFingerprints, (f) => f.length === 0)).toEqual([])
-    // …and a cleared agent accepts keys again.
+    // ...and a cleared agent accepts keys again.
     await syncProxyCredentials(withKeys([keyA]))
     expect(await pollUntil(agentFingerprints, (f) => f.includes(keyA.fingerprint))).toEqual([keyA.fingerprint])
   }, 180_000)
@@ -456,15 +455,14 @@ describe('proxy credentials suite (objects in, objects out)', () => {
         },
       },
     })
-    // Wait for the bundle through a request that spends nothing, so every
-    // refresh below is one the proxy mediates.
+    // Wait for the credentials via a request that spends nothing.
     await curlUntil(podName, probeArgs(`-H 'authorization: Bearer ${PLACEHOLDER_ACCESS_TOKEN}'`),
       (r) => r.exit === 0 && echoedOf(r.out).headers.authorization === 'Bearer real-access')
 
-    // Two workspaces refreshing together, then a third a moment later. The
-    // proxy swaps the real refresh token out once and every one of them gets
-    // that rotation back as placeholders: a second spend of `real-refresh`
-    // would be the invalid_grant that makes claude wipe the shared file.
+    // Two concurrent refreshes, then a third. The proxy spends the real
+    // refresh token once and hands every caller that rotation as
+    // placeholders; a second spend would get invalid_grant, which makes
+    // claude wipe its shared credentials file.
     const { stdout } = await kubectlWithRetry([
       'exec', '-n', k8sNamespace(), podName, '--', 'sh', '-c',
       `curl -sS --max-time 20 ${refreshArgs} > /tmp/r1 & curl -sS --max-time 20 ${refreshArgs} > /tmp/r2 & wait; `
@@ -481,7 +479,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     }
     const rotated = `rotated-access-${replies[0].rotations}`
 
-    // Durable the moment it was captured, in the host store's own shape.
+    // Captured in the host store's shape.
     const captured = await pollUntil(
       () => readSecretKey(PROXY_REFRESHED_SECRET_NAME, 'claude.json'),
       (v) => v !== undefined && v.includes(rotated),
@@ -494,9 +492,8 @@ describe('proxy credentials suite (objects in, objects out)', () => {
         scopes: ['user:inference'],
       },
     })
-    // And served from here on, ahead of the bundle the server pushed — to
-    // inference and to the claude.ai connectors alike, which is what keeps a
-    // starting claude from forcing a refresh over a rejected placeholder.
+    // The captured token wins over the pushed one, for inference and the
+    // claude.ai connectors, so a starting claude is not forced to refresh.
     for (const host of [MITM_HOST, MCP_PROXY_HOST]) {
       const next = await curlInPod(podName, probeArgs(`-H 'authorization: Bearer ${PLACEHOLDER_ACCESS_TOKEN}'`, host))
       expect(echoedOf(next.out).headers.authorization, host).toBe(`Bearer ${rotated}`)
@@ -509,8 +506,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     const recorded = await pollUntil(readState, (s) => (s.blockedHosts[workspaceId] ?? []).includes(BLOCKED_HOST))
     expect(recorded.blockedHosts[workspaceId]).toContain(BLOCKED_HOST)
 
-    // The widening is a rewrite of the registration object; the proxy
-    // applies it and prunes the record, which is what clears the badge.
+    // Widening the registration prunes the blocked-host record.
     registration = {
       ...registration,
       allowedHosts: [...registration.allowedHosts, BLOCKED_HOST],
@@ -528,8 +524,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   it('injects a git token only into workspaces of the projects it is assigned to', async () => {
     await syncProxyCredentials({ ...EMPTY, git: GIT_TOKENS })
     await curlUntil(podName, gitProbe, (r) => r.exit === 0 && echoedOf(r.out).headers.authorization !== undefined)
-    // Same pod, same remote: re-registered under a project the token is
-    // not assigned to, its next request goes out with no credential.
+    // Re-registered under a project the token is not assigned to.
     await applyProxyRegistration(workspaceId, { ...registration, projectSlug: 'creds-other' })
     try {
       const r = await curlUntil(podName, gitProbe,
@@ -541,7 +536,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     }
   }, 180_000)
 
-  // These two run LAST: they replace the shared proxy pod.
+  // These run last: they replace the shared proxy pod.
   it('is replaceable: a fresh pod serves the same CA, registration and credentials with no server action', async () => {
     const caBefore = await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.pem')
     expect(caBefore).toContain('BEGIN CERTIFICATE')
@@ -559,8 +554,8 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       'rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', k8sNamespace(), '--timeout=180s',
     ], { timeout: 190_000 })
 
-    // Nothing was pushed, seeded or re-registered in between: the
-    // replacement read everything back from the apiserver.
+    // Nothing was rewritten, so the replacement read it all back from the
+    // apiserver.
     expect(await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.pem')).toBe(caBefore)
     const r = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
       (res) => res.exit === 0 && echoedOf(res.out).headers['x-api-key'] === 'sk-ant-survives', 120_000)
@@ -573,8 +568,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   it('re-signs an outdated stored CA over its own key, so running pods keep verifying', async () => {
     const key = await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.key')
     expect(key).toContain('PRIVATE KEY')
-    // What every CA minted before the critical flag looks like: same key,
-    // non-critical basicConstraints. openssl ships in the base image.
+    // An outdated CA: same key, non-critical basicConstraints.
     const { stdout: outdated } = await kubectlWithRetry([
       'exec', '-i', '-n', k8sNamespace(), podName, '--', 'sh', '-c', [
         "cat > /tmp/ca.cnf <<'EOF'",

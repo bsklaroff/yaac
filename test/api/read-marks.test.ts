@@ -10,10 +10,8 @@ import {
 } from '@yaac/server/db/workspace-store'
 
 /**
- * One data dir for the file, not one per test: a fresh dir costs a PGlite
- * boot plus a migration replay, which dwarfed these five route assertions.
- * Isolation comes from the project slug instead — each case owns its own,
- * so a shared dir carries no state between them.
+ * One data dir serves the file, since each fresh one costs a PGlite boot and
+ * migration replay. Each case uses its own project slug to stay isolated.
  */
 describe('workspace death read-marks', () => {
   let tmpDir: string
@@ -66,8 +64,7 @@ describe('workspace death read-marks', () => {
   })
 
   it('marks every death in the project seen at once, scoped to that project', async () => {
-    // Two deaths and a plain delete here, plus a death in another project that
-    // must be left alone.
+    // Two deaths and a plain delete here, plus a death in another project.
     await recordWorkspaceCreated({ projectSlug: 'bulk', workspaceId: 'bulk-1' })
     await recordWorkspaceCreated({ projectSlug: 'bulk', workspaceId: 'bulk-2' })
     await recordWorkspaceCreated({ projectSlug: 'bulk', workspaceId: 'bulk-3' })

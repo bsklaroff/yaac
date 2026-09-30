@@ -5,11 +5,10 @@ import { api } from '#commands/api'
 import { editFile } from '#commands/edit-file'
 
 /**
- * Config editing over RPC: fetch the current content from the server,
- * edit a scratch copy in $EDITOR on this machine, and PUT the result
- * back — the same flow against a local or remote server, since the
- * files live on the server host either way. Failed saves keep the
- * scratch file so edits are never lost.
+ * Edit server-side config files: fetch the content from the server, edit a
+ * scratch copy in $EDITOR on this machine, and PUT the result back. Works
+ * the same for a local or remote server. A failed save keeps the scratch
+ * file so edits are not lost.
  */
 
 interface ScratchEdit {
@@ -44,10 +43,9 @@ function failKeepingEdits(err: unknown, edit: ScratchEdit): void {
 }
 
 /**
- * `yaac config edit <project>` — the project's yaac-config.json. Reads
- * the raw file (malformed content opens verbatim so it can be repaired);
- * saving goes through the server's validated config write, so the stored
- * file is always parseable. Emptying the buffer clears the config.
+ * `yaac config edit <project>`: edit the project's yaac-config.json. Opens
+ * the raw file, so malformed content can be repaired; the save is validated
+ * by the server. Emptying the buffer clears the config.
  */
 export async function configEditProject(slug: string): Promise<void> {
   const { content } = await api.project[':slug'].config.raw.$get({ param: { slug } })
@@ -81,7 +79,7 @@ export async function configEditProject(slug: string): Promise<void> {
   console.log('Saved project config.')
 }
 
-/** `yaac config edit-dockerfile <project>` — the project's Dockerfile.yaac. */
+/** `yaac config edit-dockerfile <project>`: the project's Dockerfile.yaac. */
 export async function configEditDockerfile(slug: string): Promise<void> {
   const { content } = await api.project[':slug'].dockerfile.$get({ param: { slug } })
   const edit = await editInScratch('Dockerfile.yaac', content)
@@ -102,7 +100,7 @@ export async function configEditDockerfile(slug: string): Promise<void> {
     : 'Saved Dockerfile.yaac — it applies to the next workspace created.')
 }
 
-/** `yaac config edit-user-dockerfile` — the global Dockerfile.user. */
+/** `yaac config edit-user-dockerfile`: the global Dockerfile.user. */
 export async function configEditUserDockerfile(): Promise<void> {
   const { content } = await api.config['user-dockerfile'].$get()
   const edit = await editInScratch('Dockerfile.user', content)

@@ -65,7 +65,7 @@ try {
   for (const tool of tools) {
     await page.getByTitle('New workspace').first().click()
     await page.getByLabel('Agent').selectOption(tool)
-    // One letter every name/id shares enough of to fill the list.
+    // A letter common enough to fill the list.
     await page.getByLabel('Model').fill('a')
     await page.locator('li button').first().waitFor({ state: 'visible' })
     const rows = await page.locator('li button').evaluateAll((buttons) => buttons.map((b) => {

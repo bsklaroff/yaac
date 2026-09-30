@@ -9,15 +9,13 @@
  *      survives a reload (localStorage); Ctrl+= / Ctrl+- / Ctrl+0 in the
  *      editor do the same. (That they stop the browser's own zoom is
  *      covered by workspace-file.test.tsx: headless Chromium has none.)
- *   4. Ctrl+F opens the app's find bar with its input focused; typing jumps
- *      to the first match and shows "1 of N"; Enter steps to "2 of N";
- *      the regex toggle flips; a miss reads "No results"; a regex that
- *      backtracks forever reads "Too slow to count" while the page keeps
- *      answering (the count runs in a Worker); hovering a toggle
- *      shows a tooltip explaining it; the replace field lines up under the
- *      find field, with the buttons right against them; Escape closes it
- *      and hands focus back to the editor. The header's search button opens
- *      it too.
+ *   4. Ctrl+F opens the find bar with its input focused. Typing jumps to the
+ *      first match ("1 of N"), Enter steps to "2 of N", the regex toggle
+ *      flips, a miss reads "No results", and a catastrophic regex reads "Too
+ *      slow to count" while the page stays responsive (counting runs in a
+ *      Worker). Toggles have tooltips; the replace field lines up under the
+ *      find field; Escape closes the bar and refocuses the editor. The
+ *      header's search button also opens it.
  *   5. The explorer's quick-open: ArrowDown moves the highlighted result
  *      and Enter opens that one.
  *   6. For a look: SCREENSHOT_DIR gets explorer.png, find.png and
@@ -203,7 +201,7 @@ async function main() {
   await find.fill('ne+dle')
   await page.screenshot({ path: path.join(SHOT_DIR, 'find.png') })
   // A regex that backtracks forever on the long `aaa…` line: the worker is
-  // killed, and the page never stops answering.
+  // killed and the page stays responsive.
   await find.fill('(a|aa)+b')
   const start = Date.now()
   const slow = await eventually(async () => (await status.innerText()) === 'Too slow to count', 6000)
@@ -218,9 +216,8 @@ async function main() {
   await pane.getByRole('button', { name: /^Find/ }).click()
   check(await eventually(async () => (await find.count()) === 1), 'the header search button opens it')
 
-  // 7. A wide editor — Settings → Project Config, expanded: the bar sits at
-  //    the left rather than floating to the middle, and Escape closes the
-  //    bar alone, not the dialog around it.
+  // 7. In the expanded Project Config editor the bar sits at the left, and
+  //    Escape closes only the bar.
   await page.keyboard.press('Escape')
   await page.locator('[title="Settings"]').first().click()
   await page.locator('button', { hasText: 'Project Config' }).first().click()

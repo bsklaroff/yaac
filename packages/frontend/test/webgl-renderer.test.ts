@@ -2,10 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Terminal } from '@xterm/xterm'
 import { createWebglController } from '#lib/webgl-renderer'
 
-// Stand-in for WebglAddon: the real one needs a live WebGL2 context (it
-// throws from activate without one — the exact failure mode the fallback
-// path exists for), so substitute a controllable fake and drive both
-// outcomes from the tests.
+// Fake WebglAddon. The real one throws from activate without a live WebGL2
+// context (the failure the fallback path handles), so tests drive both
+// outcomes through this fake.
 const fake = vi.hoisted(() => {
   const state = {
     instances: [] as InstanceType<typeof WebglAddon>[],
@@ -36,9 +35,9 @@ const fake = vi.hoisted(() => {
 
 vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: fake.WebglAddon }))
 
-// Minimal terminal exposing what the controller touches: loadAddon activating
-// the addon synchronously (as xterm's AddonManager does on an opened term) and
-// a refresh spy so tests can assert the on-show / on-recover repaint.
+// Minimal terminal: loadAddon activates the addon synchronously, as xterm does
+// on an opened terminal, and a refresh spy lets tests assert the repaint on
+// show and on recovery.
 interface FakeTerm {
   term: Terminal
   refreshes: Array<[number, number]>
@@ -114,7 +113,7 @@ describe('createWebglController', () => {
     // term.dispose() won't dispose it twice.
     expect(fake.state.instances).toHaveLength(1)
     expect(fake.state.instances[0].disposed).toBe(true)
-    // Latched: a later hide/show must not keep spawning doomed contexts.
+    // The failure sticks: a later hide/show must not retry WebGL.
     ctl.setVisible(false)
     ctl.setVisible(true)
     expect(fake.state.instances).toHaveLength(1)
@@ -156,8 +155,8 @@ describe('createWebglController', () => {
     try {
       const { term } = fakeTerm()
       createWebglController(term).setVisible(true)
-      // Losses hours apart are independent incidents — each gets a fresh
-      // context instead of slowly exhausting the burst cap.
+      // Losses far apart are independent, so each gets a fresh context
+      // instead of slowly using up the burst cap.
       for (let i = 0; i < 6; i++) {
         vi.advanceTimersByTime(31_000)
         last().fireContextLoss()
@@ -175,7 +174,7 @@ describe('createWebglController', () => {
     ctl.setVisible(true)
     for (let i = 0; i < 6; i++) last().fireContextLoss()
     expect(fake.state.instances).toHaveLength(4)
-    // A deliberate hide/show is a fresh start: WebGL is allowed to try again.
+    // An explicit hide/show resets the cap, so WebGL may try again.
     ctl.setVisible(false)
     ctl.setVisible(true)
     expect(fake.state.instances).toHaveLength(5)

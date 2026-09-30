@@ -20,18 +20,16 @@ afterEach(async () => {
   await fs.rm(dataDir, { recursive: true, force: true })
 })
 
-/** Store a project's yaac-config.json verbatim — the only thing
- *  `resolveProjectConfig` reads. Takes text so malformed files are testable. */
+/** Store a project's yaac-config.json verbatim. Takes text so malformed
+ *  files are testable. */
 async function storeConfig(raw: string): Promise<void> {
   const dir = projectConfigDir(slug)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(path.join(dir, 'yaac-config.json'), raw)
 }
 
-/** Store `config` as JSON and resolve it back, so each case asserts on what a
- *  caller (session create, the prewarmer) actually gets. Also the shape a
- *  rejection case uses — `.rejects` needs the failure on the returned promise,
- *  hence the chain rather than an `await`. */
+/** Store `config` as JSON and resolve it back, as a caller would. Returns a
+ *  promise chain so rejection cases can use `.rejects`. */
 function roundTrip(config: unknown): Promise<YaacConfig | null> {
   return storeConfig(JSON.stringify(config)).then(() => resolveProjectConfig(slug))
 }
@@ -42,8 +40,7 @@ describe('resolveProjectConfig', () => {
   })
 
   it('ignores a yaac-config.json checked into the cloned repo', async () => {
-    // Regression guard: previously the repo working tree was a config
-    // source. After the rename, only the per-project config dir is read.
+    // Only the per-project config dir is a config source.
     await fs.writeFile(
       path.join(dataDir, 'global', 'projects', slug, 'repo', 'yaac-config.json'),
       JSON.stringify({ initCommands: ['pnpm install'] }),
@@ -96,9 +93,9 @@ describe('resolveProjectConfig', () => {
     })
 
     it('refuses a key that could name any dir but its own', async () => {
-      // A key is a host dir name under cache-volumes/: a parent reference
-      // would mount some other server dir into the pod, and a subdir would
-      // nest one mount inside another the pod can swap for a link.
+      // A key is a host dir name under cache-volumes/. A parent reference
+      // would mount another server dir into the pod; a subdir would nest one
+      // mount inside another, which the pod could swap for a symlink.
       for (const key of ['../../../.credentials', 'a/b', '..', '.', '.hidden', '', 'x'.repeat(65), 'a b']) {
         await expect(roundTrip({ cacheVolumes: { [key]: '/cache' } }), key)
           .rejects.toThrow(`cacheVolumes key "${key}"`)
@@ -199,9 +196,8 @@ describe('resolveProjectConfig', () => {
     })
 
     it('refuses yaac\'s own in-workspace infra ports, but allows a sensitive one', async () => {
-      // 10250-10350 is yaac's control surface (the stream daemon, the relay),
-      // never the project's to forward. A dev database is an ordinary,
-      // explicit thing to forward — only one-click detection skips it.
+      // 10250-10350 is reserved for yaac's in-workspace services. A database
+      // port may be forwarded explicitly; only one-click detection skips it.
       for (const containerPort of [10250, 10300, 10350]) {
         await expect(roundTrip({ portForward: [{ containerPort, hostPortStart: 9000 }] }))
           .rejects.toThrow(`portForward[0].containerPort ${containerPort} is reserved`)
@@ -305,9 +301,9 @@ describe('resolveEphemeralModulesPaths', () => {
 describe('retryImageBuild', () => {
   type RetryVerb = (id: string, cfg: (slug: string) => Promise<YaacConfig | undefined>) => boolean
 
-  // The runtime cannot read config itself — a rebuild that defaulted it
-  // would silently drop a nested project's nestable layer. "No config" reads
-  // as all-defaults: null from the store, undefined to the contract.
+  // The runtime cannot read config itself; a rebuild without it would drop
+  // a nested project's nestable layer. A missing config (null from the
+  // store) reaches the driver as undefined.
   it('hands the runtime a reader for each owning project’s config', async () => {
     const mockRetry = vi.fn<RetryVerb>().mockReturnValue(true)
     installFakeWorkspaceDriver({ retryImageBuild: mockRetry })

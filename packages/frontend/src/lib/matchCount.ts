@@ -25,8 +25,8 @@ export interface Matches {
 
 export const NO_MATCHES: Matches = { froms: [], tos: [], capped: false }
 
-/** Every match of `spec` in `doc`, up to MAX_COUNTED — CodeMirror's own
- *  cursor, so the count always agrees with what the editor highlights. */
+/** Every match of `spec` in `doc`, up to MAX_COUNTED. Uses CodeMirror's
+ *  cursor so the count agrees with what the editor highlights. */
 export function countMatches(doc: string, spec: QuerySpec): Matches {
   const query = new SearchQuery(spec)
   const froms: number[] = []
@@ -42,11 +42,10 @@ export function countMatches(doc: string, spec: QuerySpec): Matches {
 }
 
 /**
- * Counts matches off the main thread. Counting a large file takes time, and
- * a regex that backtracks can take forever — a single `RegExp.exec` cannot
- * be interrupted — so the work runs in a Worker that is terminated when it
- * runs past COUNT_TIMEOUT_MS or a newer count supersedes it mid-run. One
- * worker is kept warm between counts.
+ * Counts matches in a Worker. A backtracking regex can run forever and
+ * `RegExp.exec` can't be interrupted, so the worker is terminated when it
+ * passes COUNT_TIMEOUT_MS or a newer count replaces it. The worker is reused
+ * between counts.
  */
 export class MatchCounter {
   private worker: Worker | null = null
@@ -54,7 +53,7 @@ export class MatchCounter {
   private seq = 0
 
   count(doc: string, spec: QuerySpec, done: (matches: Matches) => void): void {
-    // A count still running is stale now; it may be stuck, so it goes.
+    // A running count is stale and may be stuck, so kill its worker.
     if (this.running) this.dispose()
     const id = ++this.seq
     const worker = this.worker ??= new Worker(new URL('./matchCount.worker.ts', import.meta.url), { type: 'module' })

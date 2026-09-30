@@ -39,14 +39,13 @@ import {
 const execFileAsync = promisify(execFile)
 
 /**
- * End-to-end coverage of the node-level egress redirect. Session pods are
- * BARE — no sidecars — carrying only the `yaac.workspace-id` label and a
- * `dnsConfig` pointed at the proxy. Their outbound 443/80 is DNAT'd at
- * their veth by netd to the node-local Envoy, which forwards to the proxy
- * behind a PROXY-protocol preamble; the proxy identifies each connection
- * by the stamped source pod IP it watches, then routes by TLS SNI / Host.
- * Every target IP is TEST-NET (192.0.2.0/24) via `curl --resolve`, so
- * reaching anything at all proves the redirect.
+ * The node-level egress redirect (docs/workspace-egress.md). Workspace pods
+ * have no sidecars, only the `yaac.workspace-id` label and DNS pointed at
+ * the proxy. netd DNATs their outbound 443/80 to the node's Envoy, which
+ * forwards to the proxy with a PROXY-protocol header carrying the source
+ * pod IP; the proxy maps that to a workspace and routes by SNI / Host.
+ * Every target is a never-routable TEST-NET address, so reaching anything
+ * proves the redirect.
  */
 
 let restoreNamespace: (() => void) | null = null
@@ -165,7 +164,7 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
   return { host: `${name}.${ns}.svc` }
 }
 
-/** TLS echo with its own self-signed (NOT proxy-CA) cert — tunnel peer. */
+/** TLS echo with its own self-signed (not proxy-CA) cert, for the tunnel test. */
 async function startTlsEchoPod(name: string): Promise<{ host: string }> {
   const ns = k8sNamespace()
   const host = `${name}.${ns}.svc`
@@ -216,11 +215,9 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
 }
 
 /**
- * A bare workspace pod: the `yaac.workspace-id` label (so the proxy's pod-watch
- * resolves its source IP to a session and netd selects it for redirect), the
- * proxy-CA mount for `curl --cacert`, and `dnsConfig` pointed at the proxy
- * VIP DNS stub. No sidecars, no proxy env vars — egress is redirected at the
- * cluster level.
+ * A bare workspace pod: the `yaac.workspace-id` label (which the proxy and
+ * netd select on), the proxy-CA mount for `curl --cacert`, and DNS pointed
+ * at the proxy.
  */
 async function startWorkspacePod(name: string, workspaceId: string, proxyHost: string): Promise<void> {
   await kubectlApply({
@@ -301,8 +298,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
     echoHost = echo.host
     tlsHost = tlsEcho.host
 
-    // Session A: MITM api.anthropic.com → the HTTP echo, plus plain HTTP to
-    // the echo host. Session B: only the TLS echo (for the tunnel test).
+    // Workspace A: MITM api.anthropic.com to the HTTP echo, plus plain HTTP
+    // to the echo host. Workspace B: only the TLS echo (for the tunnel test).
     await applyProxyRegistration(workspaceA, {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
@@ -331,9 +328,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
   })
 
   it('reaches an allowed host through SNI MITM with the mounted CA', async () => {
-    // --resolve pins the never-routable IP: only the netd redirect can
-    // deliver it. --cacert proves the proxy MITM'd with a leaf the mounted
-    // yaac CA signs for api.anthropic.com. Identity is podA's source IP.
+    // Only the redirect can deliver the pinned IP, and --cacert shows the
+    // proxy's leaf is signed by the mounted yaac CA.
     const result = await curlUntilSuccess(
       podA,
       `--cacert ${CA_PATH} --resolve ${MITM_HOST}:443:${FAKE_IP_A} https://${MITM_HOST}/v1/test`,
@@ -355,13 +351,12 @@ describe('node-level transparent egress (source-IP identity)', () => {
   }, 60_000)
 
   it('judges concurrent sessions by their own source IP', async () => {
-    // podB's source IP maps to session B, whose allowlist has no MITM_HOST —
-    // so the proxy denies it even though podA may reach it.
+    // Workspace B's allowlist lacks MITM_HOST, though A's has it.
     const fromB = await curlInPod(
       podB, `-k --resolve ${MITM_HOST}:443:${FAKE_IP_A} https://${MITM_HOST}/v1/test`,
     )
     expect(fromB.exit).not.toBe(0)
-    // And the inverse: pod A may not reach session B's tunnel host.
+    // And A may not reach B's tunnel host.
     const fromA = await curlInPod(
       podA, `-k --resolve ${tlsHost}:443:${FAKE_IP_B} https://${tlsHost}/`,
     )
@@ -369,17 +364,15 @@ describe('node-level transparent egress (source-IP identity)', () => {
   }, 60_000)
 
   it('allowHost widens a live session so a blocked host becomes reachable', async () => {
-    // Session B's allowlist is [tlsHost] only, so the HTTP echo is blocked.
-    // A transparent-HTTP block is an in-band 403 (forwardPlainHttp), not a
-    // socket reset — curl without -f exits 0 on it, so assert on the body.
+    // B's allowlist is [tlsHost] only. A blocked plain-HTTP request gets an
+    // in-band 403 (curl exits 0), so assert on the body.
     const before = await curlInPod(
       podB, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/before"`,
     )
     expect(before.out, before.out).toContain('Blocked by URL allowlist')
 
-    // Widen the running session's allowlist in place (no re-create, no
-    // restart): the registration object is rewritten and the proxy's
-    // informer applies it.
+    // Widen the running workspace's allowlist in place by rewriting its
+    // registration.
     await allowWorkspaceHost(
       { workspaceId: workspaceB, projectSlug: 'egress-b' }, echoHost, { fanOutToProject: false },
     )
@@ -409,11 +402,9 @@ describe('node-level transparent egress (source-IP identity)', () => {
   }, 60_000)
 
   it('tunnels an explicit CONNECT through the redirected SSH sentinel', async () => {
-    // `curl --proxy http://<sentinel>:<tunnel-port>` sends the same CONNECT
-    // git's ncat ProxyCommand does. netd redirects the sentinel through
-    // Envoy to the proxy tunnel listener, which reads CONNECT host:port and
-    // tunnels to the (allowlisted) TLS echo. The upstream's own self-signed
-    // cert reaching curl proves no MITM happened.
+    // Sends the same CONNECT as git's ncat ProxyCommand. The proxy's tunnel
+    // listener connects it to the TLS echo; seeing the echo's own cert shows
+    // there was no MITM.
     const r = await curlUntilSuccess(
       podB,
       `--proxy http://${SSH_TUNNEL_SENTINEL}:${TUNNEL_INGRESS_PORT} -k https://${tlsHost}/`,
@@ -423,16 +414,15 @@ describe('node-level transparent egress (source-IP identity)', () => {
   }, 120_000)
 
   it('split-horizon DNS: external → sinkhole, internal .svc → live ClusterIP', async () => {
-    // External name: sinkholed. The answer is decorative — egress is port-
-    // redirected and the proxy routes by SNI/Host, never by the dialed IP.
+    // External names resolve to a sinkhole; the proxy routes by SNI/Host,
+    // not by the dialed IP.
     const ext = await execInPod(podA, [
       'sh', '-c', 'getent hosts dns-stub-probe.example || true',
     ], { timeout: 20_000 })
     expect(ext.stdout).toContain('198.18.0.1')
 
-    // Internal FQDN: the top-level proxy forwards `*.cluster.local` to cluster
-    // DNS, so the pod learns the echo Service's REAL (allocator-assigned)
-    // ClusterIP — this is what lets yaac stop pinning in-cluster Service VIPs.
+    // `*.cluster.local` is forwarded to cluster DNS, so the pod gets the
+    // echo Service's real ClusterIP.
     const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
       'get', 'service', echoName, '-n', k8sNamespace(),
     ])
@@ -443,9 +433,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
     ], { timeout: 20_000 })
     expect(internal.stdout).toContain(echoClusterIp)
 
-    // Bare `.svc` is out of CoreDNS's zone, so the proxy sinkholes it rather
-    // than forward it upstream (the DNS-exfil guard) — it must NOT resolve to
-    // the real ClusterIP.
+    // Bare `.svc` is outside cluster DNS's zone, so it is sinkholed rather
+    // than sent upstream (a DNS-exfiltration guard).
     const bareSvc = await execInPod(podA, [
       'sh', '-c', `getent hosts ${echoName}.${k8sNamespace()}.svc || true`,
     ], { timeout: 20_000 })
@@ -453,10 +442,9 @@ describe('node-level transparent egress (source-IP identity)', () => {
   }, 60_000)
 
   it('refuses a direct dial to a transparent listener (the forgery lock)', async () => {
-    // A session pod dialing the transparent HTTPS port directly would let
-    // it inject a forged PROXY-protocol source. The proxy-ingress
-    // NetworkPolicy admits those ports from the node CIDRs only — pods
-    // cannot reach them at all — so the connect must fail.
+    // Dialing the transparent port directly would let a pod forge the
+    // PROXY-protocol source. The proxy-ingress NetworkPolicy admits it only
+    // from node CIDRs.
     const r = await curlInPod(
       podA, `-k --max-time 10 https://${proxyHost}:${TRANSPARENT_HTTPS_PORT}/`,
     )

@@ -16,8 +16,8 @@ import type { ProjectRef } from '#drivers/contract'
 vi.mock('#domain/workspaces/project-purge', () => ({ purgeProjectBytes: vi.fn() }))
 import { purgeProjectBytes } from '#domain/workspaces/project-purge'
 
-/** What the purge was asked to erase, and what the rows looked like when it
- *  was asked — the ordering across the two is half of what this tests. */
+/** What the purge was asked to erase, and the rows that existed at the time,
+ *  so a test can check the purge runs before the rows are deleted. */
 const purged: ProjectRef[] = []
 let rowsAtPurge: string[] = []
 
@@ -25,16 +25,15 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  // The teardown tells the runtime to forget the project's proxied secrets:
-  // the egress path holds them until told, and a project that no longer
-  // exists will never tell it again.
+  // The teardown asks the driver to forget the project's proxied secrets,
+  // which the egress path holds until told.
   installFakeWorkspaceDriver()
   purged.length = 0
   rowsAtPurge = []
   vi.mocked(purgeProjectBytes).mockReset().mockImplementation(async (project: ProjectRef) => {
     purged.push(project)
     rowsAtPurge = (await listWorkspaceRows()).map((r) => r.workspaceId)
-    // Erasing the clone is what the real purge does.
+    // Erase the clone, as the real purge does.
     for (const root of [projectDir(project.slug), nodeLocalProjectPath(project.id)]) {
       await fs.rm(root, { recursive: true, force: true })
     }
@@ -71,18 +70,16 @@ describe('removeProject', () => {
 
     await removeProject('demo')
 
-    // The purge is handed the row's id: what the runtime's objects are named by.
+    // The purge gets the row's id, which names the runtime's objects.
     expect(purged).toEqual([{ slug: 'demo', id: demoId }])
-    // The bytes go FIRST: while the project's record exists the project
-    // exists, so a purge that then failed must not leave a clone nothing can
-    // list, remove, or re-add.
+    // Bytes go first. If rows went first and the purge then failed, the
+    // leftover clone could not be listed, removed or re-added.
     expect(rowsAtPurge.sort()).toEqual(['a', 'b', 'c'])
-    // Only this project's rows go: the deleted listing is row-driven, and
-    // the workspaces they point at went with the bytes.
+    // Only this project's rows go.
     expect((await listWorkspaceRows()).map((r) => r.workspaceId)).toEqual(['c'])
     expect((await listProjectRows()).map((p) => p.slug)).toEqual(['keeper'])
-    // Including its environment — the secrets among those are the reason
-    // this cannot be left to the reaper.
+    // Its env vars go too; some are secrets, so this cannot wait for the
+    // reaper.
     expect(await listProjectEnvVars('demo')).toEqual([])
     expect((await listProjectEnvVars('keeper')).map((v) => v.name)).toEqual(['THEIRS'])
   })
@@ -92,8 +89,7 @@ describe('removeProject', () => {
     expect(purged).toEqual([])
   })
 
-  // A purge that throws must not take the rows with it: the project is still
-  // there, and `project remove` can be run again.
+  // A failed purge keeps the rows so `project remove` can be retried.
   it('keeps the rows when the purge cannot erase the bytes', async () => {
     await writeProject('demo')
     await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'a' })

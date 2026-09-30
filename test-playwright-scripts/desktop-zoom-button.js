@@ -1,9 +1,8 @@
-// Verifies the desktop shell's green "zoom" window control end to end:
-// renderer button click → preload bridge (altKey arg) → window:toggle-maximize
-// IPC → main-process zoomAction dispatch → BrowserWindow state change.
-// On Linux the plain-click path is the maximize toggle (the darwin path enters
-// native full screen; that branch is unit-tested in
-// packages/desktop/test/window-zoom.test.ts and needs a real Mac to observe).
+// Verifies the desktop shell's green "zoom" window control end to end: a
+// click goes through the preload bridge and window:toggle-maximize IPC to
+// zoomAction, which changes the BrowserWindow state. On Linux a plain click
+// toggles maximize; the macOS full-screen path is unit-tested in
+// packages/desktop/test/window-zoom.test.ts.
 //
 // Run: node test-playwright-scripts/desktop-zoom-button.js
 // Needs: built desktop bundle (pnpm --filter @yaac/desktop exec tsup), the

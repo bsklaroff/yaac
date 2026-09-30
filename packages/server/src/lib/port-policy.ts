@@ -1,24 +1,16 @@
 /**
- * Which of a workspace's listening ports may be surfaced to the user at
- * all, and how many — and which may never be forwarded however they are
- * asked for.
+ * Which of a workspace's listening ports may be shown to the user, how many,
+ * and which may never be forwarded. How ports are discovered is up to each
+ * driver; this policy is shared by both drivers and config validation.
+ * It fails closed, since a listed port is one click from being reachable.
  *
- * Policy rather than mechanism: HOW a driver discovers a workspace's
- * listeners is entirely its own (a stream daemon pushing `/proc/net/tcp`
- * from inside a pod, an `lsof` over a host process tree), but WHAT is safe
- * to offer is the same question either way, and config validation asks the
- * infra half of it too — which is why it sits in `#lib`, open to domain as
- * well as both drivers. Fail closed: a port that reaches a list is one click
- * from being reachable.
- *
- * Two tiers, told apart by intent. Infra ports are yaac's own control
- * surface and are never declarable, detectable or dialable. Sensitive ports
- * are only kept out of one-click detection: forwarding a dev database is an
- * explicit, ordinary thing to write in a config.
+ * Infra ports are yaac's own control surface and can never be declared,
+ * detected or dialed. Sensitive ports are only excluded from one-click
+ * detection; a config may still forward them explicitly.
  */
 
-/** Well-known ports never offered for one-click exposure — doing so is a
- *  step toward RCE (node --inspect) or data exposure (DBs). */
+/** Well-known ports never offered for one-click exposure, since that risks
+ *  RCE (node --inspect) or data exposure (databases). */
 export const SENSITIVE_PORTS: ReadonlySet<number> = new Set([
   22, // sshd
   2375, 2376, // docker daemon
@@ -35,14 +27,14 @@ export const SENSITIVE_PORTS: ReadonlySet<number> = new Set([
 const INFRA_PORT_MIN = 10250
 const INFRA_PORT_MAX = 10350
 
-/** Whether a port is yaac's own control surface — never the project's to
- *  forward, by config, detection or dial. */
+/** Whether a port is yaac's own; never forwardable by config, detection or
+ *  dial. */
 export function isInfraPort(port: number): boolean {
   return port >= INFRA_PORT_MIN && port <= INFRA_PORT_MAX
 }
 
-/** Cap on ports surfaced per workspace — a hostile listener flood shows a
- *  bounded badge, not an unbounded snapshot. */
+/** Cap on ports shown per workspace, so a flood of listeners stays
+ *  bounded. */
 export const MAX_SURFACED_PORTS = 10
 
 /** Whether a detected port may be offered at all. */

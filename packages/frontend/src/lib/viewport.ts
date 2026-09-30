@@ -1,15 +1,13 @@
 import { useEffect, useSyncExternalStore } from 'react'
 
 /**
- * Viewport shape — one breakpoint for the whole app.
+ * The app's one mobile breakpoint (docs/mobile-layout.md). Below it the app
+ * is a three-screen mobile shell (projects → workspaces → pane); above it,
+ * the desktop layout. It checks width only, not `pointer: coarse`, so a
+ * narrow desktop window (or a Playwright script) gets the mobile shell.
  *
- * Below it the webapp is a three-screen mobile shell (projects → workspaces →
- * pane); above it the desktop rail + sidebar + pane row. Width-only, not
- * `pointer: coarse`, so a narrow desktop window gets the mobile shell too —
- * which is what makes it drivable from a Playwright script.
- *
- * 767px is Tailwind's `md` boundary, so `max-md:` utilities in the components
- * mean exactly the same thing this constant does. Keep them in step.
+ * 767px is Tailwind's `md` boundary, so `max-md:` utilities match it. Keep
+ * them in step.
  */
 export const MOBILE_QUERY = '(max-width: 767px)'
 
@@ -18,7 +16,7 @@ function query(): MediaQueryList | null {
   return window.matchMedia(MOBILE_QUERY)
 }
 
-/** One-shot read (exported for tests and non-React callers). */
+/** One-time read, for tests and non-React callers. */
 export function isMobileViewport(): boolean {
   return query()?.matches ?? false
 }
@@ -35,47 +33,27 @@ export function useIsMobile(): boolean {
   return useSyncExternalStore(subscribe, isMobileViewport, () => false)
 }
 
-/**
- * Publish the *visual* viewport — its height as `--app-height` and its offset
- * from the layout viewport as `--app-top` — which index.css gives to `#root`.
- *
- * The layout viewport does not shrink when a soft keyboard opens (iOS Safari
- * in particular just slides the page), so a `100dvh` app puts the bottom of
- * the terminal behind the keyboard. `window.visualViewport` is the only thing
- * that reports the keyboard reliably across iOS and Android; feeding its
- * height into the root makes the whole layout — and therefore WorkspaceView's
- * ResizeObserver, and therefore the PTY's row count — track the space the user
- * can actually see.
- *
- * Sizing alone is not enough, because a keyboard does not only shrink the
- * visual viewport: it *slides* it. Focusing the chat composer makes iOS scroll
- * the control into view before the resize lands, and it never scrolls back, so
- * an app sized to the visible space still sits at the top of the layout
- * viewport — squeezed above the space it was measured for, with the page's
- * background showing below it and a finger free to drag the shell around in
- * the gap. The offset is what closes that gap: `#root` is `position: fixed`,
- * so moving it down by exactly the slide puts the app back over the region the
- * user can see, and there is nothing below it left to scroll to.
- *
- * A pinch-zoom pans the visual viewport too, and that pan is the user's own —
- * re-anchoring the app to the top of it on every frame would make a zoomed
- * page impossible to look around. `scale` is what tells the two apart: a
- * keyboard leaves it at 1, zooming does not.
- *
- * With a tolerance, because the two failures are not symmetric. `scale` is a
- * float a browser is free to leave a hair off 1 after a pinch, and a strict
- * comparison that stays true forever turns the keyboard compensation off for
- * good on that device — the bug back, silently, with no zoom on screen to
- * suggest why. Below a percent there is no pan worth preserving anyway, so the
- * threshold costs nothing and removes the cliff.
- *
- * Only enabled on mobile: on a desktop the visual viewport also shrinks under
- * pinch-zoom, where reflowing the app is not what anyone wants.
- */
-/** Past this, the visual viewport's pan is a pinch-zoom's rather than a
- *  keyboard's — see useVisualViewportHeight. */
+/** Above this scale, the visual viewport is pinch-zoomed. A browser may leave
+ *  `scale` slightly off 1 after a pinch, so an exact check would disable the
+ *  keyboard offset for good. */
 const ZOOMED_SCALE = 1.01
 
+/**
+ * Publish the visual viewport's height as `--app-height` and its offset from
+ * the layout viewport as `--app-top`, which index.css applies to `#root`.
+ *
+ * A soft keyboard doesn't shrink the layout viewport (iOS just slides the
+ * page), so a `100dvh` app would hide the terminal's bottom behind it. Using
+ * `visualViewport`'s height makes the layout, and so the PTY's row count,
+ * fit the visible space. iOS also scrolls the viewport to show a focused
+ * input and never scrolls back; `#root` is `position: fixed`, so offsetting
+ * it by that scroll keeps the app over the visible region.
+ *
+ * A pinch-zoom also pans the viewport, and following that pan would make a
+ * zoomed page impossible to look around, so the offset is skipped while
+ * zoomed. Only enabled on mobile, since desktop pinch-zoom shouldn't reflow
+ * the app.
+ */
 export function useVisualViewportHeight(enabled: boolean): void {
   useEffect(() => {
     const root = typeof document !== 'undefined' ? document.documentElement : null
@@ -95,8 +73,7 @@ export function useVisualViewportHeight(enabled: boolean): void {
     }
     apply()
     vv.addEventListener('resize', apply)
-    // The keyboard opening also *scrolls* the visual viewport on iOS without
-    // always firing resize; recomputing on both keeps the two in step.
+    // On iOS the keyboard can scroll the viewport without firing resize.
     vv.addEventListener('scroll', apply)
     return () => {
       vv.removeEventListener('resize', apply)

@@ -4,33 +4,28 @@ import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 
 /**
- * Server I/O under a directory something less trusted can write: a
+ * Server file I/O under a directory that less-trusted code can write: a
  * workspace's checkout, and under a sandboxing runtime the tool homes and
- * conversation records every pod of a project mounts read-write
- * (docs/workspace-storage.md). Whatever runs there can put a symlink or a
- * FIFO at any path below the directory it was given, so a plain
- * `fs.readFile` there can be steered at any file the server can read, and
- * a plain `open` can block a libuv thread forever.
+ * conversation records a project's pods mount read-write
+ * (docs/workspace-storage.md). A symlink planted there could steer a plain
+ * `fs.readFile` at any file the server can read, and a FIFO could block a
+ * libuv thread forever.
  *
- * Every path is checked on what was actually opened — the descriptor —
- * never on a path string, which proves nothing about where the kernel ends
- * up. A walk pins each directory and opens the next segment through it
- * (`/proc/self/fd/<fd>/<name>`, Linux's stand-in for `openat`, which Node
- * lacks), so nothing swapped in above a checked directory can redirect the
- * walk. Leaves open non-blocking, so a FIFO answers at once instead of
- * waiting for a writer. Without `/proc/self/fd` (a macOS containerless
- * server) there is no sandbox to escape — the agent already runs as the
- * host user — so the same checks run on `fs.realpath`, where a race costs
- * nothing the agent could not do directly.
+ * Paths are checked on the opened descriptor, never on the path string. A
+ * walk pins each directory and opens the next segment through it
+ * (`/proc/self/fd/<fd>/<name>`, standing in for `openat`, which Node lacks),
+ * so a swap above a checked directory cannot redirect it. Files open
+ * non-blocking so a FIFO returns at once. Without `/proc/self/fd` (a macOS
+ * containerless server) there is no sandbox, since the agent already runs
+ * as the host user, so the same checks run on `fs.realpath`.
  *
- * Two policies, because the trees differ in whether links belong in them:
+ * Two link policies:
  *
- *  - `inside`: a link is followed when it lands inside the root. A checkout
- *    holds links on purpose, and a containerless project dir holds yaac's
- *    own (the per-workspace tool homes).
- *  - `no-links`: no link anywhere below the root — not in a directory on
- *    the way, not at the leaf. Nothing yaac or a tool writes into a
- *    sandbox-mounted tool home is a link, so one there was planted.
+ *  - `inside`: follow a link only if it lands inside the root. Checkouts
+ *    contain links on purpose, and a containerless project dir holds yaac's
+ *    per-workspace tool homes.
+ *  - `no-links`: refuse any link below the root. Nothing legitimate writes
+ *    links into a sandbox-mounted tool home, so one there was planted.
  */
 export type LinkPolicy = 'inside' | 'no-links'
 
@@ -308,11 +303,10 @@ export async function openRoot(
       await fs.rm(at.child(name), { recursive: true })
       return
     }
-    // Each child is opened as a real folder through its parent's descriptor
-    // and recursed into, and anything else — a file, or a link, which is
-    // never followed — is unlinked by name. Node's own recursive `fs.rm`
-    // walks by path, so a folder swapped for a link mid-walk could steer it
-    // out of the root; this walk never re-resolves a path it has checked.
+    // Open each child directory through its parent's descriptor and recurse;
+    // unlink anything else (files, and links, which are never followed).
+    // Node's recursive `fs.rm` walks by path, so a directory swapped for a
+    // link mid-walk could lead it out of the root.
     const sub = await openExactDir(at, name)
     if (!sub) {
       await fs.unlink(at.child(name))
@@ -343,9 +337,8 @@ export async function openRoot(
         throw err
       }
       try {
-        // Read until the file ends rather than by the size `fstat` reported,
-        // which a file growing under the read would make a promise the read
-        // does not keep — and one byte past the cap is what refuses it.
+        // Read to EOF rather than trusting `fstat`'s size, which a growing
+        // file would outrun; reading one byte past the cap detects too-large.
         const chunks: Buffer[] = []
         let total = 0
         for (;;) {
@@ -392,9 +385,8 @@ export async function openRoot(
     async writeAtomic(rel, data) {
       const { dir, name } = await parent(rel, { create: true })
       try {
-        // O_EXCL never creates through a link, dangling or not. The name is
-        // random because whoever else writes the directory could otherwise
-        // occupy every name this would pick next, and fail each write.
+        // O_EXCL never creates through a link. The name is random so another
+        // writer in the directory cannot pre-occupy the names we would pick.
         let tmp = ''
         let fh: FileHandle | undefined
         for (let tries = 0; fh === undefined; tries++) {

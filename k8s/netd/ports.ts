@@ -1,35 +1,24 @@
 /**
- * Listener-port allocation for this install's Envoy trio.
+ * Port allocation for an install's Envoy listener trio (https, http,
+ * tunnel).
  *
- * ONE trio per install — https / http / tunnel — shared by every pod netd
- * redirects, whatever egress target that pod resolves to. The target is
- * chosen inside Envoy by matching the connection's source pod IP against a
- * filter chain (see envoy-config.ts), not by which port the packet landed
- * on, so adding or removing a target never moves a port. That is what
- * makes an in-flight flow safe: conntrack pins a flow's DNAT destination
- * on its first packet, and the port that destination names is now fixed
- * for the whole life of the netd pod.
+ * Each install has one trio, shared by every redirected pod. Envoy picks
+ * the egress target from the source pod IP (see envoy-config.ts), so
+ * targets can change without moving a port, and conntrack's pinned DNAT
+ * destinations stay valid for the life of the netd pod.
  *
- * The range is still node-local and shared between coexisting installs
- * (they all run hostNetwork), so the slot is CHOSEN, not assumed: netd
- * probes from a hash-derived preference and takes the first trio nothing
- * else holds. Three ports per install rather than three per target makes a
- * collision vanishingly unlikely to begin with, and the probe plus the
- * Envoy listener gate (netd.ts) turn the residual case into a logged
- * retry instead of two installs silently sharing a socket.
- *
- * Pure here: the slot preference order and the port arithmetic. The bind
- * probe and the persistence that keeps a restarted netd on the same trio
- * live in listeners.ts.
+ * Installs on one node share the port range (all run hostNetwork), so
+ * netd tries slots in a hash-derived order and takes the first free trio.
+ * This module is the pure arithmetic; the bind probe and persistence live
+ * in listeners.ts.
  */
 
 import crypto from 'node:crypto'
 
 /**
- * The reserved node-local port window, as trio slots. Passed in from the
- * server (proxy-constants.ts) via env so the range has ONE definition —
- * the workspace NetworkPolicy admits exactly these ports, so a netd that
- * disagreed with the policy would bind listeners nothing may reach.
+ * The reserved node-local port window, in trio slots. The server passes it
+ * via env (from proxy-constants.ts) so it matches the ports the workspace
+ * NetworkPolicy admits.
  */
 export interface ListenerRange {
   base: number
@@ -37,9 +26,9 @@ export interface ListenerRange {
 }
 
 /**
- * Fallback when the env is absent (a hand-run netd). Kept in sync with
- * NETD_LISTENER_PORT_BASE / NETD_LISTENER_SLOTS by the DaemonSet manifest
- * test, which asserts the manifest passes these exact values.
+ * Fallback when the env is absent (a hand-run netd). The DaemonSet
+ * manifest test keeps it equal to NETD_LISTENER_PORT_BASE /
+ * NETD_LISTENER_SLOTS.
  */
 export const DEFAULT_LISTENER_RANGE: ListenerRange = { base: 15100, slots: 300 }
 
@@ -56,19 +45,16 @@ export function trioForSlot(slot: number, range: ListenerRange = DEFAULT_LISTENE
   return { https: base, http: base + 1, tunnel: base + 2 }
 }
 
-/** A trio's ports, in leg order — what the bind probe and the gate check. */
+/** A trio's ports in https, http, tunnel order. */
 export function trioPorts(trio: ListenerTrio): number[] {
   return [trio.https, trio.http, trio.tunnel]
 }
 
 /**
- * Every slot, ordered by preference: the install's hashed slot first, then
- * forward with wrap.
- *
- * Hashing the install namespace (rather than starting at 0) is what keeps
- * two installs off each other's first choice without either knowing the
- * other exists — the real `yaac` install and an ephemeral e2e
- * `yaac-test-<run-id>` land on unrelated slots.
+ * Every slot in preference order: the slot hashed from the install
+ * namespace first, then onward with wrap-around. Hashing keeps coexisting
+ * installs (e.g. `yaac` and an e2e `yaac-test-<run-id>`) off each other's
+ * first choice.
  */
 export function slotPreference(
   installNamespace: string,

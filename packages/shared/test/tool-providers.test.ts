@@ -16,9 +16,8 @@ import {
 } from '@yaac/shared/tool-providers'
 import { MODEL_NAMES, MODELS_BY_PROVIDER } from '@yaac/shared/tool-providers.generated'
 
-// Both registries are code-generated (scripts/gen-tool-providers.ts), so these
-// assert invariants over whatever providers the tools currently ship rather
-// than a hard-coded list — a regen must keep them holding.
+// Both registries are generated (scripts/gen-tool-providers.ts), so these
+// check invariants rather than a fixed list.
 const REGISTRIES = [
   { name: 'opencode', list: OPENCODE_PROVIDERS, defaultId: OPENCODE_DEFAULT_PROVIDER, hasModel: false },
   { name: 'pi', list: PI_PROVIDERS, defaultId: PI_DEFAULT_PROVIDER, hasModel: true },
@@ -39,7 +38,7 @@ describe.each(REGISTRIES)('$name provider registry', ({ list, defaultId, hasMode
     for (const p of list) {
       expect(p.label.length).toBeGreaterThan(0)
       expect(p.envVar.length).toBeGreaterThan(0)
-      // apiHost is the bare hostname the proxy matches on — no scheme/port/path.
+      // A bare hostname: no scheme, port or path.
       expect(p.apiHost).toMatch(/^[a-z0-9.-]+$/i)
       expect(p.apiHost).not.toMatch(/[/:]/)
     }
@@ -51,7 +50,7 @@ describe.each(REGISTRIES)('$name provider registry', ({ list, defaultId, hasMode
       if (hasModel) {
         expect(model).toBeDefined()
         // pi launches with `--model <provider>/<id>`, so the model must name
-        // its own provider or pi would resolve it against the wrong backend.
+        // its own provider.
         expect(model?.startsWith(`${p.id}/`)).toBe(true)
       } else {
         expect(model).toBeUndefined()
@@ -67,9 +66,8 @@ describe('parse*Provider', () => {
   })
 
   it('drops anything unrecognized, absent, or empty — never coerces', () => {
-    // The provider picks the env var the key is seeded under and the host the
-    // proxy swaps it on, so a guess sends the credential to a vendor the user
-    // never chose. Absent is as invalid as wrong; callers must decide.
+    // The provider decides where the key is sent, so a missing one is as
+    // invalid as a wrong one; callers must decide.
     expect(parsePiProvider(undefined)).toBeUndefined()
     expect(parsePiProvider('')).toBeUndefined()
     expect(parseOpencodeProvider(undefined)).toBeUndefined()
@@ -101,8 +99,7 @@ describe('provider info + host lookup', () => {
 })
 
 // Pinned by hand because neither CLI is pinned in the tools image. A regen
-// that drops one means it has been retired upstream, and every first create
-// of that agent in a project would launch a model the vendor no longer lists.
+// that drops one means the vendor retired it.
 describe('FALLBACK_MODELS', () => {
   it('names a model the catalog still lists for each tool', () => {
     expect(MODELS_BY_PROVIDER['anthropic']).toContain(FALLBACK_MODELS.claude)

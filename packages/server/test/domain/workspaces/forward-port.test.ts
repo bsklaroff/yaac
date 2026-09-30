@@ -72,9 +72,8 @@ describe('forwardWorkspacePort', () => {
   })
 
   it('refuses an ineligible port BEFORE writing any config', async () => {
-    // The whole reason the eligibility read sits above the persist: a click
-    // racing the surfaced list must not leave the port in the project config,
-    // inherited by every future workspace, behind an error saying it failed.
+    // A refused forward must not leave the port in the project config, where
+    // every future workspace would inherit it.
     mockUnforwarded.mockResolvedValue([3000])
 
     await expect(forwardWorkspacePort('sid-1', 8090, { persist: true }))
@@ -99,8 +98,7 @@ describe('forwardWorkspacePort', () => {
   })
 
   it('surfaces the runtime refusing a port that left the set in between', async () => {
-    // The runtime re-checks and is the authority; the read above is a
-    // question asked a moment earlier, not a reservation.
+    // The eligibility check is not a reservation; the runtime re-checks.
     mockForwardPort.mockRejectedValue(new ServerError('CONFLICT', 'not an unforwarded listener'))
 
     await expect(forwardWorkspacePort('sid-1', 8090, { persist: false }))
@@ -125,9 +123,8 @@ describe('dismissWorkspacePort', () => {
     expect(mockDismiss).toHaveBeenCalledExactlyOnceWith('sid-1', 8090)
   })
 
-  // Same refusal as the forward action, worded the same way: the two sit on
-  // one row in the webapp, and a caller racing the surfaced list should not
-  // be able to tell which of them it lost.
+  // Same refusal as forwardWorkspacePort: both act on one webapp row, so a
+  // stale click gets the same error either way.
   it('refuses a port the runtime is not offering', async () => {
     mockDismiss.mockReturnValue(false)
 

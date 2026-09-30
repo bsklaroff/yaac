@@ -10,7 +10,6 @@ import { openRoot } from '#lib/confined-fs'
 describe('ensureAgentReporters', () => {
   let dir: string
   let homes: { claudeDir: string; codexDir: string; piAgentDir: string; opencodeConfigDir: string }
-  /** The homes as a sandboxing runtime opens them. */
   const roots = async () => {
     const dirs = { claude: homes.claudeDir, codex: homes.codexDir, pi: path.dirname(homes.piAgentDir), opencodeConfig: homes.opencodeConfigDir }
     for (const d of Object.values(dirs)) await fs.mkdir(d, { recursive: true })
@@ -31,7 +30,7 @@ describe('ensureAgentReporters', () => {
       piAgentDir: path.join(dir, 'pi', 'agent'),
       opencodeConfigDir: path.join(dir, 'opencode'),
     }
-    // The reporters are the process boundary: stubs on PATH log each call.
+    // Stub commands on PATH log each call.
     calls = path.join(dir, 'calls')
     await fs.mkdir(path.join(dir, 'bin'))
     for (const name of ['yaac-agent-links', 'yaac-agent-report']) {
@@ -73,16 +72,16 @@ describe('ensureAgentReporters', () => {
       ...settings,
       hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'mine.sh' }] }] },
     }))
-    // A malformed file is replaced: the tool would ignore it anyway.
+    // A malformed file is replaced.
     await fs.mkdir(homes.codexDir, { recursive: true })
     await fs.writeFile(path.join(homes.codexDir, 'hooks.json'), '{ not json')
 
     await ensureAgentReporters(await roots())
 
-    // Bare names and `$HOME`-relative homes, because these files are shared
-    // by a whole project and read by workspaces of either substrate. The model
-    // reporter is guarded: claude hot-reloads the file, and a workspace whose
-    // staged bin predates the script must not surface a hook error.
+    // Bare command names and `$HOME`-relative paths, since the files are
+    // shared by all of a project's workspaces on either driver. The model
+    // reporter is guarded because claude hot-reloads the file and an older
+    // workspace may lack the script.
     const session = 'yaac-agent-links "$HOME/.claude" claude'
     const report = 'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true'
     expect(await hooksIn(claudeSettings)).toEqual({
@@ -97,8 +96,7 @@ describe('ensureAgentReporters', () => {
     expect(await hooksIn(path.join(homes.codexDir, 'hooks.json')))
       .toEqual({ SessionStart: [codexSession], SessionEnd: [codexSession] })
 
-    // A second create finds every byte in place and rewrites nothing — the
-    // files are read at startup by every workspace of the project.
+    // A second create rewrites nothing.
     const files = [
       claudeSettings,
       path.join(homes.codexDir, 'hooks.json'),
@@ -112,8 +110,7 @@ describe('ensureAgentReporters', () => {
     expect(await fs.readdir(path.join(homes.opencodeConfigDir, 'plugins', 'yaac-report'))).toEqual(['index.ts'])
   })
 
-  // The rename is what keeps a concurrent reader from a torn file; one that
-  // fails must not leave its temp file behind in a home every workspace reads.
+  // A failed rename must not leave the temp file in a shared home.
   it('leaves no temp file behind when a write cannot land', async () => {
     await fs.mkdir(path.join(homes.claudeDir, 'settings.json', 'occupied'), { recursive: true })
     await expect(ensureAgentReporters(await roots())).rejects.toThrow()
@@ -130,7 +127,7 @@ describe('ensureAgentReporters', () => {
     expect((await fs.lstat(path.join(homes.codexDir, 'hooks.json'))).isFile()).toBe(true)
   })
 
-  // The extension as written, against the API pi 0.84.4 hands it.
+  // Against the extension API of pi 0.84.4.
   it("reports pi's conversation and model, and ends each conversation as pi does", async () => {
     await ensureAgentReporters(await roots())
     expect(await runModule(path.join(homes.piAgentDir, 'extensions', 'yaac-report.ts'), [
@@ -151,17 +148,15 @@ describe('ensureAgentReporters', () => {
       'yaac-agent-links /h/.pi|pi|pi-1|/h/.pi/agent/sessions/t_pi-1.jsonl',
       'yaac-agent-report openrouter/z-ai/glm-5|||',
       'yaac-agent-report openrouter/moonshot/kimi-k3|||',
-      // A `/new` ends it as much as a quit does; another starts right after.
+      // `/new` ends the conversation and starts another.
       'yaac-agent-links |pi|pi-1|--end',
       'yaac-agent-links |pi|pi-1|--end',
     ])
   })
 
-  // The plugin as written, against the event shapes opencode 2.0.12 emits:
-  // the agent is half a posture, and a Tab between agents reaches the server
-  // only with the next prompt, as `session.agent.selected`; a session is
-  // named as opencode creates it, and a subagent's (`parentID`) is not the
-  // pane's.
+  // Against opencode 2.0.12's events. An agent switch arrives with the next
+  // prompt as `session.agent.selected`; subagent sessions (`parentID`) are
+  // not the pane's.
   it("reports opencode's conversation, model and agent, and ends the conversation on dispose", async () => {
     await ensureAgentReporters(await roots())
     const model = { providerID: 'opencode', id: 'big-pickle' }
@@ -171,16 +166,14 @@ describe('ensureAgentReporters', () => {
       { type: 'session.created', data: { sessionID: 'ses_child', parentID: 'ses_1', model, agent: 'explore' } },
       { type: 'session.step.started', data: { sessionID: 'ses_1', agent: 'plan', model } },
       { type: 'session.agent.selected', data: { sessionID: 'ses_1', agent: 'build', previous: 'plan' } },
-      // A `/new`, which announces no end for the session it replaces.
+      // `/new` sends no end event for the session it replaces.
       { type: 'session.created', data: { sessionID: 'ses_2', model, agent: 'build' } },
     ]
-    // Reports go out one at a time, and the child exits only once the last
-    // has — so the file is complete, and in order, by then.
+    // The child exits only after the last report, so the log is complete.
     expect(await runModule(path.join(homes.opencodeConfigDir, 'plugins', 'yaac-report', 'index.ts'), [
       `const events = ${JSON.stringify(events)}`,
       'const dispose = reporter.setup({ event: { subscribe: async function* () { yield* events } } })',
-      // Disposed once every report has gone out: opencode disposes a plugin
-      // as its server exits, long after a turn's reports.
+      // opencode disposes a plugin when its server exits.
       "const { readFileSync } = await import('node:fs')",
       `while ((readFileSync(${JSON.stringify(calls)}, { encoding: 'utf8', flag: 'a+' }).match(/\\n/g) ?? []).length < 6) {`,
       '  await new Promise((r) => setTimeout(r, 10))',
@@ -197,9 +190,8 @@ describe('ensureAgentReporters', () => {
     ])
   })
 
-  // A plain `opencode` joins a background service shared by every TUI that
-  // did not ask for its own: it keeps the env of whichever pane started it
-  // and outlives each TUI, so no pane is its to report on.
+  // opencode's shared background service outlives any one pane, so it has
+  // no pane to report for.
   it("reports nothing from opencode's shared background service", async () => {
     await ensureAgentReporters(await roots())
     await runModule(path.join(homes.opencodeConfigDir, 'plugins', 'yaac-report', 'index.ts'), [

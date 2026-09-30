@@ -8,20 +8,19 @@ export interface IdentityEnv {
 }
 
 /**
- * Routes reachable without an identity: the SPA shell and its hashed
- * assets — public so that an unidentified browser can still load the app
- * and be told what is wrong — and the health probe.
+ * Routes reachable without an identity: the health probe, and the SPA shell
+ * and assets, so an unidentified browser can still load the app and be told
+ * what is wrong.
  */
 function isPublicPath(path: string): boolean {
   return path === '/api/health' || path === '/' || path.startsWith('/assets/')
 }
 
 /**
- * The request's host as the guards see it: the `Host` header, or the URL's
- * host for in-memory dispatch (hono's `app.fetch` in tests), which carries
- * no header. Real socket traffic always carries Host, and a DNS-rebind
- * request reflects the attacker host in both, so the fallback weakens
- * nothing. Lowercased, port kept.
+ * The request's host, lowercased with the port kept: the `Host` header, or
+ * the URL's host for in-memory dispatch (`app.fetch` in tests), which has no
+ * header. Real traffic always has Host, and a DNS-rebind request carries the
+ * attacker's host in both, so the fallback is safe.
  */
 function requestHost(header: string | undefined, url: string): string {
   if (header) return header.toLowerCase()
@@ -53,12 +52,11 @@ function encodedWordBytes(encoding: string, text: string): number[] {
 }
 
 /**
- * An identity header as text to show and log. A non-ASCII value arrives as
- * RFC 2047 encoded words — several, space-separated, once it is longer than
- * one word may be — which are decoded together, the whitespace between
- * adjacent words dropped as the RFC says. Control characters are removed
- * whatever the encoding: the value goes into every request-log line and
- * into what `yaac remote set` prints.
+ * Decode an identity header for display and logging. Non-ASCII values arrive
+ * as one or more space-separated RFC 2047 encoded words, decoded together
+ * with the whitespace between them dropped. Control characters are always
+ * removed, since the value goes into request logs and `yaac remote set`
+ * output.
  */
 function decodeIdentityHeader(value: string): string {
   const words = [...value.trim().matchAll(ENCODED_WORD)]
@@ -71,31 +69,25 @@ function decodeIdentityHeader(value: string): string {
 }
 
 /**
- * Who a request is from, derived from the request itself
- * (docs/remote-hosting.md), or why it cannot be said.
+ * Who a request is from, or why that can't be determined
+ * (docs/remote-hosting.md).
  *
- * `tailscale serve` — a host `serve`, or the Tailscale operator's Ingress
- * proxy, which is the same code — stamps `X-Forwarded-For` on everything
- * it forwards, `Tailscale-User-Login`/`-Name` on what comes from a
- * user-owned device, and strips client-supplied copies of those. So:
+ * `tailscale serve` (on the host, or the Tailscale operator's Ingress proxy)
+ * sets `X-Forwarded-For` on everything it forwards, sets
+ * `Tailscale-User-Login`/`-Name` for user-owned devices, and strips
+ * client-supplied copies. So:
  *
- * - Forwarded (either header present) and carrying a user: that tailnet
- *   user.
- * - Forwarded without one: a tagged device or Funnel, which has no user to
- *   be. Refused.
- * - Not forwarded, addressed to loopback: this machine — local.
- * - Not forwarded, addressed to any other name: a path that is not
- *   `serve` and not loopback, which a top-level server refuses rather than
- *   trust — the fail-closed half, since `YAAC_ALLOWED_HOSTS` is what opts
- *   a server into remote access and remote access is identity-only. A
- *   server inside a workspace (`YAAC_WORKSPACE_ID`) is reached exactly that
- *   way, as `srv.<tailnet>:<port>` through the outer install's forward, so
- *   there it is local.
+ * - Forwarded with a user: that tailnet user.
+ * - Forwarded without a user (a tagged device or Funnel): refused.
+ * - Not forwarded, addressed to loopback: local.
+ * - Not forwarded, addressed to another name: refused (fail closed), since
+ *   remote access requires an identity. Exception: a server inside a
+ *   workspace (`YAAC_WORKSPACE_ID`) is reached this way through the outer
+ *   install's forward, so there it is local.
  *
- * A local process can forge any of these headers, and gains nothing by it:
- * it is the owner already. The bind (loopback unless in-cluster) and, in
- * the cluster, the server pod's ingress policy are what keep everything
- * else from reaching the server unmediated.
+ * A local process can forge these headers but gains nothing, as it is
+ * already the owner. Everything else is kept out by the loopback bind, or
+ * in-cluster by the server pod's ingress policy.
  */
 function identifyRequest(
   header: (name: string) => string | undefined,
@@ -131,10 +123,9 @@ function identifyRequest(
 
 /**
  * The identity gate: every non-public request gets a `principal`, or a 401
- * saying why it could not be given one (`identifyRequest`). Runs after the
- * Host, CORS, Origin and Sec-Fetch-Site guards, and on WebSocket upgrades
- * like any other request. Read per request (never cached) so a restarted
- * server — and tests — see the current environment.
+ * explaining why not (`identifyRequest`). Runs after the Host, CORS, Origin
+ * and Sec-Fetch-Site guards, including on WebSocket upgrades. The
+ * environment is read per request so tests see the current values.
  */
 export function identify(): MiddlewareHandler<IdentityEnv> {
   return async (c, next) => {
@@ -149,19 +140,13 @@ export function identify(): MiddlewareHandler<IdentityEnv> {
 }
 
 /**
- * Reject requests whose `Host` header isn't loopback (or an explicitly
- * allowed extra hostname — `YAAC_ALLOWED_HOSTS`, for the tailnet name a
- * `tailscale serve` proxy forwards). Defeats DNS rebinding, where an
- * attacker domain resolves to 127.0.0.1 but the browser still sends the
- * attacker's hostname in `Host`. Loopback is allowed unconditionally so
- * the extra-hosts knob can only widen, never weaken, local access.
+ * Allow only a loopback `Host`, or a hostname listed in `YAAC_ALLOWED_HOSTS`
+ * (the tailnet name `tailscale serve` forwards). This defeats DNS rebinding,
+ * where an attacker domain resolves to 127.0.0.1 but the browser still sends
+ * the attacker's hostname. Loopback is always allowed.
  *
- * Only the hostname is checked, not the port: a port-forward (common
- * when reaching the server from outside its container) legitimately
- * remaps the external port, so the browser's `Host` port need not equal
- * the server's bound port. The port comparison would add no real defense
- * anyway — a DNS-rebind request must already target the server's real
- * port to connect, so its `Host` port would match regardless.
+ * Only the hostname is checked: a port-forward can legitimately remap the
+ * port, and a rebind request must hit the real port anyway.
  */
 export function isAllowedHost(host: string, allowed: readonly string[] = []): boolean {
   if (!host) return false
@@ -172,8 +157,7 @@ export function isAllowedHost(host: string, allowed: readonly string[] = []): bo
 
 export function hostHeaderCheck(): MiddlewareHandler {
   return async (c, next) => {
-    // Read per request (never cached) so tests — and a server restarted
-    // with new env — see the current allowlist.
+    // Read per request so tests see the current allowlist.
     if (isAllowedHost(requestHost(c.req.header('host'), c.req.url), env.allowedHosts)) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
@@ -183,34 +167,24 @@ export function hostHeaderCheck(): MiddlewareHandler {
 }
 
 /**
- * Whether a request's `Origin` is the request's own origin: the scheme,
- * host AND port it was sent to. `host` is the Host guard's reading; the
- * scheme is `https` when `tailscale serve` terminated TLS in front of us
- * (its `X-Forwarded-Proto`) and plain `http` otherwise, since the server
- * itself serves nothing else. Absent Origin (non-browser clients —
- * CLI/undici, curl — and same-origin GETs, which browsers may send without
- * one) is allowed.
+ * Whether a request's `Origin` equals the scheme, host and port it was sent
+ * to. The scheme is `https` when `tailscale serve` terminated TLS
+ * (`X-Forwarded-Proto`), else `http`. A missing Origin (CLI, curl, some
+ * same-origin GETs) is allowed.
  *
- * The port is the point. Every page served on the server's hostname at
- * another port — a workspace's forwarded dev server on `127.0.0.1:<port>`,
- * the desktop's preview pane, `srv.<tailnet>.ts.net:19500` — runs untrusted
- * repo code, and a hostname comparison would admit it. `Origin` is
- * browser-controlled and page JS cannot forge or drop it (a Fetch
- * "forbidden header"; the WebSocket constructor has no header API), so
- * such a page, or any other site, arrives stamped with its own origin and
- * is rejected — nor can it add the `X-Forwarded-Proto` that would make an
- * `http` page look like the `https` one, since any custom header needs a
- * preflight (`denyBrowserCors`). Host and Origin both come from the URL the
- * browser targeted, so a port-forward that remaps the port leaves them
- * equal, and `tailscale serve` preserves Host. `Origin: null` (opaque origins) is unparseable and
- * fails closed.
+ * The port matters: pages on the same hostname at other ports (a forwarded
+ * dev server, the desktop preview pane) run untrusted repo code. Page JS
+ * can't forge or drop `Origin`, and can't add `X-Forwarded-Proto` without a
+ * preflight, which `denyBrowserCors` refuses. A port-forward keeps Host and
+ * Origin equal, and `tailscale serve` preserves Host. `Origin: null` fails
+ * to parse and is refused.
  */
 export function isAllowedOrigin(origin: string | undefined, host: string, forwardedProto?: string): boolean {
   if (origin === undefined || origin === '') return true
   const scheme = forwardedProto?.toLowerCase() === 'https' ? 'https' : 'http'
   try {
-    // Both through URL, so a default port written in Host (`:443`) compares
-    // equal to one the Origin leaves out.
+    // Parse both, so an explicit default port in Host (`:443`) matches an
+    // Origin that omits it.
     return new URL(origin).origin === new URL(`${scheme}://${host}`).origin
   } catch {
     return false
@@ -229,21 +203,14 @@ export function originHeaderCheck(): MiddlewareHandler {
 }
 
 /**
- * Fetch-metadata "resource isolation" check: reject a request the browser
- * marks as coming from another site. `Sec-Fetch-Site` is set by the browser
- * and page JS cannot forge it (like `Origin`), and the browser attaches it to
- * more request shapes than `Origin` — so it catches cross-site requests even
- * where `Origin` is absent. Complementary hardening alongside
- * `isAllowedOrigin`; both must pass.
+ * Fetch-metadata check: reject requests the browser marks as cross-site.
+ * `Sec-Fetch-Site` can't be forged by page JS and is sent on more requests
+ * than `Origin`, so it complements `isAllowedOrigin`; both must pass.
  *
- * Allowed: an absent header (non-browser clients, older browsers — `Origin`
- * and Host still guard those), `same-origin` (the SPA's own fetches/WS), and
- * `none` (a user-initiated load: typed URL, bookmark, a pasted banner URL). A
- * cross-site *top-level document* navigation (GET + `Sec-Fetch-Mode: navigate`
- * + `Sec-Fetch-Dest: document`) is allowed so the webapp stays linkable — but
- * an embedded navigation (`Sec-Fetch-Dest: iframe`/`embed`/…) is not, so a
- * site can't frame the app across origins. Everything else (`cross-site` /
- * `same-site` sub-resource loads) is rejected.
+ * Allowed: no header (non-browser clients, older browsers), `same-origin`,
+ * `none` (typed URL, bookmark), and a cross-site top-level document
+ * navigation so the webapp stays linkable. Embedded navigations (iframes)
+ * and cross-site or same-site subresource requests are rejected.
  */
 export function isAllowedFetchSite(
   site: string | undefined,

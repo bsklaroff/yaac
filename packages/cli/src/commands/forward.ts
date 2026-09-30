@@ -5,30 +5,23 @@ import type { DriverKind } from '@yaac/shared/types'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 
 /**
- * `yaac forward` — hold the listeners the server cannot.
+ * `yaac forward`: bind the workspace ports the server offers on this machine
+ * and tunnel each connection back over `/forward/attach`, so the web app's
+ * `127.0.0.1:<port>` links work. The server cannot bind them itself: under
+ * `k8s` it is a pod, and a remote server is on another machine. The desktop
+ * app does the same from its tray; this is for headless machines. See
+ * docs/port-forward-tunnel.md.
  *
- * A workspace's ports are offered by the server (`forwardedPorts` on the
- * workspace list) but bound by a client: under `k8s` the server is a pod,
- * so a port it bound would be on the pod's loopback and reachable from
- * nowhere the user is, and under `containerless` they are bound on the
- * server's machine, which is not this one when the server is remote. This
- * command is that client — it binds what the server says is on offer and
- * tunnels each connection back over `/forward/attach`, which makes the
- * webapp's `127.0.0.1:<port>` links true for as long as it runs. The
- * desktop app does the same thing resident in its tray; this is the one
- * you run on a headless box.
- *
- * It follows the server rather than snapshotting it: a session created,
- * stopped, or granted a new port while this runs is picked up on the next
- * poll. Polling rather than `/events` because the CLI has no other reason
- * to hold that stream open, and a few seconds' latency on a port coming up
- * is invisible next to the dev server that has to boot behind it.
+ * The server's offer is re-polled every few seconds, so ports that come and
+ * go while this runs are picked up. Polling is simpler than holding
+ * `/events` open, and the delay is small next to a dev server's boot time.
  */
 
 export interface ForwardOptions {
-  /** `container` or `container:host`, repeatable. Overrides what the
-   *  server offers — for a port it does not know about, or one you want
-   *  on a different local port. */
+  /**
+   * `container` or `container:host`, repeatable. Replaces what the server
+   * offers: for a port it does not know about, or a different local port.
+   */
   port?: string[]
   /** What to bind. Loopback unless you mean to serve the network. */
   bind?: string
@@ -49,8 +42,10 @@ export function parsePortOption(raw: string, session: string): ForwardSpec {
   return { session, containerPort, hostPort }
 }
 
-/** What the server currently offers, as specs — every running session's,
- *  or one session's when `only` names a resolved workspace id. */
+/**
+ * What the server currently offers: every running session's ports, or one
+ * session's when `only` is a resolved workspace id.
+ */
 async function offeredForwards(only: string | undefined): Promise<ForwardSpec[]> {
   const { workspaces } = await api.workspace.list.$get({ query: {} })
   const specs: ForwardSpec[] = []
@@ -64,28 +59,15 @@ async function offeredForwards(only: string | undefined): Promise<ForwardSpec[]>
 }
 
 /**
- * Refuse to forward against a containerless server on THIS machine.
+ * Refuse to forward against a containerless server on this machine. Its
+ * workspaces already bind the host ports themselves, so every bind here
+ * would either fail against the dev server or steal the port from one that
+ * has not started yet (see `serverNeedsForwarder`).
  *
- * There a workspace's own processes bind the host ports, so what the
- * server offers is the identity mapping over ports something is ALREADY
- * listening on: every bind here loses to the dev server holding it — or
- * wins against one that has not booted yet and takes its port. Left alone
- * it is a retry loop printing a bind error every poll, forever
- * (`serverNeedsForwarder`). Against a remote containerless server the
- * same mappings are as unreachable as a pod's, and this command is how
- * they get here.
- *
- * An explicit `--bind` is the one local exception, and it is taken as "I
- * know what I am binding" — loopback included. The case it exists for is
- * publishing the ports on another interface (the remote-hosting recipe
- * run on the server's own host), where each connection relays to loopback
- * and nothing fights the dev server; `--bind 127.0.0.1` with no `--port`
- * would, and is left to the user who asked for it.
- *
- * `/health` is auth-exempt and already reports the driver, which is what
- * makes this one request rather than a new mechanism. A server that does
- * not answer, or answers without the field, is left alone: an unreachable
- * server is the next call's error to report, not this one's.
+ * An explicit `--bind` skips the check: it is for publishing the ports on
+ * another interface of the server's own host. The driver comes from the
+ * auth-exempt `/health` route; if that request fails, the check is skipped
+ * and the next API call reports the error.
  */
 async function refuseLocalContainerlessForward(baseUrl: string, bind: string | undefined): Promise<void> {
   if (bind !== undefined) return
@@ -117,15 +99,11 @@ export async function forward(
     throw new Error('--port names a session\'s port, so a session has to be named too')
   }
   const target = await resolveServerTarget()
-  // Before the session is resolved: whether this install can be forwarded
-  // at all is a fact about the SERVER, and naming a live session would not
-  // change the answer. Asking about the session first would answer a
-  // containerless install with "session not found" for a bad id — the
-  // wrong objection to the wrong thing.
+  // Checked before resolving the session, so a bad id against a local
+  // containerless server gets this error rather than "session not found".
   await refuseLocalContainerlessForward(target.baseUrl, options.bind)
-  // Resolved once, server-side, so an id prefix or a name means here what
-  // it means everywhere else — and so a session that does not exist is an
-  // error now rather than an empty forward set that never fills.
+  // Resolved by the server so prefixes and names work, and an unknown
+  // session fails now instead of forwarding nothing forever.
   const workspaceId = session === undefined
     ? undefined
     : (await api.workspace[':id'].$get({ param: { id: session } })).workspaceId
@@ -150,10 +128,8 @@ export async function forward(
     },
   )
 
-  // An explicit set is exactly what was asked for and never re-read: the
-  // user named these ports, so a server that has not heard of one is not a
-  // reason to stop offering it (a dev server that has not booted yet is
-  // the ordinary case).
+  // Explicit ports are bound once and never re-polled; the server may not
+  // know about a port whose dev server has not started yet.
   if (explicit) {
     await set.reconcile(explicit)
     if (set.live().length === 0) {
@@ -177,8 +153,7 @@ export async function forward(
       try {
         await set.reconcile(await offeredForwards(workspaceId))
       } catch (err) {
-        // A server that blinked is not a reason to drop live forwards —
-        // the next tick re-reads it.
+        // Keep live forwards through a transient server error.
         console.error(`cannot read the session list: ${err instanceof Error ? err.message : String(err)}`)
       }
     }

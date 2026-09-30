@@ -2,19 +2,16 @@
  * `pnpm kind-byo up|down|env` — kind-byo, the cloud install run locally on
  * Linux (docs/cluster-setup.md "Running byo locally: kind-byo").
  *
- * `up` stands up a second kind cluster set up to look like a cloud one —
- * none of yaac's kind-config patches, Calico applied here rather than by
- * yaac, an NFS server behind csi-driver-nfs for RWX storage, a provisioned
- * default block class for RWO, the Tailscale operator for fronting — and
- * then runs the built CLI's `yaac cluster install` against it, as an
- * operator would. Nothing in the CLI knows kind-byo exists, which is what
- * makes it a test of the cloud path rather than a third backend.
+ * `up` creates a second kind cluster that looks like a cloud one (no yaac
+ * kind-config patches, Calico applied here, an NFS server behind
+ * csi-driver-nfs for RWX, a block class for RWO, the Tailscale operator),
+ * then runs the built CLI's `yaac cluster install --byo` against it. The CLI
+ * doesn't know kind-byo exists, so this tests the real cloud path.
  *
- * It is a separate install beside any normal one: its own data dir
- * (`KIND_BYO_DATA_DIR`, default `~/.yaac-byo`), its own kubeconfig in that
- * install's client-local dir, never merged into the default one. `env`
- * prints what to export to drive it. `up` is idempotent; `down` deletes the
- * cluster and keeps the data dir, whose bytes are the install's.
+ * It is a separate install with its own data dir (`KIND_BYO_DATA_DIR`,
+ * default `~/.yaac-byo`) and kubeconfig. `env` prints what to export to use
+ * it. `up` is idempotent; `down` deletes the cluster and keeps the data
+ * dir.
  */
 import { execFile, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -39,9 +36,8 @@ const GANESHA_CONTEXT = path.join(KIND_BYO_DIR, 'ganesha')
 export const KIND_BYO_NFS_CLASS = 'kind-byo-nfs'
 export const KIND_BYO_LOCAL_CLASS = 'kind-byo-local'
 /**
- * A second, non-default block class, which install is told to use for
- * `yaac-server-local`: named rather than defaulted, so a named class that
- * were ignored in favor of the default would show.
+ * A second, non-default block class that install is told to use for
+ * `yaac-server-local`, so ignoring the named class would show.
  */
 export const KIND_BYO_RWO_CLASS = 'kind-byo-rwo'
 export const KIND_BYO_NFS_NAMESPACE = 'kind-byo-nfs'
@@ -55,10 +51,8 @@ const CSI_NFS_VERSION = 'v4.13.4'
 const LOCAL_PATH_VERSION = 'v0.0.37'
 const TAILSCALE_OPERATOR_VERSION = 'v1.102.4'
 /**
- * The images the fetched manifests name by tag, pinned by digest like the
- * manifests themselves: the operator and the proxies it runs, and the
- * helper local-path runs as root, with a hostPath into the data dir, on
- * every provision (its manifest names `busybox` with no tag at all).
+ * Digest pins for images the fetched manifests name only by tag: the
+ * operator, its proxies, and local-path's helper (an untagged `busybox`).
  */
 const PINNED_IMAGES = {
   operator: `tailscale/k8s-operator:${TAILSCALE_OPERATOR_VERSION}@sha256:3c8958c42fb3c46068e8553e11b944f2133b4671d4f36c86adc11f206746bf34`,
@@ -120,10 +114,8 @@ async function kubectlApplyDocs(layout: KindByoLayout, docs: unknown[]): Promise
 }
 
 /**
- * A pinned upstream manifest: from this install's client-local cache when
- * it is there and matches the committed checksum, else downloaded once and
- * cached — the Calico scheme, so the stand-in cloud is as reproducible as
- * an install.
+ * A pinned upstream manifest, from the client-local cache when its checksum
+ * matches, else downloaded and cached (as yaac does for Calico).
  */
 async function fetchPinned(layout: KindByoLayout, name: string, url: string): Promise<string> {
   const pins = await fs.readFile(path.join(KIND_BYO_DIR, 'pins.sha256'), 'utf8')
@@ -160,9 +152,8 @@ type Obj = Record<string, unknown> & { kind?: string; metadata?: { name?: string
 // ---------------------------------------------------------------------------
 
 /**
- * The FSAL_VFS export needs file handles that outlive the kernel's inode
- * cache, which ext4, xfs and btrfs give and tmpfs, overlay and a macOS
- * virtiofs share do not — ganesha refuses to export them at all.
+ * ganesha's FSAL_VFS export needs persistent file handles: ext4, xfs and
+ * btrfs work; tmpfs, overlay and macOS virtiofs don't.
  */
 async function preflight(layout: KindByoLayout): Promise<void> {
   if (process.platform !== 'linux') {
@@ -191,11 +182,9 @@ async function nodeImage(): Promise<string> {
 }
 
 /**
- * One control-plane and two workers, so every NFS number is cross-node,
- * and none of yaac's own kind patches: the installer's `config_path`
- * handling, not kind's config, is what makes the nodes read the
- * registries' hosts. The only mount is the data dir, at its own path —
- * the backing store for both classes and nothing else of the host.
+ * One control plane and two workers, so NFS traffic crosses nodes, and none
+ * of yaac's kind patches (the installer configures registry access). The
+ * only mount is the data dir, at its own path.
  */
 async function ensureCluster(layout: KindByoLayout): Promise<void> {
   const clusters = (await run(layout, 'kind', ['get', 'clusters'])).split('\n').map((l) => l.trim())
@@ -224,9 +213,8 @@ async function ensureCluster(layout: KindByoLayout): Promise<void> {
 }
 
 /**
- * The node containers' pids ceiling: a setting of the podman container
- * this script created, which `--byo` never touches (it execs into no
- * node) — so it is set here, as a cloud node's is by its image.
+ * The node containers' pids limit. `--byo` never touches nodes, so it is
+ * set here, as a cloud node's image would.
  */
 async function nodeFixups(layout: KindByoLayout): Promise<void> {
   for (const node of (await run(layout, 'kind', ['get', 'nodes', '--name', CLUSTER])).split('\n').filter(Boolean)) {
@@ -266,17 +254,11 @@ async function sideload(layout: KindByoLayout, refs: string[], opts: { pull: boo
 }
 
 /**
- * The default block class: local-path, as a provider's zonal disk class —
- * node-pinned and `WaitForFirstConsumer`, which is the reason install's
- * binder pod exists. kind installs its own copy of the provisioner and a
- * default class of its own; both go, so the class a byo install sees is
- * one the "owner" chose. The provisioner's one node path is the data dir,
- * and every claim gets a directory of its own at
- * `<dataDir>/volumes/<namespace>/<claim>` — never the data dir's own
- * `server-local/`, which the installing CLI writes its host log into, as
- * a laptop's would be on a real cloud install. The class opts out of the
- * `<namespace>/<claim>` prefix rule the provisioner would otherwise
- * enforce, for the `volumes/` in front.
+ * The default block class: local-path, standing in for a provider's zonal
+ * disk (node-pinned, `WaitForFirstConsumer`). kind's own provisioner and
+ * default class are removed. Each claim gets
+ * `<dataDir>/volumes/<namespace>/<claim>`, never the data dir's own
+ * `server-local/`, which the installing CLI writes to.
  */
 async function ensureLocalPath(layout: KindByoLayout): Promise<void> {
   const kindDefault = await run(layout, 'kubectl', ['get', 'storageclass', 'standard', '--ignore-not-found', '-o', 'name'])
@@ -311,9 +293,9 @@ async function ensureLocalPath(layout: KindByoLayout): Promise<void> {
 }
 
 /**
- * A local-path class whose one volume lands at `<nodePath>/<pattern>`.
- * Written the way an operator would: `reclaimPolicy: Delete`, so install's
- * `Retain` patch is load-bearing.
+ * A local-path class whose one volume lands at `<nodePath>/<pattern>`,
+ * with `reclaimPolicy: Delete` as an operator might write it, so install's
+ * `Retain` patch is exercised.
  */
 export function localPathClass(name: string, nodePath: string, pattern: string, isDefault: boolean): Obj {
   return {
@@ -331,12 +313,10 @@ export function localPathClass(name: string, nodePath: string, pattern: string, 
 }
 
 /**
- * An NFS class over the ganesha export whose volumes are `subDir` of it:
- * kind-byo's own names the usual per-claim template, and an e2e-byo file's
- * a fixed directory, because that class belongs to one file with one
- * claim. Naive on purpose — `Delete`, no `actimeo`, no `mountPermissions`
- * — so install's `Retain` patch, its coherence option and its binder are
- * each load-bearing.
+ * An NFS class over the ganesha export with volumes at `subDir`: a
+ * per-claim template for kind-byo's class, a fixed dir for an e2e-byo
+ * file's. Left naive (`Delete`, no `actimeo`, no `mountPermissions`) so
+ * install's patches and binder are exercised.
  */
 export function nfsClass(name: string, subDir: string): Obj {
   return {
@@ -352,9 +332,8 @@ export function nfsClass(name: string, subDir: string): Obj {
 }
 
 /**
- * Every address a node's traffic can arrive at a pod from: its InternalIP,
- * and its Calico tunnel address, which is what a kernel mount from another
- * node's host network is sourced from once it crosses the overlay.
+ * Every address a node's traffic can reach a pod from: its InternalIP and
+ * its Calico tunnel address.
  */
 async function nodeAddresses(layout: KindByoLayout): Promise<string[]> {
   const deadline = Date.now() + 120_000
@@ -378,14 +357,10 @@ async function nodeAddresses(layout: KindByoLayout): Promise<string[]> {
 }
 
 /**
- * The ganesha export: NFSv4 only, over the data dir, uids passed through
- * raw (`No_Root_Squash` — the binder's chown is root's), admitting only the
- * node addresses, with the server's own metadata caching off so what the
- * host writes behind its back (the suite's seeding, a hand edit) is seen
- * at once; client-side staleness is what `actimeo=1` bounds and what this
- * cluster measures. `Graceless`, so a restart does not stall every client
- * through a grace period. `Filesystem_Id` pinned rather than detected
- * through the bind mounts.
+ * The ganesha export: NFSv4 over the data dir, `No_Root_Squash` (the
+ * binder chowns as root), node addresses only. Server-side metadata caching
+ * is off so host-side writes show at once; client caching is bounded by
+ * `actimeo=1`. `Graceless` so a restart doesn't stall clients.
  */
 function ganeshaConfig(clients: string[]): string {
   return `NFS_CORE_PARAM {
@@ -481,8 +456,8 @@ async function ensureGanesha(layout: KindByoLayout): Promise<void> {
       apiVersion: 'v1', kind: 'Service', metadata: { name: GANESHA_NAME, namespace: ns },
       spec: { selector: labels, ports: [{ name: 'nfs', port: 2049, targetPort: 2049, protocol: 'TCP' }] },
     },
-    // The second lock: an AUTH_SYS server that does not squash root trusts
-    // whatever uid a client claims, so nothing but a node may reach it.
+    // Without root squashing the server trusts any client's uid, so only
+    // nodes may reach it.
     {
       apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy',
       metadata: { name: `${GANESHA_NAME}-nodes-only`, namespace: ns },
@@ -515,20 +490,14 @@ async function ensureCsiNfs(layout: KindByoLayout): Promise<void> {
 }
 
 /**
- * The Tailscale operator, from its static manifest at a pinned release,
- * with the OAuth client from the environment (`TS_OAUTH_CLIENT_ID` /
- * `TS_OAUTH_CLIENT_SECRET` — ephemeral and tagged, as the operator's
- * client is by design). Without one it says so, and the install that
- * follows stops at its operator gate.
+ * The Tailscale operator from its pinned static manifest, with the OAuth
+ * client from `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_CLIENT_SECRET`. Without them
+ * the install stops at its operator gate.
  *
- * Every proxy it runs defaults (`PROXY_DEFAULT_CLASS`) to a ProxyClass
- * that takes its certificates from Let's Encrypt's staging environment.
- * Production issues at most five certificates a week for one name, and
- * each rebuild of the install's Ingress — a `down`/`up`, the byo suite's
- * namespace delete — is a new tailnet device asking for its name again;
- * staging allows 30,000. That is the one way kind-byo's origin differs
- * from a cloud install's, and it is invisible to yaac: its clients trust
- * the staging roots (`ensureStagingRoots`), nothing in the CLI changes.
+ * Its proxies get certificates from Let's Encrypt staging
+ * (`PROXY_DEFAULT_CLASS`), since production allows five a week per name and
+ * each Ingress rebuild asks again. Clients trust the staging roots
+ * (`ensureStagingRoots`); the CLI is unchanged.
  */
 async function ensureOperator(layout: KindByoLayout): Promise<void> {
   const id = process.env.TS_OAUTH_CLIENT_ID
@@ -582,7 +551,7 @@ function pinOperatorImages(deployment: Obj): Obj {
   const text = JSON.stringify(deployment)
     .replaceAll('tailscale/k8s-operator:stable', PINNED_IMAGES.operator)
     .replaceAll('tailscale/tailscale:stable', PINNED_IMAGES.proxy)
-    // One operator per tailnet device name; the host's own install may run another.
+    // The host's own install may run another operator.
     .replaceAll('"value":"tailscale-operator"', `"value":"${CLUSTER}-operator"`)
   const pinned = JSON.parse(text) as Obj & {
     spec: { template: { spec: { containers: Array<{ env?: Array<{ name: string; value: string }> }> } } }
@@ -595,9 +564,8 @@ function pinOperatorImages(deployment: Obj): Obj {
 }
 
 /**
- * The built CLI, run as an operator would run the published one: `--byo`
- * with kind-byo's NFS class and its named block class, and the default
- * class for the rest.
+ * Run the built CLI's `cluster install --byo` with kind-byo's NFS class and
+ * named block class.
  */
 async function installYaac(layout: KindByoLayout): Promise<void> {
   const cli = path.join(REPO_ROOT, 'dist', 'cli.js')
@@ -632,11 +600,10 @@ function installEnv(layout: KindByoLayout): Record<string, string> {
 }
 
 /**
- * The `e2e-byo` project's precondition, checked by its global setup before
- * anything is built: kind-byo is up, its NFS server is the image this
- * checkout builds, and this machine's uid is kind-byo's install uid — the
- * suite seeds tier files from the host, and pods at uid 1000 must be able
- * to write them.
+ * The `e2e-byo` project's precondition, checked before anything is built:
+ * kind-byo is up, its NFS server runs this checkout's image, and this
+ * machine's uid matches the install uid, since pods must write files the
+ * suite seeds from the host.
  */
 export async function requireKindByo(): Promise<void> {
   const layout = kindByoLayout()
@@ -676,12 +643,8 @@ export async function kindByoUp(): Promise<void> {
 }
 
 /**
- * Delete the cluster, workers drained first. Every NFS mount is `hard`, so
- * a node whose pods still hold one when ganesha's node goes first blocks in
- * the kernel forever — its last unmount waits on a server that no longer
- * exists, and the node container never finishes stopping. Draining evicts
- * those pods while the server still answers, so the kubelet unmounts
- * cleanly; only then is the cluster deleted.
+ * Delete the cluster after draining the workers. NFS mounts are `hard`, so
+ * a node still holding one after the NFS server goes would hang forever.
  */
 export async function kindByoDown(): Promise<void> {
   const layout = kindByoLayout()

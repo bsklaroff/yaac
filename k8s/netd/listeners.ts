@@ -1,27 +1,14 @@
 /**
- * Choosing — and keeping — this install's listener trio.
+ * Chooses this install's listener trio and keeps it stable.
  *
- * Two things have to be true at once, and they pull in opposite
- * directions:
+ * Several installs' netds can share a node's network namespace, so a free
+ * trio is found by trying to bind it. Once chosen, the slot is persisted
+ * in the Envoy config emptyDir: if the netd container restarts while Envoy
+ * keeps running, re-probing would find netd's own listeners busy and move
+ * to another trio, breaking established flows.
  *
- *  - The trio must not collide with a coexisting install's. Several netds
- *    share a node's network namespace (the real `yaac` one plus an e2e
- *    run's `yaac-test-<run-id>`), so the only honest test for "free" is to
- *    try to bind it.
- *  - The trio must not MOVE while flows are using it. Every rule netd
- *    programs names a port, and conntrack pins a flow's DNAT destination
- *    on its first packet.
- *
- * So the choice is probed once and then persisted next to the Envoy config
- * (an emptyDir, i.e. the pod's lifetime). Persistence is not an
- * optimization: netd's container can restart while the Envoy container
- * keeps running and keeps holding the ports, and a re-probing netd would
- * find its OWN listeners occupied and walk to a different trio, silently
- * stranding every established flow.
- *
- * `reset()` is the escape hatch, used when the Envoy gate reports that our
- * listeners were rejected — the one case where the persisted slot is
- * genuinely wrong and re-probing is the fix.
+ * `reset()` forgets the slot. netd calls it when Envoy rejects the
+ * listeners, the one case where re-probing is correct.
  */
 
 import net from 'node:net'
@@ -40,8 +27,7 @@ export function fileTrioStore(file: string): TrioStore {
   return {
     read: async () => {
       const raw = (await fs.readFile(file, 'utf8').catch(() => '')).trim()
-      // Guard the empty string explicitly: Number('') is 0, which would
-      // read a missing file as "slot 0 was persisted".
+      // Number('') is 0, so an empty read must not reach Number().
       if (!raw) return null
       const slot = Number(raw)
       return Number.isInteger(slot) && slot >= 0 ? slot : null
@@ -56,12 +42,9 @@ export function fileTrioStore(file: string): TrioStore {
 }
 
 /**
- * Can this process bind every port of `trio` on the node?
- *
- * `exclusive` so the probe never succeeds by joining someone else's
- * SO_REUSEPORT group — the listeners themselves set `enable_reuse_port:
- * false` for the same reason, and a probe with laxer semantics than the
- * real bind would happily hand out an occupied trio.
+ * Can this process bind every port of `trio` on the node? Binds with
+ * `exclusive` to match Envoy's `enable_reuse_port: false`, so the probe
+ * never succeeds by sharing a port with another listener.
  */
 export async function probeTrioFree(trio: ListenerTrio): Promise<boolean> {
   for (const port of trioPorts(trio)) {
@@ -100,8 +83,7 @@ export function createTrioAllocator(deps: TrioAllocatorDeps): TrioAllocator {
     resolve: async () => {
       if (current) return current
 
-      // A persisted slot is authoritative and deliberately NOT re-probed:
-      // our own Envoy is the process most likely to be holding it.
+      // Not re-probed: our own Envoy is likely holding it.
       const persisted = await deps.store.read()
       if (persisted !== null && persisted < deps.range.slots) {
         current = trioForSlot(persisted, deps.range)
@@ -117,9 +99,6 @@ export function createTrioAllocator(deps: TrioAllocatorDeps): TrioAllocator {
         deps.log(`[netd] listener trio ${trioPorts(trio).join('/')} (slot ${slot})`)
         return trio
       }
-      // Every slot in the range is held by other installs. Refusing is the
-      // fail-closed direction: sharing a port would deliver this install's
-      // egress to another install's Envoy.
       throw new Error(
         `netd: no free listener trio in ${deps.range.base}+${deps.range.slots * 3} — `
         + 'every slot on this node is already bound',

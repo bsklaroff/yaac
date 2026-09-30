@@ -12,11 +12,9 @@ import {
 } from '#domain/projects'
 
 /**
- * A project's environment as the layers above the store see it.
- *
- * The two things this owns and the store does not: what a client is allowed
- * to say (a name a shell will take, a rule the proxy can act on), and what a
- * client is allowed to LEARN — a secret's value goes in and never comes back.
+ * A project's environment above the store: validating what a client sends (a
+ * valid shell name, a rule the proxy can act on), and never returning a
+ * secret's value.
  */
 
 let tmpDir: string
@@ -46,8 +44,8 @@ describe('parseSecretProxyRule', () => {
   })
 
   it('refuses a rule that would be dropped silently inside the proxy', () => {
-    // Each of these fails much later otherwise — inside the proxy, on a
-    // request nobody is watching, with the credential simply not arriving.
+    // Otherwise each fails later inside the proxy, where the credential
+    // silently never arrives.
     expect(() => parseSecretProxyRule('K', 'nope')).toThrow(/needs a rule/)
     expect(() => parseSecretProxyRule('K', { hosts: [] })).toThrow(/non-empty list/)
     expect(() => parseSecretProxyRule('K', { hosts: ['a.com'], path: 5 })).toThrow(/path must be/)
@@ -57,18 +55,16 @@ describe('parseSecretProxyRule', () => {
   })
 
   it('refuses a blank header or body param, which would send the secret elsewhere', () => {
-    // The dangerous case, not a harmless one: the rule builder asks
-    // `if (rule.bodyParam)`, so a present-but-blank one falls through to the
-    // default `authorization: Bearer <secret>` — the credential leaving in a
-    // header nobody configured. The UI sends exactly this when "Body
-    // parameter" is picked and the field left empty.
+    // The rule builder checks `if (rule.bodyParam)`, so a blank value falls
+    // through to the default `authorization: Bearer <secret>` header. The UI
+    // sends this when "Body parameter" is picked and the field left empty.
     expect(() => parseSecretProxyRule('K', { hosts: ['a.com'], bodyParam: '' }))
       .toThrow(/bodyParam cannot be empty/)
     expect(() => parseSecretProxyRule('K', { hosts: ['a.com'], bodyParam: '   ' }))
       .toThrow(/bodyParam cannot be empty/)
     expect(() => parseSecretProxyRule('K', { hosts: ['a.com'], header: '' }))
       .toThrow(/header cannot be empty/)
-    // Absent still means "use the default authorization header".
+    // Absent still means the default authorization header.
     expect(parseSecretProxyRule('K', { hosts: ['a.com'] })).toEqual({ hosts: ['a.com'] })
   })
 })
@@ -87,8 +83,7 @@ describe('setProjectEnvVar', () => {
   })
 
   it('requires a value for a new secret, and a rule for any secret', async () => {
-    // A secret with no value is a row the create path skips: it would read as
-    // "saved" on the settings page and behave as absent in the workspace.
+    // A valueless secret would show as saved but be skipped at create.
     await expect(setProjectEnvVar('demo', { name: 'K', secret: true, rule: RULE }))
       .rejects.toThrow(/value is required for a new secret/)
     await expect(setProjectEnvVar('demo', { name: 'K', value: 'v', secret: true }))
@@ -96,9 +91,8 @@ describe('setProjectEnvVar', () => {
   })
 
   it('still demands a value for a secret imported without one', async () => {
-    // The legacy importer stores an unresolvable secret as `''`. A rule-only
-    // edit on one must not report success while `resolveProjectEnv` goes on
-    // dropping it — the row would read as saved and behave as absent.
+    // The legacy importer stores an unresolvable secret as `''`, which
+    // `resolveProjectEnv` drops, so a rule-only edit must not succeed.
     await upsertProjectEnvVar('demo', { name: 'IMPORTED', value: '', secret: true, rule: RULE })
 
     await expect(setProjectEnvVar('demo', { name: 'IMPORTED', secret: true, rule: RULE }))
@@ -140,8 +134,8 @@ describe('listProjectEnv', () => {
   })
 
   it('says a secret has no usable value when its key is gone', async () => {
-    // `hasValue: false` is what the UI turns into "enter it again", and it
-    // has to cover both "never supplied" and "no longer decrypts".
+    // The UI asks to re-enter a value when `hasValue` is false, which covers
+    // both "never supplied" and "no longer decrypts".
     await upsertProjectEnvVar('demo', { name: 'BLANK', value: '', secret: true, rule: RULE })
     expect(await listProjectEnv('demo')).toMatchObject([{ name: 'BLANK', hasValue: false }])
   })
@@ -171,8 +165,8 @@ describe('resolveProjectEnv', () => {
   })
 
   it('drops a secret with nothing behind it rather than injecting empty', async () => {
-    // An empty header fails upstream as a BAD credential rather than a
-    // missing one, which sends whoever debugs it after the wrong thing.
+    // An empty header would fail upstream as a bad credential rather than a
+    // missing one, which misleads debugging.
     await upsertProjectEnvVar('demo', { name: 'BLANK', value: '', secret: true, rule: RULE })
     await upsertProjectEnvVar('demo', { name: 'NO_RULE', value: 'v', secret: true })
 

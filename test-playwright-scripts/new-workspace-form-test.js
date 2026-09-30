@@ -16,9 +16,9 @@
  * Creates ONE real workspace in the chosen project (check 4), which it leaves
  * running — stop it afterwards.
  *
- * Drives the app the server itself serves (`dist/`), reading the port
- * from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to ~/.yaac) — so run `pnpm build` +
- * `yaac server restart` first, or you are looking at the frontend as it was.
+ * Uses the app the server serves from `dist/` (port from
+ * $YAAC_DATA_DIR/server-local/.server.lock, data dir default ~/.yaac), so
+ * run `pnpm build` and `yaac server restart` first.
  * Needs a claude credential; pi's check is skipped without one.
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/new-workspace-form-test.js

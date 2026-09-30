@@ -2,8 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PRE_STOP_GRACE_SECONDS } from '#drivers/k8s/substrate'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 
-// Mocked at the process boundary: kubectl is the only way a launch reaches
-// the cluster, so the manifest it applies is built for real and asserted on.
+// Mock kubectl, so the manifests are built for real and asserted on.
 const mockApply = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
@@ -12,23 +11,20 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   k8sNamespace: vi.fn(() => 'yaac'),
 }))
 
-// The transport token is derived through the relay's own crypto path.
 vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof streamRelayModule>()),
   podStreamToken: vi.fn().mockResolvedValue('stream-token'),
 }))
 
-// The PriorityClass ensure is its own apply chain against the cluster; the
-// launch only has to run it BEFORE the Job, which the argv order proves.
+// Only needs to run before the Job is applied.
 const mockEnsurePriorityClasses = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/priority-classes', async (importOriginal) => ({
   ...(await importOriginal<typeof priorityClassesModule>()),
   ensurePriorityClasses: mockEnsurePriorityClasses,
 }))
 
-// The proxy's bootstrap is a rollout of its own; the registration it is
-// then handed is a ConfigMap, applied through the same kubectl mock as the
-// Job, so what a create tells the proxy is asserted on the manifest.
+// Mock the proxy rollout. The registration ConfigMap goes through the
+// kubectl mock like the Job.
 const mockEnsureRunning = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/egress/proxy-client', () => ({
   proxyClient: {
@@ -37,8 +33,7 @@ vi.mock('#drivers/k8s/egress/proxy-client', () => ({
   },
 }))
 
-// The cluster half is a whole subprocess tree per call (registry pods,
-// node writes) — its boundary is the barrel.
+// Mock the cluster barrel, which runs pods of its own.
 const mockProxyClusterIp = vi.hoisted(() => vi.fn().mockResolvedValue('10.96.0.5'))
 const mockEnsureProjectRegistry = vi.hoisted(() => vi.fn())
 const mockNpmCacheUrl = vi.hoisted(() => vi.fn())
@@ -49,7 +44,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   servingNpmCacheUrl: mockNpmCacheUrl,
 }))
 
-// The node image store is written by cleanup/write pods of its own.
+// Mock the node image store, which runs pods of its own.
 const mockStoreMount = vi.hoisted(() => vi.fn())
 const mockEnsureStore = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/images/store-writer', () => ({
@@ -81,8 +76,7 @@ import {
   workspaceDir,
 } from '@yaac/shared/project-paths'
 
-// Mount sources are resolved from the tier a path lives under, so the
-// spec's paths have to be REAL tier paths of some data dir.
+// Mount sources depend on each path's tier, so paths must be real tier paths.
 setDataDir('/data/yaac')
 const NODE_ROOT = '/var/lib/yaac/node/ddh0123456789abc'
 
@@ -184,11 +178,8 @@ function appliedRegistration(): { name: string; labels: Record<string, string>; 
 
 describe('prepareWorkspaceSubstrate', () => {
   it('rolls the proxy and assembles the registration the launch will write', async () => {
-    // A stale proxy rolls inside ensureRunning, so by the time the launch
-    // writes the registration the proxy can see the object. The prepare
-    // itself writes nothing: a prepare overlaps the image build, and a
-    // registration with no Job behind it for that long is what the orphan
-    // sweep would collect.
+    // Prepare writes nothing: it overlaps the image build, and a
+    // registration without a Job for that long would be swept as orphaned.
     const substrate = await prepareWorkspaceSubstrate({
       ...INTENT,
       proxySecretRules: { TOKEN: { hosts: ['api.example.com'], header: 'Authorization' } },
@@ -196,7 +187,7 @@ describe('prepareWorkspaceSubstrate', () => {
     expect(mockEnsureRunning).toHaveBeenCalled()
     expect(mockApply).not.toHaveBeenCalled()
 
-    // Written right before the Job, in argv order.
+    // Applied right before the Job.
     mockApply.mockImplementation(() => Promise.resolve())
     await launchWorkspace(specOf(substrate))
     expect(mockApply.mock.calls.map(([m]) => (m as { kind: string }).kind)).toEqual(['ConfigMap', 'Job'])
@@ -210,8 +201,7 @@ describe('prepareWorkspaceSubstrate', () => {
       projectSlug: 'proj',
       repoUrl: 'https://github.com/example/repo.git',
     })
-    // The rules carry a project-scoped ref, never a value: the object is a
-    // plain ConfigMap precisely because nothing secret is in it.
+    // Only a reference to the secret, never its value.
     expect(reg?.payload.rules).toEqual([{
       hostPattern: 'api.example.com',
       pathPattern: '/*',
@@ -238,23 +228,17 @@ describe('prepareWorkspaceSubstrate', () => {
 
     expect(mockEnsureProjectRegistry).toHaveBeenCalledWith({ slug: 'proj', id: PROJECT_ID })
     expect(mockStoreMount).toHaveBeenCalledWith(PROJECT_ID)
-    // The refresh for the NEXT workspace is fired detached — this pod's
-    // generation is already pinned by the mount above.
+    // A refresh for the next workspace runs in the background.
     expect(mockEnsureStore).toHaveBeenCalledWith({ slug: 'proj', id: PROJECT_ID })
     const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
     const store = mounts.find((m) => m.mountPath === '/var/lib/shared-images')
     expect(store).toMatchObject({ readOnly: true })
-    // A node-local path, resolved onto the pod's own node tree.
     expect(appliedJob().spec.template.spec.volumes.find((v) => v.name === store?.name)?.hostPath)
       .toEqual({ path: `${NODE_ROOT}/shared-images/${PROJECT_ID}/gen-7`, type: 'Directory' })
-    // Plain HTTP registry: the in-pod engine needs the drop-in to pull it,
-    // naming the registry the project id names.
+    // The project registry is plain HTTP, so the engine needs this config.
     expect(Buffer.from(containerEnv().YAAC_REGISTRY_CONF_B64, 'base64').toString())
       .toContain(`location = "yaac-reg-${PROJECT_ID}.yaac.svc.cluster.local:5000"`)
-    // And the engine is announced on the POD, not just the Job: the image
-    // salvage picks its workspaces out of pod deltas, where the spec env
-    // that actually starts the engine (YAAC_NESTED_ENGINE, set by
-    // workspace-create) is not in hand.
+    // Labelled on the pod too: image salvage selects workspaces from pods.
     const podLabels = appliedJob().spec.template.metadata.labels
     expect(podLabels['yaac.nested']).toBe('true')
   })
@@ -271,22 +255,18 @@ describe('launchWorkspace', () => {
     expect(job.metadata.namespace).toBe('yaac')
     expect(job.metadata.labels).toMatchObject({
       'yaac.project': 'proj',
-      // What the project registry's policies select the pod by.
+      // Selected by the project registry's network policies.
       'yaac.project-id': PROJECT_ID,
       'yaac.workspace-id': 's1',
       'yaac.data-dir-hash': 'ddh0123456789abc',
       'yaac.tool': 'claude',
     })
-    // Absent for tui, so every pod without it — including every pod
-    // predating modes — reads as tui rather than as a broken acp one.
+    // Absent means tui.
     expect(job.metadata.labels['yaac.mode']).toBeUndefined()
     expect(job.metadata.labels['yaac.prewarmed']).toBeUndefined()
-    // Same rule for the engine stamp — absent means "no engine here", which
-    // is what keeps the image salvage from probing a workspace that has
-    // nothing to salvage.
+    // Absent means no nested engine, so salvage skips the pod.
     expect(job.metadata.labels['yaac.nested']).toBeUndefined()
 
-    // The handle names what was just stamped, without a read-back.
     expect(handle).toMatchObject({
       workspaceId: 's1', projectSlug: 'proj', jobName: 'yaac-proj-s1',
       tool: 'claude', declaredTool: 'claude', mode: 'tui',
@@ -309,15 +289,13 @@ describe('launchWorkspace', () => {
     await launchWorkspace(specOf(substrate))
 
     const env = containerEnv()
-    // The caller's own env survives alongside the runtime's.
     expect(env.CALLER_SAID).toBe('yes')
     expect(env.YAAC_STREAM_TOKEN).toBe('stream-token')
     expect(env.SSL_CERT_FILE).toBe('/etc/yaac/certs/proxy-ca.pem')
   })
 
-  // A store shared between pods corrupts (pnpm 11's SQLite index needs one
-  // kernel), so each pod's store is its own — inside the root module dir,
-  // on the same volume as `.pnpm`, which is what lets pnpm hardlink.
+  // pnpm 11's SQLite store index cannot be shared between pods, so each pod
+  // has its own store on the same volume as `.pnpm`, letting pnpm hardlink.
   it('backs each module dir with its own volume and keeps pnpm\'s store inside the root one', async () => {
     const plain = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(plain, {
@@ -337,15 +315,14 @@ describe('launchWorkspace', () => {
         'dev.gvisor.spec.mount.pnpm-modules-1.type': 'bind',
       },
     })
-    // Nothing node-side to create for them.
     expect(job.spec.initContainers).toBeUndefined()
-    // Under both names: a corepack-pinned pnpm 10 reads only npm_config_.
+    // Both spellings: pnpm 10 reads only npm_config_.
     expect(containerEnv()).toMatchObject({
       pnpm_config_store_dir: '/workspace/node_modules/.pnpm-store',
       npm_config_store_dir: '/workspace/node_modules/.pnpm-store',
     })
 
-    // No root module dir: the pod's own disk, never the checkout.
+    // Without a root module dir the store stays off the checkout.
     mockApply.mockClear()
     await launchWorkspace(specOf(plain, { moduleDirs: ['/workspace/packages/web/node_modules'] }))
     expect(containerEnv()).toMatchObject({
@@ -354,16 +331,14 @@ describe('launchWorkspace', () => {
     })
   })
 
-  // The cache is handed to the init script, which writes it BELOW the
-  // project's own .npmrc — an env var would outrank a project that names a
-  // registry of its own.
+  // Passed to the init script, which writes it below the project's own
+  // .npmrc; an env var would override a project's own registry.
   it('admits a workspace to the npm cache per its project, and points it there only while it serves', async () => {
     const url = 'http://yaac-npm-cache.yaac.svc.cluster.local:4873/'
     await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
     expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
 
-    // Not serving yet: no registry, but the label admitting the pod is
-    // there, because that is the project's decision, not the cache's state.
+    // Not serving yet: no registry, but the label is set per the project.
     expect(appliedJob().spec.template.metadata.labels['yaac.npm-cache']).toBe('true')
 
     mockNpmCacheUrl.mockResolvedValue(url)
@@ -374,13 +349,10 @@ describe('launchWorkspace', () => {
       expect(containerEnv()).not.toHaveProperty(key)
     }
 
-    // Each of these keeps the workspace off the cache entirely — no
-    // registry, and no label, so the cache's policies do not admit the pod:
+    // Each keeps the workspace off the cache (no registry, no label):
     //  - the project turned it off;
-    //  - an allowlist that leaves npmjs out (the cache fetches outside the
-    //    proxy, so it would hand the workspace what its allowlist refuses);
-    //  - a proxied npmjs secret (the cache fetches anonymously, so the
-    //    project's private packages would 404).
+    //  - the allowlist excludes npmjs (the cache bypasses the proxy);
+    //  - a proxied npmjs secret (the cache fetches anonymously).
     for (const intent of [
       { ...INTENT, config: { npmCache: false } },
       { ...INTENT, config: { setAllowedUrls: ['github.com', 'api.anthropic.com'] } },
@@ -406,7 +378,7 @@ describe('launchWorkspace', () => {
     expect(env.GIT_SSH_COMMAND).toContain('--proxy 198.18.0.2:10259')
     expect(env.GIT_SSH_COMMAND).toContain('--proxy-type http')
     expect(env.GIT_SSH_COMMAND).toContain('StrictHostKeyChecking=yes')
-    // Identity comes from the forwarded agent, never a mounted key.
+    // Keys come from the forwarded agent, never a mounted file.
     expect(env.SSH_AUTH_SOCK).toBe('/ssh-agent/socket')
     expect(env.YAAC_SSH_AGENT_UPSTREAM).toBe('10.96.0.5:10261')
     const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
@@ -416,8 +388,7 @@ describe('launchWorkspace', () => {
   })
 
   it('builds the same env twice from one spec, because a retry relaunches it', async () => {
-    // The retry loop hands the SAME spec back after a failed attempt. If the
-    // injections appended to it, the second pod would carry two of each.
+    // Retries reuse the spec, so it must not be mutated.
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     const spec = specOf(substrate, { ssh: { knownHostsFile: path.join(projectDir('proj'), 'known_hosts') } })
 
@@ -432,8 +403,7 @@ describe('launchWorkspace', () => {
   })
 
   it('ensures the priority classes before applying the Job that names one', async () => {
-    // The apiserver rejects a pod whose class is missing: the Job applies
-    // and no pod ever appears.
+    // Otherwise the Job applies but its pod is rejected.
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(substrate))
 
@@ -464,19 +434,18 @@ describe('launchWorkspace', () => {
     const pod = appliedJob().spec.template.spec
     const byMount = Object.fromEntries(pod.containers[0].volumeMounts.map((m) => [m.mountPath, m]))
     const volume = (name: string) => pod.volumes.find((v) => v.name === name)
-    // GLOBAL: subPaths of the one claim, a File included.
+    // GLOBAL: subPaths of the one claim, including a file.
     expect(volume(byMount['/workspace'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
     expect(byMount['/workspace'].subPath).toBe('projects/proj/workspaces/s1')
     expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe('projects/proj/claude/settings.json')
     // NODE-LOCAL: the pod's own node tree.
     expect(volume(byMount['/home/yaac/.cached-packages'].name)?.hostPath)
       .toEqual({ path: `${NODE_ROOT}/projects/${PROJECT_ID}/.cached-packages`, type: 'DirectoryOrCreate' })
-    // Nothing under the data dir by hostPath any more.
+    // No hostPath under the data dir.
     for (const v of pod.volumes) {
       expect(v.hostPath?.path.startsWith('/data/yaac')).not.toBe(true)
     }
-    // The init container names exactly the node-local dirs, and the preStop
-    // hook rides the spec through.
+    // The init container creates exactly the node-local dirs.
     const [init] = pod.initContainers ?? []
     expect(init?.name).toBe('node-dirs')
     expect(init?.command.slice(-2)).toEqual([
@@ -484,7 +453,7 @@ describe('launchWorkspace', () => {
       `/node/projects/${PROJECT_ID}/.cached-packages/modules/s1/node_modules`,
     ])
     expect(volume('node-root')?.hostPath).toEqual({ path: NODE_ROOT, type: 'DirectoryOrCreate' })
-    // ...and a grace period sized for the hook, not for a bare SIGTERM.
+    // A grace period long enough for the preStop hook.
     expect(pod.terminationGracePeriodSeconds).toBe(PRE_STOP_GRACE_SECONDS)
     expect(pod.containers[0].lifecycle?.preStop).toEqual({
       exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] },

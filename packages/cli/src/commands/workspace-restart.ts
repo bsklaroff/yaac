@@ -11,10 +11,9 @@ interface WorkspaceRestartResult {
 }
 
 /**
- * CLI entry for `yaac workspace restart <id>`. Hands the restart off to
- * the server. The server tears down the old Job, keeps the checkout, and
- * spins up a fresh Job that resumes every agent session which was live when
- * the workspace stopped — each in its own window.
+ * `yaac workspace restart <id>`: ask the server to restart the workspace,
+ * keeping its checkout and resuming every agent session that was live when
+ * it stopped, then attach to it.
  */
 export async function workspaceRestart(workspaceId: string): Promise<string | undefined> {
   const res = await api.workspace.restart.$post({
@@ -32,10 +31,7 @@ export async function workspaceRestart(workspaceId: string): Promise<string | un
     return
   }
 
-  // Same rule as create: an ACP workspace's agent window runs acpd, so
-  // attaching would drop the user into the supervisor's stdio rather than a
-  // usable terminal — and sit there until they kill it. The chat pane is the
-  // way in.
+  // As in create: an ACP workspace is used from the web app's chat pane.
   if (mode === 'acp') {
     console.log(`Workspace ${restartedId} is running in ACP mode — open it in the web app to chat with the agent.`)
     return restartedId
@@ -45,7 +41,7 @@ export async function workspaceRestart(workspaceId: string): Promise<string | un
     try {
       await attachWorkspacePty(restartedId, 'native')
     } catch {
-      // Job or tmux session was killed — reaper will clean up.
+      // The session was killed; the server reaps it.
     }
   }
 

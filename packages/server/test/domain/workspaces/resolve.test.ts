@@ -13,10 +13,9 @@ import { ServerError } from '@yaac/shared/errors'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /**
- * The substrate lookup is the boundary here: which workspace an id names,
- * and whether it is running, is `findWorkspace`'s answer (asserted in
- * locate.test.ts), and what this module adds is the error vocabulary the
- * routes above it rely on.
+ * The driver's `find` is faked. Which workspace an id names and whether it
+ * runs is tested in test/drivers/k8s/workspaces/locate.test.ts; these tests
+ * cover the errors the routes rely on.
  */
 const find = vi.fn()
 
@@ -63,10 +62,9 @@ describe('resolveWorkspaceContainer', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  // Every session endpoint resolves through here and several are polled, so
-  // the cache-preferring lookup is what keeps them off a subprocess.
-  // The driver only ever sees the exact id: a prefix is expanded over rows
-  // first, here in domain.
+  // Several polled endpoints resolve through here, so the lookup prefers the
+  // cache over a subprocess. Prefixes are expanded over rows first, so the
+  // driver only sees exact ids.
   it('asks for the cache-preferred match by exact id and returns the container', async () => {
     await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'abc123def456' })
     find.mockResolvedValue(handle())
@@ -79,8 +77,7 @@ describe('resolveWorkspaceContainer', () => {
     expect(find).toHaveBeenCalledWith('abc123def456', { preferCache: true })
   })
 
-  // What the WebSocket attaches ask for: they hold full ids, so nothing
-  // shorter may reach a unit through them.
+  // WebSocket attaches hold full ids, so they get no prefix expansion.
   it('hands an exact-only input to the driver untouched', async () => {
     await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'abc123def456' })
     await expect(resolveWorkspaceContainer('abc123', { exact: true })).rejects.toMatchObject({ code: 'NOT_FOUND' })
@@ -92,12 +89,10 @@ describe('resolveWorkspaceContainer', () => {
     await expect(
       resolveWorkspaceContainer('abc123', { requireRunning: true }),
     ).rejects.toMatchObject({ code: 'CONFLICT' })
-    // Without the flag the same workspace resolves, carrying its state.
     expect(await resolveWorkspaceContainer('abc123')).toMatchObject({ state: 'pending' })
   })
 
-  // The lookup distinguishes "no match" from "could not ask"; this path must
-  // not flatten the second into a NOT_FOUND the client would act on.
+  // "Could not ask" must not become a NOT_FOUND the client would act on.
   it('lets a substrate failure through', async () => {
     find.mockRejectedValue(new ServerError('RUNTIME_UNAVAILABLE', 'connection refused'))
     await expect(resolveWorkspaceContainer('abc123')).rejects.toMatchObject({
@@ -107,9 +102,8 @@ describe('resolveWorkspaceContainer', () => {
 })
 
 /**
- * The other half of the same question, for readers of RECORDED state: the row
- * answers whenever the substrate does not, so a stopped workspace — and a
- * server whose substrate is not up at all — still resolves.
+ * For readers of recorded state: the row answers when the substrate does
+ * not, so a stopped workspace resolves even with the substrate down.
  */
 describe('resolveWorkspaceRecord', () => {
   let tmpDir: string
@@ -126,8 +120,8 @@ describe('resolveWorkspaceRecord', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  // The live workspace's job and tool ride along: a caller that can only read
-  // from inside the container needs them, and only a live match has them.
+  // Callers that read from inside the container need the job and tool,
+  // which only a live match has.
   it('carries the running workspace through when there is one', async () => {
     find.mockResolvedValue(handle())
     expect(await resolveWorkspaceRecord('abc123')).toEqual({
@@ -145,7 +139,6 @@ describe('resolveWorkspaceRecord', () => {
     if (outcome instanceof Error) find.mockRejectedValue(outcome)
     else find.mockResolvedValue(outcome)
 
-    // No job and no tool: there is no container to read anything out of.
     expect(await resolveWorkspaceRecord('abc123')).toEqual({
       workspaceId: 'abc123def456',
       projectSlug: 'proj',
@@ -182,12 +175,10 @@ describe('resolveWorkspace', () => {
     expect(await resolveWorkspace('feed')).toEqual({ ok: true, workspaceId: 'feed-1' })
   })
 
-  // A prefix naming several must never land on whichever row came first —
-  // and across projects, the rows of every project count.
   it('reports an ambiguous prefix, within a project or across them', async () => {
     expect(await resolveWorkspace('abcdef')).toEqual({ ok: false, reason: 'ambiguous' })
     expect(await resolveWorkspace('fe')).toEqual({ ok: false, reason: 'ambiguous' })
-    // Scoped to a project, the other project's row is simply not there.
+    // Scoped to a project, other projects' rows are ignored.
     expect(await resolveWorkspace('fe', { projectSlug: 'proj' })).toEqual({ ok: true, workspaceId: 'feed-1' })
     expect(await resolveWorkspace('fe11-2', { projectSlug: 'proj' })).toEqual({ ok: false, reason: 'not-found' })
   })
@@ -222,8 +213,8 @@ describe('resolveWorkspaceId', () => {
     })
   })
 
-  // A unit the rows have no record of (a reset DB) is still reachable by its
-  // full id, and the driver matches it exactly.
+  // A workspace with no row (e.g. after a DB reset) is still reachable by
+  // its full id.
   it('passes an id no row knows through as-is', async () => {
     expect(await resolveWorkspaceId('unrecorded-id')).toBe('unrecorded-id')
   })

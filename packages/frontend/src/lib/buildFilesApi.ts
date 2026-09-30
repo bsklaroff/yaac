@@ -1,11 +1,10 @@
 import { api } from './api'
 
 /**
- * Client for the build-files routes — the support files living next to a
- * Dockerfile in its build dir (the image's whole build context). One
- * interface, two scopes: per-project (`/project/:slug/build-files`) and
- * global user (`/config/user-build-files`), so the settings panel renders
- * both with a single component.
+ * Client for the build-files routes: the files in a Dockerfile's build
+ * context. The project scope (`/project/:slug/build-files`) and the user
+ * scope (`/config/user-build-files`) share one interface, so the settings
+ * panel renders both with one component.
  */
 
 export interface BuildFileEntry {

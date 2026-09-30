@@ -12,19 +12,16 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * What the runtime says its workspaces are doing right now.
- *
- * A whole snapshot, never a delta: the observer holds no state, so it can
- * always recompute one, and the join never has to reconcile a partial
- * stream against a restart.
+ * What the runtime says its workspaces are doing now. Always a whole
+ * snapshot, never a delta: the observer is stateless, so the join never
+ * reconciles a partial stream against a restart.
  */
 export interface RuntimeReport {
   workspaces: WorkspaceRuntimeReport[]
   /** Recorded workspaces whose runtime is gone, for the caller to tear down. */
   stale: StaleWorkspaceInfo[]
-  /** Project slug → git credentials the upstream rejected. Project-wide and
-   *  independent of the workspace set: a bad token persists with nothing
-   *  running and blocks new work. */
+  /** Project slug → git credentials the upstream rejected. Project-wide: a
+   *  bad token blocks new work even with nothing running. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
@@ -32,19 +29,18 @@ export interface WorkspaceRuntimeReport {
   workspaceId: string
   projectSlug: string
   tool: AgentTool
-  /** `terminating` is on its way out — a non-interactive placeholder, not a
-   *  live workspace. Its agents are already evicted, so it reports none. */
+  /** A `terminating` workspace is a non-interactive placeholder; its agents
+   *  are already evicted, so it reports none. */
   phase: 'running' | 'terminating'
-  /** When the runtime came up. The join prefers the recorded time, which
-   *  survives a restart; this is the fallback for a workspace with no row. */
+  /** When the runtime came up. The join prefers the recorded time (which
+   *  survives restarts); this is the fallback when there is no row. */
   createdAtMs: number
   /** The workspace's aggregate over every live agent: `waiting` if any is. */
   status: 'running' | 'waiting'
   waitingSinceMs?: number
-  /** Per-agent liveness, keyed by the driver's handle — a tmux pane id under
-   *  `tui`, the acpd window name under `acp`. The join puts sessions onto
-   *  these by the handle each was last seen on; a handle with no
-   *  conversation is one whose id has not landed yet. */
+  /** Per-agent liveness, keyed by the driver's handle (tmux pane id under
+   *  `tui`, acpd window name under `acp`). The join attaches conversations by
+   *  the handle each was last seen on. */
   agents: AgentLiveness[]
   blockedHosts: string[]
   forwardedPorts: PortMapping[]
@@ -52,32 +48,22 @@ export interface WorkspaceRuntimeReport {
 }
 
 /**
- * The runtime half of a workspace listing: what can be seen right now.
+ * The runtime half of a workspace listing, recomputed on every call: which
+ * workspaces the driver holds, the status store, forwarders, the egress
+ * path's blocked hosts and git-auth state. The durable half (titles, pins,
+ * conversations) is the server's; `listActiveWorkspaces` joins them
+ * (docs/layered-server.md).
  *
- * Everything here is recomputed on every call and none of it survives a
- * restart — which workspaces the driver holds, the watcher-fed status
- * store, the forwarder registry, the egress path's blocked hosts and
- * git-auth state. The durable half — titles, pins, recorded creation times,
- * conversations and their opening messages — is the server's, and
- * `listActiveWorkspaces` is the join (docs/layered-server.md).
+ * Driver-neutral: drivers supply only the raw facts. Runs on every
+ * snapshot, so the listing uses `preferCache`.
  *
- * Driver-neutral, and that is the point of it living here: the classify /
- * prune / liveness-join it performs is the same work over any substrate,
- * and a driver answers only for the raw facts it alone can see. It runs on
- * every snapshot, so the listing is taken `preferCache` — a driver whose
- * watch already streams the answer should not be made to go ask.
- *
- * Agent liveness is reported keyed by the driver's HANDLE rather than by
- * conversation, because which conversation sits on a handle is a fact the
- * server records and this half never learns. The join is what puts the two
- * back together.
+ * Agent liveness is keyed by handle, since which conversation is on a
+ * handle is recorded by the server, not known here.
  */
 export async function observeWorkspaces(projectFilter?: string): Promise<RuntimeReport> {
   const driver = workspaceDriver()
-  // Prewarmed spares are not user workspaces until claimed — hide them from
-  // the listing (and skip the status/first-message reads they would
-  // trigger). The stale reaper deliberately still sees them (it takes its
-  // own listing), so a stuck spare is still reaped.
+  // Hide unclaimed spares (and skip their status reads). The stale reaper
+  // takes its own listing, so a stuck spare is still reaped.
   const handles = (await driver.list(projectFilter, { preferCache: true }))
     .filter((w) => !w.prewarmed)
 
@@ -85,9 +71,8 @@ export async function observeWorkspaces(projectFilter?: string): Promise<Runtime
     handles, Date.now(), watcherDisplayLiveness, testEnv.startingGraceMs,
   )
 
-  // Forget terminating marks whose workspace is gone (teardown finished) or
-  // that outlived the TTL (a failed teardown), so the set can't leak or
-  // strand a permanently-greyed row.
+  // Drop terminating marks for workspaces that are gone or past the TTL (a
+  // failed teardown), so rows do not stay greyed forever.
   pruneTerminating(
     new Set(handles.map((w) => w.workspaceId).filter((v): v is string => !!v)),
     Date.now(),
@@ -123,10 +108,9 @@ async function observeRunning(w: RuntimeHandle): Promise<WorkspaceRuntimeReport>
 }
 
 /**
- * A workspace on its way out. Status is forced to `running` rather than read
- * from the status store, which was evicted at teardown and would default to
- * `waiting` — a spurious attention badge on a row that is disappearing — and
- * no waiting stamp is reported for the same reason.
+ * A workspace being torn down. Status is forced to `running`: the evicted
+ * status store would default to `waiting` and show a spurious attention
+ * badge on a disappearing row. No waiting stamp for the same reason.
  */
 function observeTerminating(w: RuntimeHandle): Promise<WorkspaceRuntimeReport> {
   return Promise.resolve(emptyReport(w, 'terminating'))

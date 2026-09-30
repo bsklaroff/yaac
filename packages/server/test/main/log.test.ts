@@ -37,7 +37,6 @@ describe('serverLog', () => {
   })
 
   it('creates the data dir on demand', async () => {
-    // Fresh subdir that doesn't exist yet.
     const nested = path.join(dataDir, 'nested', 'deeper')
     setDataDir(nested)
     serverLog('[server] create me')

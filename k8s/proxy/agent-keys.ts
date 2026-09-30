@@ -1,28 +1,19 @@
 /**
- * Loading identities into the pod-local ssh-agent.
+ * Loads SSH identities into the pod-local ssh-agent.
  *
- * Each key is added once, with one `ssh-add -h <host>` destination
- * constraint per distinct host among the projects it is assigned to, so the
- * agent signs with it for those hosts and no other. ssh-add encodes the
- * hosts' *public* keys into the constraint, so it requires them in a
- * known_hosts file at the moment it runs: the file is rewritten before each
- * add to hold exactly that key's projects' entries. The agent itself stores
- * the constraint, so the file's later contents don't matter. Which
- * workspaces may use a key at all is the relay's business
- * (ssh-agent-relay.ts); the constraint is what bounds where it signs.
+ * Each key is added with one `ssh-add -h <host>` destination constraint per
+ * host among its projects, so the agent signs only for those hosts. ssh-add
+ * needs those hosts' public keys in a known_hosts file while it runs, so the
+ * file is rewritten before each add. Which workspaces may use a key is
+ * decided by ssh-agent-relay.ts.
  *
- * The file path is always passed explicitly via `-H`: ssh-add's default
- * known_hosts lookup expands `~` through getpwuid(), NOT $HOME, and the
- * proxy's runtime uid (the server's host uid, set by runAsUser) either maps
- * to the image's `node` user — whose /home/node we never write — or to no
- * passwd entry at all. Both make the default lookup fail with "No host keys
- * found for destination".
+ * The known_hosts path is passed with `-H` because ssh-add's default lookup
+ * resolves `~` via getpwuid(), not $HOME, and the proxy's uid has no usable
+ * home directory.
  *
- * The whole identity set arrives at once (the credentials Secret's
- * `ssh-keys.json`, projected by `agentIdentities`), so a reload is
- * clear-then-add, serialized and coalesced: a second set arriving
- * mid-reload is applied after, and only the latest one — the agent must
- * never end up holding a mix of two sets.
+ * A reload clears the agent and adds the whole set. Reloads are serialized
+ * and only the latest pending set is applied, so the agent never holds a mix
+ * of two sets.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -35,11 +26,10 @@ export type AgentIdentity = { privateKey: string; hosts: string[]; knownHosts: s
 const distinct = (values: string[]): string[] => [...new Set(values)].sort()
 
 /**
- * The projection of the credentials' ssh entries the agent is loaded from —
- * and so the thing a reload is decided on: which projects a key serves is
- * the relay's live concern, and only a change to a key or to its set of
- * hosts or host keys needs the agent emptied and refilled. A key assigned
- * to no project is not loaded. Sorted, so an order change is no change.
+ * The part of the ssh credential entries the agent is loaded from. A reload
+ * is needed only when this changes (keys, hosts, or host keys), not when a
+ * key's projects change. Keys with no project are skipped. Sorted so order
+ * changes compare equal.
  */
 export function agentIdentities(entries: SshCredentialEntry[]): AgentIdentity[] {
   return entries
@@ -123,9 +113,8 @@ export function createAgentKeyLoader(deps: AgentKeyLoaderDeps): AgentKeyLoader {
     log(`[proxy] ssh-agent: loaded ${loaded} of ${identities.length} identit${identities.length === 1 ? 'y' : 'ies'}`)
   }
 
-  // Latest-wins coalescing: `wanted` is the set the agent should end up
-  // holding; one worker drains it, re-running while a newer set arrived
-  // during the last apply.
+  // `wanted` is the latest set requested; one worker applies it and loops
+  // while a newer set arrived.
   let wanted: AgentIdentity[] | null = null
   let worker: Promise<void> | null = null
 

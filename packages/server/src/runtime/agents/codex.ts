@@ -18,10 +18,10 @@ interface CodexEntry {
 }
 
 /**
- * A user turn's text: a `user_message` event, or — as codex-cli 0.156.1
- * writes it — an `item_completed` event carrying a `UserMessage` item. Never
- * a `response_item` with the user role, which also carries the bootstrap
- * context (AGENTS.md) codex injects ahead of the first real turn.
+ * A user turn's text: a `user_message` event, or (codex-cli 0.156.1) an
+ * `item_completed` event with a `UserMessage` item. Never a user-role
+ * `response_item`, which also carries injected bootstrap context
+ * (AGENTS.md).
  */
 function getUserMessageText(entry: CodexEntry): string | undefined {
   const p = entry.payload
@@ -34,25 +34,16 @@ function getUserMessageText(entry: CodexEntry): string | undefined {
 }
 
 /**
- * Classifies Codex's "actively working" state from the pane's OSC
- * terminal title, mirroring claude-status.ts. Titles are pushed at the
- * server by the session's status watcher (`#runtime/status`)
- * via a tmux control-mode subscription; reads happen via the status
- * store, never by probing the pod. Codex builds its terminal title from
- * the `[tui].terminal_title` items yaac launches it with
- * (`CODEX_TITLE_ITEMS`): while a task is running the activity item renders a
- * Braille spinner frame (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, all inside U+2800–U+28FF) ahead of
- * the rest, and the moment the turn ends the spinner drops away. When Codex blocks on user input (an approval
- * prompt) the spinner is suppressed entirely and the title instead gains
- * a blinking "[ ! ] Action Required" prefix — so the leading-Braille test
- * classifies every user-blocked state as 'waiting', which is exactly what
- * the JSONL transcript could not reliably tell us (verified against
- * codex-cli 0.142.4: codex-rs/tui/src/chatwidget/status_surfaces.rs, and
- * live — a turn in flight cycles all ten spinner frames in the title).
+ * Classifies Codex's busy state from the pane's OSC title (like claude.ts).
+ * The title is built from `CODEX_TITLE_ITEMS`: during a turn the activity
+ * item shows a Braille spinner frame (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, within U+2800–U+28FF)
+ * first, which disappears when the turn ends. When Codex blocks on an
+ * approval the spinner is replaced by "[ ! ] Action Required", so every
+ * user-blocked state reads as 'waiting' (verified against codex-cli
+ * 0.142.4, codex-rs/tui/src/chatwidget/status_surfaces.rs).
  *
- * Before Codex sets a title the pane reports tmux's default (the pod
- * hostname), which classifies as 'waiting' — the right answer for a
- * session still booting.
+ * Before Codex sets a title the pane shows the hostname, which reads as
+ * 'waiting'.
  */
 const BRAILLE_SPINNER_PREFIX = /^[\u2800-\u28FF]/
 
@@ -69,32 +60,26 @@ export async function getCodexFirstUserMessage(file: SandboxFile): Promise<strin
 }
 
 /**
- * The items codex builds its terminal title from — its default pair, plus the
- * model. With them the idle title reads `workspace | GPT-5.6-Sol`, a turn in
- * flight `⠙ workspace | GPT-5.6-Sol`, and a `/model` rewrites the last segment
- * the moment it is confirmed, before any turn (verified against codex-cli
- * 0.156.1). That is the only push codex offers: no hook fires on a model
- * change, and the rollout does not exist until the first turn.
+ * The items codex builds its title from: its default pair plus the model.
+ * Idle reads `workspace | GPT-5.6-Sol`, a turn `⠙ workspace | GPT-5.6-Sol`,
+ * and `/model` updates the last segment immediately (codex-cli 0.156.1).
+ * This is codex's only model-change signal: no hook fires, and the rollout
+ * does not exist before the first turn.
  *
- * `activity` stays first, which is what keeps `classifyCodexTitle`'s
- * leading-spinner test true; `project-name` stays ahead of the model, which is
- * what gives `CODEX_MODEL_FORMAT` a separator to find.
+ * `activity` must stay first for `classifyCodexTitle`, and `project-name`
+ * must precede the model so `CODEX_MODEL_FORMAT` has a separator.
  */
 export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 
 /**
- * The `-c` settings that trust the repository root codex keys folder trust on
- * (the checkout, a clone of its own) and skip its startup update check — the same
- * on every substrate, since nothing here needs an image to carry it.
+ * `-c` settings that trust the repository root (codex keys folder trust on
+ * it) and skip the startup update check.
  *
- * With the launch's `--dangerously-bypass-hook-trust` (`buildAgentCmd`),
- * codex opens no startup screen at all: no "Trust this folder?", no "Hooks
- * need review", and no "Update available" (which a host codex behind the
- * latest release otherwise opens), any of which would swallow the prompt
- * pasted into it. That
- * is a choice with a known cost: a trusted folder loads the repository's own
- * `.codex/` config, rules, MCP servers and hooks, so a repository can loosen
- * the posture yaac launched in and run code at startup, and yaac accepts that
+ * With `--dangerously-bypass-hook-trust` (`buildAgentCmd`) codex shows no
+ * startup screen ("Trust this folder?", "Hooks need review", "Update
+ * available"), any of which would swallow the pasted prompt. Known cost: a
+ * trusted folder loads the repo's own `.codex/` config, rules, MCP servers
+ * and hooks, so a repo can loosen the posture and run code at startup
  * (docs/permission-modes.md).
  */
 export function codexLaunchConfig(workspaceDir?: string): string[] {
@@ -107,26 +92,18 @@ export function codexLaunchConfig(workspaceDir?: string): string[] {
 }
 
 /**
- * A tmux format resolving to the model segment of the title — everything after
- * the last ` | ` — or empty before codex has set one (the pane then shows tmux's
- * default, the hostname, which has no separator). Resolved inside tmux, so the
- * subscription pushes when the model changes rather than on every spinner
- * frame.
+ * A tmux format for the model segment of the title (after the last ` | `),
+ * or empty before codex sets a title. Resolved inside tmux so the
+ * subscription fires on model changes, not every spinner frame.
  */
 export const CODEX_MODEL_FORMAT = '#{?#{m/r: [|] ,#{pane_title}},#{s/^.* [|] //:pane_title},}'
 
 /**
- * The slug for a model codex's title names. The title shows the active
- * catalog's display name (`GPT-5.6-Sol` for `gpt-5.6-sol`), and no title item
- * carries the slug, so the name is looked up in the catalog codex caches in
- * its home.
- *
- * That cache is not always there, or current: api-key auth and a failed fetch
- * never write it, and one written by an older codex lacks the newer models —
- * while the title still shows a display name from the catalog codex bundles.
- * So a miss falls back to the spelling rule the catalogs follow (lowercase,
- * spaces to dashes: `GPT-6-Astra` → `gpt-6-astra`), which also leaves a slug
- * unchanged, and a model in no catalog is titled by its slug.
+ * The slug for the model named in codex's title, which shows the catalog
+ * display name (`GPT-5.6-Sol` for `gpt-5.6-sol`). Looked up in the catalog
+ * codex caches in its home. That cache may be missing (api-key auth, failed
+ * fetch) or stale, so a miss falls back to the catalogs' naming rule
+ * (lowercase, spaces to dashes), which leaves a slug unchanged.
  */
 export async function codexModelSlug(slug: string, shown: string): Promise<string> {
   try {
@@ -138,55 +115,48 @@ export async function codexModelSlug(slug: string, shown: string): Promise<strin
     const model = cache.models?.find((m) => m.display_name === shown)?.slug
     if (typeof model === 'string' && model !== '') return model
   } catch {
-    // No cache yet, or one this reader does not understand.
+    // No cache yet, or an unrecognized format.
   }
   return shown.toLowerCase().replace(/ /g, '-')
 }
 
-/** Far past any catalog codex caches; the file is in a home the agent can
- *  write, so it is not read without bound. */
+/** Size cap for the catalog cache, which lives in an agent-writable home. */
 const MODELS_CACHE_MAX_BYTES = 8 * 1024 * 1024
 
-/** How much of a rollout's end is read for its newest settings. They are
- *  written at every turn's start and on every change, so they sit near the
- *  end; a turn whose output has pushed them further back than this reads as
- *  saying nothing, which leaves the last answer standing. */
+/** How much of a rollout's tail to read for its newest settings, written at
+ *  every turn start and change. If a turn pushed them further back, the
+ *  previous answer stands. */
 const ROLLOUT_TAIL_BYTES = 1024 * 1024
 
-/** What each rollout last answered, against the size and mtime it had then —
- *  a settled conversation costs a `stat`, not a read. */
+/** Each rollout's last answer, keyed by its size and mtime, so an
+ *  unchanged rollout costs only a `stat`. */
 const rolloutPostures = new Map<string, { size: number; mtimeMs: number; posture: CodexPosture | undefined }>()
 
-/** The posture a rollout's newest settings stand for, and when they were
- *  written — which is what says whether they are this process's or the one
- *  before a restart. */
+/** The posture a rollout's newest settings map to, and when they were
+ *  written (to tell this process's settings from a pre-restart one's). */
 export interface CodexPosture {
   permissionMode: PermissionMode
   atMs: number
 }
 
 /**
- * The posture codex is running under, from the newest settings its rollout
- * records, with when they were written — or undefined when those name no
- * posture yaac has, or none were found.
+ * codex's current posture from the newest settings in its rollout, with
+ * their timestamp, or undefined if none are found or they match no posture.
  *
- * codex's hooks carry `permission_mode` only as `bypassPermissions` or
- * `default`, two answers for four postures, but its rollout says more, and at
- * once. A `thread_settings_applied` event is written the moment `/permissions`
- * or Shift+Tab changes anything, and a `turn_context` at every turn, both
- * naming the approval policy, who reviews approvals and the permission
- * profile (verified against codex-cli 0.156.1). The newer of the two wins.
+ * codex's hooks only report `bypassPermissions` or `default`. The rollout
+ * says more: `thread_settings_applied` is written as soon as
+ * `/permissions` or Shift+Tab changes anything, and `turn_context` at every
+ * turn, both naming the approval policy, reviewer and permission profile
+ * (codex-cli 0.156.1). The newer wins.
  *
- * The profile is read rather than `sandbox_policy`, which only `turn_context`
- * has: `disabled` is full access, and a managed one is workspace-write when it
- * grants a write anywhere and read-only when it grants none. That inverts the
- * launch table in `buildAgentCmd`. A combination the table never launches
- * (the `never` policy over a sandbox, `on-request` over full access) reads as
- * the nearest posture no looser than it, rather than as nothing.
+ * The profile is read rather than `sandbox_policy` (only in
+ * `turn_context`): `disabled` is full access; a managed profile is
+ * workspace-write if it grants any write, else read-only. This inverts
+ * `buildAgentCmd`'s launch table; other combinations map to the nearest
+ * posture no looser than them.
  *
- * The collaboration mode those entries also name is not read: codex's plan
- * mode is instructions to the model over whatever sandbox is in force, so it
- * restrains nothing the posture is about.
+ * The collaboration mode is ignored: codex's plan mode is just model
+ * instructions and restricts nothing.
  */
 export async function getCodexPermissionMode(rollout: SandboxFile): Promise<CodexPosture | undefined> {
   const key = `${rollout.dir}/${rollout.rel}`
@@ -257,9 +227,8 @@ function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
       : entries.some((e) => (e as { access?: unknown } | null)?.access === 'write') ? 'workspace' : 'read-only'
   const reviewer = s.approvals_reviewer ?? 'user'
   if (sandbox === undefined || (s.approval_policy !== 'on-request' && s.approval_policy !== 'never')) return undefined
-  // Past the launch table, a combination reads as the most permissive posture
-  // that lets the agent do no more unasked than it can: nothing sandboxes a
-  // full-access agent, and a policy that never asks does not widen a sandbox.
+  // Outside the launch table, pick the loosest posture that allows no more
+  // than the agent can do unasked.
   if (sandbox === 'full') return 'bypass'
   if (reviewer === 'auto_review' && s.approval_policy === 'on-request') return 'auto'
   if (reviewer !== 'user' && reviewer !== 'auto_review') return undefined
@@ -267,27 +236,25 @@ function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
 }
 
 /**
- * The thread a rollout file holds, from its name: codex files each as
- * `rollout-<YYYY-MM-DDTHH-MM-SS>-<thread id>.jsonl` (codex-cli 0.156.1, which
- * also knows a `.jsonl.zst` compressed form of the same name). Undefined for
- * any other file.
+ * The thread id from a rollout filename,
+ * `rollout-<YYYY-MM-DDTHH-MM-SS>-<thread id>.jsonl` (also `.jsonl.zst`;
+ * codex-cli 0.156.1). Undefined for other files.
  */
 export function codexRolloutThreadId(fileName: string): string | undefined {
   return /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+?)\.jsonl(\.zst)?$/.exec(fileName)?.[1]
 }
 
-/** How much of a rollout's head is read for its first line: `session_meta`
- *  carries the base instructions, some 20 KB in 0.156.1. */
+/** How much of a rollout's head to read for its first line (`session_meta`
+ *  holds ~20 KB of base instructions in 0.156.1). */
 const ROLLOUT_META_BYTES = 256 * 1024
 
 /**
- * The thread a rollout descends from, or undefined for a root: a
- * `spawn_agent` child names its parent as a `parent_thread_id` inside its
- * `session_meta` source (the `thread_spawn` variant of codex's subagent
- * source — found wherever it nests, since only the field name is pinned), a
- * `/fork` names its origin as `forked_from_id`. Both are only in that first
- * line, and a child may never fire a hook of its own, so the file is the one
- * record that ties it to its parent.
+ * The thread a rollout descends from, or undefined for a root. A
+ * `spawn_agent` child names its parent as `parent_thread_id` in its
+ * `session_meta` source (found wherever it nests, since only the field name
+ * is pinned); a `/fork` names its origin as `forked_from_id`. Only the first
+ * line has these, and a child may never fire a hook, so this is the only
+ * link to its parent.
  */
 export async function codexRolloutParent(rollout: SandboxFile): Promise<string | undefined> {
   let handle: FileHandle | null = null

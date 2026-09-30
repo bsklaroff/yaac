@@ -1,70 +1,29 @@
 /**
- * The install's main OCI registry, as an in-cluster workload.
+ * The install's main OCI registry as an in-cluster workload: the one image
+ * bus (docs/trust-split-builds.md). Host `podman build` and sandboxed
+ * builder pods push to it, and node containerd pulls every workspace image
+ * from it. Same shape as the per-project registries (project-registry.ts):
+ * digest-pinned `registry:2`, a Recreate Deployment, a ClusterIP Service,
+ * an RWO PVC, and per-node containerd `hosts.toml` written by one-shot pods.
  *
- * This is the one image bus (docs/trust-split-builds.md): host-side
- * `podman build` pushes trusted layers into it, sandboxed builder pods pull
- * their parents from it and push their products back, node containerd pulls
- * every workspace image from it, and the mirrored upstream images are named
- * through it. It is deliberately the SAME topology as the per-project
- * registries (project-registry.ts) rather than a second pattern:
- * digest-pinned `registry:2`, a Recreate Deployment, a selector-backed
- * ClusterIP Service, an RWO PVC for the blobs, and a per-node containerd
- * `hosts.toml` written by one-shot pods that hostPath-mount the node's
- * `certs.d` directory.
+ * Differences, since this one is install-wide:
+ *  - It lives in the default namespace (`REGISTRY_NAMESPACE`), so per-run
+ *    e2e namespaces share one image store.
+ *  - Its pods use upstream digest refs, since it cannot pull its own images.
+ *  - Writes need a signed grant, checked by the write gate in front of it
+ *    (registry-gate.ts). Builder pods run untrusted `RUN` steps yet must
+ *    push, so the gate scopes each write to allowed repositories.
+ *  - Its ingress policy admits the node, builder pods in any namespace, and
+ *    the in-cluster server. Workspace pods cannot reach it (their egress
+ *    policy only allows netd).
  *
- * Four things differ from a project registry, all for the same reason —
- * this one is install-wide infrastructure, not a per-project store:
+ * Host processes reach it through a `kubectl port-forward`; see
+ * `#drivers/k8s/container`'s registry module.
  *
- *  - It lives in the DEFAULT namespace (`REGISTRY_NAMESPACE`), not
- *    `k8sNamespace()`, so per-run e2e namespaces keep sharing one image
- *    store.
- *  - Its images are UPSTREAM digest refs, not local mirror tags: the
- *    registry cannot be the source of its own pod's images, and the same
- *    goes for the node-write pods that wire it up.
- *  - Writes need a grant (below); a project registry is written from
- *    inside its project's sandboxes by design.
- *  - Its ingress lock admits a different caller set: node CIDRs (containerd
- *    pulls and the kubelet probe, plus the server's port-forward, which
- *    arrives from the node) and builder pods in ANY namespace, rather than
- *    one project's workspaces. Workspace pods are not on that list and cannot
- *    reach it anyway — their own default-deny egress
- *    (`buildWorkspaceEgressNpManifest`) admits nothing but the node's netd
- *    listener range. Note the world-deny policy is NOT what stops them: it
- *    explicitly excludes workspace-labeled pods.
- *
- * The lock pins the caller set; it cannot say WHAT a caller may write.
- * Builder pods are the UNTRUSTED principal of the trust split — an
- * attacker-authored `RUN` step runs inside one — and they must be able to
- * push. What confines their writes is the write gate in front of the
- * registry (registry-gate.ts): reads stay anonymous, and every write needs a
- * signed grant scoped to the repositories it may touch.
- *
- * The server reaches it through a `kubectl port-forward`, not by any host
- * networking assumption — see `#drivers/k8s/container`'s registry module for
- * the cluster-ref vs process-endpoint split.
- *
- * Storage is an RWO PVC, exactly as the per-project registries store
- * theirs. The store therefore belongs to the CLAIM rather than to whatever
- * node the pod last landed on, which is what makes an unpinned Deployment
- * safe: a reschedule takes the volume with it, so nothing is stranded and
- * nothing silently swaps underneath a running collect. A `nodeSelector`
- * would close the same two holes and is the wrong trade — it turns a
- * self-healing degradation into a single point of failure, on exactly the
- * store a node replacement destroys.
- *
- * RWO is enough because `replicas: 1` + `Recreate` means one mounter at a
- * time by construction, and it is the access mode every backend has (RWX
- * needs a file storage class that most do not ship). Two consumers on the
- * SAME node are still fine under RWO — which is what lets the build-cache
- * collect's sibling in project-registry.ts mount the volume beside a
- * serving registry.
- *
- * A claim that never binds — a cluster with NO default StorageClass — leaves
- * the registry down rather than degraded, since `Recreate` takes the serving
- * pod away first. `cluster install` reports that precisely; the boot ensure
- * only logs it. Losing the volume itself costs nothing permanent:
- * `registryHasTag` misses and the pushers refill, the same self-healing the
- * store relies on for a cluster recreate.
+ * Storage is an RWO PVC, so a reschedule takes the store along. One
+ * replica with `Recreate` means one mounter at a time. If no default
+ * StorageClass exists the claim never binds and the registry stays down;
+ * `cluster install` reports that. Losing the volume only costs re-pushes.
  */
 import crypto from 'node:crypto'
 import {
@@ -98,20 +57,16 @@ import {
 } from './registry-gate'
 import { serverLog } from '#log'
 
-/** `app` label on every object of the main registry. Distinct from the
- *  per-project registries' `app` value so neither feature's label selectors
- *  (GC sweeps, stray-pod reaps) can ever reach the other's objects. */
+/** `app` label for the main registry's objects, distinct from the project
+ *  registries' so neither's selectors match the other. */
 export const MAIN_REGISTRY_APP_LABEL = 'yaac-main-registry'
 
-/** Marker label on the one-shot node-write pods, so the stray sweep can
- *  never select the registry Deployment's own pod. */
+/** Label on the one-shot node-write pods, so the stray sweep never selects
+ *  the registry's own pod. */
 export const LABEL_MAIN_REGISTRY_NODE_WRITE = 'yaac.main-registry-node-write'
 
-/**
- * Install-scoping labels. The hash carries the registry-scoped key rather
- * than the workspace one, for the same reason project-registry.ts uses it:
- * these objects must stay invisible to the workspace reaper and list paths.
- */
+/** Install-scoping labels, using the registry hash key so the workspace
+ *  reaper and listings never see these objects. */
 function mainRegistryLabels(): Record<string, string> {
   return {
     app: MAIN_REGISTRY_APP_LABEL,
@@ -119,39 +74,22 @@ function mainRegistryLabels(): Record<string, string> {
   }
 }
 
-/**
- * PVC backing the registry's blobs, keyed by install so coexisting installs
- * never share a store — the scoping the retired node hostPath got from
- * having `dataDirHash()` in its path.
- */
+/** The blob PVC's name, keyed by install so installs never share one. */
 export function mainRegistryPvcName(): string {
   return `${REGISTRY_SERVICE_NAME}-storage-${dataDirHash()}`
 }
 
 /**
- * Requested capacity. It is a request, not a cap that anything here
- * enforces: kind's local-path provisioner ignores the number entirely (the
- * volume is a directory on the node's filesystem), so on the local backend
- * the real bound is its GC (docs/image-gc.md). It is sized for the backends where
- * it does bind — this store holds every workspace image of the install plus
- * every trust-split step-cache layer, and running it out of space fails
- * builds rather than degrading them.
- *
- * Raising it is safe; LOWERING it is not — see the note on
- * PROJECT_REGISTRY_STORAGE_SIZE, which this shares.
+ * Requested PVC size. kind's local-path provisioner ignores it (GC is the
+ * real bound there, docs/image-gc.md); other backends enforce it, and a full
+ * store fails builds. Raising it is safe; lowering it is not (see
+ * PROJECT_REGISTRY_STORAGE_SIZE).
  */
 export const MAIN_REGISTRY_STORAGE_SIZE = '100Gi'
 
 /**
- * The blob store's claim. Deliberately names NO `storageClassName`, so it
- * binds through whatever the cluster's default class is: kind's
- * `standard` (rancher local-path) locally, the provider's default block
- * class on a stock cluster. Naming a class here would break every cluster
- * that does not happen to ship it.
- *
- * Never deleted: it outlives Deployment rollouts by design, and the store
- * is only meant to die with the cluster (where it costs re-pushes, which is
- * why nothing backs it up).
+ * The blob store's claim. No `storageClassName`, so it uses the cluster's
+ * default class. Never deleted; it lives as long as the cluster.
  */
 export function buildMainRegistryPvcManifest(): Record<string, unknown> {
   return {
@@ -187,26 +125,14 @@ export function buildMainRegistryGateConfigMapManifest(publicKeyDer: Buffer): Re
 }
 
 /**
- * The registry Deployment: `registry:2` on the pod's loopback, and the
- * write gate (registry-gate.ts) in front of it on the Service port. Trusted
- * infra like the proxy and the project registries, so no `runtimeClassName`
- * — it runs on runc; the sentry buys no containment for a yaac-pinned
- * upstream and its CPU cost starves the node. `Recreate`, because a rolling
- * overlap would put two pods on one store — and on a backend that enforces
- * RWO across nodes it would simply deadlock, the new pod waiting for a
- * volume the old pod still holds.
+ * The registry Deployment: `registry:2` on loopback behind the write gate
+ * (registry-gate.ts) on the Service port. Trusted infra, so it runs on runc,
+ * not gVisor. `Recreate` avoids two pods on one RWO volume.
  *
- * Both images are digest-pinned UPSTREAM refs rather than the local mirror
- * tags every other yaac pod uses: this registry cannot pull its own pod's
- * images from itself. The node fetches them once and `IfNotPresent` keeps
- * every later rollout offline.
- *
- * The template carries a hash of the gate config, so a changed key or
- * gate rolls the pod — Envoy reads its bootstrap once, at start.
- *
- * Readiness is probed through the gate, so it covers both containers. The
- * probe carries an empty Basic credential because the gate challenges a
- * bare `/v2/` (that challenge is what makes podman send its grant).
+ * A hash of the gate config in the template rolls the pod when the key or
+ * gate changes (Envoy reads its bootstrap only at start). Readiness is
+ * probed through the gate with an empty Basic credential, since the gate
+ * challenges a bare `/v2/` (which is what makes podman send its grant).
  */
 export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Record<string, unknown> {
   const selector = { app: MAIN_REGISTRY_APP_LABEL }
@@ -233,8 +159,7 @@ export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Recor
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
-          // Infra tier: every workspace pod's image comes from here, so
-          // evicting it to make room for a workspace is backwards.
+          // Every workspace image comes from here.
           priorityClassName: PRIORITY_CLASS_INFRA,
           containers: [
             {
@@ -280,10 +205,8 @@ export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Recor
 }
 
 /**
- * A normal selector-backed ClusterIP Service. Its allocator-assigned IP is
- * never pinned and never deleted, so `apply` is a no-op after first
- * creation and the hosts.toml written below stays valid across rollouts —
- * only a cluster recreate moves it.
+ * The registry Service. Never deleted, so its ClusterIP (and the hosts.toml
+ * naming it) stays valid across rollouts.
  */
 export function buildMainRegistryServiceManifest(): Record<string, unknown> {
   return {
@@ -297,7 +220,6 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
     spec: {
       type: 'ClusterIP',
       selector: { app: MAIN_REGISTRY_APP_LABEL },
-      // port == targetPort: nothing should have to reason about a remap.
       ports: [{
         name: 'registry',
         port: REGISTRY_SERVICE_PORT,
@@ -309,41 +231,20 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
 }
 
 /**
- * The registry pod's ingress lock: exactly the two caller classes it has.
+ * The registry's ingress policy. Allowed callers:
+ *  - The node, by `ipBlock` (containerd pulls, the kubelet probe, and
+ *    `kubectl port-forward`).
+ *  - Builder pods in any namespace (e2e runs use per-run namespaces). The
+ *    role label cannot be forged; the builder-role admission policy blocks
+ *    it.
+ *  - The in-cluster server, in any namespace (docs/server-in-cluster.md).
+ * Workspace pods are not allowed. What builders may write is limited by the
+ * write gate, not this policy.
  *
- *  - **The node**, as an `ipBlock` — NetworkPolicy has no selector for the
- *    host network namespace, and three distinct things arrive from there:
- *    containerd pulling pushed refs via hosts.toml, the kubelet readiness
- *    probe, and the server's `kubectl port-forward`, which the kubelet
- *    dials into the pod.
- *  - **Builder pods, in any namespace** — hence `namespaceSelector: {}`
- *    beside the role selector, since a bare `podSelector` would match only
- *    this namespace and e2e runs put their builders in per-run ones. The
- *    role label is unforgeable: the builder-role ValidatingAdmissionPolicy
- *    lets no ServiceAccount set it.
- *  - **The server**, when it is one of this cluster's own pods
- *    (docs/server-in-cluster.md). It pushes and HEADs here on every image
- *    resolution, and in-cluster it dials the Service directly rather than
- *    arriving from a node address through a port-forward — so without this
- *    rule the server's first registry HEAD fails and every workspace create
- *    reports the image as unbuilt. Selected across namespaces for the same
- *    reason builders are: an e2e run puts its server in a per-run one.
- *
- * Workspace pods are deliberately absent. This does NOT confine what a
- * builder writes — the write gate does (see the module header) — it stops
- * everything that is not a builder or the node from becoming a caller by
- * accident.
- *
- * The node half is rendered from `nodeIpBlocks()` at ensure time, so it
- * goes STALE if node addresses move under it (a VM restart is the usual
- * cause) — and stale means node pulls are denied, since this fails closed.
- * The same is true of the per-project registries' locks and of the
- * hosts.toml beside them, and the fix is the same: `yaac cluster install`
- * re-renders all of it. Note the server's boot ensure does NOT
- * heal this, because it takes the cheap reachable-and-done path — the
- * registry is still reachable from the SERVER, which comes in by its own
- * pod selector rather than from a node address. `cluster check`'s probe is
- * what surfaces it.
+ * Node addresses are rendered at ensure time, so a node address change
+ * (e.g. VM restart) denies node pulls until `yaac cluster install` runs
+ * again. The server's boot ensure does not catch this; `cluster check`
+ * does.
  */
 export function buildMainRegistryIngressNetworkPolicyManifest(
   nodeCidrs: string[],
@@ -385,25 +286,15 @@ export function buildMainRegistryIngressNetworkPolicyManifest(
 }
 
 /**
- * One-shot pod writing one node's containerd hosts.toml for the registry.
- * The hostPath is scoped to exactly the one `certs.d/<registry-host>`
- * directory, so the pod can affect no other registry's mapping. Pinned by
- * `nodeName` and `restartPolicy: Never` — the caller polls it to a terminal
- * phase.
+ * One-shot pod, pinned by `nodeName`, that writes one node's containerd
+ * hosts.toml for the registry. Its hostPath is only that registry's
+ * `certs.d` dir.
  *
- * Tolerates everything, like netd and the gVisor installer. `nodeName`
- * bypasses the SCHEDULER, so a `NoSchedule` taint never mattered — but
- * kubelet still admits, and the taint manager still evicts, so a
- * `NoExecute` taint would refuse this pod on the very nodes it has to reach.
- * A node with no hosts.toml cannot pull, so the pods that most need this
- * write are exactly the ones a tainted workspaces pool would deny it to. The
- * blanket toleration costs nothing in scheduling freedom: the pod is pinned
- * to one named node and lives for seconds.
- *
- * It runs the same upstream `registry:2` the Deployment does, which the
- * rollout has already put on the node: the local mirror tag the project
- * registries' writers use lives in THIS registry, and nothing can pull from
- * it until this pod has run.
+ * Tolerates every taint: `nodeName` skips the scheduler but a `NoExecute`
+ * taint would still evict it, and tainted workspace nodes need the file
+ * most. Runs the upstream `registry:2` image, which the rollout already put
+ * on the node, since nothing can pull from this registry before the file
+ * exists.
  */
 export function buildMainRegistryHostsWriterPodManifest(
   nodeName: string,
@@ -422,8 +313,7 @@ export function buildMainRegistryHostsWriterPodManifest(
     },
     spec: {
       nodeName,
-      // Trusted infra running a fixed yaac-authored script — no
-      // runtimeClassName, so it runs on runc like the registry itself.
+      // Trusted infra: runs on runc.
       restartPolicy: 'Never',
       tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
@@ -473,9 +363,7 @@ export async function writeNodeMainRegistryHostsToml(): Promise<void> {
   if (!clusterIp) {
     throw new Error(`registry Service ${REGISTRY_SERVICE_NAME} has no ClusterIP yet`)
   }
-  // Reap writer pods left by crashed runs: the per-run name suffix means no
-  // later namesake delete collects them. The node-write marker keeps the
-  // registry Deployment's own pod out of the selector's reach.
+  // Remove writer pods left by crashed runs (names are per run).
   await kubectlWithRetry([
     'delete', 'pod', '-l', `app=${MAIN_REGISTRY_APP_LABEL},${LABEL_MAIN_REGISTRY_NODE_WRITE}`,
     '-n', REGISTRY_NAMESPACE, '--ignore-not-found',
@@ -494,16 +382,14 @@ export async function writeNodeMainRegistryHostsToml(): Promise<void> {
   }
 }
 
-/** How long a fresh registry rollout may take, including the node's
- *  one-time upstream pull of the pinned registry:2 and Envoy. */
+/** Rollout timeout, including the first upstream image pulls. */
 const ROLLOUT_TIMEOUT_MS = 300_000
 
-/** A healthy rollout takes seconds; past this, the pod netns is checked for
- *  the one host setting that makes it hang for the whole timeout. */
+/** After this long, check for the `arp_ignore` misconfiguration below. */
 const ROLLOUT_STALL_MS = 60_000
 
-/** How long a rolled-out registry may take to answer a dial from here —
- *  bounded by a restarted node's pod datapath coming back. */
+/** How long a rolled-out registry may take to answer a dial (e.g. while a
+ *  restarted node's pod network comes back). */
 const REACHABLE_TIMEOUT_MS = 90_000
 
 async function waitForRegistryRollout(timeoutMs: number): Promise<void> {
@@ -514,21 +400,11 @@ async function waitForRegistryRollout(timeoutMs: number): Promise<void> {
 }
 
 /**
- * Throw an actionable error when the registry pod's netns ignores the
- * node's ARP. Calico gives a pod a /32 on eth0, so under `arp_ignore=2`
- * (reply only to senders in the target's subnet) or `8` (never reply) the
- * node can never resolve the pod: the container runs, and every kubelet
- * probe times out, forever.
- *
- * The pod does not choose the value. With the kernel default
- * `net.core.devconf_inherit_init_net=0`, a new netns copies IPv4
- * `conf/{all,default}` from the HOST's root netns rather than from the kind
- * node that creates it, so a host that sets `arp_ignore=2` — a VPN client,
- * for instance — breaks every pod created after it did. `=3` makes a netns
- * copy its creator's settings instead: the node's, which are clean.
- *
- * Silent when the pod cannot be exec'd into (it may still be pulling): the
- * caller keeps waiting and reports a plain timeout.
+ * Throw an actionable error if the registry pod's netns has `arp_ignore` 2
+ * or 8. Calico gives pods a /32, so the node could never resolve the pod
+ * and every probe times out. New netns copy this from the host's root netns
+ * (a VPN client may set it); `devconf_inherit_init_net=3` makes them copy
+ * the kind node's instead. Does nothing if the pod cannot be exec'd into.
  */
 async function refuseArpIgnoringPodNetns(): Promise<void> {
   let out: string
@@ -558,7 +434,8 @@ async function refuseArpIgnoringPodNetns(): Promise<void> {
   )
 }
 
-/** The slice of a registry Deployment the conversion gate reads. */
+/** The fields of the registry Deployment `mainRegistryStorageIsClaim`
+ *  reads. */
 interface RawRegistryDeploy {
   spec?: { template?: { spec?: { volumes?: Array<Record<string, unknown>> } } }
   status?: { readyReplicas?: number }
@@ -578,21 +455,10 @@ async function readMainRegistryDeploy(): Promise<RawRegistryDeploy | null> {
 }
 
 /**
- * Whether the Deployment's applied SPEC already stores on the PVC — false on
- * an install upgrading from the node-hostPath store, and false when there is
- * no Deployment to read at all (in which case the ensure below is what
- * creates one).
- *
- * The cheap reachable-and-done path consults this because the upgrade is
- * otherwise invisible to it: the OLD registry answers perfectly well, so a
- * reachability check alone would leave it on its hostPath forever.
- *
- * Spec, deliberately, and only sound for that caller: it reaches here having
- * already established the registry ANSWERS, so a spec that names the claim
- * is a claim something is serving from.
- *
- * One `kubectl get`, and it fails SAFE: an unreadable or absent Deployment
- * answers false, which costs a redundant apply.
+ * Whether the Deployment spec stores on the PVC. False for an older install
+ * on a node hostPath, or when the Deployment is missing or unreadable (which
+ * costs only a redundant apply). The boot ensure's reachable-and-done path
+ * checks this, since an old hostPath registry still answers.
  */
 export async function mainRegistryStorageIsClaim(): Promise<boolean> {
   return specsClaimStorage(await readMainRegistryDeploy())
@@ -600,10 +466,9 @@ export async function mainRegistryStorageIsClaim(): Promise<boolean> {
 
 export interface EnsureMainRegistryOptions {
   /**
-   * Apply everything even when the registry already answers from its claim.
-   * `yaac cluster install` passes this: converging a machine exists
-   * precisely to re-write wiring that a node or VM restart may have
-   * dropped, while the server's boot ensure takes the cheap path.
+   * Apply everything even if the registry already answers. `yaac cluster
+   * install` sets this to rewrite wiring a node or VM restart may have
+   * lost; the server's boot ensure does not.
    */
   force?: boolean
 }
@@ -621,18 +486,12 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Namespace',
-    // Privileged PSS: this namespace also holds the node-write pods that
-    // hostPath-mount a node's certs.d, which an adopted cluster's
-    // baseline/restricted default would reject at admission.
+    // Privileged PSS for the node-write pods' hostPath mounts.
     metadata: { name: REGISTRY_NAMESPACE, labels: { ...PRIVILEGED_PSS_LABELS } },
   })
-  // Before the Deployment that mounts it. Applying it second would still
-  // converge (the pod just stays Pending until the claim exists), but the
-  // rollout wait below would spend that time looking like a scheduling
-  // failure.
+  // Before the Deployment that mounts it.
   await kubectlApply(buildMainRegistryPvcManifest())
-  // The grant key is created on first use, here on a fresh cluster; the
-  // gate's config holds only its public half.
+  // Creates the grant key on first use; the gate gets the public half.
   const publicKeyDer = await registryGrantPublicKey()
   await kubectlApply(buildMainRegistryGateConfigMapManifest(publicKeyDer))
   await kubectlApply(buildMainRegistryDeploymentManifest(publicKeyDer))
@@ -644,11 +503,7 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
     try {
       await waitForRegistryRollout(ROLLOUT_TIMEOUT_MS - ROLLOUT_STALL_MS)
     } catch (err) {
-      // kubectl reports only that it timed out, and the diagnoses that matter
-      // are all one command away. The PVC is named alongside the pods because
-      // a cluster with no DEFAULT StorageClass leaves the claim Pending
-      // forever, which shows up as a Pending pod with no scheduling reason of
-      // its own.
+      // kubectl only says it timed out; point at the likely causes.
       throw new Error(
         `${err instanceof Error ? err.message : String(err)}\n`
         + `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods,pvc `
@@ -661,13 +516,9 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   }
   await writeNodeMainRegistryHostsToml()
 
-  // A rolled-out Deployment is not the same as a reachable one from HERE:
-  // the port-forward is this process's only route to it, and a stale child
-  // from a previous incarnation would still be cached. Nor is it a fresh
-  // one: right after a node restart the rollout status is the one recorded
-  // before it, so the pod can read Available for the tens of seconds its
-  // sandbox waits on calico-node — which is why this waits on the dial
-  // itself, for as long as a node takes to come back.
+  // Rolled out is not reachable: a cached port-forward may be stale, and
+  // after a node restart the pod can read Available before its network is
+  // up. So drop the cached endpoint and wait for an actual dial.
   invalidateRegistryEndpoint()
   const deadline = Date.now() + REACHABLE_TIMEOUT_MS
   while (Date.now() < deadline) {
@@ -678,11 +529,9 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
 }
 
 /**
- * Run one argv inside the registry container — the in-cluster replacement
- * for `podman exec yaac-registry`, used by the step-cache collect
- * (`#drivers/k8s/images` main-registry-gc.ts) to walk and prune the registry's own
- * storage layout. `deploy/<name>` lets kubectl pick the Deployment's pod,
- * so nothing here tracks pod names.
+ * Run a command in the registry container, for the step-cache collect
+ * (`#drivers/k8s/images` main-registry-gc.ts). `deploy/<name>` lets kubectl
+ * pick the pod.
  */
 export async function mainRegistryExec(argv: string[], timeoutMs: number): Promise<string> {
   const { stdout } = await kubectlWithRetry(
@@ -693,18 +542,10 @@ export async function mainRegistryExec(argv: string[], timeoutMs: number): Promi
 }
 
 /**
- * Bounce the registry, which is how its in-memory blob descriptors are
- * cleared after a garbage collect (a re-pushed digest would otherwise write
- * a link with no blob behind it and 404 forever).
- *
- * The Service's ClusterIP survives, so no hosts.toml rewrite is owed — but
- * this process's port-forward was bound to the pod that just went away, so
- * it is dropped and re-established on next use.
- *
- * `Recreate` means the old pod is gone before the replacement is scheduled,
- * so the replacement may well land on a different node. That is now
- * uneventful: the blobs are on the PVC, which the new pod mounts, so the
- * catalog the collect just pruned is the catalog that comes back.
+ * Restart the registry after a garbage collect to clear its in-memory blob
+ * cache (otherwise a re-pushed digest 404s forever). The ClusterIP survives,
+ * but a port-forward to the old pod must be re-established. The blobs are
+ * on the PVC, so the new pod may land on any node.
  */
 export async function restartMainRegistry(): Promise<void> {
   await kubectlWithRetry([

@@ -3,13 +3,13 @@ import type { AgentMode, AgentTool, PermissionMode, QueuedWorkspaceEntry } from 
 
 /**
  * Queued workspaces (docs/queued-workspaces.md): create requests saved to run
- * when their parent — a workspace, or another queued entry — stops. None of
- * these are optimistic: entries ride the snapshot, so the server's push is
- * what re-renders the sidebar.
+ * when their parent (a workspace, or another queued entry) stops. None of
+ * these are optimistic: entries arrive in the snapshot, so the server's push
+ * re-renders the sidebar.
  */
 
-/** Every setting a queued entry stores — all concrete, so what the sidebar
- *  shows is what will launch. */
+/** Every setting a queued entry stores. All are concrete values, so what the
+ *  sidebar shows is exactly what will launch. */
 export interface QueuedSettings {
   prompt: string
   tool: AgentTool

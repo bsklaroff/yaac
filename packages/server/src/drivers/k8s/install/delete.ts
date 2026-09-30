@@ -16,21 +16,15 @@ import { readServerConfig } from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
 
 /**
- * `yaac cluster delete` — tear down the local kind cluster `yaac cluster
- * setup` created, leaving on-disk workspaces untouched.
- *
- * One `kind delete` is now the whole teardown: every yaac workload lives
- * inside the cluster (Calico, netd, the main and
- * per-project registries) and so does all of their node-local storage,
- * including the registries' image blobs — the node's filesystem goes with
- * the node. Nothing under the yaac data dir (projects, workspaces, workspaces)
- * is touched, so a later `yaac cluster install` recreates the cluster and
+ * `yaac cluster delete`: delete the local kind cluster that `yaac cluster
+ * install` created. Every yaac workload and its node-local storage
+ * (including registry image blobs) lives inside the cluster, so one
+ * `kind delete` removes it all. The yaac data dir (projects, workspaces) is
+ * untouched, and a later `yaac cluster install` recreates the cluster and
  * re-pushes the images.
  */
 
-// Lives in arg-guards.ts (which costs nothing to import) so the CLI can
-// reject the nested guard without loading this module. Re-exported here
-// because this is where consumers of `runClusterDelete` expect to find it.
+// Defined in arg-guards.ts, which is cheap to import.
 export { ClusterDeleteError }
 
 export interface ClusterDeleteOptions {
@@ -40,11 +34,9 @@ export interface ClusterDeleteOptions {
 
 /**
  * Names of the kind clusters the podman provider can see. Throws
- * ClusterDeleteError (not a bare exit code) when kind cannot be queried at
- * all — a missing kind binary or a stopped podman is the usual cause, and
- * the message says so. `kind get clusters` prints "No kind clusters found."
- * (with spaces) when there are none; real cluster names never contain
- * whitespace, so whitespace-bearing lines are dropped to leave just names.
+ * ClusterDeleteError when kind cannot be queried (usually kind missing or
+ * podman stopped). Lines with whitespace, such as "No kind clusters
+ * found.", are dropped: cluster names never contain any.
  */
 async function listKindClusters(): Promise<string[]> {
   try {
@@ -64,11 +56,9 @@ async function listKindClusters(): Promise<string[]> {
 }
 
 /**
- * Delete the kind cluster. Refuses inside a nested yaac workspace (the
- * cluster is the outer install's infrastructure), confirms first unless
- * `yes`, and is idempotent: an absent cluster is a no-op. Throws
- * ClusterDeleteError with a user-actionable message when a step cannot
- * proceed.
+ * Delete the kind cluster, confirming first unless `yes`. Refuses on a byo
+ * install; an absent cluster is a no-op. Throws ClusterDeleteError with a
+ * user-actionable message when a step cannot proceed.
  */
 export async function runClusterDelete(
   opts: ClusterDeleteOptions = {},
@@ -105,13 +95,10 @@ export async function runClusterDelete(
 }
 
 /**
- * What `yaac cluster delete` says on a byo install instead of deleting
- * anything: the cluster is not yaac's to delete. The uninstall is the
- * install's namespaces, the cluster-scoped objects labelled with its
- * namespace, the runtime objects and node labels every install on a
- * cluster shares (said as such), and — deliberately, last — the two
- * `Retain` volumes, selected by the install id so no other install's can
- * match.
+ * Manual uninstall steps printed for a byo install, whose cluster yaac
+ * does not delete: this install's namespaces and cluster-scoped objects,
+ * then the objects all installs on the cluster share, and last the two
+ * `Retain` volumes, selected by install id.
  */
 function byoUninstall(installId: string | undefined): string {
   const ns = k8sNamespace()

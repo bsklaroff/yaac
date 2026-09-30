@@ -1,21 +1,11 @@
 /**
- * The one place a Hono API client is built. Both the CLI (via `server-api.ts`,
- * over the bearer/lock transport) and the browser SPA (over a same-origin
- * cookie fetch) call `createApiClient`, so they share a single error contract
- * and the same "unwrap the body for me" ergonomics instead of each
- * re-implementing them.
+ * Builds the typed Hono API client used by both the CLI (`server-api.ts`)
+ * and the SPA (same-origin fetch), so both share one error contract:
+ *  - Any non-2xx response throws a `ServerError` (`throwingFetch`).
+ *  - A JSON route resolves to its parsed body, a 204 to `undefined`, and a
+ *    streaming route to the raw `Response` (`unwrapClient`).
  *
- * Two behaviours live here, both so call sites stay boilerplate-free:
- *  - Errors: `throwingFetch` turns any non-2xx into a thrown `ServerError`
- *    (read from the shared `{ error: { code, message } }` envelope), so callers
- *    never check `res.ok`.
- *  - Bodies: the returned client auto-unwraps — a JSON route resolves to its
- *    parsed body (no `.then((r) => r.json())`), a 204 to `undefined`, and a
- *    streaming route (hono types it as a non-`json` format) to the raw
- *    `Response`, so `consumeNdjsonStream` can still read `res.body`.
- *
- * Browser-safe: only `hono/client` and the pure `#errors` taxonomy (no node
- * built-ins), so the frontend depends on it through `@yaac/shared`.
+ * Browser-safe: no node built-ins.
  */
 import { hc } from 'hono/client'
 import type { ClientResponse } from 'hono/client'
@@ -26,17 +16,14 @@ export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promis
 
 /**
  * Wrap a transport so any non-2xx response rejects with a `ServerError`
- * carrying the server's `{ error: { code, message } }`. Successful responses
- * pass through untouched — the body is never read here, so the unwrapping
- * layer still sees a live body. A missing or non-JSON error body degrades to
- * an `INTERNAL` error naming the status.
+ * built from the server's `{ error: { code, message } }` body, or an
+ * `INTERNAL` error naming the status if the body is not that. Successful
+ * responses pass through unread.
  */
 export function throwingFetch(inner: FetchLike): FetchLike {
   return async (input, init) => {
     const res = await inner(input, init)
     if (res.ok) return res
-    // Clone before reading: the body is consumed here only on the error path,
-    // which discards the response anyway.
     const body = await res.clone().json().catch(() => null) as ServerErrorBody | null
     throw new ServerError(
       body?.error.code ?? 'INTERNAL',
@@ -46,11 +33,8 @@ export function throwingFetch(inner: FetchLike): FetchLike {
 }
 
 /**
- * Read a successful response into the value call sites actually want. JSON
- * routes (the overwhelming majority) resolve to their parsed body; a 204 to
- * `undefined`; anything else — the NDJSON streaming routes hono types as a
- * non-`json` format — to the raw `Response`, so the caller can consume
- * `res.body` (see `consumeNdjsonStream`).
+ * JSON → parsed body, 204 → `undefined`, anything else (the NDJSON
+ * streaming routes) → the raw `Response` for `consumeNdjsonStream`.
  */
 async function unwrapResponse(res: Response): Promise<unknown> {
   if (res.status === 204) return undefined
@@ -58,15 +42,12 @@ async function unwrapResponse(res: Response): Promise<unknown> {
   return contentType.includes('application/json') ? res.json() : res
 }
 
-/** Request verbs whose result carries a body worth unwrapping. `$url`/`$path`
- *  (URL builders) and any other segment call pass through untouched. */
+/** Client methods whose result is unwrapped; others (`$url`, `$path`) are not. */
 const REQUEST_METHODS = new Set(['$get', '$post', '$put', '$delete', '$patch'])
 
 /**
- * Recursively transform a client type so every request method resolves to its
- * unwrapped body. A `json`-format route becomes `(...args) => Promise<Data>`; a
- * streaming/text route keeps its `Promise<ClientResponse<…>>` (the caller needs
- * the raw `Response`). `$url`/`$path` and nested route nodes map through.
+ * The client type with each `json`-format route's method returning
+ * `Promise<Data>`. Other routes keep their `ClientResponse` type.
  */
 export type UnwrappedClient<T> =
   T extends (...args: infer A) => Promise<ClientResponse<infer Data, infer _Status, infer Format>>
@@ -78,11 +59,9 @@ export type UnwrappedClient<T> =
       : { [K in keyof T]: UnwrappedClient<T[K]> }
 
 /**
- * Wrap a hono `hc` client so request methods resolve to unwrapped bodies (see
- * `unwrapResponse`). hono builds each node as a callable proxy — properties
- * chain the route path, a call issues the request — so we mirror it: chain
- * `get`s, and when a call lands on a `$get`/`$post`/… segment, pipe its result
- * through `unwrapResponse`.
+ * Wrap a hono `hc` client so request methods resolve through
+ * `unwrapResponse`. `hc` is a chain of callable proxies, so this wraps each
+ * node in a proxy of its own and intercepts calls on request methods.
  */
 function unwrapClient<T extends object>(client: T): UnwrappedClient<T> {
   const wrap = (node: unknown, lastKey: string | null): unknown => {
@@ -103,20 +82,16 @@ function unwrapClient<T extends object>(client: T): UnwrappedClient<T> {
 }
 
 /**
- * Build the typed Hono API client. `origin` is where the server is (empty
- * for the page's own), and every request goes to its `/api` mount; `fetch`
- * is the transport (cookie same-origin in the browser, bearer/lock
- * resolution in the CLI). Non-2xx throws (see `throwingFetch`); a
- * successful call resolves to the unwrapped body (see `unwrapClient`).
+ * Build the typed Hono API client for the server's `/api` at `origin`
+ * (empty for the page's own origin) over the given transport.
  */
 export function createApiClient(origin: string, fetch: FetchLike) {
   return unwrapClient(hc<AppType>(`${origin}/api`, { fetch: throwingFetch(fetch) }))
 }
 
 /**
- * Same typed client without the throwing/unwrapping wrappers, for callers that
- * need to inspect a raw non-2xx `Response` (HTTP-contract tests asserting
- * status codes). Application code should use `createApiClient`.
+ * The typed client without throwing or unwrapping, for tests that assert
+ * on raw status codes.
  */
 export function createRawApiClient(origin: string, fetch?: FetchLike) {
   return hc<AppType>(`${origin}/api`, { fetch })

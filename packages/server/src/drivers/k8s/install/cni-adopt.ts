@@ -15,85 +15,53 @@ import type { execFileAsync } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
 
 /**
- * The CNI gate: adopting a CNI yaac did not install (docs/cluster-setup.md
- * "The CNI gate").
+ * The CNI gate for `--byo`: checks that a Calico yaac did not install
+ * (self-managed, or provider-managed on GKE, AKS or EKS) can carry the
+ * netd egress redirect (docs/cluster-setup.md "The CNI gate",
+ * docs/workspace-egress.md).
  *
- * `yaac cluster install` normally owns the CNI: it creates the cluster with
- * no default CNI and applies a checksum-pinned Calico. `--byo` skips
- * that and runs this gate instead, so yaac can install into a Calico the
- * cluster already runs — our own, a self-managed one, or a
- * provider-managed one (GKE Dataplane V1, AKS `--network-policy calico`,
- * Calico policy-only over the AWS VPC CNI on EKS).
- *
- * **The gate is the point of the mode.** There is no datapath change here:
- * the netd redirect (docs/workspace-egress.md) works unmodified on any CNI
- * that traverses host netfilter and leaves ClusterIP translation to
- * kube-proxy. What changes is that four things yaac otherwise ASSUMES
- * become things it DETECTS — and every one of them fails silently when the
- * assumption is wrong. An unverified adoption presents as "workspaces have
- * no egress" or, worse, as a redirect chain that counts packets and never
- * fires. So each check below refuses with the specific reason rather than
- * warning and proceeding.
- *
- * Cilium is out of scope in every configuration: its eBPF host-routing
- * short-circuits the netfilter hook the redirect needs. The eBPF checks
- * here exist because Calico's own eBPF dataplane does exactly the same
- * thing, and unlike Cilium it can be turned on under a Calico install that
- * otherwise looks adoptable.
+ * The redirect needs pod egress to pass through host netfilter and
+ * kube-proxy to translate ClusterIPs. When these assumptions are wrong,
+ * workspaces silently lose egress, so every check refuses with a specific
+ * reason. Cilium and Calico's eBPF dataplane both bypass netfilter and
+ * are refused.
  */
-
 
 /** Everything the gate reads about the cluster's CNI, in one shape. */
 export interface CniFacts {
-  /**
-   * calico-node: the DaemonSet's own report of how far it has rolled out.
-   * `present` is a three-way answer — `null` means the read failed, which
-   * is not the same claim as "the cluster has no Calico" and must not be
-   * reported as one.
-   */
+  /** calico-node's rollout. `present` is null when the read failed. */
   calico: { present: boolean | null; ready: number; desired: number }
   felix: {
     /**
-     * `spec.bpfEnabled` across EVERY FelixConfiguration, not just `default`
-     * — Felix honors per-node overrides (`node.<nodename>` objects), so a
-     * cluster whose `default` leaves it unset and whose per-node object
-     * turns it on is still an eBPF cluster. Null when nothing sets it.
+     * `spec.bpfEnabled` across every FelixConfiguration, including per-node
+     * `node.<name>` overrides. Null when nothing sets it.
      */
     bpfEnabled: boolean | null
     /**
-     * `FELIX_BPFENABLED` on the calico-node container; null when unset.
-     * `'unevaluable'` when the entry exists but carries no literal value
-     * (a `valueFrom` ConfigMap/fieldRef reference), which is not the same
-     * claim as "off".
+     * `FELIX_BPFENABLED` on the calico-node container; null when unset,
+     * `'unevaluable'` when it comes from a `valueFrom` reference.
      */
     bpfEnabledEnv: boolean | 'unevaluable' | null
     /** `spec.chainInsertMode`; null when unset (Felix defaults to Insert). */
     chainInsertMode: string | null
     /** `spec.bpfKubeProxyIptablesCleanupEnabled`; null when unset. */
     bpfKubeProxyIptablesCleanupEnabled: boolean | null
-    /**
-     * False when the read failed. Nothing about Felix may then be
-     * RECORDED either — "Insert (Felix default — nothing sets it)" is a
-     * claim about the cluster, and an audit trail that states one the gate
-     * never established is worse than one that says nothing.
-     */
+    /** False when the read failed; nothing about Felix is then recorded. */
     evaluated: boolean
   }
   /**
-   * kube-proxy, counted from its pods so a static-pod install still counts,
-   * and per-node because a node without one loses workspace egress on that
-   * node alone. `external` is the operator's acknowledgement that it runs
-   * where no pod can be found (k3s runs it in-process).
+   * kube-proxy pods, per node (a node without one loses egress on its own).
+   * `external` is the operator saying it runs outside a pod (e.g. k3s).
    */
   kubeProxy: {
     pods: number
     running: number
     nodes: string[]
     external: boolean
-    /** False when the read failed — "none running" was never established. */
+    /** False when the read failed. */
     evaluated: boolean
   }
-  /** Every node a workspace could land on — the per-node coverage denominator. */
+  /** Every node a workspace could be scheduled on. */
   schedulableNodes: string[]
   /** The three sources netd's redirect exclusion set unions, plus rejects. */
   podCidrs: {
@@ -104,37 +72,21 @@ export interface CniFacts {
     /** Sources whose read failed — see `unevaluated`. */
     unreadable: Array<{ source: string; cause: string }>
   }
-  /**
-   * netd names this PriorityClass; a pod naming a missing class is
-   * rejected. `null` when the read failed — see `calico.present`.
-   */
+  /** Whether netd's PriorityClass exists; null when the read failed. */
   systemNodeCriticalPresent: boolean | null
   /** What netd will be told to match workload veths on. */
   vethPrefix: string
   /**
-   * Checks that could not be EVALUATED — a read that failed for any reason
-   * other than the object genuinely being absent (RBAC, a timeout, an
-   * unparseable response).
-   *
-   * This is the difference between a fact and an unknown, and it is
-   * load-bearing in exactly one direction. For the checks where absence
-   * refuses (calico-node, kube-proxy, the PriorityClass), collapsing an
-   * error into "absent" is safe — it refuses either way. For the eBPF check
-   * it INVERTS: absence means "Felix runs its iptables defaults", so a
-   * FelixConfiguration read that failed would wave an eBPF cluster through
-   * and land as silent no-egress, which is the exact failure this gate
-   * exists to convert into a named refusal. So an unevaluated check is a
-   * refusal of its own — reported as `{check, cause}` so the assessment can
-   * group several checks defeated by one problem.
+   * Checks whose read failed for a reason other than absence (RBAC, a
+   * timeout, bad output). Each is a refusal: for the eBPF check, treating a
+   * failed read as "no FelixConfiguration" would pass an eBPF cluster.
    */
   unevaluated: Array<{ check: string; cause: string }>
 }
 
 /**
- * The verdict. `refusals` is non-empty exactly when the adoption must not
- * proceed; `warnings` are things the operator should know that do not
- * break the datapath; `notes` are what the verification RECORDED, which is
- * the audit trail for a cluster yaac does not own.
+ * The verdict: any `refusals` block the adoption; `warnings` do not break
+ * the datapath; `notes` record what was verified.
  */
 export interface CniAssessment {
   refusals: string[]
@@ -142,24 +94,15 @@ export interface CniAssessment {
   notes: string[]
 }
 
-/**
- * Judge the gathered facts. Pure — every cluster read happens in
- * `gatherCniFacts`, so the whole refusal policy is decided by data and can
- * be reasoned about (and driven) without a cluster.
- */
+/** Judge the facts from `gatherCniFacts`. Pure, so testable without a cluster. */
 export function assessCniAdoption(facts: CniFacts): CniAssessment {
   const refusals: string[] = []
   const warnings: string[] = []
   const notes: string[] = []
 
-  // 1. Calico present at all. This is also the Cilium refusal in practice:
-  //    a Cilium cluster has no calico-node, and there is no configuration
-  //    of Cilium the veth-peer redirect survives.
-  // Throughout: a check whose read FAILED emits no absence-shaped refusal.
-  // The unevaluated refusal at the end already names it, and asserting an
-  // absence the gate never established is a second diagnosis pointing at
-  // the wrong fix — "no calico-node in kube-system" reads as a Cilium
-  // cluster when the truth is an unreachable apiserver.
+  // A check whose read failed is reported only by the unevaluated refusal
+  // at the end, not as an absence.
+  // 1. Calico is present and rolled out (this also refuses Cilium).
   if (facts.calico.present === null) {
     // Reported by the unevaluated refusal below.
   } else if (!facts.calico.present) {
@@ -180,10 +123,8 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     )
   }
 
-  // 2. The iptables dataplane, HARD. Calico's eBPF dataplane bypasses
-  //    iptables for pod traffic exactly the way Cilium does: the redirect
-  //    chain would be programmed, count nothing, and never fire — a
-  //    failure with no symptom but "workspaces cannot reach the internet".
+  // 2. Calico's eBPF dataplane bypasses iptables, so the redirect would
+  //    never fire.
   const bpf = facts.felix.bpfEnabled === true || facts.felix.bpfEnabledEnv === true
   if (bpf) {
     const where = facts.felix.bpfEnabled === true
@@ -199,10 +140,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
       + 're-run.',
     )
   } else if (facts.felix.bpfEnabledEnv === 'unevaluable') {
-    // The entry exists but its value comes from a ConfigMap or fieldRef, so
-    // the manifest does not say what the dataplane is. "No literal value"
-    // is not the same claim as "off", and guessing off is the direction
-    // that ends in silent no-egress.
+    // Set via ConfigMap or fieldRef, so the value is unknown; do not guess.
     refusals.push(
       'the calico-node container sets FELIX_BPFENABLED from a `valueFrom` reference, so '
       + 'this cannot tell whether Calico is in its eBPF dataplane — and eBPF would make '
@@ -212,14 +150,10 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     )
   }
 
-  // 3. kube-proxy. netd's Envoy dials the yaac proxy's ClusterIP from the
-  //    HOST netns; without kube-proxy there is nothing to translate that
-  //    dial, and the redirect delivers into a black hole.
+  // 3. kube-proxy translates the proxy ClusterIP that netd's Envoy dials
+  //    from the host netns.
   if (facts.kubeProxy.external) {
-    // Explicitly acknowledged: k3s runs kube-proxy in-process inside the
-    // kubelet, so there is no pod, DaemonSet or label to find. Recorded
-    // rather than silently accepted — this is the one check an operator can
-    // wave through, and the audit trail should say they did.
+    // The operator says kube-proxy runs outside a pod (e.g. k3s); record it.
     notes.push(
       'kube-proxy: declared external (YAAC_KUBE_PROXY_EXTERNAL=1) — not verified here. '
       + 'ClusterIP translation must still be kube-proxy\'s; if it is not, netd\'s Envoy '
@@ -246,9 +180,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
         : ''),
     )
   } else {
-    // Per-node, not per-cluster. One running kube-proxy proves the cluster
-    // has one; it says nothing about the node a workspace actually lands on,
-    // and a node without one loses egress by itself while the rest work.
+    // Checked per node: a node without kube-proxy loses egress on its own.
     const uncovered = facts.schedulableNodes.filter((n) => !facts.kubeProxy.nodes.includes(n))
     if (uncovered.length > 0) {
       warnings.push(
@@ -268,11 +200,8 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     )
   }
 
-  // 4. chainInsertMode: recorded, not enforced. netd APPENDS its jump to
-  //    nat PREROUTING and never competes with Felix for position, so the
-  //    design is safe either way — but which mode the adopted Calico runs
-  //    changes where Felix's own jumps land relative to ours, and that is
-  //    worth having in the record when a datapath question comes up later.
+  // 4. chainInsertMode is recorded, not enforced: netd appends its jump to
+  //    nat PREROUTING, so either mode works.
   const insertMode = facts.felix.chainInsertMode ?? 'Insert'
   if (facts.felix.evaluated) {
     notes.push(
@@ -291,16 +220,12 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     )
   }
 
-  // 5. The redirect exclusion set. Too NARROW is the dangerous direction:
-  //    a pod IP outside the list is treated as world and its pod-to-pod
-  //    443/80 is DNAT'd into the proxy.
+  // 5. The redirect exclusion set. If too narrow, pod-to-pod 443/80 to a
+  //    pod IP outside it is DNAT'd into the proxy.
   const { configured, pools, nodes, droppedConfigured } = facts.podCidrs
   const all = [...new Set([...configured, ...pools, ...nodes])].sort()
   if (droppedConfigured.length > 0) {
-    // Refuse rather than drop. A typo'd entry that merely vanished would
-    // leave the exclusion set narrower than what the operator wrote, and
-    // they would have no way to tell: the recorded list shows only what
-    // survived. Narrower means those pods' 443/80 goes into the proxy.
+    // Refuse rather than silently drop a malformed entry.
     refusals.push(
       `YAAC_POD_CIDRS contains ${droppedConfigured.length} entr(y/ies) that are not usable `
       + `IPv4 CIDRs: ${droppedConfigured.join(', ')}. Every octet must be 0-255 and the `
@@ -310,8 +235,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     )
   }
   if (all.length === 0 && facts.podCidrs.unreadable.length > 0) {
-    // Reported by the unevaluated refusal below: "the cluster publishes
-    // none" is not something a failed read established.
+    // Reported by the unevaluated refusal below.
   } else if (all.length === 0) {
     refusals.push(
       'no pod CIDR could be resolved: the cluster publishes no Calico IPPool and no node '
@@ -325,8 +249,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
       notes.push(`  from YAAC_POD_CIDRS: ${configured.join(', ')}`)
     }
     if (pools.length === 0 && configured.length === 0) {
-      // Node spec.podCIDR alone describes the kubeadm allocation, which a
-      // foreign IPAM may simply not use.
+      // Node spec.podCIDR may not reflect a foreign IPAM's allocation.
       warnings.push(
         'the only pod-CIDR source is node spec.podCIDR — no Calico IPPool answered. That '
         + 'field describes the kubeadm allocation, which a foreign IPAM (a VPC CNI, for '
@@ -337,9 +260,9 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     }
   }
 
-  // 6. Namespace privilege and scheduling. netd is hostNetwork +
-  //    NET_ADMIN/NET_RAW at system-node-critical with a blanket
-  //    toleration; on a cluster we do not own, none of that is a given.
+  // 6. netd needs hostNetwork, NET_ADMIN/NET_RAW and
+  //    system-node-critical, none of which is guaranteed on an adopted
+  //    cluster.
   if (facts.systemNodeCriticalPresent === null) {
     // Reported by the unevaluated refusal below.
   } else if (!facts.systemNodeCriticalPresent) {
@@ -357,15 +280,9 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     + 'namespace-scoped, so this relaxes nothing outside the namespaces yaac creates',
   )
 
-  // 7. Anything that could not be evaluated. Last, so the refusals above —
-  //    which name a concrete problem — lead. A read that failed is not
-  //    evidence of a healthy cluster, and for the eBPF check specifically
-  //    treating it as one is how an eBPF cluster gets waved through.
+  // 7. Checks that could not be evaluated, last so concrete problems lead.
   if (facts.unevaluated.length > 0) {
-    // Grouped by cause, because the common case is ONE problem (an
-    // unreachable apiserver, a missing RBAC rule) failing five reads —
-    // and repeating its message five times buries the sentence that says
-    // what to fix.
+    // Grouped by cause: usually one problem fails several reads.
     const byCause = new Map<string, string[]>()
     for (const { check, cause } of facts.unevaluated) {
       byCause.set(cause, [...(byCause.get(cause) ?? []), check])
@@ -421,12 +338,9 @@ interface RawSchedulableNodeList {
 }
 
 /**
- * What a sandboxed pod tolerates, read from the gvisor RuntimeClass — the
- * same source `cluster check` reads, since the RuntimeClass admission
- * controller is what merges `scheduling.tolerations` into every pod naming
- * the class. Empty on a cluster with no such class (a fresh adoption, before
- * the runtime is installed), which is the honest answer for a pod that
- * stamps none.
+ * What a sandboxed pod tolerates, from the gvisor RuntimeClass (admission
+ * merges its tolerations into every pod naming it). Empty when the class
+ * does not exist yet.
  */
 async function workspaceTolerations(run: typeof execFileAsync): Promise<PodToleration[]> {
   const rc = valueOf(await readJson<{
@@ -436,14 +350,9 @@ async function workspaceTolerations(run: typeof execFileAsync): Promise<PodToler
 }
 
 /**
- * A cluster read that distinguishes "the object is not there" from "I could
- * not find out".
- *
- * Collapsing the two is the fail-open this gate cannot afford. Absence is a
- * FACT with meaning — no FelixConfiguration means Felix runs its iptables
- * defaults, which is what yaac wants — so an RBAC denial or a timeout that
- * read as absence would license exactly the eBPF cluster the gate exists to
- * refuse.
+ * A cluster read that tells "not there" apart from "could not find out",
+ * since absence is meaningful here (no FelixConfiguration means iptables
+ * defaults) and an RBAC denial must not pass for it.
  */
 type Read<T> =
   | { kind: 'found'; value: T }
@@ -455,16 +364,13 @@ async function readJson<T>(run: typeof execFileAsync, args: string[]): Promise<R
   try {
     ({ stdout } = await run('kubectl', args))
   } catch (err) {
-    // `isKubectlAbsentError` is shared with cluster-cidrs.ts's own reads, so
-    // the two cannot disagree about what counts as a fact.
     if (isKubectlAbsentError(err)) return { kind: 'absent' }
     return { kind: 'error', message: kubectlErrorSummary(err) }
   }
   try {
     return { kind: 'found', value: JSON.parse(stdout) as T }
   } catch {
-    // kubectl exited 0 with something that is not JSON. Not a fact about
-    // the cluster — an unknown.
+    // Output that is not JSON is an unknown.
     return { kind: 'error', message: 'kubectl returned unparseable JSON' }
   }
 }
@@ -475,10 +381,9 @@ function valueOf<T>(read: Read<T>): T | null {
 }
 
 /**
- * Felix's own notion of a true boolean in an env var, which is wider than
- * `true`/`1`: it lowercases and accepts the `yes`/`y`/`t`/`on` family too.
- * Anything not recognizably FALSE counts as true, so an unfamiliar spelling
- * costs the adoption a refusal rather than waving an eBPF cluster through.
+ * Felix's parsing of a boolean env var. Anything not recognizably false
+ * counts as true, so an unfamiliar spelling refuses rather than passing an
+ * eBPF cluster.
  */
 const FALSEY = new Set(['', 'false', 'f', 'no', 'n', '0', 'off'])
 
@@ -487,11 +392,9 @@ function felixBool(raw: string): boolean {
 }
 
 /**
- * Everything `assessCniAdoption` judges, read from the cluster. Every
- * absent object is a fact rather than an error: a provider-managed Calico
- * serves no FelixConfiguration CR at all, which means Felix is running its
- * defaults — the iptables dataplane in Insert mode, exactly what yaac
- * needs.
+ * Read everything `assessCniAdoption` judges. An absent object is a fact,
+ * not an error: a provider-managed Calico has no FelixConfiguration, which
+ * means Felix runs its iptables defaults.
  */
 export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFacts> {
   const [calicoRead, felixRead, kubeProxyRead, priorityRead, nodeRead, cidrs, tolerations] =
@@ -499,15 +402,11 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
       readJson<RawDaemonSet>(run, [
         'get', 'daemonset', 'calico-node', '-n', 'kube-system', '-o', 'json',
       ]),
-      // The whole LIST, not just `default`: Felix honors per-node overrides
-      // (`node.<nodename>`), so a cluster whose default leaves bpfEnabled
-      // unset and whose per-node object turns it on is an eBPF cluster.
+      // All of them: per-node overrides count too.
       readJson<RawFelixConfigList>(run, [
         'get', 'felixconfigurations.crd.projectcalico.org', '-o', 'json',
       ]),
-      // Both label conventions: kubeadm/EKS/kind stamp `k8s-app`, GKE and
-      // AKS stamp `component`. A cluster with neither is either running
-      // kube-proxy outside a pod (k3s, in-process) or not running it.
+      // kubeadm/EKS/kind label `k8s-app`; GKE and AKS label `component`.
       readJson<RawPodList>(run, [
         'get', 'pods', '-n', 'kube-system', '-l', 'k8s-app=kube-proxy', '-o', 'json',
       ]).then(async (byK8sApp) => {
@@ -523,8 +422,7 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
       workspaceTolerations(run),
     ])
 
-  // An error is an UNKNOWN, not a fact. Named per check so the refusal says
-  // which verification did not happen.
+  // Errors become unevaluated checks, named so the refusal says which.
   const unevaluated: CniFacts['unevaluated'] = []
   const note = (check: string, read: Read<unknown>): void => {
     if (read.kind === 'error') unevaluated.push({ check, cause: read.message })
@@ -534,9 +432,8 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
   note('kube-proxy pods', kubeProxyRead)
   note('system-node-critical PriorityClass', priorityRead)
   note('node list', nodeRead)
-  // The pod-CIDR sources read through a different runner (kubectlGetJson),
-  // and an RBAC denial scoped to just `ippools` would otherwise present as
-  // "Calico publishes no pool" and narrow the exclusion set in silence.
+  // The pod-CIDR reads use a different runner; surface their failures too,
+  // or a denied `ippools` read would silently narrow the exclusion set.
   unevaluated.push(...cidrs.unreadable.map((u) => ({
     check: `pod-CIDR source: ${u.source}`, cause: u.cause,
   })))
@@ -545,15 +442,13 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
   const felixItems = valueOf(felixRead)?.items ?? []
   const kubeProxyItems = valueOf(kubeProxyRead)?.items ?? []
 
-  // Felix also takes its dataplane switch from the container env, which is
-  // how an operator-less install turns eBPF on without any CR to read.
+  // Felix can also enable eBPF from the container env.
   const bpfEntry = (calicoDs?.spec?.template?.spec?.containers ?? [])
     .find((c) => c.name === 'calico-node')?.env
     ?.find((e) => e.name === 'FELIX_BPFENABLED')
   const bpfEnabledEnv = bpfEntry === undefined
     ? null
-    // Present but sourced from a ConfigMap/fieldRef: the manifest does not
-    // say what the dataplane is, and "no literal value" is not "off".
+    // Sourced from a ConfigMap/fieldRef, so the value is unknown.
     : bpfEntry.value === undefined ? 'unevaluable' as const : felixBool(bpfEntry.value)
 
   const anyFelix = <T>(pick: (spec: NonNullable<RawFelixConfigList['items']>[number]['spec']) => T | undefined): T | null =>
@@ -566,8 +461,7 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
       desired: calicoDs?.status?.desiredNumberScheduled ?? 0,
     },
     felix: {
-      // ANY object enabling it makes the cluster eBPF, so this is an
-      // or-reduce rather than a lookup of `default`.
+      // Any object enabling it makes the cluster eBPF.
       bpfEnabled: felixItems.some((f) => f.spec?.bpfEnabled === true)
         ? true
         : anyFelix((s) => s?.bpfEnabled),
@@ -589,18 +483,9 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
       external: env.kubeProxyExternal,
       evaluated: kubeProxyRead.kind !== 'error',
     },
-    // "Could a workspace land here?" — answered by the SAME per-taint
-    // matching `cluster check`'s node inventory uses, against the same
-    // tolerations, because this is the population per-node kube-proxy
-    // coverage is measured against and a second definition would drift.
-    //
-    // Real matching rather than "carries no taint at all": a dedicated
-    // workspaces pool is built by tainting the pool and declaring the
-    // matching toleration on the gvisor RuntimeClass, which the admission
-    // controller merges into every pod naming the class. Under the blanket
-    // rule such a pool reads as zero workspace-capable nodes, so the
-    // kube-proxy coverage warning would silently check nothing at all —
-    // the very shape it exists to catch.
+    // Nodes a workspace could land on, using the same taint matching as
+    // `cluster check`, so a tainted workspace pool whose toleration is on
+    // the RuntimeClass still counts.
     schedulableNodes: (valueOf(nodeRead)?.items ?? [])
       .filter((n) => n.spec?.unschedulable !== true
         && untoleratedTaints(n.spec?.taints, tolerations).length === 0)
@@ -619,14 +504,10 @@ const WORKLOAD_ROUTE_RE =
   /^(\d{1,3}(?:\.\d{1,3}){3})\s+dev\s+(\S+)(?=\s).*\bscope link\b/
 
 /**
- * What a node's routing table says about workload veths, for the prefix
- * netd will match on.
- *
- * Pure, and deliberately the same shape `k8s/netd/routes.ts` parses: this
- * is the verification that netd's ONE pod → veth source actually exists on
- * an adopted CNI. `suggestions` are the leading-alpha prefixes of the
- * per-workload routes that are there but do not match, so a wrong
- * `YAAC_CNI_VETH_PREFIX` can be reported as the value it should have been.
+ * Parse a node's routing table for workload veth routes matching netd's
+ * prefix (the same format `k8s/netd/routes.ts` parses). `suggestions` are
+ * prefixes of workload-looking routes that do not match, to suggest a
+ * better `YAAC_CNI_VETH_PREFIX`.
  */
 export function assessWorkloadRoutes(
   ipRouteOutput: string,
@@ -642,11 +523,9 @@ export function assessWorkloadRoutes(
       matched += 1
       continue
     }
-    // Only interfaces that look like a per-workload veth family are worth
-    // suggesting: a node's own `eth0`/`lo` subnet routes are scope-link too,
-    // but they carry no hash suffix. The alpha run is LAZY on purpose —
-    // hex digits are also letters, so a greedy one turns `enia7b3c9d1e2f4`
-    // into `enia` and hands the user a prefix that matches one veth.
+    // Only suggest veth-like names with a hash suffix (not `eth0`). The
+    // alpha match is lazy because hex digits are letters too: a greedy one
+    // would turn `enia7b3c9d1e2f4` into `enia`.
     const family = /^([a-z]+?)[0-9a-f]{6,}$/.exec(iface)?.[1]
     if (family) suggestions.add(family)
   }
@@ -663,14 +542,9 @@ export interface NodeVethOutcome {
 }
 
 /**
- * Read the pod → veth source from EVERY netd pod, which is every node.
- *
- * Through netd itself because it is hostNetwork and ships iproute2, so its
- * `ip route` is the node's own. Per pod rather than `exec daemonset/...`,
- * which samples whichever pod kubectl picks: on a heterogeneous adopted
- * fleet (mixed node pools or AMIs — the realistic EKS shape) one node's
- * routing table says nothing about the others', and a node whose veths are
- * named differently is a node whose workspaces get no redirect.
+ * Read `ip route` from every netd pod (hostNetwork, so each shows its
+ * node's table). Every pod, not one, because mixed node pools can name
+ * veths differently.
  */
 export async function probeWorkloadVeths(
   run: typeof execFileAsync,
@@ -707,17 +581,9 @@ export async function probeWorkloadVeths(
 }
 
 /**
- * The shared verdict on a `probeWorkloadVeths` sweep — used by BOTH
- * `--byo` (where a failure is a refusal) and every `yaac cluster
- * check` (where it is a gate), so the two cannot drift.
- *
- * Re-checked on every cluster check on purpose. netd's readiness is Envoy's
- * config ack, which goes green with ZERO pod → veth mappings, so nothing
- * else in the datapath gate would ever notice a prefix that resolves
- * nothing — the misconfiguration would resurface later as silent no-egress,
- * which is exactly what this gate exists to prevent.
- *
- * Pure, so the whole policy is testable without a cluster.
+ * Verdict on a `probeWorkloadVeths` sweep, used by both `--byo` and
+ * `yaac cluster check`. Nothing else notices a veth prefix that matches
+ * nothing, since netd reports ready with zero mappings. Pure.
  */
 export function assessVethSource(
   outcomes: NodeVethOutcome[],
@@ -748,11 +614,8 @@ export function assessVethSource(
     + 'no route matching the prefix it renders a chain with no per-pod rules, which looks '
     + 'exactly like a healthy netd and costs those nodes\' sessions their egress.'
 
-  // A node whose routes look like workload veths under a DIFFERENT name is
-  // an unambiguous prefix mismatch. A node with no per-workload-looking
-  // route at all is ambiguous — it may simply have no local workloads yet
-  // (netd and kube-proxy are hostNetwork and own no veth), which is the
-  // normal state of a freshly added node.
+  // Veth-like routes under another name mean a prefix mismatch. No
+  // veth-like routes may just mean a new node with no workloads yet.
   const mismatched = empty.filter((o) => o.suggestions.length > 0)
   const bare = empty.filter((o) => o.suggestions.length === 0)
 
@@ -771,9 +634,8 @@ export function assessVethSource(
     }
   }
   if (bare.length > 0 && ok.length === 0) {
-    // Nothing anywhere. On any live cluster at least one node hosts a
-    // non-hostNetwork pod (coredns, if nothing else), so this is the CNI
-    // writing no per-workload host route rather than an idle fleet.
+    // No veth routes on any node (coredns alone would create one), so
+    // the CNI writes no per-workload host routes.
     return {
       status: 'fail',
       detail: `no per-workload host route of any kind on the ${bare.length} node(s) `

@@ -42,9 +42,8 @@ describe('renderRedirectRules', () => {
   })
 
   it('scopes the redirect to world with a leading RETURN per pod CIDR', () => {
-    // One destination per iptables rule, so multi-CIDR clusters cannot be
-    // expressed as `! -d` on each DNAT rule; the exclusions lead the chain
-    // instead, and anything bound for a pod leaves before a DNAT is tried.
+    // iptables allows one `-d` per rule, so the exclusions lead the chain
+    // instead of riding each DNAT rule as `! -d`.
     const rules = renderRedirectRules(input({ podCidrs: ['10.244.0.0/16', '192.168.0.0/16'] }))
     expect(rules.slice(0, 2)).toEqual([
       ['-d', '10.244.0.0/16', '-j', 'RETURN'],
@@ -60,8 +59,7 @@ describe('renderRedirectRules', () => {
   })
 
   it('emits nothing for a pod whose veth Calico has not programmed yet', () => {
-    // Fail-closed: no redirect means the pod keeps dst=world:443, which
-    // its NetworkPolicy denies.
+    // Without a rule, NetworkPolicy denies the pod's world egress.
     expect(dnatRules({ vethByPodIp: new Map() })).toEqual([])
   })
 
@@ -72,9 +70,8 @@ describe('renderRedirectRules', () => {
   })
 
   it('truncates the tag under xt_comment\'s 256-byte cap', () => {
-    // A comment at or over the cap makes iptables reject the rule, and
-    // iptables-restore then rejects the whole document — one long synced-pod
-    // name would stall every redirect on the node.
+    // One over-long comment would make iptables-restore reject the whole
+    // document.
     const selected: PodTarget[] = [{
       pod: {
         name: `${'p'.repeat(240)}-x-yaac-x-vc-alpha`,
@@ -105,17 +102,14 @@ describe('renderRedirectRules', () => {
     expect(rules).toHaveLength(6)
     expect(rules[0]).toContain('caliA')
     expect(rules[3]).toContain('caliB')
-    // Both pods, both targets, one trio: a target appearing can never move
-    // a port out from under a live flow.
     expect(rules.filter((r) => r.includes('10.89.0.7:15100'))).toHaveLength(2)
   })
 })
 
 describe('redirectChainName', () => {
   it('gives each install its own chain', () => {
-    // Several installs share a node (the real one plus an e2e run's), and
-    // each renders its chain by flush-and-refill — a shared name would
-    // have them continually delete each other's rules.
+    // Each netd flushes and refills its chain, so installs sharing a node
+    // need separate chains.
     expect(redirectChainName('yaac')).not.toBe(redirectChainName('yaac-test-abc'))
   })
 
@@ -136,8 +130,7 @@ describe('renderNatRestore', () => {
     expect(lines[2]).toBe(`-F ${CHAIN}`)
     expect(lines.filter((l) => l.startsWith(`-A ${CHAIN}`))).toHaveLength(4)
     expect(lines.at(-2)).toBe('COMMIT')
-    // Nothing may touch another chain: --noflush plus these lines is what
-    // keeps Calico's and kube-proxy's rules intact.
+    // --noflush keeps Calico's and kube-proxy's chains intact.
     expect(doc).not.toMatch(new RegExp(`^-[AFX] (?!${CHAIN})`, 'm'))
   })
 

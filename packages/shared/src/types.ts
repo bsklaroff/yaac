@@ -6,84 +6,65 @@ export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 /**
- * The tools that mint their own conversation ids. claude and pi are launched
- * under an id yaac chooses — the workspace id, for a create's conversation —
- * but codex and opencode take none, so the id a create records for them is a
- * stand-in no agent ever runs under, until the pane names the real one.
+ * The tools that choose their own conversation ids. claude and pi launch
+ * under an id yaac picks (the workspace id, for a create), but codex and
+ * opencode take none, so the recorded id is a stand-in until the pane
+ * reports the real one.
  */
 export const SELF_NAMING_TOOLS: readonly AgentTool[] = ['codex', 'opencode']
 
 /**
  * Coerce a raw tool name into an `AgentTool`, defaulting to claude.
  *
- * Where raw strings enter: a driver reading back what it stamped on a
- * workspace, and config or wire input naming a tool this build may not
- * know. Defaulting rather than rejecting is the point — a workspace
- * stamped with something unrecognized still has to render and be exec'd
- * into, so `tool` always resolves to something runnable. (What a workspace
- * DECLARES is a separate question, and `RuntimeHandle.declaredTool` is
- * where a caller asks it.)
+ * Defaults rather than rejects, because a workspace stamped with a tool this
+ * build doesn't know must still render and accept exec. What a workspace
+ * declared is available as `RuntimeHandle.declaredTool`.
  */
 export function normalizeTool(raw: string | undefined): AgentTool {
   return AGENT_TOOLS.includes(raw as AgentTool) ? raw as AgentTool : 'claude'
 }
 
 /**
- * Allowed shape for a `--model` override. Deliberately strict: the value is
- * embedded bare in agent launch commands that travel inside single-quoted
- * `respawn-window '<cmd>'` wrappers (see buildAgentCmd), so no quotes,
- * whitespace, or shell metacharacters — model ids, aliases, and
- * `provider/model` paths (`claude-opus-4-8`, `opus`,
- * `anthropic/claude-opus-4-8`) never need them.
- *
- * Here rather than beside the command builder because it is request
- * vocabulary: the route that accepts a model and the launch path that runs with
- * it both need it, and neither may import the other.
+ * Allowed shape for a `--model` override. The value is embedded bare in
+ * single-quoted `respawn-window '<cmd>'` launch commands (see buildAgentCmd),
+ * so it allows no quotes, whitespace or shell metacharacters. Model ids,
+ * aliases and `provider/model` paths never need them.
  */
 export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
 
 /**
- * An agent conversation's id, as a client, a workspace or an agent may hand it
- * over — checked before it is ever joined into a path (`acp/<wt>/<id>.jsonl`,
- * `claude/projects/<cwd>/<id>.jsonl`) or a launch command (`--resume <id>`), since
- * it arrives from outside the server. A leading letter or digit so it can
- * never be read as a flag. Every pinned tool's ids fit: UUIDs for claude,
- * codex and pi, `ses_…` for opencode.
+ * An agent conversation id from outside the server, checked before it is
+ * joined into a path (`acp/<ws>/<id>.jsonl`) or a launch command
+ * (`--resume <id>`). It must start with a letter or digit so it can't be read
+ * as a flag. Fits UUIDs (claude, codex, pi) and opencode's `ses_…` ids.
  */
 export const agentSessionIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
 
 /**
- * How yaac drives a conversation, and therefore how the webapp renders it.
- * Orthogonal to `AgentTool`: it selects the *protocol* between the server and
- * the agent, not which agent runs.
+ * How yaac drives a conversation, and so how the webapp renders it
+ * (docs/agent-modes.md). Independent of `AgentTool`.
  *
  * - `tui`  the agent's own terminal UI under tmux; the server observes it
  *          through tmux control mode and the browser attaches a PTY.
  * - `acp`  the agent speaks the Agent Client Protocol (JSON-RPC over stdio)
- *          to the server, which renders structured messages in a chat pane.
+ *          to the server, which renders a chat pane.
  *
- * Both modes run the agent in a tmux window — tmux is the process supervisor
- * that outlives the viewer either way. Only the presentation transport
- * differs (a PTY stream vs a ctrl stream into acpd's socket).
+ * Both run the agent in a tmux window.
  */
 export type AgentMode = 'tui' | 'acp'
 
 export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
 
 /**
- * The agent CLI each tool is, pinned: what `dockerfiles/Dockerfile.tools`
- * installs (a test ties the two) and what a host install asks npm for.
+ * Each tool's agent CLI, pinned. `dockerfiles/Dockerfile.tools` installs the
+ * same versions (a test checks) and so does a host install.
  *
- * Pinned because yaac speaks each CLI's own vocabulary in both directions — it
- * launches a posture as the tool's flags or config, and reads the tool's own
- * reports back as a posture (docs/permission-modes.md) — and a release that
- * changes either does not fail loudly: codex 0.156 dropped the `untrusted`
- * approval policy, so a launch naming it left a dead window. A version is
- * moved only after both directions are re-checked against the new binary.
- *
- * Each adapter in `ACP_ADAPTERS` that drives a CLI is bumped with it: codex-acp
- * names the codex it speaks to as its `@openai/codex` range, and pi-acp tracks
- * `pi --mode rpc`'s event shapes.
+ * yaac launches permission postures as each CLI's flags or config and reads
+ * the CLI's reports back as postures (docs/permission-modes.md). A release
+ * that changes either can fail silently, so bump a version only after
+ * re-checking both against the new binary. Bump the matching
+ * `ACP_ADAPTERS` entry with it, since codex-acp and pi-acp depend on their
+ * CLI's version.
  */
 export const AGENT_CLIS = {
   claude: { package: '@anthropic-ai/claude-code', version: '2.1.282' },
@@ -93,25 +74,16 @@ export const AGENT_CLIS = {
 } as const satisfies Record<AgentTool, { package: string; version: string }>
 
 /**
- * The ACP adapter each tool is driven through in `acp` mode.
+ * The ACP adapter each tool uses in `acp` mode. The image install steps, the
+ * host preflight and the driver's launch profiles all derive from this.
  *
- * The one record every other list derives from — the image's install steps,
- * the host preflight and its install advice, and the driver's per-tool launch
- * profile. Hand-kept copies of these facts are how an adapter ends up
- * installed at one version and described at another.
+ * `needsCli`: the adapter drives the CLI (codex-acp runs `codex app-server`,
+ * pi-acp runs `pi --mode rpc`), so the CLI must be on PATH. claude's adapter
+ * bundles its own SDK; opencode's adapter is the CLI itself (`opencode acp`).
  *
- * `needsCli` says the adapter is a front end rather than an implementation:
- * codex-acp drives `codex app-server` and pi-acp drives `pi --mode rpc`, so
- * both need the CLI on PATH, while claude's adapter bundles its own SDK.
- * opencode is its own adapter — `opencode acp` is a subcommand — so its binary
- * IS the tool, and its `package` is the CLI's.
- *
- * `verified` is the version yaac's description of that adapter was checked
- * against: the session modes it advertises, which yaac reads as permission
- * postures. It matters more than a normal pin because an adapter that stops
- * advertising a mode does not fail — the session silently runs in its default
- * — so a test ties this to what `dockerfiles/Dockerfile.tools` installs, and
- * the host install commands are pinned to it too.
+ * `verified`: the version whose advertised session modes yaac maps to
+ * permission postures. An adapter that drops a mode fails silently, so a
+ * test ties this to `dockerfiles/Dockerfile.tools`, and host installs use it.
  */
 export const ACP_ADAPTERS = {
   claude: {
@@ -144,52 +116,43 @@ export const ACP_ADAPTERS = {
 >
 
 /**
- * How much the agent may do before it stops to ask. Orthogonal to both
- * `AgentTool` and `AgentMode`: it selects the agent's *permission posture*,
- * which every tool spells differently (a launch flag for claude and codex, a
- * config block for opencode, nothing at all for pi).
+ * How much the agent may do before it stops to ask: its permission posture
+ * (docs/permission-modes.md). Each tool spells it differently (a launch flag
+ * for claude and codex, a config block for opencode, nothing for pi).
  *
- * - `bypass`        no prompts; the agent acts freely. What a sandboxed
- *                   workspace wants — the sandbox is the containment, so a
- *                   second layer inside it only costs interruptions.
- * - `auto`          no routine prompts, but a reviewer model adjudicates each
- *                   action and blocks the dangerous ones. Availability is not
- *                   ours to check: claude gates it by subscription plan and
- *                   fails loudly in-pane when the account is ineligible.
+ * - `bypass`        no prompts. Suits a sandboxed workspace, where the
+ *                   sandbox is the containment.
+ * - `auto`          no routine prompts; a reviewer model blocks dangerous
+ *                   actions. claude gates it by plan and fails in-pane when
+ *                   the account is ineligible.
  * - `accept-edits`  file edits in the workspace run unprompted; anything else
  *                   (other shells, out-of-tree paths, network) still asks.
  * - `manual`        every tool use asks first.
  * - `plan`          read and explore only; no edits until a plan is approved.
- * - `read-only`     read and explore freely; every edit, and anything that
- *                   reaches the network, asks first. What codex offers where
- *                   the others offer `plan`: its sandbox enforces it, where
- *                   codex's own plan mode is only instructions to the model.
+ * - `read-only`     read freely; every edit and network access asks. codex's
+ *                   equivalent of `plan`, enforced by its sandbox.
  *
- * Not every tool has every posture — ask `SUPPORTED_PERMISSION_MODES`, never
- * assume. There is deliberately no "the tool's own default" member: what a
- * bare `claude` does differs from a bare `codex` or `opencode`, so a workspace
- * records the posture it actually launched with.
+ * Not every tool has every posture; check `SUPPORTED_PERMISSION_MODES`.
+ * There is no "tool default" member, because defaults differ per tool, so a
+ * workspace records the posture it actually launched with.
  */
 export type PermissionMode = 'bypass' | 'auto' | 'accept-edits' | 'manual' | 'plan' | 'read-only'
 
 /**
- * Postures ranked from most to least permissive — a Record, so a new
- * `PermissionMode` member cannot go unranked. A spawned workspace runs at most
- * as permissively as its caller by it. `plan` and `read-only` share the
- * strictest place, so either tool's strictest posture may be granted under
- * the other.
+ * Postures ranked from most to least permissive. A Record, so a new member
+ * can't go unranked. A spawned workspace may be no more permissive than its
+ * caller. `plan` and `read-only` tie for strictest.
  */
 const PERMISSIVENESS_RANK: Record<PermissionMode, number> = {
   bypass: 0, auto: 1, 'accept-edits': 2, manual: 3, plan: 4, 'read-only': 4,
 }
 
-/** Every posture, most permissive first — the order every list of them is
- *  shown in, so a dropdown reads as the hierarchy it is. */
+/** Every posture, most permissive first, the order lists display them in. */
 export const PERMISSION_MODES: readonly PermissionMode[] = (Object.keys(PERMISSIVENESS_RANK) as PermissionMode[])
   .sort((a, b) => PERMISSIVENESS_RANK[a] - PERMISSIVENESS_RANK[b])
 
-/** Whether `mode` is ranked (a value read off a row written by another build
- *  may not be), so a comparison against it means anything at all. */
+/** Whether `mode` is ranked. A row written by another build may hold one
+ *  that isn't. */
 export function isRankedPermissionMode(mode: string): boolean {
   return Object.hasOwn(PERMISSIVENESS_RANK, mode)
 }
@@ -205,20 +168,15 @@ function ranked(...modes: PermissionMode[]): readonly PermissionMode[] {
 }
 
 /**
- * Which postures each tool can actually be launched in.
+ * Which postures each tool can be launched in (TUI mode).
  *
- * - claude carries all but `read-only`, one `--permission-mode` value each.
- * - codex carries four as an approval-policy × sandbox pair (plus
- *   `--approve-for-me`). `read-only` is its read-only sandbox. No `plan`: its
- *   plan mode is a collaboration mode that only instructs the model, over
- *   whatever sandbox is in force, and no flag launches into it. No `manual`:
- *   the policy that asked before everything, `untrusted`, is gone from the
- *   pinned codex (0.156.1 accepts only `on-request` and `never`).
- * - opencode has no reviewer-model posture, so no `auto`.
- * - pi has no permission system at all — by design, per its own docs: tools
- *   execute immediately and nothing prompts. Rather than dress that up as a
- *   posture it does not have, pi is `bypass`-only and callers are refused
- *   anything else.
+ * - claude: all but `read-only`, one `--permission-mode` value each.
+ * - codex: four, as an approval-policy × sandbox pair (plus
+ *   `--approve-for-me`). No `plan`: codex's plan mode only instructs the
+ *   model and no flag launches into it. No `manual`: the pinned codex
+ *   accepts only the `on-request` and `never` approval policies.
+ * - opencode: no reviewer-model posture, so no `auto`.
+ * - pi: no permission system at all, so `bypass` only.
  */
 export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
   claude: ranked('bypass', 'auto', 'accept-edits', 'manual', 'plan'),
@@ -228,25 +186,17 @@ export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMo
 }
 
 /**
- * The same question for a conversation driven over ACP, where the answer is
- * the *adapter's*, not the CLI's — and the two differ, because a posture is a
- * launch flag for a TUI and an advertised session mode for an adapter.
+ * Postures per tool in ACP mode, where they are the adapter's advertised
+ * session modes rather than CLI flags. Always a subset of the TUI list (a
+ * test checks).
  *
- * - claude's adapter offers a mode for each of its five, one per flag.
- * - codex-acp collapses codex's approval × sandbox grid into three modes:
- *   `read-only` (on-request approval over a workspace-write sandbox with no
- *   network — despite its name, the codex CLI's own default preset, i.e.
- *   `accept-edits`), `agent` (a reviewer model adjudicates — `auto`, and the
- *   ADAPTER's default, which is not the CLI's), and `agent-full-access`
- *   (`bypass`). Nothing there is yaac's `read-only`, so it is not offered.
- * - opencode's ACP "modes" are its AGENTS (`build`, `plan`), not postures;
- *   everything but `plan` is carried by `OPENCODE_PERMISSION` at launch,
- *   exactly as the TUI does, so the same four postures survive.
- * - pi has no permission system in either mode.
- *
- * A subset of the tool's TUI postures in every case, which a test pins: acp is
- * a different way to drive the same tool, never a way to get a posture the tool
- * does not have.
+ * - claude's adapter has a mode for each of its five.
+ * - codex-acp has three: `read-only` (despite the name, codex's default
+ *   preset, i.e. `accept-edits`), `agent` (`auto`) and `agent-full-access`
+ *   (`bypass`). None matches yaac's `read-only`.
+ * - opencode's ACP modes are its agents (`build`, `plan`); the other
+ *   postures come from `OPENCODE_PERMISSION` at launch, as in the TUI.
+ * - pi has no permission system.
  */
 export const ACP_SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
   claude: SUPPORTED_PERMISSION_MODES.claude,
@@ -256,9 +206,7 @@ export const ACP_SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly Permissi
 }
 
 /**
- * The postures `tool` can be launched in when driven in `agentMode`. Defaults
- * to `tui` so every caller that predates modes keeps asking the question it was
- * asking.
+ * The postures `tool` can be launched in when driven in `agentMode`.
  */
 export function supportedPermissionModes(
   tool: AgentTool,
@@ -279,12 +227,9 @@ export function toolSupportsPermissionMode(
 
 /**
  * The most permissive posture `tool` offers under `agentMode` that is no
- * looser than `mode`, or undefined when it has nothing that strict — which a
- * spawn refuses, since its ceiling is a demand.
- *
- * Also undefined for a `mode` this build does not rank (a row written by a
- * newer build, read with a bare cast): nothing compares with it, and the
- * comparison would otherwise match the first posture offered, `bypass`.
+ * looser than `mode`. Undefined when it has nothing that strict (a spawn
+ * refuses then), or when this build doesn't rank `mode`, which would
+ * otherwise match `bypass`.
  */
 export function nearestPermissionMode(
   tool: AgentTool,
@@ -296,12 +241,10 @@ export function nearestPermissionMode(
 }
 
 /**
- * What to launch `tool` in for a posture it may lack — a row from another
- * build, a restart, a remembered choice: the nearest it has no looser
- * (`nearestPermissionMode`), else its strictest — as is a posture this build
- * does not rank. Never the driver default, which in a container is `bypass`:
- * whatever restraint was recorded, the agent gets as much of it as the tool
- * can give. pi, having nothing but `bypass`, gets that.
+ * What to launch `tool` in for a posture it may lack (from another build, a
+ * restart, or a remembered choice): the nearest no looser, else the tool's
+ * strictest. Never the driver default (`bypass` in a container), so a
+ * recorded restriction is kept as far as the tool allows.
  */
 export function launchablePermissionMode(
   tool: AgentTool,
@@ -312,7 +255,7 @@ export function launchablePermissionMode(
   return nearestPermissionMode(tool, mode, agentMode) ?? supported[supported.length - 1]
 }
 
-/** Dropdown labels — the enum's user-facing vocabulary, in one place. */
+/** User-facing labels for each posture. */
 export const PERMISSION_MODE_COPY: Record<PermissionMode, string> = {
   bypass: 'Bypass permissions',
   auto: 'Auto permissions',
@@ -323,15 +266,10 @@ export const PERMISSION_MODE_COPY: Record<PermissionMode, string> = {
 }
 
 /**
- * The posture a workspace gets when nobody has chosen one — neither the request
- * nor the project's remembered last choice.
- *
- * A sandboxed substrate answers `bypass` for every tool: the container is the
- * containment, and prompting inside it protects nothing. Containerless
- * workspaces act as the user on the user's own machine, so they start at
- * `accept-edits` — edits land in the workspace without nagging, while shells and
- * out-of-tree writes still ask. pi is the exception in both directions: having
- * no permission system, `bypass` is the only truthful answer anywhere.
+ * The posture a workspace gets when neither the request nor the project's
+ * remembered choice names one. `bypass` in a sandboxed container;
+ * `accept-edits` under containerless, where the agent acts as the user on
+ * their own machine. pi is always `bypass`, having no permission system.
  */
 export function defaultPermissionMode(driver: DriverKind, tool: AgentTool): PermissionMode {
   if (!toolSupportsPermissionMode(tool, 'accept-edits')) return 'bypass'
@@ -339,9 +277,8 @@ export function defaultPermissionMode(driver: DriverKind, tool: AgentTool): Perm
 }
 
 /**
- * What one agent was last created with in a project — the create form's
- * memory (`project_tool_defaults`). Each field is absent until it has been
- * picked for that agent there.
+ * What one agent was last created with in a project
+ * (`project_tool_defaults`). Each field is absent until first picked.
  */
 export interface ToolCreateDefaults {
   model?: string
@@ -350,20 +287,15 @@ export interface ToolCreateDefaults {
 }
 
 /**
- * The model and posture a create for `tool` runs with when its request names
+ * The model and posture a create for `tool` runs with when the request names
  * neither: what the project remembers for that agent where it still fits,
- * else the fallback. The ONE function both ends answer this with — the create
- * form to show it, the server to launch it — so the form always shows what an
- * untouched create would run.
+ * else the fallback. Both the create form and the server call this, so the
+ * form shows what an untouched create would run.
  *
- * A remembered posture the tool no longer offers under `agentMode` (it may
- * have been recorded under the other mode, or before a tool update dropped
- * it) becomes the nearest one it does that is no looser, else its strictest
- * (`launchablePermissionMode`) — never the fallback, which in a container is
- * `bypass`. A remembered model must name the credential's current provider
- * for the tools whose ids carry one (`provider/model`); for claude and codex
- * any remembered id stands, since the catalog is a convenience rather than an
- * allowlist and the user may have typed one it lacks.
+ * A remembered posture the tool lacks goes through
+ * `launchablePermissionMode`. A remembered opencode/pi model must name the
+ * credential's current provider; any claude or codex model stands, since the
+ * catalog is not an allowlist.
  */
 export function resolveToolCreateDefaults(args: {
   driver: DriverKind
@@ -392,11 +324,10 @@ export function resolveToolCreateDefaults(args: {
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
- * Credential kinds `yaac auth fake` can seed. Each seeds a proxy-placeholder
- * credential (never a real secret) so a workspace authenticates through a parent
- * yaac's MITM proxy — the yaac-in-yaac case (see lib/project/fake-auth.ts).
- * Single source of truth shared by the CLI's `Argument.choices()` and the
- * server route's zod validator, which must stay in lockstep.
+ * Credential kinds `yaac auth fake` can seed: a placeholder credential, never
+ * a real secret, so an inner yaac authenticates through the outer yaac's
+ * proxy (see packages/server/src/domain/projects/fake-auth.ts). Shared by the
+ * CLI's choices and the server route's validator.
  */
 export const FAKE_AUTH_KINDS = [
   'claude-oauth',
@@ -407,12 +338,10 @@ export const FAKE_AUTH_KINDS = [
 export type FakeAuthKind = (typeof FAKE_AUTH_KINDS)[number]
 
 /**
- * Claude Code's native OAuth bundle. Stored under the "claudeAiOauth" key in
- * both Claude's `.credentials.json` and yaac's host-side mirror.
- *
- * Source of truth for both the TS type and the runtime validator. Fields
- * accept empty `refreshToken`/`expiresAt` because `saveToolAuth` may be
- * called with a bare OAuth access token — the proxy refreshes on first use.
+ * Claude Code's native OAuth bundle, under the "claudeAiOauth" key in both
+ * Claude's `.credentials.json` and yaac's host-side copy. `refreshToken` and
+ * `expiresAt` may be empty when `saveToolAuth` got a bare access token; the
+ * proxy refreshes on first use.
  */
 export const claudeOAuthBundleSchema = z.object({
   accessToken: z.string().min(1),
@@ -425,8 +354,8 @@ export const claudeOAuthBundleSchema = z.object({
 export type ClaudeOAuthBundle = z.infer<typeof claudeOAuthBundleSchema>
 
 /**
- * Shape of `~/.yaac/.credentials/claude/claude.json`. Either OAuth (with a
- * full bundle) or API-key (a single sk-ant-api03-… key).
+ * Shape of the server's `.credentials/claude.json`: OAuth with a full bundle,
+ * or a single sk-ant-api03-… API key.
  */
 export type ClaudeCredentialsFile =
   | {
@@ -441,32 +370,31 @@ export type ClaudeCredentialsFile =
   }
 
 /**
- * Codex's "Sign in with ChatGPT" OAuth bundle. Stored under the "codexOauth"
- * key in yaac's host-side `codex.json`. Mirrors the bits of Codex's native
- * `~/.codex/auth.json` that the proxy needs to swap placeholders and refresh.
+ * Codex's "Sign in with ChatGPT" OAuth bundle, under the "codexOauth" key in
+ * yaac's `codex.json`. Holds the parts of Codex's `auth.json` the proxy needs
+ * to swap placeholders and refresh.
  */
 export const codexOAuthBundleSchema = z.object({
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1),
-  /** Full signed JWT — identity assertion, not a bearer credential. Flows
-   *  through the proxy into the container's auth.json unmodified. */
+  /** Full signed JWT; an identity assertion, not a bearer credential, so it
+   *  goes into the container's auth.json unmodified. */
   idTokenRawJwt: z.string().min(1),
-  /** Unix epoch ms, derived from access_token JWT `exp` (best-effort; falls
-   *  back to now + 28d to mirror Codex's proactive-refresh window). */
+  /** Unix epoch ms from the access token's `exp`, else now + 28d (Codex's
+   *  proactive-refresh window). */
   expiresAt: z.number(),
   /** ISO timestamp matching Codex's `last_refresh`. */
   lastRefresh: z.string(),
-  /** Top-level `tokens.account_id` from Codex's auth.json — distinct from
-   *  id_token's `chatgpt_account_id` claim. Codex uses this to populate the
-   *  `ChatGPT-Account-Id` request header on api.openai.com, so it must flow
-   *  through to the container unchanged. */
+  /** `tokens.account_id` from Codex's auth.json (not the id_token's
+   *  `chatgpt_account_id` claim). Codex sends it as the `ChatGPT-Account-Id`
+   *  header, so it reaches the container unchanged. */
   accountId: z.string().optional(),
 })
 export type CodexOAuthBundle = z.infer<typeof codexOAuthBundleSchema>
 
 /**
- * Shape of `~/.yaac/.credentials/codex.json`. Either OAuth (with a full
- * bundle) or API-key.
+ * Shape of the server's `.credentials/codex.json`: OAuth with a full bundle,
+ * or an API key.
  */
 export type CodexCredentialsFile =
   | {
@@ -481,12 +409,10 @@ export type CodexCredentialsFile =
   }
 
 /**
- * Shape of `~/.yaac/.credentials/opencode.json`. Only api-key — opencode
- * integration in yaac authenticates via an api-key for one of the providers in
- * the generated registry (`tool-providers.ts`). `provider` picks which env var
- * carries the key and which host the proxy swaps the placeholder on, so it
- * is required: a file whose provider is missing or absent from the registry
- * loads as null rather than being coerced to a default.
+ * Shape of the server's `.credentials/opencode.json`: an api key for one
+ * provider in the generated registry (`tool-providers.ts`). `provider` picks
+ * the env var and the host the proxy swaps the key on; a file whose provider
+ * is missing or unknown loads as null.
  */
 export type OpencodeCredentialsFile = {
   kind: 'api-key'
@@ -496,10 +422,8 @@ export type OpencodeCredentialsFile = {
 }
 
 /**
- * Shape of `~/.yaac/.credentials/pi.json`. Only api-key — pi integration in
- * yaac authenticates via an api-key for one of the providers in the generated
- * registry (`tool-providers.ts`). `provider` picks which env var carries the
- * key and which host the proxy swaps the placeholder on.
+ * Shape of the server's `.credentials/pi.json`; like
+ * `OpencodeCredentialsFile`.
  */
 export type PiCredentialsFile = {
   kind: 'api-key'
@@ -509,10 +433,9 @@ export type PiCredentialsFile = {
 }
 
 /**
- * The four tool credential files as one value — what a runtime that
- * mediates egress is handed whenever the host store changes, so it can put
- * them wherever its proxy resolves credentials from. `null` is "signed
- * out", exactly as a missing file reads.
+ * The four tool credential files as one value, handed to a runtime whose
+ * proxy injects credentials whenever the host store changes. `null` means
+ * signed out.
  */
 export interface ToolCredentialBundle {
   claude: ClaudeCredentialsFile | null
@@ -522,9 +445,9 @@ export interface ToolCredentialBundle {
 }
 
 /**
- * OAuth bundles a runtime's egress path captured from a workspace's refresh
- * and the host store has not yet adopted. Each slot is the newest capture
- * the runtime holds; absent means none.
+ * OAuth bundles a runtime's egress proxy captured from a workspace's token
+ * refresh that the host store has not adopted yet. Each slot is the newest
+ * capture, if any.
  */
 export interface RefreshedToolCredentials {
   claude?: ClaudeOAuthBundle
@@ -532,10 +455,8 @@ export interface RefreshedToolCredentials {
 }
 
 /**
- * Summary view over per-tool credential files. Consumers (`auth list`,
- * workspace-create's per-tool placeholder wiring) read only kind / apiKey /
- * savedAt / opencodeProvider — full OAuth bundles stay in the per-tool
- * credentials files.
+ * Summary of a per-tool credential file. Full OAuth bundles stay in the
+ * files.
  */
 interface ToolAuthEntryBase {
   kind: ToolAuthKind
@@ -546,17 +467,12 @@ interface ToolAuthEntryBase {
 
 /**
  * A stored credential, discriminated on `tool` so the provider is required
- * exactly where it applies. The loaders already refuse to return an
- * opencode/pi credential without a usable provider — expressing that here
- * makes it the compiler's invariant instead of each consumer's: a `??
- * DEFAULT` at the point that picks the pod's env var would silently scope the
- * key to a vendor the user never chose, and now cannot be written at all.
+ * for opencode and pi. This keeps a consumer from falling back to a default
+ * provider, which could send the key to the wrong vendor.
  */
 export type ToolAuthEntry =
-  // claude and codex are listed separately, not as `'claude' | 'codex'`, so
-  // that `Extract<ToolAuthEntry, { tool: 'claude' }>` resolves to a member
-  // rather than never — that is what lets loadToolAuthEntry narrow on a
-  // literal tool argument.
+  // Listed separately, not as `'claude' | 'codex'`, so that
+  // `Extract<ToolAuthEntry, { tool: 'claude' }>` isn't `never`.
   | (ToolAuthEntryBase & { tool: 'claude' })
   | (ToolAuthEntryBase & { tool: 'codex' })
   | (ToolAuthEntryBase & {
@@ -600,9 +516,8 @@ export interface SecretProxyRule {
 }
 
 /**
- * Object form of an `initCommands` entry. Each spec becomes its own tmux
- * window so multiple long-running processes (e.g. a backend and a frontend
- * dev server) can run in parallel and be inspected independently.
+ * Object form of an `initCommands` entry. Each spec gets its own tmux window,
+ * so several long-running processes can run side by side.
  */
 export interface InitCommandSpec {
   /** tmux window name. Must be unique, kebab-ish, and must not collide
@@ -617,30 +532,21 @@ export interface InitCommandSpec {
 
 /**
  * A project's config overlay (`config/yaac-config.json`), edited through the
- * server so a client needs no shell on its host.
- *
- * What is NOT here is as deliberate as what is. A workspace's environment and
- * its proxied secrets are rows (`ProjectEnvVar`) rather than keys, so that
- * setting one needs nothing but the API — a value named here would have to
- * be resolved against the server's own process environment, which only
- * someone with a shell on that machine can write. Nothing here mounts a host
- * directory either, for the same reason: a path on the server is not
- * something a remote user can name.
+ * server so a client needs no shell on its host. Env vars and secrets are
+ * rows (`ProjectEnvVar`), not keys here, and there are no host-directory
+ * mounts: both would need a shell on the server machine to set up.
  */
 export interface YaacConfig {
   cacheVolumes?: Record<string, string>
   /**
-   * Run an in-pod rootful podman so `docker build` / `docker run` /
-   * `docker compose` work inside workspaces. Adds the nestable image layer and
-   * the nested pod-spec branch (gvisor-nested runtime, in-sandbox engine
-   * caps, tmpfs graphroot, shared image store).
+   * Run an in-pod rootful podman so `docker` commands work inside
+   * workspaces (docs/nested-containers.md).
    */
   nestedContainers?: boolean
   /**
    * Whether the project's workspaces may use the install's npm cache (k8s
-   * only): installs fetch through it by default, and a workspace of a
-   * project that sets this false can neither use nor reach it — its pnpm
-   * stays on npmjs, through the egress proxy. Unset → true.
+   * only). When false, a workspace can't reach it and fetches from npmjs
+   * through the egress proxy. Unset → true.
    */
   npmCache?: boolean
   /** Either a flat string list (collapsed into a single `init` window) or
@@ -652,12 +558,10 @@ export interface YaacConfig {
   addAllowedUrls?: string[]
   setAllowedUrls?: string[]
   /**
-   * Paths (relative to /workspace) of installed-package dirs that live
-   * and die with the workspace's runtime rather than in the shared checkout
-   * — a pod backs each with its own pod-local volume (and keeps its pnpm
-   * store inside the root one); a host workspace keeps them in its checkout.
-   * Removed at stop either way. Unset → `["node_modules"]`. Empty array
-   * disables the feature.
+   * Paths (relative to /workspace) of installed-package dirs that belong to
+   * the workspace's runtime rather than the shared checkout. A pod backs each
+   * with a pod-local volume; a host workspace keeps them in its checkout.
+   * Removed at stop. Unset → `["node_modules"]`; empty disables.
    */
   ephemeralModulesPaths?: string[]
 }
@@ -665,10 +569,9 @@ export interface YaacConfig {
 /**
  * One of a project's environment variables, as a client sees it.
  *
- * A secret's value never comes back out — `hasValue` is what the UI shows
- * instead, and it is false both for a secret nobody has supplied yet and for
- * one whose stored value no longer decrypts (a rotated-away key), because in
- * both cases the answer the user needs is "type it again".
+ * A secret's value is never returned. `hasValue` is false both for a secret
+ * never supplied and for one that no longer decrypts (its key was rotated
+ * away); either way the user must enter it again.
  */
 export interface ProjectEnvVar {
   id: string
@@ -683,9 +586,7 @@ export interface ProjectEnvVar {
 }
 
 // ---------------------------------------------------------------------------
-// Wire types — RPC request/response shapes used across the server/CLI
-// boundary. Lib and server modules return these; commands receive them via
-// the Hono RPC client.
+// Wire types: RPC request/response shapes shared by the server and clients.
 // ---------------------------------------------------------------------------
 
 /** Host↔container port mapping returned by `/workspace/create`. */
@@ -722,9 +623,8 @@ export interface ToolAuthSummary {
   opencodeProvider?: OpencodeProvider
   /** pi only — which provider the stored api-key authenticates against. */
   piProvider?: PiProvider
-  /** Candidate `--model` values for this credential, newest first, each with
-   *  its display name when the catalog has one — the create form's model
-   *  list. A convenience, not an allowlist. */
+  /** Candidate `--model` values for this credential, newest first, for the
+   *  create form. Not an allowlist. */
   models: ModelOption[]
   /** What a create runs when this project remembers no model for the tool. */
   defaultModel: string
@@ -741,39 +641,33 @@ export interface AuthListResult {
   toolAuth: ToolAuthSummary[]
 }
 
-// --- subscription plan usage (server/plan-usage.ts, snapshot field) ---
+// --- subscription plan usage (domain/auth/plan-usage.ts, snapshot field) ---
 
 /**
- * One limit row from a tool's subscription usage endpoint, normalized for
- * the wire. Covers both Claude (Anthropic's api/oauth/usage `limits[]`) and
- * Codex (ChatGPT's wham/usage primary/secondary windows).
+ * One limit row from a tool's subscription usage endpoint: Claude's
+ * api/oauth/usage `limits[]` or Codex's wham/usage windows.
  */
 export interface PlanUsageLimit {
-  /** Limit kind, verbatim from the provider. Claude: 'session' (its
-   *  five-hour usage window, not a yaac workspace), 'weekly_all',
-   *  'weekly_scoped'. Codex:
-   *  'codex_primary' (the shorter window) and 'codex_secondary' (weekly). */
+  /** Limit kind. Claude: 'session' (its five-hour window), 'weekly_all',
+   *  'weekly_scoped'. Codex: 'codex_primary' (the shorter window),
+   *  'codex_secondary' (weekly). */
   kind: string
   /** Utilization of this limit, 0–100. */
   percent: number
-  /** Upstream severity — 'normal' until the limit nears exhaustion. Codex
-   *  has no severity field, so its rows are always 'normal' (percent drives
-   *  the tone). */
+  /** Upstream severity, 'normal' until the limit nears exhaustion. Always
+   *  'normal' for Codex, which reports none. */
   severity: string
   /** ISO timestamp when this limit's window resets, when reported. */
   resetsAt: string | null
   /** Model display name for per-model limits (e.g. 'Fable'), else null. */
   modelName: string | null
-  /** Window length in minutes when the upstream reports it (Codex windows,
-   *  so a 5h vs weekly label is derived rather than assumed); null for
-   *  Claude limits, which encode the window in `kind`. */
+  /** Window length in minutes (Codex only; Claude encodes it in `kind`). */
   windowMinutes?: number | null
 }
 
 /**
- * Plan-usage query result for one tool. Only OAuth (subscription)
- * credentials are queryable; api-key auth and every failure path degrade to
- * `available: false` so the UI can simply hide the readout.
+ * Plan-usage result for one tool. Only OAuth (subscription) credentials can
+ * be queried; anything else is `available: false` and the UI hides it.
  */
 export type PlanUsageResult =
   | {
@@ -783,38 +677,34 @@ export type PlanUsageResult =
   }
   | {
     available: true
-    /** Plan tier — Claude's OAuth bundle subscriptionType (e.g. 'max') or
-     *  Codex's plan_type (e.g. 'plus', 'pro', 'team'), if known. */
+    /** Plan tier: Claude's subscriptionType (e.g. 'max') or Codex's
+     *  plan_type (e.g. 'plus'), if known. */
     subscriptionType: string | null
-    /** The org's rate-limit tier from Claude's OAuth profile endpoint (e.g.
-     *  'default_claude_max_20x') — distinguishes Max 20x from Max 10x.
-     *  Null until the server's per-credential profile fetch lands, and
-     *  always null for Codex (no analogous multiplier). */
+    /** Claude's rate-limit tier (e.g. 'default_claude_max_20x'), which
+     *  tells Max 20x from 10x. Null until fetched, and always for Codex. */
     rateLimitTier: string | null
     limits: PlanUsageLimit[]
   }
 
-// --- web-driven tool sign-in (server/tool-login.ts) ---
+// --- web-driven tool sign-in (auth-daemon/src/tool-login.ts) ---
 
 export type ToolLoginStatus = 'running' | 'success' | 'error'
 
-/** Wire view of a server-run vendor-CLI browser login (never carries tokens).
- *  The CLI opens the browser itself — same-machine setups need no relaying. */
+/** A vendor-CLI browser login in progress (never carries tokens). */
 export interface ToolLoginView {
   id: string
   tool: AgentTool
   status: ToolLoginStatus
-  /** The CLI's output so far (ANSI-stripped, tail-capped) — shown so the user
-   *  can grab the printed sign-in URL when no browser window opened. */
+  /** The CLI's output so far (ANSI-stripped, tail-capped), so the user can
+   *  copy the sign-in URL if no browser opened. */
   output?: string
   error?: string
-  /** Set when the flow failed because the vendor CLI is not installed on
-   *  this machine — the webapp offers an install instead of a retry. */
+  /** The vendor CLI is not installed; the webapp offers to install it. */
   cliMissing?: boolean
 }
 
-/** Wire view of a server-run vendor-CLI install kicked off from the webapp
- *  (the "Install Claude Code / Codex" button on a cliMissing sign-in). */
+/** A vendor-CLI install started from the webapp after a `cliMissing`
+ *  sign-in. */
 export interface ToolInstallView {
   id: string
   tool: AgentTool
@@ -827,12 +717,10 @@ export interface ToolInstallView {
 // --- workspace/list ---
 
 /**
- * A git credential the proxy injected that the upstream rejected — the
- * stored token is bad (expired or revoked), as opposed to a blocked host.
- * Recorded per project by the proxy (the credential belongs to the
- * project's repo, so one bad token affects every workspace of the project);
- * cleared automatically when a later git request to the same host from any
- * of the project's workspaces succeeds.
+ * A git credential the proxy injected that the upstream rejected (expired or
+ * revoked), as opposed to a blocked host. Recorded per project, since the
+ * credential is the project's; cleared when a later git request to the same
+ * host from any of its workspaces succeeds.
  */
 export interface GitAuthFailure {
   host: string
@@ -843,42 +731,37 @@ export interface GitAuthFailure {
 }
 
 /**
- * One agent conversation inside a workspace — a claude/codex/pi/opencode
- * workspace. Several can be live at once (a second terminal, or a `/clear`
- * that left the old conversation's window open), and the ones that are not
- * live are the workspace's history.
+ * One agent conversation inside a workspace. Several can be live at once
+ * (a second terminal, or a `/clear` that left the old window open); the
+ * rest are the workspace's history.
  */
 export interface AgentSessionEntry {
   /** The tool's own conversation id, not yaac's. */
   agentSessionId: string
   tool: AgentTool
-  /** Which protocol drives it, and therefore which pane renders it. Absent
-   *  on rows recorded before modes existed, which are `tui`. */
+  /** Which protocol drives it, and so which pane renders it. Absent means
+   *  `tui`. */
   mode?: AgentMode
   /** Restore order; 0 is the workspace's original agent. */
   ordinal: number
-  /** Had a live agent process when the workspace was last observed running —
-   *  and therefore what a restart brings back. */
+  /** Had a live agent process when the workspace was last seen running, so
+   *  a restart brings it back. */
   active: boolean
   /** Live only: this conversation's own busy/idle, from its pane. */
   status?: 'running' | 'waiting'
   /** Live only: epoch ms when this conversation's waiting spell began. */
   waitingSinceMs?: number
-  /** This conversation's own first user message (the workspace keeps the
-   *  founding one separately — they differ after a `/clear`). */
+  /** This conversation's first user message (differs from the workspace's
+   *  founding prompt after a `/clear`). */
   prompt?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) of its transcript's last write. */
   lastActiveAt?: string
   /**
-   * The model it is answering as, in the tool's own spelling
-   * (`claude-opus-5`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`) — for
-   * display beside the tool name, never to relaunch with. Seeded from the
-   * launch, then pushed by the agent itself as it changes, so it tracks a
-   * `/model` switch the moment it lands (a `tui` opencode one at its next
-   * prompt, which is when opencode's TUI first tells anything).
-   *
-   * Absent only on a conversation launched without a model that has not
-   * answered yet. A UI shows the bare tool name in that case.
+   * The model it is answering as, in the tool's spelling (`claude-opus-5`,
+   * `anthropic/claude-opus-4-8`), for display only. Seeded from the launch
+   * and updated by the agent, so it follows a `/model` switch (for a `tui`
+   * opencode, at its next prompt). Absent until a conversation launched
+   * without a model first answers.
    */
   model?: string
   /** `model`'s display name ("Opus 5.5"), when the catalog has one. */
@@ -890,70 +773,53 @@ export interface WorkspaceListEntry {
   projectSlug: string
   tool: AgentTool
   /**
-   * The workspace's aggregate: `waiting` if ANY of its agent sessions is
-   * waiting, else `running`. Waiting is the actionable state — an agent that
-   * needs you needs you whether or not a sibling is still working.
+   * `waiting` if any of its agent sessions is waiting, else `running`.
    */
   status: 'running' | 'waiting'
-  /** The workspace's container is being torn down (its pod has a deletion
-   *  timestamp, or a stop was just issued). Orthogonal to `status`: the
-   *  row is on its way out and should render as a non-interactive
-   *  "stopping…" placeholder rather than a live workspace. */
+  /** The workspace is being torn down (its pod has a deletion timestamp,
+   *  or a stop was just issued). Render a non-interactive "stopping…"
+   *  placeholder. */
   stopping?: boolean
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
-  /** Epoch ms when the current waiting spell began, stamped by the
-   *  server's push-fed status store at the transition itself. Only set
-   *  while status is 'waiting'; the *earliest* waiting agent wins, so a
-   *  second agent going idle joins the spell in progress rather than
-   *  restarting it. In-memory on the server: a restart (or a still-booting
-   *  workspace with no watcher yet) has no stamp, which clients treat as
-   *  its own spell. */
+  /** Epoch ms when the current waiting spell began; set only while
+   *  `waiting`. The earliest waiting agent's time wins. Kept in server
+   *  memory, so it is absent after a server restart. */
   waitingSinceMs?: number
-  /** The founding ask — the first user message of the workspace's first
-   *  agent session. Survives a `/clear` that discards that conversation. */
+  /** The first user message of the workspace's first agent session;
+   *  survives a `/clear`. */
   prompt?: string
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
   /** Every conversation the workspace has hosted, in restore order. */
   agentSessions: AgentSessionEntry[]
   blockedHosts: string[]
-  /** Live host→container forwards owned by the server (from the
-   *  forwarder registry). Empty until forwarders are (re)provisioned —
-   *  briefly so after a server restart, before the restore pass runs. */
+  /** Live host→container forwards. Briefly empty after a server restart,
+   *  until the restore pass runs. */
   forwardedPorts: PortMapping[]
-  /** Container ports with a live in-pod listener that is not forwarded —
-   *  detected via streamd's `ports` push, minus forwarded, dismissed,
-   *  sensitive, and infra ports. Drives the "forward this port?" badge;
-   *  self-clears when a port is forwarded or its listener stops. */
+  /** Ports with a live listener in the workspace that aren't forwarded,
+   *  dismissed, sensitive or infra. Drives the "forward this port?"
+   *  badge. */
   unforwardedPorts: number[]
   /** The branch this workspace forked from (its reference branch), as its
    *  row records it. Unset when the row records none. */
   baseBranch?: string
   /** The sidebar group this workspace is filed under (see
-   *  `WorkspaceGroupSummary`); absent means the default list. Server-persisted
-   *  and orthogonal to `status` and `stopping` — a workspace keeps its group
-   *  through stopping and restarting (and, via `StoppedWorkspaceEntry.groupId`,
-   *  keeps a ghost row in it while stopped). */
+   *  `WorkspaceGroupSummary`); absent means ungrouped. Kept through stop and
+   *  restart. */
   groupId?: string
-  /** The permission posture its agents run in (`workspaces.permissionMode`) —
-   *  what a workspace queued after this one defaults to. Absent while its row
-   *  has not landed yet. */
+  /** The permission posture its agents run in; a workspace queued after
+   *  this one defaults to it. Absent until its row is written. */
   permissionMode?: PermissionMode
 }
 
 /**
- * A named sidebar group — how the user has chosen to file a project's
- * workspaces. The sidebar lists ungrouped workspaces first and then one
- * collapsible section per group, both in `createdAt` order; membership is
- * `WorkspaceListEntry.groupId`.
+ * A named sidebar group of a project's workspaces. The sidebar lists
+ * ungrouped workspaces first, then one section per group, both in
+ * `createdAt` order.
  *
- * A group is shown when it is `pinned` or holds at least one live workspace,
- * and every shown group lists ALL its members — live ones as ordinary rows,
- * stopped ones as ghost rows with a restart action. So an unpinned group
- * whose workspaces have all stopped just disappears (its row persists, and
- * restarting a member brings it back), while pinning keeps it on screen as a
- * place to restart into.
+ * A group is shown when `pinned` or when it holds a live workspace, and then
+ * lists all its members, stopped ones as ghost rows with a restart action.
  */
 export interface WorkspaceGroupSummary {
   groupId: string
@@ -968,7 +834,7 @@ export interface WorkspaceGroupSummary {
 /** How a file changed, mapped from git's name-status letters. */
 export type ChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'typechange'
 
-/** One changed file in a workspace's checkout, relative to the fork base. */
+/** One changed file in a workspace, relative to the fork base. */
 export interface WorkspaceChange {
   path: string
   status: ChangeStatus
@@ -982,19 +848,16 @@ export interface WorkspaceChange {
 }
 
 /**
- * The review diff for a workspace — everything the agent changed since the
- * workspace forked from its base branch (committed + staged + unstaged +
- * untracked), computed against an index of our own so it never disturbs the
- * agent's own git state.
+ * The review diff for a workspace: everything changed since it forked from
+ * its base branch (committed, staged, unstaged, untracked). Computed with a
+ * separate index so the agent's git state is untouched.
  */
 export interface WorkspaceChanges {
   /** The base commit the diff is taken against (merge-base with the fork
    *  point), or HEAD when no upstream is resolvable. */
   base: string
-  /** False when no fork point was resolvable and `base` fell back to HEAD. The
-   *  diff then covers only UNCOMMITTED work, so an empty `files` means "nothing
-   *  uncommitted", not "nothing changed" — say so rather than showing the
-   *  ordinary no-changes state. */
+  /** False when `base` fell back to HEAD. The diff then covers only
+   *  uncommitted work, and an empty `files` must not read as "no changes". */
   baseResolved: boolean
   files: WorkspaceChange[]
   /** The combined unified diff; the client splits it into per-file hunks.
@@ -1004,9 +867,8 @@ export interface WorkspaceChanges {
   truncated: boolean
 }
 
-/** Where a workspace's HEAD stands against its reference branch — the status
- *  bar above its panes. Counts come from the server's own refs, so `behind`
- *  is only as fresh as `fetchedAt`. */
+/** Where a workspace's HEAD stands against its reference branch, for the
+ *  status bar. `behind` is only as fresh as `fetchedAt`. */
 export interface WorkspaceGitStatus {
   /** The branch compared against; null when nothing records one. */
   base: string | null
@@ -1082,11 +944,8 @@ export interface WorkspaceDir {
 }
 
 /**
- * Why a workspace died, derived at reap time from the pod's terminal state
- * and the reaper's own classification — the last chance to capture it,
- * since the reaper's teardown deletes the Job (and with it the pod's
- * `containerStatuses` and the Job's failure condition). Absent on a plain
- * user delete.
+ * Why a workspace died, captured at reap time from the pod's terminal state
+ * before the teardown deletes the Job. Absent on a plain user delete.
  */
 export type WorkspaceDeathReason =
   | 'oom'            // session container OOMKilled by the kernel
@@ -1104,12 +963,10 @@ export interface WorkspaceDeathCause {
 }
 
 /**
- * Which on-disk tier a skill was discovered from. Personal/plugin/project are
- * all loose `SKILL.md` files. `system` is a built-in tier: an agent's own
- * bundled skills (Codex's `.system/` under the host-mounted `~/.codex/skills/`,
- * or Claude's binary-bundled skills read list-only from its docs, `sourceLabel`
- * `bundled`), plus the skills yaac itself ships and injects into every workspace
- * (`sourceLabel` `yaac`; see the server's features/skills).
+ * Where a skill was found. Personal/plugin/project are loose `SKILL.md`
+ * files. `system` is built in: an agent's bundled skills (`sourceLabel`
+ * `bundled`) and the skills yaac injects into every workspace
+ * (`sourceLabel` `yaac`; see packages/server/src/domain/skills).
  */
 export type SkillSource = 'personal' | 'plugin' | 'project' | 'system'
 
@@ -1164,9 +1021,8 @@ export interface StaleWorkspaceInfo {
 export interface ActiveWorkspacesResult {
   workspaces: WorkspaceListEntry[]
   stale: StaleWorkspaceInfo[]
-  /** Project slug -> git credentials the upstream rejected. Project-wide,
-   *  not per-workspace: one bad token affects every workspace of the project.
-   *  Only projects with at least one failing host appear. */
+  /** Project slug -> git credentials the upstream rejected. Only projects
+   *  with a failing host appear. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
@@ -1176,41 +1032,35 @@ export interface StoppedWorkspaceEntry {
   tool: AgentTool
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). Workspace birth time. */
   createdAt: string
-  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the newest
-   *  transcript mtime across every conversation the workspace hosted, so a
-   *  workspace the user `/clear`ed an hour ago reads as an hour old rather
-   *  than as old as its opening question. Falls back to creation time when
-   *  nothing is readable (opencode leaves no host transcript). */
+  /** Last activity as 'YYYY-MM-DD HH:MM:SS' (UTC): the newest transcript
+   *  mtime across all its conversations, else the creation time (opencode
+   *  leaves no host transcript). */
   lastActiveAt?: string
-  /** When the workspace was stopped, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
-   *  at stop time; the primary sort key (newest-stopped first). Absent for
-   *  workspaces removed out-of-band, which fall back to `lastActiveAt`. */
+  /** When it was stopped, 'YYYY-MM-DD HH:MM:SS' (UTC); the sort key, newest
+   *  first. Absent if removed out-of-band (sorted by `lastActiveAt`). */
   stoppedAt?: string
-  /** The founding ask — the first conversation's first user message. */
+  /** The first conversation's first user message. */
   prompt?: string
-  /** User-assigned display title (survives stopping; ids are stable). */
+  /** User-assigned display title. */
   title?: string
-  /** Every conversation the workspace hosted, in restore order. The ones
-   *  marked `active` are what a restart brings back. */
+  /** Every conversation the workspace hosted, in restore order; a restart
+   *  brings back the `active` ones. */
   agentSessions: AgentSessionEntry[]
   /** Why the workspace died, when the reaper (not the user) stopped it. */
   deathReason?: WorkspaceDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
   deathDetail?: string
-  /** Whether the user has viewed this death's detail — clears the "Stopped
-   *  workspaces" notification dot / row highlight. Server-persisted (on the
-   *  workspace row) so the acknowledgement is durable and shared across
-   *  clients; only meaningful when `deathReason` is set. */
+  /** Whether the user has viewed this death's detail, which clears the
+   *  notification dot. Stored on the workspace row so every client shares
+   *  it; meaningful only with `deathReason`. */
   seen: boolean
-  /** The sidebar group the workspace is filed under — membership survives
-   *  stopping (workspace ids are stable across restarts), so a stopped member
-   *  keeps a ghost row in its group with a restart action. */
+  /** The sidebar group it is filed under; a stopped member shows as a ghost
+   *  row there. */
   groupId?: string
 }
 
-/** A webapp-attachable terminal inside a workspace's container (beyond the
- *  primary agent view): a `yaac`-workspace tmux window — an initCommands
- *  window (dev server, watcher, …) or a scratch shell. */
+/** A non-agent tmux window in a workspace the webapp can attach to: an
+ *  initCommands window or a scratch shell. */
 export interface WorkspaceTerminalEntry {
   /** /pty/attach target: 'window:@<id>'. */
   target: string
@@ -1219,9 +1069,7 @@ export interface WorkspaceTerminalEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Webapp event stream — pushed over the `/events` WebSocket. The slice
-// pushes a full snapshot on connect and after each background-loop tick
-// when the state changed; granular per-entity events come later.
+// Webapp event stream, pushed over the `/events` WebSocket.
 // ---------------------------------------------------------------------------
 
 /** Project row in the snapshot, and what `listProjects` answers. */
@@ -1230,61 +1078,53 @@ export interface ProjectSummary {
   remoteUrl: string
   addedAt: string
   workspaceCount: number
-  /** The agent this project was last created with; absent until the first
-   *  create, when `claude` answers. What the create form opens on. */
+  /** The agent last created with; the create form opens on it. Absent
+   *  before the first create (claude is assumed). */
   lastTool?: AgentTool
-  /** The branch this project was last created from, when that create named
-   *  one. What the create form's Branch opens on (while origin still has
-   *  it); a create naming no branch does not use it. */
+  /** The branch last named by a create; the create form's Branch field
+   *  opens on it while origin still has it. */
   lastBranch?: string
-  /** Per agent, what it was last created with here — the create form's
-   *  memory, resolved against its fallbacks by `resolveToolCreateDefaults`
-   *  so the form shows what the server would run. */
+  /** Per agent, what it was last created with here (see
+   *  `resolveToolCreateDefaults`). */
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
-  /** The git credential its git authenticates with. Null until one is
-   *  assigned — and a project without one cannot create workspaces. */
+  /** The project's git credential. Without one it can't create
+   *  workspaces. */
   gitCredential: { id: string; name: string } | null
 }
 
 /**
- * A workspace that is currently provisioning — a create or restart in flight,
- * tracked in server memory and surfaced in the snapshot so the webapp renders
- * it as a first-class, selectable sidebar row that survives a reload (with live
- * progress) until the real workspace lands or a failure is dismissed.
+ * A create or restart in flight, tracked in server memory. The webapp shows
+ * it as a sidebar row with live progress until the workspace exists or a
+ * failure is dismissed.
  */
 export interface ProvisioningWorkspaceEntry {
   workspaceId: string
   projectSlug: string
   tool: AgentTool
   kind: 'create' | 'restart'
-  /** The model a create launches with, and its display name when the
-   *  catalog has one — so the row names what is coming up before any agent
-   *  has answered. Absent on a restart. */
+  /** The model a create launches with, and its display name. Absent on a
+   *  restart. */
   model?: string
   modelName?: string
   /** Latest progress line (e.g. 'Pulling image…'). */
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */
   error?: string
-  /** The sidebar group this workspace is filed under — asked for by a create
-   *  (`--group`), or already recorded for a restart — so the row renders in
-   *  that section while it provisions rather than jumping to the top of the
-   *  list and back. Absent means the default list. */
+  /** The sidebar group it is filed under, so the row shows there while it
+   *  provisions. Absent means ungrouped. */
   groupId?: string
-  /** The prewarmed spare a create claimed. It lists under this id, not the
-   *  row's, once the row resolves — a client following the row follows it
-   *  there. */
+  /** The id of the prewarmed spare a create claimed. Once ready, the
+   *  workspace lists under this id rather than the row's. */
   claimedId?: string
-  /** 'YYYY-MM-DD HH:MM:SS' UTC, derived from when provisioning started — so
-   *  the sidebar can show a relative age for a row that has no pod yet. */
+  /** When provisioning started, 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
 }
 
 /**
- * A workspace create request saved to run when its parent stops naturally
- * (docs/queued-workspaces.md). Not a workspace yet: every setting is concrete,
- * so what the sidebar shows is exactly what will launch. Exactly one parent
- * field is set — a workspace, or another entry it is chained after.
+ * A create request saved to run when its parent stops naturally
+ * (docs/queued-workspaces.md). Every setting is concrete, so the sidebar
+ * shows exactly what will launch. Exactly one parent field is set: a
+ * workspace, or another queued entry.
  */
 export interface QueuedWorkspaceEntry {
   id: string
@@ -1300,31 +1140,27 @@ export interface QueuedWorkspaceEntry {
   permissionMode: PermissionMode
   /** The reference branch it forks from, fetched fresh at launch. */
   branch: string
-  /** The user's title for the workspace it launches, which is then not
-   *  auto-titled. */
+  /** The user's title for the workspace; suppresses auto-titling. */
   title?: string
-  /** Model-generated from the prompt, once the title sweep has run for an
-   *  untitled entry. A `title` outranks it; without one, the workspace it
-   *  launches carries it. */
+  /** Generated from the prompt for an untitled entry; the launched
+   *  workspace uses it unless `title` is set. */
   generatedTitle?: string
-  /** The sidebar group it launches into; absent is the default list. */
+  /** The sidebar group it launches into; absent means ungrouped. */
   groupId?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   /** Why its last launch failed; it is back in the queue until run again. */
   launchError?: string
-  /** Its parent workspace has no row (that workspace's own create failed), so
-   *  it has nothing to nest under and renders at the top level. */
+  /** Its parent workspace has no row (its create failed), so it renders at
+   *  the top level. */
   orphaned?: boolean
 }
 
 /**
- * What a draft workspace keeps of the create dialog (docs/draft-workspaces.md)
- * — the fields as the dialog showed them, so reopening it puts them back.
- * `model` and `branch` are absent when the dialog had not resolved them yet;
- * `startAfter` is the Start field's parent (a workspace or queued entry id),
- * absent for "Now". `title` is the user's own, absent when the dialog's
- * Title field was left blank.
+ * The create dialog's fields as a draft keeps them
+ * (docs/draft-workspaces.md). `model` and `branch` are absent if the dialog
+ * hadn't resolved them; `startAfter` is the parent workspace or queued entry
+ * id, absent for "Now"; `title` is absent if left blank.
  */
 export interface DraftWorkspaceSettings {
   prompt: string
@@ -1342,8 +1178,7 @@ export interface DraftWorkspaceSettings {
 export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
   id: string
   projectSlug: string
-  /** Model-generated from the prompt, once the title sweep has run — never
-   *  for a draft with a `title`. */
+  /** Generated from the prompt; never set for a draft with a `title`. */
   generatedTitle?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
@@ -1351,10 +1186,10 @@ export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
 }
 
 /**
- * A stopped workspace that still has queued workspaces waiting on it — kept
- * in the sidebar, as a stopped row, until the last of them has launched or
- * been discarded. Slimmer than `StoppedWorkspaceEntry` because the snapshot
- * rebuilds on every change and cannot afford that listing's transcript stats.
+ * A stopped workspace that queued workspaces still wait on, kept in the
+ * sidebar until the last of them launches or is discarded. Slimmer than
+ * `StoppedWorkspaceEntry` because the snapshot rebuilds on every change and
+ * can't afford transcript stats.
  */
 export interface HeldWorkspaceEntry {
   workspaceId: string
@@ -1373,22 +1208,19 @@ export interface HeldWorkspaceEntry {
 export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
 
 /**
- * An image build or registry push tracked in server memory and surfaced in
- * the snapshot (metadata only — the raw podman log tail is fetched via
- * `GET /image/builds/:id/log`, not streamed through snapshots).
+ * An image build or registry push tracked in server memory. The snapshot
+ * carries metadata only; the log tail comes from
+ * `GET /image/builds/:id/log`.
  */
 export interface ImageBuildEntry {
   id: string
   tag: string
-  /** Which chain step this is; `'push'` for a registry push, and `'proxy'`
-   *  / `'netd'` for the shared egress-proxy sidecar and per-node network
-   *  daemon images (neither part of a project chain). */
+  /** The chain step; `'push'` for a registry push; `'proxy'` / `'netd'`
+   *  for the shared proxy sidecar and network daemon images. */
   layer: ImageLayerName | 'push' | 'proxy' | 'netd'
   action: 'build' | 'push'
-  /** Every project that requested this tag (joiners attach their slug).
-   *  Empty for shared infrastructure builds with no owning project (the
-   *  proxy sidecar) — the webapp always shows those regardless of the
-   *  active project. */
+  /** Every project that requested this tag. Empty for shared
+   *  infrastructure builds, which the webapp shows for every project. */
   projectSlugs: string[]
   reason: 'session' | 'prewarm'
   status: 'running' | 'succeeded' | 'failed'
@@ -1414,74 +1246,59 @@ export interface CheckResult {
 }
 
 /**
- * Full picture of server-owned state the webapp renders. Hydrated from a
- * `snapshot` event on connect and replaced wholesale on every subsequent
- * `snapshot`. Mirrors the union of `GET /workspace/list` and
- * `GET /project/list`.
- */
-/**
- * Which substrate a server runs workspaces on.
+ * Which substrate a server runs workspaces on. `k8s` runs each workspace as
+ * a single-pod Job built from an image, behind an egress proxy.
+ * `containerless` runs it as a tmux server on the host in the checkout, with
+ * no image, proxy or sandbox.
  *
- * `k8s` runs each workspace as a single-pod Job in a local cluster, built
- * from an image and reached through an egress proxy. `containerless` runs
- * it as a tmux server on the host, in the workspace checkout itself — no
- * image, no proxy, and no sandbox around the agent.
- *
- * On the wire because the webapp has to render two different products: a
- * containerless server has no Dockerfile to edit, no builds to show and no
- * blocked hosts to allow, and its workspaces start at a stricter permission
- * mode than the one a sandbox justifies. The server-side definition of
- * what a kind may be branched on is `DriverKind` in the driver contract,
- * which imports this one.
+ * Sent to the webapp because a containerless server has no Dockerfile,
+ * builds or blocked hosts to show. The driver contract re-exports it and
+ * says when callers may branch on it.
  */
 export type DriverKind = 'k8s' | 'containerless'
 
 /**
- * Who a request came from, as the server derives it from the request
- * itself (`GET /whoami`, docs/remote-hosting.md). `local` reached the
- * server without passing through anything — this machine's loopback, or a
- * nested server's direct path. `tailnet` came through `tailscale serve`,
- * which stamped the device's tailnet user on it: `login` is that user's
- * login name, `name` their display name.
+ * Who a request came from (`GET /whoami`, docs/remote-hosting.md). `local`
+ * reached the server directly (loopback, or a nested server's direct path).
+ * `tailnet` came through `tailscale serve`, which stamped the tailnet user's
+ * login and display name on it.
  */
 export type Principal =
   | { kind: 'local' }
   | { kind: 'tailnet'; login: string; name: string }
 
+/**
+ * All server-owned state the webapp renders, sent as a `snapshot` event on
+ * connect and replaced whole on each later one.
+ */
 export interface ServerSnapshot {
   /** Which substrate this server runs — see `DriverKind`. */
   driver: DriverKind
   workspaces: WorkspaceListEntry[]
-  /** Every project's sidebar groups (clients filter by slug, as they do
-   *  `workspaces`). Carries hidden groups too — whether a group shows is a
-   *  question about its members, which the client already has. */
+  /** Every project's sidebar groups, hidden ones included (the client
+   *  decides visibility from the members). */
   workspaceGroups: WorkspaceGroupSummary[]
   stale: StaleWorkspaceInfo[]
   projects: ProjectSummary[]
   provisioning: ProvisioningWorkspaceEntry[]
-  /** Every project's queued workspaces not currently launching, oldest first
-   *  (clients filter by slug). A launching one is its provisioning row. */
+  /** Every project's queued workspaces not currently launching, oldest
+   *  first. A launching one appears as a provisioning row. */
   queuedWorkspaces: QueuedWorkspaceEntry[]
   /** Stopped workspaces that queued workspaces still wait on. */
   heldWorkspaces: HeldWorkspaceEntry[]
-  /** Every project's draft workspaces, oldest first (clients filter by slug). */
+  /** Every project's draft workspaces, oldest first. */
   draftWorkspaces: DraftWorkspaceEntry[]
-  /** Project slug -> git credentials the upstream rejected (project-wide;
-   *  see ActiveWorkspacesResult.gitAuthFailures). */
+  /** See `ActiveWorkspacesResult.gitAuthFailures`. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]
-  /** Claude subscription plan usage, refreshed server-side
-   *  (server/plan-usage.ts). Null until the first refresh after a webapp
-   *  client connects lands. */
+  /** Claude subscription plan usage (domain/auth/plan-usage.ts). Null
+   *  until the first refresh after a webapp client connects. */
   planUsage: PlanUsageResult | null
-  /** Codex (ChatGPT) subscription plan usage, refreshed server-side by the
-   *  same engine. Null until the first refresh lands, or when Codex isn't
-   *  signed in with a ChatGPT (OAuth) account. */
+  /** Codex (ChatGPT) plan usage. Null until the first refresh, or without
+   *  a ChatGPT (OAuth) sign-in. */
   codexPlanUsage: PlanUsageResult | null
-  /** The host workspace port-forward listeners actually bind
-   *  (`YAAC_FORWARD_BIND`; loopback locally, the tailnet IP on a remote
-   *  host). Server-reported so UI exposure claims state the real bind —
-   *  the page origin can differ from it (e.g. an SSH tunnel). */
+  /** The host port-forward listeners bind (`YAAC_FORWARD_BIND`), so the UI
+   *  can state it; it may differ from the page origin. */
   forwardBindHost: string
 }
 
@@ -1491,8 +1308,6 @@ export type ServerEvent =
 
 /**
  * Desktop-shell server picker, over the preload bridge (`window.yaacServer`).
- * The renderer only ever sees origins — tokens stay in the main process
- * (`server.json`).
  */
 export interface DesktopServerSelection {
   url: string
@@ -1511,20 +1326,16 @@ export type DesktopServerOutcome =
   | { ok: false; error: string }
 
 /**
- * Cap on a recorded opening message, applied by whoever stores it. Generous
- * next to a title — the sidebar truncates for display, but the prompt also
- * feeds title generation, which reads the opening ~1000 chars. Shared
- * vocabulary rather than a db-private constant because it bounds what
- * the store and the discovery sweeps cache as well as what the row keeps,
- * so the copies cannot disagree.
+ * Cap on a recorded opening message, applied by whoever stores it. Larger
+ * than a title because title generation reads the first ~1000 chars. Shared
+ * so the store and the discovery sweeps apply the same bound.
  */
 export const MAX_PROMPT_LENGTH = 4000
 
 /**
- * Cap on a recorded model id. Every one yaac knows is a few dozen characters;
- * the bound is for a value the agent reported — a tmux pane option anything in
- * the workspace can set, or an adapter's reply — which could otherwise be any
- * length. Applied by the tmux format that reads the option and by the store.
+ * Cap on a recorded model id. Model ids come from the agent (a tmux pane
+ * option anything in the workspace can set, or an adapter's reply), so they
+ * could otherwise be any length.
  */
 export const MAX_MODEL_LENGTH = 128
 
@@ -1532,20 +1343,12 @@ export const MAX_MODEL_LENGTH = 128
  * What a workspace's agent may ask its own yaac server to do, via the
  * in-workspace `yaac-mama` command.
  *
- * This union IS the allowlist — the strict subset of the yaac CLI reachable
- * from inside a workspace. It is enforced where the request is answered
- * (`runMamaCommand`), so neither transport can widen it: the k8s proxy
- * queues opaque envelopes without knowing what any command means, and the
- * containerless route validates against this same list.
+ * This list is the allowlist, enforced where requests are answered
+ * (`runMamaCommand`), so no transport can widen it.
  *
- * `stop` is here because in yaac a stop is REVERSIBLE: it ends the running
- * unit and keeps the checkout, the row, the title, the group and the
- * conversation, so a user can restart what an agent wound down. An agent may
- * stop itself as readily as a sibling — a fanned-out session that has
- * finished its work is the case this exists for.
- *
- * Deliberately absent: anything that deletes, restarts or reconfigures.
- * Those destroy work or reshape the install, and stay the user's.
+ * `stop` is allowed because a stop is reversible: the checkout, row, title,
+ * group and conversation are kept, so the user can restart it. Anything that
+ * deletes, restarts or reconfigures stays the user's.
  */
 export const MAMA_COMMANDS = [
   'list',
@@ -1561,18 +1364,10 @@ export const MAMA_COMMANDS = [
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]
 
 /**
- * One queued in-workspace `yaac-mama` request, as drained from a runtime that
- * holds them. Wire shape mirrors k8s/proxy/mama-queue.ts (MamaRequest sans
- * enqueuedAtMs) — the proxy bundles independently; keep them in sync.
- *
- * Shared vocabulary because it crosses a wire the proxy sidecar and the
- * server each hold one end of, exactly like the other types in this file:
- * the runtime that drains the queue and the mediator that answers each
- * request both name it, and neither owns it.
- *
- * The envelope is deliberately untyped beyond this: `command` is a bare
- * string because it comes off a wire, and `args` is a flat option map. What
- * any of it MEANS is the server's, which is what keeps the queue a queue.
+ * One queued in-workspace `yaac-mama` request, as drained from a runtime.
+ * Mirrors `MamaRequest` in k8s/proxy/mama-queue.ts (minus enqueuedAtMs);
+ * the proxy bundles separately, so keep them in sync. The server alone
+ * interprets `command` and `args`.
  */
 export interface PendingMamaRequest {
   requestId: string

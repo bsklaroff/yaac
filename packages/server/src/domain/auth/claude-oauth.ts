@@ -2,8 +2,8 @@ import { z } from 'zod'
 import type { ClaudeOAuthBundle } from '@yaac/shared/types'
 import { mayPresentRefreshToken } from './refresh-guard'
 
-/** Claude Code's OAuth token endpoint — the same one session refresh
- *  traffic hits through the proxy. */
+/** Claude Code's OAuth token endpoint, also used by in-workspace refreshes
+ *  through the proxy. */
 export const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
 
 /** Claude Code's public OAuth client id (PKCE flow, no secret). Baked into
@@ -21,10 +21,9 @@ const tokenResponseSchema = z.object({
 
 /**
  * One refresh_token grant against the Claude OAuth token endpoint. Returns
- * the refreshed bundle, merged the same way the proxy's session-refresh
- * capture merges (fields the response omits keep their stored values).
- * Never throws — null covers every failure, including a bundle that has no
- * refresh token to present (the bare-access-token save path).
+ * the refreshed bundle, keeping stored values for fields the response omits
+ * (as the proxy's refresh capture does). Never throws: null covers every
+ * failure, including a bundle with no refresh token.
  */
 export async function refreshClaudeOAuthBundle(
   bundle: ClaudeOAuthBundle,

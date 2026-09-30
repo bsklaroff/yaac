@@ -3,21 +3,11 @@ import { testEnv } from '@yaac/shared/env'
 import type { ProjectRef } from '#drivers/contract'
 
 /**
- * The image half of a workspace launch: build (or reuse) the project's
- * image, then publish it where the cluster can pull it, and answer with the
- * ref that names it there.
- *
- * The caller decides only which project and whether the workspace runs
- * nested containers — the second because it changes the image CHAIN (the
- * nestable layer is what carries an in-pod engine). Everything else is
- * substrate: which prefix the test fixtures pinned, whether a build is
- * allowed at all, the content-hash tag that decides there is nothing to do,
- * and the registry the pod resolves. Those are read here rather than passed
- * in, so no caller above the runtime has to know they exist.
- *
- * Progress is reported through the caller's callback because the caller
- * owns the create's user-visible narration; a build is the longest step it
- * has, and the layer messages come from deep inside this half.
+ * Build (or reuse) a project's workspace image, make sure it is in the
+ * registry, and return the ref the cluster pulls. `nestedContainers` adds
+ * the nestable layer (the in-pod engine) to the chain. Test image prefix
+ * and prebuilt-only mode are read from the environment here, so callers
+ * need not know about them.
  */
 export async function prepareWorkspaceImage(opts: {
   project: ProjectRef
@@ -39,10 +29,8 @@ export async function prepareWorkspaceImage(opts: {
     },
   )
 
-  // Answer with the ref the cluster resolves. In practice the tag is
-  // already in the registry — every layer above was either looked up there
-  // or built by a pod that pushed it — so this is a HEAD, and the push
-  // behind it is the backstop for a registry that lost the tag mid-run.
+  // Usually just a HEAD: every layer was either found in the registry or
+  // pushed by its builder pod. The push covers a registry that lost the tag.
   emit('Publishing the session image to the local registry...')
   return pushImageShared(imageName, { project: opts.project, reason: 'session' })
 }

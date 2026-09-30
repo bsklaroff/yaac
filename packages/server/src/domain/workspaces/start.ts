@@ -5,11 +5,11 @@ import { modelDisplayName } from '#domain/auth'
 import { recordProjectCreate } from '#db'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
-/** One create, as every caller that starts a workspace asks for it. */
+/** A request to start a workspace. */
 export interface StartWorkspaceRequest {
   projectSlug: string
-  /** The id its provisioning row is registered under — and the workspace's
-   *  own, unless a prewarmed spare is claimed in its place. */
+  /** The provisioning row's id, and the workspace's unless a spare is
+   *  claimed. */
   workspaceId: string
   tool?: AgentTool
   model?: string
@@ -22,34 +22,23 @@ export interface StartWorkspaceRequest {
   title?: string
   /** Sidebar group, already resolved to an id. */
   groupId?: string
-  /** Record what the request named as the project's next create defaults —
-   *  for a person choosing, never for an agent or a queued launch. */
+  /** Remember the named settings as project defaults (user creates only). */
   rememberDefaults: boolean
-  /** Try a prewarmed spare first. A claimed spare lists under its own id,
-   *  not `workspaceId`, so a caller that has already handed that id out (an
-   *  agent's `yaac-mama create`, a queued launch whose children now point at
-   *  it) passes false. */
+  /** Try a prewarmed spare first. A spare has its own id, so callers that
+   *  already handed out `workspaceId` pass false. */
   claimSpare: boolean
 }
 
 /**
- * Start a workspace: resolve every choice, register its provisioning row,
- * then hand over a prewarmed spare or create one cold.
- *
- * The one create path — the create route, `yaac-mama create` and a queued
- * launch all come through here, each with its own flags. Answers the
- * workspace that resulted, whose id is the spare's when one was claimed.
+ * Start a workspace: resolve settings, register the provisioning row, then
+ * claim a spare or create cold. Used by the create route, `yaac-mama create`
+ * and queued launches.
  */
 export async function startWorkspace(
   request: StartWorkspaceRequest,
   onProgress: (message: string) => void,
 ): Promise<WorkspaceCreateResult> {
   const { projectSlug, workspaceId, groupId, prompt, title } = request
-  // Every choice resolved here, once: what the request named, else what this
-  // project last used for that agent, else the fallback — the same answer
-  // the webapp's create form shows before submit. An unnamed mode stays
-  // `tui`: only the webapp can present a chat pane, and it sends the one it
-  // remembers.
   const setup = await resolveCreate(projectSlug, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -58,9 +47,7 @@ export async function startWorkspace(
   })
   const { tool } = setup
   if (request.rememberDefaults) {
-    // Only the fields the request named are written, so a create that took a
-    // resolved default never overwrites a pick — and the agent itself is
-    // always recorded, as the one this project was last created with.
+    // Only the named fields, so a resolved default never overwrites a pick.
     await recordProjectCreate(projectSlug, tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
@@ -68,10 +55,7 @@ export async function startWorkspace(
     }, request.branch)
   }
 
-  // Registered before the long await so the row shows up instantly and
-  // survives a browser reload. `ensure`, because a caller that hands the id
-  // out before this resolves (the create route, `yaac-mama create`) has
-  // reserved it already, and this only fills in what the resolve decided.
+  // `ensure`: the caller may have reserved the row already.
   const modelName = setup.model !== undefined ? modelDisplayName(tool, setup.model) : undefined
   ensureProvisioning({
     workspaceId,
@@ -85,11 +69,6 @@ export async function startWorkspace(
   })
 
   if (request.claimSpare) {
-    // Spares are warmed as this project's untouched create, so the usual
-    // claim hands the running agent over as-is; one warmed with a different
-    // agent, model or posture has its agent respawned, and one in the other
-    // mode is passed over (see `tryClaimPrewarmed`). A claim returns the
-    // spare's own id, which lists in place of this row once it resolves.
     const claimed = await tryClaimPrewarmed(projectSlug, workspaceId, setup, onProgress, {
       ...(request.branch !== undefined ? { branch: request.branch } : {}),
       ...(prompt !== undefined ? { prompt } : {}),

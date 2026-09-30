@@ -1,10 +1,8 @@
 /**
- * In-process keyed mutual exclusion via per-key promise chaining: tasks
- * sharing a key run one at a time in submission order; distinct keys run
- * concurrently. The server is a single process, so this is sufficient
- * mutual exclusion for anything only it mutates (per-project git config
- * writes, per-project registry ensures). A failed predecessor does not
- * poison the chain — each task gets its own verdict.
+ * In-process keyed mutex: tasks with the same key run one at a time in
+ * submission order; different keys run concurrently. Enough for state only
+ * this server process mutates. A failed task does not fail the ones queued
+ * after it.
  */
 export function createKeyedMutex(): <T>(key: string, task: () => Promise<T>) => Promise<T> {
   const queues = new Map<string, Promise<unknown>>()

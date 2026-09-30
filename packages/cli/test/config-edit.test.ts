@@ -12,9 +12,8 @@ vi.mock('#commands/edit-file', () => ({
   editFile: vi.fn().mockResolvedValue(undefined),
 }))
 
-// The commands use the shared `api` singleton, which resolves each request to
-// its already-unwrapped body (reads) or undefined (void writes). Mock the
-// singleton with a leaf fn per route.
+// Mock the `api` singleton with one fn per route. Like the real one, each
+// resolves to the unwrapped body, or undefined for void writes.
 const h = vi.hoisted(() => ({
   rawGet: vi.fn(),
   configPut: vi.fn(),

@@ -6,43 +6,36 @@ import { execFile, spawnSync } from 'node:child_process'
 import { workspaceBinDir } from '#domain/workspaces/workspace-bin'
 
 /**
- * The shipped `yaac-watch-prs` workspace-bin script, exercised for real: a temp
- * dir gets a stub `gh` on PATH and the script runs `--once` against it, with
- * YAAC_WATCH_PRS_WORKDIR and YAAC_WATCH_PRS_STATE keeping it off /workspace
- * and off the real seen-state.
+ * Runs the shipped `yaac-watch-prs` script with `--once` against a stub `gh`
+ * on PATH. YAAC_WATCH_PRS_WORKDIR and YAAC_WATCH_PRS_STATE keep it off
+ * /workspace and the real seen-state.
  *
- * The contract under test is that a *failed* poll is skipped visibly on
- * stderr rather than turned into events. Only stdout lines become
- * notifications (the watcher drives the agent's Monitor tool), so an API
- * outage must leave stdout empty — GitHub answers 5xx with a JSON object,
- * which the `.[]` filters would otherwise iterate into empty-field junk — and
- * must not end the baseline pass, or every pre-existing comment floods out as
- * "new" once GitHub recovers.
+ * A failed poll must be skipped with a note on stderr, not turned into
+ * events. Only stdout lines become notifications, so an API outage must
+ * leave stdout empty (GitHub's 5xx JSON body would otherwise be iterated into
+ * junk) and must not end the baseline pass, or every existing comment would
+ * flood out as new once GitHub recovers.
  */
 const SCRIPT = path.join(workspaceBinDir(), 'yaac-watch-prs')
 const US = String.fromCharCode(31)
 /** The on-disk "baseline pass finished" marker; mirrors BASELINE_MARK. */
 const BASELINE_MARK = '#baselined'
 /**
- * The script needs no jq of its own — it filters through gh's built-in `--jq`.
- * The host's jq is what lets the stub gh below *emulate* that engine, so only
- * the filter suite at the bottom depends on one being installed.
+ * The script uses gh's built-in `--jq`, not jq. The stub gh uses the host's
+ * jq to emulate it, so only the filter suite at the bottom needs jq.
  */
 const HAS_JQ = spawnSync('sh', ['-c', 'command -v jq'], { stdio: 'ignore' }).status === 0
 
 /**
- * Stub `gh`. It keys each call off argv to a fixture name, and returns
- * whatever the test wrote there — no test data is interpolated into the
- * script, so a fixture containing `$`, a backtick or a quote stays literal.
- * `$FIXTURES` holds the fixture dir, `$FAIL_KEYS` a `:`-delimited list of
- * keys whose calls should fail the way an outage does. It also records the
- * directory it was invoked from in `$FIXTURES/gh-cwd`, since which checkout
- * `gh` runs in is what decides the repo it infers.
+ * Stub `gh`. It maps each call's argv to a fixture name and returns that
+ * fixture's contents, so fixtures containing `$`, backticks or quotes stay
+ * literal. `$FIXTURES` is the fixture dir; `$FAIL_KEYS` is a `:`-delimited
+ * list of keys whose calls fail like an outage. It records its cwd in
+ * `$FIXTURES/gh-cwd`, since that decides which repo gh infers.
  *
- * With a `.txt` fixture the stub returns its lines verbatim (the US-joined
- * shape gh's `--jq` would have produced). With a `.json` one it runs the
- * script's real `--jq` filter over it via the host jq, so the filters
- * themselves are under test too.
+ * A `.txt` fixture is returned verbatim (the US-joined output of gh's
+ * `--jq`). A `.json` fixture is run through the script's real `--jq` filter
+ * via the host jq, so the filters are tested too.
  */
 const GH_STUB = `#!/bin/sh
 pwd > "$FIXTURES/gh-cwd"
@@ -128,8 +121,8 @@ describe('yaac-watch-prs script', () => {
           ...env,
         },
       }, (err, stdout, stderr) => {
-        // A non-zero exit is a result to assert on; a signal kill (timeout)
-        // or a spawn failure is a broken harness, not a script outcome.
+        // A non-zero exit is a result; a signal kill or spawn failure is a
+        // harness error.
         if (!err) return resolve({ stdout, stderr, code: 0 })
         const code = 'code' in err ? err.code : undefined
         if (typeof code !== 'number') {
@@ -160,22 +153,18 @@ describe('yaac-watch-prs script', () => {
     expect(stdout).toBe('[comment] PR #43 by alice: looks good\n')
   })
 
-  // Which checkout gh runs in is what decides the repo it infers, and
-  // /workspace is only the *container's* answer for where that checkout is: a
-  // containerless workspace is a plain checkout at an arbitrary host path, so a
-  // hard-coded /workspace makes the watcher fail outright there. The default is
-  // therefore the top of whatever repo the caller is standing in.
+  // gh infers the repo from its cwd. A containerless checkout is not at
+  // /workspace, so the default is the top of the caller's current repo.
   it('runs gh from the top of the checkout it was started in', async () => {
     await seedBaseline()
     await fixtureLines('issue-comments', [['7', 'alice', '', 'looks good']])
-    // realpath: git answers with the physical path, and on macOS the temp dir
-    // is reached through a symlink.
+    // git reports the physical path, and macOS's temp dir is a symlink.
     const repo = await fs.realpath(await fs.mkdtemp(path.join(tmpDir, 'repo-')))
     const sub = path.join(repo, 'packages', 'server')
     await fs.mkdir(sub, { recursive: true })
     expect(spawnSync('git', ['init', repo], { stdio: 'ignore' }).status).toBe(0)
 
-    // An empty override is the same as an unset one — this is the default path.
+    // An empty override counts as unset.
     const { stdout } = await run(
       ['--pr', '43', '--events', 'comment', '--once'],
       { YAAC_WATCH_PRS_WORKDIR: '' },
@@ -185,9 +174,8 @@ describe('yaac-watch-prs script', () => {
     expect((await fs.readFile(path.join(fixtures, 'gh-cwd'), 'utf8')).trim()).toBe(repo)
   })
 
-  // The container's checkout is always /workspace, so it stays the fallback for
-  // a caller started outside any repo (a pod's PATH-resolved Monitor command
-  // run from `/`, say) rather than an immediate failure.
+  // Outside any repo (e.g. a Monitor command run from `/` in a pod), it
+  // falls back to /workspace.
   it.skipIf(spawnSync('sh', ['-c', 'test -d /workspace']).status !== 0)(
     'falls back to /workspace when the cwd is in no repo', async () => {
       await seedBaseline()
@@ -199,12 +187,9 @@ describe('yaac-watch-prs script', () => {
     },
   )
 
-  // A containerless workspace runs on the user's own host, which need not have
-  // jq — so the script must never reach for one, neither to filter a response
-  // nor to probe for it at startup: gh's `--jq` is a flag on gh's own built-in
-  // engine. A jq that fails on sight proves nothing invokes it, and the source
-  // check catches a `command -v jq` preflight, which a *present* stub would
-  // satisfy.
+  // The user's host may lack jq, so the script must never call or probe for
+  // it. A jq stub that always fails proves nothing calls it; the source check
+  // catches a `command -v jq` probe, which a present stub would satisfy.
   it('needs no jq of its own — gh --jq only', async () => {
     await seedBaseline()
     await fixtureLines('issue-comments', [['7', 'alice', '', 'looks good']])
@@ -233,7 +218,7 @@ describe('yaac-watch-prs script', () => {
     )
     expect(code).toBe(0)
     expect(stdout).toBe('')
-    // Visibly skipped: our note per source plus gh's own error, on stderr.
+    // Skipped with a note per source plus gh's own error on stderr.
     expect(stderr).toContain('gh api issues/43/comments failed; retrying next poll')
     expect(stderr).toContain('gh api pulls/43/reviews failed; retrying next poll')
     expect(stderr).toContain('HTTP 503')
@@ -249,9 +234,8 @@ describe('yaac-watch-prs script', () => {
     expect(stderr).toContain('gh pr view #43 failed; retrying next poll')
   })
 
-  // The two `gh pr list` calls have different consequences — the open-PR
-  // listing aborts the whole poll, the opened-events one skips only its own
-  // block — so their stderr notes have to be told apart.
+  // A failed open-PR listing aborts the poll, while a failed opened-events
+  // query skips only its block, so their stderr notes must differ.
   it('labels the open-PR listing and the opened-events query distinctly', async () => {
     await seedBaseline()
 
@@ -266,8 +250,8 @@ describe('yaac-watch-prs script', () => {
 
   it('drops records with no author or body even when gh exits 0', async () => {
     await seedBaseline()
-    // What iterating an error object's values used to produce: fields present
-    // positionally, but empty where a real comment has an author and a body.
+    // What iterating an error object's values produces: rows with empty
+    // author and body fields.
     await fixtureLines('issue-comments', [['7', '', '', ''], ['', '', '', '']])
 
     const { stdout, code } = await run(['--pr', '43', '--events', 'comment', '--once'])
@@ -301,9 +285,9 @@ describe('yaac-watch-prs script', () => {
     expect(second.stdout).toBe('[comment] PR #43 by bob [src/a.ts]: second\n')
   })
 
-  // The baseline pass is what keeps a fresh watcher from replaying history.
-  // If it ends on a poll that never reached GitHub, nothing got marked seen,
-  // and recovery turns into a burst of stale notifications.
+  // The baseline pass keeps a new watcher from replaying history. If it
+  // ended on a failed poll, nothing would be marked seen and recovery would
+  // flood stale notifications.
   it('retries the baseline after an outage instead of flooding on recovery', async () => {
     await fixtureLines('issue-comments', [['7', 'alice', '', 'old comment']])
 
@@ -319,7 +303,7 @@ describe('yaac-watch-prs script', () => {
     expect(recovered.stdout).toBe('')
     expect(await fs.readFile(statePath, 'utf8')).toContain(BASELINE_MARK)
 
-    // ...and a genuinely new comment still surfaces afterwards.
+    // A new comment still surfaces afterwards.
     await fixtureLines('issue-comments', [
       ['7', 'alice', '', 'old comment'],
       ['8', 'bob', '', 'new comment'],
@@ -342,9 +326,8 @@ describe('yaac-watch-prs script', () => {
     expect(await fs.readFile(statePath, 'utf8')).toContain(BASELINE_MARK)
   })
 
-  // The jq filters live in the script, so feed the stub real GitHub-shaped
-  // JSON and let it run the script's own `--jq` argument over it — through the
-  // host's jq, standing in for the engine gh has built in.
+  // Feed the stub GitHub-shaped JSON and run the script's own `--jq` filters
+  // over it with the host's jq.
   describe.skipIf(!HAS_JQ)(
     'the shipped jq filters', () => {
       async function fixtureJson(key: string, value: unknown) {
@@ -363,9 +346,8 @@ describe('yaac-watch-prs script', () => {
 
       it('still emits a comment whose user is null, as ghost', async () => {
         await seedBaseline()
-        // `user` is nullable on issue comments and reviews (deleted GitHub
-        // Apps, some legacy reviews); jq renders null.login as "", which the
-        // author guard would otherwise drop silently and forever.
+        // `user` can be null (deleted GitHub Apps, some legacy reviews); jq
+        // renders null.login as "", which the author guard would drop.
         await fixtureJson('issue-comments', [{ id: 12, user: null, body: 'from a deleted app' }])
 
         const { stdout } = await run(['--pr', '43', '--events', 'comment', '--once'])
@@ -385,8 +367,8 @@ describe('yaac-watch-prs script', () => {
 
       it('emits nothing when the response is an error object, not a list', async () => {
         await seedBaseline()
-        // The reported bug: an outage's `{"message": …}` body run through a
-        // `.[]` filter. Whether jq errors or yields junk, no event may escape.
+        // An outage's `{"message": …}` body run through a `.[]` filter.
+        // Whether jq errors or yields junk, no event may escape.
         await fixtureJson('issue-comments', {
           message: 'Server Error',
           documentation_url: 'https://docs.github.com/rest',

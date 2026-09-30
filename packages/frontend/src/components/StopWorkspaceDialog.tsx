@@ -10,16 +10,14 @@ import { useUiStore } from '#lib/store'
 import type { QueuedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
 /**
- * Confirm stopping a workspace — the sidebar row menu's Stop… and Alt+D.
+ * Confirm stopping a workspace (the row menu's Stop… and Alt+D).
  *
- * With nothing queued after the workspace it is a plain confirm. With queued
- * workspaces it lists them, because stopping is what starts them: each direct
- * child can be edited (the create dialog opens over this one) or discarded
- * (immediately — this dialog is already the confirmation) before it does.
- * Entries further down a chain are shown under their parent and marked as
- * waiting: they start after THEIR parent stops, not with this stop.
+ * Stopping starts any workspaces queued after it, so the dialog lists them:
+ * each direct child can be edited or discarded first (discarding needs no
+ * further confirm). Deeper entries show under their parent as waiting, since
+ * they start when that parent stops.
  *
- * The confirm button takes initial focus, so Alt+D then Enter still stops.
+ * The confirm button takes initial focus, so Alt+D then Enter stops.
  */
 export function StopWorkspaceDialog({
   workspace,

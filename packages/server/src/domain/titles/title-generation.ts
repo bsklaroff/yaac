@@ -1,22 +1,16 @@
 /**
- * Reconcile step that gives otherwise-untitled sessions a model-generated
- * title summarizing their first user message, written to the same session
- * row as a user rename — a rename simply overwrites it, and only sessions
- * with no title at all are eligible, so a user's title is never clobbered.
- * Eligibility is checked again by the write itself: a rename that lands
- * while the model is still running wins.
+ * Reconcile step that gives untitled live workspaces a model-generated title
+ * summarizing their first user message. It is written to the same column as
+ * a user rename, and only if the row is still untitled, so a rename made
+ * while the model runs wins.
  *
- * Draft and queued workspaces are titled from their prompt the same way,
- * unless the user gave one a title of their own. Such a generated title is
- * cleared when its prompt changes, so the write is conditional on the draft
- * or entry still holding the prompt it was made from.
+ * Drafts and queued entries without a user title are titled from their
+ * prompt the same way; the write only lands if the prompt is unchanged.
  *
- * Each tick fires one detached task per eligible session — the tick body
- * never blocks on a model download or inference (those serialize inside
- * the summarizer). One attempt per session per server run, and per draft
- * prompt: the in-memory `attempted` set covers in-flight dedup, failure
- * memory, and don't-regenerate after a user deliberately clears a
- * generated title.
+ * Each tick fires detached tasks, so it never blocks on a model download or
+ * inference (the summarizer serializes those). The in-memory `attempted` set
+ * allows one attempt per workspace (or per draft/entry prompt) per server
+ * run, which also stops regeneration after a user clears a generated title.
  */
 import {
   firstAgentSessionsFor,
@@ -31,13 +25,11 @@ import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
-/** Sessions already handled this server run; added synchronously before the
- *  task's first await so a concurrent tick can't double-fire. */
+/** Keys already attempted this server run. */
 const attempted = new Set<string>()
 
-/** Sweep live workspaces, drafts and queued entries once, firing detached title-generation
- *  tasks. The candidates are the rows alone — a title and a founding prompt
- *  are both recorded state, so there is nothing to ask the runtime. */
+/** Sweep live workspaces, drafts and queued entries once, firing detached
+ *  title-generation tasks. Reads only rows; the runtime isn't consulted. */
 export async function reconcileGeneratedTitles(): Promise<void> {
   if (!env.autoTitles) return
 
@@ -50,8 +42,8 @@ export async function reconcileGeneratedTitles(): Promise<void> {
     if (prompt === undefined) continue
     void generateOnce(key, key, prompt, (t) => setWorkspaceTitle(projectSlug, workspaceId, t, { ifUntitled: true }))
   }
-  // A draft or entry is keyed on its prompt too: editing the prompt clears
-  // the title, and the new prompt is worth one attempt of its own.
+  // Drafts and entries are keyed on the prompt too, so an edited prompt gets
+  // its own attempt.
   for (const { id, prompt, title, generatedTitle } of await listDraftWorkspaceRows()) {
     if (title !== undefined || generatedTitle !== undefined) continue
     void generateOnce(`draft:${id}:${prompt}`, `draft ${id}`, prompt, (t) => setDraftWorkspaceTitle(id, prompt, t))
@@ -62,8 +54,8 @@ export async function reconcileGeneratedTitles(): Promise<void> {
   }
 }
 
-/** One attempt per key. The claim is taken before the first await, so it
- *  lands synchronously in the sweep that fired it. */
+/** One attempt per key, claimed before the first await so a concurrent tick
+ *  can't double-fire. */
 async function generateOnce(
   key: string,
   label: string,
@@ -80,7 +72,7 @@ async function generateOnce(
   }
 }
 
-/** Test helper: forget which sessions were already attempted. */
+/** Test helper: forget which keys were already attempted. */
 export function _resetTitleGenerationForTests(): void {
   attempted.clear()
 }

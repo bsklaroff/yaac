@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as createModule from '#domain/workspaces/create'
 
-// The create is the boundary: past it lies the substrate. What is real is
-// everything that decides what it runs.
+// Stub createWorkspace so the substrate is never touched; everything that
+// decides what gets created runs for real.
 vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   ...(await importOriginal<typeof createModule>()),
   createWorkspace: vi.fn(),

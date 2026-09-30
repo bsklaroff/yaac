@@ -9,13 +9,11 @@ import { resolveProjectCredential } from './credentials'
 import { projectRemoteUrl } from './detail'
 
 /**
- * Keeping every workspace's `origin/*` current (docs/server-git.md). A
- * workspace is a clone with refs of its own, so a server fetch into the
- * main clone reaches it only when something copies the refs over: every
- * fetch the server makes goes through `fetchProjectOrigin`, which fans the
- * result out to the project's running workspaces, and the `origin-refresh`
- * reconcile step fetches on a timer, so a project nobody creates in still
- * trails origin by minutes rather than indefinitely.
+ * Keeps every workspace's `origin/*` current (docs/server-git.md). Each
+ * workspace is a clone with its own refs, so after every server fetch
+ * `fetchProjectOrigin` copies the refs into the project's running
+ * workspaces. The `origin-refresh` reconcile step also fetches on a timer,
+ * so idle projects stay within minutes of origin.
  */
 
 /** How stale the main clone of a project with running workspaces may get
@@ -31,20 +29,20 @@ const lastFetchMs = new Map<string, number>()
 /** The fetches whose gc and fan-out are already scheduled. */
 const followedUp = new WeakSet<Promise<void>>()
 
-/** Per project, a fan-out in flight, and whether another was asked for
- *  while it ran. */
+/** Per project, a running fan-out and whether another was requested
+ *  meanwhile. */
 const fanOuts = new Map<string, { again: boolean }>()
 
 /**
- * Fetch a project's origin into its main clone, then — without the caller
- * waiting on either — gc the main clone (`maintainRepo`) and bring every
- * running workspace's `origin/*` up to it (`propagateOrigin`).
+ * Fetch a project's origin into its main clone, then, in the background, gc
+ * it (`maintainRepo`) and update every running workspace's `origin/*`
+ * (`propagateOrigin`).
  */
 export async function fetchProjectOrigin(slug: string): Promise<void> {
   lastFetchMs.set(slug, Date.now())
   const repo = repoDir(slug)
   const fetched = fetchOrigin(repo, await projectRemoteUrl(slug), await resolveProjectCredential(slug))
-  // Once per fetch, not per caller: callers that arrive together share one.
+  // Once per fetch; concurrent callers share one.
   if (!followedUp.has(fetched)) {
     followedUp.add(fetched)
     fetched.then(() => {
@@ -58,10 +56,8 @@ export async function fetchProjectOrigin(slug: string): Promise<void> {
 }
 
 /**
- * Refresh `origin/*` in every running workspace of the project. Coalesced:
- * one asked for while another runs marks the project, and the running one
- * goes round exactly once more when it finishes, so a burst of fetches
- * costs at most two rounds of execs.
+ * Refresh `origin/*` in every running workspace of the project. Requests
+ * during a run make it loop once more, so a burst costs at most two rounds.
  */
 function propagateOrigin(slug: string): void {
   const running = fanOuts.get(slug)
@@ -101,12 +97,9 @@ async function fanOut(slug: string): Promise<void> {
 }
 
 /**
- * The `origin-refresh` reconcile step: fetch every project that has a
- * running workspace and has not been fetched for `ORIGIN_REFRESH_MS`. A
- * fetch a create, a claim or the branch picker made counts. Detached from
- * the pass, which does not wait on the network; a failure is logged and
- * tried again an interval later, and never reaches a workspace — a stale
- * `origin/*` is all it costs.
+ * The `origin-refresh` reconcile step: fetch every project with a running
+ * workspace that hasn't been fetched (by anything) for `ORIGIN_REFRESH_MS`.
+ * Detached from the pass; failures are logged and retried next interval.
  */
 export async function refreshProjectOrigins(view: RuntimeSnapshot): Promise<void> {
   if (testEnv.e2eSkipFetch) return

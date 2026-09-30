@@ -1,25 +1,16 @@
 /**
- * Reader for the conversation record acpd tees as it relays
- * (`dockerfiles/acpd/acpd.js`). This is where a pane's history comes from.
+ * Reader for the conversation record acpd writes as it relays
+ * (`dockerfiles/acpd/acpd.js`).
  *
- * The record is the verbatim JSON-RPC stream, both directions, in arrival
- * order — so replaying it is the same translation the live path does, through
- * the same `acp-protocol` projection. That is the whole reason the log is in
- * ACP's vocabulary rather than the agent's own transcript format: one
- * translator, not two that can disagree about what a conversation looked like.
+ * The record is the verbatim JSON-RPC stream in both directions, so replay
+ * uses the same `acp-protocol` projection as live traffic. acpd writes it
+ * whether or not a client is attached, onto a host-visible path, so the
+ * server keeps nothing itself and a stopped workspace's conversation stays
+ * readable.
  *
- * Because acpd writes it whether or not anyone is attached, and onto a
- * host-mounted path, the server needs to retain nothing itself: a pane
- * attaching reads the file, and a pod that is long gone still has a readable
- * conversation.
- *
- * The record is not merely where history comes from — it is the ONLY path by
- * which conversation content reaches a pane, live content included. See
- * `tailAcpLog` for why that is forced rather than chosen.
- *
- * Being both directions verbatim, it also answers the question ACP gives a
- * reconnecting client no way to ask: whether a turn is running right now. See
- * `readAcpInFlight`.
+ * It is the only path by which conversation content reaches a pane (see
+ * `tailAcpLog`), and because it holds both directions it also tells a
+ * reconnecting client whether a turn is running (see `readAcpInFlight`).
  */
 
 import type { FileHandle } from 'node:fs/promises'
@@ -33,8 +24,8 @@ import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs
 import { serverLog } from '#log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 
-/** Which conversation's record: acpd names each `<agentSessionId>.jsonl` in
- *  its workspace's record dir. */
+/** Which conversation's record; acpd names each `<agentSessionId>.jsonl`
+ *  in its workspace's record dir. */
 export interface AcpRecordRef {
   slug: string
   workspaceId: string
@@ -42,24 +33,23 @@ export interface AcpRecordRef {
 }
 
 /**
- * A conversation's record as a file under its workspace's record dir — a dir
- * the pod writes, so it is read confined to it (`SandboxFile`). Undefined for
- * an id that is not one: the id is joined into the path, and it comes from
- * the agent, so it is held to `agentSessionIdSchema` before it is.
+ * A conversation's record as a file confined to its record dir, which the
+ * workspace can write (`SandboxFile`). Undefined for an invalid id: the id
+ * comes from the agent and is joined into the path, so it must pass
+ * `agentSessionIdSchema`.
  */
 export function acpRecord(ref: AcpRecordRef): SandboxFile | undefined {
   if (!agentSessionIdSchema.safeParse(ref.agentSessionId).success) return undefined
   return { slug: ref.slug, dir: acpLogDir(ref.slug, ref.workspaceId), rel: `${ref.agentSessionId}.jsonl` }
 }
 
-/** The most of a record the whole-file readers below will read. */
+/** Size cap for the whole-file readers below. */
 export const MAX_ACP_RECORD_BYTES = 64 * 1024 * 1024
 
 /**
- * A whole record as text, or undefined when there is none to read. A missing
- * record is not an error — a conversation whose agent has not spoken yet
- * simply has no history — and one past the cap is logged and read as
- * absent, which every caller already degrades from.
+ * A whole record as text, or undefined if there is none. A missing record
+ * just means no history yet; one over the cap is logged and treated as
+ * absent.
  */
 async function readRecord(ref: AcpRecordRef): Promise<string | undefined> {
   const file = acpRecord(ref)
@@ -78,12 +68,8 @@ async function openRecord(ref: AcpRecordRef): Promise<FileHandle | null> {
 }
 
 /**
- * Project a recorded stream into the events a pane renders — a conversation's
- * history, from a record read by whoever decides how much of one to read.
- *
- * Every line is tolerated: the record can end mid-write while the agent is
- * streaming, and an adapter that printed something that is not JSON-RPC put it
- * in here too. Neither is a reason to lose the conversation.
+ * Project recorded lines into the events a pane renders. Bad lines are
+ * skipped: the record may end mid-write, and adapters may print non-JSON.
  */
 export function replayAcpLog(raw: string): AcpEvent[] {
   const projection = new AcpProjection()
@@ -93,49 +79,40 @@ export function replayAcpLog(raw: string): AcpEvent[] {
     .map((event, seq) => ({ ...event, seq }) as AcpEvent)
 }
 
-/** How often a tail looks for newly appended bytes. Short enough that a
- *  streaming reply reads as streaming, long enough that an idle conversation
- *  costs one open + two small reads a tick. */
+/** Tail poll interval: short enough for streaming to look live, cheap when
+ *  idle (one open and two small reads). */
 const TAIL_INTERVAL_MS = 150
 
 /** The most a tail reads into memory at once. */
 const TAIL_READ_BYTES = 1024 * 1024
 
 /**
- * How much of the record's head to read to identify the life that wrote it.
- * acpd's `_acpd/life` line is byte 0 of every life and carries only a uuid and
- * a timestamp, so this is generous.
+ * Bytes of the record's head to read to identify the agent life that wrote
+ * it. acpd's `_acpd/life` line is always first and small.
  */
 const LIFE_HEADER_BYTES = 512
 
 export interface AcpLogTail {
-  /** Read whatever has been appended since the last pass, now. Used before
-   *  emitting anything that must order *after* the record's contents. */
+  /** Read anything appended since the last pass, now. Used before emitting
+   *  something that must come after the record's contents. */
   flush(): Promise<void>
   close(): void
 }
 
 /**
- * Follow a record as it grows, projecting each newly appended line.
+ * Follow a record as it grows, projecting each appended line.
  *
- * This is the ONLY path by which conversation content reaches a pane. The
- * socket carries the RPC half — our requests and their replies, and the
- * agent's questions — but not a single rendered message, because two copies of
- * one stream cannot be spliced: the record and the socket carry the same
- * `session/update` notifications, ACP gives notifications no identity, and
- * joining them at an unknown point either duplicates the overlap or drops it.
- * One source has no join.
+ * This is the only path by which conversation content reaches a pane. The
+ * live socket carries the same `session/update` notifications, but ACP gives
+ * them no ids, so merging two sources would duplicate or drop the overlap.
  *
- * A new agent life resets the reader — position, partial line, decoder and
- * projection all start again, and the batch is flagged so the caller replaces
- * rather than appends. Lives are told apart by the id in acpd's `_acpd/life`
- * header rather than by the record getting shorter: a restart whose
- * `session/load` replay regrows the file past where we were reading, inside
- * one tick, is not visible as a shrink but is still a different conversation.
+ * A new agent life resets the reader and flags the batch so the caller
+ * replaces rather than appends. Lives are told apart by the `_acpd/life`
+ * header id, not by the file shrinking: a restart whose `session/load`
+ * replay regrows the file within one tick would not look like a shrink.
  *
- * `onEvents` is always called at least once, even for a record that does not
- * exist yet — a conversation whose agent has not spoken has an empty history,
- * not a missing one.
+ * `onEvents` is always called at least once, even when no record exists
+ * yet (an empty history).
  */
 export function tailAcpLog(
   record: AcpRecordRef,
@@ -145,20 +122,15 @@ export function tailAcpLog(
   let pos = 0
   let residual = ''
   let projection = new AcpProjection()
-  // Bytes are decoded through a decoder that spans passes, because a pass
-  // boundary lands wherever the writer happened to be: acpd appends one
-  // `writeSync` per agent stdout chunk and those chunks split characters, so
-  // decoding `[pos, size)` on its own would turn a straddling character into
-  // a pair of U+FFFDs inside otherwise valid JSON.
+  // One decoder across passes: acpd's writes can split characters, and
+  // decoding each pass alone would produce U+FFFDs inside valid JSON.
   let decoder = new StringDecoder('utf8')
   let lifeId: string | undefined
   let closed = false
   let first = true
   let tooLarge = false
-  // A restart seen but not yet reported. acpd empties the file before writing
-  // a byte, so a pass can land on a record of size 0 — nothing to project, but
-  // the caller must still be told to start over, or the next pass's events
-  // would be appended to the previous life's.
+  // A restart seen but not yet reported. acpd empties the file first, so a
+  // pass may see size 0 and must still tell the caller to start over.
   let pendingReset = false
 
   const startOver = (): void => {
@@ -173,15 +145,13 @@ export function tailAcpLog(
   const runPass = async (): Promise<void> => {
     if (closed) return
     const handle = await openRecord(record)
-    // The open is several awaits long; a close that landed meanwhile means
-    // nothing read now may be reported.
+    // A close during the open means nothing read now may be reported.
     if (closed) {
       await handle?.close()
       return
     }
     if (handle === null) {
-      // No record yet. The first pass still reports, so a pane learns it has
-      // an empty history rather than waiting for one.
+      // No record yet; the first pass still reports an empty history.
       if (first) {
         first = false
         onEvents([], true)
@@ -193,10 +163,9 @@ export function tailAcpLog(
       const size = (await handle.stat()).size
       const life = await readLifeId(handle)
       if (life !== lifeId) {
-        // Undefined on both sides means a record with no header — a partial
-        // first write, or a log acpd could not stamp. Treat only a *change*
-        // as a restart, and keep the size heuristic as the fallback for a
-        // record that never identifies itself.
+        // No header on either side (a partial first write, or an unstamped
+        // log): only a change counts as a restart, with the size check as a
+        // fallback.
         if (lifeId !== undefined || life !== undefined) startOver()
         lifeId = life
       }
@@ -206,23 +175,21 @@ export function tailAcpLog(
       if (size === pos && !reset) return
 
       const events: AcpEventInit[] = []
-      // Past the cap every whole-record reader here keeps to, nothing more is
-      // read: the size is the pod's to claim (a sparse file costs it nothing),
-      // and reading to it is the server's memory.
+      // Stop at the cap: the file size is the workspace's to choose, but
+      // memory is the server's.
       if (size > MAX_ACP_RECORD_BYTES) {
         if (!tooLarge) serverLog(`[server] acp log for ${record.agentSessionId}: past ${String(MAX_ACP_RECORD_BYTES)} bytes, no longer followed`)
         tooLarge = true
       }
-      // In windows, so no pass allocates more than one; and each window is
-      // split only once, so a line that never ends costs its length, not its
-      // square.
+      // Read in windows, each split once, so an endless line costs linear
+      // memory and time.
       while (!tooLarge && pos < size) {
         const buf = Buffer.allocUnsafe(Math.min(TAIL_READ_BYTES, size - pos))
         const { bytesRead } = await handle.read(buf, 0, buf.length, pos)
         if (bytesRead === 0) break
         pos += bytesRead
         const raw = decoder.write(buf.subarray(0, bytesRead))
-        // A record being appended to always ends mid-line; hold it for next pass.
+        // Hold an incomplete last line for the next pass.
         const nl = raw.lastIndexOf('\n')
         if (nl === -1) {
           residual += raw
@@ -241,10 +208,8 @@ export function tailAcpLog(
     }
   }
 
-  // Passes are serialized on a chain rather than skipped while one is running.
-  // `flush()` exists to order the caller's next message *after* the record's
-  // contents, and a flush that returned early because the interval had just
-  // fired would resolve without having read the bytes it was called to read.
+  // Serialize passes rather than skipping: `flush()` must actually read the
+  // bytes it was called for, even if a timer pass is already running.
   let chain: Promise<void> = Promise.resolve()
   const pass = (): Promise<void> => {
     chain = chain.then(runPass, runPass)
@@ -252,13 +217,12 @@ export function tailAcpLog(
   }
 
   const timer = setInterval(() => void pass(), opts.intervalMs ?? TAIL_INTERVAL_MS)
-  // Kick the first pass immediately so an attach does not wait out a tick.
+  // Run the first pass immediately.
   void pass()
 
   return {
-    // Await the chain first: an in-flight pass may have `stat`ed before the
-    // bytes we need were appended, so ordering after it is not enough on its
-    // own — we need one that starts now.
+    // An in-flight pass may have `stat`ed before the bytes we need were
+    // appended, so queue a fresh pass after it.
     flush: async () => {
       await chain
       await pass()
@@ -290,11 +254,8 @@ async function readLifeId(handle: FileHandle): Promise<string | undefined> {
 }
 
 /**
- * One recorded line as an object, or undefined for anything that is not one.
- *
- * Every line is tolerated: a read can land while the writer is mid-line, and an
- * adapter that printed something which is not JSON-RPC put that in here too.
- * Neither is a reason to lose the conversation.
+ * One recorded line as an object, or undefined. Bad lines are tolerated
+ * (mid-write reads, non-JSON adapter output).
  */
 function parseLine(line: string): Record<string, unknown> | undefined {
   if (line.trim() === '') return undefined
@@ -316,9 +277,8 @@ function lineId(msg: Record<string, unknown>): string | undefined {
 function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   const msg = parseLine(line)
   if (msg === undefined) return []
-  // The client's own prompts. The agent echoes a user message only when
-  // replaying under `session/load`, so for anything said live these lines are
-  // the only record that a user spoke at all.
+  // The client's own prompts. The agent echoes user messages only when
+  // replaying under `session/load`, so live prompts appear only here.
   if (msg.method === ACP.sessionPrompt) {
     const content = toContentList(asRecord(msg.params)?.prompt)
     return content.length === 0 ? [] : [{ type: 'user', content }]
@@ -327,11 +287,9 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     const event = projection.apply(msg.params)
     return event === undefined ? [] : [event]
   }
-  // A permission ask, and the answer that settled it. These come from the
-  // record rather than the live socket for the same reason turn state does:
-  // acpd holds nothing for an absent client, so an ask that arrived while the
-  // relay was down exists only here — and a pane that reattaches has to see a
-  // question the agent is still blocked on.
+  // Permission asks and their answers come from the record because an ask
+  // that arrived while the relay was down exists only here, and a
+  // reattaching pane must see what the agent is blocked on.
   if (msg.method === ACP.requestPermission) {
     const id = lineId(msg)
     return id === undefined ? [] : [projection.openPermission(id, msg.params)]
@@ -348,22 +306,13 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
 }
 
 /**
- * Whether a prompt turn was still in flight when the record was last written.
+ * Whether a prompt turn was in flight when the record was last written.
  *
- * This is how a *reconnecting* client learns what it cannot be told. ACP scopes
- * turn state to the request: a turn is running iff your own `session/prompt` is
- * unanswered, and the protocol has no status query, no busy notification and no
- * `session/load` semantics for a turn already in progress. So a connection that
- * takes over a live agent — after a relay drop, a streamd self-heal, or a server
- * restart — has no way to ask whether the agent is working.
- *
- * The record answers it, because acpd tees both directions: the client's own
- * `session/prompt` requests are in there with their ids, and so are the agent's
- * replies. A turn is in flight iff the last recorded prompt has no recorded
- * reply. Turns never overlap (`AcpConversation` queues them), so only the last
- * one can be outstanding.
- *
- * A missing record means nothing has been said yet, which is not a turn.
+ * ACP gives a reconnecting client no way to ask whether the agent is working
+ * (turn state is tied to your own unanswered `session/prompt`). The record
+ * has both directions, so a turn is in flight if the last recorded prompt
+ * has no recorded reply. Turns never overlap (`AcpConversation` queues
+ * them), so only the last can be open. No record means no turn.
  */
 export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
   const raw = await readRecord(record)
@@ -374,20 +323,16 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
     if (msg === undefined) continue
     const id = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
     if (msg.method === ACP.sessionPrompt) {
-      // A prompt sent without an id is a notification the agent will never
-      // answer, so it can never be the turn we are looking for.
+      // Without an id it is a notification, which is never answered.
       if (id !== undefined) pending = id
       continue
     }
     if (msg.method === ACPD.exit) {
-      // The agent process is gone; whatever it was doing died with it. acpd
-      // restarts under a fresh record, so this only ever refers to the life
-      // being scanned.
+      // The agent exited; acpd starts a fresh record for the next life.
       pending = undefined
       continue
     }
-    // Anything else carrying a method is a request or notification, not a
-    // reply; only a reply can close a turn.
+    // Only a reply (no method) can close a turn.
     if (msg.method !== undefined) continue
     if (id !== undefined && id === pending) pending = undefined
   }
@@ -395,30 +340,19 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
 }
 
 /**
- * The permission asks the agent was still blocked on when the record was last
- * written, as the JSON-RPC ids they must be answered under.
+ * Permission asks the agent was still blocked on when the record was last
+ * written: asks with no recorded answer, found as in `readAcpInFlight`.
+ * Several can be open at once.
  *
- * The same question `readAcpInFlight` answers, for the same reason and from the
- * same evidence: acpd tees both directions, so an ask and its answer are both
- * on disk, and an ask with no answer after it is one nobody has settled. A
- * connection that took over a live agent cannot learn this any other way —
- * the ask was delivered to a client that is gone, and nothing replays it.
- *
- * The ids come back verbatim rather than normalized to strings, because they
- * are what a reply has to carry: JSON-RPC matches an id by value AND type, so
- * answering the agent's `42` with `"42"` is a reply it will never pair with the
- * request it is still waiting on.
- *
- * Unlike a turn, several can be open at once — an agent may ask about a batch
- * of calls — so this returns all of them.
+ * Ids are returned verbatim, not as strings: JSON-RPC matches ids by value
+ * and type, so answering `42` with `"42"` would never pair.
  */
 export async function readAcpPendingPermissions(
   record: AcpRecordRef,
 ): Promise<Array<string | number>> {
   const raw = await readRecord(record)
   if (raw === undefined) return []
-  // Keyed by the string form so a reply pairs with its request, valued by the
-  // original so the answer can be addressed the way the agent asked.
+  // Keyed by string form for pairing, valued by the original id.
   const open = new Map<string, string | number>()
   for (const line of raw.split('\n')) {
     const msg = parseLine(line)
@@ -429,9 +363,7 @@ export async function readAcpPendingPermissions(
       continue
     }
     if (msg.method === ACPD.exit) {
-      // The agent process is gone, and with it whatever it was waiting to be
-      // told. acpd restarts under a fresh record, so this only ever refers to
-      // the life being scanned.
+      // The agent exited, and its asks with it.
       open.clear()
       continue
     }
@@ -442,27 +374,21 @@ export async function readAcpPendingPermissions(
 }
 
 /**
- * How much of a record to scan for the opening message. The first prompt sits
- * near the top by construction — after the life header and the handshake, all
- * of which are small — so a bounded read answers the question without paying
- * for a conversation that has since grown to megabytes. Not finding one in
- * this much means there isn't one.
+ * How much of a record to scan for the opening message. The first prompt
+ * follows the small life header and handshake, so a bounded read suffices
+ * even for a large conversation.
  */
 const FIRST_PROMPT_SCAN_BYTES = 64 * 1024
 
-/** The text block at the head of a `session/prompt` line — only ever tried
- *  on a line too long to parse. */
+/** The text block at the start of a `session/prompt` line, used only for a
+ *  line too long to parse. */
 const TRUNCATED_PROMPT_TEXT =
   /"method":"session\/prompt".*?"prompt":\[\{"type":"text","text":("(?:[^"\\]|\\.)*")/
 
 /**
- * The conversation's opening user message — what labels a workspace in the
- * sidebar.
- *
- * Taken from the record rather than watched on the live stream, so a workspace
- * can be labelled without a conversation being attached: the registry runs on
- * a reconciler tick, and coupling it to a live connection is the dependency the
- * record exists to break.
+ * The conversation's opening user message, used as the workspace's sidebar
+ * label. Read from the record so the registry, which runs on a reconcile
+ * tick, needs no live connection.
  */
 export async function readAcpFirstPrompt(record: AcpRecordRef): Promise<string | undefined> {
   const handle = await openRecord(record)
@@ -470,18 +396,15 @@ export async function readAcpFirstPrompt(record: AcpRecordRef): Promise<string |
   try {
     const buf = Buffer.alloc(FIRST_PROMPT_SCAN_BYTES)
     const { bytesRead } = await handle.read(buf, 0, FIRST_PROMPT_SCAN_BYTES, 0)
-    // Through a decoder, so a character straddling the scan boundary is held
-    // back rather than becoming a U+FFFD in a sidebar label. Whatever it holds
-    // is discarded with it: an incomplete trailing line is not an answer.
+    // Decode so a character split at the scan boundary is held back rather
+    // than shown as U+FFFD; an incomplete trailing line is discarded.
     const head = new StringDecoder('utf8').write(buf.subarray(0, bytesRead))
     for (const line of head.split('\n')) {
       const msg = parseLine(line)
       if (msg?.method === ACP.sessionPrompt) return promptText(msg.params)
-      // The scan can end mid-line. That is the normal shape of an opening
-      // message carrying an image — megabytes of base64 on one line — whose
-      // text is still in reach, because `AcpConversation.prompt` writes the
-      // text block ahead of the images. Anything else cut short is not an
-      // answer.
+      // The scan may end mid-line, typically in an opening message with an
+      // image; its text is still reachable because `AcpConversation.prompt`
+      // writes the text block before the images.
       const cut = TRUNCATED_PROMPT_TEXT.exec(line)
       if (cut) return JSON.parse(cut[1]) as string
     }
@@ -508,12 +431,9 @@ function promptText(params: unknown): string | undefined {
 
 
 /**
- * The session mode the record last shows the conversation in: the handshake
- * reply's, then every successful `session/set_mode` and every mode update the
- * adapter sent since — last one wins.
- *
- * What a reattach seeds its posture from (`AcpConversation.recoverMode`):
- * the session may have moved while no connection was listening.
+ * The session mode the record last shows: the handshake reply's, then each
+ * successful `session/set_mode` and adapter mode update, last one winning.
+ * A reattach seeds its posture from this (`AcpConversation.recoverMode`).
  */
 export async function readAcpModeId(record: AcpRecordRef): Promise<string | undefined> {
   const raw = await readRecord(record)

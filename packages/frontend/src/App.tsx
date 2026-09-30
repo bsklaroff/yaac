@@ -25,9 +25,8 @@ import { CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
 import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
-/** `unidentified` carries the server's own account of why it would not say
- *  who this device is (a tagged device or Funnel, or a name reached without
- *  tailscale serve) — or why it could not be asked. */
+/** `unidentified` carries the server's explanation of why it could not
+ *  identify this device, or the error from asking. */
 type AuthState = { kind: 'checking' } | { kind: 'ok' } | { kind: 'unidentified'; message: string }
 
 function App(): JSX.Element {
@@ -48,11 +47,9 @@ function App(): JSX.Element {
   const { connected } = useEvents(auth.kind === 'ok')
   const snapshot = useSnapshot()
 
-  // Chime the moment a workspace flips to waiting (it needs input) — the audible
-  // sibling of the tray badge + notification. Seed silently on the first
-  // snapshot so workspaces already waiting on load don't all fire; skip the
-  // workspace the user is actively watching (selected + window focused — they can
-  // see it flip); gate on the sound preference.
+  // Chime when a workspace starts waiting for input. The first snapshot only
+  // seeds the set, so workspaces already waiting on load stay silent. The
+  // workspace the user is looking at (selected, window focused) never chimes.
   const soundEnabled = useUiStore((s) => s.soundEnabled)
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const waitingSpells = useRef<Set<string> | null>(null)
@@ -79,12 +76,9 @@ function App(): JSX.Element {
     )
   } else content = <Shell snapshot={snapshot} connected={connected} />
 
-  // In Electron the title bar is hidden and the traffic lights float over the
-  // UI. The full-screen states (loading/unidentified) reserve a thin draggable
-  // strip for the lights; the workspace instead pulls its own top row (rail /
-  // sidebar header / workspace bar) up level with them, so that band isn't dead
-  // space — it carries its own drag regions and light clearance.
-  // A browser tab gets neither, so it always renders content flush.
+  // In Electron the title bar is hidden and the window controls float over
+  // the UI. Full-screen states reserve a draggable strip for them; the
+  // workspace layout provides its own drag regions and clearance instead.
   const inShell = auth.kind === 'ok'
   return (
     <div className="flex h-full flex-col bg-shell">
@@ -125,37 +119,32 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
   // Server-tracked provisioning rows + local optimistic ones (snapshot wins).
   const provisioning = mergeProvisioning(snapshot?.provisioning ?? [], optimisticProvisioning)
 
-  // Mirror the restored selection (which may have come from localStorage) into
-  // the URL on first paint, so even a bare reload yields a shareable link.
-  // Ongoing changes are mirrored by the store subscription.
+  // Write the restored selection into the URL on first paint so a bare
+  // reload still yields a shareable link. Later changes go through the store
+  // subscription.
   useEffect(() => {
     const s = useUiStore.getState()
     persistSelection(s.activeProjectSlug, s.selectedWorkspaceId)
   }, [])
 
-  // Default the rail selection to the first project once projects arrive, and
-  // recover from a persisted/active project that no longer exists (deleted, or
-  // a stale link) by falling back to the first. Switching here clears the
-  // workspace — correct, since the restored workspace belonged to that project.
-  // Through restoreActiveProject, not setActiveProject: nobody chose this
-  // project, so on mobile it must not also count as walking into it.
+  // Fall back to the first project when none is active or the active one no
+  // longer exists. Uses restoreActiveProject because the user did not choose
+  // it, so on mobile it must not navigate into the project.
   useEffect(() => {
     if (projects.length === 0) return
     if (activeProjectSlug && projects.some((p) => p.slug === activeProjectSlug)) return
     restoreActiveProject(projects[0].slug)
   }, [activeProjectSlug, projects, restoreActiveProject])
 
-  // Once the snapshot no longer lists an optimistically-deleted workspace, the
-  // server's cleanup landed — stop tracking it so the set can't leak (or
-  // wrongly hide a future workspace that reuses the id).
+  // Stop tracking an optimistic delete once the snapshot drops the workspace,
+  // so the set can't grow forever or hide a later workspace with the same id.
   useEffect(() => {
     const live = new Set(workspaces.map((s) => s.workspaceId))
     for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
   }, [workspaces, pendingDeleteIds, endDelete])
 
-  // Once the server knows a provisioning id (as a real workspace or its own
-  // provisioning row), drop the local optimistic copy — the snapshot is the
-  // source of truth from here, carrying live progress and reload-survival.
+  // Drop the local optimistic provisioning row once the server reports the
+  // id, as a workspace or its own provisioning row.
   useEffect(() => {
     const known = new Set<string>([
       ...workspaces.map((s) => s.workspaceId),
@@ -164,10 +153,9 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
     for (const e of optimisticProvisioning) if (known.has(e.workspaceId)) removeOptimisticProvisioning(e.workspaceId)
   }, [workspaces, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
 
-  // A create that claimed a prewarmed spare resolves into the spare's id —
-  // remembered while the row says so, for the selection to follow, and
-  // forgotten once it no longer holds: the create failed (its row lets go of
-  // the spare), or fell back to a cold create that lists under its own id.
+  // A create that claims a prewarmed spare ends up under the spare's id.
+  // Remember that mapping so the selection can follow it, and forget it if
+  // the create fails or lists under its own id.
   useEffect(() => {
     for (const p of snapshot?.provisioning ?? []) {
       if (p.error !== undefined) forgetClaim(p.workspaceId)
@@ -184,17 +172,11 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
   const scopedHeld = (snapshot?.heldWorkspaces ?? []).filter((h) => h.projectSlug === activeProjectSlug)
   const scopedDrafts = (snapshot?.draftWorkspaces ?? []).filter((d) => d.projectSlug === activeProjectSlug)
 
-  // Workspace shortcuts, window-captured so the chord is swallowed before
-  // xterm's textarea handler could forward it to the PTY, and registered
-  // here, not in Sidebar, so they work with the sidebar hidden too:
-  //  - Alt+K/Alt+J step through the sidebar rows top-to-bottom (wrapping)
-  //    — the vertical sibling of WorkspaceView's Alt+H/Alt+L terminal cycler.
-  //  - Alt+N opens the create dialog on the active project with the prompt
-  //    focused, so Alt+N, Enter is a create with every default and Alt+N,
-  //    type, Enter one with an opening prompt.
-  //  - Alt+D stops the selected workspace, through the same stop dialog as
-  //    the sidebar row's menu (Enter confirms — the button holds focus).
-  // The ref keeps the single listener reading the current render's state.
+  // Project-scoped shortcuts (next/prev workspace, new, stop). They listen
+  // on window in the capture phase so xterm never forwards the chord to the
+  // PTY, and live here rather than in Sidebar so they work with the sidebar
+  // hidden. Terminal-scoped shortcuts belong to WorkspaceView. The ref lets
+  // the one listener read the current render's state.
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const newWorkspace = (): void => {
@@ -210,12 +192,7 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
       const state = useUiStore.getState()
-      // A rebind being recorded, or the create dialog open: the keypress is
-      // theirs.
       if (shortcutsSuspended(state)) return
-      // Only the project-scoped commands are handled here; terminal-scoped
-      // ones (new-shell, kill-terminal, terminal cycles) belong to WorkspaceView,
-      // so its ids fall through the switch untouched.
       const id = matchShortcut(state.bindings, e)
       switch (id) {
         case 'new-workspace':
@@ -245,26 +222,18 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [])
 
-  // Load saved shortcut overrides once at startup; until they arrive the
-  // factory defaults apply. Failures are non-fatal — the defaults just stand.
+  // Load saved shortcut overrides; the defaults apply until then, or on error.
   useEffect(() => {
     void getShortcutOverrides()
       .then((overrides) => useUiStore.getState().setBindings(mergeBindings(overrides)))
       .catch((e: unknown) => console.error(e))
   }, [])
 
-  // Fill a pane the user didn't empty — a project switched under the
-  // selection, or the open workspace vanished (see resolveVacantSelection).
-  // Deleting a workspace in the app doesn't come through here at all: that
-  // selects the row below it as it goes. `rowIds` is the sidebar's own order,
-  // so "the top row" is the one the user sees at the top; `workspaces` is in
-  // snapshot order, which is not it.
-  //
-  // Goes through autoSelectWorkspace, not selectWorkspace: this is the app
-  // choosing, so on mobile it must fill the pane *behind* the workspace list
-  // rather than navigating the user onto it. A layout effect, so a pane
-  // handed to a successor (a create resolving into the spare it claimed)
-  // never paints empty in between.
+  // Fill the pane when the project changed or the open workspace vanished
+  // (see resolveVacantSelection). `rowIds` is in sidebar order, so "the top
+  // row" is the one the user sees first. autoSelectWorkspace, not
+  // selectWorkspace, so mobile fills the pane without navigating onto it. A
+  // layout effect so the pane never paints empty during a hand-off.
   const lastProjectSlug = useRef(activeProjectSlug)
   useLayoutEffect(() => {
     const previousProjectSlug = lastProjectSlug.current
@@ -278,25 +247,20 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
       inFlight: inFlightProvisions,
     })
     if (!pick) return
-    // A followed claim has done its one job.
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
   }, [activeProjectSlug, rowIds, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
-  // Viewing a waiting workspace marks its current spell read — the pane shows
-  // it, so it no longer needs attention. Covers both selecting a waiting
-  // workspace and the open workspace flipping running → waiting under the
-  // user's eyes.
+  // Viewing a waiting workspace marks its current waiting spell as read,
+  // whether it was selected while waiting or started waiting while open.
   useEffect(() => {
     if (!selectedWorkspaceId) return
     const open = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
     if (open?.status === 'waiting') markWaitingRead(selectedWorkspaceId, open.waitingSinceMs ?? 0)
   }, [selectedWorkspaceId, workspaces, markWaitingRead])
 
-  // GC read marks whose waiting spell is over (workspace running, gone, or
-  // waiting anew with a fresh waitingSinceMs). Only against hydrated frames:
-  // before the first snapshot lands, `workspaces` is the empty fallback, and
-  // syncing against it would wipe every restored mark — re-flagging all
-  // waiting workspaces as unread on every reload.
+  // Drop read marks whose waiting spell has ended. Skipped until the first
+  // snapshot, since syncing against the empty fallback would wipe every
+  // restored mark on reload.
   useEffect(() => {
     if (!snapshot) return
     syncWaitingRead(workspaces
@@ -304,14 +268,9 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
       .map((s) => ({ workspaceId: s.workspaceId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
   }, [snapshot, workspaces, syncWaitingRead])
 
-  // GC chat drafts for workspaces that no longer exist. Same hydration guard as
-  // the read marks, and for the same reason: syncing against the pre-snapshot
-  // empty fallback would wipe every restored draft on reload.
-  //
-  // Provisioning ids count as live: a workspace being restarted is filtered out
-  // of the snapshot's workspace list for the whole restart, and it comes back
-  // with the same id and the same conversations — GCing there would delete a
-  // draft the user is about to return to.
+  // Drop chat drafts for workspaces that no longer exist (same first-snapshot
+  // guard as above). Provisioning ids count as live because a restarting
+  // workspace leaves the workspace list and returns with the same id.
   useEffect(() => {
     if (!snapshot) return
     syncChatDrafts([
@@ -320,22 +279,16 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
     ])
   }, [snapshot, workspaces, provisioning, syncChatDrafts])
 
-  // Per-project count of unread waiting workspaces → the rail attention badge.
   const attention = unreadWaitingBySlug(workspaces, readWaiting, pendingDeleteIds)
 
   const projectRemoteUrl = projects.find((p) => p.slug === activeProjectSlug)?.remoteUrl ?? ''
   const scopedGitAuthFailures = (activeProjectSlug && snapshot?.gitAuthFailures?.[activeProjectSlug]) || []
 
   return (
-    // Desktop: rail + sidebar sit flush on the base layer and the workspace
-    // pane floats as an inset, rounded, bordered card. Mobile: the same three
-    // regions become stacked full-screen layers, one visible at a time.
-    //
-    // The three children keep their slots across the switch, which is what
-    // keeps the pane's WorkspaceView — and every kept-alive terminal under it —
-    // mounted when a phone is rotated across the breakpoint. Only the two
-    // navigation regions swap component (they're cheap); the pane's wrapper
-    // stays the same <div> and merely changes class.
+    // Desktop: rail and sidebar beside an inset workspace card. Mobile: three
+    // stacked full-screen layers, one visible at a time. The pane wrapper
+    // stays the same <div> in both, so WorkspaceView and its terminals stay
+    // mounted when a phone rotates across the breakpoint.
     <div className={clsx('bg-shell', isMobile
       ? 'safe-area-inset relative h-full overflow-hidden'
       : 'flex h-full')}
@@ -399,7 +352,7 @@ function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; 
         <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />
       </div>
 
-      {/* Alt+D's confirm — the same dialog the sidebar row's Stop… opens. */}
+      {/* Confirm for the delete-workspace shortcut. */}
       <StopWorkspaceDialog
         workspace={confirmDelete}
         onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}

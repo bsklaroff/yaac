@@ -44,8 +44,8 @@ const TARGET = {
 }
 let dataDir: string
 
-/** A registered workspace with a known tmux pid, as a launch leaves one.
- *  `sshAgentPid` is what a project with an SSH remote also leaves. */
+/** Register a workspace with a known tmux pid, as a launch does, plus an
+ *  ssh-agent pid for a project with an SSH remote. */
 function registered(extra: { sshAgentPid?: number } = {}): void {
   rememberWorkspace({
     projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
@@ -53,8 +53,8 @@ function registered(extra: { sshAgentPid?: number } = {}): void {
   })
 }
 
-/** `has-session` fails (no session) but every other command succeeds — the
- *  ordinary "it really went away" shape. */
+/** `has-session` fails (no session) and every other command succeeds: the
+ *  normal "it is gone" case. */
 function sessionGone(): void {
   mockRunHost.mockImplementation((argv: string[]) =>
     argv.includes('has-session')
@@ -85,17 +85,16 @@ describe('destroyWorkspace', () => {
     await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
     const argvs = mockRunHost.mock.calls.map((c) => c[0] as string[])
     expect(argvs.some((a) => a.includes('kill-server'))).toBe(true)
-    // The caller deletes the checkout on this verdict, so it has to mean
-    // "nothing is still writing there" rather than "we asked".
+    // The caller deletes the checkout on this result, so it must mean
+    // nothing is still writing there.
     expect(argvs.some((a) => a.includes('has-session'))).toBe(true)
     expect(listWorkspaces()).toHaveLength(0)
   })
 
   it('reports that it could not confirm when the session outlives the kill', async () => {
     registered()
-    // has-session keeps succeeding: something is still running in there.
-    // Driven on fake timers so the test does not sit out the real deadline,
-    // which is deliberately generous for a wedged tmux.
+    // has-session keeps succeeding. Fake timers skip the real deadline,
+    // which is long to allow for a wedged tmux.
     mockRunHost.mockResolvedValue({ stdout: '', stderr: '' })
     vi.useFakeTimers()
     try {
@@ -108,10 +107,8 @@ describe('destroyWorkspace', () => {
   })
 
   it('never sweeps a dead workspace\'s recorded pid, which may have been recycled', async () => {
-    // The marker's pid is advisory. This verb runs for dead workspaces too
-    // (recovered dead after a host reboot, then stopped by the user), and
-    // there that pid names some unrelated process of this user — sweeping
-    // its tree would SIGTERM their editor.
+    // A dead workspace (e.g. after a host reboot) may have a recycled pid
+    // naming an unrelated user process, such as their editor.
     registered()
     observeLiveness(UUID, false, { reason: 'agent-exited' })
     mockDescendants.mockResolvedValue([4242, 5150])
@@ -122,23 +119,23 @@ describe('destroyWorkspace', () => {
 
   it('sweeps what a pane double-forked away from tmux', async () => {
     registered()
-    // A dev server that escaped its process group is not tmux's to kill,
-    // and on a shared host it would hold its port for good.
+    // Killing tmux does not reach a dev server that left its process group,
+    // and it would hold its port forever.
     mockDescendants.mockResolvedValue([4242, 5150, 5151])
     await destroyWorkspace(TARGET)
     expect(mockKillPids).toHaveBeenCalledWith([5150, 5151], 'SIGTERM')
   })
 
   it('is a no-op against a workspace that is already gone', async () => {
-    // Teardowns are re-issued (the reaper, a resumed stop), so nothing here
-    // may depend on there being something to tear down.
+    // Teardowns are re-issued (the reaper, a resumed stop), so an absent
+    // workspace must still succeed.
     await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
   })
 
   it('keeps the marker when only the unit is being taken down', async () => {
     registered()
-    // `unitOnly` runs between a create's launch attempts; removing the
-    // marker there would hide a workspace the next attempt reuses.
+    // `unitOnly` runs between launch attempts; removing the marker would
+    // hide a workspace the next attempt reuses.
     await destroyWorkspace(TARGET, { unitOnly: true })
     expect(listWorkspaces()).toHaveLength(1)
   })
@@ -146,9 +143,8 @@ describe('destroyWorkspace', () => {
 
 describe('destroyWorkspace ssh-agent', () => {
   it('ends the agent holding the workspace’s key, and removes its socket', async () => {
-    // The agent is not a descendant of the tmux server — it was started
-    // beside it, detached — so nothing else in the teardown would reach it,
-    // and a surviving one holds a private key for a workspace that is gone.
+    // The agent runs detached beside tmux, not under it, so only this step
+    // stops it from holding a private key for a gone workspace.
     registered({ sshAgentPid: 777 })
     const paths = containerlessWorkspacePaths(TARGET.unitName)
     fs.mkdirSync(path.dirname(paths.sshAgentSock), { recursive: true })
@@ -161,10 +157,9 @@ describe('destroyWorkspace ssh-agent', () => {
   })
 
   it('signals it for a workspace it never saw running, too', async () => {
-    // NOT gated on having seen it running, unlike the stray sweep: a
-    // workspace whose tmux died while the host stayed up would otherwise
-    // leave an agent holding the private key until reboot — the failure the
-    // per-workspace agent exists to prevent.
+    // Unlike the stray sweep, this does not require having seen the
+    // workspace running; otherwise a workspace whose tmux died would leave
+    // the agent holding its key until reboot.
     restoreWorkspace({
       projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
       prewarm: false, createdAtMs: 1_000, tmuxPid: 4242, sshAgentPid: 777,
@@ -176,9 +171,8 @@ describe('destroyWorkspace ssh-agent', () => {
   })
 
   it('leaves a recycled pid alone', async () => {
-    // What replaces the running-gate: the pid is checked against the socket
-    // path in the agent's own argv, so a number that now names something
-    // else is not signalled.
+    // The pid is checked against the socket path in the agent's argv, so a
+    // recycled pid is not signalled.
     registered({ sshAgentPid: 777 })
     mockIsSshAgentFor.mockResolvedValue(false)
 
@@ -224,9 +218,9 @@ describe('reapNodeLocal', () => {
     return dir
   }
 
-  // Keyed on ids, so a failed removal and a tree named by slug before ids
-  // are both collected — except the slug a running workspace still uses,
-  // and a tree written since the sweep began.
+  // Keyed on ids, so leftovers from a failed removal and legacy slug-named
+  // trees are collected, except a slug a running workspace still uses and a
+  // tree written since the sweep began.
   it('removes node-local trees no live project id owns, sparing a running workspace\'s', async () => {
     const live = await seed(nodeLocalProjectPath(DEMO.id))
     const liveStore = await seed(imageStoreDir(DEMO.id))
@@ -248,9 +242,7 @@ describe('reapNodeLocal', () => {
     }
   })
 
-  // A link is never followed: not an entry that is one, and not a root that
-  // is one (a relocated cache dir, a mis-pointed root) — either would delete
-  // whatever it points at.
+  // Following a symlinked entry or root would delete whatever it points at.
   it('never follows a link, at an entry or at a root', async () => {
     const victims = await fsp.mkdtemp(path.join(os.tmpdir(), 'yaac-reap-victim-'))
     try {
@@ -274,18 +266,16 @@ describe('reapNodeLocal', () => {
 
 describe('detachedTeardownCommand', () => {
   it('quotes every host path it composes into an rm -rf', () => {
-    // Both paths come from the data dir and os.tmpdir(); a space in either
-    // ("…/My Drive/yaac") would turn one removal into two of paths nobody
-    // named. The caller composes its own quoted rm's into the same script.
+    // A space in the data dir or tmpdir ("…/My Drive/yaac") would split
+    // an unquoted path into two.
     const cmd = detachedTeardownCommand(TARGET)
     expect(cmd).toMatch(/rm -rf '[^']*'/)
     expect(cmd).toMatch(/tmux -S '[^']*'/)
   })
 
-  // `kill-server` returns once the SIGHUPs are sent, not once the panes are
-  // dead; the caller appends removals of what those panes could still be
-  // writing under (the checkout's node_modules, the state roots), so the
-  // script waits for the server to be gone first — bounded, like confirmGone.
+  // `kill-server` returns once SIGHUPs are sent, not when panes are dead.
+  // The caller appends removals of dirs those panes may still write to, so
+  // the script first waits (with a bound) for the server to be gone.
   it('waits for the tmux server to be gone between the kill and the removals', () => {
     const cmd = detachedTeardownCommand(TARGET)
     const kill = cmd.indexOf('kill-server')
@@ -299,8 +289,8 @@ describe('detachedTeardownCommand', () => {
 
   it('composes commands that tolerate having already run', () => {
     const cmd = detachedTeardownCommand(TARGET)
-    // The whole script is re-issued when a teardown has to be resumed, and
-    // a caller appends its own commands after it — so no step may abort it.
+    // The script is re-issued on resume and callers append commands to it,
+    // so no step may abort it.
     expect(cmd).toContain('kill-server')
     expect(cmd).toContain('|| true')
     expect(cmd).toContain(UUID)
@@ -312,14 +302,11 @@ describe('detachedTeardownCommand', () => {
   })
 
   /**
-   * RUN the script rather than match its text.
-   *
-   * The agent is found by its socket path in `ps` output, because this runs
-   * detached with no registry to read — and the failure that shape invites is
-   * the script matching ITSELF: `sh -c` puts the whole script in the shell's
-   * own argv, so a naive pipeline kills the teardown shell and skips every
-   * command after it. No assertion about the command STRING catches that, so
-   * these run the real thing against a stubbed `ps` and a stubbed `kill`.
+   * Runs the script against stubbed `ps` and `kill`, rather than matching
+   * its text. The detached script finds the agent by its socket path in
+   * `ps` output. Since `sh -c` puts the script in its own argv, a naive
+   * pipeline would match and kill the teardown shell itself, which no string
+   * assertion would catch.
    */
   describe('run against a stubbed ps', () => {
     let binDir: string
@@ -328,15 +315,13 @@ describe('detachedTeardownCommand', () => {
     beforeEach(() => {
       binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-teardown-bin-'))
       killLog = path.join(binDir, 'killed.txt')
-      // `ps` reports one real ssh-agent for this workspace, plus a decoy for
-      // another workspace that must be left alone.
+      // One ssh-agent for this workspace, plus a decoy for another.
       const paths = containerlessWorkspacePaths(TARGET.unitName)
       fs.writeFileSync(path.join(binDir, 'ps'), [
         '#!/bin/sh',
-        // The shell running the teardown script is in `ps` output for real;
-        // this stub adds it back explicitly so the self-match is reachable.
         'echo "  4242 ssh-agent -D -a ' + paths.sshAgentSock + '"',
         'echo "  9999 ssh-agent -D -a /tmp/other/xyz-ssh.sock"',
+        // Real ps output includes the teardown shell, so a self-match can occur.
         '/bin/ps -eo pid=,args=',
       ].join('\n') + '\n', { mode: 0o755 })
       fs.writeFileSync(path.join(binDir, 'kill'), [
@@ -349,7 +334,7 @@ describe('detachedTeardownCommand', () => {
       fs.rmSync(binDir, { recursive: true, force: true })
     })
 
-    /** Run the script with the stubs first on PATH; answer what it killed. */
+    /** Run the script with the stubs first on PATH; return what it killed. */
     function runScript(extra = ''): { killed: string[]; marker: boolean } {
       const marker = path.join(binDir, 'reached-the-end')
       const script = `${detachedTeardownCommand(TARGET)}; touch ${marker}${extra}`
@@ -368,13 +353,10 @@ describe('detachedTeardownCommand', () => {
     })
 
     it('does not kill its own shell, so the rest of the teardown runs', () => {
-      // The bug this guards: `sh -c` puts the script in the shell's argv, so
-      // a pipeline matching "ssh-agent" and the socket path finds itself,
-      // kills the shell, and silently skips the tmux kill and every rm.
       const { killed, marker } = runScript()
       expect(marker).toBe(true)
       expect(killed).not.toContain(String(process.pid))
-      // Exactly one pid, so nothing incidental matched either.
+      // Exactly one pid, so nothing else matched.
       expect(killed).toHaveLength(1)
     })
   })

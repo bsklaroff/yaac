@@ -1,21 +1,18 @@
 /**
- * Listening-port observation for the `ports` stream kind: parse the pod's
- * /proc/net/tcp{,6} for LISTEN sockets a loopback-origin dial could reach
- * (bound to loopback or wildcard — the relay's `tcp` kind dials
- * localhost, so a listener bound only to a private non-loopback IP is
- * unreachable and excluded).
+ * Listening ports for the `ports` stream kind, read from the pod's
+ * /proc/net/tcp{,6}. Only sockets bound to loopback or wildcard count, since
+ * the `tcp` stream kind dials localhost.
  *
- * The files are agent-controlled state, so parsing is bounded: reads cap
- * at MAX_PROC_BYTES and rows at MAX_ROWS, and every port is re-validated
- * as an integer in [1, 65535].
+ * The agent controls these files, so parsing is bounded in size and rows and
+ * every port is validated.
  */
 
 import fs from 'node:fs'
 import path from 'node:path'
 
-/** Read cap — a hostile mount over /proc/net must not balloon memory. */
+/** Read cap, in case a hostile mount replaces /proc/net. */
 const MAX_PROC_BYTES = 2 * 1024 * 1024
-/** Row cap per file — beyond this, extra rows are ignored, not parsed. */
+/** Row cap per file; extra rows are ignored. */
 const MAX_ROWS = 8192
 
 /** /proc/net/tcp socket-state column value for LISTEN. */
@@ -70,8 +67,7 @@ export function parseProcTcpPorts(text) {
   return ports
 }
 
-/** Bounded whole-file read — /proc files have no size, so read in a loop
- *  up to the cap instead of trusting fs.readFileSync's single allocation. */
+/** Read a /proc file (which reports no size) up to `maxBytes`. */
 function readBounded(file, maxBytes) {
   const fd = fs.openSync(file, 'r')
   try {

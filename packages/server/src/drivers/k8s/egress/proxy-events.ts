@@ -2,49 +2,32 @@ import { proxyClient } from './proxy-client'
 import { serverLog } from '#log'
 
 /**
- * The server's subscription to the egress proxy's change stream.
+ * The server's subscription to the egress proxy's change stream, one
+ * long-lived `GET /events` (the proxy cannot dial the server). It signals
+ * that an in-workspace `yaac-mama` request is queued and waiting for an
+ * answer. Other proxy state (blocked hosts, git auth failures, captured
+ * rotations) arrives through objects the `ClusterCache` watches.
  *
- * One thing only the proxy process can see is an input to the server's
- * work that has to be answered now: an in-workspace `yaac-mama` landing in
- * its queue, whose caller's HTTP response is held open until the server
- * answers. Everything else the proxy observes (blocked hosts, rejected git
- * credentials, captured rotations) travels as objects the `ClusterCache`
- * watches. The proxy cannot dial the server, so the signal rides the
- * connection the server already holds — one long-lived `GET /events`.
- *
- * The events carry no payload, on purpose: the queue is drained over its
- * own claim protocol, so every event means only "drain now", and a
- * reconnect re-fires it: a dropped stream can cost latency, never a lost
- * request.
+ * Events carry no payload; each means "drain the queue now". Every
+ * (re)connect also triggers a drain, so a dropped stream costs latency but
+ * never loses a request.
  */
 
-/** A change the reconciler owes a pass on, as this stream reports it. */
+/** The kinds of change this stream reports to the reconciler. */
 export const PROXY_CHANGE_SOURCES = ['mama-requests'] as const
 export type ProxyChangeSource = typeof PROXY_CHANGE_SOURCES[number]
 
 /** First respawn delay after a stream death; doubles to the cap. */
 const RESPAWN_BASE_MS = 250
-/**
- * Cap on the respawn delay. Bounds the only window in which proxy-owned
- * state is staler than it was under the old 5s reconcile poll, so keep it
- * at that order.
- */
+/** Cap on the respawn delay, which bounds how late a queued request can
+ *  be noticed while the stream is down. */
 const RESPAWN_MAX_MS = 5_000
-/**
- * Read-idle deadline. The proxy pings every 15s, so silence past this
- * means the tunnel is dead in a way TCP has not noticed (a wedged
- * apiserver, a killed exec relay).
- */
+/** Read-idle deadline. The proxy pings every 15s, so silence past this
+ *  means the connection is dead even if TCP hasn't noticed. */
 const IDLE_DEADLINE_MS = 45_000
-/**
- * Deadline on the connect itself, which is a distinct hang from an idle
- * stream: the dial is the bare `fetch` (a stream cannot carry
- * `tunnelFetch`'s 15s timeout), and a relay that accepts the TCP
- * connection but never returns response headers would otherwise leave the
- * await suspended forever — no timer armed, nothing to abort it, and the
- * run loop never coming back round. Same 15s `tunnelFetch` uses, and the
- * same failure it exists for.
- */
+/** Deadline for the connect until response headers arrive. The dial has
+ *  no fetch timeout of its own, so without this a peer that accepts but
+ *  never responds would stall the run loop forever. */
 const CONNECT_DEADLINE_MS = 15_000
 /** Guard against a peer that never sends a newline. */
 const MAX_LINE_BYTES = 64 * 1024
@@ -61,9 +44,8 @@ export interface ProxyEventStreamDeps {
 }
 
 async function defaultOpen(signal: AbortSignal): Promise<Response> {
-  // The proxy may not be deployed yet (a cold server, or a cluster that
-  // comes up after us). Not an error worth logging every retry — just a
-  // reason to wait.
+  // The proxy may not be deployed yet; that is a reason to wait, not an
+  // error to log.
   if (!(await proxyClient.attachIfRunning())) throw new ProxyNotReachable()
   return proxyClient.openEvents(signal)
 }
@@ -108,8 +90,7 @@ export class ProxyEventStream {
     void this.run()
   }
 
-  /** Drop the stream. The held-open request would otherwise keep the exec
-   *  relay (and its kubectl child) alive past server shutdown. */
+  /** Stop reconnecting and abort the held-open request. */
   stop(): void {
     this.stopped = true
     this.clearIdleTimer()
@@ -126,26 +107,20 @@ export class ProxyEventStream {
     }
   }
 
-  /** One connect-and-consume cycle. */
+  /**
+   * One connect-and-consume cycle. On attach it fires one catch-up drain
+   * for anything queued while disconnected. The backoff resets only once
+   * data arrives (in `consume`), so a proxy that accepts and immediately
+   * closes can't cause a hot loop.
+   */
   private async connectOnce(): Promise<void> {
     const controller = new AbortController()
     this.controller = controller
     try {
-      // Bound the dial. `consume` re-arms with the idle deadline once the
-      // stream is live; until then this is the only thing that can end a
-      // connect that hangs without failing.
       this.armDeadline(controller, this.connectDeadlineMs, 'connect timed out')
       const res = await this.open(controller.signal)
       if (!res.ok) throw new Error(`status ${res.status}`)
 
-      // Attached. Whatever queued while we were away is invisible to us,
-      // so assume something did: one catch-up drain, which heals any gap.
-      //
-      // Note what does NOT happen here: the backoff is not reset. Attaching
-      // is cheap to do wrong — a proxy that accepts and immediately closes
-      // would hot-loop at the base delay forever — so the reset waits until
-      // the stream actually delivers something (see `consume`). A healthy
-      // stream pings, so it always does.
       if (this.reportedDown) {
         serverLog('[server] proxy events: stream reattached')
         this.reportedDown = false
@@ -177,8 +152,6 @@ export class ProxyEventStream {
       for (;;) {
         const { done, value } = await reader.read()
         if (done || this.stopped) return
-        // The stream is carrying traffic, so the connection was real: this
-        // is what earns the backoff reset.
         this.delayMs = this.baseDelayMs
         this.armDeadline(controller, this.idleDeadlineMs, 'no data past the idle deadline')
         buffer += decoder.decode(value, { stream: true })
@@ -189,8 +162,6 @@ export class ProxyEventStream {
           buffer = buffer.slice(nl + 1)
           if (line) this.dispatch(line)
         }
-        // A peer streaming without newlines is malformed, not a reason to
-        // grow a buffer without bound.
         if (buffer.length > MAX_LINE_BYTES) buffer = ''
       }
     } finally {

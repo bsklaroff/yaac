@@ -22,9 +22,8 @@ import { decodeJwtExp, extractCodexOAuthBundle } from '#tool-auth-interactive'
 import type { CodexOAuthBundle } from '#types'
 
 /**
- * Build a fake JWT with a given `exp` claim (seconds since epoch). Header /
- * signature segments are placeholders — only the payload is meaningful for
- * the tests.
+ * Build a fake JWT with a given `exp` claim (seconds since epoch). Only the
+ * payload is meaningful.
  */
 function makeJwt(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url')
@@ -317,7 +316,6 @@ describe('codex oauth helpers', () => {
 
     it('is a no-op when no projects exist', async () => {
       await fanOutCodexPlaceholders(SAMPLE_BUNDLE)
-      // should not throw
     })
   })
 })

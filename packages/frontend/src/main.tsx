@@ -6,8 +6,8 @@ import App from './App'
 import { ErrorBoundary } from '#components/ErrorBoundary'
 import './index.css'
 
-// State is pushed over the events WebSocket, so disable React Query's
-// own refetching — the cache is hydrated via setQueryData, not polling.
+// State is pushed over the events WebSocket into the cache, so React Query
+// never refetches on its own.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

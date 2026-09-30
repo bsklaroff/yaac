@@ -1,10 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 /**
- * The native traffic lights are hidden (main.ts) in favour of custom
- * monochrome controls drawn in the web UI (WindowControls.tsx). Those buttons
- * drive the window over these channels. contextIsolation is on, so the renderer
- * only ever sees this minimal, explicit surface — never ipcRenderer directly.
+ * The IPC surface the renderer gets. The native traffic lights are hidden, so
+ * the web UI's WindowControls.tsx drives the window over these channels.
+ * contextIsolation keeps ipcRenderer itself out of the renderer.
  */
 contextBridge.exposeInMainWorld('yaacWindow', {
   minimize: () => ipcRenderer.send('window:minimize'),
@@ -15,15 +14,13 @@ contextBridge.exposeInMainWorld('yaacWindow', {
   openExternal: (url: string) => ipcRenderer.send('window:open-external', url),
 })
 
-// The server picker (Settings → Server, rendered only when this bridge
-// exists). Selections and results are plain JSON — origins only; the main
-// process re-validates every payload (#server-switch).
+// The server picker (Settings → Server, shown only when this bridge exists).
+// The main process re-validates every payload (server-switch.ts).
 contextBridge.exposeInMainWorld('yaacServer', {
   targets: () => ipcRenderer.invoke('server:targets'),
   switchTo: (selection: unknown) => ipcRenderer.invoke('server:switch', selection),
   addRemote: (url: string) => ipcRenderer.invoke('server:add-remote', url),
-  // Re-run the boot flow against whatever `server.json` says NOW. The
-  // picker is a static page, so this is how it notices a server that was
-  // started from a terminal after the window landed on it.
+  // Re-run the boot flow against the current `server.json`, so the static
+  // picker page can pick up a server started from a terminal.
   retry: () => ipcRenderer.invoke('server:retry'),
 })

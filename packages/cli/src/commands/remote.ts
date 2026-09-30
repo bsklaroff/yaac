@@ -11,22 +11,19 @@ import {
 } from '@yaac/shared/server-config'
 
 /**
- * `yaac remote …` — pick which server this machine's clients talk to.
+ * `yaac remote …`: pick which server this machine's clients talk to
+ * (docs/server-selection.md).
  *
- * The selection is machine-wide (`~/.yaac-client/server.json`) and covers
- * every server, including one on this machine: `yaac server start` and
- * `yaac cluster install` register theirs here, so these verbs switch
- * between them and any server elsewhere with no local case. Deselecting
- * leaves the machine pointed at nothing until something is selected again
- * — there is no fallback to look for a server on this host.
+ * The selection is machine-wide (`~/.yaac-client/server.json`). A local
+ * server is selected the same way: `yaac server start` and `yaac cluster
+ * install` register theirs here. With nothing selected, clients have no
+ * server; there is no fallback to a local one.
  */
 
 /**
- * Select a server after verifying it end to end (`probeServer`: /health,
- * then /whoami — whether the server will say who this device is). Build
- * skew is a warning, not a failure — client and server upgrade
- * independently. Previously configured servers stay in the config's
- * `saved` list.
+ * Select a server after `probeServer` checks /health and /whoami. A build
+ * mismatch only warns, since client and server upgrade independently.
+ * Previously configured servers stay in the `saved` list.
  */
 export async function remoteSet(url: string): Promise<void> {
   const origin = normalizeServerUrl(url)

@@ -6,10 +6,10 @@ import { adoptLinkedCheckout, cloneRepo, getDefaultBranch, sanitizeMainClone } f
 import { git } from '@yaac/test-utils/git'
 
 /**
- * One project as an older install left it: a main clone with two linked
- * checkouts made by plain `git worktree add`, the way yaac used to make them,
- * both since stopped. Shared by the file: the conversions run in order and
- * the sanitize, which needs both converted, runs last.
+ * One project as an older install left it: a main clone with two stopped
+ * linked checkouts made by plain `git worktree add`. Shared by the file: the
+ * conversions run in order, and the sanitize, which needs both converted,
+ * runs last.
  */
 
 let tmp: string
@@ -43,8 +43,7 @@ beforeAll(async () => {
     await git(main, ['config', `branch.agent/${id}.merge`, `refs/heads/${base}`])
   }
   await git(main, ['branch', 'user-feature'])
-  // No row names it: an agent's side branch, or a workspace deleted before
-  // the upgrade, whose commits nothing else names.
+  // A branch no row names, e.g. from a workspace deleted before the upgrade.
   await git(main, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit-tree', '-m', 'orphaned work', `origin/${base}^{tree}`])
     .then((sha) => git(main, ['branch', 'agent/someone-else', sha.trim()]))
 })
@@ -64,7 +63,7 @@ describe('adoptLinkedCheckout', () => {
     await fs.writeFile(path.join(dir, 'b.txt'), 'untracked\n')
     const status = await git(dir, ['status', '--porcelain'])
     const head = await git(dir, ['rev-parse', 'HEAD'])
-    // What the last k8s launch left: the pod's view, which resolves nowhere.
+    // A k8s pod leaves a gitdir path that only resolves inside the pod.
     await fs.writeFile(path.join(dir, '.git'), `gitdir: /repo/.git/worktrees/${ID}\n`)
 
     await adoptLinkedCheckout(main, dir, ID, source, ROWS)
@@ -76,17 +75,16 @@ describe('adoptLinkedCheckout', () => {
     expect((await git(dir, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe(`origin/${base}`)
     expect(await git(dir, ['stash', 'list'])).toMatch(/stash@\{0\}/)
     expect(await git(dir, ['branch', '--list', 'user-feature'])).not.toBe('')
-    // Every agent/* no other row carries comes along; another row's does not.
+    // Unowned agent/* branches come along; another row's branch does not.
     expect(await git(dir, ['branch', '--list', 'agent/someone-else'])).not.toBe('')
     expect(await git(dir, ['branch', '--list', `agent/${CRASHED}`])).toBe('')
     await git(dir, ['fsck', '--connectivity-only'])
-    // The main clone keeps none of it.
     await expect(fs.access(path.join(main, '.git', 'worktrees', ID))).rejects.toThrow()
     expect(await git(main, ['branch', '--list', `agent/${ID}`])).toBe('')
-    // A legacy pod still gc'ing the main clone reads the never-prune keys.
+    // Keeps a legacy pod's gc of the main clone from pruning objects.
     expect((await git(main, ['config', 'gc.pruneExpire'])).trim()).toBe('never')
 
-    // Again is a no-op.
+    // A second run is a no-op.
     await adoptLinkedCheckout(main, dir, ID, source, ROWS)
     expect(await git(dir, ['status', '--porcelain'])).toBe(status)
   })
@@ -140,17 +138,15 @@ describe('sanitizeMainClone', () => {
 
     await expect(fs.access(path.join(gitDir, 'worktrees'))).rejects.toThrow()
     await expect(fs.access(path.join(gitDir, 'hooks'))).rejects.toThrow()
-    // What no clone holds is still named: the gone checkout's branch, and
-    // the one no row owned.
+    // Branches no clone holds stay in the main clone: the missing
+    // checkout's, and the one no row owns.
     expect(await subject(main, `agent/${GONE}`)).toBe('unpushed')
     expect(await git(main, ['branch', '--list', 'agent/someone-else'])).not.toBe('')
     expect(await git(main, ['branch', '--list', `agent/${ID}`])).toBe('')
     const keys = (await git(main, ['config', '--list', '--local'])).split('\n').filter(Boolean).map((l) => l.split('=')[0])
     expect(keys).not.toContain('filter.evil.clean')
     expect(keys).toEqual(expect.arrayContaining(['remote.origin.url', 'gc.pruneexpire']))
-    // Every converted clone still reads.
     for (const id of [ID, CRASHED, 'w3']) await git(wt(id), ['fsck', '--connectivity-only'])
-    // Nothing left to do.
     expect(await sanitizeMainClone(main, source, new Set())).toBe(true)
   })
 })

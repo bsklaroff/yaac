@@ -6,28 +6,11 @@ import type { Duplex } from 'node:stream'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * Which ports each workspace is listening on.
- *
- * The pod driver has to RELAY a port: a listener inside a pod is reachable
- * from nowhere until something binds a host port and forwards it. Here the
- * workspace's processes bind host ports themselves, so a detected listener
- * is already reachable ON THIS MACHINE and the mapping is the identity —
- * which is why these surface as `forwardedPorts` (links the user can click)
- * and `unforwardedPorts` is always empty. There is no "forward this" action
- * because there is nothing left to do.
- *
- * A client on another machine is a different matter: to it the server
- * host's loopback is as unreachable as a pod's, and the tunnel is the same
- * answer — bind the mapping there, dial the port here (`dialWorkspacePort`).
- *
- * That also means the port a config's `portForward` asks for is simply the
- * port the dev server binds; the create path skips its host-port
- * reservation entirely rather than racing the workspace for it.
- *
- * A poll rather than an edge, and honestly so: the pod driver's detector is
- * a poll too (its stream daemon samples `/proc/net/tcp` on a timer), and no
- * portable "a process began listening" event exists. Only running
- * workspaces are scanned.
+ * Which ports each running workspace is listening on, found by polling (no
+ * portable listen event exists). Workspaces bind host ports directly, so
+ * each listener is reported as a `forwardedPorts` identity mapping and
+ * `unforwardedPorts` is always empty. A client on another machine reaches
+ * them through the tunnel (`dialWorkspacePort`).
  */
 
 const POLL_MS = 3_000
@@ -35,19 +18,19 @@ const POLL_MS = 3_000
 const ports = new Map<string, Listener[]>()
 let timer: NodeJS.Timeout | null = null
 
-/** Test-only: drop all detector state. */
+/** Test helper: drop all detector state. */
 export function _resetPortsForTests(): void {
   ports.clear()
 }
 
-/** See `WorkspaceDriver.forwardedPorts` — the identity mappings for whatever
- *  the last sweep saw this workspace listening on. */
+/** See `WorkspaceDriver.forwardedPorts`: identity mappings from the last
+ *  sweep. */
 export function workspacePorts(workspaceId: string): PortMapping[] {
   return (ports.get(workspaceId) ?? []).map(({ port }) => ({ containerPort: port, hostPort: port }))
 }
 
-/** One sweep over every running workspace. Exported so a test can drive it
- *  without waiting out the timer. */
+/** One sweep over every running workspace; returns whether anything
+ *  changed. */
 export async function sweepPorts(): Promise<boolean> {
   let changed = false
   for (const handle of listWorkspaces()) {
@@ -72,14 +55,12 @@ export async function sweepPorts(): Promise<boolean> {
   return changed
 }
 
-/** Start the sweep. `onChange` fires only when the surfaced set really
- *  moved, so an idle host pushes no snapshots. */
+/** Start the sweep. `onChange` fires only when the set changes. */
 export function startPortSweep(onChange: () => void): void {
   if (timer) return
   timer = setInterval(() => {
     void sweepPorts().then((changed) => { if (changed) onChange() })
   }, POLL_MS)
-  // Never hold the process open for a port scan.
   timer.unref?.()
 }
 
@@ -94,25 +75,10 @@ export function forgetPorts(workspaceId: string): void {
 }
 
 /**
- * See `WorkspaceDriver.dialPort`: one TCP connection onto a port the
- * workspace is listening on, for a forwarder whose listener is on another
- * machine.
- *
- * Only a LISTENER the sweep has surfaced, dialled at the address it is
- * bound to. What keeps every other service on this host out of reach is
- * the sweep's scope — it walks the workspace's own process tree, so the
- * set is an allowlist of that tree's listeners with the sensitive-port
- * denylist on top — and dialling the recorded address rather than a
- * guessed loopback is what keeps a stranger on the OTHER loopback family
- * of the same port number from answering in the workspace's place. The
- * pod driver also dials a declared port nothing listens on yet, because a
- * pod is a sandbox; this host is the user's machine. (A yaac-dev workspace's inner `yaac server` IS in
- * its tree, so that port surfaces and is dialable — as under k8s.)
- *
- * The set is the LAST sweep's, not a live one: a port the workspace
- * released and something else re-bound stays dialable for up to the
- * sweep interval. Re-validating per dial would cost an lsof per TCP
- * connection, and the window is bounded by `POLL_MS`.
+ * See `WorkspaceDriver.dialPort`. Only listeners the last sweep found in the
+ * workspace's own process tree may be dialed, at their recorded address, so
+ * other services on this host stay unreachable. The list may be up to
+ * `POLL_MS` stale; checking per dial would cost an lsof per connection.
  */
 export function dialWorkspacePort(workspaceId: string, port: number): Promise<Duplex> {
   const listener = (ports.get(workspaceId) ?? []).find((l) => l.port === port)
@@ -121,12 +87,10 @@ export function dialWorkspacePort(workspaceId: string, port: number): Promise<Du
   }
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host: listener.host, port })
-    // Paused, as the contract requires: the tunnel attaches its reader
-    // before resuming, so nothing the far end writes on connect is lost.
+    // Paused, as the contract requires.
     socket.pause()
     socket.once('connect', () => resolve(socket))
-    // Stays attached after connect (a no-op reject), so an error in the gap
-    // before the tunnel adds its own listener is never an uncaught one.
+    // Stays attached after connect, so an early error is never uncaught.
     socket.once('error', reject)
   })
 }

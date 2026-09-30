@@ -70,8 +70,7 @@ async function main() {
   await page.getByRole('button', { name: 'verify/hello.txt', exact: true }).waitFor()
   console.log('created verify/hello.txt via New file form')
 
-  // The new file opens in a second editor below the Dockerfile.user one —
-  // wait for it to mount before typing, or the keystrokes land elsewhere.
+  // Wait for the new file's editor to mount, or keystrokes land elsewhere.
   await page.locator('.cm-content').nth(1).waitFor()
   const editor = page.locator('.cm-content').nth(1)
   await editor.click()

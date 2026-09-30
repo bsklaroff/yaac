@@ -1,19 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 
 /**
- * Long-lived `kubectl port-forward` children, keyed by purpose.
- *
- * This is the server's generic way to reach a TCP port inside the cluster
- * without assuming any host↔cluster network topology: the only thing it
- * needs is the apiserver access every other call already has. Two callers
- * use it — the stream relay (into the proxy's relay listener) and the main
- * image registry (into the registry Deployment) — and both want the same
- * shape: ONE child per purpose per server run, shared by every caller,
- * respawned after it dies.
- *
- * The local port is always ephemeral (`0:<remotePort>`), so nothing here
- * reserves a fixed host port and two yaac installs on one machine never
- * collide.
+ * Long-lived `kubectl port-forward` children, keyed by purpose: one child
+ * per key per process, shared by all callers and respawned after it dies.
+ * It reaches an in-cluster port using only apiserver access. The host-side
+ * main registry client (container/registry.ts) uses it. The local port is
+ * always ephemeral, so installs on one machine never collide.
  */
 
 export interface ForwardAddr {
@@ -35,17 +27,12 @@ const DEFAULT_READY_TIMEOUT_MS = 15_000
 
 const children = new Map<string, ChildProcess>()
 const addrs = new Map<string, ForwardAddr>()
-/** Single-flight per key so concurrent callers never race two children
- *  into existence. */
+/** In-progress starts, so concurrent callers share one child per key. */
 const inflight = new Map<string, Promise<ForwardAddr>>()
 
 let exitHookInstalled = false
 
-/**
- * Signals that terminate a process by default and can be caught. SIGKILL is
- * absent because it cannot be handled: a `kill -9`'d process still orphans
- * its forwards and nothing in-process can prevent that.
- */
+/** Catchable signals that terminate a process by default. */
 const TERMINATING_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const
 
 function killAllForwards(): void {
@@ -53,32 +40,16 @@ function killAllForwards(): void {
 }
 
 /**
- * Kill every forward when this process ends. Paired with the `unref()`
- * below, which is what makes it fire at all: a ref'd child (and its stdio
- * pipes) keeps the event loop alive, so a SHORT-lived process that touched
- * a forward — the CLI, vitest's global setup — would hang instead of
- * exiting. Unref'd, it exits; this hook is then what stops it leaving an
- * orphaned kubectl behind. The server holds its own loop open regardless.
+ * Kill every forward when this process ends, on `exit` and on terminating
+ * signals (`exit` does not fire when a signal kills the process, e.g. a
+ * vitest worker). Children are unref'd so short-lived processes such as
+ * the CLI can exit; without this hook they would leave orphaned kubectl
+ * processes that hold their port until dialed.
  *
- * `exit` alone leaks, and the gap is the common case rather than an exotic
- * one: it fires on NO signal, so a process terminated by one reparents its
- * kubectl to PID 1. A vitest worker is the worked example — vitest installs
- * a SIGTERM handler in its fork workers only under profiling flags, so a
- * normal run's `child.kill()` kills the worker with no hook run — and one
- * full e2e run left ten such orphans.
- *
- * They do not clean themselves up. An orphaned `kubectl port-forward` has
- * no timeout: it squats its ephemeral port until something dials it, at
- * which point the write to its dead stdout pipe finally kills it — so the
- * dial that discovers the orphan is also the one that fails.
- *
- * Re-raising is conditional on ours being the ONLY handler, and both halves
- * matter. Registering any listener suppresses Node's default termination,
- * so a process whose sole handler is this one would otherwise ignore
- * SIGTERM outright. But when the app has its own handler — the server's
- * graceful shutdown — that handler owns when the process ends, and
- * re-raising here would cut it short. The count is read when the signal
- * lands, not at install time, so registration order does not matter.
+ * Adding a signal listener disables Node's default termination, so the
+ * signal is re-raised when this is the only handler. When the app has its
+ * own handler (the server's graceful shutdown), that handler decides when
+ * to exit.
  */
 function installExitHook(): void {
   if (exitHookInstalled) return
@@ -143,9 +114,8 @@ function startPortForward(key: string, spec: PortForwardSpec): Promise<ForwardAd
     ], { stdio: ['ignore', 'pipe', 'pipe'] })
     children.set(key, child)
     installExitHook()
-    // See installExitHook: the child and its pipes must not be what keeps a
-    // short-lived process alive. The pipes are Sockets at runtime, which the
-    // `Readable` type on ChildProcess does not admit.
+    // See installExitHook. The pipes are Sockets at runtime, which the
+    // `Readable` type does not show.
     child.unref()
     for (const pipe of [child.stdout, child.stderr]) {
       (pipe as unknown as { unref?: () => void } | null)?.unref?.()
@@ -172,18 +142,9 @@ function startPortForward(key: string, spec: PortForwardSpec): Promise<ForwardAd
     })
     child.stderr?.on('data', () => { /* surfaced via exit/timeout */ })
     child.on('exit', () => {
-      // Forget the address so the next resolve respawns; a caller mid-dial
-      // sees the connection fail and re-resolves.
-      //
-      // BOTH deletes are identity-guarded, because a killed child's `exit`
-      // lands asynchronously: invalidate → re-resolve can have a live
-      // successor cached by the time the dead one's event fires. Wiping the
-      // successor's address there would strand it — the next resolve
-      // overwrites the map's only reference to it, leaving an unref'd
-      // kubectl that neither `invalidatePortForward` nor the exit hook can
-      // reach.
-      // The reject below is NOT guarded — it settles this child's own
-      // startup promise, which no successor can do for it.
+      // Forget the address so the next resolve respawns. Only if this is
+      // still the current child: a killed child's `exit` arrives late, and a
+      // successor may already be cached under the key.
       if (children.get(key) === child) {
         children.delete(key)
         addrs.delete(key)

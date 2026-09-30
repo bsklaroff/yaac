@@ -27,53 +27,39 @@ import { git } from '#git'
 const execFileAsync = promisify(execFile)
 
 /**
- * Prefix used for all container images built during e2e tests.
- * Keeps test images separate from images used by the running application.
+ * Prefix for all container images built during e2e tests, keeping them
+ * apart from the application's images.
  */
 export const TEST_IMAGE_PREFIX = 'yaac-test'
 
 /**
  * `key=value` label on every podman container a suite starts on the host
- * engine, naming the checkout-independent thing that owns it: this rig's
- * scratch base (`testTmpBase()`, under its ambient data dir). Two test rigs
- * share one host engine, so the global setup's leaked-container sweep
- * selects on this rather than on an image or name prefix — which would
- * reach into the other rig's run and kill its containers mid-test.
- *
- * Precondition: every rig on an engine has its own data dir
- * (`YAAC_DATA_DIR`), which a rig needs anyway for its own server and
- * scratch. Two rigs left on the default `~/.yaac` would share this label
- * and sweep each other's containers again.
+ * engine, naming this rig's scratch base (`testTmpBase()`). The global
+ * setup's leaked-container sweep selects on it, so rigs sharing an engine
+ * don't sweep each other's containers. Each rig needs its own
+ * `YAAC_DATA_DIR` for this to hold.
  */
 export function testContainerOwnerLabel(): string {
   return `yaac.test.owner=${testTmpBase()}`
 }
 
 /**
- * Unique suffix per test FILE: vitest isolates each file in its own forked
- * process, so this module is re-imported (and these bytes redrawn) per
- * file. Avoids kubernetes object name collisions between files and
- * between concurrent test runs.
+ * Unique suffix per test file (vitest re-imports this module in each file's
+ * process), avoiding k8s name collisions between files and runs.
  */
 export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
 
 /**
- * Per-file kubernetes namespace (see TEST_RUN_ID for granularity). Every
- * yaac object a test file creates (workspace Jobs, the proxy
- * Deployment/Service, mock-remote pods) lands in this namespace, isolating
- * it from other files and from a real server's `yaac` namespace. Tests
- * WITHIN a file share it — their isolation comes from per-test data dirs
- * plus the data-dir-hash label (see cleanupWorkspaceJobs). Leaked namespaces
- * are swept by test/global-setup.ts teardown.
+ * Per-file k8s namespace holding every object a test file creates. Tests
+ * within a file share it and are kept apart by the data-dir-hash label
+ * (see cleanupWorkspaceJobs). test/global-setup.ts sweeps leaked ones.
  */
 export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
 
 
 /**
- * Point the current test process at the per-run test namespace, so that
- * src helpers (listWorkspacePods, containerExec, ProxyClient, ...) target
- * the same namespace a server spawned with `createYaacTestEnv().env`
- * uses. Returns a restore function.
+ * Point this process's k8s helpers at the test namespace, the one a server
+ * spawned with `createYaacTestEnv().env` uses. Returns a restore function.
  */
 export function useTestNamespace(): () => void {
   const prev = process.env.YAAC_K8S_NAMESPACE
@@ -85,20 +71,12 @@ export function useTestNamespace(): () => void {
 }
 
 /**
- * Proxy sidecar config for e2e tests. Uses the pre-built test image;
- * namespace isolation comes from `YAAC_K8S_NAMESPACE` (see
- * `TEST_NAMESPACE` / `useTestNamespace`), not from the config.
+ * Proxy sidecar config for e2e tests, using the prebuilt test image.
  *
- * `controlOrigin` is the part a real install does not have. The server
- * reaches the proxy's control API at its Service, because the server is a
- * pod of the same namespace (docs/server-in-cluster.md). These files are
- * not: they drive the driver's own modules from the HOST, where a ClusterIP
- * names nothing — so the harness supplies its own reachability, a
- * `kubectl port-forward` it holds for the life of the file.
- *
- * Resolved lazily, and memoized, because the proxy Deployment does not
- * exist until `ensureRunning` applies it, while the client that will dial
- * it is constructed at module scope.
+ * The real server reaches the proxy's control API through its Service. These
+ * tests run on the host, so `controlOrigin` is a `kubectl port-forward`,
+ * started lazily because the proxy Deployment doesn't exist until
+ * `ensureRunning` applies it.
  */
 export const TEST_PROXY_CONFIG: ProxyClientConfig = {
   image: 'yaac-test-proxy',
@@ -107,7 +85,7 @@ export const TEST_PROXY_CONFIG: ProxyClientConfig = {
 
 let proxyControlForward: Promise<KubectlForward> | null = null
 
-/** The harness's own way into the proxy's control API — see TEST_PROXY_CONFIG. */
+/** The port-forwarded proxy control origin (see TEST_PROXY_CONFIG). */
 export async function testProxyControlOrigin(): Promise<string> {
   proxyControlForward ??= startKubectlForward({
     namespace: k8sNamespace(),
@@ -118,10 +96,8 @@ export async function testProxyControlOrigin(): Promise<string> {
 }
 
 /**
- * Run a command inside a workspace Job's pod:
- * `kubectl exec -n <ns> job/<jobName> -- <args>`. The k8s replacement for
- * the podman-era `podmanRetry(['exec', <container>, ...])` test helper.
- * argv is passed straight through execFile, so no shell quoting is needed.
+ * Run a command inside a workspace Job's pod
+ * (`kubectl exec -n <ns> job/<jobName> -- <args>`). No shell quoting needed.
  */
 export async function execInJob(
   jobName: string,
@@ -135,38 +111,23 @@ export async function execInJob(
 }
 
 /**
- * Delete every workspace Job/pod this test's data dir created in the active
- * namespace, and wait for them to actually go away. The data-dir-hash
- * scoping matters within a file: sequential tests share TEST_NAMESPACE, so
- * the label keeps them out of each other's queries (listWorkspacePods, the
- * server's stale-workspace reconciler) and out of this delete. The k8s analog
- * of the podman-era `podman rm -f $(podman ps -a --filter
- * label=yaac.data-dir=<dir>)`.
+ * Delete every workspace Job/pod this test's data dir created (selected by
+ * the data-dir-hash label, since tests in a file share a namespace) and
+ * wait, with a bound, for them to go.
  *
- * The wait is the point. e2e files run one at a time, so returning while
- * pods are still terminating just moves the teardown cost onto the next
- * file's setup — and a workspace pod is not cheap to stop (a gVisor sandbox
- * running podman-in-pod). That is how a file that takes ~80s on its own
- * takes >300s straight after a workspace-heavy one and blows a hook budget
- * that is plenty when it runs alone. Paying the drain here, where nothing
- * is racing a timeout, turns a variable cost into a fixed one.
- *
- * Bounded rather than unbounded: a wedged pod (a stuck finalizer, a node
- * that stopped reaping) must not hang the whole suite, and by the time the
- * budget is gone the next file's own namespace scoping is the backstop.
+ * Waiting here keeps a slow pod teardown from eating into the next file's
+ * setup budget, since e2e files run one at a time. The bound keeps a wedged
+ * pod from hanging the suite.
  */
 export async function cleanupWorkspaceJobs(timeoutMs = 120_000): Promise<void> {
   const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKSPACE_ID}`
   try {
-    // Issue the deletes without waiting, then poll: `kubectl delete --wait`
-    // blocks per object, so a file with several workspaces would serialize
-    // their terminations instead of overlapping them.
+    // Delete without waiting, then poll, so terminations overlap
+    // (`kubectl delete --wait` blocks per object).
     await kubectlWithRetry([
       'delete', 'jobs,pods',
       '-n', k8sNamespace(),
-      // The workspace-id term keeps this scoped to workspace Jobs/pods: the
-      // test server's proxy pod carries the same data-dir-hash (install
-      // identity) but is Deployment-managed, not ours to sweep.
+      // Only workspace pods: the proxy pod has the same data-dir-hash.
       '-l', selector,
       '--ignore-not-found', '--wait=false',
     ])
@@ -193,34 +154,21 @@ export async function cleanupWorkspaceJobs(timeoutMs = 120_000): Promise<void> {
 }
 
 /**
- * Creates a temporary data dir and sets it as the yaac data dir.
+ * Create a temp data dir under testTmpBase() and make it the yaac data dir.
  * Returns the path for cleanup.
- *
- * NOTE: lives under testTmpBase(), which is the OS tmpdir for a hermetic
- * unit run and `<ambient data dir>/e2e-tmp` for api/e2e. Workspace pods
- * hostPath-mount paths under the data dir, so the api/e2e base has to be
- * node-visible — that is why it hangs off the data dir, whose visibility
- * `yaac cluster check` proves on every setup.
  */
 export async function createTempDataDir(): Promise<string> {
   const dir = await e2eMkdtemp('yaac-test-')
   setDataDir(dir)
-  // The tier folders, through the same helper a server start uses — so a
-  // test that writes a server-local file directly (a lock, a credential)
-  // finds its parent the way production would have made it.
   await ensureDataDir()
-  // The CLIENT-LOCAL root is a SIBLING of the data dir, so mkdtemp does not
-  // make it. Created here rather than by each caller because a test that
-  // seeds a client-local file directly (a remote, a driver record) would
-  // otherwise fail on a missing parent, while production always arrives
-  // through a writer that ensures it.
+  // The client-local root sits beside the data dir, so mkdtemp doesn't
+  // create it.
   await fs.mkdir(clientLocalRoot(), { recursive: true })
   return dir
 }
 
 /**
- * Removes a temp data dir, and the client-local root beside it — which is
- * outside the tree `dir` names, so it would otherwise leak per test.
+ * Remove a temp data dir and the client-local root beside it.
  */
 export async function cleanupTempDir(dir: string): Promise<void> {
   const stuck = [...await removeScratchTree(dir), ...await removeScratchTree(`${dir}-client`)]
@@ -232,9 +180,7 @@ export async function cleanupTempDir(dir: string): Promise<void> {
   }
 }
 
-/**
- * Creates a local git repo with a single commit for testing.
- */
+/** Create a local git repo with a single commit. */
 export async function createTestRepo(dir: string): Promise<string> {
   await fs.mkdir(dir, { recursive: true })
   await git(dir, ['init'])
@@ -250,9 +196,8 @@ export async function createTestRepo(dir: string): Promise<string> {
 }
 
 /**
- * Check if podman (the image build engine) is available and running.
- * Uses `podman info` on all platforms to verify the server is actually
- * reachable (not just that a machine is listed as running).
+ * Whether podman is available, via `podman info` (which checks the engine
+ * is actually reachable).
  */
 export async function podmanAvailable(): Promise<boolean> {
   try {
@@ -266,12 +211,8 @@ export async function podmanAvailable(): Promise<boolean> {
 let _podmanAlive = false
 
 /**
- * Throws if podman is not available. Use in beforeAll/test bodies
- * so tests fail loudly instead of silently passing.
- *
- * Only a prior success is cached — failures always re-probe. No revive:
- * every engine yaac talks to is managed elsewhere (macOS machine, host
- * systemd socket, or the workspace-create-started in-pod engine).
+ * Throw if podman is not available, so tests fail rather than silently
+ * pass. Only success is cached.
  */
 export async function requirePodman(): Promise<void> {
   if (_podmanAlive) return
@@ -281,8 +222,8 @@ export async function requirePodman(): Promise<void> {
 }
 
 /**
- * Check if a kubernetes cluster (the workspace runtime) is reachable —
- * `kubectl version` round-trips to the API server with a short timeout.
+ * Whether a k8s cluster is reachable (`kubectl version` with a short
+ * timeout).
  */
 export async function clusterAvailable(): Promise<boolean> {
   try {
@@ -296,9 +237,8 @@ export async function clusterAvailable(): Promise<boolean> {
 let _clusterAlive = false
 
 /**
- * Throws if no kubernetes cluster is reachable. Use in beforeAll of every
- * e2e test that creates workspaces or proxies so they fail with a pointed
- * message instead of timing out deep inside kubectl retries.
+ * Throw if no k8s cluster is reachable, so tests fail with a clear message
+ * instead of timing out in kubectl retries.
  */
 export async function requireCluster(): Promise<void> {
   if (_clusterAlive) return
@@ -311,14 +251,12 @@ export async function requireCluster(): Promise<void> {
 }
 
 /**
- * Add a local test repo as a yaac project on `server`: clone it into the
- * data dir, then have the server record it, bypassing URL validation and
- * token resolution (which only apply to real GitHub URLs).
+ * Add a local test repo as a project on `server`: clone it into the data
+ * dir, then register it, skipping the URL checks `project add` does.
  *
- * `remoteUrl` is what the project row records — the remote every create
- * parses and resolves a credential for. It must be a shape `project add`
- * accepts, and defaults to a GitHub-shaped one named for the slug, which
- * nothing dials under YAAC_E2E_SKIP_FETCH.
+ * `remoteUrl` is what the project row records. It defaults to a
+ * GitHub-shaped URL for the slug, which nothing dials under
+ * YAAC_E2E_SKIP_FETCH.
  */
 export async function addTestProject(
   server: SpawnedServer,
@@ -332,7 +270,5 @@ export async function addTestProject(
   await registerTestProject(server, slug, opts.remoteUrl ?? `https://github.com/test-org/${slug}.git`)
 }
 
-/**
- * Get the current yaac data dir (for assertions).
- */
+/** The current yaac data dir (for assertions). */
 export { getDataDir }

@@ -11,8 +11,8 @@ function buildTestApp(): Hono {
   return app
 }
 
-// The identity gate lives in `@yaac/server/http/web-auth`; see
-// packages/server/test/api/http/web-auth.test.ts for that coverage.
+// The identity gate is covered in
+// packages/server/test/api/http/web-auth.test.ts.
 
 describe('denyBrowserCors', () => {
   it('responds 405 to preflight (OPTIONS) requests', async () => {
@@ -46,8 +46,7 @@ describe('requestLogger', () => {
   })
 
   it('names the tailnet user a request came from, and nobody for a local one', async () => {
-    // The audit trail of which person did what, now that no token name
-    // identifies a device.
+    // The log line is the audit trail of which person did what.
     const app = new Hono<IdentityEnv>()
     app.use('*', requestLogger())
     app.use('*', identify())

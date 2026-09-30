@@ -18,76 +18,54 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * The `WorkspaceDriver` contract, and the vocabulary of runtime observation
- * it answers in — what the substrate can see right now, and nothing that
- * survives it (docs/layered-server.md).
+ * The `WorkspaceDriver` contract and the types it answers in: what the
+ * substrate can see right now (docs/layered-server.md). Durable facts
+ * (titles, pins, conversations) live in `#db`; a workspace list joins the
+ * two.
  *
- * The durable half of a listing (a title, a pin, the recorded creation
- * time, the sessions and their opening messages) lives in `#db`;
- * joining the two is how a workspace list is produced. Keeping the split in
- * the types is what keeps the join honest: nothing here can carry a fact a
- * restart of the substrate would lose track of.
- *
- * Nothing in this file imports anything but shared types — types plus one
- * error class, and no module of its own — so a mediator or a machinery
- * module that reaches the runtime through `#drivers/driver` pulls no
- * cluster code (and no cluster client) into its module graph. An eslint
- * zone on this file and `driver.ts` alone is what keeps that true. The k8s
- * driver is the first implementation; a host-process driver with no
- * cluster is the second, and the reason a verb here never names a Job, a
- * label or a namespace.
+ * This file imports only shared types (an eslint zone enforces it), so
+ * callers load no cluster code. There are two drivers, k8s and
+ * containerless, so no verb here names a Job, label or namespace.
  */
 
 /**
- * A project as the runtime is handed it. The slug is for display, labels
- * and log lines; the id is what every per-project object the runtime holds
- * is NAMED by — immutable and never reused, so a project re-added under a
- * freed slug cannot inherit an old one's registry, repos or node-local tree,
- * whether or not their removal succeeded. The runtime never looks the id
- * up: it is a row, handed down with every call that needs it.
+ * A project as handed to the driver. The slug is for display, labels and
+ * logs. Per-project runtime objects are named by the id, which is never
+ * reused, so a project re-added under the same slug cannot inherit an old
+ * one's leftovers.
  */
 export interface ProjectRef {
   slug: string
   id: string
 }
 
-/** What `reapNodeLocal` must keep. Both sets are read by the caller from
- *  its own records, and an unreadable one stands the sweep down rather
- *  than reading as empty. */
+/** What `reapNodeLocal` must keep, from the caller's records. If they
+ *  cannot be read, the caller skips the sweep rather than pass empty sets. */
 export interface NodeLocalLiveSet {
   projectIds: ReadonlySet<string>
   workspaceIds: ReadonlySet<string>
 }
 
 /**
- * A workspace as the substrate can see it — everything a resolver needs and
- * nothing db keeps. The durable half (a title, a pin, the recorded
- * creation time, the conversations) never appears here.
- *
- * Distinct from `WorkspaceRuntimeReport` (the machinery's, in
- * `#runtime/status`), which is what a whole report carries: this is the
- * answer to "which workspace does this id name", so it names the runtime
- * handle an exec addresses and says nothing about liveness.
+ * A workspace as the substrate sees it: what a resolver needs to address it.
+ * Durable facts live in `#db`; liveness is in `#runtime/status`'s
+ * `WorkspaceRuntimeReport`.
  */
 export interface RuntimeHandle {
   workspaceId: string
   projectSlug: string
-  /** The runtime's own name for it, which is what an exec addresses. */
+  /** The runtime's name for the unit; what an exec addresses. */
   jobName: string
-  /** What to RUN for this workspace — always something runnable, falling
-   *  back to the default when the runtime declares nothing recognizable. */
+  /** The tool to run; falls back to the default if the declared one is
+   *  unknown. */
   tool: AgentTool
   /**
-   * What the workspace DECLARES, when that is a tool this build knows.
-   *
-   * Distinct from `tool` on purpose: a workspace stamped with something
-   * unrecognized still has to render and be exec'd into, so `tool` resolves;
-   * but it says nothing about what a workspace spawned from it should run,
-   * and a resolved guess there would outrank the server's own default.
+   * The declared tool, only if this build knows it. Unlike `tool` it has no
+   * fallback, so a fallback guess never overrides the server's default for
+   * workspaces spawned from this one.
    */
   declaredTool?: AgentTool
-  /** How this workspace's agents are driven — decided at launch and read
-   *  back off the runtime, so a caller never re-derives it from a label. */
+  /** How the agents are driven, as recorded at launch. */
   mode: AgentMode
   running: boolean
   /** Lowercased runtime phase — `running`, `pending`, `failed`, … */
@@ -96,15 +74,12 @@ export interface RuntimeHandle {
   createdAtMs: number
   /** A warmed spare, not a user's workspace. */
   prewarmed: boolean
-  /** On its way out — neither active nor stale. It renders as a
-   *  "terminating…" row and is already being torn down, so it belongs in
-   *  neither the liveness probe path nor the reaper's targets. */
+  /** Being torn down. Shown as "terminating…" and skipped by the liveness
+   *  probe and the reaper. */
   terminating: boolean
   /**
-   * Why the runtime stopped, read off the terminal state it was observed
-   * with. Only meaningful once `running` is false — the reaper consults it
-   * at reap time, the last moment the evidence exists, because its own
-   * teardown destroys the runtime that carries it.
+   * Why the runtime stopped. Only meaningful once `running` is false. The
+   * reaper reads it before its teardown destroys the evidence.
    */
   deathCause: WorkspaceDeathCause
 }
@@ -116,14 +91,10 @@ export interface AgentLiveness {
 }
 
 /**
- * What a teardown addresses: the workspace's identity, plus the runtime's
- * own name for the unit holding it.
- *
- * The unit name is the runtime's to produce and never the caller's to
- * construct — a mediator that built one would be encoding the runtime's
- * naming scheme. It rides along rather than being re-derived at teardown
- * because a stop must be able to address a unit whose workspace is already
- * gone, which is exactly when there is nothing left to derive it from.
+ * What a teardown addresses: the workspace plus the runtime's name for its
+ * unit. The unit name always comes from the runtime, never built by a
+ * caller, and is carried along because a stop may need it after the
+ * workspace is gone.
  */
 export interface TeardownTarget {
   projectSlug: string
@@ -132,29 +103,22 @@ export interface TeardownTarget {
 }
 
 /**
- * A unit the runtime is still holding for a workspace whose workspace
- * itself is gone — a Job outliving its pod, and the reason an orphan sweep
- * can find work a plain listing cannot.
+ * A unit the runtime still holds after its workspace is gone (e.g. a Job
+ * outliving its pod). The orphan sweep finds these.
  */
 export interface StrayUnit {
   workspaceId: string
-  /** The runtime's own name for the unit, for a teardown that must name it. */
   unitName: string
   projectSlug: string
-  /** When the unit was created — a sweep needs it to tell a genuine orphan
-   *  from a launch whose workspace has not been admitted yet. */
+  /** Lets a sweep tell an orphan from a launch whose workspace has not
+   *  appeared yet. */
   createdAtMs: number
 }
 
 /**
- * One reconcile pass's shared view of the runtime.
- *
- * Memoized per snapshot, so the first step in a pass that asks takes the
- * point-in-time view and every later step sees the same instant — which is
- * what makes a destructive step safe: the reaper never judges absence
- * against a view another step already invalidated. A failed read stays
- * failed for the whole pass rather than resolving differently for a later
- * caller.
+ * One reconcile pass's shared view of the runtime. Each read is memoized, so
+ * every step in the pass sees the same instant (and the same failure), and
+ * the reaper never judges absence against a different view.
  */
 export interface RuntimeSnapshot {
   /** Whether this is the periodic run-everything pass. */
@@ -166,13 +130,9 @@ export interface RuntimeSnapshot {
 }
 
 /**
- * What the egress path must be told about a workspace before it may reach
- * anything: decisions only.
- *
- * Which config applies, which tool the workspace runs, and which remote it
- * was cloned from are the caller's to resolve — they come from rows and
- * from disk. How any of that becomes an allowlist, an injection rule or a
- * stored secret is the runtime's, which is why none of it appears here.
+ * What the egress path must know about a workspace before it may reach
+ * anything. The caller resolves these inputs; the driver turns them into
+ * allowlists and injection rules.
  */
 export interface WorkspaceRegistration {
   workspaceId: string
@@ -182,23 +142,17 @@ export interface WorkspaceRegistration {
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
   /**
-   * The project's proxied secrets as INJECTION RULES — which hosts, paths
-   * and headers each name applies to. Never values.
-   *
-   * The runtime cannot answer this itself: a secret is a row the mediators
-   * own, and only they can say which of them have a value behind them (a
-   * rule for a name with nothing behind it would inject an empty header).
-   * Values reach the egress path by their own route
-   * (`syncProjectSecrets`), which is what keeps a registration safe to
-   * hold in a plain ConfigMap.
+   * The project's proxied secrets as injection rules (hosts, paths,
+   * headers), never values. Only secrets that have a value are included.
+   * Values travel separately (`syncProjectSecrets`), so a registration is
+   * safe to store in a plain ConfigMap.
    */
   proxySecretRules: Record<string, SecretProxyRule>
 }
 
 /**
- * One HTTPS token and the projects entitled to it. Scoped by project rather
- * than by URL: a credential is assigned to projects (docs/git-credentials.md),
- * and the egress path hands it only to a workspace of one of them.
+ * One HTTPS token and the projects it is assigned to
+ * (docs/git-credentials.md). Only those projects' workspaces get it.
  */
 export interface HttpsCredentialEntry {
   token: string
@@ -206,30 +160,22 @@ export interface HttpsCredentialEntry {
 }
 
 /**
- * One SSH key the egress path can sign with, and the projects entitled to
- * it — each with the host its remote names and the host key assigning it
- * trusted.
- *
- * The key material itself, because there is no file to name: a key is a
- * sealed row the server generated, and the only copies outside the database
- * are the ones a runtime puts somewhere a process can use them — the proxy's
- * in-memory ssh-agent, or a per-workspace agent under a driver with no proxy.
+ * One SSH key and the projects it is assigned to, each with its remote host
+ * and trusted host key. Carries the key material itself: keys live
+ * encrypted in the database, and the driver loads them into an ssh-agent
+ * (the proxy's, or a per-workspace one under containerless).
  */
 export interface SshCredentialEntry {
   privateKey: string
-  /** The public half, one OpenSSH line — what a workspace's agent may offer. */
+  /** The public key, one OpenSSH line. */
   publicKey: string
   projects: Array<{ slug: string; host: string; knownHostsEntry: string }>
 }
 
 /**
- * Everything the egress path injects on the user's behalf, as one value:
- * the four tool credential files, the https git tokens and the ssh keys.
- *
- * Handed to the runtime whole, on every change to any of it, rather than
- * read by the runtime on its own schedule: the host store above the
- * runtime is the authority, and a runtime holding a copy re-reads nothing
- * — it is told. A runtime that mediates no egress ignores it.
+ * Everything the egress path injects: the tool credential files, HTTPS git
+ * tokens and SSH keys. Pushed to the driver whole on every change; the
+ * driver never reads the store itself. Ignored without mediated egress.
  */
 export interface CredentialBundle extends ToolCredentialBundle {
   git: HttpsCredentialEntry[]
@@ -237,15 +183,9 @@ export interface CredentialBundle extends ToolCredentialBundle {
 }
 
 /**
- * Where one mount's bytes come from. Declared per mount rather than left
- * implicit, because the answer is what a second driver has to re-realize:
- * a host-process driver reads a hostPath as a bind or a symlink, and a
- * multi-node cluster reads the shared tier as a claim.
- *
- * The hostPath `type` says what must already be there ('' means "whatever
- * exists"); absent means a directory. It mirrors the substrate's own
- * spelling, and the driver's assignment of a mount into its manifest is
- * what catches the two drifting apart.
+ * A hostPath mount's required type, spelled as in Kubernetes ('' means
+ * anything; absent means a directory). The k8s driver's manifest assignment
+ * catches drift from the Kubernetes type.
  */
 export type HostPathKind = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
 
@@ -262,10 +202,8 @@ export interface WorkspaceMount {
 }
 
 /**
- * What one workspace may consume. Policy, not mechanics: the numbers are
- * chosen against ordinary developer hardware (how many workspaces should
- * pack onto one machine, and how much one may burst to), so they are the
- * caller's to set and the runtime's to enforce however it can.
+ * What one workspace may consume. The caller sets the policy; the driver
+ * enforces it however it can.
  */
 export interface WorkspaceResources {
   memoryRequestBytes: number
@@ -278,17 +216,14 @@ export interface WorkspaceResources {
 
 
 /**
- * What a workspace needs standing up around it before it can be launched:
- * the egress registration and the image plumbing.
- *
- * Decisions only. Whether the workspace runs nested containers comes from
- * its config, and which config, tool and remote apply comes from rows and
- * disk — all the caller's. Everything about how those become registries
- * and policies is the runtime's.
+ * Inputs for `prepareSubstrate`: what must be set up around a workspace
+ * before launch (egress registration, registry plumbing). The caller
+ * resolves them; the driver decides how they become registries and
+ * policies.
  */
 export interface SubstrateIntent {
   projectSlug: string
-  /** What the project's substrate objects are named by (`ProjectRef`). */
+  /** Names the project's substrate objects (see `ProjectRef`). */
   projectId: string
   workspaceId: string
   tool: AgentTool
@@ -296,63 +231,37 @@ export interface SubstrateIntent {
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
   nestedContainers: boolean
-  /**
-   * The project's proxied secrets' injection rules, which the runtime
-   * registers. The VALUES they resolve against are not here: they reach
-   * the egress path per project, when they change (`syncProjectSecrets`),
-   * so the registration a create writes names refs that are already live.
-   */
+  /** Injection rules for the project's proxied secrets. Values travel
+   *  separately (`syncProjectSecrets`). */
   proxySecretRules: Record<string, SecretProxyRule>
   onProgress?: (message: string) => void
 }
 
 /**
- * The runtime's receipt for one `prepareSubstrate` — everything it stood
- * up for the workspace, in whatever shape it needs to finish the launch.
- *
- * Opaque above the runtime on purpose: what a k8s driver keeps here (a
- * proxy ClusterIP, a stream token, the mounts a nested cluster implies) is
- * exactly the substrate vocabulary the contract exists to hide. A caller
- * holds it and hands it back, and holding ONE per create is what keeps a
- * retried launch from re-running the preparation.
+ * The result of `prepareSubstrate`, opaque to callers because it holds
+ * driver-specific details (proxy address, stream token, extra mounts). The
+ * caller passes it back on launch; one per create, so launch retries do not
+ * redo the preparation.
  */
 export interface WorkspaceSubstrate {
   readonly kind: 'workspace-substrate'
 }
 
 /**
- * The project's git credential, resolved down to what a workspace's own git
- * needs to authenticate with it.
- *
- * Only a runtime that does NOT mediate egress is handed one, which is the
- * whole reason it is on the spec rather than looked up: a runtime whose proxy
- * injects the credential in flight must never see the secret, and a runtime
- * with no proxy has nothing to do the injecting, so its workspace has to hold
- * the real thing (docs/containerless-driver.md). Either way the driver is
- * handed the answer instead of reaching for it.
- *
- * The SSH variant carries the key material (the OpenSSH private-key
- * container `ssh-add -` reads), because there is no path to name: a key
- * lives sealed in the database and reaches a process only where one is
- * about to use it. What the driver does with it is the driver's — the
- * containerless one loads it into a per-workspace ssh-agent, so the
- * workspace can sign with the key without ever holding a copy of it.
+ * The project's git credential in the form the workspace's own git needs.
+ * Only given to a driver without mediated egress, whose workspace must hold
+ * the real credential (docs/containerless-driver.md). The SSH variant is the
+ * OpenSSH private key `ssh-add -` reads; containerless loads it into a
+ * per-workspace ssh-agent so the workspace never holds a copy.
  */
 export type WorkspaceGitCredential =
   | { kind: 'https'; host: string; token: string }
   | { kind: 'ssh'; privateKey: string }
 
 /**
- * A workspace to run, described in decisions rather than in any
- * substrate's spelling.
- *
- * The division inside it matters: `env` and `mounts` are what the CALLER
- * decided the workspace should see, and the runtime adds its own to both
- * (the agent transport's token, CA trust, whatever a nested cluster needs)
- * rather than expecting the caller to have named them. Nothing here says
- * how any of it is spelled — labels, namespaces, manifests and priority
- * classes are the k8s driver's business, and a host-process driver would
- * read the same spec as an environment and a set of binds.
+ * A workspace to launch, in substrate-neutral terms. `env` and `mounts` are
+ * the caller's; the driver adds its own (transport token, CA trust, nested
+ * cluster needs).
  */
 export interface WorkspaceSpec {
   projectSlug: string
@@ -361,59 +270,42 @@ export interface WorkspaceSpec {
   mode: AgentMode
   /** A warmed spare: hidden from user-facing views until it is claimed. */
   prewarm: boolean
-  /** The image to run, as the runtime's registry will resolve it —
-   *  `prepareImage` produced it. Absent for a runtime that runs no images:
-   *  the caller skipped `prepareImage` entirely rather than inventing a ref
-   *  nothing would resolve. */
+  /** The image from `prepareImage`. Absent for a driver that runs no
+   *  images. */
   image?: string
   /** Caller-decided `NAME=VALUE` entries; the runtime appends its own. */
   env: string[]
   /**
-   * The names in `env` whose values are credentials. A runtime hands them to
-   * the workspace like any other entry but never writes them anywhere of its
-   * own: a secret lives encrypted in the database and in the memory of what
-   * it was handed to, not in a runtime's durable records.
+   * Names in `env` whose values are credentials. The driver passes them to
+   * the workspace but never stores them in its own durable records.
    */
   secretEnvKeys: string[]
   /** Caller-decided mounts; the runtime appends its own. */
   mounts: WorkspaceMount[]
   /**
-   * Directories inside the checkout, as the workspace sees them, that hold
-   * installed packages (`node_modules`): per workspace, rebuilt by its init
-   * commands, and never worth keeping past it. The caller has created each
-   * one in the checkout. How they are backed is the runtime's — along with
-   * where the workspace's package store goes, since a store only hardlinks
-   * into modules on the same filesystem — and a runtime whose checkout is
-   * already on local disk leaves them where they are.
+   * Package dirs inside the checkout (e.g. `node_modules`), as the workspace
+   * sees them. Disposable and rebuilt by init commands; the caller has
+   * created them. The driver decides how to back them (and where the package
+   * store goes, since it must share their filesystem to hardlink).
    */
   moduleDirs: string[]
   resources: WorkspaceResources
-  /** Argv run inside the workspace once its filesystem is up and before it
-   *  is reported ready — the in-workspace setup the caller staged. */
+  /** Setup command run inside the workspace before it is reported ready. */
   postStartExec: string[]
   /**
-   * Argv run inside the workspace as it is being stopped, before its
-   * processes are signalled, bounded by the runtime's grace period. What a
-   * working copy checkpoints on the way out. A runtime whose workspaces
-   * keep no working copy (the host-process one) never receives one and
-   * ignores it if it did, like `postStartExec`.
+   * Command run inside the workspace on stop, before its processes are
+   * signalled, within the grace period (checkpoints the opencode working
+   * copy). Containerless never receives one.
    */
   preStopExec?: string[]
   /** The workspace runs its own container engine. */
   nestedContainers: boolean
   /**
-   * SSH remote: the host path of the project-scoped known_hosts the caller
-   * wrote. Its presence is what says "this workspace talks git over SSH";
-   * how the key material and the tunnel reach the workspace is the
-   * runtime's, since both are properties of its own egress path.
+   * Set for an SSH remote: the host path of the project's known_hosts. The
+   * driver decides how the key and tunnel reach the workspace.
    */
   ssh?: { knownHostsFile: string }
-  /**
-   * How the workspace's own git authenticates against `origin`, for a
-   * runtime with no egress path to inject it on the way out. Absent under a
-   * mediating runtime, whose workspace is exactly what that boundary exists
-   * to keep the real credential from.
-   */
+  /** The real git credential; set only without mediated egress. */
   gitCredential?: WorkspaceGitCredential
   /** The receipt from this workspace's `prepareSubstrate`. */
   substrate: WorkspaceSubstrate
@@ -421,17 +313,13 @@ export interface WorkspaceSpec {
 }
 
 /**
- * The command ran inside the workspace and exited nonzero — a conclusive
- * verdict ABOUT the workspace, as opposed to a transport failure, which
- * proves nothing about it.
+ * A command ran inside the workspace and exited nonzero. Unlike a transport
+ * failure, this proves something about the workspace.
  *
- * The one error distinction the contract makes, and it is forced: the agent
- * probes branch on it. `verifyAgentWindowAlive` reports "that agent died on
- * launch" only when the probe reached the workspace and found no such
- * window, and the stale reaper's tmux probe may only conclude `dead` on the
- * same evidence — a cluster blip read as death reaps a live workspace, Job
- * and all. Every driver must therefore distinguish the two; a driver that
- * cannot tell them apart must report the transport failure, never this.
+ * `verifyAgentWindowAlive` and the stale reaper's tmux probe conclude an
+ * agent or workspace is dead only on this error; treating a network blip as
+ * death would reap a live workspace. A driver that cannot tell the two apart
+ * must report a transport failure, never this.
  */
 export class WorkspaceExecError extends Error {
   constructor(
@@ -447,30 +335,17 @@ export class WorkspaceExecError extends Error {
 }
 
 /**
- * The `changes` failure code that means no diff base came of the ref it was
- * told to diff against — the ref names nothing in that checkout, or nothing
- * the checkout shares history with. Either way there is no fork point, and
- * a diff taken anyway would be against the wrong thing.
- *
- * It crosses the contract, so every driver reports exactly this code for
- * that failure and nothing else for it — a `changes` read that fails for
- * any other reason keeps its own code. What the failure PROVES depends on
- * who chose the ref: with an explicit `base` the caller named a ref that
- * does not resolve (their mistake), and with none the workspace could not
- * resolve even the recorded fork branch or its own HEAD (ours). Only the
- * caller knows which it passed, so the driver reports the code and leaves
- * the verdict to whoever chose the base.
+ * The `changes` exit code for "no diff base": the ref does not resolve in
+ * the checkout or shares no history with it. Every driver uses exactly this
+ * code for that failure. The caller decides whose fault it is: an explicit
+ * `base` is the user's mistake; the default base failing is ours.
  */
 export const CHANGES_BASE_UNRESOLVED = 4
 
 /**
- * A child-process-shaped stream into a workspace: the transport the agent
- * drivers speak over (tmux control mode for `tui`, acpd's JSON-RPC for
- * `acp`).
- *
- * Structural rather than nominal, and deliberately the shape `child_process`
- * already has — a driver that really does spawn a local child satisfies it
- * as-is, and the k8s driver's relay facade was written to it.
+ * A `child_process`-shaped stream into a workspace, used by the agent
+ * drivers (tmux control mode for `tui`, acpd's JSON-RPC for `acp`). A real
+ * local child satisfies it as-is.
  */
 export interface StreamChild {
   stdin: { write(data: string): void } | null
@@ -480,9 +355,8 @@ export interface StreamChild {
   kill(signal?: NodeJS.Signals): boolean
 }
 
-/** A PTY-shaped stream into a workspace — what a terminal viewer attaches
- *  to. `kill()` with no signal drops the stream; with one, it is delivered
- *  to the process inside. */
+/** A PTY stream into a workspace, for terminal viewers. `kill()` with no
+ *  signal drops the stream; with one, it signals the process inside. */
 export interface StreamPty {
   onData(cb: (data: string) => void): void
   onExit(cb: (e: { exitCode: number }) => void): void
@@ -492,21 +366,12 @@ export interface StreamPty {
 }
 
 /**
- * A source that can dirty a reconcile pass.
- *
- * The ones the mediators know are named: the two substrate edges a
- * workspace can appear or vanish on, and the two in-pod edges no watch of
- * the substrate can see — a workspace's live conversation set changing,
- * and its driver connection going unhealthy (after which liveness can no
- * longer be inferred and has to be probed).
- *
- * The open tail carries a runtime's OWN sources — the ones only its own
- * steps declare and only it can raise, like what the egress proxy reports
- * over its event stream — so a driver can watch things the layers above
- * have no vocabulary for without every one of them learning the word.
- *
- * There is no poll: every source has an edge, and the resync is what makes
- * losing one cost latency rather than correctness.
+ * An event source that can mark a reconcile pass dirty. The named ones are
+ * workspace/unit changes on the substrate, a change in a workspace's live
+ * conversations, and an unhealthy agent connection (liveness must then be
+ * probed). Any other string is a driver's own source (e.g. the egress
+ * proxy's event stream). There is no polling; the periodic resync covers a
+ * missed event.
  */
 export const MEDIATOR_TRIGGERS = [
   'workspaces',
@@ -515,9 +380,7 @@ export const MEDIATOR_TRIGGERS = [
   'status-streams',
 ] as const
 
-/** The triggers named above, as a type — what a raise site is written
- *  against so a rename here breaks compilation there rather than quietly
- *  demoting an edge-driven step to resync latency. */
+/** Typed so a renamed trigger breaks compilation at its raise sites. */
 export type MediatorTrigger = typeof MEDIATOR_TRIGGERS[number]
 
 export type ReconcileTrigger = MediatorTrigger | (string & {})
@@ -534,85 +397,52 @@ export interface PassContext {
   triggers: ReadonlySet<ReconcileTrigger>
   /** Whether this is the periodic run-everything pass. */
   resync: boolean
-  /** Aborts the pass. Handed down so a step that fans out into many of its
-   *  own can stop starting them the moment shutdown signals. */
+  /** Aborted on shutdown, so a step that fans out can stop early. */
   signal: AbortSignal
   /** The pass's shared runtime view — memoized, created on first use. */
   snapshot: () => RuntimeSnapshot
-  /** Which projects exist — memoized, read on first use and handed to the
-   *  steps that need it: it is a row question, so a runtime step is handed
-   *  the answer instead of reading db itself. An unreadable list REJECTS
-   *  rather than resolving empty, because a step that collects whatever
-   *  no live project owns would read "none" as "collect everything". */
+  /** Which projects exist, memoized. Passed down so driver steps never read
+   *  `#db`. Rejects if unreadable rather than resolving empty, which a
+   *  garbage-collecting step would read as "collect everything". */
   projects: () => Promise<ProjectRef[]>
   /**
    * One project's resolved config, memoized per project for the pass.
-   *
-   * Handed down for the same reason as the two above: which config applies
-   * to a project is answered from disk by the layers that own it, and a
-   * runtime step that read it itself would be reaching sideways. Steps use
-   * it to decide what a project's upkeep should look like — which image
-   * chain to keep warm, which ports a restored forwarder should carry.
-   *
-   * `undefined` means the project has no config, which is the ordinary case
-   * and reads as "all defaults" — never as a failure.
+   * Passed down so driver steps never read project files themselves.
+   * `undefined` means no config (all defaults), not a failure.
    */
   projectConfig: (projectSlug: string) => Promise<YaacConfig | undefined>
   /**
-   * Whether a teardown has been issued for this workspace but is not yet
-   * visible in the substrate — the gap between a stop starting and the
-   * delete landing.
-   *
-   * Handed down like the accessors above, in the other direction: the marks
-   * belong to the driver-neutral machinery, and a driver step that imported
-   * them would point the driver back up at the layer running over it. A
-   * driver's OWN observation of "on the way out" is separate and stays its
-   * own; this is the half nothing in the substrate can see yet.
+   * Whether a teardown was issued for this workspace but is not yet visible
+   * in the substrate. The marks live in `#runtime`, which drivers cannot
+   * import, so they are passed down.
    */
   terminating: (workspaceId: string) => boolean
 }
 
 /**
- * How a driver reports outward while it is running.
- *
- * The whole of its upward channel, and deliberately narrow: a driver
- * imports nothing above its contract, so everything it has to tell the
- * layers over it — that a pass owes work, that the workspace set moved —
- * travels through here. The composition root supplies them, which is also
- * what lets it feed the driver-neutral machinery (the status watchers) from
- * what the driver observed without the driver ever naming it.
+ * A driver's only channel to the layers above it, which it cannot import.
+ * The composition root supplies these callbacks.
  */
 export interface DriverSinks {
   /** A source that dirties the next reconcile pass. */
   trigger: (source: ReconcileTrigger) => void
-  /**
-   * The set of workspaces changed — the whole set, never a delta, for the
-   * same reason `RuntimeReport` is: the receiver holds no state it would
-   * have to reconcile against a restart.
-   */
+  /** The workspace set changed. Always the whole set, never a delta. */
   workspacesChanged: (workspaces: RuntimeHandle[]) => void
   /**
-   * The substrate is usable, but nothing is watching it yet.
-   *
-   * The moment to rebuild whatever the PREVIOUS server left running and
-   * this one has forgotten — in-memory state a restart drops while the
-   * workspaces keep going. Awaited: the driver starts watching only once it
-   * resolves, so recovery never races the deltas.
+   * The substrate is usable but not yet watched: time to rebuild in-memory
+   * state for workspaces a previous server left running. The driver starts
+   * watching only after this resolves.
    */
   recover: () => Promise<void>
-  /** Attached and watching. Everything the driver reports arrives after
-   *  this, and a caller that must not run against an unattached substrate
-   *  (the reconcile loop) starts here rather than when `start` returns. */
+  /** Attached and watching. The reconcile loop starts here, not when
+   *  `start` returns. */
   attached: () => void
 }
 
 /**
- * The steps a runtime contributes to a pass, in two groups because that is
- * the whole of the ordering the mediators actually constrain.
- *
- * `prePool` runs before the spare pool sizes itself; `maintenance` runs
- * after the sweeps that read rows. Within a group the runtime's own order
- * is its business — the reasons are substrate reasons.
+ * A driver's reconcile steps. `prePool` runs before the spare pool is sized;
+ * `maintenance` runs after the row-reading sweeps. Order within a group is
+ * the driver's.
  */
 export interface DriverReconcileSteps {
   prePool: ReconcileStep[]
@@ -620,50 +450,26 @@ export interface DriverReconcileSteps {
 }
 
 /**
- * Which substrate this process runs on — the one thing a layer above the
- * driver may branch on, and the whole of the capability vocabulary.
- *
- * Deliberately a kind rather than a bag of feature flags. Every
- * container-shaped feature (images and their builds, egress mediation and
- * the placeholder credentials that depend on it, sandboxing, the port
- * relay, nested clusters and engines, the spare pool, the in-workspace
- * spawn channel) is present in `k8s` and absent in `containerless`, so a
- * per-feature declaration would be a table with two identical columns and
- * no reader able to tell which flag it was really asking about. A driver
- * with a genuinely partial profile is what would earn the bag; until one
- * exists, the honest statement is what the driver IS.
- *
- * What it never licenses is substrate detail: a caller branches on the kind
- * to decide WHETHER a feature applies, never on HOW the driver realizes
- * one. Both kinds answer every verb — what an absent feature answers is
- * specified per verb below (empty, `null`, resolve), so most callers need
- * no branch at all.
- *
- * The type itself is a shared one because it also crosses the wire: the
- * webapp renders a different product per kind for the same reasons the
- * mediators branch on it.
+ * Which substrate this process runs on. A kind rather than feature flags:
+ * every container feature (images, egress mediation, sandboxing, nested
+ * engines, the spare pool) exists under `k8s` and not under
+ * `containerless`. Callers may branch on it to decide WHETHER a feature
+ * applies, never HOW it is done. Each verb below says what it answers when
+ * its feature is absent, so most callers need no branch. Shared because the
+ * webapp also branches on it.
  */
 export type { DriverKind }
 
 /**
- * Where one workspace's things are, as the workspace itself sees them.
- *
- * The vocabulary every command the layers above author is written against:
- * they build tmux invocations, `git -C` calls and prompt scripts, and a
- * path baked into one of those is a substrate fact that escaped the driver.
- * A container driver answers with its fixed in-container paths (every
- * workspace has its own kernel, so one constant per path is safe); a
- * host-process driver answers with per-workspace paths, since its
- * workspaces share the host's filesystem and would otherwise collide on a
- * single tmux server.
- *
- * Everything here is a path INSIDE the workspace's world. Nothing on it is
- * a host path the server itself should read — what a workspace keeps on disk
- * is `#domain/workspaces`, and a driver that happens to make the two equal
- * (as a host-process driver does) does not make it the caller's business.
+ * Where a workspace's things are, as the workspace sees them. Every command
+ * built above the driver (tmux, `git -C`, prompt scripts) uses these instead
+ * of hard-coded paths. k8s answers fixed in-container paths; containerless
+ * answers per-workspace host paths, since its workspaces share one
+ * filesystem. These are never host paths for the server to read; that is
+ * `#domain/workspaces`.
  */
 export interface WorkspacePaths {
-  /** The tmux server socket every tmux invocation passes to `-S`. */
+  /** The tmux socket, passed to every tmux call as `-S`. */
   tmuxSock: string
   /** The checkout: a window's cwd, and what `git -C` addresses. */
   workspaceDir: string
@@ -671,197 +477,121 @@ export interface WorkspacePaths {
   scratchDir: string
   /** Where acpd puts one socket per ACP conversation. */
   acpSockDir: string
-  /**
-   * Where a workspace's own ssh-agent binds, on a substrate that gives it
-   * one. A runtime whose egress path holds the identities instead (the pod
-   * driver: the proxy forwards its agent) never reads this.
-   */
+  /** Where the workspace's own ssh-agent binds (containerless only; under
+   *  k8s the proxy holds the keys). */
   sshAgentSock: string
   /** Where an ACP conversation's JSONL log is written. */
   acpLogDir: string
-  /** Where the workspace reads the images pasted into its terminal panes —
-   *  the path a paste hands the agent. */
+  /** Where pasted images are, as the agent sees them. */
   attachmentsDir: string
-  /** acpd's entry module, for the launch command that supervises an agent. */
+  /** acpd's entry module, used in the acp launch command. */
   acpdEntry: string
 }
 
 /**
  * How a workspace is run. One implementation is registered per process
- * (`#drivers/driver`); everything above the runtime layer calls it and
- * nothing above names a substrate object.
- *
- * The split with the mediators is policy over mechanics: WHEN to reap, WHAT
- * to prewarm, WHICH windows to open are decisions and live in `#domain`;
- * how any of that becomes a running workspace is here.
+ * (`#drivers/driver`). Policy (when to reap, what to prewarm, which windows
+ * to open) lives in `#domain`; this is the mechanics.
  */
 export interface WorkspaceDriver {
-  /** Which substrate this is — see `DriverKind` for what a caller may do
-   *  with the answer. */
+  /** See `DriverKind` for how callers may use this. */
   readonly kind: DriverKind
 
   /**
-   * Where this workspace's things are, in its own world (see
-   * `WorkspacePaths`).
-   *
-   * Addressed by `jobName` like every other per-workspace verb, so a caller
-   * that already holds the handle it is about to `exec` against needs no
-   * second identity to write the command text for it.
-   *
-   * Pure and synchronous, and derived from the handle rather than looked
-   * up: a probe of a workspace that may already be gone still has to name
-   * the socket it WOULD have had, and a teardown composing a detached
-   * script has nothing left to consult. Two calls for the same handle
-   * always agree, whatever the substrate is doing.
+   * The workspace's paths (see `WorkspacePaths`). Pure and derived from
+   * `jobName`, so it works for a workspace that is already gone and always
+   * gives the same answer.
    */
   workspacePaths(jobName: string): WorkspacePaths
 
   /**
-   * Attach to the substrate and start watching it: whatever bootstrap it
-   * needs, its caches and watches, its own upkeep of the host.
-   *
-   * Resolving does NOT mean attached — a driver may defer the whole thing
-   * until first use. `sinks.attached` is the edge that means it;
-   * `sinks.recover` fires first, while the substrate is usable and nothing
-   * is watching yet.
-   *
-   * Failures of the bootstrap are the driver's to absorb: a server with no
-   * usable substrate still serves project and auth requests, and says so
-   * when a create asks for one.
+   * Attach to the substrate and start watching it. Resolving does not mean
+   * attached (a driver may defer); `sinks.attached` signals that, after
+   * `sinks.recover`. The driver absorbs bootstrap failures: the server still
+   * serves project and auth requests without a usable substrate.
    */
   start(sinks: DriverSinks): Promise<void>
   /**
-   * Stop everything push-fed, synchronously — watches, streams, and any
-   * host work in flight.
-   *
-   * Separate from `release` because the reconcile loop drains between the
-   * two: the watches must be down before the drain (they hold connections
-   * and per-workspace processes that would outlive the server), and what a
-   * draining pass still uses must survive it.
+   * Synchronously stop watches, streams and host work in flight. Separate
+   * from `release` because the reconcile loop drains between the two, and
+   * the drain still needs what `release` frees.
    */
   stop(): void
-  /** Drop what a draining pass still needed — the forward declarations, the
-   *  proxy client's state. After the drain, because a reap in that drain
-   *  still tears its workspace's forwards down. */
+  /** Drop what a draining pass still needed (forward declarations, the
+   *  proxy client's state), after the drain. */
   release(): void
 
-  /** Locate one workspace by its EXACT workspace id — prefix expansion is
-   *  domain's, over rows, and unit names are this runtime's own business.
-   *  An unclaimed spare is not a workspace and never matches. `preferCache`
-   *  answers from a push-fed view when the runtime has a trustworthy one. */
+  /** Find a workspace by exact id (prefix matching is domain's). Unclaimed
+   *  spares never match. `preferCache` allows answering from a watched
+   *  cache. */
   find(workspaceId: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle | undefined>
   /**
-   * Locate what a stop should address, by exact workspace id, including a
-   * workspace whose unit outlived its pod — a stop must still reach a
-   * runtime that is half gone, which is exactly the case a plain `find`
-   * reports as absent. An unclaimed spare matches only with `spares`: a
-   * failed warm tears down its own, and nothing else may stop one.
+   * Find what a stop should address, by exact id, including a unit that
+   * outlived its pod (which `find` reports as absent). Unclaimed spares
+   * match only with `spares`, used when a failed warm cleans up.
    */
   findForTeardown(workspaceId: string, opts?: { spares?: boolean }): Promise<TeardownTarget | undefined>
   /**
-   * Every workspace the runtime is holding, optionally one project's,
-   * spares included.
-   *
-   * `preferCache` carries the same meaning as on `find`: answer from a
-   * push-fed view when the runtime keeps a trustworthy one. The display
-   * path passes it — it runs on every snapshot, and a runtime whose watch
-   * is already streaming the answer should not be made to go ask. A caller
-   * that needs the substrate's own word (a reaper, a resolver) leaves it
-   * off.
+   * Every workspace held, optionally one project's, spares included.
+   * Display paths pass `preferCache`; reapers and resolvers that need the
+   * substrate's own answer do not.
    */
   list(projectSlug?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
-  /** Live counts per project slug, spares EXCLUDED. A display detail: an
-   *  unreachable substrate reports nothing rather than failing the caller. */
+  /** Live counts per project, spares excluded. Empty when unreachable. */
   count(): Promise<Record<string, number>>
   /** How many one project is running, spares INCLUDED. 0 when unreachable. */
   countForProject(projectSlug: string): Promise<number>
-  /** The working-tree diff of a running workspace, read from inside it.
-   *
-   *  Rejects with `WorkspaceExecError` when the read ran inside the
-   *  workspace and failed; `CHANGES_BASE_UNRESOLVED` is the code that says
-   *  the base ref yielded no fork point there. */
+  /** A running workspace's diff, read inside it. Rejects with
+   *  `WorkspaceExecError` on failure (`CHANGES_BASE_UNRESOLVED` when the
+   *  base has no fork point). */
   changes(jobName: string, base?: string, defaultBase?: string): Promise<WorkspaceChanges>
-  /** A fresh view for one reconcile pass. `resync` marks the periodic
-   *  run-everything pass; a direct caller outside a pass takes its own. */
+  /** A fresh view for one reconcile pass (or a direct caller outside one). */
   snapshot(resync?: boolean): RuntimeSnapshot
-  /** The runtime's own upkeep, spliced into the pass. What these sweep and
-   *  why is substrate detail, so the mediators order the groups and name
-   *  none of the steps. */
+  /** The driver's own upkeep steps for the reconcile pass. */
   reconcileSteps(): DriverReconcileSteps
 
-  /** Which hosts this workspace has been denied. Empty for a workspace the
-   *  runtime mediates no egress for. */
+  /** Hosts this workspace was denied. Empty without mediated egress. */
   blockedHosts(workspaceId: string): Promise<string[]>
-  /** Git credentials the egress path saw an upstream reject for this
-   *  project — expired or revoked, and project-wide because the credential
-   *  is. Empty for a runtime that injects none. */
+  /** Git credentials the egress path saw rejected upstream for this
+   *  project. Empty without mediated egress. */
   gitAuthFailures(projectSlug: string): Promise<GitAuthFailure[]>
-  /** Git credentials the egress path saw rejected, for every project it
-   *  holds any for. The display path's form: it renders them all and has no
-   *  project list of its own to fan out over. */
+  /** `gitAuthFailures` for every project, for the display path. */
   allGitAuthFailures(): Promise<Record<string, GitAuthFailure[]>>
-  /** The host ports this workspace's ports are offered at — what a client
-   *  forwarder should bind, and what the webapp links to. In-memory and
-   *  lost on a restart, which is what the forwarder restore rebuilds. */
+  /** The host port each forwarded port is offered at (what a client binds
+   *  and the webapp links to). In memory; the forwarder restore rebuilds it
+   *  after a restart. */
   forwardedPorts(workspaceId: string): Promise<PortMapping[]>
-  /** Ports this workspace is listening on that nothing reaches yet — the
-   *  set `forwardPort` will accept, so a caller can refuse an ineligible
-   *  one before doing anything durable about it. `forwardPort` re-checks
-   *  regardless: this answers a question, it does not reserve anything. */
+  /** Listening ports not yet forwarded: what `forwardPort` accepts. Lets a
+   *  caller refuse early; `forwardPort` checks again. */
   unforwardedPorts(workspaceId: string): Promise<number[]>
   /**
-   * Every image build this runtime has run or is running, for display.
-   *
-   * In-memory and lost on a restart, like the forwards: a build is
-   * observation of what the runtime is doing right now, not durable state.
-   * A runtime that builds no images answers empty, and the whole feed
-   * degrades to "nothing to show" rather than to an error. Synchronous
-   * because it is held state, and the snapshot the webapp hydrates from
-   * composes it inline.
+   * Image builds run or running, for display. In memory, lost on restart.
+   * Empty for a driver that builds no images.
    */
   listImageBuilds(): ImageBuildEntry[]
   /**
-   * One build's raw engine output, or `undefined` when the runtime has no
-   * such build.
-   *
-   * Kept off `listImageBuilds` deliberately: it changes at line rate, so
-   * putting it in the feed would push a new snapshot to every client for
-   * every line. The viewer polls this only while it is open.
+   * One build's raw output, or `undefined` if unknown. Kept out of
+   * `listImageBuilds` because it changes on every line; the viewer polls it
+   * while open.
    */
   imageBuildLog(id: string): string | undefined
-  /** Hide a finished build from the feed, answering whether there was one
-   *  to hide. Display-only — nothing about what was built changes, and a
-   *  failed chain keeps backing off whatever schedule it was on. */
+  /** Hide a finished build from the feed; returns whether it existed.
+   *  Display only: retry backoff is unaffected. */
   dismissImageBuild(id: string): boolean
   /**
-   * Forget a finished build and run it again now, answering whether there
-   * was one to retry (an unknown id, or one still running, is `false`).
-   *
-   * Fire-and-forget: the rebuild reports through the feed like any other
-   * build, so a caller gets its answer without waiting for one. What a
-   * retry MEANS is entirely the runtime's — which chain to re-run, and what
-   * to do about a build no project owns (its own infrastructure, which only
-   * it can rebuild).
-   *
-   * `projectConfig` is handed in for the same reason as `PassContext`'s: a
-   * rebuild needs to know what a project's config asks for, and which
-   * config applies is answered above the runtime. Taken as a parameter
-   * rather than off a pass because a retry is caller-triggered.
+   * Rerun a finished build now; returns false for an unknown or running id.
+   * Fire-and-forget: progress shows in the feed. `projectConfig` is passed
+   * in for the same reason as on `PassContext`.
    */
   retryImageBuild(
     id: string,
     projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
   ): boolean
   /**
-   * Widen one running workspace's egress to reach `host`, live.
-   *
-   * Live only: nothing here outlives the workspace, so a caller that wants
-   * every FUTURE workspace to reach the host persists that itself first
-   * (persistence is policy) and asks for the fan-out, which widens the
-   * project's other running workspaces to match. A workspace the runtime
-   * has no egress registration for rejects when it is the named target and
-   * is skipped when it is only a sibling — the fan-out is best-effort by
-   * construction.
+   * Let one running workspace reach `host`, until it stops. The caller
+   * persists the host for future workspaces itself. `fanOutToProject` also
+   * widens the project's other running workspaces, best-effort. Rejects if
+   * the target has no egress registration.
    */
   allowHost(
     target: { workspaceId: string; projectSlug: string },
@@ -869,16 +599,10 @@ export interface WorkspaceDriver {
     opts: { fanOutToProject: boolean },
   ): Promise<void>
   /**
-   * Offer one running workspace's container port, live, and answer with
-   * the mapping it is offered at — `declareForwards` for a port nobody
-   * declared up front.
-   *
-   * Only a port the runtime currently reports as an unforwarded listener
-   * may be named — a caller cannot drive this to open an arbitrary one.
-   * `fanOutToProject` carries the same meaning as on `allowHost`, and a
-   * sibling that fails is logged rather than raised: it may have nothing
-   * listening there yet, which is indistinguishable from a config-declared
-   * forward waiting for its server to boot.
+   * Forward a running workspace's port that was not declared up front, and
+   * return its mapping. Only a currently unforwarded listener is accepted.
+   * `fanOutToProject` is as on `allowHost`; sibling failures are logged, as
+   * a sibling may not be listening yet.
    */
   forwardPort(
     target: { workspaceId: string; projectSlug: string; jobName: string },
@@ -886,24 +610,16 @@ export interface WorkspaceDriver {
     opts: { fanOutToProject: boolean },
   ): Promise<PortMapping>
   /**
-   * Stop offering one of a workspace's unforwarded listeners, answering
-   * whether it was one to begin with.
-   *
-   * `forwardPort`'s in-memory twin, and bounded the same way: only a port
-   * the runtime currently reports as an unforwarded listener may be named,
-   * so the dismissed set cannot be grown arbitrarily. Nothing about it
-   * outlives the runtime — a restart surfaces the port again, which is the
-   * intended behavior for a hint rather than a decision.
+   * Hide an unforwarded listener from the suggestions; returns whether it
+   * was one. Only current listeners are accepted, so the set stays bounded.
+   * In memory: a restart shows the port again.
    */
   dismissPort(workspaceId: string, containerPort: number): boolean
 
   /**
-   * Run a shell command inside a workspace and collect its output.
-   *
-   * Rejects with `WorkspaceExecError` when the command RAN and exited
-   * nonzero, and with anything else when the workspace was never reached.
-   * That one distinction is load-bearing (see the error's own docs); no
-   * caller branches further, so the contract declares no taxonomy past it.
+   * Run a shell command inside a workspace and collect its output. Rejects
+   * with `WorkspaceExecError` when the command ran and exited nonzero, and
+   * with any other error when the workspace was not reached.
    */
   exec(
     jobName: string,
@@ -911,79 +627,41 @@ export interface WorkspaceDriver {
     opts?: { timeout?: number; maxAttempts?: number },
   ): Promise<{ stdout: string; stderr: string }>
   /**
-   * Wait until the workspace can carry `exec` — and repair the transport if
-   * it can be repaired, which is why this is a verb and not a poll the
-   * caller writes. Rejects when the workspace is not reachable within the
-   * deadline, leaving the caller to decide what an unreachable workspace
-   * means.
+   * Wait until `exec` works, repairing the transport if possible. Rejects if
+   * the workspace is unreachable by the deadline.
    */
   awaitAgentTransport(jobName: string, opts?: { timeoutMs?: number }): Promise<void>
 
   /**
-   * Open a long-lived command stream into a workspace, running `argv`.
-   *
-   * The agent drivers' transport: `tui` attaches a tmux control-mode client
-   * over it, `acp` speaks JSON-RPC to acpd. Synchronous by contract — the
-   * facade must exist before the connection does, with writes buffered
-   * until it lands and a failure to connect surfacing as an `error` event,
-   * because a driver reports a failed dial as an observation rather than a
-   * throw (its caller owns the backoff).
+   * Open a long-lived command stream running `argv` (tmux control mode for
+   * `tui`, acpd JSON-RPC for `acp`). Synchronous: writes buffer until the
+   * connection lands, and a failed dial is an `error` event, not a throw;
+   * the caller owns the backoff.
    */
   dialCtrl(jobName: string, argv: string[]): StreamChild
-  /**
-   * Open a PTY stream into a workspace, running `argv` under a real
-   * terminal of the given size. Synchronous for the same reason as
-   * `dialCtrl`; a viewer attaches to the facade and the bytes start when
-   * the connection does.
-   */
+  /** Open a PTY stream running `argv`. Synchronous, like `dialCtrl`. */
   dialPty(jobName: string, argv: string[], size: { cols?: number; rows?: number }): StreamPty
   /**
-   * Repair whatever serves this workspace's streams, when repeated
-   * connection failures suggest it is the thing that is down rather than
-   * the path to it.
-   *
-   * A verb rather than caller-written recovery because what "the stream
-   * daemon" IS differs per driver — the k8s driver re-execs the in-pod
-   * streamd; another may respawn a local supervisor, or have nothing to
-   * repair and answer immediately. The watcher calls it on a backoff and
-   * treats failure as "try again later", so a driver with nothing to do
-   * here resolves rather than rejecting.
+   * Repair whatever serves this workspace's streams after repeated
+   * connection failures (k8s re-execs the in-pod streamd). The watcher
+   * calls it on a backoff; a driver with nothing to repair resolves.
    */
   reviveStatusStream(jobName: string): Promise<void>
 
   /**
-   * Turn a spare into the caller's workspace, running `tool`.
-   *
-   * The commit point of a claim, and at-most-once against concurrent
-   * callers: the runtime compares and swaps, so of two claims for the same
-   * spare exactly one resolves and the other REJECTS rather than quietly
-   * succeeding. A spare that vanished rejects the same way. A caller
-   * treats the rejection as "not claimed" and falls back to creating a
-   * workspace of its own — never as a failure to report.
-   *
-   * Afterwards the workspace is no longer prewarmed and declares `tool`:
-   * every `RuntimeHandle` observed from here on reports
-   * `declaredTool === tool`, which is what a spawn from the claimed
-   * workspace reads to decide what its own workspace should run.
+   * Claim a spare as the caller's workspace, running `tool`. Compare-and-
+   * swap: of concurrent claims exactly one resolves; the others (and a
+   * claim on a vanished spare) reject, and the caller creates a fresh
+   * workspace instead. Afterwards the handle reports `declaredTool === tool`.
    */
   claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
 
   /**
-   * This runtime can actually run that agent, in that mode — installing
-   * what it supplies itself, and rejecting with the reason when it cannot.
-   *
-   * Asked before anything is recorded or provisioned, because the failure
-   * it prevents is silent: an adapter a runtime cannot exec produces a
-   * window that closes, a session that ends, and a create that already
-   * reported success.
-   *
-   * A verb rather than something derived from the driver kind, because the
-   * answer is not a property of the substrate alone: an image either ships
-   * an adapter or does not, and that is settled at build time, but a host
-   * has whatever the user installed and whatever the runtime has installed
-   * on it so far. Only the runtime can answer it, and only at the moment it
-   * is asked. `onProgress` narrates an install; a runtime with nothing to
-   * install ignores it.
+   * Check this driver can run the tool in this mode, installing what it
+   * supplies itself; rejects with the reason otherwise. Called before
+   * anything is recorded, since the failure it prevents is silent (the
+   * window just closes after the create reported success). `onProgress`
+   * reports an install.
    */
   assertCanLaunch(opts: {
     tool: AgentTool
@@ -991,230 +669,119 @@ export interface WorkspaceDriver {
     onProgress?: (message: string) => void
   }): Promise<void>
 
-  /**
-   * The substrate a launch will need is reachable — the cluster, for a
-   * runtime that runs workspaces on one.
-   *
-   * Called before the caller has recorded or provisioned anything, so a
-   * broken installation fails a create while it is still free to fail.
-   */
+  /** Check the substrate (e.g. the cluster) is reachable, before a create
+   *  records or provisions anything. */
   ensureRuntimeReachable(): Promise<void>
-  /**
-   * Make the workspace's image available to run, and answer with the ref
-   * that names it.
-   *
-   * WHICH image a workspace should run follows from its project's config,
-   * which is the caller's to resolve; building, caching and publishing it
-   * so the runtime can start from it is entirely the runtime's — including
-   * how much of that is a no-op because the image is already there.
-   */
+  /** Build or reuse the project's workspace image and return its ref. */
   prepareImage(opts: {
     project: ProjectRef
     nestedContainers: boolean
     onProgress?: (message: string) => void
   }): Promise<string>
   /**
-   * Stand up everything a workspace needs around it, and answer with the
-   * receipt `launch` completes it from.
-   *
-   * Separate from `launch`, and once per create rather than once per
-   * attempt, because it is the slow half and the independent one: a caller
-   * overlaps it with its own work (a checkout, an image build), and a
-   * relaunch after a failed attempt must not redo it — re-preparing would
-   * re-touch a nested cluster that is already running the workspace's
-   * state.
+   * Set up what a workspace needs around it; the result goes on the launch
+   * spec. Once per create, not per launch attempt: it is slow, runs
+   * concurrently with the caller's other work, and must not be redone on a
+   * retry.
    */
   prepareSubstrate(intent: SubstrateIntent): Promise<WorkspaceSubstrate>
   /**
-   * The host store changed — deliver the whole credential set to wherever
-   * the runtime injects from. The caller hands the bundle in because the
-   * host store is the authority on what the set IS, and a runtime that
-   * re-read it on a schedule of its own would be a second one.
-   *
-   * Wholesale on purpose: the set is one install-wide thing, and replacing
-   * it whole is what makes a sign-out reach a running workspace as surely
-   * as a sign-in does.
-   *
-   * A runtime with no egress path of its own resolves without doing
-   * anything — its workspaces hold the real credential themselves.
+   * Replace the whole credential set the egress path injects from. Whole,
+   * so a sign-out reaches running workspaces as surely as a sign-in. A no-op
+   * without mediated egress.
    */
   syncCredentials(bundle: CredentialBundle): Promise<void>
-  /**
-   * A project's proxied secrets changed — deliver the new set to wherever
-   * the runtime resolves injections from, replacing what it held for that
-   * project. Named per project because that is the granularity of an edit,
-   * and because the values of other projects are none of this call's
-   * business.
-   *
-   * A runtime that mediates no egress resolves without doing anything: it
-   * hands the values to the workspace directly at launch, so there is
-   * nothing running to update.
-   */
+  /** Replace one project's proxied secret values. A no-op without mediated
+   *  egress, where values go into the workspace at launch. */
   syncProjectSecrets(projectSlug: string, values: Record<string, string>): Promise<void>
-  /**
-   * OAuth rotations the runtime's egress path captured from a workspace's
-   * refresh, which the host store may not hold yet. Synchronous because it
-   * is watch-fed state the runtime already holds; a runtime that captures
-   * none answers empty.
-   */
+  /** OAuth tokens the egress path captured from a workspace's refresh,
+   *  which the host store may not have yet. Empty if none. */
   refreshedCredentials(): RefreshedToolCredentials
-  /**
-   * Start the workspace, and answer with the handle that addresses it.
-   *
-   * The handle is the caller's grip on what it just made: what an `exec`
-   * addresses, and what a `destroy` tears down when the launch turns out
-   * not to have worked. A caller may launch the same workspace again after
-   * a failed attempt, having torn the last one down first.
-   */
+  /** Start the workspace. A caller may relaunch after tearing down a
+   *  failed attempt. */
   launch(spec: WorkspaceSpec): Promise<RuntimeHandle>
-  /**
-   * Wait until the workspace's filesystem and processes are up — far
-   * enough that the in-workspace setup has run, but saying nothing about
-   * the agent transport (`awaitAgentTransport` is that gate).
-   *
-   * Rejects when it does not get there, leaving the caller to decide
-   * whether that is worth another attempt.
-   */
+  /** Wait until the workspace is up and its setup has run (the agent
+   *  transport is `awaitAgentTransport`). Rejects if it does not get
+   *  there. */
   awaitReady(handle: RuntimeHandle): Promise<void>
   /**
-   * Say which of a workspace's ports should be reachable, and answer with
-   * the host port each should be reached at. Held for the workspace's
-   * lifetime (`deregisterWorkspace` drops them).
+   * Declare which workspace ports should be reachable and return the host
+   * port for each, held until `deregisterWorkspace`. Binds nothing: under
+   * `containerless` the workspace binds the ports itself (identity mapping);
+   * under `k8s` a client (`yaac forward`, the desktop app) binds the host
+   * port and tunnels through `dialPort` (docs/port-forward-tunnel.md).
+   * Called before launch, since the status bar shows the answer.
    *
-   * A DECLARATION, not a listener: nothing here binds a host port, because
-   * the server is not where the listener lives on either substrate. Under
-   * `containerless` the workspace's own processes bind these ports on the
-   * server's machine, so the mapping is the identity and the declaration
-   * only states it; under `k8s` the listener belongs to a client (`yaac
-   * forward`, the desktop app), which binds the answer given here and
-   * tunnels each connection back through `dialPort` — as a client on
-   * another machine does against a containerless server too. Called
-   * before the workspace launches, because what it answers is stamped
-   * into the workspace's own status bar.
-   *
-   * Synchronous, and the runtime's allocator: it is the only thing that
-   * knows which host ports its other workspaces were already promised, so
-   * two workspaces of one project asking for 3000 get different answers.
-   * What it cannot know is what else on the user's machine holds a port —
-   * that surfaces when the client's listener fails to bind, which is the
-   * only place it can be observed at all.
+   * The driver allocates, so two workspaces asking for 3000 get different
+   * host ports. Conflicts with other programs surface when the client binds.
    */
   declareForwards(workspaceId: string, forwards: PortForwardConfig[]): PortMapping[]
   /**
-   * Open a byte stream onto one of a running workspace's ports — one TCP
-   * connection's worth, the near end of a forward whose listener is
-   * somewhere else.
+   * Open one TCP connection to a running workspace's port, for a forward.
+   * Rejects if the workspace is gone or nothing answers; under
+   * `containerless`, also for a port the workspace's own processes were not
+   * seen listening on (the host is the user's machine). Destroy the stream
+   * to close it.
    *
-   * Rejects when the workspace is gone or nothing answers on the port —
-   * and, under `containerless`, for a port the workspace's own process
-   * tree was not seen listening on: a pod is a sandbox and `k8s` dials
-   * anything in it, while a host is the user's machine and only the
-   * listeners the sweep surfaced are on offer. Destroying the returned
-   * stream is what closes it; the runtime holds no registry of these,
-   * since a caller that drops one has ended the connection it stood for.
-   *
-   * Handed over PAUSED, and that is part of the contract: a runtime may
-   * have had to read from the connection to set it up, so bytes the far
-   * end sent immediately would otherwise be gone before the caller has
-   * attached a reader. The caller resumes once it is ready.
+   * Returned paused, so bytes sent right away are not lost before the
+   * caller attaches a reader; the caller resumes it.
    */
   dialPort(workspaceId: string, containerPort: number): Promise<Duplex>
 
-  /** Tell the egress path what a running workspace may reach now.
-   *  Idempotent — a claimed spare re-registers from its project's current
-   *  config, under its claimed tool. */
+  /** Tell the egress path what a running workspace may reach. Idempotent;
+   *  a claimed spare re-registers under its claimed tool. */
   registerWorkspace(reg: WorkspaceRegistration): Promise<void>
   /**
-   * Stop routing for a workspace: its port forwards go down as a set and
-   * its egress registration is dropped.
-   *
-   * Best-effort by design — a workspace that is going away must not be held
-   * up by a datapath hiccup — and separate from `destroy` because a
-   * detached teardown wants this half in-process while the rest of the
-   * teardown outlives the caller.
+   * Drop a workspace's port forwards and egress registration. Best-effort.
+   * Separate from `destroy` so a detached teardown can do this part
+   * in-process.
    */
   deregisterWorkspace(workspaceId: string): Promise<void>
   /**
-   * Preserve whatever the workspace built, before anything destroys it.
-   *
-   * Reaches INTO the workspace, so it must settle before the unit is
-   * deleted — `destroy` sequences it itself, and a caller composing
-   * `detachedTeardownCommand` has to await this first. Never throws: a
-   * salvage that fails costs a rebuild, and must not strand a teardown.
+   * Save images the workspace built before it is destroyed. Must finish
+   * before the unit is deleted: `destroy` handles that, and a caller using
+   * `detachedTeardownCommand` must await this first. Never throws.
    */
   salvageImages(target: TeardownTarget): Promise<void>
   /**
-   * Tear a workspace's runtime down and wait for it to really be gone.
+   * Tear down a workspace and wait until it is gone. Resolves `false` if
+   * that could not be confirmed; a unit still shutting down may still write
+   * to the workspace's files, so a caller deleting them must check this.
    *
-   * Resolves `true` when it is, `false` when the runtime could not confirm
-   * it — a unit still shutting down may still be writing to the workspace's
-   * files, so a caller that goes on to delete those MUST gate on the
-   * verdict. The runtime's own sweeps collect whatever a `false` left.
-   *
-   * `salvageImages` defaults on; pass `false` when the caller is about to
-   * destroy the salvage destination too.
-   *
-   * `unitOnly` takes down what is RUNNING and leaves standing whatever the
-   * runtime prepared AROUND the workspace. What it protects is the
-   * caller's receipt: a `prepareSubstrate` runs once and is reused across
-   * launch attempts, so tearing its products down between them would
-   * invalidate the very thing the next attempt launches from. A create
-   * that gave up while KEEPING its files (a resume, a spare) passes it for
-   * the adjacent reason — its row still names the workspace, so the
-   * runtime's own sweeps are what collect the rest, on their schedule
-   * rather than under a caller that is still deciding.
-   *
-   * It is not a way to PRESERVE anything: a runtime is free to collect
-   * what nothing names any more. An ordinary stop never passes it — there
-   * the whole point is that nothing is left holding anything.
+   * `salvageImages` defaults on; pass `false` when the salvage destination
+   * is also being destroyed. `unitOnly` tears down only the running unit and
+   * keeps what `prepareSubstrate` set up, for a create retrying its launch
+   * or giving up while its row survives. Ordinary stops never pass it.
    */
   destroy(
     target: TeardownTarget,
     opts?: { salvageImages?: boolean; unitOnly?: boolean },
   ): Promise<boolean>
   /**
-   * The same teardown as a shell command, for a caller that must not wait
-   * for it — composed into a detached script the calling process outlives.
-   *
-   * Every command it returns is idempotent and tolerates having already
-   * run: the whole script is re-issued when a teardown has to be resumed.
-   * The caller may append its own commands, and must let `salvageImages`
-   * settle before running it — nothing here can reach into the workspace
-   * once it has.
+   * The same teardown as an idempotent shell command, for a detached script
+   * that outlives the caller (and may be re-run to resume). The caller may
+   * append commands and must let `salvageImages` finish first.
    */
   detachedTeardownCommand(target: TeardownTarget): string
-  /** Everything the runtime holds for a whole project, beyond its
-   *  workspaces — the secret values it was handed included, and the
-   *  project's NODE-LOCAL tree on every node (its caches and working
-   *  copies, which the caller's own filesystem does not reach): the caller
-   *  tears the workspaces down first and removes the global tree after.
-   *  Best-effort per part, so one unreachable piece cannot strand the
-   *  rest. */
+  /** Destroy everything the driver holds for a project besides its
+   *  workspaces, including secret values and the node-local tree on every
+   *  node. The caller tears down workspaces first and removes the global
+   *  tree after. Best-effort per part. */
   destroyProjectSubstrate(project: ProjectRef): Promise<void>
   /**
-   * Collect the NODE-LOCAL leftovers of what is gone, on every node the
-   * runtime has: a whole per-project tree whose project id is not in
-   * `live.projectIds`, and a per-workspace working copy whose workspace is not
-   * in `live.workspaceIds`. Keyed on ids rather than on what a removal
-   * managed to delete, so it also collects every failed removal. The global
-   * half of the same sweep is the caller's; this is the half that lives
-   * where the caller's filesystem may not reach. Throttled by the runtime
-   * where a sweep costs anything (a pod per node), never by the caller;
-   * never rejects.
+   * Delete node-local leftovers on every node: project trees not in
+   * `live.projectIds` and workspace working copies not in
+   * `live.workspaceIds`. Keyed on ids, so it also catches failed removals.
+   * The caller sweeps the global tier. The driver throttles it; never
+   * rejects.
    */
   reapNodeLocal(live: NodeLocalLiveSet): Promise<void>
 
   /**
-   * Take the in-workspace `yaac-mama` requests waiting to be answered.
-   *
-   * A drain is a CLAIM: each request is handed out once, and a crash before
-   * `resolveMamaRequests` loses the request (the caller times out) rather
-   * than doubling it.
-   *
-   * Empty forever on a runtime whose workspaces reach the server directly
-   * instead — this pair is the PULL transport, which exists because a
-   * sandboxed pod cannot dial the host. A runtime answering empty here is
-   * not one without the feature.
+   * Take pending `yaac-mama` requests. Each is handed out once; a crash
+   * before `resolveMamaRequests` loses it (the workspace times out) rather
+   * than running it twice. Always empty under containerless, whose
+   * workspaces call the server directly.
    */
   pendingMamaRequests(): Promise<PendingMamaRequest[]>
   /** Answer a drained batch, releasing the waiting workspaces. */

@@ -1,10 +1,8 @@
 /*
- * Verifies dotfile (hidden-file) handling in the settings-panel Build files
- * manager: (1) selecting a folder through the "Upload folder" input includes
- * hidden files (dotfiles) inside it — the picker dialog may not display
- * them, but the traversal must still upload them; (2) the "New file" form
- * accepts a dotfile path (e.g. `.vimrc`) directly. Drives the running yaac
- * server's webapp in real Chromium and cleans up everything it created.
+ * Verifies dotfile handling in the settings panel's Build files manager:
+ * (1) "Upload folder" includes dotfiles, even though a picker may hide them;
+ * (2) the "New file" form accepts a dotfile path such as `.vimrc`. Drives
+ * the running server's webapp in real Chromium and cleans up after itself.
  *
  * Run: node test-playwright-scripts/build-files-hidden-test.js
  * Needs a running server (`yaac server start` / `pnpm watch`).
@@ -63,8 +61,6 @@ async function main() {
   await page.locator('button', { hasText: 'User Dockerfile' }).first().click()
   await page.getByText('Build files').waitFor()
 
-  // Folder upload: the input traverses the directory programmatically, so
-  // dotfiles must come through even though a picker wouldn't display them.
   const base = path.basename(dir)
   await page.locator('input[aria-label="Upload folder"]').setInputFiles(dir)
   await page.getByRole('button', { name: `${base}/visible.txt`, exact: true }).waitFor()
@@ -80,7 +76,6 @@ async function main() {
   }
   console.log('PASS: folder upload included dotfiles and nested dotdirs')
 
-  // New file form accepts a dotfile path directly.
   await page.getByPlaceholder(/new file path/).fill('.vimrc')
   await page.getByRole('button', { name: 'New file' }).click()
   await page.getByRole('button', { name: '.vimrc', exact: true }).waitFor()
@@ -89,7 +84,6 @@ async function main() {
   // Clean up everything this run created.
   for (const rel of [base, '.vimrc']) {
     await page.locator(`[aria-label="Delete ${rel === base ? `${base}/.config/nested.conf` : rel}"]`).first().waitFor()
-    // Delete the folder rows via their common top dir where possible.
   }
   for (const rel of listed.concat(['.vimrc'])) {
     const btn = page.locator(`[aria-label="Delete ${rel}"]`)

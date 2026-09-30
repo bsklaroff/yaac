@@ -175,9 +175,9 @@ describe('resolveVacantSelection', () => {
   })
 
   it('takes the topmost row when the open workspace vanished', () => {
-    // A CLI delete / the stale reaper: the selection is still set, but its
-    // workspace is no longer among the selectable rows. Topmost is the sidebar's
-    // first row, not the snapshot's — the caller passes display order.
+    // e.g. a CLI delete or the stale reaper: the selection is set but its
+    // workspace is no longer a selectable row. Topmost means the sidebar's first
+    // row; the caller passes display order.
     expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone' }))).toBe('w1')
     expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone', rowIds: ['w2', 'w1'] }))).toBe('w2')
   })
@@ -190,15 +190,15 @@ describe('resolveVacantSelection', () => {
     expect(resolveVacantSelection(args({
       selectedWorkspaceId: 'req', claims, rowIds: ['w1', 'spare'],
     }))).toBe('spare')
-    // A project switch is not the create resolving: the top row, as ever.
+    // A project switch is not the create resolving, so take the top row.
     expect(resolveVacantSelection(args({
       previousProjectSlug: 'p0', selectedWorkspaceId: 'req', claims,
     }))).toBe('w1')
   })
 
   it('holds a vanished selection whose provision is still in flight', () => {
-    // A snapshot that caught neither the row nor its workspace: the create's
-    // result may yet say where it went, so the pane is not handed away.
+    // The snapshot has neither the row nor its workspace. The create's result
+    // may still say where it went, so the pane is not handed away.
     expect(resolveVacantSelection(args({ selectedWorkspaceId: 'req', inFlight: ['req'] }))).toBeNull()
   })
 
@@ -247,7 +247,7 @@ describe('selection + project switching', () => {
     expect(useUiStore.getState().focusNonce).toBe(0)
     useUiStore.getState().selectWorkspace('s1')
     expect(useUiStore.getState().focusNonce).toBe(1)
-    // Re-selecting the same session still bumps — clicking it re-focuses.
+    // Re-selecting the same session still bumps, so clicking it re-focuses.
     useUiStore.getState().selectWorkspace('s1')
     expect(useUiStore.getState().focusNonce).toBe(2)
     useUiStore.getState().openWorkspace('proj', 's2')
@@ -366,8 +366,8 @@ describe('view mode (tiles vs tabs)', () => {
     const nonce = useUiStore.getState().focusNonce
     useUiStore.getState().setActiveTab('s1', 'agent')
     expect(useUiStore.getState().focusNonce).toBe(nonce)
-    // No-op re-record keeps the state object identity (re-render-free): the
-    // focus recorder re-fires on every shortcut-driven focus.
+    // A no-op re-record keeps state identity (no re-render); the focus recorder
+    // fires again on every shortcut-driven focus.
     const before = useUiStore.getState().activeTabs
     useUiStore.getState().setActiveTab('s1', 'agent')
     expect(useUiStore.getState().activeTabs).toBe(before)
@@ -378,7 +378,7 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().focusTerminal('s1', 'window:@2')
     expect(useUiStore.getState().activeTabs.s1).toBe('window:@2')
     expect(useUiStore.getState().focusNonce).toBe(nonce + 1)
-    // Re-focusing the already-active terminal still bumps — Alt+N re-focuses.
+    // Re-focusing the active terminal still bumps, so Alt+N re-focuses.
     useUiStore.getState().focusTerminal('s1', 'window:@2')
     expect(useUiStore.getState().focusNonce).toBe(nonce + 2)
   })
@@ -402,7 +402,6 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().setChangesBase('s1', 'dev')
     useUiStore.getState().setChangesBase('s2', 'main')
     expect(useUiStore.getState().changesBase).toEqual({ s1: 'dev', s2: 'main' })
-    // Passing undefined removes just that session's entry.
     useUiStore.getState().setChangesBase('s1', undefined)
     expect(useUiStore.getState().changesBase).toEqual({ s2: 'main' })
   })
@@ -463,8 +462,7 @@ describe('theme preference', () => {
     useUiStore.getState().setThemePref('light')
     expect(useUiStore.getState().themePref).toBe('light')
     expect(store.get('yaac.theme.v1')).toBe('light')
-    // (applyThemeAttribute's <html data-theme> write is covered in
-    // theme.test.ts under jsdom; there is no document here.)
+    // applyThemeAttribute's DOM write is covered in theme.test.ts (jsdom).
   })
 
   it('defaults to system', () => {

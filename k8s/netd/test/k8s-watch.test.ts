@@ -17,7 +17,7 @@ import {
 } from 'yaac-netd/k8s-watch'
 import { KubeConfig } from '@kubernetes/client-node'
 
-/** Stand-in for client-node's informer: no network, fully driveable. */
+/** Fake client-node informer, driven by the test. */
 class FakeInformer implements InformerLike {
   readonly handlers = new Map<string, Array<(arg?: unknown) => void>>()
   objects: KubernetesObject[] = []
@@ -94,10 +94,7 @@ describe('mapService', () => {
   })
 
   it('keeps a headless Service verbatim rather than judging it', () => {
-    // The mapper validates shape, not usefulness. Nothing downstream
-    // rejects `None` either — it does not have to: the only Service netd
-    // consumes is the yaac-authored `yaac-proxy`, which always has a real
-    // ClusterIP.
+    // netd only uses `yaac-proxy`, which always has a real ClusterIP.
     expect(mapService({ metadata: { name: 's', namespace: 'n' }, spec: { clusterIP: 'None' } }))
       .toMatchObject({ clusterIp: 'None' })
   })
@@ -166,8 +163,6 @@ describe('startResourceWatch', () => {
     vi.advanceTimersByTime(1_000)
     expect(informer.startCalls).toBe(2)
 
-    // A second rapid failure backs off further, so a broken apiserver is
-    // not hammered once a second forever.
     informer.emit('error', new Error('again'))
     vi.advanceTimersByTime(1_000)
     expect(informer.startCalls).toBe(2)
@@ -191,8 +186,7 @@ describe('startResourceWatch', () => {
     informer.emit('error', new Error('boom'))
     vi.advanceTimersByTime(1_000)
     expect(informer.startCalls).toBe(2)
-    // Healthy for well over a minute, then dropped: that is routine, so the
-    // next restart is prompt rather than inheriting the doubled delay.
+    // Ran for over a minute before failing, so the backoff resets.
     vi.advanceTimersByTime(120_000)
     informer.emit('error', new Error('dropped'))
     vi.advanceTimersByTime(1_000)
@@ -261,8 +255,7 @@ describe('loadInClusterConfig', () => {
     process.env.KUBERNETES_SERVICE_PORT = '443'
     const kubeConfig = loadInClusterConfig()
     expect(kubeConfig.getCurrentCluster()?.server).toBe('https://10.96.0.1:443')
-    // tokenFile, not a token: the provider re-reads it, so netd survives
-    // kubelet rotating the projected ServiceAccount token.
+    // A tokenFile is re-read, so kubelet's token rotation is picked up.
     const authProvider = kubeConfig.getCurrentUser()?.authProvider as
       { name?: string; config?: { tokenFile?: string } } | undefined
     expect(authProvider?.name).toBe('tokenFile')
@@ -272,8 +265,6 @@ describe('loadInClusterConfig', () => {
 
 describe('namespacedServicesPath', () => {
   it('scopes the Services watch to one namespace', () => {
-    // netd reads Services from its OWN namespace only — that scoping is
-    // what keeps netd's cluster-wide read down to pods.
     expect(namespacedServicesPath('yaac')).toBe('/api/v1/namespaces/yaac/services')
   })
 })

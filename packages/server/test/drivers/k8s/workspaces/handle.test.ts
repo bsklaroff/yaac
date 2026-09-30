@@ -53,10 +53,8 @@ describe('runtimeHandleFromPod', () => {
     expect(runtimeHandleFromPod(pod({ tool: 'not-a-tool' })).tool).toBe('claude')
   })
 
-  // What a pod DECLARES is a separate question from what to run in it: a
-  // resolved guess would outrank the server's configured default for a
-  // workspace spawned from this one, so an unrecognized label declares
-  // nothing at all.
+  // A guessed tool would override the server's default for workspaces
+  // spawned from this one, so an unknown label yields no tool.
   it('declares no tool when the pod is stamped with one this build does not know', () => {
     const h = runtimeHandleFromPod(pod({ tool: 'not-a-tool' }))
     expect(h.tool).toBe('claude')
@@ -72,10 +70,8 @@ describe('runtimeHandleFromPod', () => {
     expect(runtimeHandleFromPod(pod({ terminating: true })).terminating).toBe(true)
   })
 
-  // The death cause is derived here — at the boundary, from the pod's
-  // captured terminal state — because the raw evidence is kubelet-shaped and
-  // the reaper above wants the verdict, not the vocabulary. Each case below
-  // is a shape kubelet actually reports.
+  // The death reason is derived from the pod's terminal state. Each case is
+  // a shape kubelet actually reports.
   it.each([
     [
       'OOMKilled with an exit code',

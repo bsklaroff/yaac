@@ -28,10 +28,9 @@
  * makes are discarded by the end; if a check fails midway, discard leftovers
  * from the sidebar.
  *
- * Drives the app the server itself serves (`dist/`), at the origin
- * `$YAAC_DATA_DIR-client/server.json` selects (data dir defaults to ~/.yaac)
- * with no credential, as a loopback origin is this machine's owner — so run
- * `pnpm build` + `yaac server restart` first.
+ * Uses the app the server serves from `dist/`, at the loopback origin
+ * `$YAAC_DATA_DIR-client/server.json` selects (data dir default ~/.yaac), so
+ * run `pnpm build` and `yaac server restart` first.
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/queued-workspaces-ui-test.js
  * (SCREENSHOT_DIR for screenshots; defaults to /tmp/yaac-shots.
@@ -59,8 +58,10 @@ function requirePlaywright() {
   }
 }
 
-/** The origin this install's clients dial: `server.json`'s selected entry,
- *  which must be loopback — the script sends no credential. */
+/**
+ * The selected origin from `server.json`. It must be loopback, since the
+ * script sends no credential.
+ */
 function readServerOrigin() {
   const dataDir = process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac')
   const file = `${dataDir}-client/server.json`
@@ -112,8 +113,7 @@ try {
     await row.getByRole('button', { name: menu }).click()
     await page.getByRole('menuitem', { name: item }).click()
   }
-  // A locator wait, not waitForFunction: the page's CSP refuses the
-  // in-page polling eval that waitForFunction falls back to.
+  // Not waitForFunction, which the page's CSP blocks.
   const submitWhenReady = async (label) => {
     const button = page.locator('button:not([disabled])', { hasText: new RegExp(`^${label}$`) })
     await button.waitFor({ timeout: 15_000 })

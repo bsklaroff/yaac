@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// Mock node:child_process so the promisified execFile / exec are
-// controllable. Must be hoisted before importing the module under test.
+// node:child_process is mocked so the promisified execFile/exec are
+// controllable.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[], opts: unknown) => Promise<ExecResult>>()
@@ -20,9 +20,7 @@ vi.mock('node:child_process', () => ({
       (res) => actualCb(null, res),
       (err: unknown) => actualCb(err),
     )
-    // `on` as well as `end`: the caller subscribes to stdin's 'error' so a
-    // child that died before reading can't take the process down with an
-    // unhandled event, and a stand-in for a stream has to carry that.
+    // The caller subscribes to stdin 'error', so the fake needs `on` too.
     return { stdin: { end: stdinEndMock, on: stdinOnMock } }
   },
   exec: (command: string, opts: unknown, cb?: ExecCallback) => {
@@ -139,10 +137,9 @@ describe('kubectlWithRetry', () => {
     await kubectlWithRetry(['apply', '-f', '-'], { input: '{"kind":"Job"}' })
     expect(execFileMock).toHaveBeenCalledWith('kubectl', ['apply', '-f', '-'], expect.objectContaining({ maxBuffer: 64 << 20 }))
     expect(stdinEndMock).toHaveBeenCalledWith('{"kind":"Job"}')
-    // Subscribed before the write: a shutdown SIGTERMs the process group, so
-    // the child can be gone before it reads and the EPIPE that follows would
-    // otherwise be an unhandled 'error' — i.e. the server exiting by uncaught
-    // exception instead of running its shutdown handler.
+    // Subscribed before the write: on shutdown the child may die before
+    // reading, and the resulting EPIPE would otherwise be an uncaught error
+    // that skips the shutdown handler.
     expect(stdinOnMock).toHaveBeenCalledWith('error', expect.any(Function))
   })
 })
@@ -173,11 +170,9 @@ describe('kubectlGetJson', () => {
 })
 
 describe('isKubectlAbsentError', () => {
-  // The predicate exists for one caller with an unusual requirement:
-  // `--byo` treats "no FelixConfiguration" as a FACT meaning "Felix
-  // runs its iptables defaults" and proceeds on it. So a failure
-  // misclassified as absence licenses an eBPF cluster the gate exists to
-  // refuse, and the failure mode is silent no-egress.
+  // `--byo` treats "no FelixConfiguration" as meaning Felix's iptables
+  // defaults, so a failure misread as absence would let an eBPF cluster
+  // through and silently break egress.
   it('accepts kubectl\'s own absence shapes, for an object or a whole resource type', () => {
     for (const stderr of [
       'Error from server (NotFound): daemonsets.apps "calico-node" not found',
@@ -190,16 +185,14 @@ describe('isKubectlAbsentError', () => {
   })
 
   it('rejects a failure of the machinery in FRONT of the object', () => {
-    // The trap: a broken conversion/admission webhook carries "not found"
-    // about its OWN service. A bare substring match would read that as the
-    // FelixConfiguration being absent — i.e. "Felix defaults" on a cluster
-    // whose Felix config was unknowable.
+    // A broken webhook's error says "not found" about its own Service; a
+    // substring match would misread that as the object being absent.
     expect(isKubectlAbsentError(stderrError(
       'Error from server (InternalError): Internal error occurred: failed calling webhook '
       + '"conversion.projectcalico.org": service "calico-apiserver" not found',
     ))).toBe(false)
 
-    // ...and the ordinary non-absences.
+    // Ordinary errors are not absence either.
     for (const stderr of [
       'Error from server (Forbidden): felixconfigurations.crd.projectcalico.org is forbidden',
       'The connection to the server localhost:8080 was refused',
@@ -212,9 +205,8 @@ describe('isKubectlAbsentError', () => {
 
 describe('kubectlErrorSummary', () => {
   it('skips klog retry narration for kubectl\'s own diagnosis', () => {
-    // kubectl narrates client-go's retries first and prints the sentence
-    // that says what to fix last; taking the first line buries it under
-    // near-identical walls of klog, one per failed check.
+    // kubectl prints client-go retry noise first and the useful sentence
+    // last, so the summary takes the last line.
     const summary = kubectlErrorSummary(stderrError(
       'E0806 15:53:50.959713 19874 memcache.go:265] "Unhandled Error" err="couldn\'t get '
       + 'current server API group list: Get \\"http://localhost:8080/api\\": dial tcp"\n'
@@ -228,14 +220,13 @@ describe('kubectlErrorSummary', () => {
   })
 
   it('falls back rather than returning nothing, and caps the length', () => {
-    // Klog all the way down (no message to fall back to): show it rather
-    // than an empty string, since something is better than silence.
+    // Only klog lines: show them rather than an empty string.
     const klogOnly = Object.assign(new Error(''), {
       stderr: 'E0806 12:00:00.0 1 x.go:1] only klog here',
     })
     expect(kubectlErrorSummary(klogOnly)).toContain('only klog here')
     expect(kubectlErrorSummary(new Error('plain failure'))).toBe('plain failure')
-    // Capped, with the ellipsis marking the truncation.
+    // Capped, with an ellipsis.
     expect(kubectlErrorSummary(stderrError('x'.repeat(400)))).toHaveLength(141)
   })
 })
@@ -278,8 +269,7 @@ describe('execFileAsync', () => {
     execFileMock.mockReset()
   })
 
-  // The bare promisified runner the setup/delete paths use for non-kubectl
-  // binaries (kind, podman) — no namespace, no retries.
+  // The plain runner used for kind and podman: no namespace, no retries.
   it('runs a binary with its argv and resolves stdout/stderr', async () => {
     execFileMock.mockResolvedValue({ stdout: 'kind v0.30.0', stderr: '' })
     await expect(execFileAsync('kind', ['version'])).resolves.toEqual({

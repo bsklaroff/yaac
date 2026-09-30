@@ -1,23 +1,11 @@
 /**
- * Reconcile step that drains in-workspace `yaac-mama` requests: the runtime
- * holds each waiting workspace's request until someone answers it; this step
- * takes them, resolves who called from the live workspace listing, hands
- * each one to `runMamaCommand`, and reports the answers back so the callers
- * can be released.
+ * Reconcile step that drains pending `yaac-mama` requests from the runtime,
+ * attributes each to its calling workspace, runs it through
+ * `runMamaCommand`, and reports the answers back. A crash mid-drain loses a
+ * request (it times out) rather than running it twice.
  *
- * A drain is a claim: a crash between drain and report loses the request
- * (the caller's request times out where it waits), never doubles it.
- *
- * What a request MEANS is deliberately not here but in `runMamaCommand`:
- * which commands exist at all, what each one does, and what a caller may not
- * ask for are policy — the drain's whole contribution is the queue and
- * attributing each request to its caller (docs/layered-server.md).
- *
- * This is the pull-based transport, which is the only one a sandboxed pod
- * can have: a workspace pod cannot dial the host server, so the proxy holds
- * its request and the server comes to collect. A containerless workspace runs
- * beside the server and posts to it directly (`/workspace/mama`), reaching
- * the same `runMamaCommand` without a queue.
+ * This pull transport is for pods, whose requests the egress proxy holds.
+ * Containerless workspaces post to `/workspace/mama` directly.
  */
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeHandle, RuntimeSnapshot } from '#drivers/contract'
@@ -43,8 +31,7 @@ export async function reconcileMamaRequests(
     const pending = await (deps.fetchPendingFn
       ?? (() => workspaceDriver().pendingMamaRequests()))()
     if (pending.length === 0) return
-    // One workspace listing per drain, shared by every request in the batch.
-    // A burst at the queue cap must not fan out into a listing per request.
+    // One workspace listing per drain, shared by every request.
     const listPods = deps.listWorkspacesFn
       ?? (() => (snapshot ?? workspaceDriver().snapshot()).workspaces())
     let pods: Promise<RuntimeHandle[]> | undefined
@@ -61,13 +48,8 @@ export async function reconcileMamaRequests(
 }
 
 /**
- * Answer one request: resolve the caller's project and tool from the live
- * workspace listing, hand it to the command handler, and relay the answer
- * back.
- *
- * The caller lookup is the only judgement made here — a request from a
- * workspace the runtime does not report cannot be attributed to a project,
- * so there is nothing to answer.
+ * Answer one request, attributing it via the live workspace listing. A
+ * request from an unknown workspace fails.
  */
 async function reportMamaRequest(
   req: PendingMamaRequest,
@@ -75,7 +57,7 @@ async function reportMamaRequest(
 ): Promise<MamaResultWire> {
   const fail = (error: string): MamaResultWire => ({ requestId: req.requestId, ok: false, error })
 
-  // Off a wire, so the field can be missing however the type reads.
+  // From the wire, so it may be missing despite the type.
   const callerId = req.workspaceId
   if (!callerId) return fail('request names no calling workspace')
 
@@ -93,9 +75,7 @@ async function reportMamaRequest(
     {
       workspaceId: callerId,
       projectSlug: caller.projectSlug,
-      // Only when the caller actually declares a tool yaac knows: one running
-      // something else says nothing about what a spawned workspace should
-      // run, and a guess would outrank the server's configured default.
+      // Only a known declared tool; a guess would override the default.
       ...(caller.declaredTool !== undefined ? { tool: caller.declaredTool } : {}),
     },
     { command: req.command, args: req.args ?? {}, body: req.body ?? '' },

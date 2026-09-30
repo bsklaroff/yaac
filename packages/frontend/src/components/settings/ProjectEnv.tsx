@@ -38,8 +38,6 @@ function draftFrom(v: ProjectEnvVar): Draft {
   const rule = v.rule
   return {
     name: v.name,
-    // A secret's value never comes back from the server, so an edit starts
-    // empty and leaving it that way keeps the stored one.
     value: v.value ?? '',
     secret: v.secret,
     hosts: rule?.hosts.join(', ') ?? '',
@@ -63,15 +61,10 @@ function ruleFromDraft(draft: Draft): SecretProxyRule {
 }
 
 /**
- * A project's environment variables and proxied secrets.
- *
- * Stored with the project rather than in `yaac-config.json`, secrets
- * encrypted, which is what makes them settable from wherever the webapp is
- * open — a client on another machine has no way to put a value into the
- * server host's own environment.
- *
- * A secret's value is write-only: it goes in here and never comes back, so
- * an edit that leaves the field blank keeps whatever is stored.
+ * A project's environment variables and proxied secrets. They are stored on
+ * the server (secrets encrypted) rather than in `yaac-config.json`, so a
+ * client on another machine can set them. A secret's value is write-only:
+ * leaving it blank in an edit keeps the stored value.
  */
 export function ProjectEnv({ slug, mediatedEgress }: {
   slug: string
@@ -106,8 +99,7 @@ export function ProjectEnv({ slug, mediatedEgress }: {
     try {
       await setProjectEnvVar(slug, {
         name: draft.name.trim(),
-        // Omitted for a secret being edited without a new value, so the
-        // server keeps the sealed one.
+        // Omit a blank secret value so the server keeps the stored one.
         ...(draft.secret && draft.value === '' ? {} : { value: draft.value }),
         secret: draft.secret,
         ...(draft.secret ? { rule: ruleFromDraft(draft) } : {}),

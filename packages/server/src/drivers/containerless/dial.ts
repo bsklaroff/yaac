@@ -5,22 +5,13 @@ import { containerlessWorkspacePaths } from './paths'
 import type { StreamChild, StreamPty } from '#drivers/contract'
 
 /**
- * The two long-lived streams into a workspace.
- *
- * Both are the degenerate case of what the contract asks for, which is why
- * the contract asks for it in those shapes: `StreamChild` is "deliberately
- * the shape `child_process` already has — a driver that really does spawn a
- * local child satisfies it as-is", and this is that driver. There is no
- * relay, no token and no tunnel; the argv the caller wrote for a workspace
- * runs on the host, in the workspace's checkout, with its environment.
+ * The two long-lived streams into a workspace. Here they are plain local
+ * processes run in the workspace's checkout with its environment; no relay
+ * or tunnel is involved.
  */
 
-/**
- * See `WorkspaceDriver.dialCtrl`. Synchronous by contract, which a real
- * `spawn` satisfies for free: the object exists immediately and a failure to
- * start arrives as an `error` event, which is exactly the "report a failed
- * dial as an observation rather than a throw" the callers' backoff wants.
- */
+/** See `WorkspaceDriver.dialCtrl`. `spawn` already reports a failed start
+ *  as an `error` event, as the contract requires. */
 export function dialCtrlStream(jobName: string, argv: string[]): StreamChild {
   const paths = containerlessWorkspacePaths(jobName)
   const [cmd, ...args] = argv
@@ -31,9 +22,7 @@ export function dialCtrlStream(jobName: string, argv: string[]): StreamChild {
   })
 }
 
-/** See `WorkspaceDriver.dialPty`. A real PTY on the host — the same library
- *  the pod driver's in-pod stream daemon uses at the other end of its
- *  relay, with the relay taken out. */
+/** See `WorkspaceDriver.dialPty`. A local PTY. */
 export function dialPtyStream(
   jobName: string,
   argv: string[],
@@ -63,14 +52,8 @@ export function dialPtyStream(
 }
 
 /**
- * See `WorkspaceDriver.reviveStatusStream`.
- *
- * Nothing to repair: the pod driver re-execs its in-pod stream daemon
- * because the daemon is a separate process that can die while the pod
- * lives, but here the "stream daemon" is the tmux server itself — if that is
- * gone the workspace is gone, which is the liveness edge's business and not
- * a repair. Resolving rather than rejecting is what the contract asks of a
- * driver with nothing to do here.
+ * See `WorkspaceDriver.reviveStatusStream`. Nothing to repair: the streams
+ * come straight from tmux, and if tmux is gone so is the workspace.
  */
 export function reviveStatusStream(): Promise<void> {
   return Promise.resolve()

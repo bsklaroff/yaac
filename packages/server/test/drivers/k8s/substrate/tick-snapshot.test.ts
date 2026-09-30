@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// The fallback listings are one-shot kubectl calls, so the child process is
-// the boundary: the session-pod object layer (its selectors, schemas and
-// mappers) runs for real behind it.
+// Mock the kubectl child process that fallback listings use; the object
+// layer above it runs for real.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
@@ -92,8 +91,7 @@ describe('createTickSnapshot', () => {
     await snap.jobs()
     await snap.jobs()
     expect(execFileMock).toHaveBeenCalledTimes(2)
-    // Each fallback is scoped the way its own object layer scopes it —
-    // install-wide, by data-dir-hash.
+    // Each fallback is scoped install-wide by data-dir hash.
     const argv = execFileMock.mock.calls.map(([, args]) => args.join(' '))
     expect(argv.find((c) => c.startsWith('get pods -n test-ns')))
       .toMatch(/-l yaac\.data-dir-hash=[0-9a-f]{16},yaac\.workspace-id/)
@@ -106,8 +104,7 @@ describe('createTickSnapshot', () => {
   })
 
   it('reads an absent namespace as empty rather than an error', async () => {
-    // A namespace torn down mid-pass: kubectl 404s, the object layer
-    // returns no rows, and the step sees empty instead of throwing.
+    // The namespace was deleted mid-pass and kubectl returns 404.
     execFileMock.mockRejectedValue(
       Object.assign(new Error('kubectl failed'), { stderr: 'Error from server (NotFound)' }),
     )
@@ -132,8 +129,7 @@ describe('createTickSnapshot', () => {
   })
 
   it('falls back to a live list when the cache source is unhealthy', async () => {
-    // The destructive-step safety story: a degraded watch must never be
-    // mistaken for "this object no longer exists".
+    // A degraded watch must never read as "the object is gone".
     const cache = healthyCache()
     vi.spyOn(cache, 'healthy').mockReturnValue(false)
     setActiveClusterCache(cache)

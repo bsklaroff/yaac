@@ -55,8 +55,7 @@ describe('classifyWorkspaces', () => {
   })
 
   it('still classifies prewarmed spares (the reaper must keep seeing them)', async () => {
-    // listActiveWorkspaces filters spares out, but the stale reaper relies on
-    // classifyWorkspaces NOT special-casing them, so a stuck spare is reaped.
+    // The stale reaper relies on this so a stuck spare gets reaped.
     const live = { ...pod({ jobName: 'yaac-proj-spare', workspaceId: 'sp1' }), labels: { 'yaac.prewarmed': 'true' } }
     const liveRes = await classifyWorkspaces([live], now(), probe('alive'), GRACE_MS)
     expect(liveRes.running).toEqual([live])
@@ -84,8 +83,7 @@ describe('classifyWorkspaces', () => {
   })
 
   it('keeps a running pod whose tmux probe is inconclusive (unknown) and never reaps it', async () => {
-    // The false-positive guard: a transient kubectl-exec failure on a
-    // healthy, long-running session must NOT trigger a reap.
+    // A transient probe failure must not reap a healthy workspace.
     const p = pod({ jobName: 'yaac-proj-blip', workspaceId: 'b1', ageMs: GRACE_MS + 60_000 })
     const result = await classifyWorkspaces([p], now(), probe('unknown'), GRACE_MS)
     expect(result.running).toEqual([p])
@@ -106,8 +104,7 @@ describe('classifyWorkspaces', () => {
   })
 
   it('skips young running-but-no-tmux pods during the startup grace window', async () => {
-    // Simulates session-create attempt N with the pod up but tmux
-    // not yet started. Reaping this would clobber the proxy session.
+    // Pod is up but create has not started tmux yet.
     const p = pod({ jobName: 'yaac-proj-new', ageMs: GRACE_MS - 1_000 })
     const probeFn = vi.fn<(target: ProbeTarget) => Promise<TmuxLiveness>>().mockResolvedValue('dead')
     const result = await classifyWorkspaces([p], now(), probeFn, GRACE_MS)
@@ -116,8 +113,7 @@ describe('classifyWorkspaces', () => {
   })
 
   it('skips young non-running pods so a retry can recreate them safely', async () => {
-    // Simulates the window between attempt N dying and the retry loop
-    // recreating the Job. The reaper must not race with it.
+    // A failed create attempt whose retry will recreate the Job.
     const p = pod({ running: false, ageMs: GRACE_MS - 1_000 })
     const result = await classifyWorkspaces([p], now(), probe('alive'), GRACE_MS)
     expect(result.running).toEqual([])
@@ -179,8 +175,7 @@ describe('classifyWorkspaces', () => {
   })
 
   it('routes a pod with a deletionTimestamp to the terminating bucket, never stale', async () => {
-    // Old enough to be stale and probe dead — but terminating wins, so it's
-    // neither reaped nor shown as active.
+    // Old enough to be stale, but terminating takes precedence.
     const p = pod({ jobName: 'yaac-proj-term', workspaceId: 't1', terminating: true, ageMs: GRACE_MS + 5_000 })
     const result = await classifyWorkspaces([p], now(), probe('dead'), GRACE_MS)
     expect(result.terminating).toEqual([p])

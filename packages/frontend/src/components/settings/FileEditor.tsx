@@ -10,18 +10,14 @@ function errMessage(e: unknown): string {
 }
 
 /**
- * A syntax-highlighted file editor with a load/save lifecycle: fetches the
- * initial text via `load`, tracks dirty state, and persists via `save`.
- * `load`/`save` must be stable (memoize with useCallback keyed on the
- * target file) — the editor reloads whenever `load` changes identity, so a
- * new `load` is how the caller points it at a different file.
+ * A syntax-highlighted file editor that loads text via `load`, tracks dirty
+ * state, and saves via `save`. Memoize `load`/`save` per file: the editor
+ * reloads whenever `load` changes identity, which is how a caller switches
+ * files.
  *
- * An expand button on the editor frame opens the same buffer in a
- * near-fullscreen overlay (a nested dialog, titled `title`) with the same
- * hint/error/save row below it; the text state is shared, so edits and
- * dirty state survive expanding and collapsing.
- *
- * Text is sized like the file pane's editor, following its text-size setting.
+ * An expand button opens the same buffer in a near-fullscreen dialog titled
+ * `title`; edits carry over in both directions. Text size follows the file
+ * pane's text-size setting.
  */
 export function FileEditor({
   title,
@@ -78,7 +74,6 @@ export function FileEditor({
     return <p className="text-xs text-text-faint">Loading…</p>
   }
 
-  // Rendered below the editor both inline and expanded.
   const footer = (
     <>
       {hint && <p className="text-[11px] leading-relaxed text-text-faint">{hint}</p>}

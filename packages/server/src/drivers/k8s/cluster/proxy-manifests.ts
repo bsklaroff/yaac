@@ -36,19 +36,9 @@ import { env } from '@yaac/shared/env'
 import type { CredentialBundle } from '#drivers/contract'
 
 /**
- * Pod securityContext running the proxy as the host's own uid/gid — see
- * `installSecurityContext`, which the server's Deployment shares.
- *
- * The proxy mounts nothing from the host, so no path it touches is owned
- * by anyone in particular; it keeps the server's identity so that the two
- * infra pods read as one principal wherever a uid shows (process listings,
- * the relay's peer checks). The image's default `node` uid (1000) is not
- * assumed either way.
- *
- * `fsGroup` on top of that shared identity, as on the server's Deployment
- * and for the same reason: both of the proxy's volumes are emptyDirs (see
- * the deployment), and emptyDir is the one volume kind whose ownership the
- * kubelet manages.
+ * Runs the proxy as the host's uid/gid, like the server
+ * (`installSecurityContext`), so the two infra pods share one identity.
+ * `fsGroup` makes its emptyDir volumes writable.
  */
 export function proxyRunAsSecurityContext(): Record<string, unknown> {
   const identity = installSecurityContext()
@@ -56,20 +46,12 @@ export function proxyRunAsSecurityContext(): Record<string, unknown> {
 }
 
 /**
- * Build the proxy Deployment manifest. Exported for unit tests; applied
- * by `ensureProxyResources`.
- *
- * Exposure: ClusterIP Service only — no hostNetwork, no hostPort, no
- * NodePort. The proxy listens inside its pod's network namespace, and the
- * server reaches it there as an ordinary pod-to-pod Service dial: it is a
- * pod of the same namespace (docs/server-in-cluster.md), and this Service
- * is the only address it needs. Nothing off the pod network can reach it,
- * which is why the control and relay ports carry no auth-by-address
- * assumption beyond the ingress policy in policy-manifests.ts.
+ * The proxy Deployment, applied by `ensureProxyResources`. Exposed only via
+ * a ClusterIP Service (no hostNetwork, hostPort or NodePort); the server
+ * dials it pod-to-pod (docs/server-in-cluster.md).
  */
 export function buildProxyDeploymentManifest(imageRef: string): Record<string, unknown> {
-  // Every proxy pod carries the install identity — the same data-dir-hash
-  // label workspace pods carry.
+  // The install's data-dir-hash label, as on workspace pods.
   const podLabels = {
     app: PROXY_APP_NAME,
     [LABEL_DATA_DIR_HASH]: dataDirHash(),
@@ -84,39 +66,28 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
     },
     spec: {
       replicas: 1,
-      // Recreate, not RollingUpdate: the transparent listeners are
-      // addressed by the Service, and an overlap window would split one
-      // workspace's connections across two pods whose blocked-host records
-      // and captured rotations would each overwrite the other's.
+      // Recreate: two overlapping pods would overwrite each other's
+      // blocked-host records and captured token refreshes.
       strategy: { type: 'Recreate' },
       selector: { matchLabels: { app: PROXY_APP_NAME } },
       template: {
         metadata: { labels: podLabels },
         spec: {
-          // The proxy watches pods (source-IP → workspace) and its input
-          // objects via the in-cluster API, and writes its three outputs
-          // there, so it needs its SA token mounted — the access is
-          // granted by buildProxyRoleManifest.
+          // Needs its token to watch pods and inputs and write outputs
+          // (buildProxyRoleManifest).
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
-          // Infra tier: losing the proxy costs every workspace on the cluster
-          // its DNS and its entire route to the world, so it outranks the
-          // workspaces under node pressure and can preempt one when a full
-          // node leaves it nowhere to run.
+          // Every workspace's DNS and egress depend on it.
           priorityClassName: PRIORITY_CLASS_INFRA,
-          // No runtimeClassName: the proxy is trusted yaac infra and runs on
-          // runc — the sentry buys no containment for yaac-shipped code and
-          // its CPU cost starves the node (see the gvisor.ts module doc).
+          // Trusted infra: runc, not gVisor (see gvisor.ts).
           ...proxyRunAsSecurityContext(),
           containers: [
             {
               name: 'proxy',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
-              // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the
-              // DNS stub, keeping the Service's port==targetPort invariant
-              // (no remap, so policy and Service agree on the port).
+              // Lets the non-root proxy bind udp/53 for the DNS stub.
               securityContext: { capabilities: { add: ['NET_BIND_SERVICE'] } },
               ports: [
                 { containerPort: PROXY_PORT },
@@ -132,16 +103,13 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 { name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) },
                 { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
                 { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
-                // Stream relay (docs/stream-relay.md): the authenticated
-                // CONNECT into workspace pods' streamd. Same env for outer and
-                // inner proxies — only the addressing differs (NodePort vs
-                // pod-IP dial).
+                // Stream relay (docs/stream-relay.md): authenticated CONNECT into
+                // workspace pods' streamd.
                 { name: 'RELAY_PORT', value: String(RELAY_PORT) },
                 { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
-                // ssh-agent forwarding: the proxy splices this port to its
-                // own in-memory agent for entitled workspace pods, which
-                // re-expose it as SSH_AUTH_SOCK's UNIX socket in-pod.
+                // ssh-agent forwarding for entitled workspace pods, which expose
+                // it in-pod as SSH_AUTH_SOCK.
                 { name: 'SSH_AGENT_PORT', value: String(SSH_AGENT_PORT) },
                 {
                   name: 'PROXY_AUTH_SECRET',
@@ -149,18 +117,12 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                     secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' },
                   },
                 },
-                // The proxy runs as the server's host uid (runAsUser
-                // below), which need not own the image's /home/node — so
-                // point HOME at a dedicated emptyDir (writable via fsGroup).
-                // The entrypoint's ssh-agent socket and the proxy's
-                // known_hosts writer both resolve HOME; ssh-add expands ~
-                // via getpwuid (not $HOME), so the proxy hands it the file
-                // explicitly with -H.
+                // The host uid may not own /home/node, so HOME is a writable
+                // emptyDir (for the ssh-agent socket and known_hosts). ssh-add
+                // ignores $HOME, so the proxy passes the file with -H.
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
-                // Split-horizon DNS: the proxy resolves internal names
-                // (`*.svc`) against the cluster CoreDNS so workspace pods
-                // learn live ClusterIPs (no IP pinning).
+                // Split-horizon DNS: `*.svc` names resolve via CoreDNS.
                 { name: 'DNS_FORWARD_INTERNAL', value: '1' },
               ],
               readinessProbe: {
@@ -174,18 +136,13 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
               ],
             },
           ],
-          // Nothing from the host: the proxy is stateless. Its inputs are
-          // objects it watches and its outputs objects it writes
-          // (docs/workspace-egress.md), so a pod replacement — anywhere in
-          // the cluster — restores itself from the apiserver alone.
+          // No host mounts: the proxy's state lives in API objects
+          // (docs/workspace-egress.md), so a replacement pod restores itself.
           volumes: [
-            // Tor's state and readiness marker, per pod: a circuit is
-            // re-bootstrapped on every replacement.
+            // Tor's state, rebuilt per pod.
             { name: 'proxy-data', emptyDir: {} },
-            // Writable HOME for the proxy's ssh-agent socket, ssh-add and
-            // known_hosts. emptyDir so fsGroup can make it group-writable
-            // by the non-root proxy uid. The agent socket is pod-local:
-            // workspace pods reach the agent over SSH_AGENT_PORT.
+            // Writable HOME (see above). Workspace pods reach the agent over
+            // SSH_AGENT_PORT, not this socket.
             { name: 'home', emptyDir: {} },
           ],
         },
@@ -195,32 +152,18 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
 }
 
 /**
- * Admission guard making `yaac.role=builder` unfakeable: the label is
- * policy-bearing (the world-deny exclusion above), so nothing untrusted
- * may mint it. Builder pods are created by exactly one kind of identity —
- * a yaac server, which runs in-cluster as the `SERVER_SA_NAME`
- * ServiceAccount of its install namespace — so the guard admits that
- * username shape (`system:serviceaccount:<any-ns>:yaac-server`) and denies
- * every other identity, whether another ServiceAccount (the identity class
- * untrusted code can hold; workspace pods carry no token at all) or a cert
- * user such as a cluster operator.
+ * Admission policy reserving `yaac.role=builder` (the label exempts pods
+ * from world-deny egress). Only a yaac server's ServiceAccount
+ * (`system:serviceaccount:<any-ns>:yaac-server`) may set it, and its pods
+ * must run under gVisor. UPDATE is checked too, so the label cannot be
+ * added later.
  *
- * The shape, deliberately not one install's exact username: this policy is
- * cluster-scoped under a FIXED name, and one cluster hosts more than one
- * install (the real `yaac` one plus an ephemeral `yaac-test-<run-id>` per
- * e2e file — the same reason `serverClusterScopedName()` suffixes the
- * server's RBAC). Every install re-applies the guard, so its text must be
- * install-agnostic or the last applier locks everyone else's server out.
- * Suffixing the policy name instead would not compose either: VAP
- * validations AND together, so two policies each naming a different server
- * would deny both. Admitting the shape costs nothing under the threat
- * model — untrusted code holds no API identity at all, so it can neither
- * act as nor create a `yaac-server` ServiceAccount in any namespace.
- *
- * Carriers must also run under the gvisor RuntimeClass (the label
- * describes a sandboxed builder; a runc pod wearing it is a bug or an
- * attack either way). UPDATE is matched so the label can't be patched onto
- * an existing pod after admission.
+ * It matches any namespace because the policy has a fixed cluster-wide name
+ * and several installs (the real one plus e2e runs) each re-apply it:
+ * narrowing it to one install's account would lock the others out, and
+ * per-install policies don't work because a request must pass every
+ * policy. Untrusted code has no API identity, so it cannot act as such an
+ * account.
  */
 export function buildBuilderRoleGuardPolicyManifest(): Record<string, unknown> {
   return {
@@ -278,7 +221,7 @@ export function buildBuilderRoleGuardBindingManifest(): Record<string, unknown> 
   }
 }
 
-/** ServiceAccount the proxy runs as so it can watch pods (source-IP→workspace). */
+/** The proxy's ServiceAccount. */
 export function buildProxyServiceAccountManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
@@ -288,16 +231,10 @@ export function buildProxyServiceAccountManifest(): Record<string, unknown> {
 }
 
 /**
- * The proxy's Role: pods, Secrets and ConfigMaps readable (it watches its
- * inputs), and exactly its three output objects writable.
- *
- * `list` and `watch` cannot be name-scoped, so the read grant is
- * namespace-wide; the install namespace holds nothing but yaac's own
- * objects (the proxy already carries `yaac-proxy-auth` in its env), and
- * the proxy already holds every value in memory. `create` cannot be
- * name-scoped either, which is why the outputs are pre-created by the
- * server (`ensureProxyResources`) and the proxy only ever `update`s and
- * `patch`es them.
+ * The proxy's Role: read pods, Secrets and ConfigMaps (namespace-wide, since
+ * `list`/`watch` cannot be limited by name), and update only its three
+ * output objects. `create` cannot be limited by name either, so the server
+ * pre-creates the outputs (`ensureProxyResources`).
  */
 export function buildProxyRoleManifest(): Record<string, unknown> {
   return {
@@ -334,14 +271,10 @@ function secretData(files: Record<string, string>): Record<string, string> {
 }
 
 /**
- * The credentials Secret: every tool's host-store file verbatim (a
- * signed-out tool contributes no key, which the proxy reads as signed out)
- * plus the git credentials, each entry naming the projects it is assigned
- * to — `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
- * (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`),
- * which the agent is loaded from. Replaced whole on every push — the set is
- * one install-wide thing, and a key's absence is as much a fact as its
- * presence.
+ * The credentials Secret: each signed-in tool's credential file, plus
+ * `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
+ * (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`).
+ * Replaced whole on every push, so a removed key disappears.
  */
 export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): Record<string, unknown> {
   const files: Record<string, string> = {}
@@ -365,10 +298,9 @@ export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): R
 }
 
 /**
- * Name of a project's secret-values Secret: `yaac-proxy-secrets-<safeSlug
- * ≤21>-<hash8>`, the shape the per-project registry uses and for the same
- * reasons — a slug is not DNS-safe, and the hash spans the data dir so
- * installs sharing a namespace cannot collide.
+ * A project's secret-values Secret name: `yaac-proxy-secrets-<safeSlug
+ * ≤21>-<hash8>`, as for project registries (slugs are not DNS-safe, and the
+ * hash includes the data dir so installs cannot collide).
  */
 export function proxyProjectSecretsName(projectSlug: string): string {
   return installScopedName(PROXY_PROJECT_SECRETS_PREFIX, projectSlug)
@@ -387,12 +319,8 @@ function installScopedName(prefix: string, projectSlug: string): string {
   return `${prefix}-${safeSlug}-${hash8}`.replace(/--+/g, '-')
 }
 
-/**
- * One project's opened secret values, keyed the way its registration's
- * `secretRef`s name them (`<slug>/<NAME>`). One object per project because
- * values are edited per project and opened by decryption — re-rendering
- * every project's values to change one is work with nothing behind it.
- */
+/** One project's decrypted secret values, keyed as its registration's
+ *  `secretRef`s name them (`<slug>/<NAME>`). One object per project. */
 export function buildProjectSecretsManifest(
   projectSlug: string,
   values: Record<string, string>,
@@ -420,11 +348,9 @@ export function proxyRegistrationName(workspaceId: string): string {
 }
 
 /**
- * One workspace's registration: rules (with `secretRef`s, never values),
- * allowed hosts, repo URL, tool, project and test redirects — a ConfigMap
- * precisely because it carries no secret. Labelled with its workspace and
- * project so the proxy indexes it by workspace and a fan-out finds a
- * project's set.
+ * One workspace's registration (rules with `secretRef`s but no values,
+ * allowed hosts, repo URL, tool, project, test redirects). A ConfigMap,
+ * since it holds no secrets. Labelled by workspace and project.
  */
 export function buildRegistrationConfigMapManifest(
   workspaceId: string,
@@ -447,12 +373,8 @@ export function buildRegistrationConfigMapManifest(
   }
 }
 
-/**
- * The three objects the proxy writes, created empty by the server so the
- * proxy's Role can name them (see `buildProxyRoleManifest`). Applied only
- * when absent — an apply of the empty shape onto a live one would wipe
- * what the proxy wrote.
- */
+/** The three objects the proxy writes, pre-created empty by the server
+ *  (see `buildProxyRoleManifest`). */
 export function buildProxyOutputManifests(): Array<Record<string, unknown>> {
   const output = (kind: string): Record<string, string> =>
     proxyLabels({ [LABEL_PROXY_OUTPUT]: kind })
@@ -493,30 +415,21 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
     },
     spec: {
       type: 'ClusterIP',
-      // Allocator-assigned ClusterIP (no longer pinned): workspace-create reads
-      // it live at pod-create (proxyServiceClusterIp) for the pod's dnsConfig.
-      // The Service is never deleted/recreated, so its ClusterIP is stable for
-      // the cluster's lifetime; the egress redirect is EDS-backed (endpoints,
-      // not the VIP) and the DNS policy is identity-based, so neither needs a
-      // fixed IP.
+      // The ClusterIP is read at workspace create for the pod's DNS
+      // (proxyServiceClusterIp); it is stable because the Service is never
+      // recreated.
       selector: { app: PROXY_APP_NAME },
-      // port == targetPort throughout: the NetworkPolicy and the in-pod
-      // egress filter list the post-translation (transport) port, so a
-      // remap would make policy and Service silently diverge.
+      // port == targetPort: policies name the pod port, so a remap would
+      // silently diverge.
       ports: [
         { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
-        // The relay, for the in-cluster server: it has a route to this
-        // Service and none to a host port-forward, so YAAC_RELAY_ADDR names
-        // the Service and the dial follows the proxy pod across a
-        // reschedule. A host-side server still forwards to the pod port
-        // directly and never reads this entry.
+        // The relay, which the in-cluster server dials via the Service.
         { name: 'relay', port: RELAY_PORT, targetPort: RELAY_PORT },
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
         { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
         { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
-        // ssh-agent forwarding: workspace pods dial this on the Service
-        // ClusterIP (the address they already carry as their resolver), so
-        // the agent moves with the proxy pod, node and all.
+        // ssh-agent forwarding; workspace pods dial the ClusterIP they
+        // already use for DNS.
         { name: 'ssh-agent', port: SSH_AGENT_PORT, targetPort: SSH_AGENT_PORT },
         { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
       ],

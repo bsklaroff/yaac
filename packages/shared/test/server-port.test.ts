@@ -12,14 +12,13 @@ const inUse = (): Error => Object.assign(new Error('in use'), { code: 'EADDRINUS
 
 describe('DEFAULT_SERVER_PORT', () => {
   it('is a fixed, well-known loopback port', () => {
-    // A stable default is the whole point — pin it so a change is deliberate.
+    // Pinned so a change is deliberate.
     expect(DEFAULT_SERVER_PORT).toBe(8787)
   })
 })
 
 describe('resolveServerPort', () => {
-  // resolveServerPort reads YAAC_SERVER_PORT via env.serverPort, so drive the
-  // env cases by stubbing the var rather than passing it in.
+  // resolveServerPort reads YAAC_SERVER_PORT itself, so stub the var.
   afterEach(() => {
     vi.unstubAllEnvs()
   })
@@ -138,9 +137,8 @@ describe('bindWithAutoIncrement', () => {
 
 describe('isAddrInUseError', () => {
   it('returns true for a real EADDRINUSE error', async () => {
-    // Bind an OS-assigned port, then try to bind the same port again — the
-    // second listen fails with EADDRINUSE, the exact error the server must
-    // classify so it refuses to silently pick a different port.
+    // A second bind fails with EADDRINUSE, which the server must recognize
+    // rather than silently pick another port.
     const first = net.createServer()
     await new Promise<void>((resolve) => first.listen(0, '127.0.0.1', () => resolve()))
     const addr = first.address()

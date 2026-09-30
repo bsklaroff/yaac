@@ -20,33 +20,17 @@ import type { ProjectRef } from '#drivers/contract'
 
 /** `app` label value shared by every per-project registry pod. */
 export const REGISTRY_APP_LABEL = 'yaac-registry'
-/**
- * GC scope label: ties registry objects to this yaac install without
- * making them visible to the workspace reaper/list paths (which filter on
- * `yaac.data-dir-hash` + `yaac.workspace-id`).
- */
+/** Ties registry objects to this install without making them visible to
+ *  the workspace reaper and listings (which use `yaac.data-dir-hash`). */
 export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
-/**
- * Marker label on the one-shot node-write pods (hosts writer / cleanup),
- * value = the pod's kind. Distinguishes them from the registry
- * Deployment's pod, which carries the same registry labels — the stray
- * sweep in `writeNodeRegistryHostsToml` selects on this label's existence
- * so it can never delete the registry itself.
- */
+/** Label on the one-shot node-write pods (value: the pod's kind), so the
+ *  stray sweep never selects the registry's own pod. */
 export const LABEL_NODE_WRITE = 'yaac.node-write'
-/**
- * In-cluster port of the per-project registry. Deliberately not 443/80:
- * netd redirects those to the proxy, whereas 5000 rides the per-project
- * workspaces NetworkPolicy straight to the registry, un-MITM'd.
- */
+/** In-cluster port. Not 443/80, which netd redirects to the proxy. */
 export const PROJECT_REGISTRY_PORT = 5000
 
-/**
- * Upstream registry:2 pinned by its multi-arch index digest — the same
- * image the main local registry runs. Push-and-serve only: no
- * pull-through, no sync, no config beyond storage (nested image pulls go
- * through the MITM proxy instead).
- */
+/** registry:2 pinned by multi-arch index digest, as the main registry
+ *  uses. Push-and-serve only; nested pulls go through the proxy. */
 export const REGISTRY_IMAGE_DIGEST =
   'sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
 export const REGISTRY_UPSTREAM_IMAGE = `docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`
@@ -54,25 +38,18 @@ export const REGISTRY_UPSTREAM_IMAGE = `docker.io/library/registry@${REGISTRY_IM
 export const REGISTRY_MIRROR_TAG = `yaac-registry2:${REGISTRY_IMAGE_DIGEST.slice(7, 19)}`
 
 /**
- * Deployment/Service name for a project's registry: `yaac-reg-<id>`.
- * Named by the project's immutable id, so a project re-added under a freed
- * slug gets a registry of its own even when the old one's removal failed,
- * and no install hash is needed — an id cannot collide across installs
- * sharing a namespace. At 45 characters every derived name (`-storage`,
- * `-sessions`, …) stays within the 63-character DNS-label cap; the
- * one-shot pods' longer names are subdomains, capped at 253.
+ * A project's registry name, `yaac-reg-<id>`. The id is never reused, so a
+ * re-added project gets a fresh registry, and no install hash is needed.
+ * At 45 chars, derived names fit the 63-char DNS-label limit.
  */
 export function projectRegistryName(projectId: string): string {
   return `yaac-reg-${projectId}`
 }
 
 /**
- * The in-cluster service-DNS name of the registry. A FULL `.svc.cluster.local`
- * FQDN, not the `.svc` shorthand: workspaces resolve it through the proxy's
- * split-horizon DNS, which forwards ONLY `.cluster.local` to CoreDNS (a bare
- * `.svc` would be sinkholed, since CoreDNS forwards anything outside its zone
- * to the remote resolver — a DNS-exfil channel). The node's containerd matches
- * it via the hosts.toml this module writes (it never DNS-resolves it).
+ * The registry's full `.svc.cluster.local` name. Workspaces resolve it via
+ * the proxy's DNS, which forwards only `.cluster.local` to CoreDNS. Node
+ * containerd matches it against the hosts.toml written here.
  */
 export function projectRegistryHostname(projectId: string): string {
   return registryHostnameOf(projectRegistryName(projectId))
@@ -88,39 +65,28 @@ export function projectRegistryHost(projectId: string): string {
 }
 
 /**
- * PVC backing this project's registry storage. Per project, and named off
- * `projectRegistryName` so it inherits that name's uniqueness and its
- * DNS-label budget. Growth is bounded by reconcileProjectRegistryGc, which
- * reclaims the blobs behind manifests no tag points at; live tags are never
- * collected, so a project that keeps minting NEW tags (content-hash image
- * chains) still grows until it is removed.
+ * The project's registry PVC. reconcileProjectRegistryGc reclaims untagged
+ * blobs, but live tags are kept, so a project minting new tags keeps
+ * growing until removed.
  */
 export function projectRegistryPvcName(projectId: string): string {
   return `${projectRegistryName(projectId)}-storage`
 }
 
 /**
- * Requested capacity — one project's image chain and its workspaces' salvaged
- * layers, so a fraction of the main registry's. As with that one it is a
- * request, not a cap anything here enforces: kind's local-path provisioner
- * ignores the number, and the real bound on the local backend is the
- * collect below. On a cloud provisioner it is a real allocation, PER
- * PROJECT, against block-storage cost and quota.
+ * Requested PVC size per project (ignored by kind's local-path provisioner;
+ * a real allocation on cloud providers).
  *
- * Raising it is safe; LOWERING it is not. The claim is re-applied on every
- * ensure and `spec.resources.requests.storage` is immutable except for
- * expansion, so a smaller number here makes every subsequent ensure fail at
- * the apply on installs that already bound the larger one. Shrinking means
- * a migration, not an edit. Same for MAIN_REGISTRY_STORAGE_SIZE.
+ * Raising it is safe; lowering it is not: the claim is re-applied on every
+ * ensure and its size can only grow, so a smaller value fails every ensure
+ * on existing installs. Same for MAIN_REGISTRY_STORAGE_SIZE.
  */
 export const PROJECT_REGISTRY_STORAGE_SIZE = '50Gi'
 
 /**
- * registries.conf.d drop-in making user-driven `docker push` from a
- * workspace accept the registry's plain HTTP. Written into the workspace at
- * setup time (the host is per-project, so it cannot be baked into the
- * shared nestable layer). Scoped to the exact registry host — every
- * other registry keeps full TLS verification.
+ * registries.conf.d drop-in letting a workspace's `docker push` use this
+ * registry's plain HTTP. Written at workspace setup (it is per project).
+ * Only this host skips TLS verification.
  */
 export function projectRegistryConfDropIn(projectId: string): string {
   return [
@@ -131,11 +97,8 @@ export function projectRegistryConfDropIn(projectId: string): string {
   ].join('\n')
 }
 
-/**
- * Every registry object carries the project id — what its selectors, its
- * NetworkPolicies and the orphan GC key on — and the slug, for a human
- * reading `kubectl get`.
- */
+/** Labels: the project id (used by selectors, policies and GC) and the
+ *  slug (for humans). */
 function registryLabels(project: ProjectRef): Record<string, string> {
   return {
     app: REGISTRY_APP_LABEL,
@@ -155,29 +118,17 @@ function installRegistrySelector(): string {
   return `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`
 }
 
-/**
- * kubectl label selector matching every registry object of this project
- * scoped to this install (the orphan GC must never see another install's
- * registries, whose projects are not in its live set).
- */
+/** Selector for this project's registry objects in this install only (the
+ *  orphan GC must never see another install's). */
 function registrySelector(projectId: string): string {
   return `${installRegistrySelector()},${LABEL_PROJECT_ID}=${projectId}`
 }
 
 /**
- * The blob store's claim. No `storageClassName`, so it binds through the
- * cluster's default class — see the main registry's PVC builder for why
- * naming one would be wrong.
- *
- * RWO is enough: `replicas: 1` + `Recreate` gives one mounter at a time by
- * construction. It still admits a SECOND pod on the same node, which is
- * what lets the collect pod below mount the store beside the serving
- * registry instead of having to stop it.
- *
- * Losing the volume is not symmetric with the main registry's: the
- * cross-workspace layer cache refills by rebuild, but anything a workspace
- * `docker push`ed here under a name yaac never mints is not regenerable and
- * goes with it.
+ * The blob store's claim, using the default storage class. RWO still lets a
+ * second pod on the same node mount it, which the collect pod relies on.
+ * Losing it loses anything a workspace `docker push`ed here that yaac
+ * cannot rebuild.
  */
 export function buildProjectRegistryPvcManifest(project: ProjectRef): Record<string, unknown> {
   return {
@@ -196,27 +147,12 @@ export function buildProjectRegistryPvcManifest(project: ProjectRef): Record<str
 }
 
 /**
- * Build the registry:2 Deployment. Trusted infra like the proxy, so no
- * runtimeClassName — it runs on runc; the sentry buys no containment for
- * yaac-shipped code and its CPU cost starves the node (see the gvisor.ts
- * module doc). Recreate strategy: a rolling overlap would put two pods on
- * one store, and on a backend that enforces RWO across nodes it would
- * deadlock on the old pod's volume.
+ * The registry:2 Deployment. Trusted infra, so runc (see gvisor.ts).
+ * `Recreate` avoids two pods on one RWO volume. Not pinned to a node; a
+ * bound volume carries its own node affinity.
  *
- * Unpinned: the blobs live on the PVC, so wherever the scheduler puts the
- * pod is where the catalog is. Placement is still constrained where it has
- * to be — a bound volume carries its own node affinity, which the scheduler
- * enforces without anything here having to name a node.
- *
- * Declaring no `tolerations` is load-bearing, not an omission, and it is
- * what keeps this off a tainted workspaces pool. That used to be hand-computed
- * by the node-resolver this replaced (matching each node's taints against an
- * empty toleration set); with the pin gone the scheduler does the same
- * matching natively, and for the same reason: the pool's toleration lives on
- * the gvisor RuntimeClass, which this trusted-infra pod deliberately does
- * not name. Under `WaitForFirstConsumer` the volume is then provisioned to
- * follow that choice, so the exclusion holds for the store's whole life, not
- * just its first placement.
+ * It declares no tolerations on purpose, which keeps it off a tainted
+ * workspace pool (that toleration comes from the gVisor RuntimeClass).
  */
 export function buildProjectRegistryDeploymentManifest(
   project: ProjectRef,
@@ -240,27 +176,20 @@ export function buildProjectRegistryDeploymentManifest(
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
-          // Infra tier: the project's workspaces pull their images from here,
-          // so evicting it to make room for a workspace is backwards.
+          // The project's workspaces pull their images from here.
           priorityClassName: PRIORITY_CLASS_INFRA,
           containers: [
             {
               name: 'registry',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
-              // Manifest DELETE, which the image cache's retire leg uses to
-              // drop chain slots a shorter rebuild no longer fills, and
-              // which is what leaves their blobs collectable. Scoped by the
-              // same policies as every other write to this registry: only
-              // this project's own workspaces can reach it.
+              // Manifest DELETE lets the image cache retire unused chain slots
+              // so their blobs can be collected.
               //
-              // `readOnly` is the maintenance window a blob collect runs in
-              // (reconcileProjectRegistryGc): pulls and the catalog keep
-              // serving, pushes and deletes answer 405. Spelled as an
-              // inline YAML MAP — the `…_READONLY_ENABLED=true` spelling
-              // collapses the key to a scalar and registry 2.8 panics at
-              // boot with "readonly config key must contain additional
-              // keys".
+              // `readOnly` is the window a blob collect runs in
+              // (reconcileProjectRegistryGc): reads work, writes get 405. It must
+              // be an inline YAML map; `…_READONLY_ENABLED=true` makes
+              // registry 2.8 panic at boot.
               env: [
                 { name: 'REGISTRY_STORAGE_DELETE_ENABLED', value: 'true' },
                 ...(opts.readOnly
@@ -301,12 +230,10 @@ export function buildProjectRegistryServiceManifest(project: ProjectRef): Record
     },
     spec: {
       type: 'ClusterIP',
-      // Allocator-assigned (no longer pinned): workspaces resolve the live
-      // ClusterIP through the proxy's split-horizon DNS, and the node's
-      // hosts.toml is rewritten with the live IP on every ensure.
+      // Workspaces resolve the ClusterIP via the proxy's DNS; the node's
+      // hosts.toml is rewritten with it on every ensure.
       selector: registryPodSelector(project.id),
-      // port == targetPort: the network policies list the post-translation
-      // port; a remap would diverge.
+      // port == targetPort, since the policies name the pod port.
       ports: [{
         name: 'registry',
         port: PROJECT_REGISTRY_PORT,
@@ -317,17 +244,10 @@ export function buildProjectRegistryServiceManifest(project: ProjectRef): Record
 }
 
 /**
- * NetworkPolicy admitting this project's workspaces to this project's
- * registry — the SOLE egress hole for workspace→registry traffic:
- * NetworkPolicy unions allow rules, so this punches an exactly-scoped
- * hole through the workspace-egress policy's default-deny (which itself has
- * no in-cluster registry allowance — an install-wide rule there could
- * not express "same project only"; see that builder's comment).
- * Per-project rather than shared because registry:2 has no path ACLs: a
- * shared writable registry
- * would let any workspace overwrite another project's (or the infra) tags.
- * The workspace-id Exists term keeps the policy off the registry pod
- * itself (it carries the project label too).
+ * Egress policy letting this project's workspaces (and only them) reach its
+ * registry; the install-wide workspace policy cannot scope by project.
+ * Registries are per project because registry:2 has no path ACLs. The
+ * workspace-id term keeps the registry pod itself out.
  */
 export function buildRegistryWorkspacesNetworkPolicyManifest(
   project: ProjectRef,
@@ -357,17 +277,9 @@ export function buildRegistryWorkspacesNetworkPolicyManifest(
 }
 
 /**
- * NetworkPolicy locking the registry pod's INGRESS to exactly its two
- * legitimate clients: same-project workspace pods pushing on 5000, and the
- * NODE — the kubelet readiness probe plus containerd pulling pushed refs
- * from the host netns via hosts.toml. The workspaces policy above already
- * stops other projects' workspaces at their source; this is the
- * receiving-side lock, so no future egress loosening can silently reopen
- * cross-project tag reads or overwrites (registry:2 has no path ACLs).
- *
- * The node half is an `ipBlock` because the pulls originate in the host
- * network namespace, which plain NetworkPolicy can only name by address
- * (NetworkPolicy has no selector for the host network namespace).
+ * Registry ingress: same-project workspace pods, and the node (kubelet
+ * probe, containerd pulls) by `ipBlock`. A receiving-side check, so a later
+ * egress change cannot open cross-project access.
  */
 export function buildRegistryIngressNetworkPolicyManifest(
   project: ProjectRef,
@@ -404,12 +316,7 @@ export function buildRegistryIngressNetworkPolicyManifest(
   }
 }
 
-/**
- * Deny-all egress on the registry pod: it only ever serves pushes and
- * pulls — there is nothing for it to fetch (no pull-through, no proxy
- * pseudo-workspace). Ingress is locked separately by
- * buildRegistryIngressNetworkPolicyManifest.
- */
+/** Deny-all egress for the registry pod, which only serves. */
 export function buildRegistryEgressNetworkPolicyManifest(
   project: ProjectRef,
 ): Record<string, unknown> {
@@ -430,32 +337,16 @@ export function buildRegistryEgressNetworkPolicyManifest(
 }
 
 /**
- * Scaffolding shared by the one-shot pods that replaced the old `podman
- * exec <node>` writes: node files are written by a pod that hostPath-mounts
- * the target directory, so the server never assumes the node is a container
- * on its own podman engine. Plain root like the registry itself,
- * `restartPolicy: Never` — the caller polls it to a terminal phase and
- * deletes it. Names carry a per-run random suffix so two runs can never
- * fight over one pod name (delete each other's pod mid-poll); strays from
- * crashed runs are reaped by label — the `LABEL_NODE_WRITE` sweep before
- * each hosts write, and `removeProjectRegistry`'s by-selector delete. It
- * reuses the registry:2 mirror image (already in the local registry, and on
- * the node once the registry Deployment has rolled out), and its registry
- * labels both put it under the deny-all egress NetworkPolicy (it needs no
- * network) and inside the removal selector's scope.
+ * Shared shape of the one-shot pods that write node files (via a hostPath
+ * mount) or collect the registry. Run to completion, then deleted by the
+ * caller. Names have a per-run suffix so runs never collide; strays are
+ * removed by label. Uses the registry:2 image already on the node, and the
+ * registry labels put it under the deny-all egress policy.
  *
- * `nodeName` is the whole point for the pods that touch a specific node's
- * filesystem, and the blanket toleration below is what makes it work: the
- * pin bypasses the SCHEDULER, but kubelet still admits and the taint manager
- * still evicts, so a `NoExecute` pool taint would deny those pods the very
- * nodes they must write. The collect pod passes null and an `affinity`
- * instead — see `buildRegistryGcPodManifest` for why it has to go through
- * the scheduler.
- *
- * The collect pod inherits that blanket toleration even though it IS
- * scheduled, which is harmless rather than sloppy: its required podAffinity
- * ties it to the registry pod, and the registry declares no tolerations, so
- * the only node satisfying the term is one no taint blocked anyway.
+ * Node-file pods are pinned with `nodeName` and tolerate every taint (a
+ * `NoExecute` taint would otherwise evict them). The collect pod is
+ * scheduled with `affinity` instead (see `buildRegistryGcPodManifest`); the
+ * toleration is harmless there, since it must land beside the registry.
  */
 function buildNodeWritePodManifest(
   labels: Record<string, string>,
@@ -479,21 +370,12 @@ function buildNodeWritePodManifest(
     spec: {
       ...(nodeName ? { nodeName } : {}),
       ...(affinity ? { affinity } : {}),
-      // Trusted infra (runs a fixed yaac-authored script) — no
-      // runtimeClassName, so it runs on runc like the proxy and registry.
+      // Trusted infra: runc.
       restartPolicy: 'Never',
-      // Tolerates everything, like netd and the gVisor installer. `nodeName`
-      // bypasses the SCHEDULER, so NoSchedule never mattered — but kubelet
-      // admits and the taint manager evicts, so a NoExecute taint would
-      // refuse this pod on the very nodes it exists to write to: a tainted
-      // workspaces pool would get no hosts.toml, and its workspaces could not
-      // pull. Free in scheduling terms — the pod is pinned to one named node
-      // and lives for seconds.
+      // See above: a NoExecute taint would otherwise evict it.
       tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      // Infra tier: a workspace pod filling the one node this can land on
-      // must not keep the registry wiring from landing.
       priorityClassName: PRIORITY_CLASS_INFRA,
       containers: [{
         name: 'write',
@@ -507,12 +389,8 @@ function buildNodeWritePodManifest(
   }
 }
 
-/**
- * One-shot pod writing the node containerd hosts.toml for this project's
- * registry. The hostPath is scoped to exactly the one
- * `certs.d/<registry-host>` directory (`DirectoryOrCreate` replaces the
- * old `mkdir -p`), so the pod can affect no other registry's mapping.
- */
+/** One-shot pod writing a node's containerd hosts.toml for this registry.
+ *  Its hostPath is only this registry's `certs.d` dir. */
 export function buildRegistryHostsWriterPodManifest(
   project: ProjectRef,
   imageRef: string,
@@ -541,23 +419,13 @@ export function buildRegistryHostsWriterPodManifest(
 }
 
 /**
- * One-shot pod removing this project's node-side residue: the registry's
- * `certs.d` directory. Unlike the writer it mounts the PARENT directory —
- * removing the child dir itself (not just its contents) requires it,
- * matching what `podman exec rm -rf` did. A wider mount than the writer's,
- * but the pod lives for seconds and runs only at project removal.
+ * One-shot pod removing the registry's `certs.d` dir from a node, the only
+ * thing it writes outside the API server (the PVC goes with the other
+ * objects). Mounts the parent dir so it can remove the child.
  *
- * The blobs are NOT its business: they are on a PVC, which
- * `removeProjectRegistry`'s by-selector delete takes with everything else.
- * A `hosts.toml` mapping is the only thing this project ever wrote outside
- * the API server.
- *
- * Addressed by the registry's NAME and labelled by the caller, because the
- * orphan GC also removes registries that predate project ids, whose names
- * no id produces and whose objects carry no id label
+ * Takes a name and labels rather than a project, because the orphan GC also
+ * removes registries named before project ids
  * (docs/legacy-compat-shims.md, "Registries named before project ids").
- * An id-named registry's pods carry `registryLabels`' id, so a stray one
- * stranded by a crash is inside the next removal's selector.
  */
 export function buildRegistryCleanupPodManifest(
   registryName: string,
@@ -582,8 +450,7 @@ export function buildRegistryCleanupPodManifest(
   )
 }
 
-/** In-GC-pod mount point of the registry storage — the `rootdirectory`
- *  the image's stock config.yml already points `registry` at. */
+/** Storage mount in the GC pod: the stock config's `rootdirectory`. */
 const GC_STORAGE_PATH = '/var/lib/registry'
 /** The stock config the mirrored image ships, which the GC run re-reads. */
 const GC_CONFIG_PATH = '/etc/docker/registry/config.yml'
@@ -591,49 +458,27 @@ const GC_CONFIG_PATH = '/etc/docker/registry/config.yml'
 const GC_REPOS_PATH = `${GC_STORAGE_PATH}/docker/registry/v2/repositories`
 
 /**
- * Content-hash generations kept per yaac-built repo. Deliberately far
- * above the host engine's HOST_GENERATIONS_KEPT of 2: the host's
- * generations are sequential rebuilds of ONE chain, so "current + one
- * rollback" covers it, whereas a project registry serves every workspace at
- * once and each workspace on its own branch mints its own hash. The live set
- * is therefore as wide as the fleet, not one deep — keep enough that a
- * parallel workspace's image is never the thing retention evicts.
+ * Content-hash generations kept per yaac-built repo. Higher than the host's
+ * HOST_GENERATIONS_KEPT because workspaces on different branches each use
+ * their own hash at once.
  */
 export const REGISTRY_GENERATIONS_KEPT = 8
 
 /**
- * The retention pass the collect runs first, and the ONLY thing in this
- * subsystem that drops a tag someone could still name.
+ * Shell script that untags all but the newest `keep` content-hash
+ * generations of each yaac-built repo, so `--delete-untagged` can reclaim
+ * them (each source change otherwise adds a tag that lives forever). Same
+ * policy as the host's image-gc.ts.
  *
- * `--delete-untagged` alone cannot bound a repo whose every build mints a
- * NEW tag: yaac's own chain is content-hash tagged (`yaac-tools:<hash>`),
- * so each source change adds a generation that stays tagged, and therefore
- * stays collectable-by-nothing, forever. This retires all but the newest
- * REGISTRY_GENERATIONS_KEPT of them, which is exactly the policy
- * image-gc.ts already applies to the host engine.
+ * Only repos named `yaac-*` and tags that are 16 hex chars are touched, so
+ * user repos, `latest` and `yaac-cache-…` slots never are. It edits the
+ * storage layout directly, since it runs in the read-only window where
+ * DELETE is refused.
  *
- * Two guards keep it off anything else, because a tag here is otherwise a
- * promise to whoever pulls it:
- *  - the repo must be yaac-built (`yaac-…`) — every push into this
- *    registry names one — so a workspace's own `myapp` repo is never
- *    touched;
- *  - the tag must have the 16-hex content-hash shape — so `v1`, `latest`
- *    and the cache's `yaac-cache-…` slots can never match.
- * Retiring a tag only unlinks the name; the manifest it pointed at and its
- * blobs are what the `--delete-untagged` collect then reclaims.
- *
- * Done on the storage layout rather than the delete API because the
- * collect runs inside the read-only window, where DELETE answers 405 —
- * and that window is also what guarantees no client is mid-push while the
- * names move.
- *
- * The main registry runs the same pass (`#drivers/k8s/images`
- * main-registry-gc.ts) with a smaller `keep`, because its
- * live set is known rather than guessed: it hands in every tag a workload
- * or a project's current chain names as `protect` (`repo:tag`, never
- * retired, still counted against `keep`), and `skip` (shell `case`
- * patterns) for repos that are off-limits this pass. Each retired tag is
- * printed as `RETIRED <repo>:<tag>`, and the last line is the count.
+ * The main registry reuses it (`#drivers/k8s/images` main-registry-gc.ts)
+ * with a smaller `keep`, `protect` (`repo:tag` refs never retired but still
+ * counted) and `skip` (shell `case` patterns). Prints `RETIRED <repo>:<tag>`
+ * per tag, then the count.
  */
 export function buildRegistryRetentionScript(opts: {
   keep?: number
@@ -644,8 +489,7 @@ export function buildRegistryRetentionScript(opts: {
   const skip = opts.skip ?? []
   return [
     `[ -d ${GC_REPOS_PATH} ] || exit 0`,
-    // Callers pass only `repo:tag` refs of the image-name charset, so a
-    // single-quoted literal is safe.
+    // Image-name charset only, so single quotes are safe.
     `PROTECT='${(opts.protect ?? []).join('\n')}'`,
     'retired=0',
     `for tagdir in $(find ${GC_REPOS_PATH} -type d -path '*/_manifests/tags' 2>/dev/null); do`,
@@ -655,13 +499,8 @@ export function buildRegistryRetentionScript(opts: {
     '    yaac-*) ;;',
     '    *) continue;;',
     '  esac',
-    // Newest first by tag-dir mtime, which for these tags is their
-    // CREATION time: a re-push writes `current/link` and an `index/…`
-    // entry INSIDE the tag directory, which does not bump the directory's
-    // own mtime. Content-hash tags are write-once, so creation order is
-    // exactly the generation order wanted here — but that makes this
-    // ordering unsafe to reuse for a mutable tag, which would sort by when
-    // it first appeared rather than when it last moved.
+    // Newest first by tag-dir mtime, i.e. creation time (a re-push does not
+    // change it). Fine for write-once content-hash tags, not mutable ones.
     `  for stale in $(ls -1t "$tagdir" 2>/dev/null | grep -Ex '[0-9a-f]{16}' | tail -n +${keep + 1}); do`,
     '    printf \'%s\\n\' "$PROTECT" | grep -qxF "$repo:$stale" && continue',
     '    rm -rf "$tagdir/$stale" && retired=$((retired+1)) && echo "RETIRED $repo:$stale"',
@@ -672,37 +511,15 @@ export function buildRegistryRetentionScript(opts: {
 }
 
 /**
- * One-shot pod reclaiming a project's registry blobs: retire stale
- * content-hash generations, then `registry
- * garbage-collect --delete-untagged` against the storage PVC with the
- * registry's own binary and stock config.
+ * One-shot pod reclaiming a project's registry blobs: the retention script,
+ * then `registry garbage-collect --delete-untagged` on the registry's PVC.
+ * Rebuilds re-point reused tags, leaving old manifests untagged; this
+ * deletes them and their blobs.
  *
- * It mounts the SAME claim the registry Deployment holds — which is what
- * makes the read-only maintenance window meaningful: it collects the store
- * that is being served, not a copy. RWO permits the second mounter only on
- * the node that already has the volume (RWO is node-scoped, unlike
- * ReadWriteOncePod), so co-location is a correctness requirement, not an
- * optimization.
- *
- * A required podAffinity on the registry pod's own labels is what states
- * that. Relying on the bound volume to imply it would only hold on
- * volume-affine backends: kind's local-path PV carries node affinity, but a
- * network-attached CSI volume typically carries none, and the scheduler does
- * not enforce RWO co-location for CSI volumes at scheduling time — the
- * conflict would surface at attach as a Multi-Attach error, after which this
- * pod sits in ContainerCreating for the full REGISTRY_GC_TIMEOUT_MS and blob
- * reclaim quietly stops on exactly the multi-node clusters the PVC is for.
- * `nodeName` cannot express it either: it bypasses the scheduler, so it
- * would just as happily bind the pod somewhere the volume cannot follow.
- *
- * `--delete-untagged` is what makes this worth running at all. Both image
- * flows into this registry REUSE tags — the image cache pushes
- * `<repo>:<tag>` and `<repo>:yaac-cache-<tag>-<n>` under the names the
- * workspace already had, and a rebuilt tag re-points at fresh bytes — so
- * every rebuild leaves the previous manifest referenced by no tag at all.
- * Those are exactly the manifests this deletes, and their blobs go with
- * them. The retention pass above is what feeds it the one class of
- * garbage it could not otherwise see.
+ * It mounts the same RWO claim as the serving registry, which works only on
+ * the same node. A required podAffinity to the registry pod enforces that;
+ * the scheduler does not for CSI volumes (it would fail at attach with
+ * Multi-Attach), and `nodeName` would skip the scheduler entirely.
  */
 export function buildRegistryGcPodManifest(
   project: ProjectRef,
@@ -726,12 +543,7 @@ export function buildRegistryGcPodManifest(
     {
       podAffinity: {
         requiredDuringSchedulingIgnoredDuringExecution: [{
-          // `registryLabels`, which the pod template stamps exactly.
-          //
-          // The node-write marker must be ABSENT, or the term would also be
-          // satisfied by a sibling one-shot pod (a hosts writer, another
-          // run's collect) — all of which carry the same registry labels and
-          // none of which implies the volume is on that node.
+          // The registry pod: same labels, minus other one-shot pods.
           labelSelector: {
             matchLabels: registryLabels(project),
             matchExpressions: [{ key: LABEL_NODE_WRITE, operator: 'DoesNotExist' }],
@@ -743,11 +555,8 @@ export function buildRegistryGcPodManifest(
   )
 }
 
-/**
- * The registry:2 mirror's in-cluster ref, from the registry. The mirror is
- * what lets a node pull the image with zero upstream egress at pod-create
- * time; `yaac cluster install` is what puts it there.
- */
+/** The registry:2 mirror's in-cluster ref. Lookup-only; `yaac cluster
+ *  install` mirrors it. */
 export async function ensureRegistryImage(): Promise<string> {
   if (await registryHasTag(REGISTRY_MIRROR_TAG)) return registryRef(REGISTRY_MIRROR_TAG)
   throw missingPrebuiltImage('Registry', REGISTRY_MIRROR_TAG)
@@ -763,11 +572,8 @@ async function listNodeNames(): Promise<string[]> {
   return (list?.items ?? []).map((n) => n.metadata.name)
 }
 
-/**
- * Run a node-write pod to a terminal phase (`runPodToCompletion` owns the
- * delete-stray/apply/poll/cleanup shape) and require Succeeded; failures
- * carry the pod logs.
- */
+/** Run a node-write pod to completion; throws with its logs unless it
+ *  Succeeded. */
 async function runNodeWritePod(manifest: Record<string, unknown>): Promise<void> {
   const name = (manifest as { metadata: { name: string } }).metadata.name
   const { phase, logs } = await runPodToCompletion(manifest, { timeoutMs: 60_000, pollMs: 500 })
@@ -780,23 +586,9 @@ async function runNodeWritePod(manifest: Record<string, unknown>): Promise<void>
 }
 
 /**
- * Write the node containerd hosts.toml mapping the registry's svc-DNS host to
- * its live ClusterIP URL, so `kubectl run` of a pushed ref pulls straight from
- * the in-cluster registry. Written by a one-shot in-cluster pod, NOT
- * `podman exec <node>`: the server host's engine need not be the one hosting
- * the node, and node names need not be container names. The node is not a
- * cluster-DNS client, so it needs the IP here; hosts.toml is read per-pull
- * (no containerd restart) and is rewritten on every ensure, so the
- * allocator-assigned IP is always current. Must run after the Service is
- * applied and the Deployment rolled out (the rollout also guarantees the
- * writer pod's own image is already on the node).
- */
-/**
- * The registry Service's live ClusterIP, or null when it has none yet (or
- * the cluster is unreachable). The allocator assigns it and nothing ever
- * pins it, so every consumer that cannot use cluster DNS — the node's
- * containerd hosts.toml below, and the hostNetwork'd image-store builder —
- * has to read it fresh rather than remember one.
+ * The registry Service's ClusterIP, or null if none yet (or unreachable).
+ * Consumers without cluster DNS (node hosts.toml, the hostNetwork image-store
+ * builder) must read it fresh.
  */
 export async function projectRegistryClusterIp(projectId: string): Promise<string | null> {
   const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
@@ -805,14 +597,16 @@ export async function projectRegistryClusterIp(projectId: string): Promise<strin
   return svc?.spec?.clusterIP ?? null
 }
 
+/**
+ * Write every node's containerd hosts.toml mapping the registry's DNS name
+ * to its ClusterIP (nodes do not use cluster DNS). Read per pull, and
+ * rewritten on every ensure. Must run after the Deployment rolls out, which
+ * also puts the writer pod's image on the node.
+ */
 export async function writeNodeRegistryHostsToml(project: ProjectRef): Promise<void> {
   const vip = await projectRegistryClusterIp(project.id)
   if (!vip) throw new Error(`project registry Service ${projectRegistryName(project.id)} has no ClusterIP yet`)
-  // Reap stray writer/cleanup pods left by crashed runs (a daemon killed
-  // mid-poll never reaches runPodToCompletion's cleanup delete, and the
-  // per-run name suffix means no later namesake delete collects them).
-  // The node-write marker keeps the registry Deployment's pod out of the
-  // selector's reach.
+  // Remove one-shot pods left by crashed runs.
   await kubectlWithRetry([
     'delete', 'pod', '-l', `${registrySelector(project.id)},${LABEL_NODE_WRITE}`,
     '-n', k8sNamespace(), '--ignore-not-found',
@@ -828,20 +622,11 @@ export async function writeNodeRegistryHostsToml(project: ProjectRef): Promise<v
 const registryEnsureMutex = createKeyedMutex()
 
 /**
- * Idempotently stand up the project's registry (PVC + Deployment + Service
- * + the network policies + node hosts.toml) and wait for it to serve. Called from
- * workspace-create for every `nestedContainers` workspace — it is the bus the
- * cross-workspace image cache rides. The Service's ClusterIP is allocator-assigned and never
- * deleted, so `apply` is a no-op on it after first creation (the pin and its
- * immutable-field migration are gone).
- *
- * Serialized per project: concurrent creates on one project are routine
- * (a user create racing a prewarm spare spawn and queued yaac-mama
- * requests — all bursting on the first background tick after a daemon
- * start), and unserialized ensures would interleave the applies,
- * rollout waits, and node-write pod runs. The ensure is idempotent, so
- * the queued caller's turn is quick; different projects still ensure in
- * parallel.
+ * Create or update the project's registry (PVC, Deployment, Service,
+ * policies, node hosts.toml) and wait for it to serve. Called for every
+ * `nestedContainers` workspace; the cross-workspace image cache uses it.
+ * Serialized per project, since concurrent creates on one project are
+ * common.
  */
 export async function ensureProjectRegistry(project: ProjectRef): Promise<void> {
   await registryEnsureMutex(project.id, async () => {
@@ -849,8 +634,7 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
     const ns = k8sNamespace()
     const imageRef = await ensureRegistryImage()
 
-    // The claim first, so the Deployment's pod never spends the rollout
-    // wait Pending on a volume that does not exist yet.
+    // The claim before the Deployment that mounts it.
     await kubectlApply(buildProjectRegistryPvcManifest(project))
     await kubectlApply(buildProjectRegistryDeploymentManifest(project, imageRef))
     await kubectlApply(buildProjectRegistryServiceManifest(project))
@@ -862,11 +646,7 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
         'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
       ], { timeout: 130_000, maxAttempts: 2 })
     } catch (err) {
-      // Workspace create is where a storage misconfiguration surfaces first,
-      // and kubectl reports only a timeout. An unbindable claim — no default
-      // StorageClass, or an exhausted provisioner quota — presents as a
-      // Pending pod with no scheduling reason of its own, so the PVC has to
-      // be named alongside the pods for the diagnosis to be one command.
+      // kubectl only reports a timeout; point at the likely storage cause.
       throw new Error(
         `${err instanceof Error ? err.message : String(err)}\n`
         + `Inspect with \`kubectl -n ${ns} get pods,pvc -l ${registrySelector(project.id)}\` — `
@@ -878,22 +658,12 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
   })
 }
 
-/**
- * Tear down a project's registry objects — including the PVC its blobs live
- * on, which is what reclaims the storage — plus its node-side residue (the
- * hosts.toml dir) via one-shot cleanup pods. The delete selector includes
- * the install scope label so coexisting installs sharing a namespace never
- * delete each other's registries; `pod` is in the kinds so stray
- * writer/cleanup pods from crashed runs are reaped.
- */
+/** Delete a project's registry objects (PVC included) and each node's
+ *  hosts.toml dir. Scoped to this install. */
 export async function removeProjectRegistry(projectId: string): Promise<void> {
   const selector = registrySelector(projectId)
-  // Node-side residue exists only if the registry itself ever did (the
-  // hosts.toml dir is written by the hosts writer). Probe before deleting
-  // and skip the cleanup pods for registry-less projects: their cleanup pod
-  // can't even start — the mirror image was never pushed — so each one
-  // would sit Pending for runNodeWritePod's full 60s deadline, stalling
-  // every project remove.
+  // Skip the node cleanup if no registry ever existed; its pod could not
+  // start (no mirror image) and would stall the remove for 60s per node.
   const existing = await kubectlGetJson<{ items?: unknown[] }>([
     'get', 'deployment,service', '-l', selector, '-n', k8sNamespace(),
   ])
@@ -914,20 +684,14 @@ function registryIdLabels(projectId: string): Record<string, string> {
   }
 }
 
-/**
- * Delete every registry object `selector` matches, then — when `name` says
- * a Deployment or Service existed — the hosts.toml dir its writer left on
- * each node.
- */
+/** Delete the registry objects `selector` matches, then, if `name` is
+ *  set, its hosts.toml dir on each node. */
 async function removeRegistry(
   selector: string,
   name: string | null,
   cleanupLabels: Record<string, string>,
 ): Promise<void> {
-  // The PVC goes with the rest. Deleting it while the Deployment's pod
-  // still holds it is fine — pvc-protection keeps it Terminating until the
-  // last mounter is gone, and that mounter is being deleted in this same
-  // call.
+  // Deleting the PVC while mounted is fine; it waits for the pod to go.
   await kubectlWithRetry([
     'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod', '-l', selector,
     '-n', k8sNamespace(), '--ignore-not-found',
@@ -937,8 +701,7 @@ async function removeRegistry(
   const imageRef = registryRef(REGISTRY_MIRROR_TAG)
   const runId = crypto.randomBytes(4).toString('hex')
   for (const [i, node] of (await listNodeNames()).entries()) {
-    // Best-effort: the cluster may be recreated or unreachable, in which
-    // case the hosts.toml went with the node it was written on.
+    // Best-effort.
     await runNodeWritePod(buildRegistryCleanupPodManifest(name, cleanupLabels, imageRef, node, i, runId))
       .catch(() => { /* node-side residue is harmless */ })
   }
@@ -948,41 +711,22 @@ interface RawServiceList {
   items: Array<{ metadata: { labels?: Record<string, string>; creationTimestamp?: string } }>
 }
 
-/**
- * How often one project's registry is collected. Long on purpose: a pass
- * costs the registry a restart, and what it reclaims (the previous
- * generation of each rebuilt tag) accrues over hours, not minutes.
- */
+/** How often a project's registry is collected. Each pass restarts the
+ *  registry, and garbage accrues slowly. */
 export const REGISTRY_GC_INTERVAL_MS = 6 * 60 * 60_000
 
 /** Deadline for the collect run itself — it walks every blob in the store. */
 export const REGISTRY_GC_TIMEOUT_MS = 10 * 60_000
 
-/** Last collect per project id — module state, so a server restart just
- *  means a registry that is already older than the interval is eligible
- *  again on the next resync pass. */
+/** Last collect per project id (in memory). */
 const lastRegistryGcMs = new Map<string, number>()
 
 /**
- * When this project's registry last had nothing to collect: its previous
- * collect, or — for one this process has not collected yet — the moment
- * the Service came into being.
- *
- * The creation time is the load-bearing half. Garbage here is the
- * PREVIOUS generation of a rebuilt tag, so a registry accrues none until
- * something is rebuilt through it, and a registry younger than the
- * interval cannot have accrued a window's worth however busy it has been.
- * Without that baseline the throttle measures this process's uptime
- * instead, and an unseen project is eligible immediately — which puts a
- * maintenance window (two `Recreate` rollouts, a few seconds of connection
- * refusals each) on the registry a workspace create JUST stood up, at the
- * one moment the new workspace is pushing and pulling through it hardest.
- * The registry's own age is the honest measure, and it survives the server
- * restart the map does not: a registry that really is due is still due on
- * the first pass after one.
- *
- * A Service with no parseable creationTimestamp (nothing a real API server
- * returns) falls back to "eligible", the pre-baseline behavior.
+ * When the registry last had nothing to collect: its last collect, else the
+ * Service's creation time. Using creation time keeps a brand-new registry
+ * (busy with its first workspace) from getting a maintenance window right
+ * away, and survives server restarts. An unparseable timestamp counts as
+ * eligible.
  */
 function gcBaselineMs(projectId: string, creationTimestamp?: string): number {
   const collected = lastRegistryGcMs.get(projectId)
@@ -997,8 +741,7 @@ export function _resetRegistryGcForTests(): void {
   inFlightCollect = null
 }
 
-/** The collect running right now, if any. One at a time across the whole
- *  install: each holds a registry in maintenance mode for minutes. */
+/** The running collect, if any; one at a time per install. */
 let inFlightCollect: Promise<void> | null = null
 
 /** Test hook: await the detached collect this pass started. */
@@ -1007,33 +750,17 @@ export function _registryGcSettledForTests(): Promise<void> {
 }
 
 /**
- * Start a blob reclaim in ONE project registry.
+ * Start a blob collect in one due project registry, detached (it takes
+ * minutes and would stall the reconcile loop).
  *
- * `registry garbage-collect` is only safe when nothing can be pushing: a
- * push that has uploaded blobs but not yet its manifest looks exactly like
- * garbage, so a concurrent push can have its layers deleted underneath it.
- * Upstream's answer is "read-only mode, or not running at all" — and NOT
- * RUNNING is not an option here, because an active project's workspace count
- * never reaches zero, so a collect gated on idleness would never run for
- * the registries that actually grow.
+ * Garbage collection is unsafe during a push (uploaded blobs without a
+ * manifest look like garbage), and active registries are never idle. So the
+ * registry is rolled into read-only mode: pulls keep working, and pushes or
+ * deletes get 405 and are retried next cycle. It costs two `Recreate`
+ * rollouts, a few seconds of downtime each.
  *
- * The collect therefore takes a MAINTENANCE WINDOW: the Deployment is
- * rolled with read-only maintenance on, which keeps pulls and the catalog
- * serving while pushes and deletes answer 405 (verified against this pin).
- * A salvage push or retire that lands in the window fails best-effort and
- * is retried on its next cycle — the ledger and the retired-shape memo
- * only record what actually succeeded — while pulls, which a live workspace
- * and its synced pods depend on, never stop working. The cost is two
- * `Recreate` rollouts: a few seconds of unavailability at each edge.
- *
- * DETACHED, one project per pass, never two at once: a collect is two
- * rollouts plus a pod run — minutes — and reconcile steps run
- * sequentially, so awaiting it here would stall every later step and every
- * later tick behind it (the same reason the image-salvage step detaches).
- *
- * Only a live project's registry is collected. A dead one is the orphan
- * sweep's to remove, and a collect racing that removal would re-apply the
- * Deployment in its `finally`, standing it back up with no PVC behind it.
+ * Only live projects are collected; the orphan sweep removes dead ones, and
+ * a collect's `finally` would otherwise recreate a removed Deployment.
  */
 export async function reconcileProjectRegistryGc(
   liveProjectIds: ReadonlySet<string>,
@@ -1066,13 +793,8 @@ export async function reconcileProjectRegistryGc(
   }
 }
 
-/**
- * The collect itself, under the project's ensure mutex. That mutex is what
- * makes a workspace create safe against a running collect — and also the one
- * place a create can wait on one: worst case it blocks for the two
- * rollouts plus REGISTRY_GC_TIMEOUT_MS. At the 6h cadence that is rare,
- * but it is where the latency comes from.
- */
+/** The collect, under the project's ensure mutex, so a workspace create
+ *  waits for it (at worst two rollouts plus REGISTRY_GC_TIMEOUT_MS). */
 async function collectProjectRegistry(project: ProjectRef): Promise<void> {
   await registryEnsureMutex(project.id, async () => {
     const name = projectRegistryName(project.id)
@@ -1088,10 +810,7 @@ async function collectProjectRegistry(project: ProjectRef): Promise<void> {
 
     await roll(true)
     try {
-      // The collect pod names no node: it mounts the same PVC the registry
-      // does, and the bound volume's affinity is what lands it beside the
-      // pod that just rolled out. The read-only rollout above is also what
-      // guarantees the claim exists by here.
+      // Scheduled beside the registry pod by its podAffinity.
       const runId = crypto.randomBytes(4).toString('hex')
       const { phase, logs } = await runPodToCompletion(
         buildRegistryGcPodManifest(project, imageRef, runId),
@@ -1103,8 +822,7 @@ async function collectProjectRegistry(project: ProjectRef): Promise<void> {
       }
       serverLog(`[server] registry gc: project=${project.slug} ${logs.trim().split('\n').pop() ?? ''}`)
     } finally {
-      // Unconditional: a failed collect must never strand the registry in
-      // maintenance mode, where every salvage push would answer 405.
+      // Always restore, so a failed collect never leaves it read-only.
       await roll(false).catch((err: unknown) => {
         console.warn(`Registry GC: failed to restore ${project.slug} to serving: ${String(err)}`)
       })
@@ -1112,12 +830,9 @@ async function collectProjectRegistry(project: ProjectRef): Promise<void> {
   })
 }
 
-/**
- * How old a registry object must be before the orphan sweep may take it. A
- * pass reads the live project set once, at its start, so a project added
- * after that read whose first nested workspace stands its registry up
- * within the same pass would otherwise look like an orphan.
- */
+/** Minimum age before the orphan sweep removes a registry object, so a
+ *  project added after the pass read its live set is not mistaken for an
+ *  orphan. */
 export const ORPHAN_REGISTRY_MIN_AGE_MS = 10 * 60_000
 
 /** How often the orphan sweep runs per server life. */
@@ -1138,17 +853,11 @@ interface RawRegistryObjectList {
 }
 
 /**
- * Remove this install's registries that belong to no live project: those
- * whose `yaac.project-id` is not in `liveProjectIds`, and those with no id
- * at all, which predate project ids and so belong to nothing. Keyed on the
- * id rather than on anything a removal leaves behind, so it collects every
- * removal that failed (a cluster unreachable at `project remove`) as well
- * as the slug-named registries an upgrade leaves — permanent, not a shim.
- *
- * Listed across the object kinds a registry is made of, so one whose ensure
- * died before its Service was applied still goes. An object with no id is
- * grouped with its siblings by slug, excluding every id-labelled object:
- * a live project of the same slug holds a registry of its own.
+ * Remove this install's registries belonging to no live project: an id not
+ * in `liveProjectIds`, or no id at all (legacy slug-named registries). Keyed
+ * on ids, so it also catches failed removals. Lists every object kind, so a
+ * partially created registry still goes. Id-less objects are grouped by
+ * slug, excluding id-labelled ones.
  */
 export async function gcOrphanProjectRegistries(
   liveProjectIds: ReadonlySet<string>,
@@ -1166,15 +875,14 @@ export async function gcOrphanProjectRegistries(
     console.warn(`Orphan registry GC: failed to list registries: ${(err as Error).message}`)
     return
   }
-  // selector → the Deployment/Service name, when one exists (it names the
-  // node-side hosts.toml dir the cleanup pods remove), and the labels those
-  // pods carry.
+  // selector → Deployment/Service name (for the hosts.toml cleanup) and
+  // the cleanup pods' labels.
   const orphans = new Map<string, { name: string | null; labels: Record<string, string> }>()
   for (const { kind, metadata } of list?.items ?? []) {
     const labels = metadata.labels ?? {}
     const id = labels[LABEL_PROJECT_ID]
     if (id !== undefined && liveProjectIds.has(id)) continue
-    // Fails closed: an object whose age cannot be read is never old enough.
+    // An unreadable age is never old enough.
     const created = Date.parse(metadata.creationTimestamp ?? '')
     if (Number.isNaN(created) || now - created < ORPHAN_REGISTRY_MIN_AGE_MS) continue
     const slug = labels[LABEL_PROJECT]

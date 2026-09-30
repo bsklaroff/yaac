@@ -1,20 +1,14 @@
 /**
- * The node-local image store, exercised through its four barrel entries.
+ * The node-local image store, through its four barrel functions.
  *
- * Two things have to hold, and they are checked at the two ends the store
- * has. The POD is what the server hands the cluster — a node-pinned,
- * hostNetwork'd, deliberately un-privileged runc pod with the generation
- * parent mounted rw — and the SCRIPT is what actually decides a
- * generation's contents. So the script is not string-matched: it is run,
- * for real, against a stub project registry laid out as the files its
- * `curl` would fetch and a stub `podman` that records what it was asked to
- * pull. What that run proves is the ranking (which of a repo's generations
- * are worth a node's disk), the publish order (nothing is mountable until
- * the DONE marker), and the generation GC.
+ * The pod manifest is asserted directly (node-pinned, host network,
+ * unprivileged runc, store dir mounted rw). The build script is run for real
+ * against a stub registry (files its `curl` fetches) and a stub `podman` that
+ * records pulls. That checks generation ranking, publish order (nothing is
+ * mountable before the DONE marker) and generation GC.
  *
- * The mount side is driven off a real data dir, because the whole contract
- * of {@link nodeImageStoreMount} is "what does the server see on disk" —
- * a complete generation, an interrupted one, and none at all.
+ * {@link nodeImageStoreMount} reads a real data dir: a complete generation,
+ * an interrupted one, and none at all.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
@@ -49,7 +43,7 @@ import {
   reconcileNodeImageStores,
   removeNodeLocalProject,
 } from '#drivers/k8s/images'
-// Setup values and the reset hook — not a second surface under test.
+// Setup values and state reset, not units under test.
 import {
   DONE_MARKER,
   SHARED_IMAGES_MOUNT,
@@ -102,7 +96,6 @@ function stageLiveCluster(opts: { podVolumes?: unknown[] } = {}): void {
     if (args[1] === 'pods' && args.includes('-l')) {
       return Promise.resolve({ items: [{ spec: { volumes: opts.podVolumes ?? [] } }] })
     }
-    // runPodToCompletion's phase poll.
     return Promise.resolve({ status: { phase: 'Succeeded' } })
   })
 }
@@ -137,15 +130,12 @@ function podCommand(i = 0): { script: string; argv: string[] } {
 
 const GENERATIONS = { old: 'f'.repeat(16), mid: 'a'.repeat(16), new: '0123456789abcdef' }
 
-/** tag -> the image config's `created`, or null for a tag with no
- *  generation to it (a chain slot, a hand-written name). */
+/** tag -> the image config's `created`, or null for a tag with no config blob. */
 type RepoFixture = Record<string, string | null>
 
 /**
- * A stub project registry the real build script can be pointed at, laid
- * out as the files its `curl` calls would fetch. Repos are listed
- * oldest-generation-first so catalog order cannot be what produces a
- * correct answer either.
+ * A stub project registry for the real build script. Tags are listed
+ * oldest first, so listing order cannot produce the right answer by luck.
  */
 const CATALOG: Record<string, RepoFixture> = {
   'yaac-tools': {
@@ -155,30 +145,27 @@ const CATALOG: Record<string, RepoFixture> = {
     [`${CACHE_TAG_PREFIX}${GENERATIONS.old}-1`]: null,
     [`${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`]: null,
   },
-  // The push-prefixed form of a yaac repo. Salvage no longer mints these,
-  // but a registry written before that still carries them until the GC
-  // sweeps the legacy subtree — and until then they are generations like
-  // any other.
+  // The `localhost/`-prefixed form of a yaac repo, which older registries
+  // may still hold until the GC removes it. Its tags count as generations.
   'localhost/yaac-base': {
     [GENERATIONS.old]: '2026-01-02T00:00:00Z',
     [GENERATIONS.mid]: '2026-02-02T00:00:00Z',
     [GENERATIONS.new]: '2026-03-02T00:00:00Z',
   },
-  // Newest generation's config will not scrape (no blob written for it).
+  // The newest generation's config blob is missing.
   'yaac-flaky': {
     [GENERATIONS.old]: '2026-01-03T00:00:00Z',
     [GENERATIONS.mid]: '2026-02-03T00:00:00Z',
     [GENERATIONS.new]: null,
   },
-  // Three generations built in the same instant — nothing to rank by.
+  // Three generations with the same timestamp.
   'yaac-tied': {
     [GENERATIONS.old]: '2026-04-01T00:00:00Z',
     [GENERATIONS.mid]: '2026-04-01T00:00:00Z',
     [GENERATIONS.new]: '2026-04-01T00:00:00Z',
   },
   'podman-stable': { v5: null },
-  // A session's OWN repo that happens to tag by short commit sha — the
-  // content-hash shape without being yaac's chain.
+  // A user repo whose tags look like content hashes but are not yaac's.
   myapp: {
     [GENERATIONS.old]: '2026-05-01T00:00:00Z',
     [GENERATIONS.mid]: '2026-05-02T00:00:00Z',
@@ -201,13 +188,10 @@ interface ScriptRun {
 }
 
 /**
- * Run the REAL build script against CATALOG in a scratch store root, with
- * `podman` stubbed at the process boundary: a `pull` records its ref and
- * materializes just enough of a containers/storage layout (an `overlay`
- * tree and a `layers.json` carrying diff sizes) for the post-passes to run
- * for real. Everything else in the script — the hardlink seed, the ranking,
- * the opaque rewrite, the metadata assertion, the publish, the GC — is the
- * shipped code.
+ * Run the real build script against CATALOG in a scratch store root. The
+ * `podman` stub records each pull and creates just enough containers/storage
+ * layout (an `overlay` tree and `layers.json`) for the later steps to run.
+ * Everything else in the script is the shipped code.
  */
 async function runStoreWriterScript(
   script: string,
@@ -236,8 +220,7 @@ async function runStoreWriterScript(
         layers: [{ digest: `sha256:${'e'.repeat(64)}`, size: 1024 }],
       }))
       if (created === null) continue
-      // A real config carries `created` twice over — once at top level and
-      // once per history entry. The scrape must not depend on which.
+      // A real config has `created` at top level and in each history entry.
       await put(`v2/${repo}/blobs/${cfg}`, JSON.stringify({
         created,
         history: [{ created: '2020-01-01T00:00:00Z' }, { created }],
@@ -255,10 +238,9 @@ async function runStoreWriterScript(
   ].join('\n'))
   const layersJson = JSON.stringify(opts.layers ?? [{ id: 'l1', 'diff-size': 4096 }])
 
-  // A REAL two-layer overlay layout for the opaque pass to work on: a lower
-  // holding `app/{gone.txt,src/old.js}`, and an upper that REPLACES `app`
-  // (the opaque xattr) with `app/src/new.js`. The shared `src` is the whole
-  // point — a first-level-only rewrite leaves `old.js` merged in.
+  // A two-layer overlay layout: a lower with `app/{gone.txt,src/old.js}`
+  // and an upper that replaces `app` (opaque xattr) with `app/src/new.js`.
+  // The shared `src` catches a rewrite that only handles the first level.
   const fixture = path.join(dir, 'fixture.py')
   await fs.writeFile(fixture, [
     'import os, sys',
@@ -275,13 +257,11 @@ async function runStoreWriterScript(
     "link = os.path.join(ovl, 'l', 'LOWLINK')",
     "os.path.islink(link) or os.symlink('../LOW/diff', link)",
     `open(os.path.join(ovl, 'UP', 'lower'), 'w').write('${opts.breakLowerChain ? 'l/MISSING' : 'l/LOWLINK'}')`,
-    // The store builder runs unprivileged, so this is the namespace
-    // containers/storage itself picks there (see the module doc).
+    // Unprivileged containers/storage uses the `user.` xattr namespace.
     "os.setxattr(os.path.join(up, 'app'), 'user.overlay.opaque', b'y')",
   ].join('\n'))
 
   await stub('podman', [
-    // The graphroot comes from the storage.conf the script wrote.
     `g=$(sed -n 's/^graphroot = "\\(.*\\)"$/\\1/p' "\${CONTAINERS_STORAGE_CONF:-/dev/null}")`,
     'case "$1" in',
     `  pull) shift; for a in "$@"; do case "$a" in -*) ;; *) echo "$a" >> "${pullLog}";; esac; done`,
@@ -293,11 +273,9 @@ async function runStoreWriterScript(
     'exit 0',
   ].join('\n'))
 
-  // The one thing this environment genuinely cannot do: `mknod` of a
-  // character device needs CAP_MKNOD, which the test user does not have.
-  // Stubbing it at the interpreter boundary keeps the shipped pass running
-  // for real — it still decides WHICH whiteouts to make, which is the part
-  // that has been wrong before — and its own report is what is asserted.
+  // `mknod` of a character device needs CAP_MKNOD, which the test user
+  // lacks, so it is stubbed inside python. The shipped code still decides
+  // which whiteouts to make, and its report is asserted.
   const realPython = (await execFileAsync('sh', ['-c', 'command -v python3'])).stdout.trim()
   await stub('python3', [
     'if [ "$1" = "-" ]; then',
@@ -342,26 +320,24 @@ describe('ensureNodeImageStore', () => {
     const [pod] = appliedPods()
     expect(pod.kind).toBe('Pod')
     expect(pod.spec.nodeName).toBe(NODE)
-    // In the host netns the pod IS the node, which is what the project
-    // registry's ingress already admits — so there is no NetworkPolicy to
-    // add on either side, and the registry has to be named by ClusterIP
-    // because the node is not a cluster-DNS client.
+    // On the host network the pod counts as the node, which the registry's
+    // ingress already admits. The node has no cluster DNS, so the registry
+    // is named by ClusterIP.
     expect(pod.spec.hostNetwork).toBe(true)
     expect(podCommand().script).toContain(`REG=${CLUSTER_IP}:5000`)
-    // Trusted infra: runc (no RuntimeClass), and tolerating everything
-    // because `nodeName` bypasses the scheduler but not kubelet admission.
+    // Trusted infra on runc. Tolerates everything, since `nodeName` skips
+    // the scheduler but not taint eviction.
     expect(pod.spec.runtimeClassName).toBeUndefined()
     expect(pod.spec.tolerations).toEqual([{ operator: 'Exists' }])
-    // Deliberately un-privileged: a pull needs no CAP_SYS_ADMIN, and
-    // withholding it is what makes containers/storage record opaque dirs
-    // in the `user.` xattr namespace the rewrite pass can read back.
+    // Unprivileged: a pull needs no CAP_SYS_ADMIN, and without it
+    // containers/storage records opaque dirs in `user.` xattrs, which the
+    // rewrite pass reads.
     const ctr = pod.spec.containers[0]
     expect(ctr.securityContext).toEqual({ runAsUser: 0 })
     expect(JSON.stringify(pod)).not.toContain('SYS_ADMIN')
     expect(JSON.stringify(pod)).not.toContain('privileged')
-    // The generation parent, rw, at the path the script is handed as argv
-    // — the NODE's path for it, under this install's node-local tree, not
-    // the server-side spelling.
+    // The store dir, rw, using the node's path under this install's
+    // node-local tree, not the server's.
     expect(pod.spec.volumes).toEqual([{
       name: 'store',
       hostPath: { path: nodeLocalHostPath(imageStoreDir(ID)), type: 'DirectoryOrCreate' },
@@ -395,44 +371,37 @@ describe('ensureNodeImageStore', () => {
 
     const gen = (repo: string, which: keyof typeof GENERATIONS) =>
       `${CLUSTER_IP}:5000/${repo}:${GENERATIONS[which]}`
-    // Newest two of each yaac repo, and their chain slots with them.
+    // The newest two of each yaac repo, with their chain slots.
     expect(pulled).toContain(gen('yaac-tools', 'new'))
     expect(pulled).toContain(gen('yaac-tools', 'mid'))
     expect(pulled).toContain(`${CLUSTER_IP}:5000/yaac-tools:${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`)
-    // Same for the push-prefixed form of a yaac repo, which the guard has
-    // to recognize or a real registry's copies go unranked.
+    // The same for the `localhost/`-prefixed form.
     expect(pulled).toContain(gen('localhost/yaac-base', 'new'))
     expect(pulled).toContain(gen('localhost/yaac-base', 'mid'))
-    // The retired generation is not pulled, and neither are the
-    // intermediates that only ever cache-hit against it.
+    // Not the oldest generation, nor its chain slots.
     expect(pulled).not.toContain(gen('yaac-tools', 'old'))
     expect(pulled).not.toContain(gen('localhost/yaac-base', 'old'))
     expect(pulled.some((r) => r.includes(`${CACHE_TAG_PREFIX}${GENERATIONS.old}`))).toBe(false)
-    // yaac-flaky's newest generation has no readable config. It is kept
-    // anyway and the OLDEST readable one gives up the slot: one transient
-    // fetch failure must not cost the node the generation its next build
-    // would have cache-hit.
+    // yaac-flaky's newest config is unreadable, but it is kept and the
+    // oldest is dropped, so a transient fetch failure does not lose the
+    // generation the next build would use.
     expect(pulled).toContain(gen('yaac-flaky', 'new'))
     expect(pulled).toContain(gen('yaac-flaky', 'mid'))
     expect(pulled).not.toContain(gen('yaac-flaky', 'old'))
-    // A hand-written tag is not a generation: the upstream mirror comes
-    // back whole, chain slots included. Nor is a content-hash-SHAPED tag on
-    // a repo that is not yaac's chain — ranking mirrors the registry
-    // retention pass on both halves of its guard.
+    // Hand-written tags and non-yaac repos are not ranked, matching the
+    // registry retention pass, so they are pulled in full.
     expect(pulled).toContain(`${CLUSTER_IP}:5000/podman-stable:v5`)
     expect(pulled).toContain(`${CLUSTER_IP}:5000/myapp:v1`)
     expect(pulled).toContain(`${CLUSTER_IP}:5000/myapp:${CACHE_TAG_PREFIX}v1-1`)
     expect(pulled).toContain(gen('myapp', 'old'))
-    // Named before chain, so the image a workspace refers to is warmed
-    // before the intermediates that only accelerate a rebuild.
+    // Named images before chain slots, so what a workspace uses is warmed
+    // first.
     expect(pulled.indexOf(gen('yaac-tools', 'new')))
       .toBeLessThan(pulled.indexOf(`${CLUSTER_IP}:5000/yaac-tools:${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`))
     expect(published).toBe(true)
 
-    // yaac-tied's three generations carry the same timestamp, so there is
-    // nothing to rank by. Which two survive is arbitrary; that it is always
-    // the same two, and always two, is not — an unstable tie-break would
-    // churn a node's store on every build for no gain.
+    // Tied timestamps: which two survive is arbitrary but must be stable,
+    // or every build would churn the store.
     const tied = (rs: string[]) => rs.filter((r) => r.startsWith(`${CLUSTER_IP}:5000/yaac-tied:`))
     expect(tied(pulled)).toHaveLength(CACHED_GENERATIONS_KEPT)
     const again = await runStoreWriterScript(
@@ -447,13 +416,9 @@ describe('ensureNodeImageStore', () => {
     const { whiteouts, published } = await runStoreWriterScript(
       podCommand().script, storeRoot, [], { overlay: true })
 
-    // Opacity hides the lower directory AND everything under it. The
-    // shared `src` is the trap: whiting out only the top level leaves it a
-    // live merge point, so `old.js` reappears inside a directory the image
-    // replaced wholesale — an image that is silently wrong while its id,
-    // its digests and `image ls` all look perfect.
+    // An opaque dir hides everything below it. Whiting out only the top
+    // level would leave `src` merged, and `old.js` would silently reappear.
     expect(whiteouts).toEqual(['app/gone.txt', 'app/src/old.js'])
-    // ...and nothing outside the replaced directory is touched.
     expect(whiteouts).not.toContain('untouched.txt')
     expect(published).toBe(true)
   })
@@ -462,10 +427,9 @@ describe('ensureNodeImageStore', () => {
     stageLiveCluster()
     await ensureNodeImageStore(PROJECT)
     const storeRoot = await fs.mkdtemp(path.join(tmpDataDir, 'store-'))
-    // A `lower` file naming a link that does not resolve. Fail-open here
-    // would shrink the whiteout set and then hardlink that hole into every
-    // later generation via the per-layer marker, so the build has to die
-    // instead and leave the last good generation mounted.
+    // A `lower` link that does not resolve. Continuing would miss whiteouts
+    // and carry the mistake into later generations, so the build fails and
+    // the last good generation stays mounted.
     await expect(runStoreWriterScript(podCommand().script, storeRoot, [], {
       overlay: true,
       breakLowerChain: true,
@@ -477,9 +441,8 @@ describe('ensureNodeImageStore', () => {
 
   it('drops the generations nothing can be holding, and keeps the one a create may just have read', async () => {
     const storeRoot = await fs.mkdtemp(path.join(tmpDataDir, 'store-'))
-    // Three predecessors: an old complete one nothing references, the
-    // NEWEST complete one (what a create would have pinned), and one a
-    // crashed build left without a DONE marker.
+    // An old complete generation, the newest complete one (which a create
+    // may have pinned), and one a crashed build left without a DONE marker.
     const [superseded, newest, partial] = [generationName(1), generationName(2), generationName(3)]
     for (const g of [superseded, newest, partial]) await fs.mkdir(path.join(storeRoot, g))
     for (const g of [superseded, newest]) {
@@ -488,11 +451,8 @@ describe('ensureNodeImageStore', () => {
 
     stageLiveCluster()
     await ensureNodeImageStore(PROJECT)
-    // Deliberately an EMPTY keep list: no pod had been created when the
-    // server computed it. The newest complete generation must survive
-    // anyway — a create reads it and fires this build, so a pod can appear
-    // between the two, and dropping it would empty a running engine's
-    // store. One build cycle later that pod is in the live set.
+    // An empty keep list: a create may have picked the newest generation
+    // before its pod existed, so that generation must survive anyway.
     const { generations, published, stdout } = await runStoreWriterScript(
       podCommand().script, storeRoot, [])
     expect(published).toBe(true)
@@ -501,9 +461,8 @@ describe('ensureNodeImageStore', () => {
     expect(generations).not.toContain(partial)
     expect(stdout).toContain('store-generations kept 2 dropped 2')
 
-    // A layer without a recorded diff size would make `podman images`
-    // decompress its tar-split — ruinous over the gofer — so the build
-    // fails before the marker, leaving the last good generation mounted.
+    // A layer without a recorded diff size makes `podman images` decompress
+    // it (very slow under gVisor), so the build fails before the marker.
     _resetImageStoreForTests()
     mockApply.mockClear()
     await ensureNodeImageStore(PROJECT)
@@ -522,11 +481,9 @@ describe('ensureNodeImageStore', () => {
     const t0 = 1_000_000
     await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 })).resolves.toBe(true)
     await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 + 1000 })).resolves.toBe(false)
-    // A push into the registry is the one moment there is new content, so
-    // it is worth a build regardless of when the last one ran.
+    // A push means new content, so it forces a build.
     await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 + 1000, force: true })).resolves.toBe(true)
-    // The forced build reset the clock like any other, so the next
-    // unforced one waits a full interval from IT.
+    // The forced build resets the interval.
     await expect(
       ensureNodeImageStore(PROJECT, { nowMs: t0 + 1000 + STORE_REFRESH_INTERVAL_MS - 1 }),
     ).resolves.toBe(false)
@@ -535,8 +492,7 @@ describe('ensureNodeImageStore', () => {
     ).resolves.toBe(true)
   })
 
-  // The stray sweep runs before every build, so a run whose server died
-  // mid-poll cannot leave a pod behind that a later namesake never collects.
+  // Leftover pods from a crashed run are swept before every build.
   it('sweeps strays from a crashed run before building', async () => {
     stageLiveCluster()
     await ensureNodeImageStore(PROJECT)
@@ -557,10 +513,8 @@ describe('ensureNodeImageStore', () => {
   })
 
   it('retries a failed build on the short backoff, not the full interval', async () => {
-    // A build that publishes nothing is nearly always transient — the
-    // commonest cause is racing the registry's own maintenance rollout, a
-    // few seconds — so it must not leave the project a generation behind
-    // for the whole interval.
+    // A failed build is usually transient (often a registry rollout), so
+    // it retries soon rather than after a full interval.
     mockGetJson.mockImplementation(() => Promise.resolve(null))
     const t0 = 1_000_000
     await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 })).resolves.toBe(false)
@@ -581,8 +535,7 @@ describe('nodeImageStoreMount', () => {
     for (const g of [older, newer, partial]) await fs.mkdir(path.join(parent, g), { recursive: true })
     for (const g of [older, newer]) await fs.writeFile(path.join(parent, g, DONE_MARKER), 'x')
 
-    // `partial` sorts newest but has no marker: a build that crashed
-    // mid-pull must never become a workspace's store.
+    // `partial` is newest but has no marker, so it is never used.
     await expect(nodeImageStoreMount(ID)).resolves.toEqual({
       source: { kind: 'hostPath', path: path.join(parent, newer), type: 'DirectoryOrCreate' },
       mountPath: SHARED_IMAGES_MOUNT,
@@ -602,7 +555,7 @@ describe('reconcileNodeImageStores', () => {
     stageLiveCluster()
     const other = { slug: 'other', id: '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9' }
     reconcileNodeImageStores([PROJECT, other])
-    // Detached: the sweep returns before any pod has been applied.
+    // Not awaited: it returns before any pod is applied.
     expect(appliedPods()).toHaveLength(0)
     await vi.waitFor(() => expect(appliedPods()).toHaveLength(2))
     const ids = appliedPods().map((p) => p.metadata.labels['yaac.project-id'])
@@ -616,9 +569,8 @@ describe('removeNodeLocalProject', () => {
     await removeNodeLocalProject(ID)
     const [pod] = appliedPods()
     expect(pod.spec.nodeName).toBe(NODE)
-    // The install's node root is mounted, so both trees can go in one
-    // pass — the server's uid cannot remove the root-owned store itself,
-    // and the project tree may be on a node its filesystem never sees.
+    // The server cannot remove the root-owned store, and the project tree
+    // may be on another node, so a pod removes both.
     expect(pod.spec.volumes[0].hostPath?.path).toBe(nodeLocalNodePath())
     expect(pod.spec.containers[0].command[2])
       .toBe(`rm -rf "/node/shared-images/${ID}" "/node/projects/${ID}"`)

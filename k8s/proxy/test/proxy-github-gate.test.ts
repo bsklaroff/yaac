@@ -3,16 +3,13 @@ import type http from 'node:http'
 
 /**
  * Tests for the proxy's placeholder-gated GitHub CLI (`gh`) credential
- * injection. Mirrors the relevant slice of `buildDynamicRules` /
- * `resolveGithubApiTokenForWorkspace` in k8s/proxy/proxy.ts — the proxy runs in
- * its own container and can't be imported directly, so we copy the logic
- * under test.
+ * injection, mirrored from `buildDynamicRules` /
+ * `resolveGithubApiTokenForWorkspace` in k8s/proxy/proxy.ts (which can't be
+ * imported).
  *
- * `gh` reads GH_TOKEN (seeded with the placeholder) and sends it to the GitHub
- * API host. Injection fires only when the workspace has a github.com HTTPS git
- * credential AND the inbound Authorization header carries the placeholder
- * sentinel; the real token is swapped in while preserving gh's auth scheme
- * (`token ` or `Bearer `). Every other combination passes through unchanged.
+ * Injection fires only when the workspace has a github.com HTTPS git
+ * credential and the Authorization header carries the placeholder. The real
+ * token keeps gh's auth scheme (`token ` or `Bearer `).
  */
 
 const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'

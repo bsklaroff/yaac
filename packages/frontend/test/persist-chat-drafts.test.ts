@@ -8,11 +8,8 @@ import {
 } from '#lib/store'
 
 /**
- * Half-typed ACP messages outlive their pane, which is torn down every time it
- * goes off-screen. This covers the two ways that can go wrong: the map growing
- * forever as workspaces come and go, and a reload finding garbage where a draft
- * should be — plus the `sent` marker, which is what lets a restored draft be
- * told apart from a message that was already delivered.
+ * Chat drafts saved in the store: pruning drafts of removed workspaces,
+ * loading only valid ones after a reload, and the `sent` marker.
  */
 
 // Minimal localStorage stand-in for the node test environment.
@@ -69,8 +66,7 @@ describe('chat-draft persistence', () => {
   })
 
   it('keeps an oversized paste in memory but out of localStorage', () => {
-    // One giant draft must not exhaust the quota and take the other keys'
-    // writes down with it — the whole map is one JSON blob.
+    // A huge draft isn't saved, so it can't exhaust the quota.
     const huge = 'x'.repeat(64 * 1024 + 1)
     persistChatDrafts({ 'w1|acp-1': { text: huge }, 'w2|acp-1': { text: 'small' } })
     expect(loadChatDrafts()).toEqual({ 'w2|acp-1': { text: 'small' } })
@@ -103,15 +99,14 @@ describe('chat-draft persistence', () => {
     expect(useUiStore.getState().chatDrafts).toEqual({
       [chatDraftKey('w1', 'acp-1')]: { text: 'ship it', sent: 'ship it' },
     })
-    // The echo settles both: nothing typed, nothing in flight, no key.
+    // With nothing typed and nothing in flight, the key is removed.
     setChatDraft('w1', 'acp-1', '')
     setChatSent('w1', 'acp-1', undefined)
     expect(useUiStore.getState().chatDrafts).toEqual({})
   })
 
   it('drops the marker when the text is edited', () => {
-    // Whatever is in the box now is new work — it is no longer the message
-    // that went to the socket, so it must not be mistaken for it later.
+    // New text drops the `sent` marker.
     const { setChatDraft, setChatSent } = useUiStore.getState()
     setChatDraft('w1', 'acp-1', 'ok')
     setChatSent('w1', 'acp-1', 'ok')
@@ -122,9 +117,7 @@ describe('chat-draft persistence', () => {
   })
 
   it('settles the marker when the box is emptied, leaving no key', () => {
-    // The box only empties through the echo, which is the same moment the
-    // marker stops meaning anything — so the whole entry goes, rather than a
-    // marker outliving the text it described.
+    // Emptying the box removes the whole entry, marker included.
     const { setChatDraft, setChatSent } = useUiStore.getState()
     setChatDraft('w1', 'acp-1', 'ok')
     setChatSent('w1', 'acp-1', 'ok')

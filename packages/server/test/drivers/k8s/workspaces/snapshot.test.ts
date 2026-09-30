@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-// The substrate's listings are the boundary: the pass memo and the
-// pod-to-handle mapping above them run for real.
+// Mock only the substrate's listings; everything above them runs for real.
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
   listWorkspacePods: vi.fn(),
@@ -55,8 +54,7 @@ describe('createRuntimeSnapshot', () => {
     expect(mockJobs).toHaveBeenCalledTimes(1)
   })
 
-  // A destructive caller relies on "could not see" never reading as
-  // "nothing is there".
+  // Destructive callers must not mistake a failed listing for an empty one.
   it('rejects rather than resolving empty when a listing fails', async () => {
     mockJobs.mockRejectedValue(new Error('apiserver down'))
 

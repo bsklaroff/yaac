@@ -1,37 +1,33 @@
 /*
- * Verifies a freshly attached session terminal starts with the agent's
- * bottom line visible and that typing reveals nothing new. The bug this
- * guards against ("sessions — especially prewarmed ones — start ever so
- * slightly scrolled down; the bottom line appears when you type"): the old
- * attach shape created the view session *attached*, so the shared window
- * resized twice (client rows-1 with the default status bar, then client
- * rows after `status off`); tmux's shrink discards the row below the
- * agent's cursor (Claude's bottom hint line) and the grow restores a
- * history line at the top instead, shifting the screen down a row — healed
- * only if the agent notices a net size change and repaints. Fixed in
- * pty-bridge attachArgs (detached create, status off first, then attach).
+ * Verifies that a freshly attached session terminal starts with the agent's
+ * bottom line visible, and that a keypress reveals nothing new.
  *
- * Note the xterm layer can't be the culprit: the tmux client holds the
- * alternate screen buffer for the whole attach, so viewportY === baseY === 0
- * always (also asserted here). This reads Terminal objects via the
- * window.__xterms hook SessionTerminal exposes (xterm 6 mirrors no scroll
- * state into the DOM). Per trial it opens the webapp on the session (deep
- * link via ?project=&session=), rAF-samples opacity + viewportY/baseY, logs
- * /pty/attach WS binary frames, captures the last buffer rows before and
- * after a keypress, and fails if the keypress changes them. Between trials
- * the tmux window is resized back to the oversized 500x200 (kubectl exec)
- * so every attach replays the prewarmed-style shrink of a painted screen.
+ * The bug: if the view session is created already attached, the shared
+ * tmux window resizes twice (rows-1 with the status bar, then rows after
+ * `status off`). The shrink drops the row below the agent's cursor (Claude's
+ * hint line) and the grow restores a history line at the top instead, so the
+ * screen sits one row low until the agent repaints. attachArgs in
+ * pty-bridge.ts avoids this: create detached, turn status off, then attach.
+ *
+ * xterm itself can't cause this: the tmux client keeps the alternate buffer
+ * for the whole attach, so viewportY === baseY === 0 (also asserted). The
+ * script reads Terminal objects via the window.__xterms test hook, since
+ * xterm 6 does not mirror scroll state into the DOM.
+ *
+ * Each trial opens the webapp on the session (?project=&session=), samples
+ * opacity and viewportY/baseY every animation frame, logs /pty/attach WS
+ * frames, and compares the bottom buffer rows before and after a keypress.
+ * Between trials the tmux window is resized back to 500x200 (kubectl exec)
+ * so each attach replays the prewarm-style shrink.
  *
  * Run: node test-playwright-scripts/xterm-attach-scroll-pin-test.js <sessionId>|claim [trials] [dpr] [viewportWxH]
  * e.g. node test-playwright-scripts/xterm-attach-scroll-pin-test.js <id> 5 2 900x520
- * With `claim`, each trial claims a prewarmed spare via POST /session/create
- * (the real "+ New session" fast path), samples its first attach, saves
- * before/after-keypress screenshots to the script's directory, and deletes
- * the session afterwards; trials wait for the pool to respawn a spare.
- * Needs a running server and an existing session for <sessionId> whose agent
- * has booted. Reads port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
- * (playwright resolved from the global npm root; browsers under
- * /opt/playwright-browsers)
+ * With `claim`, each trial claims a prewarmed spare via POST /session/create,
+ * samples its first attach, saves before/after-keypress screenshots to the
+ * OS temp dir, deletes the session, and waits for the pool to respawn a
+ * spare.
+ * Needs a running server and, for <sessionId>, a session whose agent has
+ * booted. Reads the port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -72,8 +68,8 @@ function podName(sessionId) {
   return out
 }
 
-/** Reset the session's tmux window to the oversized prewarm dims and restore
- *  automatic (latest-client) sizing so the next attach re-runs the shrink. */
+/** Resets the tmux window to the oversized prewarm size, with `latest`
+ *  sizing, so the next attach repeats the shrink. */
 function resetWindow(pod) {
   execSync(
     `kubectl exec -n yaac ${pod} -c session -- sh -c "${TMUX} resize-window -t yaac:^ -x 500 -y 200`
@@ -133,9 +129,8 @@ async function runTrial(browser, base, code, sessionId, label, dpr, vw, vh, shot
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
   try {
     await page.addInitScript(() => {
-      // Log every /pty/attach binary frame (time + size) without disturbing
-      // the app's own handler: intercept the onmessage assignment and
-      // dispatch through a wrapping listener.
+      // Log /pty/attach binary frames while still calling the app's
+      // onmessage handler.
       const OrigWS = window.WebSocket
       window.__wsFrames = []
       window.WebSocket = class extends OrigWS {
@@ -157,8 +152,8 @@ async function runTrial(browser, base, code, sessionId, label, dpr, vw, vh, shot
           }
         }
       }
-      // rAF-sample the first terminal SessionTerminal exposes; subscribe to
-      // its scroll/resize events for exact ordering.
+      // Sample the first terminal every frame, and log its scroll/resize
+      // events in order.
       window.__samples = []
       window.__events = []
       let hooked = null
@@ -189,7 +184,7 @@ async function runTrial(browser, base, code, sessionId, label, dpr, vw, vh, shot
       requestAnimationFrame(tick)
     })
 
-    // Deep link straight to the session: URL selection wins over localStorage.
+    // URL selection takes precedence over localStorage.
     await page.goto(`${base}/?bootstrap=${code}&project=yaac&session=${sessionId}`)
     await page.waitForFunction(() => window.__samples.length > 0, null, { timeout: 60_000 })
     await page.waitForFunction(
@@ -197,9 +192,8 @@ async function runTrial(browser, base, code, sessionId, label, dpr, vw, vh, shot
       null,
       { timeout: 15_000 },
     )
-    // Watch for post-reveal drift, then poke a key: if the attach ate the
-    // agent's bottom line, the repaint the keypress forces makes it appear —
-    // the user-visible symptom. Capture the bottom rows around the press.
+    // If the attach lost the bottom line, the repaint a keypress forces makes
+    // it appear. Capture the bottom rows around the press.
     await page.waitForTimeout(2500)
     if (shotPrefix) await page.screenshot({ path: `${shotPrefix}-pre-key.png` })
     const bottomRows = () => page.evaluate(() => {
@@ -249,10 +243,9 @@ async function runTrial(browser, base, code, sessionId, label, dpr, vw, vh, shot
     console.log(`term events: ${events.slice(-14)
       .map((e) => `${fmt(e.t)}:${e.ev}${e.ev === 'scroll' ? `=${e.y}` : `=${e.cols}x${e.rows}`}`)
       .join(' ') || '(none)'}`)
-    // The keypress must reveal nothing: same bottom rows before and after
-    // (ArrowRight is visually inert in an idle agent input box), and the
-    // bottom row must not be blank while upper rows have content (the
-    // eaten-hint-line shape).
+    // ArrowRight changes nothing visible in an idle input box, so the bottom
+    // rows must match. A blank bottom row under content means the hint line
+    // was lost.
     const changed = rowsPre.join('\n') !== rowsPost.join('\n')
     const bottomBlank = rowsPre[2].trim() === '' && rowsPre.some((r) => r.trim() !== '')
     console.log(`bottom rows pre-key: ${JSON.stringify(rowsPre.map((r) => r.slice(0, 40)))}`)
@@ -298,8 +291,8 @@ async function main() {
         shotPrefix = path.join(os.tmpdir(), `scroll-pin-claim-${i}`)
         console.log(`claimed spare ${trialSession} (screenshots at ${shotPrefix}-*.png)`)
       } else if (i > 1) {
-        // Give the server time to reap the previous view session, then
-        // restore the oversized window and let the agent repaint at it.
+        // Let the server reap the previous view session, then restore the
+        // oversized window and let the agent repaint.
         await new Promise((r) => setTimeout(r, 1500))
         resetWindow(pod)
         await new Promise((r) => setTimeout(r, 3000))

@@ -1,26 +1,14 @@
-// The public interface of the workspaces feature. Everything outside this
-// directory imports `#domain/workspaces`; the SEALED_FOLDERS lint rule
-// stops src from reaching past this file. Modules in here import each
-// other by relative path, which is why they are unaffected by that rule.
+// The public interface of the workspaces feature (a sealed folder; see
+// SEALED_FOLDERS).
 //
-// This feature owns a workspace's *life*: deciding what one should be,
-// starting it, restarting it, stopping it, reaping it when it dies, and
-// the rows that record all of that. What it never owns is how any of that
-// becomes a running thing — it drives the registered runtime through
-// `#drivers/driver` and speaks only `#drivers/contract` vocabulary, so
-// nothing here names a Job, a label or a namespace. It composes the two
-// runtime verticals that are agent rather than substrate knowledge:
-// `#runtime/agents` builds its windows, and `#runtime/status` holds the
-// observations it evicts on teardown. Neither imports back, which is what
-// keeps the graph acyclic and both testable without a workspace.
+// This feature owns a workspace's life: creating, starting, restarting,
+// stopping and reaping it, and its rows. It drives the runtime only through
+// `#drivers/driver` and `#drivers/contract`, and uses `#runtime/agents` and
+// `#runtime/status`. The reconcile entry points are idempotent, since the
+// background loop calls them every tick.
 //
-// The reconcile entry points at the bottom are the background loop's half
-// of the same job: every one is idempotent and self-gating, because the
-// loop calls them on a fixed tick with no memory of the last pass.
-//
-// Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/features/workspaces/. Modules not re-exported are
-// internal: the seed/workspace-bin staging is covered through `createWorkspace`.
+// Each name added here needs a unit test in
+// packages/server/test/domain/workspaces/.
 
 export { reconcileAgentSessions } from './agent-session-registry'
 export { toAgentSessionEntry } from './agent-session-entry'

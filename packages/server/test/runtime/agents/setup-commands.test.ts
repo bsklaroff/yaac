@@ -22,9 +22,8 @@ const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
 /**
- * A main clone and a checkout cloned from it, on this disk, with the
- * commands run for real — the checkout's path standing in for /workspace,
- * which on a host workspace is exactly what it is.
+ * Runs the commands for real against a main clone and a checkout of it,
+ * with the checkout's path as the workspace dir.
  */
 describe('clone refresh commands', () => {
   let tmp: string
@@ -73,7 +72,7 @@ describe('clone refresh commands', () => {
       await commit(source, 'upstream')
       await git(source, ['branch', 'fresh'])
       await git(source, ['branch', '-f', 'forced', 'main'])
-      // The agent fetched `ahead` itself, past what the main clone has seen.
+      // The agent fetched `ahead` itself; the main clone has not.
       await git(source, ['branch', 'ahead'])
       await git(wt, ['fetch', '-q', source, 'refs/heads/ahead:refs/remotes/origin/ahead'])
       await git(source, ['branch', '-f', 'ahead', 'main~1'])
@@ -90,7 +89,7 @@ describe('clone refresh commands', () => {
       expect(await tip(wt, 'origin/forced')).toBe(forcedBefore)
       expect(await tip(wt, 'origin/ahead')).toBe(await tip(source, 'main'))
       expect(await fs.readFile(path.join(wt, '.git', 'FETCH_HEAD'), 'utf8')).toBe('the agent\'s\n')
-      // Everything it moved to was already reachable through the alternate.
+      // No new objects: everything came through the alternate.
       expect(await git(wt, ['count-objects', '-v'])).toBe(objects)
     })
   })
@@ -143,8 +142,8 @@ describe('buildWindowsExec', () => {
   })
 
   it('starts every agent in one tmux command, each naming what it resumes', () => {
-    // codex reports a resumed conversation only at its next turn, and a pane
-    // naming none reads as holding none — so no listing may land between.
+    // One command, so no pane listing sees a window before it names what it
+    // resumes (codex reports that only at its next turn).
     const cmd = buildWindowsExec([], 'codex', [
       { tool: 'codex', cmd: 'codex resume t-1', resumes: 't-1' },
       { tool: 'opencode', cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
@@ -158,9 +157,8 @@ describe('buildWindowsExec', () => {
   })
 })
 
-// The pod-side half of session setup lives in the yaac-workspace-init script
-// (the postStart hook). Pin the contracts the server relies on so a script
-// edit can't silently drift from the TypeScript side.
+// Pod-side setup is the yaac-workspace-init script (the postStart hook).
+// Pin what the server relies on so the two cannot drift apart.
 describe('yaac-workspace-init script', () => {
   const scriptPath = path.join(workspaceBinDir(), WORKSPACE_INIT_SCRIPT)
 
@@ -171,8 +169,7 @@ describe('yaac-workspace-init script', () => {
   })
 
   it('drives tmux over the same pod-local socket the k8s driver answers with', async () => {
-    // The script is baked into the image, so it cannot ask the driver — it
-    // hard-codes the path, and this is what catches the two drifting apart.
+    // The script hard-codes the socket path.
     const body = await fs.readFile(scriptPath, 'utf8')
     expect(body).toContain(`tmux -S ${PATHS.tmuxSock}`)
   })
@@ -189,23 +186,18 @@ describe('yaac-workspace-init script', () => {
   })
 
   it('points the nested engine at the combined CA bundle (PROXY_CA_BUNDLE_PATH)', async () => {
-    // The engine-start block hardcodes the bundle path (sudo strips env, so
-    // the script can't read it from the pod) — pin it to the constant so a
-    // moved bundle can't silently break nested registry TLS.
+    // Hard-coded in the script because sudo strips the environment.
     const body = await fs.readFile(scriptPath, 'utf8')
     expect(body).toContain(`SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH}`)
   })
 
   it('never does git work from /workspace (the checkout races the hook)', async () => {
     const body = await fs.readFile(scriptPath, 'utf8')
-    // The hook cd's to / before any git command: /workspace holds a
-    // half-provisioned workspace whose .git file still names the HOST admin
-    // path, and git's cwd repository discovery treats that as fatal even
-    // for `config --global`.
+    // `cd /` before any git command: git fails on the half-set-up
+    // /workspace repo, even for `config --global`.
     expect(body.indexOf('\ncd /\n')).toBeGreaterThan(-1)
     expect(body.indexOf('\ncd /\n')).toBeLessThan(body.indexOf('git config --global'))
-    // The tmux session pins its start directory back to the workspace so
-    // the respawned agent and later windows run there.
+    // Windows still start in /workspace.
     expect(body).toMatch(/new-session[^\n]* -c \/workspace/)
   })
 
@@ -213,8 +205,7 @@ describe('yaac-workspace-init script', () => {
     const body = await fs.readFile(scriptPath, 'utf8')
     const streamdAt = body.indexOf('node /opt/yaac/streamd/main.js')
     expect(streamdAt).toBeGreaterThan(-1)
-    // Everything the server relies on (git config, tmux) precedes streamd:
-    // its reachability is the "setup done" signal.
+    // streamd starts last: its reachability signals that setup is done.
     expect(body.indexOf('git config --global')).toBeLessThan(streamdAt)
     expect(body.indexOf('new-session')).toBeLessThan(streamdAt)
     expect(body.indexOf('podman system service')).toBeLessThan(streamdAt)

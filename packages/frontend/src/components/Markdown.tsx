@@ -5,22 +5,13 @@ import { CodeView } from '#components/CodeView'
 import { languageForFence, type HighlightLanguage } from '#lib/highlight'
 
 /**
- * Agent prose, rendered as the markdown it is.
- *
- * An agent writes markdown whether or not anyone renders it — headings, lists,
- * tables and fenced code arrive in the ACP stream as literal `##` and triple
- * backticks — so the choice is only whether the user reads the source or the
- * document. Raw HTML stays off (react-markdown's default): the text comes from
- * a model reading untrusted repository content, and nothing about a chat
- * message needs an escape hatch into the DOM.
- *
- * Every element is styled explicitly rather than through a typography preset,
- * because this is a chat bubble, not an article: margins are tight and
- * collapse at the edges, so a one-line reply stays one line high.
+ * Renders agent markdown in the chat pane. Raw HTML stays disabled
+ * (react-markdown's default) because the text may echo untrusted repository
+ * content. Elements are styled individually with tight margins so a one-line
+ * reply stays one line high.
  */
 
-/** The raw text and fence language of a ```fenced block, from its hast node.
- *  Typed loosely on purpose — this is a tree shape, not our data. */
+/** The text and language of a fenced code block, from its hast node. */
 function fencedCode(node: unknown): { text: string; language: HighlightLanguage | null } | undefined {
   const pre = (node ?? {}) as { children?: Array<{ tagName?: string; properties?: { className?: unknown }; children?: Array<{ value?: unknown }> }> }
   const code = pre.children?.[0]
@@ -32,17 +23,10 @@ function fencedCode(node: unknown): { text: string; language: HighlightLanguage 
   return { text, language: languageForFence(fence) }
 }
 
-/**
- * A fenced code block, rendered by the same view a read tool call and the diff
- * views use — so a snippet in a message and the same code shown as a file are
- * the same colors. Only the chrome belongs to this component: a fence sits
- * inside prose, so it gets a card.
- */
+/** A fenced code block, drawn with `CodeView` inside a card. */
 function CodeBlock({ text, language }: { text: string; language: HighlightLanguage | null }): JSX.Element {
-  // A fence's trailing newline is the fence itself, not a blank last line. The
-  // lines are taken literally — never `codeLines` — because a fence is prose
-  // the agent wrote, so anything in it that looks like a line-number gutter is
-  // text it meant to show.
+  // Drop the fence's trailing newline. Lines are taken literally (not via
+  // `codeLines`) so text that looks like line numbers is kept.
   const lines = useMemo(
     () => text.replace(/\n$/, '').split('\n').map((line) => ({ text: line })),
     [text],
@@ -57,12 +41,9 @@ function CodeBlock({ text, language }: { text: string; language: HighlightLangua
 }
 
 /**
- * The one place a URL from the stream reaches the DOM, shared by links and by
- * images so both get the same treatment. The href is already sanitized by the
- * time it arrives: react-markdown's default `urlTransform` empties any
- * protocol outside `https?`/`ircs?`/`mailto`/`xmpp`, so `javascript:` and
- * `data:` URIs are blanked before a component sees them. Passing a
- * `urlTransform` prop to `ReactMarkdown` would replace that, not add to it.
+ * Link used for both links and images. react-markdown's default
+ * `urlTransform` has already blanked unsafe protocols such as `javascript:`
+ * and `data:`; passing a custom `urlTransform` would replace that check.
  */
 function Link({ href, children }: { href?: string; children: ReactNode }): JSX.Element {
   return (
@@ -78,15 +59,12 @@ function Link({ href, children }: { href?: string; children: ReactNode }): JSX.E
 }
 
 /**
- * Block code is rendered from `pre` rather than from `code`, and deliberately
- * without recursing into its children: that is what keeps the `code` override
- * below meaning "inline code" without having to guess which it is looking at.
+ * Block code is rendered from `pre` without recursing into its children, so
+ * the `code` override only ever sees inline code.
  */
 const COMPONENTS: Components = {
   pre: ({ node, children }) => {
     const fenced = fencedCode(node)
-    // Anything that isn't the code element a fence produces is passed through
-    // untouched — showing it plainly beats dropping it.
     return fenced ? <CodeBlock text={fenced.text} language={fenced.language} /> : <pre>{children}</pre>
   },
   code: ({ children }) => (
@@ -106,13 +84,9 @@ const COMPONENTS: Components = {
   hr: () => <hr className="my-2.5 border-hairline" />,
   strong: ({ children }) => <strong className="font-semibold text-text">{children}</strong>,
   a: ({ href, children }) => <Link href={href}>{children}</Link>,
-  // An image is shown as a link, never fetched. `<img src>` is a request the
-  // browser makes on render — no click, no consent — so an image in a reply
-  // built from untrusted repository content is a way out of the page for
-  // whatever the URL encodes. The served SPA's CSP does refuse the fetch, but
-  // that header belongs to another package and the dev server sets none; a
-  // component that is only safe because of it is one edit away from not being.
-  // So the pane says what the image claims to be and lets the reader decide.
+  // Images render as links, never fetched: an automatic <img> request could
+  // exfiltrate data encoded in a URL from untrusted content. Don't rely on
+  // the server's CSP for this; the dev server sets none.
   img: ({ src, alt, title }) => (
     <Link href={typeof src === 'string' ? src : undefined}>{alt || title || 'image'}</Link>
   ),
@@ -129,11 +103,8 @@ const COMPONENTS: Components = {
 
 const PLUGINS = [remarkGfm]
 
-/**
- * Memoized on the text, because the pane re-renders on every streamed chunk
- * and only the last bubble's text is actually changing — re-parsing every
- * earlier message each time is the one cost this rendering could have added.
- */
+/** Memoized on the text so streaming chunks into the last message doesn't
+ *  re-parse every earlier one. */
 export const Markdown = memo(function Markdown({ children }: { children: string }): ReactNode {
   return <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>{children}</ReactMarkdown>
 })

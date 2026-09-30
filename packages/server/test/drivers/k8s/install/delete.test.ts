@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// The two boundaries a delete crosses: the kind/podman subprocess and the
-// TTY prompt. Nothing inside features/cluster is mocked — the confirmation
-// gate runs for real behind the readline fake.
+// Only the kind/podman subprocess and the TTY prompt are faked; the
+// confirmation logic runs for real.
 vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
@@ -54,7 +53,7 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     logs.push(args.map(String).join(' '))
   })
-  // A TTY, so the confirmation gate actually prompts.
+  // A TTY, so the confirmation prompts.
   Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
 })
 
@@ -65,8 +64,8 @@ afterEach(() => {
 
 describe('runClusterDelete', () => {
   it('refuses on a byo install, printing the uninstall instead of deleting anything', async () => {
-    // The cluster is not yaac's to delete — and a kind cluster named like
-    // the install's could still exist on this host.
+    // The cluster is not yaac's to delete, even if a same-named kind
+    // cluster exists on this host.
     await writeServerConfig({
       url: 'https://yaac.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'install-1', byo: true,
     })
@@ -75,16 +74,15 @@ describe('runClusterDelete', () => {
       expect(err).toBeInstanceOf(ClusterDeleteError)
       const message = (err as Error).message
       expect(message).toContain('the cluster is not yaac\'s to delete')
-      // Every namespace the install made, the registry's signing key included.
+      // Every namespace the install made, including the signing key's.
       expect(message).toMatch(/kubectl delete namespace yaac yaac-registry-keys\n/)
       expect(message).toMatch(/kubectl delete clusterrole,clusterrolebinding -l yaac\.install-namespace=yaac/)
-      // What every install on the cluster shares is said to be shared, the
-      // node labels the gVisor installer stamps included.
+      // Cluster-wide objects (including gVisor node labels) are flagged as
+      // shared with other installs.
       expect(message).toMatch(/only if no other yaac install uses this cluster[\s\S]*kubectl delete runtimeclass/)
       expect(message).toContain('kubectl label nodes --all yaac.gvisor- yaac.gvisor-version-')
-      // The two Retain volumes outlive the uninstall, and how to remove them
-      // deliberately is said, not done — selected by the install id, which
-      // no other install's volumes carry.
+      // The Retain volumes survive; the message says how to delete them by
+      // install id.
       expect(message).toContain('kubectl delete pv -l yaac.install-id=install-1')
       expect(deleteCall()).toBeUndefined()
     } finally {
@@ -96,10 +94,8 @@ describe('runClusterDelete', () => {
     await runClusterDelete({ yes: true })
 
     expect(deleteCall()?.[1]).toEqual(['delete', 'cluster', '--name', 'yaac'])
-    // Runs kind under the podman provider, like setup.
     expect((deleteCall()?.[2] as { env?: NodeJS.ProcessEnv })?.env?.KIND_EXPERIMENTAL_PROVIDER)
       .toBe('podman')
-    // --yes skips the prompt entirely.
     expect(mockQuestion).not.toHaveBeenCalled()
   })
 
@@ -139,11 +135,9 @@ describe('runClusterDelete', () => {
     await runClusterDelete({})
 
     expect(mockQuestion).toHaveBeenCalledOnce()
-    // The prompt names both resources it will remove.
     const prompt = String(mockQuestion.mock.calls[0]?.[0])
     expect(prompt).toMatch(/kind cluster "yaac"/)
-    // The registry now dies with the cluster, so the prompt says so rather
-    // than naming a separate container.
+    // The registry lives in the cluster and is deleted with it.
     expect(prompt).toMatch(/in-cluster image registry/)
     expect(deleteCall()?.[1]).toEqual(['delete', 'cluster', '--name', 'yaac'])
   })
@@ -159,14 +153,14 @@ describe('runClusterDelete', () => {
     mockRun.mockRejectedValue(
       Object.assign(new Error('exit 125'), { stderr: 'Cannot connect to podman' }),
     )
-    // The subprocess stderr is the useful half of the message.
+    // The subprocess stderr is included in the message.
     await expect(runClusterDelete({ yes: true }))
       .rejects.toThrow(/Could not list kind clusters[\s\S]*Cannot connect to podman/)
   })
 
   it('falls back to the error message when the failure carries no stderr', async () => {
-    // A spawn failure (kind not installed) rejects with an Error and no
-    // stderr at all — the message is then all there is to report.
+    // A spawn failure (kind not installed) has no stderr; the error
+    // message is reported.
     mockRun.mockRejectedValue(new Error('spawn kind ENOENT'))
     await expect(runClusterDelete({ yes: true }))
       .rejects.toThrow(/Could not list kind clusters[\s\S]*spawn kind ENOENT/)

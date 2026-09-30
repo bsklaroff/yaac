@@ -5,15 +5,12 @@ import type { SpawnedServer } from '#cli'
 type ServerApp = ReturnType<typeof buildApp>
 
 /**
- * Wrap an in-memory `buildApp(...)` instance as a raw typed Hono API client.
- * Dispatches through `app.fetch`, so no port is bound. Uses a loopback host
- * so the server's Host-header check accepts it and identifies the caller as
- * local (the real CLI likewise targets 127.0.0.1).
-
+ * Wrap an in-memory `buildApp(...)` as a raw typed API client, dispatching
+ * through `app.fetch` with no port bound. The loopback host passes the Host
+ * check and identifies the caller as local.
  *
- * Raw on purpose: unlike the app's `createApiClient`, this neither throws on
- * non-2xx nor unwraps the body, so contract tests can assert status codes and
- * read `res.json()` themselves.
+ * Unlike `createApiClient`, it neither throws on non-2xx nor unwraps the
+ * body, so tests can assert status codes.
  */
 export function makeTestApiClient(app: ServerApp) {
   return createRawApiClient('http://127.0.0.1', (input, init) =>
@@ -21,20 +18,16 @@ export function makeTestApiClient(app: ServerApp) {
 }
 
 /**
- * Raw typed Hono API client that speaks to a real spawned server subprocess
- * over HTTP. Mirrors `makeTestApiClient` (also raw) but issues real network
- * calls against `server.lock.port`.
+ * Like `makeTestApiClient`, but over HTTP to a spawned server.
  */
 export function makeServerApiClient(server: SpawnedServer) {
   return createRawApiClient(`http://127.0.0.1:${server.lock.port}`)
 }
 
 /**
- * The headers `tailscale serve` puts on a request it forwards from a
- * user-owned tailnet device, addressed as `host` — so a test can make a
- * tailnet call against a server whose `YAAC_ALLOWED_HOSTS` it stubs to
- * admit that name. Without `login`, what serve sends for a tagged device or
- * Funnel: forwarded, with no user.
+ * The headers `tailscale serve` adds when forwarding a request from a
+ * user's tailnet device to `host`. With a null `login`, the headers serve
+ * sends for a tagged device or Funnel (no user).
  */
 export function asTailnet(login: string | null, host: string): Record<string, string> {
   return {
@@ -45,9 +38,8 @@ export function asTailnet(login: string | null, host: string): Record<string, st
 }
 
 /**
- * Record a project whose checkout the test has staged in the data dir
- * (`<projects>/<slug>/repo`) — the server's `project add` minus the clone,
- * which a test server has no network for.
+ * Register a project whose checkout the test staged at
+ * `<projects>/<slug>/repo`: `project add` without the clone.
  */
 export async function registerTestProject(
   server: SpawnedServer,
@@ -59,12 +51,10 @@ export async function registerTestProject(
 }
 
 /**
- * Give a project a git credential the way the webapp's Settings does: store
- * an HTTPS token under a name, then assign it. Throws on any non-2xx, since
- * a fixture that silently lacks a credential fails far from here.
- *
- * Credentials outlive the projects they serve and names are unique, so a
- * project re-added under the same slug names its credential itself.
+ * Give a project a git credential as the webapp's Settings does: store an
+ * HTTPS token under a name, then assign it. Throws on any non-2xx.
+ * Credential names are unique and outlive projects, so a project re-added
+ * under the same slug must pass its own `name`.
  */
 export async function assignTestGitCredential(
   server: SpawnedServer,

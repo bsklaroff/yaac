@@ -86,16 +86,16 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
     tool === 'pi' ? 'Pi' :
     'OpenCode'
 
-  // Shortcut paths that capture a result directly: the e2e hook and the
-  // opencode/pi api-key prompt.
+  // Returns a result directly for the e2e hook and the opencode/pi api-key
+  // prompt; otherwise null.
   let result = await runToolLogin(tool).catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : String(err))
     process.exit(1)
   })
 
   if (!result && (tool === 'claude' || tool === 'codex')) {
-    // Browser sign-in, executed by the auth server on this machine and
-    // persisted by it straight to the (possibly remote) main server.
+    // Browser sign-in runs in the auth daemon on this machine, which saves
+    // the result straight to the (possibly remote) server.
     try {
       await ensureAuthDaemon()
       const outcome = await runRelayedToolLogin(tool)
@@ -106,7 +106,7 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
       if (outcome === 'error') {
         process.exit(1)
       }
-      // cli-missing: the vendor CLI isn't installed here — offer the key.
+      // 'cli-missing': fall back to an API key.
       console.log(`The ${label} CLI is not installed on this machine — enter an API key instead.`)
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err))

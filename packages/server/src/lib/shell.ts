@@ -2,41 +2,32 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 /**
- * Run a program on THIS machine and await its output.
- *
- * The host-side counterpart to the exec helpers in `#drivers/k8s/substrate` and
- * `#drivers/k8s/container`, which address a pod and a container runtime
- * respectively. A module that runs a plain local binary — a pinned
- * llama.cpp, a git subcommand — belongs here, and reaching for one of those
- * instead would tie it to a substrate it does not use.
+ * Run a local program and await its output. Use this for plain host
+ * binaries (llama.cpp, git) rather than the pod and container-runtime exec
+ * helpers in `#drivers/k8s/*`.
  */
 export const execFileAsync = promisify(execFile)
 
 /**
- * Shell-escape one token by single-quoting it (and escaping any embedded
- * single quotes), so the joined string survives an outer `sh -c`. The one
- * canonical POSIX quoter for server-built shell strings — import this
- * instead of redefining the escape dance per module.
+ * Single-quote one token (escaping embedded single quotes) so it survives
+ * an outer `sh -c`. The canonical quoter for server-built shell strings.
  */
 export function shellQuote(arg: string): string {
   return `'${shellEscape(arg)}'`
 }
 
 /**
- * The inner half of `shellQuote`: escape embedded single quotes without
- * adding the surrounding pair. For the many call sites that build a quoted
- * literal inside a larger template (`tmux … '${…}'`) and so supply the
- * quotes themselves.
+ * Escape embedded single quotes without adding the surrounding pair, for
+ * templates that supply their own quotes (`tmux … '${…}'`).
  */
 export function shellEscape(str: string): string {
   return str.replace(/'/g, `'\\''`)
 }
 
 /**
- * `str` as one double-quoted word that the shell expands nothing in: for a
- * launch-command argument whose `$VAR` is the program's to expand, not the
- * launch shell's. Double-quoted, and a single quote refused, for the reasons
- * `envJsonAssignment` gives.
+ * `str` as one double-quoted word in which the shell expands nothing, for a
+ * launch argument whose `$VAR` the program itself should expand. Single
+ * quotes are refused, as in `envJsonAssignment`.
  */
 export function doubleQuoted(str: string): string {
   if (str.includes("'")) {
@@ -46,20 +37,15 @@ export function doubleQuoted(str: string): string {
 }
 
 /**
- * A `NAME="<json>"` assignment to prefix a launch command with, for the
- * several tools whose configuration arrives as a JSON environment variable
- * (`OPENCODE_PERMISSION`, `CODEX_CONFIG`, `OPENCODE_CONFIG_CONTENT`).
+ * A `NAME="<json>"` prefix for a launch command, for tools configured
+ * through a JSON env var (`OPENCODE_PERMISSION`, `CODEX_CONFIG`,
+ * `OPENCODE_CONFIG_CONTENT`).
  *
- * Double-quoted with escaped inner quotes rather than single-quoted, because
- * every one of these is embedded in `respawn-window '<cmd>'` — a single quote
- * would end the wrapper early — and bare `{...}` would hit zsh brace
- * expansion. Serialized rather than hand-written so the escaping cannot drift
- * from the shape.
- *
- * A value whose JSON contains a single quote is refused rather than escaped:
- * nothing that reaches here has one (model ids are `MODEL_RE`, posture rules
- * are literals), and the alternative is a quoting dance that would have to be
- * correct in two shells at once.
+ * Double-quoted because these are embedded in `respawn-window '<cmd>'`,
+ * where a single quote would end the wrapper, and bare `{...}` would hit
+ * zsh brace expansion. JSON containing a single quote is refused; no
+ * current value has one (model ids match `MODEL_RE`, posture rules are
+ * literals).
  */
 export function envJsonAssignment(name: string, value: unknown): string {
   const json = JSON.stringify(value)

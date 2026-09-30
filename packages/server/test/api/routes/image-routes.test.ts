@@ -2,16 +2,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Hono } from 'hono'
 import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
-// These routes are pure translation: HTTP in, one mediator call out, and a
-// 404 for an id it does not know. What a build IS, and what retrying one
-// means, is the runtime's — so the feed stands behind a fake here and the
-// assertions are about status codes and what reached the seam.
+// These routes only translate HTTP to one mediator call (404 for an unknown
+// id); build behavior is the runtime's, so the feed is faked and the tests
+// assert status codes and what reached the seam.
 import { imageApp } from '#routes/images'
 import { toErrorBody } from '#http'
 import type { ImageBuildEntry, YaacConfig } from '@yaac/shared/types'
 
-// The log route throws NOT_FOUND; only the root app's onError serializes it,
-// so exercise the routes through a wrapper that installs the same handler.
+// Only the root app's onError serializes NOT_FOUND, so wrap the routes with
+// the same handler.
 const app = new Hono()
   .onError((err, c) => {
     const { status, body } = toErrorBody(err)
@@ -69,9 +68,8 @@ describe('image routes', () => {
     expect(res.status).toBe(404)
   })
 
-  // Dismissal is advisory: the route reports 204 either way rather than
-  // making the webapp handle a row that stopped existing between the render
-  // and the click.
+  // Dismissal is advisory: 204 either way, so the webapp need not handle a
+  // row that vanished between render and click.
   it('DELETE /builds/:id dismisses through the mediator', async () => {
     const res = await app.request('/builds/b1', { method: 'DELETE' })
     expect(res.status).toBe(204)
@@ -87,8 +85,7 @@ describe('image routes', () => {
   it('POST /builds/:id/retry relays the retry and returns 202', async () => {
     const res = await app.request('/builds/b1/retry', { method: 'POST' })
     expect(res.status).toBe(202)
-    // The config reader the mediator injects — what the runtime rebuilds
-    // with — travels with the id.
+    // The mediator's config reader travels with the id.
     expect(mockRetry).toHaveBeenCalledWith('b1', expect.any(Function))
   })
 

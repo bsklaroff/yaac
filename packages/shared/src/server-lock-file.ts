@@ -12,24 +12,20 @@ export interface ServerLock {
   startedAt: number
   buildId: string
   /**
-   * Identity of the server process holding the lock, minted per boot. What
-   * `pid` used to mean for compare-and-delete: pids are per-namespace, so
-   * once a server can be a pod, two servers of the same install genuinely
-   * can both be pid 1.
+   * Random id of the server process, minted per boot, used for
+   * compare-and-delete. `pid` cannot serve: two server pods can both be
+   * pid 1.
    */
   instance: string
   /**
-   * `os.hostname()` of the writer: the machine for a host process, the pod
-   * name for the in-cluster server. Not decoration — it is what says
-   * whether the pid and the loopback `/health` probe below MEAN anything to
-   * this reader.
+   * `os.hostname()` of the writer (the pod name in the cluster). Tells a
+   * reader whether `pid` and the loopback `/health` probe apply to it.
    */
   host: string
   /**
-   * Last renewal of the lease, ms epoch. The running server rewrites it
-   * every {@link LEASE_HEARTBEAT_MS}; a reader that cannot use pid liveness
-   * treats the lock as held while this is younger than
-   * {@link LEASE_STALE_MS}.
+   * Last lease renewal, ms epoch, rewritten every
+   * {@link LEASE_HEARTBEAT_MS}. A reader on another host treats the lock as
+   * held while this is younger than {@link LEASE_STALE_MS}.
    */
   heartbeatAt: number
 }
@@ -39,12 +35,10 @@ export const SERVER_LOCK_FILENAME = '.server.lock'
 /** How often the running server renews `heartbeatAt`. */
 export const LEASE_HEARTBEAT_MS = 5_000
 /**
- * How old a heartbeat may get before a lock is takeable. Four missed
- * renewals: long enough that a GC pause or a loaded node cannot hand the
- * install a second writer of the same PGlite database, short enough that a
- * SIGKILLed pod's replacement is not held out for a visible age. Where pid
- * liveness applies (same host) it still answers instantly and this bound is
- * never reached.
+ * How old a heartbeat may get before another host may take the lock. Four
+ * missed renewals: long enough that a GC pause cannot let a second server
+ * open the same database, short enough that a killed pod's replacement
+ * starts promptly.
  */
 export const LEASE_STALE_MS = 20_000
 
@@ -63,17 +57,15 @@ export function isServerLock(value: unknown): value is ServerLock {
 }
 
 /**
- * Whether this reader shares a pid namespace and a loopback with the lock's
- * writer, and may therefore judge it by `process.kill(pid, 0)` and a
- * `127.0.0.1:<port>` probe. False for an in-cluster server's lock read from
- * the host (and vice versa), where both signals answer about the wrong
- * process on the wrong interface.
+ * Whether the lock's writer shares this reader's pid namespace and
+ * loopback, so `process.kill(pid, 0)` and a `127.0.0.1:<port>` probe
+ * apply. False when a host reads an in-cluster server's lock or vice versa.
  */
 export function isSameHostLock(lock: ServerLock): boolean {
   return lock.host === os.hostname()
 }
 
-/** Whether the lease is still being renewed — the cross-host liveness signal. */
+/** Whether the lease is still being renewed (the cross-host liveness check). */
 export function isLeaseFresh(lock: ServerLock): boolean {
   return Date.now() - lock.heartbeatAt < LEASE_STALE_MS
 }
@@ -89,18 +81,10 @@ export function parseServerLock(raw: string): ServerLock | null {
 }
 
 /**
- * A lock is "live" if (a) the pid still exists and (b) its port answers
- * HTTP within 500ms. Used both by the CLI (is there a server to talk to?)
- * and by a second `yaac server` invocation (should I exit idempotently?).
- * Any answer counts, a 404 included: liveness is not API compatibility. A
- * server too old to know `/api/health` still holds the database, so it must
- * be stopped rather than reclaimed; the caller's buildId check is what
- * says it is outdated.
- *
- * Both signals are local ones, so a lock written on the other side of a
- * container boundary is judged by its lease instead (see
- * {@link isSameHostLock}): its pid names a process in another namespace and
- * its port is on another loopback.
+ * A lock is live if its pid exists and its port answers HTTP within 500ms.
+ * Any response counts, even a 404: an old server without `/api/health`
+ * still holds the database and must be stopped, not reclaimed. A lock from
+ * another host is judged by its lease instead.
  */
 export async function isLockLive(lock: ServerLock): Promise<boolean> {
   if (!isSameHostLock(lock)) return isLeaseFresh(lock)
@@ -120,21 +104,13 @@ export async function isLockLive(lock: ServerLock): Promise<boolean> {
 }
 
 /**
- * A lock is "ready" when the server is not just live but has finished its
- * startup initialization (DB open + first-boot migrations) and can serve
- * real requests. `yaac server start` waits on this: the port binds and the
- * lock is written before that init runs, and the init blocks the single
- * event loop, so `isLockLive` can pass during the brief responsive window
- * beforehand — printing "server started" while the very next command's
- * `/health` probe times out against the frozen loop. Liveness (isLockLive)
- * stays the coarser signal used for lock reclamation / start idempotency,
- * where "ready" would wrongly classify a still-initializing server as stale.
+ * A lock is ready when the server has also finished startup (DB open and
+ * migrations). `yaac server start` waits on this because the lock is
+ * written before startup, which blocks the event loop. Lock reclamation
+ * uses {@link isLockLive} instead, so a starting server is not treated as
+ * stale. From another host only the lease can be checked.
  */
 export async function isLockReady(lock: ServerLock): Promise<boolean> {
-  // Off-host (the in-cluster server, read from the host): the readiness
-  // flag lives behind a loopback this reader cannot dial, so the lease is
-  // the only answer available. `yaac cluster install` waits on the
-  // Deployment's own rollout for the stronger signal.
   if (!isSameHostLock(lock)) return isLeaseFresh(lock)
   if (!pidExists(lock.pid)) return false
   try {
@@ -158,7 +134,7 @@ function pidExists(pid: number): boolean {
     process.kill(pid, 0)
     return true
   } catch (err) {
-    // ESRCH = no such process. EPERM = exists but we can't signal it — still alive.
+    // EPERM: the process exists but we may not signal it.
     const code = (err as NodeJS.ErrnoException).code
     return code === 'EPERM'
   }

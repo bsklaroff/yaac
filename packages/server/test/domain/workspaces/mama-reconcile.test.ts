@@ -30,9 +30,8 @@ function makeReq(over: Partial<PendingMamaRequest> = {}): PendingMamaRequest {
   }
 }
 
-/** Who the drain said was calling, and what it handed over. Nothing about a
- *  command's MEANING is decided on this side, so the handler seam is the
- *  whole of what these tests assert against. */
+/** Each caller and request the drain passed to runMamaCommand. The drain does
+ *  not interpret commands, so the tests assert only on what it hands over. */
 const handled: Array<{ caller: MamaCaller; request: MamaRequestInput }> = []
 let answer: MamaOutcome = { ok: true, output: 'minted-id' }
 
@@ -45,9 +44,7 @@ beforeEach(() => {
   })
 })
 
-/** Drain exactly one request and hand back what was posted for it. The
- *  per-request path has no entry point of its own — a drain is the only way
- *  in, which is also the only way a request reaches it. */
+/** Drain exactly one request and return the result posted for it. */
 async function drainOne(
   req: PendingMamaRequest,
   pods: () => Promise<RuntimeHandle[]>,
@@ -76,9 +73,8 @@ describe('reconcileMamaRequests', () => {
   })
 
   it('passes the command and its options through without judging them', async () => {
-    // Which commands exist at all is the handler's; the drain carries
-    // whatever arrived, so an unknown one reaches the one place that refuses
-    // it rather than being silently dropped here.
+    // The handler decides which commands exist, so an unknown one must
+    // reach it to be refused rather than be dropped here.
     await drainOne(
       makeReq({ command: 'not-a-command', args: { tool: 'not-a-tool' } }),
       () => Promise.resolve([makeCaller()]),
@@ -90,15 +86,14 @@ describe('reconcileMamaRequests', () => {
   })
 
   it('tolerates an envelope missing its optional halves', async () => {
-    // Off a wire, so args/body can be absent however the type reads.
+    // The request comes off the wire, so args/body may be missing.
     const bare = { requestId: 'req-1', workspaceId: 'caller-session', command: 'list' }
     await drainOne(bare as PendingMamaRequest, () => Promise.resolve([makeCaller()]))
     expect(handled[0].request).toEqual({ command: 'list', args: {}, body: '' })
   })
 
-  // A caller running something yaac does not know says nothing about what a
-  // spawned workspace should run, and reporting a guess would outrank the
-  // server's own configured default.
+  // A guessed tool would override the server's configured default for the
+  // spawned workspace.
   it('omits the caller tool when the caller declares something else', async () => {
     const caller = makeCaller()
     delete caller.declaredTool
@@ -114,8 +109,8 @@ describe('reconcileMamaRequests', () => {
     })
   })
 
-  // The one judgement this side makes: a request from a workspace the runtime
-  // does not report cannot be attributed to a project.
+  // A request from a workspace the runtime does not report cannot be
+  // attributed to a project.
   it('rejects a caller the runtime does not report, without running anything', async () => {
     const result = await drainOne(makeReq(), () => Promise.resolve([]))
     expect(result).toEqual({ requestId: 'req-1', ok: false, error: 'calling workspace not found' })
@@ -164,8 +159,8 @@ describe('reconcileMamaRequests', () => {
     const workspaces = vi.fn(() => Promise.resolve([makeCaller()]))
     const posted: MamaResultWire[][] = []
     await reconcileMamaRequests({
-      // No listWorkspacesFn: the pass view wins over a view of its own, so
-      // a leaked second listing would fail the caller lookup.
+      // No listWorkspacesFn: callers must resolve from the pass's listing,
+      // since a fallback listing here would find nothing.
       fetchPendingFn: () => Promise.resolve([makeReq(), makeReq({ requestId: 'r2' })]),
       postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
     }, { ...snapshotFixture(), workspaces })

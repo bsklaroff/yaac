@@ -29,9 +29,9 @@ describe('Typeahead', () => {
     expect(rows()).toEqual(['Opus 5.5claude-opus-5-5'])
   })
 
-  // Enter is the form's submit unless a row is highlighted — so a field whose
-  // typed text is a value (a branch) highlights nothing until asked, and one
-  // whose text is a search (a model) highlights the first match as you type.
+  // Enter submits the form unless a row is highlighted. A field whose text is
+  // a value (a branch) highlights nothing until asked; a field whose text is a
+  // search (a model) highlights the first match as you type.
   it('picks the highlighted row on Enter, and leaves an unhighlighted Enter to the form', () => {
     const formKey = vi.fn()
     const onSelect = vi.fn()

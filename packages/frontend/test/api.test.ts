@@ -5,10 +5,9 @@ import { ServerError } from '@yaac/shared/errors'
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
 
-/** Stub globalThis.fetch — the client's sameOriginFetch calls straight through
- *  to it. `ok` is derived from the status; `clone` returns the same stub so the
- *  throwing wrapper can read an error body; the JSON content-type drives the
- *  client's auto-unwrap. */
+/** Stub globalThis.fetch, which the client calls. `clone` returns the same
+ *  stub so the error path can read the body; the JSON content type makes the
+ *  client parse it. */
 function stubFetch(over: {
   status?: number
   json?: () => Promise<unknown>

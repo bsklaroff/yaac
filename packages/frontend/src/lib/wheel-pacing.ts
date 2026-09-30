@@ -1,38 +1,29 @@
 import type { Terminal } from '@xterm/xterm'
 
 /**
- * Wheel pacing: keep a scroll gesture from queueing more remote scroll
- * steps than tmux can answer.
+ * Wheel pacing: stop a scroll gesture from queueing more scroll reports
+ * than tmux can answer.
  *
- * Scrolling an attached pane is a remote operation — tmux runs with
- * `mouse on`, so every wheel report round-trips to the pod and comes back
- * as a redraw. Stock xterm forwards one report per browser wheel event,
- * and a trackpad flick (plus its momentum tail) emits them far faster
- * than the redraw round trip drains them: the backlog keeps the pane
- * scrolling long after the fingers stop and the terminal repaints as fast
- * as bursts arrive. The pacer re-times the same reports onto animation
- * frames — a bounded number per frame, with a bounded backlog whose
- * excess is dropped — so the pane tracks the gesture and stops when it
- * stops.
+ * tmux runs with `mouse on`, so each wheel report round-trips to the
+ * workspace and comes back as a redraw. A trackpad flick emits reports much
+ * faster than that, so the pane would keep scrolling long after the gesture
+ * ends. The pacer sends the same reports on animation frames, a few per
+ * frame, and drops any backlog beyond a small cap.
  *
- * Scroll semantics are unchanged: like stock xterm, each wheel event that
- * crosses the line threshold (xterm's own consumeWheelEvent, which owns
- * trackpad damping and fractional-delta carry) becomes exactly one
- * report; only the timing and the queue bound are new.
+ * As in stock xterm, each wheel event that crosses the line threshold
+ * (xterm's consumeWheelEvent) becomes one report; only timing and the
+ * queue limit differ.
  */
 
-/** Reports released per flush (one flush per animation frame). At or above
- *  typical trackpad/wheel event rates per frame, so ordinary gestures are
- *  not slowed; a free-spinning high-rate wheel can exceed it and is slowed
- *  by design — the backlog cap below bounds how much of such a burst
- *  survives the gesture. */
+/** Reports sent per animation frame. Matches typical wheel event rates, so
+ *  only a free-spinning wheel is slowed. */
 const MAX_REPORTS_PER_FLUSH = 2
-/** Cap on queued reports; excess is dropped. Bounds how far the pane keeps
- *  scrolling after the gesture ends (tmux scrolls a few lines per report). */
+/** Cap on queued reports; the excess is dropped. Limits how far the pane
+ *  keeps scrolling after the gesture ends. */
 const MAX_BACKLOG_REPORTS = 6
 
-/** One pacing step, pure for testing: how many reports to emit from a
- *  `pending` backlog (signed: negative = scroll up) and what to carry. */
+/** One pacing step: how many reports to emit from a signed `pending`
+ *  backlog (negative = scroll up) and how many to carry over. */
 export function paceStep(
   pending: number,
   maxPerFlush: number = MAX_REPORTS_PER_FLUSH,
@@ -41,13 +32,12 @@ export function paceStep(
   const sign = pending < 0 ? -1 : 1
   const emit = sign * Math.min(Math.abs(pending), maxPerFlush)
   const rest = pending - emit
-  // `|| 0` normalizes the -0 the sign multiply produces on empty rests.
+  // `|| 0` turns -0 into 0.
   const carry = sign * Math.min(Math.abs(rest), maxBacklog) || 0
   return { emit: emit || 0, carry }
 }
 
-/** Accumulate signed report units and clamp the backlog (drop the excess —
- *  a queue deeper than the cap is a gesture that already ended). */
+/** Add signed reports to the backlog, dropping any excess over the cap. */
 export function addToBacklog(
   pending: number,
   add: number,
@@ -58,8 +48,7 @@ export function addToBacklog(
   return sign * Math.min(Math.abs(next), maxBacklog) || 0
 }
 
-/** A cell the pty should be told a mouse event happened at (xterm's
- *  ICoreMouseEvent shape, as in patchClickForwarding). */
+/** xterm's ICoreMouseEvent (see selection.ts). */
 type CoreMouseEvent = {
   col: number
   row: number
@@ -94,25 +83,20 @@ type TerminalInternals = Terminal & {
   }
 }
 
-// xterm's CoreMouseButton / CoreMouseAction values (const enums, inlined at
-// build time and not exported for us to import): the wheel "button" is 4,
-// a wheel-up is UP (0) and a wheel-down is DOWN (1).
+// xterm's CoreMouseButton / CoreMouseAction values, which are const enums
+// and not exported. Wheel-up is UP and wheel-down is DOWN.
 const MOUSE_BUTTON_WHEEL = 4
 const MOUSE_ACTION_UP = 0
 const MOUSE_ACTION_DOWN = 1
 
 /**
- * Install the pacer via term.attachCustomWheelEventHandler. While tmux has
- * mouse reporting active, wheel events accumulate into the paced backlog
- * and the handler returns false (xterm sends nothing itself); when mouse
- * reporting is off (mid-reconnect), events pass through to stock handling
- * untouched. Reports replay through xterm's own CoreMouseService and
- * MouseService (honoring the negotiated protocol/encoding), the exact path
- * built-in reporting takes — same approach as patchClickForwarding.
+ * Install the pacer as xterm's custom wheel handler. While mouse reporting
+ * is active, wheel events go into the backlog and xterm sends nothing
+ * itself; otherwise they get stock handling. Reports go through xterm's own
+ * CoreMouseService, as in patchClickForwarding.
  *
- * Reaches into private xterm internals; the unit tests canary the names.
- * Returns a disposer, or null if the internals have moved (wheel behavior
- * then reverts to stock, as before this patch).
+ * Uses private xterm internals, whose names the unit tests check. Returns a
+ * disposer, or null if the internals have changed (stock behavior then).
  *
  * Call after `term.open()`.
  */
@@ -133,15 +117,13 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
 
   let pending = 0
   let raf = 0
-  // Where and with which modifiers the reports land: the last wheel event
-  // wins (the pointer doesn't move mid-gesture in any way that matters).
+  // Position and modifiers of the last wheel event.
   let at: { col: number; row: number; x: number; y: number } | null = null
   let mods: { ctrl: boolean; alt: boolean; shift: boolean } = { ctrl: false, alt: false, shift: false }
 
   const flush = (): void => {
     raf = 0
-    // The pane app can turn mouse reporting off between accumulation and
-    // flush (a TUI exiting, a reconnect): drop the backlog, report nothing.
+    // Mouse reporting may have turned off since (a TUI exited, a reconnect).
     if (!coreMouse.areMouseEventsActive) {
       pending = 0
       return
@@ -151,8 +133,7 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
     if (emit !== 0 && at) {
       const action = emit < 0 ? MOUSE_ACTION_UP : MOUSE_ACTION_DOWN
       for (let i = 0; i < Math.abs(emit); i++) {
-        // triggerMouseEvent mutates its argument (1-based coord fixup), so
-        // hand it a fresh object each call.
+        // triggerMouseEvent mutates its argument, so pass a fresh object.
         trigger({ ...at, button: MOUSE_BUTTON_WHEEL, action, ...mods })
       }
     }
@@ -160,21 +141,15 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
   }
 
   term.attachCustomWheelEventHandler((ev: WheelEvent): boolean => {
-    // No mouse reporting active (a graceful detach, or a pane app turned it
-    // off): decline, leaving it to stock xterm — which, with no scrollback
-    // (see WorkspaceTerminal), has nothing to scroll.
+    // Without mouse reporting, leave the event to stock xterm.
     if (!coreMouse.areMouseEventsActive) return true
-    // Same gating as stock reporting: consumeWheelEvent owns sensitivity,
-    // trackpad damping, and the fractional-line carry — an event below the
-    // line threshold emits nothing now and carries its fraction forward.
+    // consumeWheelEvent handles sensitivity and carries fractional lines.
     const lines = consume(ev, render.dimensions?.device?.cell?.height, browser.dpr)
     if (lines === 0) return false
     const pos = getCoords(ev, screen)
     if (!pos) return false
     at = pos
     mods = { ctrl: ev.ctrlKey, alt: ev.altKey, shift: ev.shiftKey }
-    // One report per qualifying event, exactly like stock — the pacer only
-    // re-times it and bounds the queue.
     pending = addToBacklog(pending, lines < 0 ? -1 : 1)
     if (raf === 0) raf = requestAnimationFrame(flush)
     return false
@@ -183,8 +158,7 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
   return (): void => {
     if (raf !== 0) cancelAnimationFrame(raf)
     pending = 0
-    // attachCustomWheelEventHandler has no detach; an always-true handler
-    // restores stock behavior for the terminal's remaining lifetime.
+    // There is no detach; an always-true handler restores stock behavior.
     term.attachCustomWheelEventHandler(() => true)
   }
 }

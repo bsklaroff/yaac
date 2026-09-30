@@ -5,14 +5,10 @@ import { api } from '#lib/api'
 import type { DesktopServerSelection, DesktopServerTargets, Principal } from '@yaac/shared/types'
 
 /**
- * Desktop-only server picker (Settings → Server). Lists every server this
- * machine has configured — including the one on this machine, which `yaac
- * server start` registers like any other — and takes a new one by its
- * origin. Switching rewrites `~/.yaac-client/server.json`, the same
- * machine-wide selection `yaac remote set/on` writes, so the CLI follows;
- * the shell then relands the window on the new origin, so a successful
- * switch tears this page down mid-flight ("Reconnecting…" is the last
- * thing it shows).
+ * Desktop-only server picker. Lists the servers this machine has configured
+ * and adds one by origin. Switching rewrites `~/.yaac-client/server.json`
+ * (the same selection `yaac remote set/on` writes, so the CLI follows), then
+ * the shell reloads the window on the new origin, unloading this page.
  */
 export function ServerSettings(): JSX.Element {
   const bridge = serverBridge()
@@ -29,9 +25,7 @@ export function ServerSettings(): JSX.Element {
   }, [bridge])
 
   if (!bridge) {
-    // Unreachable through the settings nav (the section is hidden without
-    // the bridge) — a browser tab is already attached to the origin that
-    // served it, so there is nothing to switch.
+    // The nav hides this section outside the desktop shell.
     return <section><h2 className="text-sm font-semibold">Server</h2></section>
   }
 
@@ -41,7 +35,7 @@ export function ServerSettings(): JSX.Element {
     try {
       const outcome = await bridge.switchTo(sel)
       if (!outcome.ok) setError(outcome.error)
-      else setSwitching(true) // the shell relands the window now
+      else setSwitching(true) // the shell reloads the window
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to switch server')
     } finally {

@@ -8,16 +8,11 @@ import { serverLog } from '#log'
 import { notifyWorkspaceListChanged } from '#notify'
 
 /**
- * The named git credentials, sealed at rest (docs/git-credentials.md).
- *
- * Same discipline as the env store, and the same cipher (better-auth's
- * `symmetricEncrypt`): sealing happens here, so every caller above handles
- * a secret only as a value it was handed. A row is returned WITHOUT its
- * secret opened — the public key is a plain column, and the agent's
- * identity answer works from it alone — and `openSecret` is the one door.
- * A secret that will not open is reported rather than thrown, so a broken
- * row cannot take down the listing that is the one place the user can see
- * it needs replacing.
+ * Named git credentials, encrypted at rest (docs/git-credentials.md) with the
+ * same cipher as the env store. Rows are returned with the secret still
+ * encrypted; `openSecret` decrypts on demand. A secret that fails to decrypt
+ * is logged, not thrown, so the listing still shows the user which one to
+ * replace.
  */
 
 export type GitCredentialKind = 'https' | 'ssh'
@@ -93,8 +88,8 @@ export async function insertGitCredential(entry: {
   return toRow(rows[0])
 }
 
-/** Rename a credential (and, for a key, the public line whose comment
- *  carries the name). False when there is no such credential. */
+/** Rename a credential, and for an ssh key its public line, whose comment
+ *  carries the name. False when there is no such credential. */
 export async function renameGitCredential(
   id: string,
   name: string,
@@ -112,10 +107,9 @@ export async function renameGitCredential(
 }
 
 /**
- * Remove a credential, leaving the projects that used it with none — the
- * host key their assignment trusted goes with it. Deliberately not refused
- * while in use: a leaked credential has to be removable at once. False when
- * there was no such credential.
+ * Remove a credential, unassigning it (and its trusted host key) from every
+ * project. Allowed while in use, so a leaked credential can be removed at
+ * once. False when there was no such credential.
  */
 export async function deleteGitCredential(id: string): Promise<boolean> {
   const db = await getDb()
@@ -132,13 +126,10 @@ export async function deleteGitCredential(id: string): Promise<boolean> {
 }
 
 /**
- * Replace a credential's secret with a new one: a new row under the same
- * name, every project moved onto it with the host key it already trusted
- * (the host has not changed, only the key), and the old row deleted — in
- * one transaction, so no project is ever without a credential in between.
- * A new row rather than an update, so nothing holding the old id can go on
- * using what replaced it unawares. Undefined when there is no such
- * credential.
+ * Replace a credential's secret. In one transaction: insert a new row under
+ * the same name, move every project onto it (keeping its trusted host key),
+ * and delete the old row. A new id means nothing holding the old id silently
+ * uses the new secret. Undefined when there is no such credential.
  */
 export async function replaceGitCredential(
   id: string,

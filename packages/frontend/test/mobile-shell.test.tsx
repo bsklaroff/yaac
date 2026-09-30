@@ -21,11 +21,9 @@ afterEach(() => {
 })
 
 /**
- * Model a history navigation the way a browser does it: the entry moves first,
- * *then* popstate fires. jsdom won't walk the stack for a synthetic event, so
- * the test has to put the destination entry in place itself — and it matters,
- * because the shell relies on the current entry already agreeing with the
- * event to know a change came from history rather than from a tap.
+ * Simulate a history navigation as a browser does it: the entry changes,
+ * then popstate fires. jsdom doesn't do this for a synthetic event, and the
+ * shell relies on the current entry already matching the event.
  */
 function popTo(state: { yaacScreen: string; yaacDepth: number }): void {
   act(() => {
@@ -43,8 +41,7 @@ describe('MobileScreenLayer', () => {
         <MobileScreenLayer active={false}><p>pane</p></MobileScreenLayer>
       </>,
     )
-    // All three are in the tree — the pane's terminals must never be
-    // unmounted just because another screen is showing.
+    // All three stay mounted, so the pane's terminals aren't unmounted.
     expect(screen.getByText('projects')).toBeTruthy()
     expect(screen.getByText('workspaces')).toBeTruthy()
     expect(screen.getByText('pane')).toBeTruthy()
@@ -55,9 +52,8 @@ describe('MobileScreenLayer', () => {
       <MobileScreenLayer active={false}><p>pane</p></MobileScreenLayer>,
     )
     const layer = container.firstElementChild as HTMLElement
-    // `invisible` (visibility: hidden) keeps the box laid out, so the pane's
-    // ResizeObserver still measures a real size; `hidden` would collapse every
-    // terminal rect to zero.
+    // `invisible` keeps the layout, so terminals still measure a real size;
+    // `hidden` would collapse them to zero.
     expect(layer.className).toContain('invisible')
     expect(layer.className).not.toMatch(/\bhidden\b/)
     expect(layer.className).toContain('pointer-events-none')
@@ -92,15 +88,14 @@ describe('goBackScreen', () => {
 
     goBackScreen()
     expect(back).toHaveBeenCalledOnce()
-    // Nothing moved yet — the popstate listener is what applies the change,
-    // which is exactly what makes the chevron and the hardware button one
-    // and the same navigation.
+    // Nothing changes until popstate, so the chevron and the hardware back
+    // button behave the same.
     expect(useUiStore.getState().mobileScreen).toBe('pane')
   })
 
   it('steps up by hand on a cold load, instead of walking out of the app', () => {
-    // A reload that restored `pane` from localStorage: one history entry, and
-    // it is the one we're standing on. back() here would leave the app.
+    // A reload restored `pane` with a single history entry, so back() would
+    // leave the app.
     useUiStore.setState({ mobileScreen: 'pane' })
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     const push = vi.spyOn(window.history, 'pushState')
@@ -109,7 +104,7 @@ describe('goBackScreen', () => {
     act(() => { goBackScreen() })
     expect(back).not.toHaveBeenCalled()
     expect(useUiStore.getState().mobileScreen).toBe('workspaces')
-    // And stepping up must not deepen the stack it just failed to find.
+    // Stepping up replaces the entry rather than pushing.
     expect(push).not.toHaveBeenCalled()
     expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('workspaces')
   })
@@ -169,10 +164,8 @@ describe('useMobileHistory', () => {
     act(() => { useUiStore.getState().setActiveProject('proj') })
     act(() => { useUiStore.getState().selectWorkspace('s1') })
 
-    // Back to workspaces, then forward again to the pane. A module counter
-    // decremented on every popstate would read 0 here and send the chevron
-    // down the cold-load path, duplicating an entry and deadening the next
-    // hardware back press.
+    // Back to workspaces, then forward to the pane. The depth must come from
+    // the entry; a counter decremented per popstate would read 0 here.
     popTo({ yaacScreen: 'workspaces', yaacDepth: 1 })
     popTo({ yaacScreen: 'pane', yaacDepth: 2 })
 
@@ -186,9 +179,8 @@ describe('useMobileHistory', () => {
     act(() => { useUiStore.getState().setActiveProject('proj') })
     push.mockClear()
 
-    // A dead back press: the entry below happens to carry the same screen, so
-    // the store write is a no-op. A "came from popstate" flag set here would
-    // never be consumed, and would eat the real navigation that follows.
+    // A back press onto an entry with the same screen changes nothing, and
+    // must not break the next navigation.
     popTo({ yaacScreen: 'workspaces', yaacDepth: 0 })
 
     act(() => { useUiStore.getState().selectWorkspace('s1') })
@@ -204,7 +196,7 @@ describe('useMobileHistory', () => {
       window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
     })
     expect(useUiStore.getState().mobileScreen).toBe('projects')
-    // And the unstamped entry gets stamped in place rather than pushed onto.
+    // The unstamped entry is stamped in place, not pushed onto.
     expect(window.history.state).toMatchObject({ yaacScreen: 'projects', yaacDepth: 0 })
   })
 
@@ -213,17 +205,13 @@ describe('useMobileHistory', () => {
     renderHook(() => useMobileHistory(false))
     act(() => { useUiStore.getState().selectWorkspace('s1') })
     expect(push).not.toHaveBeenCalled()
-    // persistSelection still mirrors the selection into the URL — that is its
-    // own replaceState and nothing to do with screens. What must not appear
-    // is a screen entry.
+    // persistSelection still writes the URL, but no screen is stamped.
     expect((window.history.state as { yaacScreen?: string } | null)?.yaacScreen).toBeUndefined()
   })
 
   it('survives persistSelection rewriting the current entry’s URL', () => {
     renderHook(() => useMobileHistory(true))
-    // persistSelection replaceStates the selection into the query string on
-    // every selection change; it must preserve the screen stamped there, or
-    // back navigation silently degrades to a replace.
+    // persistSelection's replaceState must keep the stamped screen.
     act(() => { useUiStore.getState().setActiveProject('proj') })
     expect(window.location.search).toContain('project=proj')
     expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('workspaces')

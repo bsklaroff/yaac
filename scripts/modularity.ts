@@ -23,15 +23,13 @@
 //          the system an average change can reach. Same quantity as CCD, scaled
 //          to [0,1] so it compares across differently-sized scopes.
 //
-// Interface width is measured against the barrels, since a sealed folder's
-// index.ts *is* its interface (see CLAUDE.md). `exports` counts the names it
-// re-exports, `used` counts how many of them anything outside actually imports,
-// and depth is Ousterhout's ratio -- implementation lines per exported name.
-// A deep module hides a lot behind a little; a shallow one is mostly surface.
+// Interface width is measured at the barrels (a sealed folder's index.ts).
+// `exports` counts the names it re-exports, `used` counts how many of them
+// anything outside imports, and depth is Ousterhout's ratio: implementation
+// lines per exported name.
 //
-// LOC is reported but deliberately not folded into a score: minimizing lines
-// pushes toward extracting shared abstractions, which is a leading cause of
-// wide interfaces and cycles. It is a tiebreaker, not a co-equal objective.
+// LOC is reported but not scored: minimizing lines pushes toward shared
+// abstractions, which tend to widen interfaces and create cycles.
 
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -125,12 +123,10 @@ function resolveSpec(fromFile: string, spec: string): string | undefined {
 }
 
 // ------------------------------------------------------------ module naming
-// A sealed folder is always its own module: its barrel is the interface the
-// repo has already committed to, so it is the boundary whether or not the
-// parent directory also holds loose files (runtime/ is both). Everything else
-// falls back to the shallowest directory under src/ that holds source files
-// directly, which makes pure namespace directories transparent -- features/ is
-// not a module, features/workspaces is.
+// A sealed folder is always its own module, even when its parent directory
+// also holds loose files (runtime/ is both). Otherwise a module is the
+// shallowest directory under src/ that holds source files directly, so a
+// directory holding only subdirectories is not a module.
 
 /** Directories whose index.ts is published through a package's imports map. */
 const sealedDirs = new Set<string>()
@@ -286,9 +282,8 @@ interface FileImports {
 }
 
 /**
- * We decide type-only-ness ourselves rather than trusting dependency-cruiser's
- * `type-only` dependencyType, because the `#…` edges we re-resolve come back
- * from it tagged only as "unknown" -- there would be no flag to read.
+ * Type-only-ness is decided here because dependency-cruiser tags the `#…`
+ * edges we re-resolve only as "unknown".
  */
 function fileImports(absFile: string): FileImports {
   const names = new Map<string, string[]>()
@@ -472,10 +467,8 @@ const argv = process.argv.slice(2)
 const wantJson = argv.includes('--json')
 const wantFiles = argv.includes('--files')
 const wantNames = argv.includes('--names')
-// Type-only imports are erased at compile time, so they cost nothing at link or
-// startup -- but they are still interface coupling, and a type that crosses a
-// barrel still has to be understood to use it. They count by default; pass
-// --runtime-only to see the graph the linker sees.
+// Type-only imports are erased at compile time but are still interface
+// coupling, so they count by default. --runtime-only drops them.
 const runtimeOnly = argv.includes('--runtime-only')
 const rootArgs = argv.filter((a) => !a.startsWith('--'))
 const roots = rootArgs.length
@@ -552,11 +545,9 @@ for (const [from, tos] of moduleEdges) {
 
 // Interface width, measured at the barrels.
 //
-// Consumers are counted across the WHOLE repo, not just the graph scope: these
-// folders are published through each package's `exports` too, so the CLI, the
-// root e2e trees and other packages' tests are real consumers. Scoping this to
-// the modules under analysis reports names as dead when they are merely used
-// from somewhere else, which is the one way this report could cause damage.
+// Consumers are counted across the whole repo, not just the graph scope:
+// these folders are also published through each package's `exports`, so a
+// name used only by the CLI or a test must not be reported as dead.
 interface Iface {
   module: string
   dir: string
@@ -567,10 +558,9 @@ interface Iface {
   /** Imported through the barrel specifically -- the rest bypass it. */
   viaBarrel: Set<string>
   /**
-   * For each exported name, the in-graph modules that import it. Deliberately
-   * NOT repo-wide like `used`: this drives the design signal (is this name part
-   * of a shared abstraction, or a bespoke pairing?), and a test importing its
-   * own subject would make every name look shared.
+   * For each exported name, the in-graph modules that import it. Unlike
+   * `used` this is not repo-wide, since a test importing its own subject
+   * would make every name look shared.
    */
   consumers: Map<string, Set<string>>
   starFrom: string[]
@@ -733,8 +723,8 @@ if (scored.cycles.length) {
   for (const g of scored.cycles) {
     const members = new Set(g)
     console.log(`  [${g.length}] ${[...g].sort().join(', ')}`)
-    // Every edge inside the group is load-bearing for the cycle; the thin ones
-    // (fewest importing files) are the cheapest places to break it.
+    // The edges with the fewest importing files are the cheapest places to
+    // break the cycle.
     const inner: { edge: string; weight: number; via: string[]; typeOnly: boolean }[] = []
     for (const from of g) {
       for (const to of moduleEdges.get(from) ?? []) {

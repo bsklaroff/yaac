@@ -1,28 +1,13 @@
 /**
- * The build-engine seam: routes each image layer to the engine that
- * realizes it, keyed on layer trust (docs/trust-split-builds.md).
+ * Picks how each image layer is built, based on trust
+ * (docs/trust-split-builds.md).
  *
- * Routing is a WHITELIST: the yaac-shipped layers — `base`, `tools`,
- * `nestable`, whose Dockerfiles live in the install's DOCKERFILES_DIR with
- * pinned upstreams — are not built here at all. `yaac cluster install`
- * builds them on the machine running the CLI and pushes them, so the
- * server only ever looks their content-hash tag up in the registry. Every
- * other layer name executes user/agent-editable RUN steps and builds in an
- * ephemeral runsc builder pod, so a malicious step at worst compromises a
- * throwaway sandbox. Whitelisting means a future layer name is sandboxed by
- * default rather than silently trusted.
- *
- * The trusted names cannot be faked: `resolveImageChain()` is the only
- * producer of `ImageLayer.name` and assigns `base`/`tools`/`nestable`
- * exclusively to the yaac-shipped Dockerfiles — `Dockerfile.yaac` is
- * always `project` (layered or standalone) and `Dockerfile.user` always
- * `user`, regardless of their content.
- *
- * The seam is the build itself, and only that. Whether a layer is already
- * realized is not routed at all any more — the registry is where every
- * layer lands, whichever side produced it — and neither are pushes: a
- * cluster-pod build's delta push is an inseparable step of the build
- * itself, and a prebuilt layer was pushed by the install that built it.
+ * The yaac-shipped layers (`base`, `tools`, `nestable`) are built and
+ * pushed by `yaac cluster install`, so the server only looks them up. Every
+ * other layer runs user- or agent-editable RUN steps and builds in an
+ * ephemeral runsc builder pod. This is an allowlist, so a new layer name is
+ * sandboxed by default. The trusted names cannot be faked:
+ * `resolveImageChain()` assigns them only to the yaac-shipped Dockerfiles.
  */
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import type { ImageLayerName } from '@yaac/shared/types'
@@ -65,9 +50,8 @@ export interface BuildEngine {
 }
 
 /**
- * The trusted layers' "engine", which builds nothing: their tags are
- * install output, so a missing one is a missing install and the only
- * useful thing to do is say which command produces it.
+ * Trusted layers are built by the install, so a missing tag means a missing
+ * install. This "engine" just reports which command produces it.
  */
 export const prebuiltEngine: BuildEngine = {
   kind: 'prebuilt',

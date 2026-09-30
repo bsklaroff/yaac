@@ -1,14 +1,11 @@
 /**
- * Contract tests for the skills feature's shipped content — the `<name>/SKILL.md`
- * dirs under `builtin-skills/` that yaac stages into every session and surfaces
- * as the `system`/`yaac` tier. They cover files, not a module, so the
- * one-describe-per-barrel-function rule that governs the sealed folder's module
- * tests does not apply here.
+ * Contract tests for the shipped `builtin-skills/<name>/SKILL.md` dirs that
+ * yaac stages into every session as the `system`/`yaac` tier. They cover
+ * files, not a module, so the one-describe-per-barrel-function rule does not
+ * apply.
  *
- * A typo in the frontmatter (or a misplaced dir) would silently drop a skill
- * from staging and discovery, since both paths only require a parseable
- * SKILL.md. Driving the real packaged dir through the feature's entry points
- * keeps each skill wired in without an integration run.
+ * A frontmatter typo or misplaced dir would silently drop a skill, so the real
+ * packaged dir runs through staging and discovery.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
@@ -18,8 +15,7 @@ import { setDataDir } from '@yaac/shared/project-paths'
 import type { SkillSummary } from '@yaac/shared/types'
 import { builtinSkillsDir, getProjectSkills, getSkillDetail, stageBuiltinSkills } from '#domain/skills'
 
-// A project with nothing on disk, so the only tier discovery finds is the
-// packaged one. `builtinSkillsDir()` is left at its packaged default.
+// A project with nothing on disk, so discovery finds only the packaged tier.
 const slug = 'shipped-skills'
 
 let tmp: string
@@ -37,8 +33,8 @@ afterAll(async () => {
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
-/** The shipped skill `name` as the viewer sees it, asserting it is staged into
- *  sessions and discovered with a usable description. */
+/** Assert skill `name` is staged and discovered with a description, and
+ *  return its summary. */
 function expectShipped(name: string): SkillSummary {
   expect(staged).toContain(name)
   const skill = shipped.find((s) => s.name === name)
@@ -62,8 +58,6 @@ describe('builtin-skills/', () => {
 describe('push-pr skill', () => {
   it('is discoverable and drives the watch phase through yaac-watch-prs', async () => {
     expectShipped('push-pr')
-    // The watch step must invoke the generalized watcher scoped to comments,
-    // matching the usage shape yaac-watch-prs documents.
     expect(await bodyOf('push-pr')).toContain('yaac-watch-prs --pr <pr-number> --events comment')
   })
 })
@@ -79,13 +73,12 @@ describe('yaac-mama skill', () => {
       '# opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
-    // Stopping is in the subset, and the two things an agent has to know
-    // about it are that omitting the workspace means itself and that a
-    // self-stop's confirmation may never arrive.
+    // Omitting the workspace stops the caller itself, and a self-stop's
+    // confirmation may never arrive.
     expect(body).toContain('yaac-mama stop [<workspace>]')
     expect(body).toContain('the workspace ending is the confirmation')
-    // The subset is the point of the skill, so it has to say so: an agent
-    // reading this must not go looking for a delete or a restart.
+    // The skill must say it is a subset, so an agent does not look for
+    // delete or restart.
     expect(body).toContain('strict subset')
   })
 })
@@ -102,13 +95,10 @@ describe('review-pr skill', () => {
   it('is discoverable and drives the watch and the self-stop through the workspace-bin commands', async () => {
     expectShipped('review-pr')
     const body = await bodyOf('review-pr')
-    // A reviewer workspace watches its own PR's activity, and winds itself down
-    // through yaac-mama once the PR is approved.
+    // A reviewer watches its PR and stops itself via yaac-mama once approved.
     expect(body).toContain('yaac-watch-prs --pr <n> --events commit,comment')
     expect(body).toContain('yaac-mama stop')
-    // The approval bar is the reason this skill exists as its own thing: a nit
-    // nobody addressed still blocks approval, so the halfway verdict the
-    // reviewer would otherwise reach for is ruled out by name.
+    // An unaddressed nit still blocks approval.
     expect(body).toContain('Say "Approved" only when nothing is outstanding')
     expect(body).toContain('There is no "Approved with nits"')
   })
@@ -118,13 +108,11 @@ describe('spawn-pr-reviewers skill', () => {
   it('is discoverable and drives both halves through the workspace-bin commands', async () => {
     expectShipped('spawn-pr-reviewers')
     const body = await bodyOf('spawn-pr-reviewers')
-    // The watch half scopes the generalized watcher to newly opened PRs; the
-    // per-reviewer half is delegated to review-pr rather than restated here.
+    // Watching covers new PRs; each reviewer follows review-pr.
     expect(body).toContain('yaac-watch-prs --events opened')
     expect(body).toContain('`review-pr`')
-    // The spawn half must name a tool and model, and resolve the tool itself
-    // when the argument names only a model. The model is required with no
-    // default, so no model id is baked in anywhere as one.
+    // The spawn names a tool and model, resolving the tool when only a model
+    // is given. The model has no default, so no model id is baked in.
     expect(body).toContain('yaac-mama create --tool <tool> --model <model>')
     expect(body).toContain('yaac-mama models')
     expect(body).toContain('There is **no default model**.')

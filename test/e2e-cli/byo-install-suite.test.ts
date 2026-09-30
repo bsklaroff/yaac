@@ -16,30 +16,25 @@ const execFileAsync = promisify(execFile)
 /**
  * `yaac cluster install --byo`, end to end, against the install `pnpm
  * kind-byo up` made (docs/cluster-setup.md "Running byo locally:
- * kind-byo"). Not a per-file server: the subject is the INSTALLED one — its
- * class-provisioned claims, its uid, its tailnet fronting, the verbs an
- * operator runs against it, and what survives a namespace delete.
+ * kind-byo"). It tests that installed server, not a per-file one: its
+ * claims, its uid, its tailnet Ingress, the operator commands, and what
+ * survives a namespace delete.
  *
- * Two clients, as an operator has. The OPERATOR shell is the install's own
- * data dir and kubeconfig, which is what the host-side verbs (`server
- * stop|start|restart|logs`, `cluster check|delete|install`) read. The
- * USER goes through the server's API. The published https origin identifies
- * callers by tailnet user, and this machine is a tagged device, so from
- * here the origin serves `/api/health` and refuses `/whoami` — which is
- * itself the proof that the Ingress's identity handling reaches the pod.
- * Everything a user does therefore runs through a loopback forward to the
- * server's Service (loopback is the owner), the way the rest of the e2e
- * tiers reach their servers.
+ * There are two clients. The operator uses the install's own data dir and
+ * kubeconfig, which the host-side commands (`server stop|start|restart|logs`,
+ * `cluster check|delete|install`) read. The user goes through the API. The
+ * https origin identifies callers by tailnet user and this machine is a
+ * tagged device, so the origin refuses `/whoami` here. User actions
+ * therefore go through a loopback port-forward to the server's Service,
+ * where loopback counts as the owner.
  *
- * One install for the file; the last case destroys its namespace and
- * re-installs, so it runs last. Every install here is minutes of work.
+ * One install serves the file. The last case deletes the namespace and
+ * re-installs, so it runs last.
  *
- * The namespace delete takes the Ingress with it, so the operator's proxy
- * comes back as a new tailnet device that asks for its certificate again.
- * kind-byo's proxies take theirs from Let's Encrypt's staging environment
- * (production allows five a week per name), so the suite trusts the
- * staging roots — in this process, and through `NODE_EXTRA_CA_CERTS` in
- * every CLI it spawns.
+ * The namespace delete removes the Ingress, so its proxy requests a new
+ * certificate. kind-byo uses Let's Encrypt staging (production allows five
+ * a week per name), so the suite trusts the staging roots, both in this
+ * process and via `NODE_EXTRA_CA_CERTS` in every CLI it spawns.
  */
 const INSTALL_TIMEOUT = 30 * 60_000
 /** `pnpm kind-byo up`'s install flags: its NFS class, and its NAMED block class. */
@@ -60,7 +55,7 @@ let scratch: string
 let workspaceId = ''
 const children: ChildProcess[] = []
 
-/** The install namespace, `yaac`: this suite talks to the installed server, never a per-file one. */
+/** The install namespace, `yaac`. */
 function installEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra, KUBECONFIG: layout.kubeconfig }
   delete env.YAAC_K8S_NAMESPACE
@@ -101,8 +96,8 @@ async function claimVolumes(): Promise<Record<string, string>> {
 }
 
 beforeAll(async () => {
-  // This worker started before the project's env named the staging roots,
-  // so its own requests to the origin are told about them here.
+  // This worker started before the env named the staging roots, so add
+  // them to its own trust store.
   const staging = (await fs.readFile(layout.stagingCa, 'utf8'))
     .split(/(?<=-----END CERTIFICATE-----)\s*/).filter((pem) => pem.includes('BEGIN'))
   tls.setDefaultCACertificates([...tls.getCACertificates('default'), ...staging])
@@ -131,8 +126,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     const health = await fetch(`${origin}/api/health`)
     expect(health.ok).toBe(true)
     expect(await health.json()).toMatchObject({ ready: true, driver: 'k8s' })
-    // ...on a staging certificate, which is what lets this suite rebuild
-    // the origin as often as it likes.
+    // ...on a staging certificate.
     const issuer = await new Promise<string>((resolve, reject) => {
       const host = new URL(origin).hostname
       const socket = tls.connect({ host, port: 443, servername: host }, () => {
@@ -145,9 +139,8 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     })
     expect(issuer).toMatch(/^\(STAGING\)/)
 
-    // This machine is a tagged tailnet device: the Ingress stamps no user,
-    // so the server refuses to say who it is — the identity rule, reached
-    // through the operator's proxy.
+    // This machine is a tagged tailnet device, so the Ingress sends no user
+    // and the server refuses to identify the caller.
     const whoami = await fetch(`${origin}/api/whoami`)
     expect(whoami.status).toBe(401)
     expect(await whoami.text()).toMatch(/tagged device/)
@@ -157,8 +150,8 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     expect(set.exitCode).toBe(1)
     expect(set.stderr).toMatch(/refused to identify this device[\s\S]*tagged device/)
 
-    // Recorded as a byo install, in the cluster it went into — by that
-    // cluster's identity, with the context only as a hint.
+    // Recorded as a byo install, keyed by the cluster's uid; the context
+    // is only a hint.
     const record = await readServerJson()
     expect(record).toMatchObject({ byo: true, kubeContext: 'kind-yaac-byo' })
     expect(record.clusterUid).toBe((await kubectl('get', 'namespace', 'kube-system', '-o', 'jsonpath={.metadata.uid}')).trim())
@@ -187,10 +180,8 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     expect(pv.spec.mountOptions).toEqual(expect.arrayContaining(['actimeo=1']))
     expect(pv.metadata.labels).toMatchObject({ 'yaac.claim': 'yaac-global', 'yaac.install-id': installId })
 
-    // Provisioned a directory per claim, exactly where kind-byo's classes
-    // put them — not the data dir's own tiers, which the installing CLI
-    // writes its host log into — claimed for this install by the binder's
-    // marker, and owned by the install uid.
+    // One directory per claim where kind-byo's classes put them, marked
+    // for this install and owned by the install uid.
     for (const claim of ['yaac-global', 'yaac-server-local']) {
       const root = path.join(layout.dataDir, 'volumes', 'yaac', claim)
       expect((await fs.stat(root)).uid).toBe(1000)
@@ -200,8 +191,8 @@ describe('yaac cluster install --byo, on kind-byo', () => {
 
   it('creates a workspace through the installed server, with a terminal and a forward that work', async () => {
     expect((await runYaac(userEnv, 'remote', 'set', forward.origin)).exitCode).toBe(0)
-    // The install outlives every run of this file (its volumes are Retain),
-    // so a project an earlier run added is still there: start from none.
+    // The install's volumes are Retain, so a project from an earlier run
+    // may still exist.
     const gone = await api(`/project/${SLUG}`, { method: 'DELETE' })
     expect([204, 404]).toContain(gone.status)
     for (const args of [
@@ -212,11 +203,9 @@ describe('yaac cluster install --byo, on kind-byo', () => {
       const res = await runYaac(userEnv, ...args)
       expect(res.exitCode, `${args.join(' ')}: ${res.stderr}`).toBe(0)
     }
-    // `workspace create` fast-fails an unknown slug from THIS machine's disk
-    // when the origin is loopback — right for a kind install, whose global
-    // tier is here, and never reached by a byo user, who comes in over the
-    // https origin. This suite's loopback is a port-forward, so it stands
-    // in the directory that check looks for.
+    // With a loopback origin, `workspace create` checks for the project on
+    // this machine's disk, as it would for a kind install. A byo user comes
+    // in over https and never hits that check, so fake the directory.
     await fs.mkdir(path.join(scratch, 'user', 'global', 'projects', SLUG), { recursive: true })
     const created = await runYaac(userEnv, 'workspace', 'create', SLUG, '--tool', 'claude')
     expect(created.exitCode, created.stderr).toBe(0)
@@ -226,7 +215,6 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     const pod = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.workspace-id=${workspaceId}`,
       '-o', 'jsonpath={.items[0].metadata.name}')).trim()
 
-    // A terminal round-trips over the PTY WebSocket.
     const term = await (await api(`/workspace/${workspaceId}/terminals`, { method: 'POST' })).json() as { target: string }
     const ws = new WebSocket(`${forward.origin.replace('http', 'ws')}/api/pty/attach`
       + `?id=${workspaceId}&target=${encodeURIComponent(term.target)}&cols=100&rows=30`)
@@ -238,15 +226,14 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     await waitFor('the terminal echo', () => Promise.resolve(screen.includes('BYO_42')), 30_000)
     ws.close()
 
-    // A port in the pod, forwarded to this machine over the tunnel.
     const port = 18_761
     await execFileAsync('kubectl', ['exec', '-n', 'yaac', pod, '-c', 'workspace', '--', 'sh', '-c',
       `nohup node -e "require('http').createServer((q, r) => r.end('byo-forward')).listen(${String(port)}, '127.0.0.1')" >/dev/null 2>&1 &`],
     { env: operatorEnv })
     const fwd = spawn(process.execPath, [TEST_CLI_ENTRY, 'forward', workspaceId], { env: userEnv, stdio: ['ignore', 'pipe', 'pipe'] })
     children.push(fwd)
-    // What the forwarder says is the only account of a tunnel the server
-    // closed: the close code and reason land here, nowhere else.
+    // The forwarder's output is the only record of why the server closed
+    // a tunnel.
     let fwdOutput = ''
     fwd.stdout.on('data', (b: Buffer) => { fwdOutput += b.toString() })
     fwd.stderr.on('data', (b: Buffer) => { fwdOutput += b.toString() })
@@ -259,9 +246,8 @@ describe('yaac cluster install --byo, on kind-byo', () => {
       if (res.ok) mapping = await res.json() as { hostPort: number }
       return res.ok
     }, 90_000)
-    // THIS forwarder's listener, not merely something accepting on the
-    // port: a stray one (an earlier run's forwarder orphaned by a kill)
-    // would take the connection and tunnel it to a server that is gone.
+    // Wait for this forwarder's listener, not just any listener: an
+    // orphaned forwarder from an earlier run could hold the port.
     const bound = `forwarding 127.0.0.1:${String(mapping!.hostPort)} `
     await waitFor('this suite\'s forwarder to bind the port', () =>
       Promise.resolve(fwdOutput.includes(bound) || /cannot bind port/.test(fwdOutput)))
@@ -278,9 +264,8 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     const stop = await runYaac(operatorEnv, 'server', 'stop')
     expect(stop.exitCode, stop.stderr).toBe(0)
     expect((await kubectl('get', 'deployment', 'yaac-server', '-n', 'yaac', '-o', 'jsonpath={.spec.replicas}')).trim()).toBe('0')
-    // The log is on a claim this machine never sees on a cloud install, and
-    // a stopped server is when it is wanted: read through a reader pod,
-    // which is gone again afterwards.
+    // With the server stopped, the log is read through a temporary reader
+    // pod, since a cloud install's claim is not visible from this machine.
     const stopped = await runYaac(operatorEnv, 'server', 'logs', '-n', '5')
     expect(stopped.exitCode, stopped.stderr).toBe(0)
     expect(stopped.stdout.split('\n').filter(Boolean).length).toBe(5)

@@ -5,8 +5,8 @@ import { dismissProvisioning } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
 import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
-/** Shown in the main pane while a selected workspace provisions, in place of the
- *  terminal that will arrive. Streams progress; on failure offers dismiss. */
+/** Main-pane placeholder while the selected workspace provisions. Shows
+ *  progress, or the error with a Dismiss button. */
 export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorkspaceEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)

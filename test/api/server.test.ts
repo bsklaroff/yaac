@@ -21,17 +21,13 @@ describe('buildApp', () => {
 
   it('GET /health returns buildId + ok without auth', async () => {
     const app = buildApp({ buildId: 'abc123' })
-    // /health is the identity-exempt probe; hit it at a name nobody is
-    // identified at to prove the exemption still holds.
+    // /health is exempt from the identity check, so it answers even at a
+    // name with no identity.
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     const res = await app.request('/api/health', { headers: { host: 'srv.tailnet.ts.net' } })
     expect(res.status).toBe(200)
-    // `driver` echoes whichever runtime the project's setup registered as
-    // its stand-in for the composition root — k8s under `api-k8s`,
-    // containerless under `api-containerless`. Asserted against the registry
-    // rather than a literal so this pins the ROUTE's contract (it reports
-    // the registered driver) instead of pinning which project ran it, and
-    // stays exhaustive either way.
+    // `driver` reports whichever driver the project's setup registered
+    // (k8s under `api-k8s`, containerless under `api-containerless`).
     expect(await res.json()).toEqual({
       ok: true,
       buildId: 'abc123',
@@ -57,8 +53,7 @@ describe('buildApp', () => {
 
   it('unknown routes return uniform 404 NOT_FOUND', async () => {
     const app = buildApp({ buildId: 'test-build-id' })
-    // Unknown routes aren't in AppType, so the typed client can't
-    // reach them — fall back to a raw app.request.
+    // The typed client can't reach an unknown route.
     const res = await app.request('/no/such/route')
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({

@@ -69,9 +69,8 @@ describe('ProxyClient.isDeployedProxyCurrent', () => {
   })
 
   it('returns false when the pod template still carries a RuntimeClass (manifest-only upgrade)', async () => {
-    // A manifest-only change: the proxy image is byte-identical, but a
-    // Deployment stamped gvisor (the gVisor-era proxy — infra now runs on
-    // runc) is stale. An image-only check would keep the old pod forever.
+    // Same image, but infra runs on runc, so a gvisor RuntimeClass means
+    // the Deployment is stale. An image-only check would miss it.
     mockKubectlGetJson.mockResolvedValueOnce(
       deployedProxy('localhost:5001/yaac-test-proxy:abc123', 'gvisor'),
     )
@@ -99,9 +98,8 @@ describe('ProxyClient.ensureRunning staleness gate', () => {
   })
 
   /**
-   * A client forced into the attached state (running=true with a live
-   * port), the state attachIfRunning() leaves behind, with /healthz
-   * answering OK.
+   * A client forced into the state attachIfRunning() leaves behind, with
+   * /healthz answering OK.
    */
   function attachedClient(): ProxyClient {
     const c = new ProxyClient({ image: 'yaac-test-proxy' })

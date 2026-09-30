@@ -53,8 +53,8 @@ describe('createApiClient / createRawApiClient', () => {
   })
 
   it('createApiClient hands back the raw Response for a non-JSON (streaming) body', async () => {
-    // A route hono types as a stream/text format resolves to the live Response
-    // (content-type is not application/json), so callers can read res.body.
+    // A non-JSON route resolves to the live Response, so callers can read
+    // res.body.
     const fetchImpl = vi.fn(() =>
       Promise.resolve(new Response('{"type":"result"}\n', {
         status: 200,

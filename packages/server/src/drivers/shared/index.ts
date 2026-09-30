@@ -1,32 +1,15 @@
-// What the drivers share with each other, and with nothing else.
+// Code shared by the drivers and used by nothing else. Drivers cannot import
+// each other, so this is where common substrate code lives instead of
+// being duplicated or pushed up into `#lib`. It may not import a driver,
+// `#db`, `#domain` or `#runtime` (enforced by lint).
 //
-// The layer below is `#lib`, which is dependency-free and open to every
-// layer; this one is dependency-free too but deliberately NOT open — it
-// holds the things that are common to substrates and meaningless outside
-// them. A driver is sealed from its siblings (`#drivers/k8s` and
-// `#drivers/containerless` cannot see each other, so neither can host code
-// the other needs), and without somewhere for that to live the choice is
-// duplicating it or pushing substrate concerns up into `#lib` where every
-// mediator would inherit them.
+// Used by both drivers only → here. Also used above the drivers → `#lib`
+// or `@yaac/shared`. One driver only → that driver's folder.
 //
-// The arrow runs one way and the lint enforces it: a driver imports
-// `#drivers/shared`, and nothing in here may import a driver — not the
-// contract's implementations, not `#db`, `#domain` or `#runtime`. That is
-// what keeps it a floor rather than a back channel between the two drivers.
-//
-// The test of whether something belongs here is who calls it. Both drivers
-// and nobody else → here. Anyone above a driver as well → `#lib` (the
-// status bar's text, the host-port reservation) or `@yaac/shared` (anything
-// that also crosses the wire). One driver only → that driver's own folder.
-//
-// Adding a name here widens the interface and obliges a unit test in
+// Each name exported here needs a unit test in
 // packages/server/test/drivers/shared/.
 
-// The review diff: the script a driver runs inside a workspace, and the
-// parser for what it prints. The parsing internals behind
-// `parseChangesOutput` (numstat, name-status, git's rename notation) stay
-// off the barrel — they are one function's parts, and it is what the
-// drivers call.
+// The review diff: the in-workspace script and the parser for its output.
 export {
   buildChangesScript,
   parseChangesOutput,

@@ -28,9 +28,8 @@ import { registerServer } from '@yaac/shared/server-config'
 export async function startServer(): Promise<void> {
   await preflightHostTor()
   await ensureDataDir()
-  // Before the spawn, so a refusal reaches the operator directly: the
-  // detached child dies before its log exists, and they would otherwise
-  // wait out the ready poll for a timeout that explains nothing.
+  // Check before spawning: a detached child that refuses dies before its
+  // log exists, leaving only an unexplained ready-poll timeout.
   await assertHostServerAllowed()
   const cliBuildId = await readBuildId()
 
@@ -38,10 +37,8 @@ export async function startServer(): Promise<void> {
   if (existing && await isLockLive(existing)) {
     if (existing.buildId === cliBuildId) {
       console.error(`[yaac] server already running pid=${existing.pid} port=${existing.port}`)
-      // Registered even here, because "already running" includes a server
-      // someone ran in the foreground with `yaac server run`, which
-      // registers nothing. Without this, `yaac server start` would print
-      // success against a server no client can reach.
+      // Register anyway: the running server may be a foreground
+      // `yaac server run`, which registers nothing.
       await registerLocalServer(existing.port)
       return
     }
@@ -52,18 +49,14 @@ export async function startServer(): Promise<void> {
     )
   }
 
-  // Lock file present but not live (pid dead or its port silent) —
-  // the next spawn's idempotency check would overwrite it anyway, but
-  // clearing first keeps the "wait for new lock" poll simple.
+  // A stale lock (dead pid or silent port). Clearing it keeps the
+  // wait-for-new-lock poll simple.
   if (existing) await removeLock()
 
   await spawnServerDetached()
-  // Wait for readiness, not bare liveness: the server writes its lock and
-  // answers /health before it opens the DB and runs first-boot migrations,
-  // which block the event loop for seconds. Returning on the pre-init
-  // /health would print "server started" while the next command's liveness
-  // probe times out against the frozen loop. 30s comfortably covers a
-  // cold-start migration (a few seconds) plus headroom on a loaded host.
+  // Wait for readiness, not just liveness: /health answers before the DB
+  // opens and first-boot migrations block the event loop for seconds. 30s
+  // covers a cold-start migration with headroom.
   const fresh = await waitForReadyLock(30_000)
   if (fresh.buildId !== cliBuildId) {
     throw new Error(
@@ -73,23 +66,17 @@ export async function startServer(): Promise<void> {
   await registerLocalServer(fresh.port)
   const torPrefix = env.useTor ? '(using tor) ' : ''
   console.error(`[yaac] ${torPrefix}server started pid=${fresh.pid} port=${fresh.port}`)
-  // A host server is a containerless one by construction (see
-  // `#main/driver-choice`), so this needs no lookup. Repeated here because
-  // the child said it to its own log file, which is not where the operator
-  // who set the variable is looking.
+  // A host server is always containerless (`#main/driver-choice`). Repeat
+  // the warning here, since the child only wrote it to its log file.
   const torGap = torCoverageWarning('containerless')
   if (torGap !== undefined) console.error(`[yaac] WARNING: ${torGap}`)
 }
 
 /**
- * Point this machine's clients at the host server that is now up, and
- * record that this install is a containerless one — the same registration
- * `yaac cluster install` performs for the Deployment it applies, so that no
- * client has a "server on this machine" case at all.
- *
- * A failure here leaves the server running and unreachable BY CLIENTS,
- * which is worth saying plainly: the recovery is to run the command again,
- * not to hunt for a lock.
+ * Register the host server in `server.json` as a containerless install,
+ * the same registration `yaac cluster install` does for the Deployment. On
+ * failure the server keeps running but clients cannot find it; rerunning
+ * the command fixes that.
  */
 async function registerLocalServer(port: number): Promise<void> {
   try {
@@ -121,21 +108,12 @@ export async function stopServer(): Promise<void> {
   }
 
   if (!isSameHostLock(existing)) {
-    // The lock belongs to a server in a pod (docs/server-in-cluster.md),
-    // and it is LIVE — the check above judged an off-host lock by its
-    // lease, so getting here means one is being renewed right now.
-    //
-    // Removing it would be the worst available answer. The pod loses the
-    // lease at its next tick and exits, the Deployment restarts it, and
-    // the user who asked for a stop got a restart. Worse, a `yaac server
-    // start` in the same state would spawn a host process onto a data dir
-    // whose lock this command just cleared — the dual-writer the lease
-    // exists to prevent, manufactured by the thing meant to prevent it.
-    //
-    // Scaling the Deployment is what stops that server, and `yaac server
-    // stop` reaches it through `#drivers/k8s/install` before ever getting
-    // here. Getting here therefore means that path did not run — the
-    // cluster could not be asked — so say what is true and change nothing.
+    // A live lock from another host belongs to the in-cluster server
+    // (docs/server-in-cluster.md). `yaac server stop` normally scales that
+    // Deployment through `#drivers/k8s/install` before reaching here, so
+    // getting here means the cluster was unreachable. Removing the lock
+    // would make the pod exit and restart, and would let a later
+    // `yaac server start` add a second writer, so change nothing.
     console.error(
       `[yaac] this install's server runs in the cluster (lock held by `
       + `${existing.host ?? 'another host'}, lease still being renewed), and `
@@ -151,13 +129,11 @@ export async function stopServer(): Promise<void> {
   try {
     process.kill(existing.pid, 'SIGTERM')
   } catch {
-    // Process already gone — still need to clear the lock below.
+    // Already gone; the lock is still cleared below.
   }
 
-  // The server's shutdown path is bounded to ~6s worst case (3s loop
-  // drain + 3s server close) under heavy parallel load. Poll with
-  // headroom so a healthy SIGTERM-driven exit isn't misreported as a
-  // "force-removed stale lock".
+  // Shutdown takes up to ~6s under load (3s loop drain + 3s server close),
+  // so allow headroom before reporting a force-removal.
   const deadline = Date.now() + 10_000
   while (Date.now() < deadline) {
     const cur = await readLock()
@@ -167,9 +143,7 @@ export async function stopServer(): Promise<void> {
     }
     await new Promise((r) => setTimeout(r, 50))
   }
-  // Server didn't clean up in time. Remove the lock ourselves — the old
-  // process is either gone or wedged, either way it's no longer the
-  // source of truth.
+  // The old process is gone or wedged; remove its lock ourselves.
   const cur = await readLock()
   if (cur && cur.pid === existing.pid) await removeLock()
   console.error(`[yaac] force-removed stale lock (pid ${existing.pid})`)
@@ -196,22 +170,18 @@ async function spawnServerDetached(): Promise<void> {
   // If the spawn itself fails immediately (e.g. ENOENT), surface it.
   await new Promise<void>((resolve, reject) => {
     child.once('error', reject)
-    // A spawned detached process won't emit a useful signal here, so
-    // give it a tick and assume success — the lock poll will catch
-    // the actual failure mode (e.g. "server never wrote the lock").
+    // A detached child gives no success signal; wait a tick and let the
+    // lock poll catch later failures.
     setTimeout(resolve, 50)
   })
 }
 
 /**
- * Figure out how to relaunch ourselves as `yaac server run`.
+ * How to relaunch ourselves as `yaac server run`.
  *
- * - Production build (`dist/cli.js`): `process.execPath` is node and
- *   `argv[1]` is the bundled entry — just reuse both.
- * - Dev (source `.ts` files): we're running under tsx. tsx strips its
- *   own CLI script from argv before running the target, so `argv[1]`
- *   is the source entry (`src/cli.ts`). Respawn via tsx's CLI so the
- *   loader is set up again in the child.
+ * - Production (`dist/cli.js`): reuse `process.execPath` and `argv[1]`.
+ * - Dev (under tsx): `argv[1]` is the `.ts` entry, so respawn through tsx's
+ *   CLI to set up the loader again.
  */
 function resolveServerInvocation(): { bin: string; args: string[] } {
   const entry = process.argv[1] ?? ''
@@ -250,15 +220,13 @@ export interface ServerLogsOptions {
 }
 
 /**
- * Entry point for `yaac server logs`. Prints `serverLogPath()`
- * (`~/.yaac/server-local/server.log`) to stdout
- * by spawning stock `tail` (flags limited to those shared by BSD and GNU
- * tail — macOS and Linux are the only supported platforms).
+ * Entry point for `yaac server logs`: prints `serverLogPath()` via `tail`,
+ * using only flags shared by BSD and GNU tail (macOS and Linux).
  *
- * - No options: prints the whole file (`tail -n +1`).
- * - `--lines N`: prints only the last N lines (`tail -n N`).
- * - `--follow`: keeps printing as content is appended (`tail -F`, which
- *   also handles the file appearing later and truncation/replacement).
+ * - No options: the whole file (`tail -n +1`).
+ * - `--lines N`: the last N lines.
+ * - `--follow`: keep printing (`tail -F`, which also handles the file
+ *   appearing later or being replaced).
  */
 export async function serverLogs(opts: ServerLogsOptions = {}): Promise<void> {
   const logPath = serverLogPath()
@@ -272,14 +240,12 @@ export async function serverLogs(opts: ServerLogsOptions = {}): Promise<void> {
   }
 
   const args = opts.follow ? ['-F'] : []
-  // `-n +1` = from the first line (whole file); `-n N` = last N lines.
-  // Negative N would flip tail into last-|N|-lines mode — clamp to 0,
-  // matching the old "print nothing" behavior.
+  // Clamp N to 0: a negative N would put tail into last-|N|-lines mode.
   args.push('-n', opts.lines !== undefined ? String(Math.max(0, opts.lines)) : '+1')
   args.push(logPath)
 
-  // stderr is dropped: the missing-file case is reported above, and in
-  // follow mode `tail -F` narrates retries/rotation we don't want shown.
+  // Drop stderr: the missing-file case is reported above, and `tail -F`
+  // prints retry/rotation notices.
   const child = spawn('tail', args, { stdio: ['ignore', 'pipe', 'ignore'] })
   child.stdout.pipe(process.stdout, { end: false })
 

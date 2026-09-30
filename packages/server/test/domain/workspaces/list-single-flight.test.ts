@@ -4,9 +4,8 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-// listActiveWorkspaces fans out into many other helpers. We mock the leaves
-// (pod listing, fs-backed helpers) so the single-flight wrapper can be
-// exercised without a cluster or server.
+// Pod listing, tmux liveness and transcript reads are mocked so the
+// single-flight wrapper runs without a cluster. Everything else is real.
 
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
@@ -28,9 +27,6 @@ vi.mock('#runtime/agents/agent-tools', async (importOriginal) => ({
   normalizeTool: vi.fn().mockReturnValue('claude'),
 }))
 
-// The join under test reads the recorded rows alongside the real
-// observation half, so the leaf mocks above drive it end to end — only the
-// substrate is stubbed.
 import { listWorkspacePods } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import type * as agentToolsModule from '#runtime/agents/agent-tools'
@@ -68,14 +64,11 @@ describe('listActiveWorkspaces single-flight', () => {
     const b = listActiveWorkspaces()
     const c = listActiveWorkspaces()
 
-    // All three callers should be waiting on the single in-flight
-    // listWorkspacePods; verify by checking the mock call count before
-    // we let it resolve.
+    // All three callers share one in-flight listWorkspacePods.
     expect(mockListPods).toHaveBeenCalledTimes(1)
 
     resolveList!([])
     const results = await Promise.all([a, b, c])
-    // Same Promise resolution — all three see the same result object.
     expect(results[0]).toBe(results[1])
     expect(results[1]).toBe(results[2])
   })
@@ -90,14 +83,13 @@ describe('listActiveWorkspaces single-flight', () => {
   it('clears the in-flight slot even when the underlying call rejects', async () => {
     mockListPods.mockRejectedValueOnce(new Error('cluster down'))
     await expect(listActiveWorkspaces()).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
-    // Slot must be released — a follow-up call should attempt again.
     mockListPods.mockResolvedValueOnce([])
     await listActiveWorkspaces()
     expect(mockListPods).toHaveBeenCalledTimes(2)
   })
 
   it('keeps different filters on separate in-flight slots', async () => {
-    // The projects must be recorded so ensureProjectExists doesn't 404.
+    // Record the projects so the filter does not 404.
     await recordProject({ slug: 'proj-a', remoteUrl: 'https://example.com/a.git', addedAt: '2026-01-01T00:00:00.000Z' })
     await recordProject({ slug: 'proj-b', remoteUrl: 'https://example.com/b.git', addedAt: '2026-01-01T00:00:00.000Z' })
 
@@ -108,8 +100,6 @@ describe('listActiveWorkspaces single-flight', () => {
       listActiveWorkspaces('proj-b'),
     ])
 
-    // Two distinct executions (one per filter), so listWorkspacePods ran
-    // twice and the result objects are not the same reference.
     expect(mockListPods).toHaveBeenCalledTimes(2)
     expect(a).not.toBe(b)
   })

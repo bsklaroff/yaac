@@ -1,21 +1,16 @@
 /*
- * Verifies the deleted / terminating-sessions UI in real Chromium:
- *   - a session marked `terminating` renders as a greyed, non-interactive
- *     "terminating…" row in the sidebar (SessionRow's terminating branch),
- *     distinct from a live running row;
- *   - the sidebar-header trash button opens the full-screen deleted-sessions
- *     overlay (DeletedSessionsButton): a search box + a newest-deleted-first
- *     master list, and a detail pane showing Created / Last active / Deleted
- *     times, the prompt, and a Restart action;
+ * Verifies the stopped / terminating workspaces UI in real Chromium:
+ *   - a `terminating` workspace renders as a greyed, non-interactive
+ *     "terminating…" row in the sidebar, unlike a running row;
+ *   - the sidebar header's trash button opens the full-screen stopped
+ *     workspaces overlay: a search box, a newest-first list, and a detail
+ *     pane with Created / Last active / Deleted times, the prompt and a
+ *     Restart action;
  *   - the search box filters the list, and a no-match query shows "No matches."
  *
- * Unlike the other scripts here, this one does NOT need a running server: it
- * serves the built SPA (packages/frontend/dist) from a throwaway static server and
- * MOCKS the backend — the /events WebSocket delivers a snapshot carrying a
- * terminating session, and /session/list-deleted returns ordered entries. That
- * isolates the changed frontend code from the live cluster/session stack (handy
- * when no project is seeded). The server-side ordering/classification logic is
- * covered by the vitest suites in packages/server.
+ * Needs no running server: it serves the built SPA (packages/frontend/dist)
+ * from a throwaway static server and mocks the backend (the /events snapshot
+ * and the list-deleted route).
  *
  * Run: pnpm frontend:build && node test-playwright-scripts/deleted-terminating-ui-test.js
  * (set SCREENSHOT_DIR to capture screenshots there; playwright is resolved from
@@ -71,7 +66,7 @@ const SNAPSHOT = {
   projects: [{ slug: 'demo', remoteUrl: 'https://example.com/demo', addedAt: '2026-07-01T00:00:00Z', sessionCount: 2 }],
   provisioning: [], gitAuthFailures: {}, imageBuilds: [], planUsage: null,
 }
-// Already newest-deleted-first, as listDeletedSessions now returns.
+// Already newest first, as the server returns it.
 const DELETED = [
   { sessionId: 'd1', projectSlug: 'demo', tool: 'claude', title: 'Fix the auth bug',
     prompt: 'Fix the auth bug in the login flow', createdAt: '2026-07-13 09:00:00',
@@ -96,14 +91,14 @@ await page.routeWebSocket('**/events', (ws) => { ws.onMessage(() => {}); ws.send
 await page.goto(base)
 await page.getByText('Refactor the parser').first().waitFor({ timeout: 10000 })
 
-// Behavior 1: terminating row is a greyed, non-interactive placeholder.
+// 1: the terminating row is a greyed, non-interactive placeholder.
 check('terminating row shows "terminating…"', await page.getByText('terminating…').count() > 0)
 const term = page.locator('div', { hasText: 'Add tests for the lexer' }).filter({ hasText: 'terminating…' }).last()
 const opacity = await term.evaluate((el) => getComputedStyle(el.closest('[aria-disabled]') || el).opacity).catch(() => '1')
 check('terminating row is greyed (opacity < 1)', parseFloat(opacity) < 1)
 if (shot('1-sidebar-terminating.png')) await page.screenshot({ path: shot('1-sidebar-terminating.png') })
 
-// Behavior 2: full-screen deleted overlay.
+// 2: the full-screen overlay.
 await page.getByRole('button', { name: 'Deleted sessions' }).click()
 await page.getByText('Fix the auth bug').first().waitFor({ timeout: 5000 })
 await page.waitForTimeout(400)

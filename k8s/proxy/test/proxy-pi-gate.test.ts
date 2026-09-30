@@ -3,19 +3,16 @@ import type http from 'node:http'
 import { PI_PROVIDER_HOSTS } from 'yaac-proxy-sidecar/tool-providers.generated'
 
 /**
- * Tests for the proxy's placeholder-gated pi credential injection.
- * Mirrors the relevant slice of `buildDynamicRules` in k8s/proxy/proxy.ts —
- * the proxy runs in its own container and can't be imported directly, so we
- * copy the logic under test. The provider→host table is the real generated
- * one (imported), so a regen that drops/moves a host is caught here.
+ * Tests for the proxy's placeholder-gated pi credential injection, mirrored
+ * from `buildDynamicRules` in k8s/proxy/proxy.ts (which can't be imported).
+ * The provider→host table is the real generated one, so a regen that drops
+ * or moves a host is caught here.
  *
- * pi is api-key only, across many providers. Which header carries the key
- * varies by provider (Anthropic-style uses `x-api-key`, the rest use
- * `Authorization: Bearer`), so the proxy substitutes the placeholder wherever
- * it appears rather than tracking the header per provider. Injection fires when
- * the workspace is registered as tool=pi AND the request host matches the
- * credential's provider host AND the placeholder is present. Every other
- * combination passes through unchanged.
+ * The header carrying the key varies by provider (`x-api-key` or
+ * `Authorization: Bearer`), so the proxy replaces the placeholder wherever
+ * it appears. Injection fires only when the workspace is registered as
+ * tool=pi, the host is the credential's provider host, and the placeholder
+ * is present.
  */
 
 const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
@@ -104,8 +101,7 @@ describe('pi credential injection gating', () => {
   })
 
   it('substitutes wherever the placeholder rides — x-api-key wins when both are present', () => {
-    // The proxy substitutes in place, so whichever header the tool put the
-    // sentinel in gets the real key; x-api-key takes precedence when both do.
+    // x-api-key takes precedence when both headers carry the placeholder.
     const rules = buildPiRules('pi', anthCreds, ANTHROPIC_API_HOST, {
       'x-api-key': PLACEHOLDER_API_KEY,
       authorization: 'Bearer ' + PLACEHOLDER_API_KEY,

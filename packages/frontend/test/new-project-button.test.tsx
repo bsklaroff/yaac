@@ -31,7 +31,7 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-/** Render, open the dialog, type the remote, and let the credentials land. */
+/** Render, open the dialog, type the remote, and wait for credentials. */
 async function openWith(url: string): Promise<void> {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -51,8 +51,8 @@ describe('NewProjectButton', () => {
     vi.mocked(addProject).mockResolvedValue({ slug: 'repo', knownHostsEntry: 'github.com ssh-ed25519 HOSTKEY' })
     await openWith('git@github.com:o/repo.git')
 
-    // An SSH remote has no key to reuse (the token is the wrong kind), so the
-    // picker opens on a new one, named for the project the remote becomes.
+    // No SSH key exists (the token is the wrong kind), so the picker offers
+    // a new one, named for the project.
     await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('Credential name').value).toBe('repo-key'))
     expect(screen.queryByRole('option', { name: 'repo-token' })).toBeNull()
     expect(addButton().disabled).toBe(true)
@@ -64,7 +64,7 @@ describe('NewProjectButton', () => {
 
     fireEvent.click(addButton())
     await waitFor(() => expect(addProject).toHaveBeenCalledWith('git@github.com:o/repo.git', 'c-key'))
-    // The clone trusted the host's key: shown for comparison before closing.
+    // The trusted host key is shown before the dialog closes.
     expect(await screen.findByText('github.com ssh-ed25519 HOSTKEY')).toBeTruthy()
     expect(useUiStore.getState().activeProjectSlug).toBe('repo')
   })
@@ -76,11 +76,11 @@ describe('NewProjectButton', () => {
       .mockResolvedValueOnce({ slug: 'repo', knownHostsEntry: null })
     await openWith('https://github.com/o/Repo.git/')
 
-    // A stored token of the kind exists, so nothing is chosen for the user.
+    // A matching token exists, so nothing is preselected.
     await waitFor(() => expect(screen.getByRole('option', { name: 'repo-token' })).toBeTruthy())
     expect(addButton().disabled).toBe(true)
-    // Named for the slug the server derives (the last segment, lowercased),
-    // past the name already taken.
+    // Named for the project slug (last URL segment, lowercased), avoiding the
+    // taken name.
     fireEvent.change(screen.getByLabelText('Git credential'), { target: { value: 'new' } })
     expect(screen.getByLabelText<HTMLInputElement>('Credential name').value).toBe('repo-token-2')
     fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'ghp_x' } })

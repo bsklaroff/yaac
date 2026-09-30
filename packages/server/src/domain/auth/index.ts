@@ -1,30 +1,16 @@
-// The public interface of the auth feature. Everything outside this
-// directory imports `#domain/auth`; the SEALED_FOLDERS lint rule stops
-// src from reaching past this file. Modules in here import each other by
-// relative path, which is why they are unaffected by that rule.
-//
-// Two consumers. The auth routes read the masked credential list, clear
-// stored credentials, nudge the plan-usage refresh, and drive the vendor
-// sign-in flows through the relay hub (whose WebSocket the server's upgrade
-// handler also holds); the snapshot builder reads the two plan-usage slices.
-//
-// Everything behind those names is internal: the usage and profile
-// endpoints, both OAuth refresh grants, and the masking. They are reached
-// only through the entry points above and are covered through them.
-//
-// Credential convergence adds three more consumers: the create path seeds a
-// project's tool homes, the auth route fans a fresh login out to them, and
-// the reconcile pass (plus the containerless attach and workspace stop)
-// drives the standing sweep. The comparators and the per-project harvest and
-// push are internal to it, exercised through those four.
-//
-// The model catalog serves the create path and `yaac-mama models`: which
-// models a tool's credential can run, the one a create falls back to, and
-// what an id is called on screen.
-//
-// The runtime link is the other direction: every writer of the host store
-// pushes the whole set to the runtime, and the reconcile pass adopts what a
-// mediating runtime captured from a workspace's refresh.
+// Public interface of the sealed auth folder (`#domain/auth`):
+//  - the auth routes: masked credential list, clearing credentials,
+//    plan-usage refresh, and vendor sign-in via the relay hub (whose
+//    WebSocket the server's upgrade handler also holds);
+//  - the snapshot builder: the two plan-usage slices;
+//  - credential sync: create seeds a project's tool homes, the auth route
+//    fans a new login out to them, and the reconcile pass (plus containerless
+//    attach and workspace stop) runs the periodic sweep;
+//  - the model catalog, for the create path and `yaac-mama models`;
+//  - the runtime link: every writer of the host store pushes the full set to
+//    the runtime, and the reconcile pass adopts tokens a mediating runtime
+//    captured from a workspace's refresh.
+// Usage/profile endpoints, OAuth refresh grants and masking are internal.
 
 export { authAgentHub } from './agent'
 export { clearAuth } from './clear'

@@ -1,8 +1,7 @@
 /**
- * Diff structures the panes render, from the two sources that produce them:
- * a combined `git diff` (the changes pane) and a before/after text pair (an
- * ACP edit tool call, in the chat pane). Both land on the same `DiffLine[]`,
- * so one renderer draws both. Pure — no DOM, so it's unit-tested directly.
+ * Diff lines for the panes, from two sources: a combined `git diff` (the
+ * changes pane) and a before/after text pair (an ACP edit tool call in the
+ * chat pane). Both produce `DiffLine[]`, so one renderer draws both.
  */
 
 export type DiffLineKind = 'add' | 'del' | 'context' | 'hunk'
@@ -97,10 +96,8 @@ export function indexDiffsByPath(diff: string): Map<string, ParsedFileDiff> {
 }
 
 /**
- * Split a text into lines for diffing, without the phantom last line a
- * trailing newline would otherwise produce. An empty text is no lines at all,
- * not one blank one — an empty file being replaced should not read as a
- * deleted blank line.
+ * Split text into lines for diffing, ignoring a trailing newline. Empty text
+ * has no lines, so replacing an empty file doesn't show a deleted blank line.
  */
 function splitLines(text: string): string[] {
   if (text === '') return []
@@ -110,13 +107,10 @@ function splitLines(text: string): string[] {
 }
 
 /**
- * Number each distinct line, so the matching below compares integers.
- *
- * Without this the cap bounds how many cells the table has but not what one
- * costs: every cell is a string comparison, and lines that are long and
- * near-identical — a lockfile, a generated file, anything an agent can put in
- * front of us — make each comparison walk the whole line before answering.
- * Interning makes them all O(1), so the cap means what it says.
+ * Number each distinct line so the LCS table compares integers. Long,
+ * near-identical lines (lockfiles, generated files) would otherwise make each
+ * cell a slow string comparison, and `MAX_DIFF_CELLS` would not bound the
+ * cost.
  */
 function internLines(a: string[], b: string[]): { a: Int32Array; b: Int32Array } {
   const ids = new Map<string, number>()
@@ -130,15 +124,14 @@ function internLines(a: string[], b: string[]): { a: Int32Array; b: Int32Array }
 }
 
 /**
- * Above this many cells the line-matching table costs more than the result is
- * worth. An agent's edit block is a hunk with a little context, so a fragment
- * this large means something unusual — a whole-file rewrite — where showing
- * the old block then the new one reads just as well as an interleaved diff.
+ * Above this many LCS cells, skip line matching and show the old block then
+ * the new one. Edit blocks are usually small hunks, so this only happens on
+ * something like a whole-file rewrite, where an interleaved diff adds little.
  */
 const MAX_DIFF_CELLS = 1_000_000
 
-/** Every line of one side, as one kind. The fallback for a pair too large to
- *  match line by line, and the whole answer when one side is absent. */
+/** Every line of one side as all adds or all deletes. Used when one side is
+ *  missing or the pair is too large to match. */
 function wholeSide(text: string, kind: 'add' | 'del'): DiffLine[] {
   return splitLines(text).map((line, i) => ({
     kind,
@@ -149,18 +142,13 @@ function wholeSide(text: string, kind: 'add' | 'del'): DiffLine[] {
 }
 
 /**
- * Diff a before/after pair of texts into renderable lines.
+ * Diff a before/after text pair into renderable lines, using a line-level
+ * longest common subsequence.
  *
- * This is what an ACP edit tool call hands us: not a unified diff, but the two
- * versions of a *fragment* — one hunk of a file, with context lines around the
- * change, or the entire contents when a file is being created. So the line
- * numbers here are positions within the fragment, and a renderer showing them
- * as file line numbers would be lying; the chat pane's diff view leaves the
- * gutter off for that reason.
- *
- * The matching is a plain longest-common-subsequence over lines, which is what
- * makes context lines render as context instead of as a delete and an add of
- * the same text.
+ * An ACP edit tool call supplies two versions of a fragment (one hunk with
+ * context, or a whole new file), not a unified diff. The line numbers are
+ * therefore positions within the fragment, not file line numbers, which is
+ * why the chat pane's diff view hides the gutter.
  */
 export function diffTextPair(oldText: string | undefined, newText: string): DiffLine[] {
   if (oldText === undefined) return wholeSide(newText, 'add')
@@ -170,9 +158,7 @@ export function diffTextPair(oldText: string | undefined, newText: string): Diff
     return [...wholeSide(oldText, 'del'), ...wholeSide(newText, 'add')]
   }
 
-  // lcs[i][j] = length of the longest common subsequence of a[i:] and b[j:],
-  // in one flat row-major table. Both sides are compared as interned ids; the
-  // strings themselves are only ever read for the text of an emitted line.
+  // lcs[i][j] = LCS length of a[i:] and b[j:], in a flat row-major table.
   const { a: ia, b: ib } = internLines(a, b)
   const width = b.length + 1
   const lcs = new Int32Array((a.length + 1) * width)
@@ -205,7 +191,7 @@ export function diffTextPair(oldText: string | undefined, newText: string): Diff
   return lines
 }
 
-/** How many lines a diff adds and removes — the +N/−N a file header shows. */
+/** The +N/−N line counts a file header shows. */
 export function diffStats(lines: DiffLine[]): { additions: number; deletions: number } {
   return {
     additions: lines.filter((l) => l.kind === 'add').length,
@@ -216,8 +202,7 @@ export function diffStats(lines: DiffLine[]): { additions: number; deletions: nu
 /**
  * Whether a changed file matches a find query: a case-insensitive substring
  * of its path (either side of a rename) or of any code line in its diff.
- * Hunk headers are skipped — their line numbers aren't content. An empty
- * query matches everything, so an unfiltered list needs no special case.
+ * Hunk headers are skipped. An empty query matches everything.
  */
 export function changeMatchesQuery(
   file: { path: string; oldPath?: string },

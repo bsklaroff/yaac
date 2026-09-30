@@ -65,16 +65,16 @@ describe('useIsMobile', () => {
     const mq = stubMatchMedia(false)
     const { unmount, result } = renderHook(() => useIsMobile())
     unmount()
-    // No listener left to notice this — and no error from setting state on an
-    // unmounted subscriber.
+    // No listener is left to notice this, and no error from setting state on
+    // an unmounted subscriber.
     act(() => mq.set(true))
     expect(result.current).toBe(false)
   })
 })
 
 describe('useVisualViewportHeight', () => {
-  /** Install a fake visualViewport whose shape can be changed, as a soft
-   *  keyboard opening — or a pinch-zoom — would. */
+  /** Install a fake visualViewport whose shape can change, as it would when
+   *  a soft keyboard opens or the user pinch-zooms. */
   function stubVisualViewport(
     height: number,
   ): (next: { height?: number; offsetTop?: number; scale?: number }) => void {
@@ -106,10 +106,9 @@ describe('useVisualViewportHeight', () => {
   })
 
   it('follows the slide the keyboard puts the visual viewport through', () => {
-    // iOS scrolls the focused control into view and stays there, so the
-    // visible region starts partway down the layout viewport. An app that
-    // published only the height would sit above it, with the page showing
-    // through underneath.
+    // iOS scrolls the focused control into view, so the visible region starts
+    // partway down the layout viewport. Publishing only the height would leave
+    // the app above it with the page showing underneath.
     const change = stubVisualViewport(844)
     renderHook(() => useVisualViewportHeight(true))
 
@@ -131,9 +130,8 @@ describe('useVisualViewportHeight', () => {
   })
 
   it('still follows the keyboard on a scale left a hair off 1 by an old pinch', () => {
-    // `scale` is a float, and a browser is free not to land back on exactly 1.
-    // Read as "zoomed", that device loses the keyboard compensation for good —
-    // with no zoom on screen to suggest why.
+    // `scale` is a float and may not return to exactly 1. Treating that as
+    // zoomed would disable keyboard compensation with no visible zoom.
     const change = stubVisualViewport(844)
     renderHook(() => useVisualViewportHeight(true))
 

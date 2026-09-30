@@ -10,14 +10,9 @@ import { makeServerApiClient } from '@yaac/test-utils/api'
 import { clusterAvailable } from '@yaac/test-utils/setup'
 
 /**
- * HTTP-surface tests for the spawned server. These don't exercise the
- * CLI directly — they hit the server's identity-gated endpoints via
- * the typed RPC client to verify the response shapes the CLI relies on.
- *
- * The server itself boots without a cluster (its bootstrap is
- * best-effort), so most cases run anywhere; the few routes whose
- * NOT_FOUND path requires a pod listing are skipped when no cluster is
- * reachable.
+ * Response shapes the CLI relies on, checked through the typed RPC client
+ * against a spawned server. The server boots without a cluster, so most
+ * cases run anywhere; those needing a pod listing are skipped without one.
  */
 const haveCluster = await clusterAvailable()
 describe('yaac server HTTP surface (real server)', () => {
@@ -25,11 +20,8 @@ describe('yaac server HTTP surface (real server)', () => {
   let server: SpawnedServer
   let client: ReturnType<typeof makeServerApiClient>
 
-  // One server for the file: every case below is a pure read of the
-  // HTTP surface (auth rejections, empty lists, NOT_FOUND paths) and
-  // none mutates server state, so a spawn apiece bought nothing but a
-  // ~2s tax per assertion. It admits a tailnet name, so a request to it
-  // reaches the identity gate rather than stopping at the Host guard.
+  // One server for the file; no case mutates state. It admits a tailnet
+  // name, so requests reach the identity gate instead of the Host guard.
   beforeAll(async () => {
     testEnv = await createYaacTestEnv()
     server = await spawnYaacServer({ ...testEnv.env, YAAC_ALLOWED_HOSTS: 'srv.tailnet.ts.net' })
@@ -42,8 +34,8 @@ describe('yaac server HTTP surface (real server)', () => {
   })
 
   it('refuses /project/list to a caller it cannot identify', async () => {
-    // The tailnet name reached without tailscale serve: no identity to be.
-    // A raw request, because fetch() silently drops a Host override.
+    // A tailnet name without tailscale serve has no identity. A raw
+    // request, because fetch() silently drops a Host override.
     const status = await new Promise<number>((resolve, reject) => {
       const req = http.request({
         host: '127.0.0.1', port: server.lock.port, path: '/api/project/list',
@@ -68,17 +60,14 @@ describe('yaac server HTTP surface (real server)', () => {
     expect(body.error.code).toBe('NOT_FOUND')
   })
 
-  // Session resolution lists pods via kubectl, so this NOT_FOUND path
-  // needs a reachable cluster (without one it maps to RUNTIME_UNAVAILABLE).
+  // Without a cluster this answers RUNTIME_UNAVAILABLE instead.
   it.skipIf(!haveCluster)('GET /workspace/:id/blocked-hosts returns 404 for an unknown workspace', async () => {
     const res = await client.workspace[':id']['blocked-hosts'].$get({ param: { id: 'deadbeef' } })
     expect(res.status).toBe(404)
   })
 
   it('GET /prewarm is gone (removed with the kubernetes migration)', async () => {
-    // The route was deleted along with the prewarm feature; the typed RPC
-    // client no longer exposes it, so hit the path raw and expect the
-    // uniform 404.
+    // The typed client has no such route, so request the path raw.
     const res = await fetch(`http://127.0.0.1:${server.lock.port}/prewarm`)
     expect(res.status).toBe(404)
     const body = await res.json() as { error: { code: string } }

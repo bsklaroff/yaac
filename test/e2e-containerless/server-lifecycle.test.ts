@@ -16,22 +16,15 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 
 /**
- * The server as a HOST PROCESS: binding, the lock file, `start`/`stop`/
- * `restart`, and `logs`.
- *
- * In the containerless tier because that is the only substrate whose server
- * is a host process. Under k8s the server is a Deployment of the cluster it
- * manages (docs/server-in-cluster.md), so `start` is a scale and `stop` is a
- * scale to zero — asserted separately in test/e2e-cli/server.test.ts. What
- * is checked here (a pid, a port, a lock, a log file) only means anything on
- * the side of the container boundary that has them.
+ * The server as a host process: binding, the lock file, `start`/`stop`/
+ * `restart`, and `logs`. Only the containerless server is a host process;
+ * under k8s it is a Deployment (docs/server-in-cluster.md), covered by
+ * test/e2e-cli/server.test.ts.
  */
 
-// Hold the cross-worker server mutex for the whole file: these tests
-// exercise `yaac server start`/`stop`/`restart` which spawn detached
-// servers via the CLI (not spawnYaacServer), so there's no per-test
-// hook to wrap. Acquiring at the file level serializes this suite
-// with every other server-using test.
+// These tests spawn detached servers through the CLI rather than
+// spawnYaacServer, so the cross-worker server mutex is held for the whole
+// file.
 let releaseServerMutex: (() => Promise<void>) | null = null
 beforeAll(async () => {
   releaseServerMutex = await acquireServerMutex()
@@ -57,11 +50,8 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
   })
 
   it('binds, writes the lock at serverLockPath(), serves /health and the CLI, and clears the lock on stop', async () => {
-    // One spawned server walks the whole run-lifecycle: these were four
-    // separate tests, but each claim needs nothing beyond "a live server",
-    // so they share one spawn. (`server run` second-invocation idempotency
-    // is covered by the `server start` idempotency test below — both hit
-    // the same server-side lock check.)
+    // A second `server run` hits the same lock check as the `server start`
+    // idempotency test below.
     server = await spawnYaacServer(testEnv.env)
     expect(server.lock.port).toBeGreaterThan(0)
 
@@ -70,8 +60,7 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
     expect(await res.json()).toMatchObject({ ok: true })
 
     expect(serverLockPath()).toBe(path.join(testEnv.dataDir, 'server-local', '.server.lock'))
-    // The running server renews `heartbeatAt` every few seconds, so the file
-    // matches the spawn-time read in everything but that.
+    // `heartbeatAt` is renewed every few seconds.
     const raw = await fs.readFile(serverLockPath(), 'utf8')
     expect({ ...JSON.parse(raw) as object, heartbeatAt: server.lock.heartbeatAt }).toEqual(server.lock)
 
@@ -85,22 +74,16 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
   })
 
   it('`server run --port <N>` prefers the requested port over the env default', async () => {
-    // A port above the env default (YAAC_SERVER_PORT) proves --port wins: were
-    // it ignored, the server would land on the lower env port. Auto-increment
-    // only nudges it higher, so the bound port stays in [wanted, wanted+probes).
+    // A port above the env default (YAAC_SERVER_PORT): if --port were
+    // ignored the server would bind the lower one. Auto-increment only moves
+    // it up, so it lands in [wanted, wanted + probes).
     const wanted = testEnv.serverPort + 1
-    // The built bundle, like every other spawn in the suite (see
-    // TEST_CLI_ENTRY) — the source under tsx re-transpiles the whole
-    // dependency graph before it can even bind.
     const child = spawn(process.execPath, [
       TEST_CLI_ENTRY, 'server', 'run', '--port', String(wanted),
     ], { env: testEnv.env, stdio: ['ignore', 'ignore', 'pipe'] })
     try {
-      // Generous budget: a cold `server run` binds and writes its lock in a
-      // few seconds, and a loaded parallel run stretches that — at 5s this
-      // timed out and read `port` off an undefined lock. Only the lock is
-      // awaited, not `/api/health` readiness: the port is stamped at bind time,
-      // well before the DB init that `ready` gates on.
+      // Generous budget for a cold start on a loaded host. The lock is
+      // written at bind time, before DB init, so readiness is not awaited.
       const deadline = Date.now() + 60_000
       let lock = await readLock()
       while (!lock && Date.now() < deadline) {
@@ -138,17 +121,14 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     expect(exitCode).toBe(0)
     const lock = await readLock()
     expect(lock).not.toBeNull()
-    // No --port was given, so the server prefers the fixed default (here the
-    // test env's YAAC_SERVER_PORT), auto-incrementing only if it's busy —
-    // never an OS-assigned ephemeral port well outside that range.
+    // Without --port it starts from YAAC_SERVER_PORT and increments if
+    // busy, never picking an OS-assigned ephemeral port.
     expect(lock!.port).toBeGreaterThanOrEqual(testEnv.serverPort)
     expect(lock!.port).toBeLessThan(testEnv.serverPort + MAX_PORT_PROBES)
     const res = await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
     expect(res.status).toBe(200)
-    // `server start` returns only once the server is ready (DB init done),
-    // not merely bound — so /health reports ready: true by the time the
-    // command's exit is observed. This is what lets the next init command
-    // (e.g. `yaac auth ...`) reach the server instead of racing its boot.
+    // `server start` waits for readiness (DB init), so the next init
+    // command does not race the boot.
     expect(await res.json()).toMatchObject({ ok: true, ready: true })
   })
 
@@ -219,10 +199,9 @@ describe('yaac server start on a k8s install', () => {
   })
 
   it('refuses, and never spawns a second writer of that data dir', async () => {
-    // The recorded driver is the tripwire: it says which KIND of install
-    // this data dir is (docs/server-in-cluster.md). A host server started
-    // against a k8s one would be a second writer of the same PGlite
-    // database, and would reap every workspace it cannot see as podless.
+    // The recorded driver marks this data dir as a k8s install
+    // (docs/server-in-cluster.md). A host server here would be a second
+    // writer of the same database and would reap every workspace as podless.
     const clientRoot = `${testEnv.dataDir}-client`
     await fs.mkdir(clientRoot, { recursive: true })
     await fs.writeFile(path.join(clientRoot, 'server.json'), JSON.stringify({
@@ -231,26 +210,21 @@ describe('yaac server start on a k8s install', () => {
 
     const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'start')
     expect(exitCode).toBe(1)
-    // TWO refusals can answer here, and this tier must accept either,
-    // because which one fires depends on whether the machine has kubectl —
-    // and a containerless workspace, which is where this tier is meant to be
-    // runnable, does not:
-    //   - with a cluster to ask: no Deployment → `assertHostServerAllowed`
-    //     refuses, naming `yaac cluster install`.
-    //   - without one: `runDeployedServerVerb` cannot ask, and a k8s
-    //     install treats that as a refusal rather than falling back to the
-    //     host path — which is the same wall, one step earlier.
-    // Asserting one message would make this test a probe for kubectl.
+    // Which refusal fires depends on whether this machine can reach a
+    // cluster (a containerless workspace usually cannot):
+    //   - with a cluster: no Deployment, so `assertHostServerAllowed`
+    //     refuses and names `yaac cluster install`.
+    //   - without one: `runDeployedServerVerb` cannot ask and refuses rather
+    //     than falling back to a host server.
     expect(stderr).toMatch(/runs its server in the cluster|cannot ask the cluster/)
     expect(stderr).toMatch(/yaac cluster install|Fix the cluster access/)
-    // Refused before the spawn either way, which is the property that
-    // matters: nothing is running to clean up.
+    // Either way, nothing was spawned.
     expect(await readLock()).toBeNull()
   })
 
   it('has no --driver flag to choose a substrate with', async () => {
-    // Placement is the driver now: `yaac server start` means containerless
-    // and `yaac cluster install` means k8s, so there is nothing to select.
+    // `yaac server start` means containerless and `yaac cluster install`
+    // means k8s, so there is nothing to select.
     const { exitCode, stderr } = await runYaac(
       testEnv.env, 'server', 'start', '--driver', 'containerless',
     )
@@ -272,9 +246,9 @@ describe('yaac server run refuses what the identity rule cannot defend', () => {
   })
 
   it('a bind beyond loopback, where anyone could claim to be this machine', async () => {
-    // Loopback is the owner (docs/remote-hosting.md), so a bind on any
-    // other address hands that to whoever reaches it and sends a loopback
-    // Host. Only the in-cluster pod binds wide, behind its ingress policy.
+    // Loopback callers are treated as the owner (docs/remote-hosting.md),
+    // so a wider bind would grant that to anyone who sends a loopback Host.
+    // Only the in-cluster pod binds wide, behind its ingress policy.
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, YAAC_BIND_ADDR: '0.0.0.0' }, 'server', 'run',
     )
@@ -284,9 +258,8 @@ describe('yaac server run refuses what the identity rule cannot defend', () => {
   })
 
   it('YAAC_REQUIRE_AUTH, which asked for a gate that no longer exists', async () => {
-    // The one silent failure the token removal could cause: a host shared
-    // with other OS users, serving them all as its owner. Refused instead
-    // (docs/legacy-compat-shims.md).
+    // Without this refusal, a host shared with other OS users would
+    // silently serve them all as its owner (docs/legacy-compat-shims.md).
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, YAAC_REQUIRE_AUTH: '1' }, 'server', 'run',
     )
@@ -319,8 +292,7 @@ describe('yaac server logs (real CLI)', () => {
     const started = await runYaac(testEnv.env, 'server', 'start')
     expect(started.exitCode).toBe(0)
 
-    // Hit /health to guarantee the request logger has flushed at least
-    // one line, plus the initial "listening on …" line from startup.
+    // Guarantees a request-log line besides the startup line.
     const lock = await readLock()
     await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
 
@@ -354,8 +326,7 @@ describe('yaac server logs (real CLI)', () => {
       let stdout = ''
       child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
 
-      // Generous budgets: the first wait absorbs the CLI's cold start,
-      // which can still take a second or two on a loaded host.
+      // The first wait absorbs the CLI's cold start.
       await waitFor(() => stdout.includes('initial\n'), 15000)
       await fs.appendFile(serverLogPath(), 'appended\n')
       await waitFor(() => stdout.includes('appended\n'), 5000)

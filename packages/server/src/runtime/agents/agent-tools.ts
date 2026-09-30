@@ -1,15 +1,13 @@
 /**
- * The per-tool dispatch table: everything the rest of the server asks about
- * "the agent" without wanting to know which one it is. Each function here
- * switches on an `AgentTool` and delegates to that tool's module, so the
- * tool-specific grammars (claude's spinner titles, opencode's busy markers,
- * codex's rollout files) stay behind this file and never reach a caller.
+ * Per-tool dispatch: everything the server asks about "the agent" without
+ * caring which tool it is. Each function switches on `AgentTool` and
+ * delegates to that tool's module, keeping tool-specific formats (claude's
+ * spinner titles, opencode's busy markers, codex's rollout files) out of
+ * callers.
  *
- * Window naming lives here too, because its two halves are inverses:
- * session setup names an agent's tmux window (`agentWindowName`) and the
- * status watcher reads that name back to pick the tool (`agentWindowTool`).
- * Splitting them across folders is how a rename silently stops a pane from
- * ever being classified.
+ * Window naming is here too: setup names an agent's window
+ * (`agentWindowName`) and the status watcher parses it back
+ * (`agentWindowTool`), so the two must stay in sync.
  */
 import path from 'node:path'
 import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, agentSessionIdSchema } from '@yaac/shared/types'
@@ -34,14 +32,12 @@ import type { SandboxFile } from './sandbox-fs'
 export type AgentPaneStatus = 'running' | 'waiting'
 
 /**
- * One agent session's first user message, read from the transcript recorded
- * for it. There is deliberately no by-id variant: a conversation started by
- * `/clear` has an id yaac never chose, and codex's rollout filename is not
- * derivable from any id at all — the recorded path is the only handle.
+ * A conversation's first user message, read from its recorded transcript.
+ * There is no by-id variant: a `/clear` conversation has an id yaac did not
+ * choose, and codex's rollout filename is not derivable from any id.
  *
- * opencode is the exception it always is: no host transcript, so its first
- * message comes from an HTTP probe into the running container, for the
- * session its id names, and is unavailable once the pod is gone.
+ * opencode has no host transcript, so its first message comes from an HTTP
+ * probe into the running workspace and is unavailable once it stops.
  */
 export async function getAgentSessionFirstMessage(
   tool: AgentTool,
@@ -57,26 +53,21 @@ export async function getAgentSessionFirstMessage(
 }
 
 /**
- * The tmux pane option a tool's in-pane reporter sets to the model it is
- * running (`workspace-bin/yaac-agent-report`) — claude from its `SessionStart`
- * and `PostModelSwitch` hooks, opencode and pi from a plugin and an extension
- * of their own.
+ * The pane option a tool's reporter (`workspace-bin/yaac-agent-report`)
+ * sets to its current model: claude via hooks, opencode and pi via their
+ * plugin/extension.
  */
 export const MODEL_PANE_OPTION = '@yaac-model'
 
 /**
- * The tmux format a pane's model subscription watches. Every tool but codex
- * reports through `MODEL_PANE_OPTION`; codex can run nothing on a model
- * change, but rewrites its title, so its format cuts the model out of that.
- * Either way the value moves the moment the switch lands, and tmux pushes it.
+ * The tmux format a pane's model subscription watches: `MODEL_PANE_OPTION`
+ * for every tool but codex, whose model is cut out of its title instead.
  *
- * The option is filtered to printable ASCII and bounded INSIDE the format.
- * tmux escapes a pane title but expands a user option verbatim into the
- * `%subscription-changed` line, and anything in the workspace can set one —
- * so an unfiltered value could carry a newline and forge control-mode lines
- * (`%exit`, another pane's status, a `%begin` that desyncs replies). Filtering
- * where the value is written would not help: the agent can run `tmux
- * set-option` itself. (Not `[[:cntrl:]]`: its `:` ends the modifier list.)
+ * The option is filtered to printable ASCII and length-bounded inside the
+ * format: tmux expands user options verbatim into `%subscription-changed`
+ * lines, and anything in the workspace can set one (e.g. with
+ * `tmux set-option`), so a newline could forge control-mode lines. (Not
+ * `[[:cntrl:]]`: its `:` ends the modifier list.)
  */
 export function agentModelFormat(tool: AgentTool): string {
   return tool === 'codex'
@@ -85,30 +76,28 @@ export function agentModelFormat(tool: AgentTool): string {
 }
 
 /**
- * The tmux pane option a tool's reporter sets to the permission mode it is in,
- * in its own words: claude's mode name, from its `UserPromptSubmit` and `Stop`
- * hooks, and opencode's agent (`build`, `plan`), from its plugin. Both go
- * through the same script as the model (`workspace-bin/yaac-agent-report`).
+ * The pane option a tool's reporter sets to its permission mode, in the
+ * tool's own terms: claude's mode name (from hooks) or opencode's agent
+ * (`build`, `plan`). Set by `workspace-bin/yaac-agent-report`.
  */
 export const MODE_PANE_OPTION = '@yaac-permission-mode'
 
-/** Joins the two halves of `agentReportFormat`'s value. The mode half is
- *  filtered to letters and dashes, so the last one is always the join. */
+/** Separator in `agentReportFormat`'s value. The mode half is filtered to
+ *  letters and dashes, so the last separator is always the join. */
 const REPORT_SEPARATOR = '|'
 
 /**
- * The tmux format a pane's report subscription watches: its model
- * (`agentModelFormat`) and its permission mode (`MODE_PANE_OPTION`), in one
- * value so one subscription carries both. The mode is filtered inside the
- * format for the same reason the model is — anything in the workspace can set
- * the option — and more tightly, since every mode name is a word.
+ * The tmux format for a pane's report subscription: model
+ * (`agentModelFormat`) and mode (`MODE_PANE_OPTION`) in one value. The mode
+ * is filtered inside the format too, more tightly, since mode names are
+ * words.
  */
 export function agentReportFormat(tool: AgentTool): string {
   return `${agentModelFormat(tool)}${REPORT_SEPARATOR}#{=32;s/[^A-Za-z-]//:${MODE_PANE_OPTION}}`
 }
 
-/** The two halves of a pushed `agentReportFormat` value; either may be empty
- *  — a pane whose tool has not reported that half yet. */
+/** The two halves of a pushed `agentReportFormat` value; either may be
+ *  empty if the tool has not reported it yet. */
 export function splitAgentReport(value: string): { model: string; mode: string } {
   const at = value.lastIndexOf(REPORT_SEPARATOR)
   return at < 0
@@ -117,27 +106,25 @@ export function splitAgentReport(value: string): { model: string; mode: string }
 }
 
 /**
- * The tmux pane option naming the conversation a pane holds, as
- * `<tool>|<id>|<project-relative transcript>` — set by
- * `workspace-bin/yaac-agent-links` from claude's and codex's `SessionStart`
- * hooks, pi's extension and opencode's plugin, so it moves on every `/clear`,
- * `/new` or resume, and dies with its pane. A resume launch sets it first
- * (`nameSessionCommand`).
+ * The pane option naming the pane's conversation, as
+ * `<tool>|<id>|<project-relative transcript>`. Set by
+ * `workspace-bin/yaac-agent-links` from each tool's hook or plugin, so it
+ * changes on `/clear`, `/new` or resume and dies with the pane. A resume
+ * launch sets it first (`nameSessionCommand`).
  */
 const SESSION_PANE_OPTION = '@yaac-session'
 
 /**
- * The tmux command naming a conversation on `target`'s pane, as its tool's
- * reporter would but for the transcript, which only the tool knows.
+ * The tmux command naming a conversation on `target`'s pane, as the tool's
+ * reporter would, minus the transcript only the tool knows.
  */
 export function nameSessionCommand(target: string, tool: AgentTool, agentSessionId: string): string {
   return `set-option -p -t ${target} ${SESSION_PANE_OPTION} '${tool}|${agentSessionId}|'`
 }
 
 /**
- * The tmux format a pane's session subscription watches. Filtered and bounded
- * inside the format for the same reason the model is (`agentModelFormat`):
- * anything in the workspace can set the option.
+ * The tmux format for a pane's session subscription, filtered and bounded
+ * like `agentModelFormat`.
  */
 export const PANE_SESSION_FORMAT = `#{=1024;s/[^ -~]//:${SESSION_PANE_OPTION}}`
 
@@ -151,18 +138,14 @@ export interface PaneSession {
 
 /**
  * The conversation a pushed `PANE_SESSION_FORMAT` value names, or undefined
- * for an empty or malformed one.
+ * if empty or malformed.
  *
- * This is the layer that treats the value as untrusted, and it is the only
- * one: the registry records it verbatim, a restart interpolates the id into a
- * launch command as a bare argv word (`--resume <id>`), and the stopped
- * listing stats and parses whatever path it names. So the id is held to
- * `agentSessionIdSchema` — a bounded charset no shell or path join reads
- * anything into, never a flag (`codex resume
- * --dangerously-bypass-approvals-and-sandbox`) — and a path the reporter could
- * not legitimately have written — absolute, or climbing out of the project —
- * is dropped. Where a recorded path is read, it is also held to the tool's
- * own home (`resolveProjectPath`).
+ * This is where the untrusted value is validated: the id is later recorded,
+ * interpolated into a launch command (`--resume <id>`), and used in path
+ * lookups. So the id must match `agentSessionIdSchema` (a bounded charset,
+ * never a flag such as `--dangerously-bypass-approvals-and-sandbox`), and an
+ * absolute or project-escaping path is dropped. Reads of a recorded path are
+ * further confined to the tool's home (`resolveProjectPath`).
  */
 export function parsePaneSession(value: string): PaneSession | undefined {
   const [tool, id, ...rest] = value.trim().split('|')
@@ -177,17 +160,14 @@ export function parsePaneSession(value: string): PaneSession | undefined {
 }
 
 /**
- * The posture an agent's reported mode (`LiveAgent.reportedMode`) stands for,
- * or undefined when it names none yaac has — which is left unrecorded rather
- * than rounded to a neighbour.
+ * The posture an agent's reported mode (`LiveAgent.reportedMode`) maps to,
+ * or undefined if none matches.
  *
- * Under `acp` it is a session mode id, read back through the adapter's
- * profile. Under `tui` it is what the tool's reporter published: claude's own
- * mode name, or opencode's agent, which only means something against the
- * posture the workspace runs under now (`current`). codex's is already a
- * posture: its hooks can only tell `bypassPermissions` from everything else,
- * so the registry reads it from the rollout its pane names
- * (`getCodexPermissionMode`). pi has no modes.
+ * Under `acp` it is a session mode id, mapped through the adapter profile.
+ * Under `tui` it is the reporter's value: claude's mode name, or opencode's
+ * agent, which is interpreted against the workspace's `current` posture.
+ * codex's hooks cannot report a mode, so the registry reads it from the
+ * rollout (`getCodexPermissionMode`). pi has no modes.
  */
 export function resolveAgentPermissionMode(
   mode: AgentMode,
@@ -203,10 +183,10 @@ export function resolveAgentPermissionMode(
 }
 
 /**
- * The model id a pushed model-format value names, in the tool's own spelling
+ * The model id in a pushed model-format value, in the tool's own spelling
  * (`claude-opus-5-5[1m]`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`), or
- * undefined for an empty push — a pane whose tool has not reported yet.
- * Only codex needs a lookup: its title shows the catalog's display name.
+ * undefined if the tool has not reported yet. Only codex needs a lookup,
+ * since its title shows the catalog's display name.
  */
 export async function resolveAgentModel(
   tool: AgentTool,
@@ -219,14 +199,12 @@ export async function resolveAgentModel(
 }
 
 /**
- * Build a tmux format that resolves to `running`/`waiting` by searching the
- * visible pane for any of `markers` (each an ERE, matched case-insensitively
- * via `#{C/ri:}` — a content search over the visible grid). The markers are
- * OR'd; a match in the pane means `running`, none means `waiting`.
+ * A tmux format that resolves to `running` if any of `markers` (EREs,
+ * case-insensitive, via `#{C/ri:}`) appears in the visible pane, else
+ * `waiting`.
  *
- * Markers must obey tmux-ERE limits (see the agent modules' definitions): no
- * `(?:...)` (use `(...)`), no `{n,}` interval (whose `}` would close the
- * `#{...}`), and no literal `,` (the `#{||:}`/`#{?}` argument separator).
+ * Markers must fit tmux's ERE limits: no `(?:...)`, no `{n,}` (its `}`
+ * closes `#{...}`), and no literal `,` (the argument separator).
  */
 function busyStatusFormat(markers: readonly string[]): string {
   const anyBusy = markers
@@ -236,11 +214,10 @@ function busyStatusFormat(markers: readonly string[]): string {
 }
 
 /**
- * The tmux status format a tool's watcher subscribes to. claude/codex expose
- * busy/idle in the pane's OSC title, so the format is `#{pane_title}` and the
- * pushed value is classified server-side (`classifyAgentObservation`).
- * opencode/pi render it into the pane, so the format resolves the verdict
- * inside tmux and pushes `running`/`waiting` directly.
+ * The tmux status format a tool's watcher subscribes to. claude/codex show
+ * busy/idle in the OSC title, so the format is `#{pane_title}`, classified
+ * server-side (`classifyAgentObservation`). opencode/pi draw it in the pane,
+ * so the format resolves `running`/`waiting` inside tmux.
  */
 export function agentStatusFormat(tool: AgentTool): string {
   if (tool === 'opencode') return busyStatusFormat(OPENCODE_BUSY_MARKERS)
@@ -249,9 +226,8 @@ export function agentStatusFormat(tool: AgentTool): string {
 }
 
 /**
- * Classify a pushed subscription value for a tool. claude/codex push the pane
- * title (classified by its spinner prefix); opencode/pi push an
- * already-resolved verdict from their `agentStatusFormat`.
+ * Classify a pushed subscription value: claude/codex push the title
+ * (classified by spinner prefix); opencode/pi push a resolved verdict.
  */
 export function classifyAgentObservation(tool: AgentTool, observed: string): AgentPaneStatus {
   if (tool === 'codex') return classifyCodexTitle(observed)
@@ -260,30 +236,25 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Age
 }
 
 /**
- * The tmux window name for a workspace's Nth agent. The first keeps the bare
- * tool name, so every existing `yaac:<tool>` target — the prompt paste, the
- * CLI's `attach --agent`, the terminals listing — resolves exactly as before
- * no matter how many agents a workspace ends up holding. Extras are
- * `<tool>-2`, `<tool>-3`, …
+ * The tmux window name for a workspace's Nth agent: the bare tool name for
+ * the first (so `yaac:<tool>` targets keep working), then `<tool>-2`,
+ * `<tool>-3`, …
  */
 export function agentWindowName(tool: AgentTool, index: number): string {
   return index === 0 ? tool : `${tool}-${index + 1}`
 }
 
 /**
- * The agent tool a tmux window runs, or undefined when it is not an agent
- * window — the inverse of `agentWindowName`.
+ * The agent tool a tmux window runs, or undefined for non-agent windows;
+ * the inverse of `agentWindowName`.
  *
- * Any tool matches, not just the workspace's: a workspace can hold a codex
- * conversation beside its claude ones, and matching only the workspace's tool
- * would drop that window from the live pane set — which in turn leaves its
- * link inactive, so the next restart silently forgets a conversation that was
- * running when the workspace stopped.
+ * Any tool matches, not just the workspace's, since a workspace can hold a
+ * codex conversation beside claude ones; dropping it would make the next
+ * restart forget it.
  *
- * Init-command windows and scratch shells are excluded — they have no agent
- * status to classify. An agent a user starts by hand inside a *scratch*
- * window is therefore linked as a conversation (its hook still fires) but
- * carries no status dot; naming the window after the tool is what opts it in.
+ * Init windows and scratch shells are excluded. An agent started by hand in
+ * a scratch window is still linked (its hook fires) but gets no status;
+ * naming the window after the tool opts it in.
  */
 export function agentWindowTool(windowName: string): AgentTool | undefined {
   return AGENT_TOOLS.find((t) => windowName === t || new RegExp(`^${t}-\\d+$`).test(windowName))

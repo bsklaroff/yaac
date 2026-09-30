@@ -22,23 +22,20 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
     kind: entry.kind,
     keyPreview: maskKey(entry.apiKey),
     savedAt: entry.savedAt,
-    // `tool` is a runtime value here, so the entry is the full union —
-    // narrowed per tool rather than read off a shape that carries every
-    // tool's optional fields at once.
+    // `entry` is the full union, so narrow per tool.
     opencodeProvider: entry.tool === 'opencode' ? entry.opencodeProvider : undefined,
     piProvider: entry.tool === 'pi' ? entry.piProvider : undefined,
-    // What the create form offers for this credential: its provider decides
-    // the list for the tools whose ids carry one.
+    // The create form's model list; for opencode/pi it depends on the
+    // provider.
     models: modelsForTool(tool, provider),
     defaultModel: defaultModelFor(tool, provider),
   }
 }
 
 /**
- * Aggregate the masked view over git credentials and per-tool credentials
- * used by the settings page, `yaac auth list` and the create form (which reads each configured
- * tool's model list off it). Never returns the raw tokens, key bytes, or
- * API keys.
+ * Masked summary of git credentials and per-tool credentials, for the
+ * settings page, `yaac auth list` and the create form's model lists. Never
+ * returns raw tokens or keys.
  */
 export async function listAuth(): Promise<AuthListResult> {
   const [gitCredentials, claude, codex, opencode, pi] = await Promise.all([

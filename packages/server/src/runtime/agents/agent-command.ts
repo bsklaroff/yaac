@@ -16,25 +16,15 @@ import { doubleQuoted, envJsonAssignment, shellEscape } from '#lib/shell'
 import { CODEX_TITLE_ITEMS, codexLaunchConfig } from './codex'
 
 /**
- * Every `tmux` invocation this file authors routes through this prefix so
- * they all reach the same server socket — WHICH socket being the driver's
- * answer, not ours (`WorkspacePaths.tmuxSock`).
- *
- * It has to be, because the two drivers need different answers for the same
- * reason: a UNIX socket only rendezvouses within the kernel that bound it.
- * A pod has its own, so one fixed in-container path is safe for every
- * workspace; host processes share one, so a fixed path would land every
- * workspace on a single tmux server, where `has-session -t yaac` and
- * `respawn-window -t yaac:<tool>` would answer for whichever workspace got
- * there first.
+ * Prefix for every `tmux` invocation here, pointing at the driver's socket
+ * (`WorkspacePaths.tmuxSock`). Each pod has its own kernel so one fixed path
+ * is fine there, but host processes share one, and a fixed path would put
+ * every containerless workspace on a single tmux server.
  */
 export function tmuxCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>): string {
-  // Unquoted, and it has to be: this prefix is embedded both at the top
-  // level of an `exec` and INSIDE single-quoted script bodies (the prompt
-  // paste, an init window's `'cd … && …'`), where a quote would end the
-  // enclosing string. What keeps it safe is the other end — a driver's
-  // paths are shell-safe by construction, which `assertShellSafePaths`
-  // enforces at launch for the one driver whose paths are not constants.
+  // Unquoted because it is also embedded inside single-quoted scripts.
+  // Safe because driver paths are shell-safe (`assertShellSafePaths` checks
+  // the driver whose paths are not constants).
   return `tmux -S ${paths.tmuxSock}`
 }
 
@@ -48,11 +38,10 @@ export interface InitWindow {
 }
 
 /**
- * Resolve `config.initCommands` into the concrete set of tmux windows to
- * spawn. Pure (no side effects) so it can be unit-tested directly.
+ * Resolve `config.initCommands` into the tmux windows to spawn:
  *
  *   - string[]            → one `init` window with the commands chained `&&`
- *   - InitCommandSpec[]   → one window per spec, name taken from spec.name
+ *   - InitCommandSpec[]   → one window per spec, named by spec.name
  *   - undefined / []      → no windows
  */
 export function resolveInitWindows(config: YaacConfig): InitWindow[] {
@@ -79,19 +68,15 @@ export interface AgentCmdSpec {
   /** pi only — provider whose default model is passed to `pi --model`
    *  when no explicit `model` override is given. */
   piProvider?: PiProvider
-  /** Model passed to the agent's `--model` flag: a model id or alias for
-   *  claude/codex (`opus`, `gpt-5.2-codex`), `provider/model` for
-   *  opencode and pi. Validated by the create route to MODEL_RE, so it is
-   *  safe to embed bare in the single-quoted respawn-window wrapper. */
+  /** Model for the agent's `--model` flag: an id or alias for claude/codex
+   *  (`opus`, `gpt-5.2-codex`), `provider/model` for opencode and pi.
+   *  Validated against MODEL_RE by the create route, so it can be embedded
+   *  bare in the single-quoted respawn-window wrapper. */
   model?: string
   /**
-   * The permission posture to launch in — how much the agent may do before
-   * it stops to ask.
-   *
-   * Required rather than defaulted: it decides whether an agent can act
-   * unsupervised, and on a runtime with no sandbox around it that is the
-   * difference between a workspace and this machine. A caller states it,
-   * and the workspace's row is what remembers the answer across a restart.
+   * The permission posture to launch in. Required, not defaulted: without a
+   * sandbox it decides what the agent may do to this machine unsupervised.
+   * The workspace row remembers it across restarts.
    */
   permissionMode: PermissionMode
   /** codex only — the workspace to run it in and launch it trusting
@@ -100,41 +85,30 @@ export interface AgentCmdSpec {
 }
 
 /**
- * The posture to actually launch `tool` in, given what the workspace's row
- * asks for.
- *
- * Create refuses a posture its tool doesn't have, so this only fires on a row
- * written by a different build — where refusing would strand a workspace that
- * cannot be restarted. The fallback is the most permissive posture the tool
- * has that is no looser than the row's (`launchablePermissionMode`): opencode has
- * no reviewer model, so `auto` lands on `accept-edits`; codex's strictest is
- * `read-only`, where claude's and opencode's is `plan`, so each lands on the
- * other's. pi has nothing that strict — no permission system at all — so it
- * is `bypass`, and saying so beats launching flags that do nothing.
+ * The posture to launch `tool` in. Create refuses unsupported postures, so
+ * this only adjusts rows written by a different build, which must still
+ * restart. It picks the loosest supported posture no looser than the row's
+ * (`launchablePermissionMode`): opencode `auto` → `accept-edits`; codex's
+ * strictest is `read-only` and claude/opencode's is `plan`, so each maps to
+ * the other's; pi has no permission system, so always `bypass`.
  */
 function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
   return launchablePermissionMode(tool, mode)
 }
 
 /**
- * opencode's posture is config, not flags. `OPENCODE_CONFIG_CONTENT` is a
- * config document read per process and merged over the `opencode.json` in
- * the shared config dir (its own keys win), which is what makes the posture
- * per-workspace — that file is shared by every workspace in the project, and
- * the model picked in one workspace's TUI is persisted there for the rest.
+ * opencode's posture is config, not flags. `OPENCODE_CONFIG_CONTENT` is read
+ * per process and merged over the project's shared `opencode.json` (its keys
+ * win), which makes the posture per-workspace.
  *
- * Rules are stated in opencode's ordered `permissions` array, over a base
- * policy every agent starts from — `* allow`, then `ask` for
- * `external_directory` and `.env` reads — that global rules append to and a
- * built-in agent's own rules append after (`plan` adds its `edit deny`).
- * Last match wins, so a posture names only what it changes.
+ * Rules go in opencode's ordered `permissions` array, after a base policy
+ * (`* allow`, then `ask` for `external_directory` and `.env` reads) and
+ * before a built-in agent's own rules (`plan` adds `edit deny`). Last match
+ * wins, so a posture states only what it changes.
  *
- * **Getting a rule wrong fails open, silently.** An action opencode does not
- * know matches nothing, so a misspelled `ask` leaves the base policy's
- * `* allow` in force — on a containerless workspace's real filesystem. That is
- * also why `bypass` states `* allow` rather than passing no config: the base
- * policy already asks for out-of-tree access and `.env` reads, and a future
- * default that tightens would quietly stop meaning bypass.
+ * **A wrong rule fails open, silently.** An unknown action matches nothing,
+ * leaving `* allow` in force. For the same reason `bypass` states `* allow`
+ * explicitly rather than relying on the base policy.
  */
 interface OpencodeRule { action: string; resource: string; effect: 'allow' | 'ask' }
 
@@ -144,13 +118,11 @@ interface OpencodeConfig {
 }
 
 /**
- * The permission actions opencode knows, read off the pinned binary: the
- * tools one real turn of `@opencode/cli@2.0.12` offers, plus the wildcard and
- * `external_directory` (a boundary rather than a tool). A rule naming any
- * other action is accepted with no diagnostic at any log level and matches
- * nothing, so `agent-command.test.ts` checks every action the table below
- * names against this list — a rename then fails a test instead of a posture.
- * Re-read it whenever the pin in dockerfiles/Dockerfile.tools moves.
+ * The permission actions opencode knows, read off the pinned binary
+ * (`@opencode/cli@2.0.12`): its tools plus the wildcard and
+ * `external_directory`. Unknown actions are accepted silently and match
+ * nothing, so `agent-command.test.ts` checks every action used below against
+ * this list. Re-read it when the pin in dockerfiles/Dockerfile.tools moves.
  */
 export const OPENCODE_ACTIONS: readonly string[] = [
   '*', 'edit', 'glob', 'grep', 'question', 'read', 'shell', 'skill', 'subagent',
@@ -161,11 +133,10 @@ const rule = (action: string, effect: OpencodeRule['effect']): OpencodeRule =>
   ({ action, resource: '*', effect })
 
 /**
- * Ask before anything that acts, reads excepted. Wildcard first so it covers
- * what the base policy allows and this file need not enumerate — websearch,
- * subagents, skills, Code Mode, every MCP tool a project's own config adds;
- * then the reads back to allow, with the base policy's `.env` asks restated
- * because that wildcard `read allow` would otherwise be the last match.
+ * Ask before anything that acts, except reads. The wildcard comes first to
+ * cover tools not listed here (websearch, subagents, skills, MCP tools);
+ * reads are then allowed, with the base policy's `.env` asks restated since
+ * `read allow` would otherwise be the last match.
  */
 const OPENCODE_ASK_TO_ACT: OpencodeRule[] = [
   rule('*', 'ask'),
@@ -174,47 +145,34 @@ const OPENCODE_ASK_TO_ACT: OpencodeRule[] = [
   { action: 'read', resource: '*.env.*', effect: 'ask' },
 ]
 
-// Ask-to-act with editing let through, which is what claude's `acceptEdits`
-// does: `edit` is the action opencode's edit, write and patch tools all
-// assert, so edits in the tree land unasked, and everything else
-// that acts — commands, fetches, subagents, Code Mode, MCP tools — still asks.
-// An edit outside the tree asks too: that is the `external_directory` action,
-// whose last match stays the wildcard's ask. claude also lets through a few
-// filesystem commands (`mkdir`, `mv`, `rm`, …); a `shell` rule matching
-// command text is not stated, since how the pinned opencode matches a chained
-// command is unverified, and a pattern that matched `rm x; curl …` would fail
-// open.
+// Ask-to-act, but allow `edit` (asserted by opencode's edit, write and
+// patch tools), like claude's `acceptEdits`. Edits outside the tree still
+// ask via `external_directory`. Unlike claude, no filesystem shell commands
+// are allowed: how opencode matches chained commands is unverified, and a
+// pattern matching `rm x; curl …` would fail open.
 const OPENCODE_ACCEPT_EDITS: OpencodeConfig = {
   permissions: [...OPENCODE_ASK_TO_ACT, rule('edit', 'allow')],
 }
 
 const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
   bypass: { permissions: [rule('*', 'allow')] },
-  // Never reached — `postureFor` lands `auto` on `accept-edits` first — but a
-  // total table cannot fall open through a hole.
+  // Unreachable (`postureFor` maps `auto` to `accept-edits`), but kept so
+  // the table has no gaps.
   auto: OPENCODE_ACCEPT_EDITS,
   'accept-edits': OPENCODE_ACCEPT_EDITS,
-  // One of opencode's own agents for the edit side — its `edit: deny` outside
-  // its plan files appends after these and stays — but that is ALL its rules
-  // say: nothing about `shell`, which the base policy allows, so on its own
-  // it runs commands unprompted. The ask-to-act rules are what make plan
-  // read-only, as it is for claude and codex.
+  // opencode's `plan` agent only denies edits; the ask-to-act rules keep it
+  // from running commands unprompted.
   plan: { default_agent: 'plan', permissions: OPENCODE_ASK_TO_ACT },
   manual: { permissions: OPENCODE_ASK_TO_ACT },
-  // Never reached either — `postureFor` lands it on `plan`.
+  // Unreachable (`postureFor` maps it to `plan`).
   'read-only': { default_agent: 'plan', permissions: OPENCODE_ASK_TO_ACT },
 }
 
 /**
  * The `OPENCODE_CONFIG_CONTENT` assignment for the launch command: the
- * posture, plus the model when one was asked for (`provider/model`; omitted,
- * opencode uses the model persisted in the shared config, or its own
- * default).
- *
- * Double-quoted with escaped inner quotes rather than single-quoted: the whole
- * command is embedded in `respawn-window '<cmd>'`, so a single quote would end
- * it early, and bare `{...}` would hit zsh brace expansion. Serialized rather
- * than hand-written so the escaping cannot drift from the shape.
+ * posture plus the model, if given (`provider/model`; otherwise opencode
+ * uses the model saved in the shared config or its default). Quoting is
+ * `envJsonAssignment`'s.
  */
 export function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
   const config = {
@@ -229,16 +187,13 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   const mode = postureFor(tool, spec.permissionMode)
   const resume = spec.resume ?? false
   if (tool === 'codex') {
-    // codex splits the posture across two orthogonal axes — an approval
-    // policy and a sandbox — so each mode picks the pair that adds up to it:
-    //  - accept-edits is codex's own default preset (workspace-write +
-    //    on-request), hence no flags. Its sandbox has network off, which is
-    //    what makes it *ask* to escalate for anything reaching the network.
-    //  - auto keeps that sandbox and hands the approvals to a reviewer model.
-    //  - read-only is the read-only sandbox (its "Read Only" preset: approval
-    //    to edit or reach the network).
-    //  - plan and manual are not codex postures, and `postureFor` lands both
-    //    on read-only; stated anyway, so the table cannot fall open.
+    // codex postures are an approval policy plus a sandbox:
+    //  - accept-edits: codex's default preset (workspace-write, on-request),
+    //    no flags. Network is off in the sandbox, so network access asks.
+    //  - auto: same sandbox, approvals by a reviewer model.
+    //  - read-only: the read-only sandbox.
+    //  - plan and manual map to read-only via `postureFor`, but are listed
+    //    so the table has no gaps.
     const posture = {
       bypass: '--yolo',
       auto: '--approve-for-me',
@@ -247,26 +202,18 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
       plan: '--sandbox read-only',
       'read-only': '--sandbox read-only',
     }[mode]
-    // --model goes after the resume subcommand: codex defines -m/--model on
-    // both the root TUI command and `codex resume`, so trailing placement
-    // binds it to whichever command runs.
+    // --model goes last so it binds to `codex resume` too.
     //
-    // The title items are how a `/model` reaches yaac (see
-    // `CODEX_TITLE_ITEMS`); the rest is the update check and folder trust
-    // that, with the hook-trust bypass (its hooks are in its home's
-    // hooks.json, `ensureAgentReporters`), keeps codex from opening any
-    // startup screen (`codexLaunchConfig`). Each is TOML, double-quoted for
-    // the same reason `envJsonAssignment` is.
+    // The title items report `/model` changes to yaac (`CODEX_TITLE_ITEMS`).
+    // The rest, with the hook-trust bypass (hooks live in its home's
+    // hooks.json, `ensureAgentReporters`), keeps codex from showing startup
+    // screens (`codexLaunchConfig`).
     const config = [
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
       ...codexLaunchConfig(spec.paths?.workspaceDir),
     ]
-    // `-C` names the workspace outright rather than leaving codex to take the
-    // pane's cwd: a resume whose cwd differs from the one the conversation
-    // recorded stops on a "session or current directory?" screen, which an
-    // explicit `-C` skips — and the workspace is the answer either way, even
-    // on a restart under the other substrate, where the recorded one does not
-    // exist.
+    // Name the workspace with `-C`: a resume from a different cwd than the
+    // one recorded stops on a "session or current directory?" screen.
     return [
       'codex',
       spec.paths ? `-C ${spec.paths.workspaceDir}` : '',
@@ -278,117 +225,67 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     ].filter(Boolean).join(' ')
   }
   if (tool === 'pi') {
-    // pi runs its TUI in tmux (like claude/codex). It has no permission
-    // system by design — tools execute immediately, nothing prompts — which
-    // is why `bypass` is the only posture it is offered, and why `--approve`
-    // is unconditional here: it accepts the *project trust* prompt (which
-    // gates loading `.pi/` settings, not tool execution), and without it pi
-    // stops to ask about the checkout on every launch.
-    // `--model <provider>/<id>` selects the
-    // provider (pi reads that provider's api-key env var, which the proxy
-    // swaps). `--session-id <id>` addresses this session by id in the shared
-    // `.pi` home — creating it on a fresh run, resuming it otherwise (the same
-    // flag both ways, like `claude --session-id`), so `resume` needs no branch.
-    // An explicit override wins over the provider's generated default; the
-    // proxy only swaps the authenticated provider's key, so an override
-    // naming a different provider surfaces as an auth error in the pane.
+    // pi has no permission system, so `bypass` is its only posture.
+    // `--approve` accepts the project trust prompt (loading `.pi/`
+    // settings), which would otherwise appear on every launch.
+    // `--model <provider>/<id>` picks the provider whose api-key env var
+    // the proxy swaps; an override naming another provider shows as an auth
+    // error. `--session-id` creates or resumes the session by id, so resume
+    // needs no branch.
     const piModel = model ?? piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
-    // `--model` is dropped only if there is no override and the chosen
-    // provider has no generated default (every current pi provider has one;
-    // guarded so a future registry gap falls back to pi's own default rather
-    // than `--model undefined`).
+    // Guard against a provider with no default model.
     const modelFlag = piModel ? ` --model ${piModel}` : ''
     const pi = `pi --approve${modelFlag} --session-id ${workspaceId}`
-    // On a fresh run that `--session-id` names a session that doesn't exist
-    // yet, so pi prints a yellow "Warning: No project session found with id
-    // '<id>'; creating a new session with that id." to stderr, which then
-    // lingers at the top of the pane for the whole session. The id is
-    // caller-chosen by design (it must match yaac's so pi embeds it in the
-    // JSONL log filename — see lib/session/pi-status.ts), so this fires on
-    // every new pi session; it is expected, not an error.
+    // On a fresh run pi warns on stderr that no session with this id exists
+    // and it is creating one. The id is chosen by yaac on purpose (pi embeds
+    // it in its JSONL filename; see transcripts.ts), so this always fires
+    // and would linger at the top of the pane.
     //
-    // Route pi's stderr through sed to drop exactly that one line, leaving the
-    // TUI (stdout) and any genuine stderr (auth failures, bad-model errors)
-    // intact. `0,/re/{//d}` deletes only the *first* match (the warning prints
-    // once at startup), and `sed -u` keeps surviving lines unbuffered so a
-    // startup error still reaches the pane before pi exits. The pattern is
-    // anchored at `^` with `.*` standing in for the variable id and the full
-    // "creating a new session with that id." tail required, so a genuine error
-    // is never swallowed. It runs the agent with stdout on the pane's PTY, and
-    // pi colors this line via chalk keyed off *stdout* being a TTY — so it
-    // arrives on stderr wrapped in SGR escapes (`\x1b[33m…\x1b[39m`). The
-    // leading `(\x1b\[[0-9;]*m)*` absorbs those (zero-or-more, so a plain-text
-    // line off-TTY still matches). tmux runs this under the pod's zsh
-    // (SHELL=/bin/zsh), so process substitution is available; the pattern uses
-    // `.*` rather than the literal quotes around the id, keeping the whole
-    // string free of single quotes so it survives the single-quoted
-    // `respawn-window '<cmd>'` wrapper it is embedded in.
+    // Filter stderr through sed to delete only the first such line. The
+    // regex allows leading SGR color codes (pi colors it because stdout is a
+    // TTY) and requires the full message tail, so real errors pass through.
+    // `sed -u` keeps other lines unbuffered. The pod's shell is zsh, so
+    // process substitution works, and the string has no single quotes so it
+    // survives the `respawn-window '<cmd>'` wrapper.
     const warn = 'Warning: No project session found with id .*creating a new session with that id\\.'
     return `${pi} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2)`
   }
   if (tool === 'opencode') {
-    // --standalone runs the TUI over a private server of its own — a child
-    // on stdio — rather than the background service opencode would otherwise
-    // spawn and leave running. The server is what reads the config, so a
-    // child inheriting this process's env is what makes the posture and
-    // model per-workspace, and nothing outlives the window to carry a stale
-    // one into the next launch. The TUI takes no model or agent flag — both
-    // ride in the config (`opencodeConfigArg`) — and refuses an unknown one
-    // outright (usage, exit: a dead window), so none is invented here.
+    // --standalone runs a private server as a child instead of a shared
+    // background service, so the config (posture, model) comes from this
+    // process's env and nothing stale outlives the window. The TUI rejects
+    // unknown flags, and takes model and agent only via config.
     return [
       opencodeConfigArg(mode, model),
       'opencode --standalone',
       resume ? `--session ${workspaceId}` : '',
     ].filter(Boolean).join(' ')
   }
-  // claude names all five postures on one flag, so the mapping is a rename.
-  // `--permission-mode bypassPermissions` over the older
-  // `--dangerously-skip-permissions` spelling: same posture, and stating it
-  // on the same flag as the rest keeps one axis instead of two.
-  // `auto` is gated by subscription plan — an ineligible account fails in the
-  // pane, which is the honest place for it: nothing here can check first.
-  //
-  // `manual` over the `default` this flag also still accepts: `default` is
-  // absent from the flag's advertised choices, which reads like a compat
-  // alias on its way out. Naming the documented one keeps the cell off a
-  // spelling that could be dropped — and if it ever is, commander rejects the
-  // value and the pane dies at launch rather than running lax.
+  // claude takes every posture on `--permission-mode`
+  // (`bypassPermissions` rather than `--dangerously-skip-permissions`, to
+  // keep one flag). `auto` depends on the subscription plan; an ineligible
+  // account fails in the pane. `manual` rather than the undocumented
+  // `default`: if it is ever dropped, launch fails loudly instead of
+  // running lax.
   const posture = {
     bypass: 'bypassPermissions',
     auto: 'auto',
     'accept-edits': 'acceptEdits',
     manual: 'manual',
     plan: 'plan',
-    // Never reached — `postureFor` lands it on `plan`.
+    // Unreachable (`postureFor` maps it to `plan`).
     'read-only': 'plan',
   }[mode]
-  // `env -u TMUX` is what keeps the pane title readable, and it is the whole
-  // reason claude's status still works — see `SPINNER_PREFIX` in claude.ts.
-  // Claude Code animates its spinner into the title only when it does NOT
-  // detect a multiplexer, and it detects one by reading `$TMUX`; inside a yaac
-  // pane that is always set, so the title would sit on the idle glyph for the
-  // life of the session and every workspace would read `waiting` forever.
-  // Hiding the variable from the process restores the animation, and the OSC
-  // title still reaches tmux — the escape is written to the pty either way,
-  // so `#{pane_title}` is set exactly as before.
+  // `env -u TMUX` makes claude's status work (see `SPINNER_PREFIX` in
+  // claude.ts): claude animates its spinner in the pane title only when
+  // `$TMUX` is unset. The OSC title still reaches tmux via the pty.
   //
-  // Only `TMUX` is dropped. `TMUX_PANE` stays, because the hooks set their
-  // pane options on it (workspace-bin/yaac-agent-links, yaac-agent-report) —
-  // dropping it would silently cost every conversation's record. And the
-  // value itself survives as `YAAC_TMUX`, which is how they find the server
-  // to set those options on without claude seeing a multiplexer.
+  // `TMUX_PANE` is kept for the hooks (workspace-bin/yaac-agent-links,
+  // yaac-agent-report), which find the tmux server through `YAAC_TMUX`.
   //
-  // What claude gives up, largest first:
-  //  - Agent teams lose the tmux pane backend. Claude picks it by the same
-  //    `$TMUX` read (`isInProcessEnabled` is `!insideTmux && !inITerm2`), so
-  //    teammates now run in-process instead of splitting panes in the yaac
-  //    window. Nothing yaac renders depends on those panes — an agent pane is
-  //    classified by its window name, and a teammate split carries no status
-  //    of its own — but a user who ran teams here would see them stop
-  //    appearing as panes.
-  //  - Its tmux clipboard path, falling back to OSC 52, which is what reaches
-  //    the browser terminal anyway.
-  //  - A scrollback hint in its footer.
+  // Costs: agent teams run in-process instead of as tmux panes (claude
+  // checks `$TMUX` for that too; yaac does not depend on those panes), the
+  // clipboard falls back to OSC 52, and a footer scrollback hint is lost.
   return [
     `env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${model}` : '',
@@ -397,30 +294,23 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
 }
 
 /**
- * In-pod command that delivers an initial prompt to the agent's pane: it
- * pastes the text into the TUI's input and submits it. Three timing hazards
- * shape the script — a prompt pasted into a TUI that is still starting up
- * is silently discarded (observed with claude in the create e2e suite), and
- * with no user attached nothing would ever re-send it:
+ * In-workspace command that pastes an initial prompt into the agent's TUI
+ * and submits it. A prompt pasted while the TUI is starting is silently
+ * lost (seen with claude in the create e2e suite), and no user is attached
+ * to resend it, so:
  *
- *  1. Readiness gate: wait for `#{alternate_on}` — every agent TUI switches
- *     the pane to the alternate screen when its render loop comes up, which
- *     is the earliest tool-agnostic "accepting input" signal. Falls through
- *     after 60s so a TUI that never flips still gets a best-effort paste.
- *  2. Verified paste: paste, then check `capture-pane` for the prompt's
- *     first line (its first 40 chars — the pane is created 500 cols wide
- *     and nothing attaches before provisioning finishes, so no wrap) and
- *     re-paste until it is visibly in the input box.
- *  3. Submit + guard: Enter is sent separately (a paste never
- *     self-submits) and re-sent after a beat — a TUI finishing its startup
- *     render can keep the pasted text but drop the first Enter; on an
- *     already-submitted prompt the repeat is a no-op on an empty input box.
+ *  1. Wait for `#{alternate_on}`, the earliest tool-agnostic sign the TUI
+ *     accepts input; give up waiting after 60s and paste anyway.
+ *  2. Paste, then check `capture-pane` for the first 40 chars of the first
+ *     line (the pane is 500 cols wide, so no wrapping), re-pasting until
+ *     it appears.
+ *  3. Send Enter separately, then again after a moment, since a TUI
+ *     finishing startup can drop the first one; a repeat on an empty input
+ *     does nothing.
  *
- * The prompt travels base64-encoded — its alphabet has no quotes or shell
- * metacharacters, so arbitrary text (quotes, `$`, newlines) survives the
- * host shell and the in-pod single-quoted `sh -c` with no escaping logic;
- * `paste-buffer -p` honors bracketed paste so a multiline prompt lands in
- * the input box instead of submitting line by line.
+ * The prompt travels base64-encoded so any text survives the shell layers,
+ * and `paste-buffer -p` uses bracketed paste so a multiline prompt is not
+ * submitted line by line.
  */
 export function buildPromptPasteCmd(
   target: string,
@@ -440,8 +330,7 @@ function promptPasteScript(
   const TMUX = tmuxCmd(paths)
   const b64 = Buffer.from(prompt, 'utf8').toString('base64')
   const target = `-t ${paneTarget}`
-  // First non-empty line anchors the paste verification; a whitespace-only
-  // prompt (nothing capture-pane could match) degrades to one blind paste.
+  // A whitespace-only prompt has nothing to match, so paste it once blind.
   const probeLine = prompt.split('\n').find((l) => l.trim() !== '')?.slice(0, 40)
   const probeB64 = probeLine === undefined
     ? undefined
@@ -461,13 +350,10 @@ function promptPasteScript(
 }
 
 /**
- * `buildPromptPasteCmd`, detached: decode the paste script to a pod-local
- * file and setsid it, so the exec returns immediately instead of holding
- * the caller through the script's readiness polling and settle sleeps
- * (~5s+ on a fresh agent). The script survives the exec stream closing
- * (reparented to the container's init), retries entirely in-pod, and logs
- * to /tmp/yaac-prompt.log for postmortems. The script travels
- * base64-encoded so its quoting survives the single shell pass unchanged.
+ * `buildPromptPasteCmd`, detached: write the script to a workspace-local
+ * file and setsid it, so the exec returns at once instead of waiting through
+ * the script's polling (5s+ on a fresh agent). The script survives the exec
+ * stream closing and logs to `yaac-prompt.log` in the scratch dir.
  */
 export function buildPromptPasteBgCmd(
   target: string,
@@ -483,23 +369,15 @@ export function buildPromptPasteBgCmd(
 
 /**
  * In-workspace probe that every agent window survived its respawn.
- * `respawn-window` reports success even when its command dies instantly
- * (the tool binary missing from the image a spare was warmed from, or from
- * a containerless host): the pane exits, tmux closes the window, and the
- * yaac session lives on through its init windows — so the caller would hand
- * over a "healthy" session whose agent pane silently falls back to the
- * lowest-index window (see attachArgs). The in-workspace sleep gives a
- * doomed command time to exit before the existence probe; a slow crash past
- * it still slips through — this catches the deterministic spawn-failure
- * class, not every crash.
+ * `respawn-window` succeeds even when the command dies at once (e.g. the
+ * tool binary is missing), after which tmux closes the window and the pane
+ * silently falls back to another window (see attachArgs). The sleep gives
+ * such a command time to exit; slower crashes are not caught.
  *
- * A window-name LIST rather than a tool, because a launch can open several
- * conversations at once (a restart resuming a multi-agent workspace), whose
- * windows are `agentWindowName(tool, i)` — `claude`, `claude-2`, `codex`.
- * One `list-windows`, one sleep, one exit code for the whole set; each
- * missing window names itself on stderr, which is what the caller's message
- * reports. Window names are tool names with an optional `-N` suffix, so
- * they embed in the double-quoted `sh -c` with nothing to escape.
+ * Takes a list because one launch can open several conversations
+ * (`claude`, `claude-2`, `codex`). Each missing window is printed to stderr.
+ * Window names are tool names with an optional `-N`, so they need no
+ * escaping.
  */
 export function buildAgentWindowCheck(windowNames: string[], paths: WorkspacePaths): string {
   const probes = windowNames
@@ -510,16 +388,11 @@ export function buildAgentWindowCheck(windowNames: string[], paths: WorkspacePat
 }
 
 /**
- * The probe's VERDICT: it reached the workspace, and the windows the launch
- * asked for are not there.
+ * The probe reached the workspace and the agent windows are gone.
  *
- * A type rather than a message, because the split it carries has to survive
- * a caller that cannot use `try`/`catch` control flow to honor it. The
- * create fires this probe without awaiting it, so its whole `.catch` sees
- * every rejection — and reporting a transport blip as a dead agent there
- * does not merely add noise: a failed provisioning row HIDES its workspace
- * from the snapshot, so a false positive makes a live, working workspace
- * vanish behind an error until the user dismisses it.
+ * A distinct type because create runs the probe unawaited and its `.catch`
+ * sees every rejection. A transport blip must not be reported as a dead
+ * agent: a failed provisioning row hides its workspace from the snapshot.
  */
 export class AgentLaunchDeadError extends Error {
   constructor(message: string, opts?: { cause?: unknown }) {
@@ -529,20 +402,12 @@ export class AgentLaunchDeadError extends Error {
 }
 
 /**
- * Runs after the launch that opened the windows — on the claim path after
- * `waitForStreamd`, so it rides the relay. Only a `WorkspaceExecError` is a
- * verdict about the windows: the probe reached the workspace and did not
- * find them, which is what rejects as `AgentLaunchDeadError`. A transport
- * failure proves nothing about the agent, so it propagates as itself rather
- * than masquerading as a dead agent.
- *
- * The probe also exits nonzero when the tmux server is gone entirely — its
- * stderr ("no server running on ...") is the difference between that and a
- * closed agent window, and carrying it keeps the reader off the wrong
- * trail. Deliberately says the command "failed to start" rather than naming
- * a cause: a missing binary is the common one, but a bad interpreter, a
- * half-finished install and an immediate auth exit all land here, and the
- * probe cannot tell them apart.
+ * Check that a launch's agent windows are alive. Only a
+ * `WorkspaceExecError` (the probe ran and found windows missing) becomes
+ * `AgentLaunchDeadError`; transport failures propagate unchanged. The probe
+ * also fails if the tmux server is gone, and its stderr distinguishes that.
+ * The message says "failed to start" because the probe cannot tell a
+ * missing binary from a bad interpreter or an immediate auth exit.
  */
 export async function verifyAgentWindowAlive(
   jobName: string,
@@ -567,12 +432,10 @@ export async function verifyAgentWindowAlive(
 }
 
 /**
- * The tmux invocation that creates one init-command window. Shared between
- * fresh-session setup and the claim-time re-branch prep so a re-created
- * window is indistinguishable from a warm-time one. Without remain-on-exit
- * the window closes when its command finishes — and the webapp pane/tab
- * follows the window list, so a hidePane init window shows while running and
- * disappears once done.
+ * The tmux command that creates one init-command window, shared by fresh
+ * setup and claim-time prep so both produce the same window. Without
+ * remain-on-exit the window closes when its command finishes, and the
+ * webapp's tabs follow the window list.
  */
 export function initWindowCommand(win: InitWindow, paths: WorkspacePaths): string {
   return `${tmuxCmd(paths)} new-window -d -t yaac -n ${win.name} `

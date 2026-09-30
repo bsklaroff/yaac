@@ -3,8 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// The pod-level entry point is driven without a snapshot only for the
-// unreachable-cluster case.
+// Only the unreachable-cluster case runs without a snapshot.
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listWorkspacePods: vi.fn().mockResolvedValue([]),
@@ -29,15 +28,13 @@ import {
 } from '#runtime/status/status-store'
 
 /**
- * The registry records what the live agents name: each pane (or acpd
- * socket) says which conversation it holds, and every one named is a row and
- * active; everything else linked to the workspace is inactive history. Only
- * `active` survives teardown to drive a restart.
+ * Each pane (or acpd socket) names the conversation it holds. Every named
+ * conversation is recorded as active; other conversations of the workspace
+ * are inactive history. Only `active` survives teardown to drive a restart.
  *
- * The live set is set directly here — how a pane comes to name its
- * conversation is the tui driver's and the reporter script's, tested beside
- * them — and the real `applyWorkspaceEvent` is the sink, so every assertion
- * is on the rows a pass actually produces.
+ * The live set is injected directly (how panes report is tested with the
+ * tui driver and reporter script), and the real `applyWorkspaceEvent` writes
+ * the rows the assertions read.
  */
 describe('reconcileAgentSessions', () => {
   let tmpDir: string
@@ -61,18 +58,19 @@ describe('reconcileAgentSessions', () => {
     vi.restoreAllMocks()
   })
 
-  /** One pass over the workspace, running on a pod. */
+  /** Run one pass over the workspace, running on a pod. */
   const sweep = (pod: Partial<RuntimeHandle> = {}): Promise<void> => reconcileAgentSessions(snapshotFixture([
     handleFixture({ workspaceId: 'wt-1', projectSlug: 'demo', jobName: 'yaac-demo-wt-1', ...pod }),
   ]))
 
-  /** What the status watcher sees running, over a healthy stream. */
+  /** Set the agents the status watcher sees, over a healthy stream. */
   const live = (agents: LiveAgent[]): void => {
     setWorkspaceStreamHealth('demo', 'wt-1', true)
     setLiveAgents('demo', 'wt-1', agents)
   }
 
-  /** A claude transcript opening with `firstMessage`, and a pane naming it. */
+  /** Write a claude transcript opening with `firstMessage`; return a pane
+   *  naming it. */
   async function claudeOn(handle: string, id: string, firstMessage?: string): Promise<LiveAgent> {
     const rel = path.join('claude', 'projects', '-workspace', `${id}.jsonl`)
     const file = path.join(claudeDir('demo'), 'projects', '-workspace', `${id}.jsonl`)
@@ -91,9 +89,8 @@ describe('reconcileAgentSessions', () => {
     (await getWorkspaceRow('demo', 'wt-1'))?.permissionMode
 
   it('records every conversation a pane names, and exactly those are active', async () => {
-    // The agent window's conversation, one started by hand in a scratch shell
-    // (a pane whose tool comes from what it named), and a codex pane before
-    // its first turn, which names nothing yet and so is no conversation.
+    // The agent window's conversation, one started by hand in another pane,
+    // and a codex pane that has not named a conversation yet.
     live([
       { ...await claudeOn('%0', 'conv-a', 'refactor the parser'), model: 'claude-opus-5' },
       await claudeOn('%4', 'conv-s', 'a side question'),
@@ -120,9 +117,8 @@ describe('reconcileAgentSessions', () => {
     live([await claudeOn('%0', 'conv-a', 'the original ask')])
     await sweep()
 
-    // A `/clear`: the same pane now names conv-b. conv-a stays recorded, its
-    // opening message still the workspace's founding ask and its ordinal
-    // still first, so a restart's windows do not reshuffle.
+    // After `/clear` the pane names conv-b. conv-a keeps its first prompt
+    // and first ordinal, so a restart's windows do not reshuffle.
     live([await claudeOn('%0', 'conv-b')])
     await sweep()
     await sweep()
@@ -130,7 +126,7 @@ describe('reconcileAgentSessions', () => {
     expect(links.map((l) => [l.agentSessionId, l.active, l.ordinal, l.firstPrompt]))
       .toEqual([['conv-a', false, 0, 'the original ask'], ['conv-b', true, 1, undefined]])
 
-    // conv-b's opening message is picked up once it has been prompted.
+    // conv-b's first prompt is picked up once it exists.
     live([await claudeOn('%0', 'conv-b', 'something else entirely')])
     await sweep()
     expect((await row('conv-b'))?.firstPrompt).toBe('something else entirely')
@@ -151,15 +147,15 @@ describe('reconcileAgentSessions', () => {
     await sweep()
     expect(await rows()).toEqual([['conv-a', true, undefined]])
 
-    // A spare's warm-time agent is nobody's conversation until claimed.
+    // A spare's agent is not recorded until the spare is claimed.
     live([await claudeOn('%0', 'conv-warm')])
     await sweep({ prewarmed: true })
     expect(await rows()).toEqual([['conv-a', true, undefined]])
   })
 
   it('probes an opencode conversation\'s opening message in the pod', async () => {
-    // opencode leaves no host transcript, so the pass carries the job name
-    // down to the read.
+    // opencode leaves no host transcript, so it is read in the pod by job
+    // name.
     podExec.mockResolvedValue({
       stdout: JSON.stringify({ data: { id: 'ses_1', title: 'build a thing', time: { updated: 1 } } }),
       stderr: '',
@@ -171,15 +167,15 @@ describe('reconcileAgentSessions', () => {
     expect(podExec.mock.calls[0]?.[0]).toBe('yaac-demo-wt-1')
     expect(podExec.mock.calls[0]?.[1]).toBe('opencode api --standalone session.get --param sessionID=ses_1')
 
-    // Read once: the row remembers the answer.
+    // Read once; the row keeps the answer.
     await sweep()
     expect(podExec).toHaveBeenCalledTimes(1)
   })
 
   it('hands the create\'s pin to the first conversation a codex or opencode pane names', async () => {
-    // What a tui create records: one conversation under the workspace id — for
-    // opencode with the `--prompt` ask and the launch's model, for codex in a
-    // second workspace with neither. Neither tool ever runs under that id.
+    // A tui create records a placeholder conversation under the workspace
+    // id: for opencode with the `--prompt` text and model, for codex (in a
+    // second workspace) with neither. Neither tool actually uses that id.
     const launch = (workspaceId: string, session: { tool: 'codex' | 'opencode'; firstPrompt?: string; model?: string }) =>
       applyWorkspaceEvent({
         type: 'sessions-launched',
@@ -190,9 +186,8 @@ describe('reconcileAgentSessions', () => {
     await launch('wt-1', { tool: 'opencode', firstPrompt: 'build a thing', model: 'opencode/big-pickle' })
     const [pin] = await listWorkspaceAgentSessions('demo', 'wt-1')
 
-    // The pane names the session opencode minted, which takes the pin's place:
-    // first in the window order, carrying the ask the user typed rather than
-    // the title opencode summarized it into.
+    // The session opencode created replaces the placeholder: first in window
+    // order, with the user's prompt rather than opencode's title.
     podExec.mockResolvedValue({ stdout: JSON.stringify({ data: { id: 'ses_1', title: 'Thing builder' } }), stderr: '' })
     live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_1' }])
     await sweep()
@@ -201,7 +196,7 @@ describe('reconcileAgentSessions', () => {
     expect(await summary('wt-1')).toEqual([['ses_1', 0, true, 'build a thing', 'opencode/big-pickle']])
     expect((await row('ses_1'))?.createdAt).toEqual(pin?.createdAt)
 
-    // Only the first: a `/new` after it is a conversation of its own.
+    // Only the first; a later `/new` is a separate conversation.
     live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_2' }])
     await sweep()
     expect(await summary('wt-1')).toEqual([
@@ -209,8 +204,8 @@ describe('reconcileAgentSessions', () => {
       ['ses_2', 1, true, 'Thing builder', undefined],
     ])
 
-    // With no ask on the pin, the conversation's own opening message is the
-    // workspace's.
+    // With no prompt on the placeholder, the conversation's own first
+    // message is used.
     await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'wt-2' })
     await launch('wt-2', { tool: 'codex' })
     const rel = path.join('codex', 'sessions', 'rollout-conv-c.jsonl')
@@ -227,14 +222,14 @@ describe('reconcileAgentSessions', () => {
   })
 
   it('leaves a pin alone beside a conversation of its tool recorded before the takeover', async () => {
-    // Rows written before a pin was replaced: the pin first, carrying the ask,
-    // and the conversation opencode actually ran behind it.
+    // Rows from before the placeholder was replaced: the placeholder with
+    // the prompt, then the real opencode conversation.
     await recordAgentSessions('demo', 'wt-1', [
       { tool: 'opencode', agentSessionId: 'wt-1', firstPrompt: 'the founding ask' },
       { tool: 'opencode', agentSessionId: 'ses_old' },
     ])
     podExec.mockResolvedValue({ stdout: JSON.stringify({ data: { title: 'a later ask' } }), stderr: '' })
-    // A `/new` is not the workspace's first conversation, so it takes nothing.
+    // A `/new` is not the first conversation, so it inherits nothing.
     live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_new' }])
     await sweep()
     const links = await listWorkspaceAgentSessions('demo', 'wt-1')
@@ -254,7 +249,7 @@ describe('reconcileAgentSessions', () => {
     })
     live([await claudeOn('%0', 'wt-1', 'the original ask')])
     await sweep()
-    // A `/clear` names a new conversation beside it, as for any other.
+    // A `/clear` names a new conversation, as for any other tool.
     live([await claudeOn('%0', 'conv-b')])
     await sweep()
     const links = await listWorkspaceAgentSessions('demo', 'wt-1')
@@ -288,17 +283,16 @@ describe('reconcileAgentSessions', () => {
       }),
       '',
     ].join('\n'))
-    // claude's adapter reports its model in its picker's vocabulary; the row
-    // takes the catalog id that name belongs to. A second conversation's
-    // handshake has not answered yet, so it has no id and is not recorded.
+    // claude's adapter reports its picker's model name; the row stores the
+    // matching catalog id. A second conversation has no id yet and is not
+    // recorded.
     live([
       { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' },
       { handle: 'claude-2', tool: 'claude' },
     ])
     await sweep({ mode: 'acp' })
 
-    // The handle is the acpd window, which a restart reads back to address
-    // the conversation.
+    // The handle is the acpd window a restart uses to find the conversation.
     expect(await rows()).toEqual([['acp-1', true, 'claude']])
     const link = await row('acp-1')
     expect(link).toMatchObject({ mode: 'acp', firstPrompt: 'ship the thing', model: 'claude-opus-5-5' })
@@ -313,10 +307,9 @@ describe('reconcileAgentSessions', () => {
   })
 
   /**
-   * The row follows a posture move, and only a move: a claude pane pushes its
-   * mode, a codex rollout is read — and a reading that has not changed must
-   * not undo a push that has, which is what a workspace holding both would do
-   * if every pass wrote whatever codex last said.
+   * The row changes only when a mode actually changes. claude pushes its
+   * mode; codex's is read from its rollout. An unchanged codex reading must
+   * not undo a mode claude just pushed.
    */
   it('follows each agent\'s moves, never a reading that has not moved', async () => {
     const rel = path.join('codex', 'sessions', 'rollout-conv-x.jsonl')
@@ -333,7 +326,7 @@ describe('reconcileAgentSessions', () => {
       { handle: '%1', tool: 'codex', agentSessionId: 'conv-x', transcriptPath: rel },
     ])
 
-    // codex's first reading was written in this life, so it is news.
+    // codex's first reading is from this process, so it counts.
     await panes()
     await sweep()
     expect(await posture()).toBe('bypass')
@@ -342,11 +335,11 @@ describe('reconcileAgentSessions', () => {
     await panes('plan')
     await sweep()
     expect(await posture()).toBe('plan')
-    // codex still says bypass, as it did — that is not news.
+    // codex still says bypass, which is not a change.
     await sweep()
     expect(await posture()).toBe('plan')
 
-    // A `/permissions` pick in codex is.
+    // A `/permissions` pick in codex is a change.
     await fs.appendFile(rollout, settings({
       approval_policy: 'on-request',
       approvals_reviewer: 'user',
@@ -356,8 +349,8 @@ describe('reconcileAgentSessions', () => {
     expect(await posture()).toBe('accept-edits')
   })
 
-  // A restart resumes a rollout whose newest entry is the old process's: that
-  // is where the conversation was, not a move this life made.
+  // After a restart, the rollout's newest entry is from the old process and
+  // is not a change.
   it('ignores a codex rollout entry written before this life', async () => {
     await setWorkspacePermissionMode('demo', 'wt-1', 'accept-edits')
     const rel = path.join('codex', 'sessions', 'rollout-conv-y.jsonl')
@@ -376,9 +369,8 @@ describe('reconcileAgentSessions', () => {
     expect(await posture()).toBe('accept-edits')
   })
 
-  // A resume launch names its conversation with no rollout — codex says
-  // nothing until its next turn — so the row's recorded one is read instead,
-  // and a Shift+Tab before that turn still reaches the row.
+  // A resumed codex pane reports no rollout until its next turn, so the
+  // row's recorded rollout is read instead.
   it('follows a resumed codex pane through the rollout its row recorded', async () => {
     await setWorkspacePermissionMode('demo', 'wt-1', 'accept-edits')
     const rel = path.join('codex', 'sessions', 'rollout-conv-z.jsonl')
@@ -396,9 +388,8 @@ describe('reconcileAgentSessions', () => {
     expect((await row('conv-z'))?.transcriptPath).toBe(rel)
   })
 
-  // The row is the posture the agent is in, whichever way it moved — and
-  // tmux keeps a pane's option while no server watches it, so the first
-  // report a new server gets is news too.
+  // Modes are recorded in either direction. tmux keeps a pane's option while
+  // no server watches, so a new server's first report also counts.
   it('records reported modes up or down, including one made while no server watched', async () => {
     await setWorkspacePermissionMode('demo', 'wt-1', 'accept-edits')
     const acp = (reportedMode: string): void => live([
@@ -414,7 +405,7 @@ describe('reconcileAgentSessions', () => {
     live([{ handle: '%0', tool: 'claude', reportedMode: 'acceptEdits' }])
     await sweep()
     expect(await posture()).toBe('accept-edits')
-    // The server goes down; claude moves to plan and the hook sets the option.
+    // While the server is down, claude moves to plan.
     _resetReportedModesForTests()
     _resetWorkspaceStatusStoreForTests()
     live([{ handle: '%0', tool: 'claude', reportedMode: 'plan' }])

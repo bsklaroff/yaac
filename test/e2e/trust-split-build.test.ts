@@ -51,23 +51,19 @@ import {
 } from '@yaac/server/drivers/k8s/install/server-deploy'
 
 /**
- * End-to-end coverage of trust-split builds (docs/trust-split-builds.md):
- * untrusted Dockerfile.yaac / Dockerfile.user layers build inside ephemeral
- * runsc builder pods that pull their parent from the shared registry
- * (an in-cluster Deployment behind a ClusterIP Service), stream
- * build logs back through the build-tracking registry, delta-push their
- * product, and step-cache every unchanged instruction across genuinely
- * distinct pods via --cache-from/--cache-to registry cache images. The
- * final product is then run as a pod, proving node containerd can pull the
- * cross-repo-mounted manifest.
+ * Trust-split builds (docs/trust-split-builds.md): untrusted
+ * Dockerfile.yaac / Dockerfile.user layers build in short-lived gVisor
+ * builder pods. Each pulls its parent from the in-cluster registry, streams
+ * its build log back, pushes only its new layers, and reuses cached steps
+ * from earlier pods via --cache-from/--cache-to. The result is then run as
+ * a pod to show the node can pull it.
  */
 
 const PROJECT_SLUG = 'trust-split-e2e'
 const PROJECT = { slug: PROJECT_SLUG, id: crypto.randomUUID() }
 
-// Per-run nonce baked into every RUN step: content-hash tags must be new
-// each run, or the registry (which persists across e2e runs) already holds
-// them and ensureImage rightly skips the builds this test asserts on.
+// Per-run nonce in every RUN step. The registry persists across runs, so
+// without it the tags would already exist and the builds would be skipped.
 const NONCE = crypto.randomBytes(4).toString('hex')
 
 const DOCKERFILE_V1 = [
@@ -87,9 +83,8 @@ const DOCKERFILE_V2 = [
   '',
 ].join('\n')
 
-// COPY proves the build-files flow end to end: a support file written into
-// the user build dir ships to the builder pod (tar stream) and lands in
-// the image.
+// The COPY checks that a support file in the user build dir reaches the
+// builder pod and lands in the image.
 const DOCKERFILE_USER = [
   'ARG BASE_IMAGE',
   'FROM ${BASE_IMAGE}',
@@ -107,15 +102,11 @@ function serverUsername(): string {
 }
 
 /**
- * A kubeconfig whose user impersonates this run's server ServiceAccount
- * (kubeconfig `user.as`). This file drives `ensureImage` IN-PROCESS, so
- * without it every builder pod would be created as the host kubeconfig's
- * cert admin — an identity the builder-role guard rightly denies, and one
- * production never uses (there the server itself, running in-cluster as
- * its SA, creates builder pods). Impersonation needs the cert user's
- * `impersonate` verb (cluster-admin on a dev cluster has it), and the
- * requests are then AUTHORIZED as the impersonated SA — which is why the
- * fixture also applies the server's RBAC in beforeAll.
+ * A kubeconfig that impersonates this run's server ServiceAccount
+ * (`user.as`). This file calls `ensureImage` in-process, and the
+ * builder-role guard only admits builder pods from the server's SA, as in
+ * production. The host user needs the `impersonate` verb, and requests are
+ * authorized as the SA, so beforeAll applies the server's RBAC.
  */
 async function writeServerImpersonationKubeconfig(dir: string): Promise<string> {
   const { stdout } = await kubectlWithRetry(
@@ -158,17 +149,11 @@ describe('trust-split builds', () => {
     await requirePodman()
     await requireCluster()
     restoreNamespace = useTestNamespace()
-    // `useTestNamespace` only points YAAC_K8S_NAMESPACE at this run's
-    // namespace; something still has to create it, and every object below
-    // (the builder-role guard, the builder pods) lands in it. The server's
-    // bootstrap is what does this in production — in here it is the
-    // fixture's job.
+    // `useTestNamespace` only sets the name; the server's bootstrap would
+    // normally create it.
     await ensureNamespace()
-    // The server's SA and RBAC, exactly as `deployTestServer` applies them
-    // for the tiers that run a real server pod. Here no server pod runs —
-    // the builds below impersonate this identity instead — but the binding
-    // must exist for the impersonated requests to be authorized. The
-    // cluster-scoped pair is namespace-suffixed and swept by
+    // The server's SA and RBAC, as `deployTestServer` applies them, for the
+    // impersonated builds. The cluster-scoped objects are swept by
     // cluster-setup's afterAll.
     await kubectlApply(buildServerServiceAccountManifest())
     await kubectlApply(buildServerClusterRoleManifest())
@@ -191,9 +176,8 @@ describe('trust-split builds', () => {
   it('serves the registry in-cluster behind a selector-backed Service', async () => {
     await ensureMainRegistry()
 
-    // The ref every pod pulls by: the registry's own Service FQDN, in the
-    // DEFAULT namespace rather than this run's isolated one — every run
-    // shares one image store.
+    // Pods pull by the registry Service's FQDN in its shared namespace,
+    // not this run's.
     expect(registryHost())
       .toBe(`${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local:5000`)
 
@@ -203,8 +187,6 @@ describe('trust-split builds', () => {
     expect(svc?.spec.selector).toEqual({ app: MAIN_REGISTRY_APP_LABEL })
     expect(svc?.spec.clusterIP).toBeTruthy()
 
-    // Rolled out, and reachable from the server through its port-forward —
-    // no host networking assumption anywhere in the path.
     const deploy = await kubectlGetJson<{ status?: { readyReplicas?: number } }>([
       'get', 'deployment', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
     ])
@@ -213,8 +195,7 @@ describe('trust-split builds', () => {
   }, 120_000)
 
   it('gates every registry write on a signed grant for the repo it writes', async () => {
-    // Throwaway project-shaped repos: ids no project holds, so the main
-    // registry's GC reclaims them like any removed project's.
+    // Repos for project ids no project holds, so registry GC reclaims them.
     const [idA, idB] = [crypto.randomUUID(), crypto.randomUUID()]
     const base = `http://${await registryEndpoint()}`
     const basic = (password: string): string =>
@@ -226,8 +207,7 @@ describe('trust-split builds', () => {
         headers: authorization ? { authorization } : {},
       })
 
-    // Reads need nothing: the catalog, and a manifest HEAD of the tag the
-    // builder pods themselves boot from.
+    // Reads need no grant.
     expect((await fetch(`${base}/v2/_catalog`)).status).toBe(200)
     await expect(registryTagState('podman-stable:v5.5')).resolves.toBe('present')
 
@@ -257,13 +237,11 @@ describe('trust-split builds', () => {
     expect(manifest.status).toBe(201)
     await expect(registryTagState(`yaac-user-${idA}:gate`)).resolves.toBe('present')
 
-    // The same grant writes nothing else: another project's repo, the
-    // trusted chain, a mirror.
+    // The grant writes nowhere else.
     for (const repo of [`yaac-user-${idB}`, 'yaac-base', 'podman-stable']) {
       expect((await startUpload(repo, grantA)).status, repo).toBe(403)
     }
-    // Nor a repo nested under its own: registry:2 would name this manifest's
-    // repo `yaac-user-<A>/blobs/x`.
+    // Nor to a repo nested under its own.
     const nested = await fetch(`${base}/v2/yaac-user-${idA}/blobs/x/manifests/gate`, {
       method: 'PUT',
       headers: { authorization: grantA, 'content-type': 'application/vnd.oci.image.index.v1+json' },
@@ -285,8 +263,7 @@ describe('trust-split builds', () => {
   it('reserves yaac.role=builder for the server ServiceAccount alone', async () => {
     await ensureBuilderRoleGuard()
 
-    // A ServiceAccount WITH pod-create RBAC in this namespace: the guard,
-    // not RBAC, must be what blocks the fake below.
+    // This SA has pod-create RBAC, so only the guard can block it.
     const ns = k8sNamespace()
     const faker = `system:serviceaccount:${ns}:faker`
     await kubectlApply({
@@ -323,22 +300,15 @@ describe('trust-split builds', () => {
         { input: JSON.stringify(manifest), maxAttempts: 1 },
       )
 
-    // The guard admits one identity SHAPE, so a cluster operator's cert
-    // user is denied too — even though RBAC would let it create the pod.
-    //
-    // Retried, and FIRST, because this case doubles as the propagation
-    // gate: a freshly-applied VAP lags a moment, and a cluster that
-    // already carried a PREVIOUS revision of the guard keeps enforcing the
-    // old expression until the update propagates. Only this case tells the
-    // two revisions apart — the deny-all-ServiceAccounts revision this one
-    // replaced admitted a cert user's gvisor builder pod, the current one
-    // denies it — so an SA-denial probe would wave the old expression
-    // through and every case below would assert against stale semantics.
+    // Only the server SA is admitted, so a cluster admin is denied too.
+    // Runs first and retries: it waits out propagation of the guard
+    // (a ValidatingAdmissionPolicy), and it is the only case that tells the
+    // current guard from an older revision still enforced on the cluster.
     let adminDenial = ''
     for (let i = 0; i < 20 && !adminDenial; i++) {
       try {
         await applyAs(podManifest('admin-builder', true))
-        // Propagation lag: the pod got through — remove it and retry.
+        // Not propagated yet: remove the pod and retry.
         await kubectlWithRetry(['delete', 'pod', 'admin-builder', '-n', ns, '--ignore-not-found'])
         await new Promise((r) => setTimeout(r, 500))
       } catch (err) {
@@ -348,26 +318,24 @@ describe('trust-split builds', () => {
     expect(adminDenial).toContain(BUILDER_ROLE_GUARD_NAME)
     expect(adminDenial).toContain('reserved')
 
-    // Control: the SA CAN create an unlabeled pod (RBAC path is open)...
+    // The SA can create an unlabeled pod...
     await applyAs(podManifest('faker-control', false), faker)
-    // ...but a builder-labeled pod is rejected by the admission policy.
+    // ...but not a builder-labeled one.
     const fakerDenial = await applyAs(podManifest('faker-builder', true), faker)
       .then(() => '')
       .catch((err: unknown) => (err as { stderr?: string }).stderr ?? String(err))
     expect(fakerDenial).toContain(BUILDER_ROLE_GUARD_NAME)
     expect(fakerDenial).toContain('reserved')
 
-    // The direction that actually shipped broken once: the server's own
-    // identity is ADMITTED. A guard that denied everything would pass every
-    // denial case above; this is the assertion that pins the allow side.
+    // The server's own identity is admitted. Without this, a guard that
+    // denied everything would pass.
     const server = serverUsername()
     await applyAs(podManifest('server-builder', true), server)
     await kubectlWithRetry(['delete', 'pod', 'server-builder', '-n', ns, '--ignore-not-found'])
 
-    // And the label may not ride on a non-sandboxed pod even for the one
-    // identity that is allowed to set it. 'reserved' must NOT appear: only
-    // the gvisor validation may fail for the server, or the allow side of
-    // the username validation regressed.
+    // Even the server may not put the label on a non-gVisor pod. Only the
+    // gvisor check may fail here; 'reserved' would mean the identity check
+    // wrongly denied the server.
     const runcDenial = await applyAs(podManifest('server-runc-builder', true, false), server)
       .then(() => '')
       .catch((err: unknown) => (err as { stderr?: string }).stderr ?? String(err))
@@ -378,29 +346,27 @@ describe('trust-split builds', () => {
   }, 120_000)
 
   it('builds untrusted layers in builder pods with cross-pod step cache', async () => {
-    // --- First build: fresh project layer, built in a builder pod. ---
+    // First build: a new project layer.
     await writeProjectDockerfile(DOCKERFILE_V1)
     const chain1 = await resolveImageChain(PROJECT, TEST_IMAGE_PREFIX)
     const projectTag1 = chain1.layers.find((l) => l.name === 'project')?.tag
     expect(projectTag1).toBeTruthy()
 
-    // As the server's identity: the guard admits builder pods from the
-    // server SA alone, and production's builds run in-cluster as that SA.
+    // As the server's SA, the only identity the guard admits.
     const final1 = await asServerIdentity(() => ensureImage(PROJECT, TEST_IMAGE_PREFIX))
     expect(final1).toBe(projectTag1)
-    // The product lives in the registry — and only there: the host store
-    // never sees a cluster-pod tag.
+    // The image is in the registry only, not the host store.
     expect(await registryHasTag(projectTag1!)).toBe(true)
     expect(await imageExists(projectTag1!)).toBe(false)
     expect(buildLogFor(projectTag1!)).toContain('STEP')
 
-    // --- Second build: one step appended + a user layer added. A FRESH
-    // builder pod must cache-hit the unchanged instruction prefix from the
-    // registry (--cache-from), then build the user layer in the same pod. ---
+    // Second build: one step appended and a user layer added. A new
+    // builder pod must reuse the unchanged steps from the registry cache,
+    // then build the user layer.
     await writeProjectDockerfile(DOCKERFILE_V2)
     await fs.mkdir(userBuildDir(), { recursive: true })
     await fs.writeFile(path.join(userBuildDir(), 'Dockerfile.user'), DOCKERFILE_USER)
-    // A support file next to Dockerfile.user — the COPY source above.
+    // The COPY source for Dockerfile.user.
     await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`copied-${NONCE}\n`))
     const chain2 = await resolveImageChain(PROJECT, TEST_IMAGE_PREFIX)
     const projectTag2 = chain2.layers.find((l) => l.name === 'project')?.tag
@@ -414,13 +380,10 @@ describe('trust-split builds', () => {
     expect(await registryHasTag(projectTag2!)).toBe(true)
     expect(await registryHasTag(userTag!)).toBe(true)
 
-    // The edited Dockerfile re-ran only its changed step: the unchanged
-    // prefix came from the registry step cache in a pod that had never
-    // built anything.
     expect(buildLogFor(projectTag2!)).toContain('Using cache')
 
-    // --- The product is a runnable image: node containerd pulls the
-    // delta-pushed manifest (parent blobs cross-repo-mounted by the pod). ---
+    // The result runs: the node can pull the manifest whose parent layers
+    // were mounted from another repo.
     const run = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',
@@ -443,19 +406,17 @@ describe('trust-split builds', () => {
     expect(run.logs).toContain('step-one')
     expect(run.logs).toContain('step-three')
     expect(run.logs).toContain('user-step')
-    // The uploaded support file was streamed into the builder pod's
-    // context and COPY'd into the image.
     expect(run.logs).toContain('copied-')
 
-    // Editing a support file re-tags the user layer (context files are
-    // part of the content hash) — resolution only, no third build needed.
+    // Support files are part of the content hash, so an edit re-tags the
+    // user layer (checked by resolution alone).
     await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`edited-${NONCE}\n`))
     const chain3 = await resolveImageChain(PROJECT, TEST_IMAGE_PREFIX)
     const userTag3 = chain3.layers.find((l) => l.name === 'user')?.tag
     expect(userTag3).toBeTruthy()
     expect(userTag3).not.toBe(userTag)
 
-    // --- No builder pods left behind (inline delete on release). ---
+    // No builder pods are left behind.
     const leftover = await kubectlGetJson<{
       items: Array<{ metadata: { name: string; deletionTimestamp?: string } }>
     }>(['get', 'pods', '-n', k8sNamespace(), '-l', 'yaac.role=builder'])

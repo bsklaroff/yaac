@@ -14,10 +14,9 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
 
 import { listWorkspacePods } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
-// The listing is a join: the rows are the server's, and which of them still
-// have a runtime — plus every transcript read behind a prompt or a
-// last-activity stamp — is read off disk. Its real halves stand behind the
-// boundary here, so the leaf mocks above still drive them.
+// The listing joins DB rows with what is read off disk (live runtimes,
+// transcripts for prompts and last-activity stamps). Only pod listing is
+// mocked; the rest runs for real.
 import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
@@ -44,17 +43,15 @@ async function writeProject(slug: string, meta: Partial<ProjectMeta> = {}): Prom
   await recordProject(full)
 }
 
-/** Record a workspace, then (optionally) its stop — the two writes every
- *  row in the stopped listing has been through. */
+/** Record a workspace, its first conversation, and optionally its stop. */
 async function seedWorkspace(
   slug: string,
   workspaceId: string,
   opts: { tool?: AgentTool; deleted?: boolean } = {},
 ): Promise<void> {
   await recordWorkspaceCreated({ projectSlug: slug, workspaceId })
-  // Session create records the conversation it launches alongside the row —
-  // that is where the workspace's tool and founding ask are read from, so a
-  // fixture without one is a workspace that could never have existed.
+  // A real create always records a conversation, which is where the tool
+  // and first prompt are read from.
   await recordAgentSessions(slug, workspaceId, [
     { tool: opts.tool ?? 'claude', agentSessionId: workspaceId },
   ])
@@ -140,10 +137,9 @@ describe('listStoppedWorkspaces', () => {
   })
 
   it('orders a session removed out of band by its last activity', async () => {
-    // Neither `busy` nor `idle` has a recorded stop, so each sorts by when it
-    // was last active: `idle` (no transcript) by its birth, just before
-    // `recent` was stopped, and `busy` — born first — by a transcript written
-    // after both.
+    // `busy` and `idle` have no recorded stop, so each sorts by last
+    // activity: `idle` (no transcript) by its creation, just before `recent`
+    // stopped, and `busy` (created first) by a transcript written after both.
     const dir = path.join(claudeDir('demo'), 'projects', '-workspace')
     await fs.mkdir(dir, { recursive: true })
     const transcript = path.join(dir, 'busy.jsonl')
@@ -223,12 +219,10 @@ describe('listStoppedWorkspaces', () => {
     await fs.writeFile(transcript, '{}\n')
     await fs.utimes(transcript, new Date('2026-01-02'), new Date('2026-01-02'))
     await seedWorkspace('demo', 'withlog', { deleted: true })
-    // Last-activity now comes from the workspace's conversations, so the
-    // transcript is attached to one rather than to the row. Recorded in the
-    // column's form, as discovery reports it: an absolute here would be
-    // refused on the way back out, and the listing would still pass by
-    // falling back to the conventional path for the same file — reporting
-    // nothing about whether the recorded path works.
+    // Last activity comes from the workspace's conversations. The path is
+    // relative, as discovery records it; an absolute one would be refused and
+    // the listing would fall back to the conventional path, so the test
+    // would not check the recorded path at all.
     await recordAgentSessions('demo', 'withlog', [
       {
         tool: 'claude',
@@ -253,14 +247,10 @@ describe('listStoppedWorkspaces', () => {
     await seedWorkspace('demo', 'a', { deleted: true })
 
     expect((await listStoppedWorkspaces('demo'))[0]?.prompt).toBe('hello there')
-    // The write door this parse goes out through: the path it read is the
-    // absolute conventional one, and what lands in the column is the portable
-    // form. Nothing else here would notice an absolute — the prompt is
-    // persisted too, so the assertion below answers from the row either way.
+    // The parse read an absolute path but must record the relative form.
     const [link] = await listWorkspaceAgentSessions('demo', 'a')
     expect(link?.transcriptPath).toBe(path.join('claude', 'projects', '-workspace', 'a.jsonl'))
-    // Persisted, so the second listing answers from the row: removing the
-    // transcript can't take the prompt away.
+    // The prompt is persisted, so it survives the transcript's removal.
     await fs.rm(path.join(workspacesDir, 'a.jsonl'))
     expect((await listStoppedWorkspaces('demo'))[0]?.prompt).toBe('hello there')
   })

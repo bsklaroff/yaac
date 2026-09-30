@@ -18,13 +18,9 @@ import { CLAUDE_STUB } from '@yaac/test-utils/fixtures'
  * captured bundle landing back on the main server over RPC. Plus the
  * `yaac auth server` lifecycle commands and the raw /agent/auth wire.
  *
- * ONE main server for the file — spawning one waits on the cross-worker
- * server mutex and dominated the wall-clock of these tests. What
- * each test actually needs isolated is the AUTH server, not the main one:
- * the afterEach below stops it, so every case starts with no agent
- * connected (which is exactly what the 503-guidance case asserts). The
- * shared data dir carries only the credential the first test saves, and
- * nothing later reads it.
+ * One main server serves the whole file. Each test needs only the auth
+ * server isolated, and the afterEach stops it, so every case starts with
+ * no agent connected.
  */
 describe('yaac auth server (real CLI + real servers)', () => {
   let testEnv: YaacTestEnv
@@ -36,8 +32,6 @@ describe('yaac auth server (real CLI + real servers)', () => {
   })
 
   afterEach(async () => {
-    // Stop any auth server this test started, so its reconnect loop
-    // doesn't spam the logs and the next test starts agent-free.
     await runYaac(testEnv.env, 'auth', 'server', 'stop')
   })
 
@@ -82,7 +76,6 @@ describe('yaac auth server (real CLI + real servers)', () => {
     }
     expect(connected).toBe(true)
 
-    // A second start is an idempotent no-op.
     const again = await runYaac(testEnv.env, 'auth', 'server', 'start')
     expect(again.exitCode).toBe(0)
     expect(again.stderr).toMatch(/already running/)
@@ -96,9 +89,8 @@ describe('yaac auth server (real CLI + real servers)', () => {
   })
 
   it('seeds the server git identity from this machine, and never overwrites one', async () => {
-    // The one path that gives a user an identity without typing one. The
-    // seed runs before the auth server writes its lock, and `start` returns
-    // once the lock lands, so each check below follows a finished seed.
+    // The seed runs before the auth server writes its lock, and `start`
+    // returns once the lock exists, so each check follows a finished seed.
     const base = `http://127.0.0.1:${server.lock.port}`
     const identity = async (): Promise<unknown> =>
       ((await (await fetch(`${base}/api/config/git-identity`)).json()) as { identity: unknown }).identity
@@ -110,8 +102,8 @@ describe('yaac auth server (real CLI + real servers)', () => {
       expect(await identity()).toEqual({ name: 'Seeded User', email: 'seeded@example.com' })
       await runYaac(testEnv.env, 'auth', 'server', 'stop')
 
-      // One the user chose is a deliberate answer: a restart with a
-      // different git config beside it leaves it alone.
+      // An identity the user set survives a restart with a different git
+      // config.
       const set = await runYaac(
         testEnv.env, 'config', 'git-identity', '--name', 'Chosen User', '--email', 'chosen@example.com',
       )

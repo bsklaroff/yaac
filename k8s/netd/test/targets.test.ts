@@ -37,12 +37,9 @@ describe('selectTargets', () => {
   })
 
   it('never redirects ANOTHER install\'s workspace pods', () => {
-    // The bug this guards: netd watches every namespace, so without the
-    // ownership check the real install's netd redirects an e2e install's
-    // pods at its own proxy. Both installs append a PREROUTING jump, so the
-    // first-appended chain wins and the loser's pods reach a proxy that
-    // cannot resolve them — silent, total egress loss for whichever install
-    // lost, decided by restart order.
+    // netd watches every namespace. Redirecting another install's pods to
+    // this proxy would break their egress, since this proxy can't resolve
+    // them.
     expect(select([pod('theirs', 'yaac-test-r1', { [LABEL_WORKSPACE_ID]: 't1' })])).toEqual([])
   })
 

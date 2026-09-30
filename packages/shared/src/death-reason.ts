@@ -1,10 +1,6 @@
 import type { WorkspaceDeathReason } from '#types'
 
-/**
- * The one human-copy mapping for workspace death reasons, shared by the
- * frontend and the CLI so both render identical text. `detail` (exit code,
- * eviction message, …) is appended after an em-dash when present.
- */
+/** Display text for workspace death reasons, shared by the frontend and CLI. */
 const DEATH_REASON_COPY: Record<WorkspaceDeathReason, string> = {
   'oom': 'out of memory (hit the workspace memory limit)',
   'evicted': 'evicted by the node',

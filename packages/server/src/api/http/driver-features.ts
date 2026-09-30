@@ -4,20 +4,11 @@ import { workspaceDriver } from '#drivers/driver'
 /**
  * Refuse a route for a feature this server's substrate does not have.
  *
- * The driver contract says a runtime that lacks a feature answers empty,
- * `null` or a no-op, and that stays true — it is what lets the snapshot
- * compose every feed unconditionally without a containerless server
- * breaking every client's render. This is the other half of that rule, and
- * the distinction is worth stating: a VERB degrades so the whole picture
- * still draws, but a ROUTE is one client asking one question, and handing
- * it a convincing empty answer teaches it the wrong thing. `GET
- * /image/builds` returning `[]` reads as "no builds are running"; on a
- * server that will never build one, the honest answer is that it cannot.
- *
- * 501 rather than 404 (the route exists) or 400 (the caller is not at
- * fault). Callers that render a feature per driver — the webapp reads
- * `snapshot.driver` and hides these outright — never see it; the ones that
- * do are asking something this install cannot answer.
+ * A driver verb for a missing feature degrades to empty, `null` or a no-op so
+ * the snapshot can compose every feed unconditionally. A route is different:
+ * `GET /image/builds` returning `[]` would read as "no builds are running",
+ * so the route answers 501 NOT_SUPPORTED instead. The webapp hides these
+ * features using `snapshot.driver` and never sees the 501.
  */
 
 /** The features a route can require, in product vocabulary rather than
@@ -32,11 +23,9 @@ const WHY: Record<DriverFeature, string> = {
 }
 
 /**
- * Throw unless the registered driver has `feature`.
- *
- * Called at the TOP of a handler, before any id is resolved: what this
- * server can do is not a property of the workspace being asked about, and a
- * 404 for a workspace that happens not to exist would hide the real answer.
+ * Throw unless the registered driver has `feature`. Call it first in a
+ * handler, before resolving any id, so a 404 for a missing workspace can't
+ * hide the real answer.
  */
 export function requireDriverFeature(feature: DriverFeature): void {
   if (workspaceDriver().kind !== 'containerless') return

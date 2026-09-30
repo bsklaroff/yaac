@@ -10,8 +10,8 @@ vi.mock('#domain/workspaces/spare-pool', () => ({
   rebranchSpare: vi.fn(),
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({
-  // The AWAITED teardown: the reap removes the spare's checkout off the back
-  // of it, so it must not resolve before the Job is actually gone.
+  // The awaited teardown. The reap removes the spare's checkout after it, so
+  // it must not resolve before the Job is gone.
   cleanupWorkspace: vi.fn().mockResolvedValue(true),
   deleteWorkspaceState: vi.fn().mockResolvedValue(true),
   isTmuxSessionAlive: vi.fn(),
@@ -24,8 +24,7 @@ vi.mock('#db', async (importOriginal) => ({
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
-// `claiming` and `inFlight` are the module's shared state, read here to set
-// up a mid-claim / mid-spawn cluster and asserted on afterwards.
+// Module state, used to set up mid-claim / mid-spawn cases and assert on.
 import { claiming, inFlight, clearPrewarmStateForTests } from '#domain/workspaces/prewarm'
 import { LABEL_PREWARMED, type PodInfo } from '#drivers/k8s/substrate/pods'
 import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
@@ -39,21 +38,21 @@ import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } 
 import { cleanupWorkspace, deleteWorkspaceState } from '#domain/workspaces/cleanup'
 import { getWorkspaceRow, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
 
-/** What the registered runtime reports for the pass. */
+/** The workspaces the runtime reports for a pass. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
 const mockCreate = vi.mocked(createWorkspace)
 const mockCleanup = vi.mocked(cleanupWorkspace)
 const mockDeleteState = vi.mocked(deleteWorkspaceState)
 const mockResolveCreate = vi.mocked(resolveCreate)
 
-/** What the project's untouched create resolves to — what a spare is warmed as. */
+/** The project's default create setup, which a spare is warmed with. */
 const SETUP: CreateSetup = { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui' }
 const WARM = { ...SETUP, prewarm: true, workspaceId: expect.any(String) as string }
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-/** One reconcile pass, then long enough for the spawns it fired — which
- *  resolve what to warm before creating — to reach `createWorkspace`. */
+/** Run one reconcile pass, then wait for its spawns to reach
+ *  `createWorkspace`. */
 async function pass(snapshot?: Parameters<typeof reconcilePrewarmPool>[0]): Promise<void> {
   await reconcilePrewarmPool(snapshot)
   await flush()
@@ -89,9 +88,8 @@ describe('reconcilePrewarmPool', () => {
     vi.mocked(listProjectRows).mockResolvedValue([])
     vi.mocked(getWorkspaceRow).mockResolvedValue(undefined)
     mockCreate.mockResolvedValue({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
-    // Both report success by default: the reap chain gates each step on the
-    // one before it, so a falsy default would silently skip the deletions
-    // every case here is about.
+    // Default to success: each reap step waits on the previous one, so a
+    // falsy default would silently skip the deletions under test.
     mockCleanup.mockResolvedValue(true)
     mockDeleteState.mockResolvedValue(true)
     vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '1')
@@ -113,11 +111,10 @@ describe('reconcilePrewarmPool', () => {
   })
 
   it('removes the reaped spare\'s workspace state only once its pod is gone', async () => {
-    // The order is the point. A spare's checkout is deleted off the back of
-    // its teardown, and the detached teardown resolves before its Job delete
-    // has even started — so doing this off THAT would remove /workspace from
-    // under a pod still mounting it, and a crash in the window would leave a
-    // claimable labeled spare with no checkout at all.
+    // The checkout must go only after the awaited teardown. The detached
+    // teardown resolves before the Job delete starts, so using it would pull
+    // /workspace out from under a live pod, and a crash then would leave a
+    // claimable spare with no checkout.
     const order: string[] = []
     let releaseTeardown = (): void => { /* replaced below */ }
     mockCleanup.mockImplementation(async () => {
@@ -131,8 +128,7 @@ describe('reconcilePrewarmPool', () => {
 
     await pass()
     await flush()
-    // The tick does not wait on the teardown, so a slow one never stalls the
-    // pool — but nothing has been deleted yet either.
+    // The tick does not wait on the teardown, and nothing is deleted yet.
     expect(order).toEqual(['teardown-started'])
 
     releaseTeardown()
@@ -142,9 +138,8 @@ describe('reconcilePrewarmPool', () => {
   })
 
   it('keeps the checkout when the teardown could not confirm the pod is gone', async () => {
-    // A Job delete that timed out leaves a pod in its grace period still
-    // writing to /workspace. The spare keeps its flagged row, which is what
-    // lets the startup sweep recognize the checkout and try again.
+    // A timed-out Job delete leaves a pod still writing to /workspace. The
+    // spare keeps its row so the startup sweep can retry.
     mockCleanup.mockResolvedValue(false)
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's3', prewarmed: true })])
 
@@ -274,8 +269,8 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  // The webapp is who claims spares, and it sends the remembered agent mode —
-  // so a spare is warmed with it, where the create route itself would not.
+  // The webapp claims spares and sends the remembered agent mode, so spares
+  // are warmed in that mode.
   it('warms a spare as the project\'s untouched create, remembered mode included', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
     await pass()
@@ -283,9 +278,9 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
-  // A claim cannot convert a spare between modes (the pod spec differs), so
-  // one in a mode the project no longer creates in would fill the pool with
-  // a spare nothing takes. Every other mismatch is a respawn at claim time.
+  // A claim cannot switch a spare's mode (the pod spec differs), so a spare
+  // in an unused mode would never be taken. Other mismatches are fixed by a
+  // respawn at claim time.
   it('replaces a spare warmed in another agent mode than the project now uses', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
       { slug: 'p', lastTool: 'codex', createDefaults: { codex: { mode: 'acp' } } } as unknown as ProjectRow,
@@ -331,14 +326,12 @@ describe('reconcilePrewarmPool', () => {
 
     settleFirst()
     await flush()
-    // One of two settled: the other stays, so the next tick still sees the
-    // outstanding spawn and doesn't stampede.
+    // The unsettled spawn stays, so the next tick does not start another.
     expect([...inFlight.values()]).toEqual(['p'])
   })
 
-  // A spawn's pod lists long before its create settles, and a reap then
-  // kills it under a create that retries it into the same fate — which is
-  // what a stop racing a spawn used to do, three attempts over.
+  // A spawn's pod is listed well before its create settles. Reaping it then
+  // would make the create retry into the same fate.
   it('never reaps a spare whose spawn is still in flight, nor counts it twice', async () => {
     mockCreate.mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
@@ -346,11 +339,11 @@ describe('reconcilePrewarmPool', () => {
     const [[, { workspaceId }]] = mockCreate.mock.calls as unknown as [[string, { workspaceId: string }]]
     const warming = pod({ jobName: `yaac-p-${workspaceId}`, workspaceId, prewarmed: true, running: false })
 
-    // Listed beside the real workspace: one spare, not two, so no refill.
+    // One spare beside the real workspace, so no refill.
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }), warming])
     await pass()
-    // The real workspace stopped: the project is idle, but the spare is not
-    // its to drain until the spawn settles.
+    // The project is now idle, but the spare is not drained until its spawn
+    // settles.
     mockWorkspaces.mockResolvedValue([warming])
     await pass()
     expect(mockCreate).toHaveBeenCalledTimes(1)
@@ -362,8 +355,7 @@ describe('reconcilePrewarmPool', () => {
   })
 
   // A restart takes its pod down before the new one runs. The project is not
-  // idle for that gap, so its spare stays rather than being drained and
-  // re-warmed once the restart is up. A failed restart holds nothing.
+  // idle during that gap, so its spare stays. A failed restart does not count.
   it('keeps an idle project\'s spare while one of its workspaces is restarting', async () => {
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1', running: false, terminating: true }),

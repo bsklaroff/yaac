@@ -3,23 +3,13 @@ import { addAllowedHostToProjectConfig } from '#domain/projects'
 import { resolveWorkspaceContainer } from './resolve'
 
 /**
- * Let a workspace reach a host its egress denied — the webapp's
- * click-to-allow action.
+ * Let a workspace reach a host its egress denied (the webapp's click-to-allow
+ * action).
  *
- * Two decisions live here, and both are the reason this is a mediator verb
- * rather than a call straight through to the runtime.
- *
- * `persist` is the first: whether the widen outlives this workspace. Written
- * into the project's yaac-config.json, it is inherited by every future
- * workspace of the project — durable project policy, so the write belongs
- * above the runtime whatever realizes the live half.
- *
- * The second is that persisting implies the fan-out. A user who says "allow
- * this everywhere" means the sibling workspaces they already have running too,
- * not just the ones they create next; without it a persisted host would look
- * ignored until each was recreated. So the config write comes first — a
- * failure there means nothing was widened anywhere — and the runtime is then
- * asked to widen the project's whole running set.
+ * With `persist`, the host is written to the project's yaac-config.json so
+ * future workspaces inherit it, and the runtime also widens every running
+ * workspace of the project, since "allow everywhere" includes those. The
+ * config write goes first, so a failure there widens nothing.
  */
 export async function allowWorkspaceHost(
   idOrName: string,

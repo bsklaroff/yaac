@@ -111,9 +111,9 @@ describe('ensureAuthDaemonSpawned', () => {
     expect(calls).toHaveLength(1)
   })
   it('without a pre-resolved target the default resolution throws off-CLI', async () => {
-    // Documents the desktop trap: with no server selected in `server.json`
-    // the default resolveServerTarget() cannot succeed, so a caller that
-    // has already resolved one must pass `target`.
+    // With no server selected in `server.json`, the default
+    // resolveServerTarget() fails, so a caller (e.g. the desktop app) that
+    // already resolved one must pass `target`.
     const { impl, calls } = fakeSpawn()
     await expect(ensureAuthDaemonSpawned({ invocation: INVOCATION, spawnImpl: impl }))
       .rejects.toThrow()

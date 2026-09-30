@@ -1,19 +1,14 @@
 /**
- * In-memory registry of image builds and registry pushes in flight (or
- * recently finished). Surfaced in the server snapshot as metadata only —
- * status, chain step, podman STEP progress — so the webapp can render a
- * "building" indicator; the raw log tail is served by `GET
- * /image/builds/:id/log` and polled only while the overlay is open (streaming
- * log lines through snapshots would rebuild the full snapshot at line rate).
+ * In-memory list of image builds and registry pushes, running or recently
+ * finished. The snapshot carries only metadata (status, layer, STEP
+ * progress) for the webapp's "building" indicator; the log tail is fetched
+ * separately from the `/builds/:id/log` route, so log lines don't trigger
+ * snapshot rebuilds.
  *
- * The server is a single process, so a module-level map is enough. Finished
- * entries (succeeded and failed alike) persist until the user dismisses them —
- * `dismiss` hides a row from the list but keeps the record, so a dismissed
- * failure still gates the background prewarm sweep's backoff via
- * `hasBlockingFailure` (dismissing is an acknowledgement, not a retry). An
- * explicit retry (`forgetImageBuild` + rebuild) or a superseding build clears
- * that backoff. A hard `MAX_ENTRIES` cap bounds memory; nothing ages out on a
- * timer.
+ * Finished entries stay until dismissed. Dismissing only hides a row: a
+ * dismissed failure still makes the prewarm sweep back off
+ * (`hasBlockingFailure`). A retry (`forgetImageBuild`) or a new build of the
+ * same tag clears it. `MAX_ENTRIES` bounds memory.
  */
 import { notifyWorkspaceListChanged } from '#notify'
 import { stripAnsi } from '@yaac/shared/ansi'
@@ -40,8 +35,7 @@ interface BuildRecord {
   log: string
   startedAt: number
   finishedAt?: number
-  /** User dismissed this finished row: hidden from `listImageBuilds` but kept
-   *  so a dismissed failure still backs off the prewarm sweep. */
+  /** Hidden from `listImageBuilds` but kept for `hasBlockingFailure`. */
   dismissed?: boolean
 }
 
@@ -54,9 +48,9 @@ const MAX_ENTRIES = 30
 const STEP_TEXT_MAX = 120
 
 /**
- * Parse podman/buildah's per-instruction progress line, e.g.
- * `STEP 3/14: RUN apt-get update`. Returns null for any other line — if the
- * format ever changes the UI degrades to status + raw log, nothing breaks.
+ * Parse podman's per-instruction progress line, e.g.
+ * `STEP 3/14: RUN apt-get update`. Returns null for any other line; if the
+ * format changes, the UI just shows status and the raw log.
  */
 export function parseBuildStep(line: string): { current: number; total: number; text: string } | null {
   const m = /^STEP\s+(\d+)\/(\d+):\s*(.*)$/.exec(line)
@@ -64,10 +58,8 @@ export function parseBuildStep(line: string): { current: number; total: number; 
   return { current: Number(m[1]), total: Number(m[2]), text: m[3].slice(0, STEP_TEXT_MAX) }
 }
 
-/** Enforce the entry cap as a memory backstop — nothing ages out on a timer,
- *  so finished rows persist until dismissed. Over the cap, drop dismissed rows
- *  first (already hidden), then the oldest finished ones; running entries are
- *  never dropped. */
+/** Enforce `MAX_ENTRIES`: drop dismissed rows first, then the oldest
+ *  finished ones. Running entries are never dropped. */
 function prune(): void {
   if (entries.size <= MAX_ENTRIES) return
   const droppable = [...entries.values()]
@@ -81,17 +73,14 @@ function prune(): void {
 }
 
 /**
- * Track a new build/push. A finished entry for the same tag+action is
- * superseded (a retry replaces a stale failure, so its `hasBlockingFailure`
- * backoff clears). Returns the entry id the caller uses for log ingestion
- * and completion.
+ * Track a new build or push, replacing any finished entry for the same tag
+ * and action. Returns the entry id for log ingestion and completion.
  */
 export function registerImageBuild(input: {
   tag: string
   layer: ImageLayerName | 'push' | 'proxy' | 'netd'
   action: 'build' | 'push'
-  /** Omitted for shared infrastructure builds with no owning project (the
-   *  proxy sidecar), which register with no projects. */
+  /** Omitted for infrastructure builds that belong to no project. */
   project?: ProjectRef
   reason: ImageBuildReason
 }): string {
@@ -117,9 +106,8 @@ export function registerImageBuild(input: {
   return id
 }
 
-/** A joiner coalescing onto an in-flight build records its project. No-op
- *  (and no broadcast) when the project is already attached or the id is
- *  gone. */
+/** Add a project waiting on an in-flight build. No-op when it is already
+ *  attached or the id is gone. */
 export function attachImageBuildProject(id: string, project: ProjectRef): void {
   const e = entries.get(id)
   if (!e || e.projects.some((p) => p.id === project.id)) return
@@ -128,9 +116,9 @@ export function attachImageBuildProject(id: string, project: ProjectRef): void {
 }
 
 /**
- * Append one podman output line to the entry's log tail. Broadcasts only
- * when the parsed `STEP N/M` progress advances — never per raw line, since
- * every snapshot rebuild re-lists active workspaces.
+ * Append one podman output line to the entry's log tail. Notifies only when
+ * the `STEP N/M` progress changes, since each notification rebuilds the
+ * snapshot.
  */
 export function ingestImageBuildLine(id: string, line: string): void {
   const e = entries.get(id)
@@ -165,10 +153,8 @@ export function failImageBuild(id: string, error: string): void {
   notifyWorkspaceListChanged()
 }
 
-/** Hide a finished row from the list (user dismissed the × ). The record is
- *  kept, so a dismissed failure still backs off the prewarm sweep —
- *  dismissing is an acknowledgement, not a retry. Running entries are left
- *  alone; their coordinator owns the lifecycle. Returns whether anything
+/** Hide a finished row from the list, keeping the record (see the module
+ *  comment). Running entries are left alone. Returns whether anything
  *  changed. */
 export function dismissImageBuild(id: string): boolean {
   const e = entries.get(id)
@@ -178,10 +164,9 @@ export function dismissImageBuild(id: string): boolean {
   return true
 }
 
-/** Drop a finished entry entirely — the explicit retry path. Unlike
- *  `dismiss`, this removes the record, so a failure stops backing off the
- *  prewarm sweep and the rebuild can proceed immediately. Running entries are
- *  kept. Returns whether anything changed. */
+/** Delete a finished entry (the retry path), so its failure no longer
+ *  blocks the prewarm sweep. Running entries are kept. Returns whether
+ *  anything changed. */
 export function forgetImageBuild(id: string): boolean {
   const e = entries.get(id)
   if (!e || e.status === 'running') return false
@@ -224,8 +209,8 @@ export function getImageBuild(id: string): ImageBuildEntry | undefined {
   return e ? project(e) : undefined
 }
 
-/** The projects a build stands for — none for infra, or an unknown id —
- *  which is what the retry path rebuilds. */
+/** The projects waiting on a build, which a retry rebuilds. Empty for
+ *  infra builds and unknown ids. */
 export function imageBuildProjects(id: string): ProjectRef[] {
   return [...entries.get(id)?.projects ?? []]
 }
@@ -236,11 +221,9 @@ export function getImageBuildLog(id: string): string | undefined {
 }
 
 /**
- * Whether a recent failure covers any of `tags`. The prewarm sweep uses this
- * to back off a chain whose build just failed instead of retrying every 5s
- * tick. Dismissed failures still count (dismissing only hides the row); the
- * backoff clears when the window lapses, the Dockerfile changes (a new tag),
- * or the user hits retry (which forgets the entry).
+ * Whether any of `tags` failed within `retryAfterMs`. The prewarm sweep uses
+ * this to back off a failing chain. Dismissed failures count; a changed
+ * Dockerfile (new tag) or a retry clears it.
  */
 export function hasBlockingFailure(tags: string[], retryAfterMs: number): boolean {
   const cutoff = Date.now() - retryAfterMs

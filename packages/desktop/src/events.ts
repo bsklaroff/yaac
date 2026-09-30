@@ -3,12 +3,9 @@ import type { ServerSnapshot } from '@yaac/shared/types'
 import { parseSnapshotMessage } from '#attention'
 
 /**
- * Long-lived `/events` subscription for the tray/badge/notification signal.
- * The main process opens the WS itself — the server identifies it from the
- * request like any client — and re-resolves the target on every
- * (re)connect, so a server the machine was re-pointed at since is the one
- * the next reconnect lands on. Deps are injected so the loop unit-tests
- * without sockets or timers wired to a real server.
+ * Long-lived `/events` subscription that feeds the tray badge and
+ * notifications. The target is re-resolved on every reconnect, so switching
+ * servers takes effect on the next connection.
  */
 
 /** The `/api/events` WS endpoint for a server origin (http→ws, https→wss). */
@@ -57,7 +54,7 @@ export function startEventsMonitor(deps: EventsMonitorDeps): { stop: () => void 
     try {
       target = await deps.resolveTarget()
     } catch {
-      // Server down (dead lock) — retry; the shell may be mid-starting it.
+      // No server selected yet; keep retrying.
       scheduleReconnect()
       return
     }

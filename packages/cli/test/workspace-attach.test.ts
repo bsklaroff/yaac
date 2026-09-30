@@ -15,8 +15,7 @@ describe('workspaceAttach', () => {
     getSpy.mockResolvedValue({ workspaceId: 'abc123def456' })
   })
 
-  // The socket takes an exact id only, so what was typed — a prefix here —
-  // is resolved by the server first.
+  // The socket takes only an exact id, so the prefix is resolved first.
   it('attaches over the server PTY WebSocket with the native target, by the id the server resolved', async () => {
     await workspaceAttach('abc')
     expect(getSpy).toHaveBeenCalledWith({ param: { id: 'abc' } })

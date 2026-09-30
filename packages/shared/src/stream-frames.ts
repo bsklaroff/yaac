@@ -4,8 +4,8 @@
  * client → pod: 0 data, 1 resize {cols,rows}, 2 signal {name}
  * pod → client: 0 data, 3 exit {code}
  *
- * Mirror of dockerfiles/streamd/framing.js (the in-pod side, plain JS
- * with no build step, so it cannot import this module) — keep in sync.
+ * dockerfiles/streamd/framing.js is the in-pod copy (plain JS, no build
+ * step); keep the two in sync.
  */
 
 export const FRAME_DATA = 0
@@ -34,9 +34,9 @@ export function encodeFrame(type: number, payload: Buffer | object): Buffer {
 }
 
 /**
- * Incremental frame parser. feed() buffers arbitrary chunk boundaries and
- * returns every complete frame; throws on an oversized frame (protocol
- * error — the caller should destroy the stream).
+ * Incremental frame parser: feed() accepts any chunking and returns every
+ * complete frame. Throws on an oversized frame; the caller should then
+ * destroy the stream.
  */
 export class FrameParser {
   private buf: Buffer = Buffer.alloc(0)

@@ -6,24 +6,18 @@ import { testEnv } from '@yaac/shared/env'
 import { AGENT_CLIS, type ToolInstallView } from '@yaac/shared/types'
 
 /**
- * Web-driven CLI install: when a sign-in fails because the vendor CLI is not
- * installed (ToolLoginView.cliMissing), the webapp offers an "Install …"
- * button that runs the vendor's install here in the server:
+ * Web-driven CLI install. When a sign-in fails because the vendor CLI is
+ * missing (ToolLoginView.cliMissing), the webapp offers an "Install" button
+ * that runs the vendor's installer on this machine, at the version pinned in
+ * `AGENT_CLIS`:
  *
- *  - claude: the official standalone installer (`curl | bash`, lands in
- *    `~/.local/bin`), told the version to install.
- *  - codex: `npm install -g @openai/codex@<version>`.
+ *  - claude: the official standalone installer (`curl | bash`, into
+ *    `~/.local/bin`).
+ *  - codex: `npm install -g @openai/codex@<version>`. There is no Homebrew
+ *    fallback because a formula cannot be pinned to a version.
  *
- * Both at the version in `AGENT_CLIS`, the release workspaces run (a
- * containerless workspace runs yaac's own install of it, not this one). No
- * Homebrew fallback for codex — a formula installs whatever is current and
- * cannot be pinned.
- *
- * Session lifecycle mirrors tool-login's via the shared cli-session
- * registry: one per tool, polled by the webapp, lingering after finishing so
- * polling sees the terminal state. Success is exit 0 *plus* the CLI actually
- * resolving afterwards — an installer that "succeeds" into a directory the
- * sign-in flow can't see is still a failure.
+ * Success requires exit 0 and the CLI then resolving on $PATH, since the
+ * sign-in flow must be able to find it.
  */
 
 type InstallSession = CliSession<ToolInstallView>
@@ -53,10 +47,9 @@ function installArgv(tool: 'claude' | 'codex'): string[] | null {
 }
 
 /**
- * Start (or restart) the install flow for a tool. Any still-running install
- * for the same tool is cancelled first — clients drive one at a time. `id`
- * is supplied by the relay (the main server mints flow ids); direct
- * callers/tests may omit it.
+ * Start (or restart) the install flow for a tool, cancelling any install
+ * still running for it. The relay passes the server-minted `id`; tests may
+ * omit it.
  */
 export function startToolInstall(tool: 'claude' | 'codex', id?: string): ToolInstallView {
   const existing = registry.liveForTool(tool)
@@ -85,8 +78,6 @@ export function startToolInstall(tool: 'claude' | 'codex', id?: string): ToolIns
       registry.finish(s, 'error', outputTail(s.buf) || `Installer exited with code ${String(code)}.`)
       return
     }
-    // Exit 0 alone isn't "installed" — the sign-in flow must be able to find
-    // the binary on the server's $PATH.
     if (resolveToolCliPath(tool) === null) {
       registry.finish(s, 'error', 'The installer finished but the CLI still cannot be found on this machine.')
       return

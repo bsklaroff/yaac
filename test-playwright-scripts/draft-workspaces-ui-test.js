@@ -106,7 +106,7 @@ try {
   await page.keyboard.press('Escape')
   await question.waitFor({ state: 'visible' })
   check('a typed prompt asks before closing', (await question.textContent())?.includes('Save as a draft?') === true)
-  // Let the scale-in finish: focus lands, and the screenshot shows the card.
+  // Let the scale-in animation finish.
   await page.waitForTimeout(300)
   check('Save draft has focus',
     await question.getByRole('button', { name: 'Save draft' }).evaluate((el) => el === document.activeElement))

@@ -6,7 +6,7 @@ vi.mock('#db', async (importOriginal) => {
   return {
     ...actual,
     applyWorkspaceEvent: vi.fn(),
-    // Real, but replaceable: an unreadable project list is a case of its own.
+    // Real, but a test can make the project list unreadable.
     listProjectRows: vi.fn(actual.listProjectRows),
   }
 })
@@ -17,8 +17,8 @@ import { EventEmitter } from 'node:events'
 import type ChildProcessModule from 'node:child_process'
 
 const spawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => void>()
-/** The last detached child the mediator spawned: a test ends its script by
- *  emitting `exit` on it, the way the real child would. */
+/** The last detached child spawned. A test emits `exit` on it to end the
+ *  script, as the real child would. */
 let lastChild: EventEmitter | undefined
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof ChildProcessModule>('node:child_process')
@@ -32,8 +32,7 @@ vi.mock('node:child_process', async () => {
   }
 })
 
-// Audit logging is a vi.fn so the teardown line can be asserted without a
-// real server.log on disk.
+// Mocked so the teardown log line can be asserted.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
@@ -75,10 +74,9 @@ import {
 
 const mockServerLog = vi.mocked(serverLog)
 
-// Cleanup reports the stop as an event rather than writing the row itself,
-// so applyWorkspaceEvent is stubbed and what a teardown says is asserted
-// directly. The orphan sweep's tests read real rows instead: which ids a
-// project has is the question that sweep turns on.
+// Cleanup reports the stop as an event, so applyWorkspaceEvent is stubbed
+// and its events asserted. The orphan sweep's tests use real rows, since the
+// sweep depends on which ids a project has.
 const appliedEvents: WorkspaceEvent[] = []
 vi.mocked(applyWorkspaceEvent).mockImplementation((event) => {
   appliedEvents.push(event)
@@ -90,19 +88,18 @@ const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .map((e) => [e.projectSlug, e.workspaceId, e.cause])
 
 /**
- * What the mediator asked the runtime to do, in the order it asked.
+ * What cleanup asked the runtime to do, in order.
  *
- * The runtime's own sequencing (deregister, salvage, delete) is
- * asserted in `test/drivers/k8s/workspaces/teardown.test.ts`, where it lives.
- * What these tests own is the half above it: what the mediator records and
- * evicts before handing over, what it composes around the runtime's shell
- * command, and how it treats the verdict it gets back.
+ * The runtime's own sequencing (deregister, salvage, delete) is tested in
+ * `test/drivers/k8s/workspaces/teardown.test.ts`. These tests cover the layer
+ * above: what cleanup records and evicts first, what it adds around the
+ * runtime's shell command, and how it handles the result.
  */
 interface RuntimeCalls {
   destroyed: TeardownTarget[]
   deregistered: string[]
   salvaged: TeardownTarget[]
-  /** Resolved by `salvageImages`, so a test can hold the chain open. */
+  /** Releases `salvageImages`, so a test can hold the chain open. */
   releaseSalvage: () => void
 }
 
@@ -158,9 +155,8 @@ describe('cleanupWorkspace', () => {
     ])
   })
 
-  // Callers chain `deleteWorkspaceState` off this, so a runtime the driver
-  // could not confirm gone has to read as "not gone" all the way up: what
-  // is still shutting down is still writing to /workspace.
+  // Callers run `deleteWorkspaceState` after this, so an unconfirmed
+  // teardown must report "not gone": the workspace may still be writing.
   it('reports NOT gone when the runtime could not confirm the teardown', async () => {
     runtime = installRuntime({ destroy: () => Promise.resolve(false) })
 
@@ -169,11 +165,9 @@ describe('cleanupWorkspace', () => {
     })).resolves.toBe(false)
   })
 
-  // Reaches across the seal on purpose. The liveness caches are keyed by
-  // (slug, workspaceId) and process-global, so a teardown that forgot to evict
-  // them leaves a restarted session reading its predecessor's verdict — and
-  // nothing about that failure is loud. Asserting `forgetLiveness` in
-  // liveness.test.ts only proves the function works, not that cleanup calls it.
+  // The liveness caches are process-global and keyed by (slug, workspaceId).
+  // Without eviction, a restarted session would silently read its
+  // predecessor's result. liveness.test.ts cannot check that cleanup evicts.
   it('evicts the liveness cache so a reused session id cannot read a stale verdict', async () => {
     _clearTmuxAliveCacheForTests()
     _resetWorkspaceStatusStoreForTests()
@@ -186,8 +180,8 @@ describe('cleanupWorkspace', () => {
     await expect(probeTmuxLiveness(target)).resolves.toBe('alive')
     expect(exec).toHaveBeenCalledTimes(1)
 
-    // Within the TTL a second probe would be served from cache — teardown is
-    // what has to invalidate it.
+    // Within the TTL a second probe would hit the cache; teardown must evict
+    // it.
     await cleanupWorkspace({ jobName: 'yaac-p-s-stale', projectSlug: 'p', workspaceId: 's-stale' })
 
     exec.mockRejectedValue(new WorkspaceExecError('exit 1', 1, '', "can't find session: yaac"))
@@ -207,15 +201,14 @@ describe('cleanupWorkspace', () => {
     ])
   })
 
-  // The mount sources belong to a workspace that may still be running: a
-  // teardown that removed them first would pull /workspace's neighbours out
+  // The dirs are mount sources, so removing them first would pull them out
   // from under a container still shutting down.
   it('removes the workspace dirs only once the runtime is gone', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-order-'))
     setDataDir(dataDir)
     try {
-      // A host-run workspace keeps its ephemeral paths in the checkout
-      // itself; those go, and the rest of the checkout stays for a restart.
+      // A containerless workspace keeps ephemeral paths in the checkout.
+      // Those are removed; the rest stays for a restart.
       const checkout = workspaceDir('p', 's-dirs')
       const modules = path.join(checkout, 'node_modules')
       await fs.mkdir(path.join(modules, 'left-pad'), { recursive: true })
@@ -238,10 +231,9 @@ describe('cleanupWorkspace', () => {
     }
   })
 
-  // The checkout is full of agent-authored content by the time it stops, so
-  // an ephemeral path is removed only where it is a real directory of the
-  // checkout: a committed `node_modules -> /anywhere` would otherwise be an
-  // rm of host state, and a parent symlink out of the checkout the same.
+  // The agent controls the checkout, so an ephemeral path is removed only if
+  // it is a real directory there. A committed `node_modules -> /anywhere`, or
+  // a symlinked parent, would otherwise delete host state.
   it('leaves an ephemeral path that is, or is reached through, a symlink out of the checkout', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-link-'))
     setDataDir(dataDir)
@@ -267,12 +259,9 @@ describe('cleanupWorkspace', () => {
     }
   })
 
-  // The dirs are mount sources, so an unconfirmed teardown keeps them: a
-  // delete that never landed leaves the workspace fully alive and running
-  // on them, and on the prewarm-reap path that spare stays claimable — its
-  // row survives on this same verdict — so a later claim would hand a user
-  // a workspace whose state dirs are gone. Both sweeps that resume the
-  // teardown remove them, so keeping them only delays it.
+  // If the delete never landed, the workspace is still running on these
+  // dirs, and a reaped spare stays claimable. The sweeps that resume the
+  // teardown remove them later.
   it('keeps the workspace dirs when the runtime could not be confirmed gone', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-keep-'))
     setDataDir(dataDir)
@@ -313,8 +302,8 @@ describe('deleteWorkspaceState', () => {
     const admin = path.join(dataDir, 'global', 'projects', slug, 'repo', '.git', 'worktrees', 'w1')
     await fs.mkdir(wt, { recursive: true })
     await fs.mkdir(admin, { recursive: true })
-    // Workspace setup writes this precisely so `git worktree prune` can't reap
-    // a live workspace; it has to be cleared or it outlives what it protects.
+    // Setup writes this so `git worktree prune` cannot reap a live workspace;
+    // teardown must clear it.
     await fs.writeFile(path.join(admin, 'locked'), 'yaac\n')
 
     await expect(deleteWorkspaceState(slug, 'w1')).resolves.toBe(true)
@@ -322,9 +311,8 @@ describe('deleteWorkspaceState', () => {
     await expect(fs.access(admin)).rejects.toThrow()
   })
 
-  // Structural rather than incidental: every id that reaches this today is a
-  // server-minted UUID or one read back off a row or the runtime, but an empty
-  // one resolves to the workspaces ROOT — every workspace of the project.
+  // Ids are server-minted today, but an empty id would resolve to the
+  // workspaces root, i.e. every workspace of the project.
   it('refuses an empty workspace id instead of resolving to the workspaces root', async () => {
     const slug = 'dws-empty'
     const root = path.join(dataDir, 'global', 'projects', slug, 'workspaces')
@@ -354,9 +342,8 @@ describe('cleanupWorkspaceDetached', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  // The script composes both halves: the runtime tears its own objects down,
-  // this layer removes the dirs it owns, and the runtime's half goes first
-  // because those dirs are what the workspace has mounted.
+  // The runtime's teardown runs before this layer removes its dirs, since
+  // the workspace has those dirs mounted.
   it('composes the runtime teardown ahead of the dirs this layer owns', async () => {
     const checkoutModules = path.join(workspaceDir('p', 's-script'), 'node_modules')
     await fs.mkdir(checkoutModules, { recursive: true })
@@ -371,8 +358,8 @@ describe('cleanupWorkspaceDetached', () => {
     expect(script.indexOf(TEARDOWN_SENTINEL)).toBeLessThan(script.indexOf('rm -rf'))
   })
 
-  // Routing has to stop in-process: a detached shell can neither drop this
-  // server's port forwards nor speak to the egress registration.
+  // Routing must stop in-process: a detached shell cannot drop this server's
+  // port forwards or egress registration.
   it('stops routing before it spawns anything', async () => {
     await cleanupWorkspaceDetached({
       jobName: 'yaac-p-s-dereg', projectSlug: 'p', workspaceId: 's-dereg',
@@ -392,8 +379,8 @@ describe('cleanupWorkspaceDetached', () => {
     expect(runtime.salvaged).toEqual([
       { projectSlug: 'p', workspaceId: 's-detached', unitName: 'yaac-p-s-detached' },
     ])
-    // Held open: the workspace has to outlive the salvage, which reaches
-    // into it, so nothing may be spawned while it is still running.
+    // The salvage reads from the workspace, so nothing is spawned until it
+    // finishes.
     expect(spawnedScript()).toBeUndefined()
 
     runtime.releaseSalvage()
@@ -456,8 +443,8 @@ describe('cleanupWorkspaceDetached', () => {
   })
 
   it('preserveDeletedRecord reports no stop, leaving the recorded cause intact', async () => {
-    // Resuming a teardown yaac already recorded (its terminating mark was lost)
-    // must not re-report — that would clobber the real cause with a stray one.
+    // Resuming a recorded teardown (whose terminating mark was lost) must not
+    // re-report, which would overwrite the real cause.
     await cleanupWorkspaceDetached({
       jobName: 'yaac-p-s-resume',
       projectSlug: 'proj-a',
@@ -466,8 +453,7 @@ describe('cleanupWorkspaceDetached', () => {
     })
 
     expect(stopsReported()).toEqual([])
-    // The teardown itself still runs (the runtime's command is idempotent,
-    // so re-issuing it is exactly how a lost teardown is resumed).
+    // The idempotent teardown still runs; that is how it is resumed.
     await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
   })
 })
@@ -489,11 +475,9 @@ describe('teardownForRestart', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  // A stop returns while its detached script is still running, and under
-  // containerless the runtime has already forgotten the workspace by then —
-  // so a restart within seconds resolves to the stopped row (`jobName:
-  // null`) and would relaunch into a checkout the script is still walking.
-  // The wait is what stands between the two.
+  // A stop returns while its detached script still runs, and under
+  // containerless the runtime has already forgotten the workspace. A quick
+  // restart would relaunch into a checkout the script is still cleaning.
   it('waits for the workspace\'s detached teardown to exit before a relaunch', async () => {
     await cleanupWorkspaceDetached({
       jobName: 'yaac-p-s-race', projectSlug: 'p', workspaceId: 's-race',
@@ -509,8 +493,8 @@ describe('teardownForRestart', () => {
     lastChild!.emit('exit', 0)
     await restart
     expect(settled).toBe(true)
-    // And the mark the stop left is gone, so the fresh workspace is not
-    // rendered as stopping.
+    // The stop's terminating mark is cleared, so the new workspace does not
+    // show as stopping.
     expect(isWorkspaceTerminating('s-race')).toBe(false)
   })
 
@@ -523,8 +507,7 @@ describe('teardownForRestart', () => {
 describe('gcOrphanEphemeralModuleDirs', () => {
   let dataDir: string
 
-  /** Register the given ids as creates in flight, in the real registry the
-   *  sweep reads. */
+  /** Register ids as in-flight creates in the real registry. */
   const publishInFlight = (provisioning: string[] = []): void => {
     clearAllProvisioningForTests()
     for (const workspaceId of provisioning) {
@@ -532,7 +515,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     }
   }
 
-  /** What the runtime was handed to reap on the node-local side. */
+  /** Live sets passed to the runtime's node-local reap. */
   let reaped: NodeLocalLiveSet[]
 
   /** Install a runtime reporting these workspaces and stray units. */
@@ -543,7 +526,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     })
   }
 
-  /** Install a runtime whose view cannot be read — the sweep must stand down. */
+  /** Install a runtime whose view cannot be read. */
   function seeNothing(): void {
     installFakeWorkspaceDriver({
       snapshot: () => {
@@ -570,10 +553,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  // Backdated: what this sweep exists to collect is a leftover from a
-  // previous run, and it deliberately spares anything written around its own
-  // start (a create staging into it). A dir seeded microseconds before the
-  // call would be the latter, not the former.
+  // Backdated, since the sweep spares anything written around its own start
+  // (a create staging into it).
   const STALE = new Date(Date.now() - 3_600_000)
 
   async function seedModulesDir(slug: string, sid: string): Promise<string> {
@@ -590,11 +571,9 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     return dir
   }
 
-  // The node-local half is the runtime's: the module dirs and working
-  // copies live on whichever node the workspace ran on, which may not be
-  // this filesystem. What the domain owns is the live set it hands over —
-  // every recorded project's id, with the workspaces, the stray units and
-  // the creates in flight, and nothing removed here.
+  // Node-local dirs may live on another node, so the runtime removes them.
+  // This layer only hands over the live set: recorded project ids,
+  // workspaces, stray units and in-flight creates.
   it('hands the runtime the live project ids and workspaces, and removes no node-local dir itself', async () => {
     await recordProject({ slug: 'proj-a', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' })
     await recordProject({ slug: 'proj-b', remoteUrl: 'https://x/proj-b', addedAt: '2026-01-01' })
@@ -607,9 +586,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
     seeRunning(
       [handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })],
-      // A unit mid-recreate (its workspace evicted, the replacement not
-      // scheduled yet) shows up ONLY as a stray, and its dirs are what the
-      // replacement is about to mount.
+      // A unit mid-recreate appears only as a stray, and its replacement is
+      // about to mount its dirs.
       [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectSlug: 'proj-b', createdAtMs: 0 }],
     )
 
@@ -624,8 +602,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     }
   })
 
-  // An empty list would tell the runtime that every project's tree is an
-  // orphan, so a list that cannot be read stands the node-local half down.
+  // An empty list would make every project's tree look orphaned, so an
+  // unreadable list skips the node-local reap.
   it('hands the runtime nothing when the projects cannot be listed', async () => {
     vi.mocked(listProjectRows).mockRejectedValueOnce(new Error('db closed'))
     const dead = await seedWorkspacesDir('proj-a', 'dead-1')
@@ -633,7 +611,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await gcOrphanEphemeralModuleDirs()
 
     expect(reaped).toHaveLength(0)
-    // The global half does not depend on the list, and still runs.
+    // The global sweep does not depend on the list and still runs.
     await expect(fs.access(dead)).rejects.toThrow()
   })
 
@@ -649,15 +627,12 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(deadTmux)).rejects.toThrow()
   })
 
-  // A dead spare (flagged row, no pod) must be told from a stopped workspace,
-  // since only the spare's checkout is disposable — from one read of the
-  // project's rows.
+  // Only a dead spare's checkout is disposable; a stopped workspace's is
+  // kept.
   it('collects a dead spare, and keeps a stopped workspace', async () => {
     await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'stopped-1' })
     await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'spare-1', spare: true })
-    // Both checkouts stale, so only the spare flag stands between the
-    // stopped one and the spare pass — an unseeded dir would be spared as
-    // unreadable instead, and prove nothing.
+    // Both checkouts are stale, so only the spare flag tells them apart.
     const [spareCheckout, stoppedCheckout] = await Promise.all(['spare-1', 'stopped-1'].map(async (sid) => {
       const dir = workspaceDir('proj-a', sid)
       await fs.mkdir(dir, { recursive: true })
@@ -684,9 +659,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   })
 
   it('spares a session the process is still provisioning', async () => {
-    // The create registers its row before it stages anything, and nothing is
-    // launched yet — so no listing can vouch for it. Sweeping here deletes
-    // the dirs the starting workspace is about to mount.
+    // The create records its row before anything is launched, so no
+    // listing shows it yet; sweeping would delete dirs it is about to mount.
     const staging = await seedWorkspacesDir('proj-a', 'creating-1')
     publishInFlight(['creating-1'])
 
@@ -696,8 +670,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   })
 
   it('spares a dir written since the sweep took its listing', async () => {
-    // The same race for a create with no provisioning row (a prewarmed
-    // spare): freshly written is the tell, so leave it for the next sweep.
+    // The same race for a create with no provisioning row (a spare): a
+    // fresh dir is left for the next sweep.
     const fresh = await seedWorkspacesDir('proj-a', 'staging-1')
     await fs.utimes(fresh, new Date(), new Date())
 
@@ -706,9 +680,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(fresh)).resolves.toBeUndefined()
   })
 
-  // "I could not see" must never read as "nothing is there": the view
-  // rejects rather than resolving empty, and the sweep stands down — the
-  // runtime included, which is handed no keep-list to reap against.
+  // An unreadable view must not read as empty: the sweep does nothing, and
+  // the runtime gets no live set to reap against.
   it('returns quietly when the runtime view cannot be read', async () => {
     const dead = await seedWorkspacesDir('proj-a', 'would-be-removed')
     seeNothing()

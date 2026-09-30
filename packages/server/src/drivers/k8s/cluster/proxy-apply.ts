@@ -40,17 +40,16 @@ import {
 import { nodeIpBlocks } from './cluster-cidrs'
 import { ensureNetd } from './netd'
 
-/** The workspace-id label an install from before workspaces were named
- *  stamped, in place of LABEL_WORKSPACE_ID. */
+/** The workspace-id label older installs used instead of
+ *  LABEL_WORKSPACE_ID. */
 const LEGACY_WORKSPACE_ID_LABEL = 'yaac.worktree-id'
 
 /**
- * Give every pod, Job and proxy registration an older install labelled with
- * LEGACY_WORKSPACE_ID_LABEL the current label too, so the workspaces it left
- * running are seen, governed by the current policies and served by the
- * proxy (docs/legacy-compat-shims.md). The old label stays: until the proxy
- * rolls, it is still the one the running proxy and policies select on.
- * True when there was anything to relabel.
+ * Add the current workspace-id label to pods, Jobs and proxy registrations
+ * that only carry LEGACY_WORKSPACE_ID_LABEL, so older workspaces are seen and
+ * governed by the current policies (docs/legacy-compat-shims.md). The old
+ * label stays until the proxy rolls. Returns whether anything was
+ * relabelled.
  */
 export async function relabelLegacyWorkspaces(): Promise<boolean> {
   let found = false
@@ -98,12 +97,8 @@ interface RawSecret {
   data?: Record<string, string>
 }
 
-/**
- * Ensure the proxy auth Secret exists and return its value. The secret is
- * generated once per cluster and read back on every server start —
- * replacing the podman-era trick of recovering it from the proxy
- * container's env on adoption.
- */
+/** Ensure the proxy auth Secret exists (generated once per cluster) and
+ *  return its value. */
 export async function ensureProxyAuthSecret(): Promise<string> {
   const existing = await kubectlGetJson<RawSecret>([
     'get', 'secret', PROXY_AUTH_SECRET_NAME, '-n', k8sNamespace(),
@@ -125,11 +120,8 @@ export async function ensureProxyAuthSecret(): Promise<string> {
 let cachedProxyClusterIp: string | null = null
 
 /**
- * The live ClusterIP of the proxy Service — read at pod-create as the workspace
- * pods' DNS nameserver + egress redirect target. Allocator-assigned (no longer
- * pinned), and stable because the Service is never deleted/recreated.
- * That stability is why the first read is cached for the process — it saves a
- * kubectl child per workspace create.
+ * The proxy Service's ClusterIP: workspace pods' DNS server and redirect
+ * target. Cached, since the Service is never recreated while in use.
  */
 export async function proxyServiceClusterIp(): Promise<string> {
   if (cachedProxyClusterIp) return cachedProxyClusterIp
@@ -142,28 +134,19 @@ export async function proxyServiceClusterIp(): Promise<string> {
   return ip
 }
 
-/**
- * Forget the cached proxy Service ClusterIP. Called from ProxyClient.stop()
- * (the Service is deleted with the Deployment there, so a later ensure may
- * allocate a new IP) and from test setup.
- */
+/** Forget the cached ClusterIP (after the Service is deleted, and in
+ *  tests). */
 export function resetProxyClusterIpCache(): void {
   cachedProxyClusterIp = null
 }
 
 export async function ensureProxyResources(imageRef: string): Promise<void> {
-  // SA + RBAC before the Deployment, which references the SA so the proxy
-  // can watch pods and its input objects and write its outputs. The
-  // Service's ClusterIP is allocator-assigned and never deleted, so
-  // `apply` is a no-op on it after first creation — no immutable-field
-  // migration needed (the pin is gone).
+  // RBAC before the Deployment that uses it.
   await kubectlApply(buildProxyServiceAccountManifest())
   await kubectlApply(buildProxyRoleManifest())
   await kubectlApply(buildProxyRoleBindingManifest())
-  // The three objects the proxy writes, created empty so its Role can name
-  // them — and only when absent, since an apply of the empty shape onto a
-  // live one would wipe what the proxy wrote. Before the Deployment, so
-  // the pod never boots against a name it cannot patch.
+  // The objects the proxy writes, created empty (so its Role can name them)
+  // only if absent, since applying over them would wipe its output.
   for (const manifest of buildProxyOutputManifests()) {
     const { kind, metadata } = manifest as { kind: string; metadata: { name: string } }
     const existing = await kubectlGetJson<object>(['get', kind.toLowerCase(), metadata.name, '-n', k8sNamespace()])
@@ -171,33 +154,22 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   }
   await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
-  // The egress lockdown, applied with the proxy so it exists before any
-  // workspace pod can be scheduled (workspaces require ensureRunning()).
+  // Policies go on with the proxy, before any workspace pod can exist.
   const nodeCidrs = await nodeIpBlocks()
   await kubectlApply(buildWorkspaceEgressNpManifest(nodeCidrs))
-  // Workspace-pod ingress lock: only the proxy's relay dials reach streamd;
-  // everything else is default-denied. Applied with the proxy for the same
-  // exists-before-any-workspace reason as the egress lockdown.
   await kubectlApply(buildWorkspaceIngressLockNpManifest())
-  // Lock the proxy's transparent ports to the node (forgery guard): only
-  // netd's Envoy, which runs in the node netns, may originate PP2.
   await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
-  // And its upstream dials kept off the kind fronting's node port, where a
-  // transparent CONNECT would otherwise reach the server as the node.
   await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
-  // World-egress default-deny over non-workspace, non-builder pods.
   await kubectlApply(buildEgressWorldDenyNpManifest())
-  // Only once their replacements govern every pod an older install left
-  // running (docs/legacy-compat-shims.md). The relabel is repeated here,
-  // and not only at driver start, so every path that can reach this delete
-  // (a create racing startup, a start whose relabel failed) finishes it
-  // first — and a relabel that throws never gets this far.
+  // Legacy-named policies, removed only after their replacements govern
+  // every pod an older install left running (docs/legacy-compat-shims.md).
+  // The relabel runs here too, not just at driver start, so any path that
+  // reaches this delete finishes it first.
   await relabelLegacyWorkspaces()
   await kubectlWithRetry([
     'delete', 'networkpolicy', 'yaac-worktree-egress', 'yaac-worktree-ingress-lock',
     '-n', k8sNamespace(), '--ignore-not-found',
   ])
-  // The redirect layer.
   await ensureNetd()
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
@@ -214,16 +186,11 @@ interface RawObject {
 const CA_WAIT_MS = 30_000
 
 /**
- * Upsert the proxy-CA ConfigMap that every workspace pod mounts, from the
- * Secret the proxy keeps its CA in. Carries two keys: the bare proxy CA
- * (additive trust — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS) and the combined
- * bundle `{public roots} ∪ {proxy CA}` (replace-semantics trust for the
- * own-bundle tools — CURL_CA_BUNDLE & friends). Skips the write when both
- * stored values already match (the common case — the CA lives for the
- * install, and only the bundle moves when the image's roots do).
- *
- * The proxy writes the Secret before it starts listening, so a proxy that
- * answers `/healthz` has written it; the wait covers the moment between.
+ * Upsert the proxy-CA ConfigMap that workspace pods mount, from the proxy's
+ * CA Secret. Two keys: the bare CA (for tools that add to the system trust,
+ * e.g. NODE_EXTRA_CA_CERTS) and public roots plus the CA (for tools that
+ * replace it, e.g. CURL_CA_BUNDLE). Skips the write if unchanged. Waits
+ * briefly for a freshly rolled proxy to write the Secret.
  */
 export async function ensureCaConfigMap(): Promise<void> {
   const deadline = Date.now() + CA_WAIT_MS
@@ -261,10 +228,9 @@ export async function ensureCaConfigMap(): Promise<void> {
 }
 
 /**
- * Hand the proxy the whole credential set — the host-store files and the
- * ssh keys — by replacing its credentials Secret. Applied whether or not a
- * proxy is deployed yet: the object is what the first one boots from.
- * Never logs a value.
+ * Replace the proxy's credentials Secret with the whole credential set.
+ * Applied even before the proxy exists, since it boots from it. Never logs
+ * values.
  */
 export async function syncProxyCredentials(bundle: CredentialBundle): Promise<void> {
   await kubectlApply(buildProxyCredentialsSecretManifest(bundle))
@@ -273,9 +239,8 @@ export async function syncProxyCredentials(bundle: CredentialBundle): Promise<vo
     + `${String(bundle.git.length)} git token(s), ${String(bundle.ssh.length)} ssh key(s)`)
 }
 
-/** Hand the proxy one project's opened secret values, replacing what it
- *  held for that project. An emptied set is applied as such, so a deleted
- *  secret stops being injected. */
+/** Replace one project's secret values for the proxy (an empty set is
+ *  applied too, so deleted secrets stop being injected). */
 export async function syncProjectSecrets(
   projectSlug: string,
   values: Record<string, string>,
@@ -283,7 +248,7 @@ export async function syncProjectSecrets(
   await kubectlApply(buildProjectSecretsManifest(projectSlug, values))
 }
 
-/** Forget a project's secret values — the object goes with the project. */
+/** Delete a project's secret values object. */
 export async function removeProjectSecrets(projectSlug: string): Promise<void> {
   await kubectlWithRetry([
     'delete', 'secret', proxyProjectSecretsName(projectSlug),
@@ -292,19 +257,11 @@ export async function removeProjectSecrets(projectSlug: string): Promise<void> {
 }
 
 /**
- * Cluster-wide admission guard reserving the `yaac.role=builder` label:
- * no ServiceAccount (the only identity untrusted code can hold) may create
- * or update a pod carrying it, and carriers must run under the gvisor
- * RuntimeClass.
- * Fail-closed: the label excludes its pods from the world-deny egress
- * policy, so builders must not run on a cluster that cannot enforce the
- * reservation. Applied idempotently by `yaac cluster install` and again by
- * the builder pool before it leases a pod.
- *
- * Lives here, not with the builder pool it guards: it applies this
- * feature's own manifests to this feature's cluster, and cluster install
- * calls it. Housing it in #drivers/k8s/images meant cluster install imported
- * the feature that sits above it.
+ * Admission guard reserving the `yaac.role=builder` label: no
+ * ServiceAccount (the only identity untrusted code can hold) may set it, and
+ * its pods must run under gVisor. The label exempts pods from the
+ * world-deny policy, so builders refuse to run where this cannot be
+ * enforced. Applied by `yaac cluster install` and by the builder pool.
  */
 export async function ensureBuilderRoleGuard(): Promise<void> {
   if (!await vapAvailable()) {

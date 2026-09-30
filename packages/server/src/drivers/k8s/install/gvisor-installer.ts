@@ -1,6 +1,4 @@
 import {
-} from '#drivers/k8s/cluster'
-import {
   GVISOR_INSTALLER_READY_FILE,
   buildRuntimeClassManifests,
   gvisorInstallScript,
@@ -15,63 +13,40 @@ import { invalidateRegistryEndpoint, registryHasTag, registryRef } from '#driver
 import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
 
 /**
- * `yaac-gvisor-install` — the privileged DaemonSet that puts the gVisor
- * runtime on every node yaac schedules sandboxed pods onto, and the
- * RuntimeClasses that then point at it.
+ * `yaac-gvisor-install`: the privileged DaemonSet that installs the gVisor
+ * runtime on nodes, plus the RuntimeClasses that use it.
  *
- * This is the ONE install mechanism (the GPU-driver pattern): on each node
- * it lands on it drops the pinned runsc + containerd-shim-runsc-v1,
- * registers the two runsc handlers in that node's containerd config,
- * restarts containerd, and labels the node — after which the RuntimeClasses'
- * `scheduling.nodeSelector` lets sandboxed pods land there. The script it
- * runs, the node paths it writes and the label it stamps all live in
- * `#drivers/k8s/substrate` (gvisor.ts); this module owns the Kubernetes objects.
+ * On each node it installs the pinned runsc and shim, registers the two
+ * runsc handlers in containerd's config, restarts containerd, and labels
+ * the node so the RuntimeClasses' `nodeSelector` lets sandboxed pods land
+ * there. The script, node paths and label are defined in
+ * `#drivers/k8s/substrate` (gvisor.ts); this module owns the Kubernetes
+ * objects.
  *
- * Two properties fall out of it being a DaemonSet rather than a loop over
- * `podman exec <node>`:
- *  - it reaches nodes yaac has no shell on, which is the whole reason it
- *    exists (a remote control plane, a managed node pool);
- *  - node recycling is handled for free. A pool upgrade replaces nodes; the
- *    DaemonSet schedules onto each new one and installs before the
- *    RuntimeClass selector lets any workspace pod near it. Nothing has to
- *    notice a node was replaced. The same pass is the node-TUNING
- *    mechanism (the sysctls, DefaultTasksMax — substrate/node-tuning.ts),
- *    which is why a node that merely restarted gets its kernel state back
- *    with no `yaac cluster install` re-run.
- *
- * Blast radius is bounded by where the DaemonSet runs: `nodeSelector` is
- * plumbed through so a cluster with a dedicated workspaces pool can install
- * the runtime there only, leaving infra nodes' containerd untouched. Every
- * infra pod yaac runs (proxy, registries, node-write pods
- * planes, this installer) stamps no RuntimeClass and so keeps running on
- * runc wherever it lands.
+ * As a DaemonSet it reaches nodes yaac has no shell on (managed pools) and
+ * covers new or replaced nodes automatically. It also applies node tuning
+ * (substrate/node-tuning.ts), so a restarted node gets its settings back.
+ * `nodeSelector` can limit it to a dedicated workspace pool. Infra pods
+ * use no RuntimeClass and run on runc.
  */
 
 /** DaemonSet / ServiceAccount name, and the `app` label on every object. */
 export const GVISOR_INSTALLER_APP_NAME = 'yaac-gvisor-install'
 
 /**
- * The installer's container image: upstream `curl`, digest-pinned by its
- * multi-arch INDEX digest and mirrored into the local registry like Envoy
- * and registry:2 (a child-platform digest would mirror one architecture's
- * bytes onto every node — hence the `assertMirrorArch` re-check).
- *
- * Deliberately NOT a yaac-built image. Everything the installer needs is a
- * shell, an HTTP client that can verify TLS and speak PATCH (fetching the
- * pinned release, labelling the node through the apiserver), sha512sum, and
- * nsenter — which is exactly a busybox userland plus curl, at ~5 MB. A yaac
- * image would tie the runtime install to the build engine and the registry
- * being up, and this has to work on a cluster where neither yaac-built
- * images nor a host podman exist yet.
+ * The installer's image: upstream `curl`, pinned by its multi-arch index
+ * digest and mirrored into the local registry. It provides everything the
+ * script needs (a shell, curl, sha512sum, nsenter) in ~5 MB, and does not
+ * depend on any yaac-built image.
  */
 const CURL_VERSION = '8.18.0'
 const CURL_PIN = 'sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17'
 export const GVISOR_INSTALLER_UPSTREAM_IMAGE = `docker.io/curlimages/curl@${CURL_PIN}`
-/** Mirror tag carries the pin, so re-pinning re-mirrors (see netd's). */
+/** The mirror tag includes the pin, so re-pinning re-mirrors. */
 export const GVISOR_INSTALLER_MIRROR_TAG =
   `curlimages/curl:${CURL_VERSION}-${CURL_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
-/** The mirrored installer image's in-cluster ref. Lookup-only (see netd's). */
+/** The mirrored installer image's ref; throws if it was never mirrored. */
 export async function ensureGvisorInstallerImage(): Promise<string> {
   if (await registryHasTag(GVISOR_INSTALLER_MIRROR_TAG)) {
     return registryRef(GVISOR_INSTALLER_MIRROR_TAG)
@@ -92,13 +67,10 @@ export function buildGvisorInstallerServiceAccountManifest(): Record<string, unk
 }
 
 /**
- * ClusterRole/Binding names are global, so they carry the install namespace
- * — the real `yaac` install and any ephemeral e2e `yaac-test-<run-id>` one
- * coexist on a cluster, each with its own installer bound to its own SA
- * (both converge on the same node state, which is idempotent by
- * construction). The label lets a sweep find an interrupted run's
- * leftovers without matching the real install's, since cluster-scoped
- * objects do not cascade when their namespace is deleted.
+ * ClusterRole/Binding names are cluster-wide, so they include the install
+ * namespace; several installs (e.g. e2e runs) can share a cluster. The
+ * label lets a sweep find an interrupted run's leftovers, since
+ * cluster-scoped objects are not deleted with their namespace.
  */
 export function gvisorInstallerClusterScopedName(): string {
   return `${GVISOR_INSTALLER_APP_NAME}-${k8sNamespace()}`
@@ -109,17 +81,10 @@ export function gvisorInstallerClusterScopedLabels(): Record<string, string> {
 }
 
 /**
- * Exactly the authority to stamp the runtime label on nodes: read a node,
- * patch a node. No create/delete, no other resource, nothing namespaced —
- * the installer's real power is on the node's filesystem, and there is no
- * reason for that to come with an API-level lever too.
- *
- * `patch` on nodes is necessarily cluster-wide (RBAC cannot name nodes that
- * do not exist yet), so a compromised installer could label or taint any
- * node. That costs availability, not isolation: the label only steers where
- * sandboxed pods go, and a pod steered to a runsc-less node fails at sandbox
- * create — the runtime handler comes from the RuntimeClass, never from a
- * node label. The pod is node-root regardless.
+ * Only enough RBAC to label nodes: get and patch nodes. Node patch must be
+ * cluster-wide, so a compromised installer could mislabel nodes, but that
+ * affects only scheduling: a pod sent to a node without runsc fails to
+ * start rather than running unsandboxed.
  */
 export function buildGvisorInstallerClusterRoleManifest(): Record<string, unknown> {
   return {
@@ -157,48 +122,25 @@ export function buildGvisorInstallerClusterRoleBindingManifest(): Record<string,
 export interface GvisorInstallerOptions {
   image: string
   /**
-   * Where the runtime gets installed. Empty (the default) means every node,
-   * which is what a single-node local cluster wants. A cluster with a
-   * dedicated workspaces pool sets its pool label here and the runtime — plus
-   * the containerd restart that installing it costs — never touches an
-   * infra node; the RuntimeClasses follow automatically, since they select
-   * on the label this DaemonSet stamps, not on the pool.
+   * Nodes to install on; empty means every node. A dedicated workspace pool
+   * sets its label here so infra nodes' containerd is never restarted.
    */
   nodeSelector?: Record<string, string>
 }
 
 /**
- * The DaemonSet. Notable choices:
+ * The installer DaemonSet:
  *
- * - `privileged` + `hostPID`. It writes node binaries and containerd's
- *   config, and it restarts containerd by entering PID 1's mount namespace
- *   to run the node's own systemctl — there is no unprivileged spelling of
- *   "install a container runtime". This is the plan's accepted portability
- *   cost, and the reason a dedicated workspaces pool is worth having.
- * - runc, like every other yaac infra pod: it stamps no RuntimeClass, which
- *   it could not anyway — it is what makes the sandbox tier exist.
- * - `hostNetwork` with the NODE's DNS. The pod must work on a node whose
- *   CNI or CoreDNS is not up yet (a fresh node in a recycled pool installs
- *   before anything else lands on it), and it needs plain egress to the
- *   gVisor release bucket. The apiserver is still reachable for the label
- *   patch: kubelet injects its service IP into every pod, so no cluster DNS
- *   is involved.
- * - Blanket toleration, `system-node-critical`, like netd: this is node
- *   infrastructure, and a node the installer was evicted from is a node
- *   whose sandboxed pods stop being schedulable. It is also why a tainted
- *   workspaces pool costs this DaemonSet nothing — `Exists` already covers the
- *   pool taint; only the *workload's* toleration has to be declared, and
- *   that goes on the RuntimeClasses.
- * - `maxUnavailable: 1` on the rolling update. A version bump changes the
- *   template (the script carries the pin), and rolling it restarts
- *   containerd on each node it touches; doing that fleet-wide at once would
- *   disrupt every node's CRI simultaneously for no gain. It paces UPDATES
- *   only — the first apply on a multi-node cluster still starts every pod at
- *   once, which is a thing to revisit when a real pool exists.
- * - Readiness is the marker the script writes after a pass that left the
- *   runtime live — the same "ready means the datapath works, not the
- *   process started" rule netd follows, and what `ensureGvisorRuntime`'s
- *   rollout gate waits on before applying the RuntimeClasses.
+ * - `privileged` + `hostPID`: it writes node binaries and containerd's
+ *   config, and restarts containerd via the node's systemctl.
+ * - `hostNetwork` with the node's DNS, so it works before the CNI or
+ *   CoreDNS is up on a new node.
+ * - Tolerates every taint and runs `system-node-critical`, like netd.
+ * - `maxUnavailable: 1`, so a version bump restarts containerd one node at
+ *   a time. This paces updates only: the first apply on a multi-node
+ *   cluster still restarts every node's containerd at once.
+ * - Ready only once the script has made the runtime live, which the
+ *   rollout wait in `ensureGvisorRuntime` depends on.
  */
 export function buildGvisorInstallerDaemonSetManifest(
   opts: GvisorInstallerOptions,
@@ -221,8 +163,6 @@ export function buildGvisorInstallerDaemonSetManifest(
         spec: {
           hostNetwork: true,
           hostPID: true,
-          // The node's resolver, not CoreDNS: the release download must not
-          // depend on cluster DNS being up on a brand-new node.
           dnsPolicy: 'Default',
           ...(Object.keys(nodeSelector).length > 0 ? { nodeSelector } : {}),
           serviceAccountName: GVISOR_INSTALLER_APP_NAME,
@@ -256,28 +196,14 @@ export function buildGvisorInstallerDaemonSetManifest(
 }
 
 /**
- * The whole gVisor runtime setup for a cluster: the installer DaemonSet on
- * every (selected) node, then the RuntimeClasses.
+ * Set up gVisor on the cluster: the installer DaemonSet, then (after its
+ * rollout, so labeled nodes exist) the RuntimeClasses. `nodeSelector`
+ * limits where the runtime is installed. `tolerations` goes on the
+ * RuntimeClasses, which add it to every sandboxed pod so they can run on a
+ * tainted workspace pool (see buildRuntimeClassManifests).
  *
- * The two pool knobs are deliberately asymmetric, because they answer
- * different questions. `nodeSelector` bounds where the runtime is INSTALLED
- * (and where a containerd restart is spent), so it lands on the DaemonSet;
- * the DaemonSet needs no toleration plumbing at all, since it already
- * tolerates everything the way node infrastructure must. `tolerations`
- * bounds nothing — it is what lets sandboxed pods onto a tainted workspaces
- * pool — so it lands on the RuntimeClasses, whose admission merge is what
- * puts it on every pod that names them (see buildRuntimeClassManifests).
- *
- * Order matters and the rollout gate is not decoration. The RuntimeClasses
- * carry a nodeSelector on the label the installer stamps, so applying them
- * first on a cluster with no installed node would leave every sandboxed pod
- * Pending until the DaemonSet caught up. Waiting for the rollout means that
- * by the time the classes exist, the nodes they select do too.
- *
- * Idempotent, and the way an existing cluster picks up a runsc version bump:
- * `yaac cluster install` calls it on every run, the DaemonSet rolls
- * node by node, and each node's script restarts containerd only if the bump
- * actually changed something on it.
+ * `yaac cluster install` runs this every time; a runsc version bump rolls
+ * node by node.
  */
 export async function ensureGvisorRuntime(
   opts: { nodeSelector?: Record<string, string>; tolerations?: PodToleration[] } = {},
@@ -293,14 +219,9 @@ export async function ensureGvisorRuntime(
     'rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`,
     '-n', k8sNamespace(), '--timeout=300s',
   ], { timeout: 310_000, maxAttempts: 2 })
-  // A pass that changed something restarted the node's containerd, and
-  // every kubectl port-forward into that node died with it — including this
-  // process's route to the registry, whose child may still be cached and
-  // alive with a dead stream. Drop it so the next lookup re-forwards instead
-  // of reading the dead transport as a missing image (`registryHasTag`
-  // fails to `false`, which is what turned a first install's netd deploy
-  // into "build and push it" for an image the install had just pushed).
-  // The same drop ensureRegistry does after rolling the registry pod.
+  // A containerd restart kills port-forwards into the node, including the
+  // cached registry forward. Drop it, or `registryHasTag` would read the
+  // dead forward as a missing image.
   invalidateRegistryEndpoint()
   for (const manifest of buildRuntimeClassManifests({ tolerations: opts.tolerations })) {
     await kubectlApply(manifest)

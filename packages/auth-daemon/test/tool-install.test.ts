@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as cliResolveModule from '#cli-resolve'
 
-// Both lookups hit the real machine (post-install verification, npm
-// discovery) — mocked so these tests pass regardless of what's installed
-// locally.
+// Mocked so the tests don't depend on what is installed locally.
 const cliResolve = vi.hoisted(() => ({
   resolveToolCliPath: vi.fn<(tool: 'claude' | 'codex') => string | null>(() => '/fake/bin/tool'),
   resolveCommandPath: vi.fn<(name: string) => string | null>(() => null),

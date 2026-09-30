@@ -1,29 +1,26 @@
 /*
- * Verifies the sidebar plan-usage readout (UsageBadge): with a Claude OAuth
- * (subscription) credential stored, the sidebar header shows a small pill
- * with the tightest limit's utilization percent; clicking it opens a popover
- * titled "Plan usage" with the plan tier and one row per limit — the 5h
- * session window, the weekly all-models window, and any per-model weekly
- * window — each with a percent, a progress bar, and a reset line (countdown
- * inside 24h, local day + time beyond it). The pill percent must equal the
- * max percent across rows. Clicking a row pins that metric to the pill
- * (compact tag + its percent, aria-pressed on the row), clicking another
- * switches the pin, re-clicking unpins, and a pin survives a page reload.
- * Opening the popover also POSTs a background refresh nudge, which the
- * server throttles to at most one upstream refresh per minute.
+ * Verifies the sidebar plan-usage badge (UsageBadge) in Chromium against the
+ * running server. With a Claude OAuth (subscription) credential stored:
+ *  - the sidebar header shows a pill with the tightest limit's percent;
+ *  - clicking it opens a "Plan usage" popover with the plan tier and one row
+ *    per limit (5h session, weekly all-models, any per-model weekly), each
+ *    with a percent, a progress bar and a reset time (countdown within 24h,
+ *    day + time beyond);
+ *  - the pill percent equals the max across rows;
+ *  - clicking a row pins that metric to the pill, clicking another switches
+ *    the pin, clicking again unpins, and a pin survives a reload;
+ *  - opening the popover POSTs a refresh nudge (throttled server-side in
+ *    packages/server/src/domain/auth/plan-usage.ts).
  *
- * Drives the running yaac server's webapp in real Chromium. The usage data
- * rides the server-pushed /events snapshot: the server refreshes it from
- * api.anthropic.com (at most every 5min, only while a webapp client is
- * connected) and the badge just renders the pushed value — so this needs
- * OAuth (not api-key) Claude credentials, and the badge can take a few
- * seconds after page load (first refresh + next 5s snapshot tick).
+ * Usage data arrives in the /events snapshot. The server refreshes it from
+ * api.anthropic.com at most every 5 min, and only while a webapp client is
+ * connected, so the badge may take a few seconds to appear. Requires OAuth,
+ * not api-key, Claude credentials.
  *
  * Run: node test-playwright-scripts/usage-badge-test.js
- * (set SCREENSHOT_DIR to capture closed/open screenshots there)
+ * (set SCREENSHOT_DIR to capture screenshots there)
  * Needs a running server (`yaac server start`); reads the port from
- * $YAAC_DATA_DIR/.server.lock (or ~/.yaac). (playwright is resolved from
- * the global npm root; browsers live under /opt/playwright-browsers)
+ * $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -65,8 +62,7 @@ async function main() {
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
 
-  // Precondition: only an OAuth (subscription) credential produces a badge —
-  // with api-key auth it is correctly hidden and there is nothing to drive.
+  // Only an OAuth credential produces a badge; api-key auth hides it.
   const dataDir = process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac')
   const credsPath = path.join(dataDir, '.credentials', 'claude.json')
   const credsKind = fs.existsSync(credsPath)
@@ -75,8 +71,7 @@ async function main() {
   check('stored Claude credential is OAuth', credsKind === 'oauth', `kind=${credsKind}`)
   if (credsKind !== 'oauth') process.exit(1)
 
-  // The popover-open nudge endpoint (fire-and-forget on the client; data
-  // arrives via the snapshot, so a 204 is all there is to see here).
+  // The nudge returns 204; the data itself arrives via the snapshot.
   const refreshRes = await fetch(`${base}/api/auth/claude/usage/refresh`, { method: 'POST' })
   check('usage-refresh nudge endpoint answers 204', refreshRes.status === 204, `HTTP ${refreshRes.status}`)
 
@@ -103,24 +98,22 @@ async function main() {
     await popup.waitFor({ state: 'visible', timeout: 5_000 })
 
     const popupText = await popup.textContent()
-    // No \b anchors: textContent concatenates the spans with no whitespace,
-    // so the tier rides between other words ("Plan usageMax (20x) planCurrent…").
+    // No \b anchors: textContent joins spans without whitespace
+    // ("Plan usageMax (20x) planCurrent…").
     check('popover names the plan tier', /(Max|Pro|Team|Enterprise)( \(\d+x\))? plan/.test(popupText), popupText.slice(0, 60))
-    // A Max account must show its usage multiplier (from the org's
-    // rate_limit_tier on the OAuth profile endpoint).
+    // The multiplier comes from the org's rate_limit_tier on the OAuth
+    // profile endpoint.
     if (/Max/.test(popupText)) {
       check('the Max tier shows its usage multiplier', /Max \(\d+x\) plan/.test(popupText), popupText.slice(0, 60))
     }
     check('popover lists the 5h session window', popupText.includes('Current session (5h)'))
     check('popover lists the weekly all-models window', popupText.includes('Weekly — all models'))
 
-    // At minimum the session and weekly-all windows; per-model rows vary.
     const rows = popup.locator('li')
     const rowCount = await rows.count()
     check('at least the session and weekly rows are present', rowCount >= 2, `${rowCount} rows`)
 
-    // Countdown inside 24h ("resets in 3h 47m"), day + time beyond it
-    // ("resets Tue 22:00").
+    // "resets in 3h 47m" within 24h, "resets Tue 22:00" beyond.
     const resetRe = /resets (in \d|(Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{2}:\d{2})/
     const percents = []
     for (let i = 0; i < rowCount; i++) {
@@ -134,15 +127,14 @@ async function main() {
     }
     check('pill percent is the max across rows',
       pillText === `${Math.max(...percents)}%`, `${pillText} vs rows ${percents.join(',')}`)
-    // Weekly windows reset in >24h, so at least one row must use the
-    // absolute day + time form.
+    // Weekly windows reset in >24h, so one row must use day + time.
     const popupNow = await popup.textContent()
     check('a >24h reset uses the day + time form',
       /(Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{2}:\d{2}/.test(popupNow), popupNow.slice(-60))
 
     if (shotDir) await page.screenshot({ path: path.join(shotDir, 'usage-badge-open.png') })
 
-    // ── Pinning ────────────────────────────────────────────────────────
+    // Pinning.
     const sessionPct = percents[0]
     await popup.getByRole('button', { name: 'Pin Current session (5h)' }).click()
     check('pinning the session window retags the pill',
@@ -156,7 +148,6 @@ async function main() {
       (await pill.textContent()).trim() === `wk${percents[1]}%`, await pill.textContent())
     if (shotDir) await page.screenshot({ path: path.join(shotDir, 'usage-badge-pinned.png') })
 
-    // The pin persists across a reload (localStorage).
     await page.reload()
     await pill.waitFor({ state: 'visible', timeout: 15_000 })
     check('the pin survives a reload',

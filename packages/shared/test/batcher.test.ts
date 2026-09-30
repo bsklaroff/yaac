@@ -1,20 +1,16 @@
 /**
- * The output micro-batcher — `createOutputBatcher`.
+ * `createOutputBatcher`, the host-side copy used by the PTY bridge and the
+ * webapp's keystroke path. `now` is injected and timers are faked, so a test
+ * can state "8ms of quiet" exactly.
  *
- * The policy is the whole point of the module, so the tests drive it through
- * real timers' worth of simulated clock: `now` is injected and the timer is
- * vitest's fake, which is what lets a test say "8ms of quiet" precisely.
- *
- * The in-pod mirror (dockerfiles/streamd/batcher.js) is gated by its own
- * tests over Buffers. These cover the host-side copy — the one the PTY
- * bridge and the webapp's keystroke path share — and the two files are what
- * keep the mirrors from drifting apart.
+ * The in-pod copy (dockerfiles/streamd/batcher.js) has its own tests over
+ * Buffers; the two test files keep the copies from drifting apart.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createOutputBatcher, BATCH_MS, MAX_BATCH_CHARS } from '@yaac/shared/batcher'
 
-/** A clock the batcher reads and the tests advance in step with the fake
- *  timers, so `now()` and a fired timeout never disagree. */
+/** A clock advanced in step with the fake timers, so `now()` and a fired
+ *  timeout always agree. */
 function clock(): { now: () => number; advance: (ms: number) => void } {
   let t = 1_000
   return {
@@ -35,14 +31,12 @@ describe('createOutputBatcher', () => {
     const writes: string[] = []
     const b = createOutputBatcher((s) => writes.push(s), { now: c.now })
 
-    // Leading edge: the first chunk after quiet pays zero added latency —
-    // this is what keeps keystroke echo (and a lone keypress going the other
-    // way) as fast as it was before any batching existed.
+    // The first chunk after quiet goes out immediately, so keystroke echo
+    // gets no added latency.
     b.push('a')
     expect(writes).toEqual(['a'])
 
-    // Everything inside the window accumulates into one write, in order,
-    // instead of one write per event.
+    // Chunks inside the window become one write, in order.
     b.push('b')
     b.push('c')
     expect(writes).toEqual(['a'])
@@ -72,13 +66,11 @@ describe('createOutputBatcher', () => {
     expect(writes).toEqual(['12345'])
     b.push('678') // 3 of 8 accumulated
     expect(writes).toHaveLength(1)
-    // Crossing the cap flushes without waiting out the timer: a big transfer
-    // must not sit in memory for a window, and memory stays bounded.
+    // Crossing the cap flushes immediately, bounding memory.
     b.push('90ab12')
     expect(writes).toEqual(['12345', '67890ab12'])
 
-    // A single push larger than the cap passes through whole rather than
-    // being split.
+    // A single push larger than the cap passes through unsplit.
     c.advance(BATCH_MS)
     const big = 'x'.repeat(MAX_BATCH_CHARS + 5)
     b.push(big)
@@ -92,13 +84,12 @@ describe('createOutputBatcher', () => {
 
     b.push('first') // immediate
     b.push('pending')
-    // The bridge flushes before closing the socket so no output is stranded
-    // behind the close — without this, the tail of a program's output would
-    // be lost whenever it exited inside a batch window.
+    // The bridge flushes before closing the socket, so output from a program
+    // that exits inside a batch window isn't lost.
     b.flush()
     expect(writes).toEqual(['first', 'pending'])
 
-    // Flushing an empty batcher writes nothing at all (no empty frames).
+    // No empty frames.
     b.flush()
     expect(writes).toEqual(['first', 'pending'])
   })
@@ -111,8 +102,8 @@ describe('createOutputBatcher', () => {
     b.push('out') // immediate
     b.push('stranded')
     b.dispose()
-    // The stream is gone: the queued chunk must never reach a socket that
-    // closed, and the pending timer must not outlive it either.
+    // Nothing may reach a closed socket, and the pending timer must not
+    // outlive it.
     c.advance(BATCH_MS * 4)
     expect(writes).toEqual(['out'])
 

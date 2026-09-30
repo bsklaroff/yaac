@@ -21,7 +21,7 @@ import {
 } from '#lib/files'
 import { AddIcon, LoadingIcon, MinusIcon, SaveIcon, SearchIcon, TextSizeIcon, WarningIcon } from '#lib/icons'
 
-/** Idle time after the last edit before it saves itself. */
+/** Idle time after the last edit before autosave. */
 export const AUTOSAVE_MS = 1000
 /** How often a visible pane asks whether the file changed on disk. */
 export const POLL_MS = 2000
@@ -38,34 +38,32 @@ type Phase =
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'retrying'
 
 /**
- * Every write one editor pane makes, and what it knows about the file on
- * disk. One save runs at a time: edits made while it is in flight wait for
- * it and go out against the version it returned, so the pane never races
- * itself. A 409 pauses autosave until the user picks Reload or Overwrite —
- * autosave never overwrites someone else's version, and never recreates a
- * file that is gone.
+ * Saves for one editor pane, and what it knows about the file on disk. One
+ * save runs at a time; edits made meanwhile go out against the version it
+ * returns. A 409 pauses autosave until the user picks Reload or Overwrite,
+ * so autosave never overwrites another version or recreates a deleted file.
  */
 class Saver {
-  /** What the last load or successful save holds. */
+  /** The text and version from the last load or successful save. */
   base: { text: string; version: string } | null = null
   text = ''
   phase: Phase = { kind: 'loading' }
   status: SaveStatus = 'idle'
-  /** Set when the file moved on under a dirty buffer, or a save was refused:
-   *  the version it has now, null when it is gone. Autosave waits while set. */
+  /** Set when the file changed under a dirty buffer or a save was refused:
+   *  its current version, null if deleted. Autosave waits while set. */
   conflict: { version: string | null } | null = null
   private debounce: ReturnType<typeof setTimeout> | undefined
   private retry: ReturnType<typeof setTimeout> | undefined
   private retries = 0
   private inFlight: Promise<void> | null = null
-  /** Polls are numbered, and one issued before the latest save landed is
-   *  ignored: it may have read the file between the write and its answer. */
+  /** Poll sequence number. A poll issued before the latest save finished is
+   *  ignored, since it may have read the file mid-write. */
   private pollSeq = 0
   private landedAt = 0
-  /** Set when a save found no workspace at all (the project removed, the
-   *  workspace deleted): there is nowhere left to save to, so nothing retries. */
+  /** Set when a save found no workspace (deleted, or its project removed);
+   *  nothing retries. */
   lost = false
-  /** False while no pane shows this saver: it stops polling, not saving. */
+  /** False while no pane shows this saver; it stops polling but still saves. */
   alive = true
   /** Called on every change; the mounted pane re-renders on it. */
   notify: () => void = () => {}
@@ -143,7 +141,7 @@ class Saver {
     return run
   }
 
-  /** Ask the server whether the file moved on. */
+  /** Ask the server whether the file changed. */
   async poll(): Promise<void> {
     if (this.inFlight || this.phase.kind === 'binary' || this.phase.kind === 'large') return
     const seq = ++this.pollSeq
@@ -178,7 +176,7 @@ class Saver {
       return
     }
     if (this.base !== null && file.version === this.base.version) {
-      // Back on disk as we last knew it — a missing file restored.
+      // A deleted file is back as we last knew it.
       if (this.conflict?.version === null) {
         this.conflict = null
         this.notify()
@@ -187,8 +185,7 @@ class Saver {
     }
     if (file.content === undefined) return
     if (this.base === null || !this.dirty) {
-      // A clean buffer takes the new text; the editor applies it as one
-      // minimal change, so the cursor and scroll survive.
+      // A clean buffer takes the new text.
       this.base = { text: file.content, version: file.version }
       this.text = file.content
       this.phase = { kind: 'ready' }
@@ -213,8 +210,8 @@ class Saver {
     }
   }
 
-  /** Save the buffer over whatever is there now, recreating a file that is
-   *  gone — the only way either happens. */
+  /** Save the buffer over the file on disk, recreating it if deleted. The
+   *  only path that does either. */
   async overwrite(): Promise<void> {
     this.cancel()
     if (this.inFlight) await this.inFlight
@@ -229,13 +226,11 @@ function formatSize(bytes: number): string {
 }
 
 /**
- * One file open for editing (docs/file-editor.md). Kept mounted while hidden
- * so its undo history, cursor and unsaved text survive a tab switch; it polls
- * only while visible. Edits save themselves a second after the last
- * keystroke, and Cmd/Ctrl-S — handled on the pane's root, so it covers the
- * header strip too and never reaches a terminal — saves at once. Cmd/Ctrl-F
- * opens the editor's find bar from anywhere in the pane the same way, and
- * Cmd/Ctrl =/−/0 size the text there rather than zooming the page.
+ * One file open for editing (docs/file-editor.md). Stays mounted while hidden
+ * so undo history, cursor and unsaved text survive a tab switch; polls only
+ * while visible. Autosaves a second after the last keystroke. Pane-level
+ * keys: Cmd/Ctrl-S saves now, Cmd/Ctrl-F opens find, Cmd/Ctrl =/−/0 size the
+ * text instead of zooming the page.
  */
 export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   workspaceId: string
@@ -245,7 +240,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
 }): JSX.Element {
   const [, render] = useReducer((n: number) => n + 1, 0)
   const key = fileKey(workspaceId, path)
-  // A saver that outlived an earlier pane of this file still holds its text.
+  // Reuse a saver left by an earlier pane of this file; it holds its text.
   const [saver] = useState(() => fileSaver<Saver>(key) ?? new Saver(workspaceId, path))
   saver.notify = render
   const setFileDirty = useUiStore((s) => s.setFileDirty)
@@ -264,25 +259,20 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         discardFileSavers([key])
         useUiStore.getState().setFileDirty(workspaceId, path, false)
       }
-      // Closed on purpose (or deleted): nothing it holds is kept.
+      // Closed or deleted: keep nothing.
       if (fileSaver(key) !== saver) {
         saver.cancel()
         useUiStore.getState().setFileDirty(workspaceId, path, false)
         return
       }
-      // Nothing to keep, or nowhere left to save it.
       if (!saver.dirty || saver.lost) {
         forget()
         return
       }
-      // Unmounted with unsaved text though nobody closed it: its workspace
-      // left the snapshot (stopped by the user, the reaper or yaac-mama).
-      // The checkout stays and takes writes, so what can be saved is saved,
-      // retries and all. A conflicted or failing buffer stays registered and
-      // marked dirty — the page guards it — and a pane of the same file, once
-      // the workspace is back, picks it up. A workspace that is gone for good
-      // ends it: with nowhere to save to, and no pane to show it, it is
-      // forgotten rather than retried for the life of the page.
+      // Unmounted with unsaved text because the workspace stopped. The
+      // checkout still takes writes, so keep saving. A conflicted or failing
+      // buffer stays registered and dirty for a later pane to pick up; one
+      // whose workspace is gone for good is forgotten.
       saver.notify = () => {
         if (!saver.alive && (!saver.dirty || saver.lost) && fileSaver(key) === saver) forget()
       }
@@ -293,8 +283,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const dirty = saver.dirty
   useEffect(() => { setFileDirty(workspaceId, path, dirty) }, [dirty, setFileDirty, workspaceId, path])
 
-  // Poll while visible, at once whenever the pane comes back; going hidden
-  // saves what is pending.
+  // Poll while visible (immediately on return); flush when hidden.
   useEffect(() => {
     if (!visible) {
       void saver.flush()
@@ -390,7 +379,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
       }}
     >
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline bg-surface px-2 text-[11px]">
-        {/* A long path gives up its folders from the left, never the name. */}
+        {/* A long path truncates its folders from the left, never the name. */}
         <span className="flex min-w-0 flex-1 items-center font-mono" title={path}>
           {slash > 0 && (
             <span className="truncate text-text-faint [direction:rtl]">
@@ -419,8 +408,6 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         )}
         {phase.kind === 'ready' && !conflict && (
           <div className="flex shrink-0 items-center">
-            {/* Below the mobile breakpoint the editor's text is pinned at
-                16px (index.css), so there is nothing to size. */}
             <TextSizeMenu size={fontSize} onChange={setFontSize} />
             <button
               onClick={openFind}
@@ -452,8 +439,8 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   )
 }
 
-/** The header's "Aa": one button opening − / size / + and Reset, the way a
- *  reader app offers it, so sizing costs the strip a single icon. */
+/** The header's "Aa" button, opening − / size / + and Reset. Hidden on
+ *  phones, where editor text is fixed at 16px (index.css). */
 function TextSizeMenu({ size, onChange }: { size: number; onChange: (px: number) => void }): JSX.Element {
   const mod = IS_MAC ? '⌘' : 'Ctrl+'
   const step = 'flex h-6 w-6 items-center justify-center rounded text-text-dim transition hover:bg-surface-3 '

@@ -2,21 +2,20 @@
 /*
  * session-switch-flash.js
  *
- * Verifies that switching between sessions (and tabs) never flashes tmux
- * overflow dots on the right-hand side of the pane. Each view's tmux window
- * follows its client under `window-size latest` (pty-bridge attachArgs), and
- * hidden panes keep a frozen rect (WorkspaceView) so switches are pure
- * visibility flips with no resize at all. A regression shows up here as dotRows > 0 in
- * the visible xterm buffer right after a switch, or as grids changing across
- * switches.
+ * Verifies that switching between sessions never flashes tmux overflow dots
+ * on the right side of the pane. Each view's tmux window follows its client
+ * under `window-size latest` (attachArgs in pty-bridge.ts), and hidden panes
+ * keep a frozen rect (WorkspaceView), so a switch only flips visibility and
+ * never resizes. A regression shows as dotRows > 0 in the visible buffer
+ * right after a switch, or as grid sizes changing across switches.
  *
- * Drives the first two sessions in the sidebar: opens A, opens B, then
- * switches B→A→B, sampling the visible terminal's buffer for trailing-dot
- * rows (·· at line end) at ~80ms for ~1.2s after each switch. Screenshots go
- * to /tmp/yaac-shots/switch-*.png. Prints PASS/FAIL.
+ * Opens the first two sessions in the sidebar (A, then B), then switches
+ * B->A->B->A->B, sampling the visible terminal for rows ending in `··` every
+ * ~80ms for ~1.2s after each switch. Screenshots go to
+ * /tmp/yaac-shots/switch-*.png. Prints PASS/FAIL.
  *
- * Run (needs a running server and >= 2 open-able sessions; PROJECT selects
- * the project slug when the auto-selected one has fewer than two):
+ * Run (needs a running server and >= 2 sessions; PROJECT picks the project
+ * slug when the default one has fewer than two):
  *   PROJECT=yaac node test-playwright-scripts/session-switch-flash.js
  */
 import { execSync } from 'node:child_process'
@@ -42,8 +41,8 @@ function readServerLock() {
   for (const p of candidates) if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   throw new Error('no .server.lock found — is the server running?')
 }
-// The VISIBLE terminal's grid + trailing-dot rows, and all mounted grids
-// (frozen-rect regression check: hidden grids must not move on a switch).
+// Reports the visible terminal's grid and dot rows, plus every mounted grid
+// (hidden grids must not change size on a switch).
 const PROBE = () => {
   const xs = window.__xterms
   if (!xs) return { error: 'no __xterms' }
@@ -79,8 +78,7 @@ try {
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(2000)
 
-  // Session titles: in the sidebar's text, each session row renders its title
-  // on the line right before its "Nm ago" line.
+  // In the sidebar text, a session's title is the line before its "Nm ago".
   const titles = await page.evaluate(() => {
     const lines = (document.querySelector('aside')?.innerText ?? '').split('\n').map((l) => l.trim())
     const out = []

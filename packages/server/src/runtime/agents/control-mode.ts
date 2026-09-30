@@ -1,43 +1,35 @@
 /**
- * Minimal tmux control-mode (`tmux -C`) protocol client, used by the
- * status watchers to hold one persistent stream per session pod.
+ * Minimal tmux control-mode (`tmux -C`) client. The status watchers hold one
+ * persistent stream per workspace, used both ways:
+ * - notifications push state (`%subscription-changed` carries the
+ *   subscribed format's value; `%output` is parsed but unused, since the
+ *   watchers attach `no-output`);
+ * - commands go over the same connection (`send()` resolves with the
+ *   `%begin`/`%end` reply body), so the heartbeat needs no extra exec.
  *
- * The stream is both channels at once:
- * - notifications push state at us (`%subscription-changed` carries the
- *   subscribed status format's value inline; `%output` — a pane's raw
- *   redraw bytes — is parsed but unused, since the watchers attach
- *   `no-output`),
- * - commands ride the same connection (`send()` writes a command line
- *   and resolves with the `%begin`/`%end`-framed reply body), which is
- *   what makes the heartbeat free of extra execs.
- *
- * Protocol facts this encodes (verified against tmux 3.4, the version
- * in the session image):
- * - On attach the server emits one unsolicited reply block (the
- *   implicit attach command) before anything else — consumed as the
- *   banner so FIFO reply-matching can't misalign.
- * - Replies are `%begin <ts> <num> <flags>` … body … `%end|%error` with
- *   the same fields; notifications never interleave inside a block.
- * - `%subscription-changed name $sid @wid widx %pane … : value` — the
- *   value (a pane title here) follows the first ` : ` and may itself
- *   contain colons; the header tokens never contain spaces.
- * - Subscribed formats are checked on tmux's ~1s cadence: the current
- *   value arrives at the first check after subscribing (no change
- *   needed), so a watcher gets an initial classification for free.
+ * Protocol facts (tmux 3.4, as in the workspace image):
+ * - On attach tmux emits one unsolicited reply block, consumed as a banner
+ *   so FIFO reply matching stays aligned.
+ * - Replies are `%begin <ts> <num> <flags>` … body … `%end|%error`;
+ *   notifications never appear inside a block.
+ * - `%subscription-changed name $sid @wid widx %pane … : value`: the value
+ *   follows the first ` : ` and may contain colons; header tokens have no
+ *   spaces.
+ * - Subscriptions are checked about once a second, and the current value
+ *   arrives at the first check, giving an initial classification.
  */
 
 export type ControlModeNotification =
   | { kind: 'subscription'; name: string; paneId: string; value: string }
   | { kind: 'output'; paneId: string }
-  /** A window was added or closed — the watcher's cue to re-enumerate agent
-   *  panes, since a new conversation arrives as a new window. */
+  /** A window was added or closed; the watcher re-lists agent panes, since a
+   *  new conversation arrives as a new window. */
   | { kind: 'windows-changed' }
   | { kind: 'exit' }
 
 /**
- * Parse one notification line (a `%`-prefixed line outside any reply
- * block). Returns null for notifications the watchers don't consume
- * (`%session-changed`, `%layout-change`, …) and for non-`%` noise.
+ * Parse one notification line (a `%` line outside a reply block). Returns
+ * null for notifications the watchers ignore and for non-`%` noise.
  */
 export function parseControlModeNotification(line: string): ControlModeNotification | null {
   if (line.startsWith('%subscription-changed ')) {
@@ -56,10 +48,8 @@ export function parseControlModeNotification(line: string): ControlModeNotificat
     return { kind: 'output', paneId }
   }
   if (line === '%exit' || line.startsWith('%exit ')) return { kind: 'exit' }
-  // tmux emits one of these whenever the window list changes. `%window-close`
-  // is the plain close; `%unlinked-window-close` fires for a window that
-  // belonged to no session the client is attached to — both mean an agent
-  // window may have gone.
+  // `%unlinked-window-close` is for a window in no session this client is
+  // attached to; either close may mean an agent window went away.
   if (line.startsWith('%window-add')
     || line.startsWith('%window-close')
     || line.startsWith('%unlinked-window-close')) {

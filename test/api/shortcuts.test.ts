@@ -6,11 +6,9 @@ import { makeTestApiClient } from '@yaac/test-utils/api'
 const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }
 
 /**
- * One data dir for the file, not one per test: a fresh dir costs a PGlite
- * boot plus a migration replay, which dwarfed these four route assertions.
- * Order is load-bearing in exchange — the pristine-state case is declared
- * first, and the reset case (which is also the only other writer) last, so
- * nothing inherits an override it didn't write.
+ * One data dir serves the file, since each fresh one costs a PGlite boot and
+ * migration replay. Order matters: the pristine-state case runs first and
+ * the reset case (the only other writer) last.
  */
 describe('shortcuts route', () => {
   let tmpDir: string

@@ -13,8 +13,7 @@ beforeAll(() => {
   }
 })
 
-// Auto-cleanup only registers when vitest runs with globals; this suite
-// doesn't, so unmount explicitly to keep the renders isolated.
+// Without vitest globals there is no auto-cleanup, so unmount explicitly.
 afterEach(cleanup)
 
 const FAILURES = [{ host: 'github.com', status: 401, atMs: 1751700000000 }]

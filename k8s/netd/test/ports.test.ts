@@ -42,8 +42,7 @@ describe('slotPreference', () => {
   })
 
   it('gives coexisting installs different first choices', () => {
-    // The real install and an e2e run's share a node's netns; landing on
-    // the same first slot would make one of them re-probe every time.
+    // Installs sharing a node should not start on the same slot.
     expect(slotPreference('yaac')[0]).not.toBe(slotPreference('yaac-test-abc')[0])
   })
 

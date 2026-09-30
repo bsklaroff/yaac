@@ -1,25 +1,16 @@
 /**
- * What an in-workspace `yaac-mama` command means — the one place a request
- * from inside a workspace becomes an action.
+ * Runs in-workspace `yaac-mama` commands. Both transports (the k8s proxy
+ * queue and the containerless route) end here, so `MAMA_COMMANDS` is
+ * enforced for both.
  *
- * Every transport ends here. The k8s proxy queues opaque envelopes and knows
- * nothing about what any of them mean; the containerless route validates a
- * token and hands the envelope over. So `MAMA_COMMANDS` is the allowlist in
- * the only place it can be enforced for both: a command this switch does not
- * name cannot be run, whichever way it arrived.
+ * An agent may list the project's workspaces, create or queue one, edit what
+ * it queued, retitle, group, and stop one (its own included). Stopping is
+ * allowed because it is reversible: the checkout, row and conversations are
+ * kept. Deleting, restarting and reconfiguring stay the user's.
  *
- * What a caller may NOT do is as deliberate as what it may. An agent can see
- * the project's workspaces, make another one (now, or queued for when one
- * stops), edit what it queued, retitle one, file them into named groups, and stop one — its own included. Stopping is in reach
- * because in yaac it is REVERSIBLE: `stopWorkspace` ends the running unit and
- * keeps the checkout, the row, the title, the group and the conversation, so
- * a user can restart whatever an agent wound down. Deleting, restarting and
- * reconfiguring are not: those destroy work or reshape the install, and stay
- * the user's. An agent that wants one asks for it in prose.
- *
- * The caller is never trusted for its own identity: `MamaCaller` is resolved
- * by the transport (pod source IP under k8s, an opaque per-workspace token
- * under containerless) and every command is scoped to that caller's project.
+ * The caller's identity comes from the transport (pod IP under k8s, a
+ * per-workspace token under containerless), never the request, and every
+ * command is scoped to the caller's project.
  */
 import { decideSpawn, type SpawnRequest } from './spawn-policy'
 import { listActiveWorkspaces } from './list'
@@ -58,12 +49,12 @@ export interface MamaCaller {
   workspaceId: string
   /** Its project. Every command is scoped to this and nothing else. */
   projectSlug: string
-  /** The tool it runs, when the substrate labelled it — the second step of
-   *  the spawned workspace's tool precedence. */
+  /** The tool it runs, if known; used in the spawned workspace's tool
+   *  precedence. */
   tool?: AgentTool
 }
 
-/** One command off the wire: still untyped, because that is how it arrived. */
+/** One command as received, not yet validated. */
 export interface MamaRequestInput {
   command: string
   args: Record<string, string>
@@ -75,11 +66,8 @@ export type MamaOutcome =
   | { ok: false; error: string }
 
 /**
- * Longest a group name may be — the store's own cap, which the group routes
- * bound themselves by too. Anything longer is refused rather than accepted
- * and truncated on the way to the table, where two distinct long names
- * sharing their first `MAX_TITLE_LENGTH` characters would resolve to one
- * group and file a workspace into a group nobody named.
+ * Longest group name, the store's cap. Longer names are refused rather than
+ * truncated, which could merge two distinct names into one group.
  */
 const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 
@@ -87,14 +75,9 @@ const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 const CREATE_ARGS = ['tool', 'model', 'permission-mode', 'ui-mode', 'branch', 'group', 'title'] as const
 
 /**
- * Which options each command reads. An option a command does not take is
- * refused rather than ignored, because silently dropping one means the
- * caller's request did something other than what it said — `--group` on a
- * `rename` would look like it worked and file nothing.
- *
- * Here rather than only at the proxy so BOTH transports answer the same way:
- * the proxy shape-checks what it queues, but a containerless workspace posts
- * straight to the route and never passes through it.
+ * Options each command accepts. Others are refused rather than ignored, so a
+ * request never silently does less than it said. Checked here so both
+ * transports behave the same.
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: [],
@@ -109,10 +92,9 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
 }
 
 /**
- * The option names an older install's `yaac-mama` sends — still the one
- * staged in a workspace it launched — mapped to the current ones
- * (docs/legacy-compat-shims.md). The k8s proxy renames them on receipt
- * too; this is the containerless route's copy.
+ * Legacy option names sent by an older `yaac-mama` still staged in a
+ * running workspace, mapped to current ones (docs/legacy-compat-shims.md).
+ * The k8s proxy renames them too; this covers the containerless route.
  */
 const LEGACY_ARGS = new Map([['worktree', 'workspace'], ['parent-worktree', 'parent-workspace']])
 
@@ -121,13 +103,9 @@ function withLegacyArgsRenamed(args: Record<string, string>): Record<string, str
 }
 
 /**
- * Run one `yaac-mama` command on behalf of a workspace, and render the answer
- * as the text its stdout gets.
- *
- * Text rather than JSON because the caller is a shell script with no parser
- * and its reader is an agent: a table is what both can use. Errors come back
- * as a value (never a throw) so a transport that is holding a caller's
- * request open always has something to answer with.
+ * Run one `yaac-mama` command for a workspace and return the text for its
+ * stdout (plain text, since the reader is an agent via a shell script).
+ * Errors are returned, never thrown, so the transport always has an answer.
  */
 export async function runMamaCommand(
   caller: MamaCaller,
@@ -142,9 +120,6 @@ export async function runMamaCommand(
   }
   const command = request.command as MamaCommand
   const accepted = COMMAND_ARGS[command]
-  // hasOwn-free because these are the caller's own keys against a fixed
-  // list, but the same reasoning as the proxy's: a name off a wire must not
-  // be able to reach anything it did not send.
   for (const name of Object.keys(request.args)) {
     if (!accepted.includes(name)) {
       return {
@@ -168,8 +143,6 @@ export async function runMamaCommand(
       case 'edit-queued': return await runEditQueued(caller, request)
     }
   } catch (err) {
-    // Anything a command threw (a bad group name, an unreachable substrate)
-    // is the caller's answer, not the drain's problem.
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
@@ -209,8 +182,6 @@ function renderWorkspaces(
   const rows = [...workspaces]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((w) => ({
-      // The caller marks its own row: an agent reading this list is usually
-      // deciding what to do about the OTHER workspaces.
       id: `${w.workspaceId.slice(0, 8)}${w.workspaceId === callerId ? ' (you)' : ''}`,
       tool: w.tool,
       status: w.status,
@@ -225,9 +196,8 @@ function renderWorkspaces(
   const toolW = width('TOOL', (r) => r.tool)
   const statusW = width('STATUS', (r) => r.status)
   const groupW = width('GROUP', (r) => r.group)
-  // `rename` is one of the six commands, so its result has to be readable
-  // here — otherwise an agent can retitle a workspace and never see it. Shown
-  // only once something has a title, like the CLI's own listings.
+  // Titles let an agent see its `rename` results; the column is shown only
+  // when some workspace has one.
   const hasTitles = rows.some((r) => r.title !== '')
   const titleW = hasTitles ? width('TITLE', (r) => r.title) : 0
   const titleCell = (v: string): string => hasTitles ? `${v.padEnd(titleW)}  ` : ''
@@ -239,11 +209,7 @@ function renderWorkspaces(
   ]
 }
 
-/**
- * Queued entries as a tree: each under the workspace it waits on, one level
- * deeper per link of a chain — so an agent can see what it has queued, and
- * after what.
- */
+/** Queued entries as a tree under the workspace each waits on. */
 function renderQueued(rows: QueuedWorkspaceRow[], callerId: string): string[] {
   const children = new Map<string, QueuedWorkspaceRow[]>()
   for (const r of rows) {
@@ -261,7 +227,6 @@ function renderQueued(rows: QueuedWorkspaceRow[], callerId: string): string[] {
       walk(r.id, depth + 1)
     }
   }
-  // The roots are the workspaces entries wait on directly.
   for (const parent of children.keys()) {
     if (ids.has(parent)) continue
     lines.push(`after ${parent.slice(0, 8)}${parent === callerId ? ' (you)' : ''}:`)
@@ -276,17 +241,12 @@ function flatten(text: string, max: number): string {
 }
 
 /**
- * Start a sibling workspace in the caller's project. The decision — tool
- * precedence, the posture ceiling, the fan-out cap, the id it gets and the
- * row it provisions under — is `decideSpawn`'s; this resolves the two things
- * it needs from the store: the group name, since a group has to exist before
- * the create can carry it, and the caller's own posture, off its row.
+ * Start a sibling workspace in the caller's project. `decideSpawn` makes the
+ * decisions; this supplies the caller's permission mode from its row.
  */
 async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const callerRow = await getWorkspaceRow(caller.projectSlug, caller.workspaceId)
-  // Every running workspace has a row (create writes it before provisioning),
-  // so a caller without one has no posture to cap a spawn at — refuse rather
-  // than guess one.
+  // Without a row there is no permission mode to cap the spawn at.
   if (!callerRow) return { ok: false, error: 'this workspace has no recorded permission mode' }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
@@ -301,21 +261,15 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     ...settings.settings,
   })
   return decision.ok
-    // The id alone, so `id=$(yaac-mama create "…")` works — the one output
-    // here that a script is likely to capture rather than read.
+    // The id alone, so `id=$(yaac-mama create "…")` works.
     ? { ok: true, output: decision.workspaceId }
     : { ok: false, error: decision.error }
 }
 
 /**
- * Queue a workspace to start when its parent stops naturally. The parent is
- * always named — the caller's own id for "when I'm done, this picks up from
- * here", before it `yaac-mama stop`s itself — and may be any workspace in
- * this project, or a queued entry to chain after.
- *
- * Settings default from the parent, and the posture from the parent too, but
- * never above the caller's own: an agent may not hand work to something with
- * more permission than it has.
+ * Queue a workspace to start when its parent (a workspace in this project,
+ * often the caller itself, or another queued entry) stops. Settings default
+ * from the parent; the permission mode is capped at the caller's own.
  */
 async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const callerRow = await getWorkspaceRow(caller.projectSlug, caller.workspaceId)
@@ -334,20 +288,16 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
 }
 
 /**
- * Edit a queued workspace in the caller's project — its prompt, any setting
- * `queue` takes, or its parent — so an agent can refine a follow-up without
- * discarding it (which it cannot do) and queueing another. An empty body
- * keeps the prompt. The ceiling is `queue`'s: an entry the user queued
- * above the caller's own posture is refused until the edit names one at or
- * below it, or an agent could put its words behind someone else's grant.
+ * Edit a queued workspace in the caller's project: prompt (an empty body
+ * keeps it), settings or parent. The permission mode is capped at the
+ * caller's own, as in `queue`, so an agent cannot reuse a higher grant the
+ * user gave an entry.
  */
 async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const callerRow = await getWorkspaceRow(caller.projectSlug, caller.workspaceId)
   if (!callerRow) return { ok: false, error: 'this workspace has no recorded permission mode' }
   const target = request.args.queued?.trim() ?? ''
   if (target === '') return { ok: false, error: 'edit-queued needs a queued workspace id' }
-  // Scoped like every other lookup here: only this project's entries are
-  // candidates, and a prefix matching two resolves to neither.
   const rows = await listQueuedWorkspaceRows(caller.projectSlug)
   const exact = rows.find((r) => r.id === target)
   const matches = exact !== undefined ? [exact] : rows.filter((r) => r.id.startsWith(target))
@@ -378,14 +328,13 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   }
 }
 
-/** What `create`, `queue` and `edit-queued` all take, checked and resolved. */
+/** Settings shared by `create`, `queue` and `edit-queued`. */
 type CreateSettings = Pick<SpawnRequest, 'tool' | 'model' | 'permissionMode' | 'uiMode' | 'branch' | 'group' | 'title'>
 
 /**
- * The options every command that makes a workspace shares, shape-checked.
- * The group stays a name: the command resolves it, creating it if needed,
- * only once its own checks have passed, so a refused request leaves no
- * group behind.
+ * Validate the shared create options. The group stays a name, resolved
+ * (and created) only after the command's own checks pass, so a refused
+ * request creates no group.
  */
 function createSettings(
   args: Record<string, string>,
@@ -430,14 +379,7 @@ function queueFields({ uiMode, ...rest }: CreateSettings): Partial<QueueRequest>
   return { ...rest, ...(uiMode !== undefined ? { mode: uiMode } : {}) }
 }
 
-/**
- * Retitle a workspace — the label the sidebar shows in place of its id.
- *
- * The one command whose most useful target is the CALLER: an agent that has
- * worked out what it is actually doing can say so, and the user reads it
- * without opening the workspace. Naming a sibling works too, and is scoped the
- * same way everything here is.
- */
+/** Retitle a workspace, by default the caller itself. */
 async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = await resolveTargetWorkspace(caller, request.args.workspace)
   if (!target.ok) return target
@@ -446,21 +388,14 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
   const title = request.body.trim()
   if (title === '') return { ok: false, error: 'rename needs a title' }
   await setWorkspaceTitle(caller.projectSlug, workspaceId, title)
-  // Read back rather than echoing the request: the store trims, collapses
-  // whitespace and caps the length, so this is what the sidebar will show.
+  // Read back the stored (normalized) title.
   const stored = (await getProjectWorkspaceRows(caller.projectSlug)).get(workspaceId)?.title
   return { ok: true, output: `Renamed ${workspaceId.slice(0, 8)} to "${stored ?? title}".` }
 }
 
 /**
- * Which workspace a command that names one is aimed at.
- *
- * Shared by the two commands that take a `--workspace`, so both say "me" the
- * same way: omitted means the caller, which saves an agent looking up an id
- * it would only be using to name itself. Resolution is
- * `resolveWorkspace`'s, so an id from another project simply is not
- * here, and an ambiguous prefix resolves to nothing rather than to whichever
- * row came back first.
+ * Resolve a `--workspace` argument within the caller's project; omitted
+ * means the caller. An ambiguous prefix fails.
  */
 async function resolveTargetWorkspace(
   caller: MamaCaller,
@@ -475,15 +410,8 @@ async function resolveTargetWorkspace(
     : { ok: false, error: workspaceError(caller.projectSlug, target, resolved.reason) }
 }
 
-/**
- * What to tell a caller whose workspace argument resolved to nothing.
- *
- * The two failures need different next moves, and behind a destructive verb
- * that difference is the whole message: an unknown id means look again, an
- * ambiguous prefix means the caller already holds the right id and simply
- * did not type enough of it. Answering both with "no workspace" sends an agent
- * back to `list` when it needed one more character.
- */
+/** Distinct messages for an unknown id and an ambiguous prefix, since
+ *  they need different fixes. */
 function workspaceError(
   projectSlug: string,
   target: string,
@@ -495,18 +423,9 @@ function workspaceError(
 }
 
 /**
- * Stop a workspace: the running unit goes, everything that makes it
- * restartable stays.
- *
- * Omitting the workspace stops the CALLER, and that is the case this exists
- * for — a fanned-out workspace that has finished its work winding itself down.
- * The cost is that a self-stop's confirmation is best-effort: the caller is
- * tearing down the very transport its reply rides (its pod under k8s, the
- * tmux server hosting the command under containerless). `stopWorkspace`
- * schedules the teardown detached, so this returns and the reply is written
- * before it proceeds — but whether that reaches a workspace being torn down is
- * not something this can promise, which is why the script and the skill both
- * say the workspace ending IS the confirmation.
+ * Stop a workspace, by default the caller (an agent winding itself down
+ * after its work). The checkout is kept for restart. A self-stop's reply is
+ * best-effort, since the teardown removes the transport it travels on.
  */
 async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = await resolveTargetWorkspace(caller, request.args.workspace)
@@ -515,10 +434,7 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
   try {
     await stopWorkspace(target.workspaceId)
   } catch (err) {
-    // `stopWorkspace`'s own NOT_FOUND sends the caller to `yaac workspace
-    // list`, which an agent does not have. It also means something narrower
-    // here than it does at the CLI: the id already resolved against this
-    // project's rows, so the workspace exists — it just has no running unit.
+    // The id resolved against rows, so NOT_FOUND here means not running.
     if (err instanceof ServerError && err.code === 'NOT_FOUND') {
       return { ok: false, error: `workspace ${target.workspaceId.slice(0, 8)} is not running` }
     }
@@ -540,12 +456,8 @@ async function runGroupCreate(
   if (name.length > MAX_GROUP_NAME_CHARS) {
     return { ok: false, error: `group name exceeds ${MAX_GROUP_NAME_CHARS} characters` }
   }
-  // Idempotent by construction: naming a group that exists resolves to it
-  // rather than making a second one with the same name.
+  // Idempotent: an existing group of that name is reused.
   const group = await resolveGroup(caller.projectSlug, name, { create: true })
-  // The resolved name, not the typed one — the group it landed on may have
-  // been named slightly differently (case, spacing), and an agent reading
-  // this back should see the label the sidebar will show.
   return { ok: true, output: `Group "${group.name}" is ready (${group.groupId}).` }
 }
 
@@ -554,9 +466,6 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   if (workspace === undefined || workspace.trim() === '') {
     return { ok: false, error: 'group move needs a workspace id' }
   }
-  // Resolved against the caller's OWN project's rows, which is what scopes
-  // the move: a workspace id from another project simply is not here, so there
-  // is no cross-project move to refuse separately.
   const found = await resolveWorkspace(workspace, { projectSlug: caller.projectSlug })
   if (!found.ok) {
     return { ok: false, error: workspaceError(caller.projectSlug, workspace.trim(), found.reason) }
@@ -564,19 +473,13 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   const workspaceId = found.workspaceId
 
   const target = request.body.trim()
-  // No group named means the default list, which is how both surfaces say
-  // it — `yaac group move` cannot use a bare `--` (its parser eats it as
-  // end-of-options), so omitting the argument is the shared idiom. `--` is
-  // still honored for anyone who reaches for it.
+  // No group (or `--`) means ungrouped.
   const resolved = target === '--' || target === ''
     ? null
     : await resolveGroup(caller.projectSlug, target, { create: true })
   await setWorkspaceGroup(caller.projectSlug, workspaceId, resolved?.groupId ?? null)
   return {
     ok: true,
-    // The resolved NAME, like the CLI's own line: the ambiguity error tells a
-    // caller to pass the group id, and an agent is the caller most likely to
-    // take it up — echoing that uuid back is not an answer.
     output: resolved === null
       ? `Moved ${workspaceId.slice(0, 8)} out of its group.`
       : `Moved ${workspaceId.slice(0, 8)} into "${resolved.name}".`,
@@ -584,13 +487,8 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
 }
 
 /**
- * Which agent tools this host can actually authenticate, and the model ids
- * each accepts.
- *
- * Answered from the host's own credentials because the server is the host —
- * the one question a workspace genuinely cannot answer for itself, since it
- * holds sentinels (or, containerless, holds the real thing but not the
- * knowledge of what else is configured).
+ * Which agent tools the server has credentials for, and each one's models.
+ * A workspace cannot tell this itself.
  */
 async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
   const entries = await Promise.all(AGENT_TOOLS.map(async (tool) => ({

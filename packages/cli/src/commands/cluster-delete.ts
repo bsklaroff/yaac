@@ -5,10 +5,10 @@ export interface ClusterDeleteCliOptions {
 }
 
 /**
- * `yaac cluster delete` — delete the local kind cluster and its registry,
- * keeping on-disk workspaces. Host-side like `cluster install`:
- * talks to kind/podman directly, never the server. Exits 1 when a step
- * cannot proceed (ClusterDeleteError carries the fix instructions).
+ * `yaac cluster delete`: delete the local kind cluster and its registry,
+ * keeping on-disk workspaces. Runs on the host against kind/podman directly,
+ * not through the server. Exits 1 when a step cannot proceed
+ * (ClusterDeleteError carries the fix instructions).
  */
 export async function clusterDelete(options: ClusterDeleteCliOptions = {}): Promise<void> {
   try {

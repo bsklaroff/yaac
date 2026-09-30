@@ -3,13 +3,8 @@ import { access as fsAccess } from 'node:fs/promises'
 import { WorkspaceExecError } from '#drivers/contract'
 
 /**
- * This driver's process boundary: everything it does to the host, and the
- * only module its unit tests mock.
- *
- * The k8s driver's bottom is kubectl and the client library; this one's is
- * `child_process`. Keeping it in one module is what lets the launch, exec,
- * teardown and port tests drive the real feature and assert on what it
- * hands the outside world, rather than stubbing a sibling.
+ * This driver's process boundary: every host process it runs goes through
+ * here, so this is the only module its unit tests mock.
  */
 
 export interface RunResult {
@@ -20,20 +15,16 @@ export interface RunResult {
 export interface RunOpts {
   cwd?: string
   env?: NodeJS.ProcessEnv
-  /** Kill the command after this long and reject — a TRANSPORT failure, not
-   *  a verdict about the workspace (see `WorkspaceExecError`). */
+  /** Kill and reject after this long, as a transport failure (not a
+   *  `WorkspaceExecError`). */
   timeoutMs?: number
 }
 
 /**
- * Run a command on the host and collect its output.
- *
- * The one error distinction the contract forces lands here: a command that
- * RAN and exited nonzero rejects with `WorkspaceExecError`, and everything
- * else — the binary missing, a timeout, a spawn failure — rejects as a
- * plain `Error`. The stale reaper reads a `WorkspaceExecError` from a tmux
- * probe as proof the workspace is dead and tears it down, so widening this
- * would let a host hiccup reap live workspaces.
+ * Run a command on the host and collect its output. Only a command that ran
+ * and exited nonzero rejects with `WorkspaceExecError`; a missing binary,
+ * timeout or spawn failure is a plain `Error`. The stale reaper relies on
+ * this to avoid reaping live workspaces.
  */
 export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> {
   const [cmd, ...args] = argv
@@ -67,8 +58,7 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
       if (settled) return
       settled = true
       done()
-      // Never a WorkspaceExecError: the command did not run, so it says
-      // nothing about the workspace.
+      // The command did not run, so not a WorkspaceExecError.
       reject(err)
     })
     child.on('close', (code) => {
@@ -86,13 +76,8 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
   })
 }
 
-/**
- * Run a command with something on its stdin, and collect its output.
- *
- * The one caller is `ssh-add -`, and the reason it exists is the reason that
- * caller does: a private key handed over a pipe never becomes a file, so
- * there is nothing on disk to forget to delete.
- */
+/** `runHost` with `input` on stdin (used to pipe a private key to
+ *  `ssh-add -` so it never touches disk). */
 export function runHostWithInput(
   argv: string[],
   input: string,
@@ -145,17 +130,9 @@ export function runHostWithInput(
 }
 
 /**
- * Start an ssh-agent bound to `sock`, detached, and answer with its pid.
- *
- * `-D` keeps it in the foreground of its own process so the pid we get is
- * the agent itself rather than a parent that forked and exited — which is
- * what makes the pid recorded in the workspace marker the one teardown can
- * signal. Detached and `unref`ed for the same reason the tmux server is: it
- * belongs to the workspace, not to the server that created it, and must
- * survive a server restart.
- *
- * Resolves once the socket exists, so the `ssh-add` that follows cannot race
- * the bind.
+ * Start a detached ssh-agent bound to `sock` (it must survive a server
+ * restart, like tmux) and return its pid once the socket exists. `-D` keeps
+ * the agent itself as the child, so the pid is the one teardown signals.
  */
 export async function spawnSshAgent(sock: string): Promise<number> {
   const child = spawn('ssh-agent', ['-D', '-a', sock], {
@@ -163,19 +140,14 @@ export async function spawnSshAgent(sock: string): Promise<number> {
     stdio: 'ignore',
   })
   child.unref()
-  // Attached BEFORE anything can throw, as `runHost` does. A spawn failure
-  // (no `ssh-agent` on this host) surfaces as an 'error' event on the next
-  // tick, and an unhandled one on a ChildProcess is an uncaught exception —
-  // which this process has no handler for, so a single SSH project on a host
-  // without ssh-agent would take the whole server down rather than failing
-  // its create.
+  // Attach before anything can throw: an unhandled spawn 'error' event
+  // (no ssh-agent installed) would crash the server.
   let spawnError: Error | undefined
   child.on('error', (err) => { spawnError = err })
 
   const pid = child.pid
   if (pid === undefined) {
-    // The event has not necessarily fired yet; one tick is enough for it,
-    // and its message names the actual cause.
+    // Wait one tick for the 'error' event, which names the cause.
     await new Promise((r) => setTimeout(r, 0))
     throw spawnError ?? new Error('ssh-agent did not start')
   }
@@ -199,13 +171,8 @@ export async function spawnSshAgent(sock: string): Promise<number> {
 }
 
 /**
- * Whether a binary resolves on PATH. Used by the host check, the create's
- * launch preflight and the launch's shell selection; never throws.
- *
- * The name is a positional argument rather than interpolated into the
- * script, so it is data to the shell no matter who supplies it. Every
- * caller today passes a validated tool name or a table constant; this is
- * what keeps that from being load-bearing.
+ * Whether a binary resolves on PATH. Never throws. The name is passed as an
+ * argument, not interpolated into the script.
  */
 export async function onPath(binary: string): Promise<boolean> {
   try {
@@ -220,13 +187,9 @@ export async function onPath(binary: string): Promise<boolean> {
 }
 
 /**
- * Every descendant of `roots`, roots included — the workspace's process
- * tree, which is what "this workspace's ports" and "kill what is left" both
- * mean here.
- *
- * Read from `ps` rather than `/proc` so one implementation serves Linux and
- * macOS; the tree is walked breadth-first from a single snapshot, so a
- * process that forks mid-walk is simply missed until the next sweep.
+ * Every descendant of `roots`, roots included: the workspace's process tree.
+ * Uses one `ps` snapshot (portable to Linux and macOS); a process forked
+ * mid-walk is missed until the next sweep.
  */
 export async function descendantPids(roots: number[]): Promise<number[]> {
   if (roots.length === 0) return []
@@ -257,48 +220,33 @@ export async function descendantPids(roots: number[]): Promise<number[]> {
   return [...seen]
 }
 
-/**
- * TCP ports the given processes are LISTENing on.
- *
- * `lsof` on both platforms: it is the one tool that answers "which of THESE
- * processes is listening" in a single call, which is the question — a
- * workspace's ports are its own process tree's, not the host's. A host
- * without lsof reports nothing rather than failing, and the host check says
- * so up front.
- */
-/** One TCP listener: its port, and the loopback address this host dials
- *  to reach it — the bound address itself, or the loopback of the bound
- *  family for a wildcard. */
+/** One TCP listener: its port, and the address to dial it on (the bound
+ *  address, or its family's loopback for a wildcard). */
 export interface Listener {
   port: number
   host: string
 }
 
+/**
+ * TCP ports the given processes listen on, via `lsof` (Linux and macOS).
+ * Empty if lsof is missing; the host check warns about that.
+ */
 export async function listeningPorts(pids: number[]): Promise<Listener[]> {
   if (pids.length === 0) return []
   let out: string
   try {
-    // `-b`: a TCP listing is matched by socket inode from /proc/<pid>/fd
-    // against /proc/net/tcp*, and needs no stat of any path; without it
-    // lsof stats every mount on the host on the way, and one hung network
-    // mount (NFS, 9p, fuse) hangs every sweep past its timeout — reporting
-    // a host with a live dev server as listening on nothing. `-w` drops the
-    // warnings `-b` emits about the mounts it then skipped. The hang itself
-    // has no test; the argv assertion in ports.test.ts is what guards the
+    // `-b` avoids stat-ing mounts, so a hung network mount cannot hang the
+    // sweep; `-w` silences the resulting warnings. ports.test.ts asserts the
     // flags.
     ({ stdout: out } = await runHost([
       'lsof', '-b', '-w', '-a', '-p', pids.join(','), '-iTCP', '-sTCP:LISTEN', '-P', '-n', '-Ftn',
     ], { timeoutMs: 10_000 }))
   } catch {
-    // Also the ordinary "nothing is listening" case: lsof exits 1 when no
-    // file matches, which is indistinguishable from a real failure here and
-    // means the same thing either way.
+    // lsof also exits 1 when nothing is listening.
     return []
   }
-  // -F emits one field per line, `t` (IPv4/IPv6) before `n` (the name) for
-  // each file: `n*:3000`, `n127.0.0.1:3000`, `n[::1]:3000`. A wildcard is
-  // reachable on its family's loopback — and only `t` tells a `*` bound as
-  // 0.0.0.0 from one bound as `::`.
+  // -F output: `t` (IPv4/IPv6) then `n` (e.g. `n*:3000`, `n[::1]:3000`) per
+  // file. `t` tells which loopback a `*` wildcard is reachable on.
   const byPort = new Map<number, Listener>()
   let family = ''
   for (const line of out.split('\n')) {
@@ -324,23 +272,15 @@ export function killPids(pids: number[], signal: NodeJS.Signals): void {
     try {
       process.kill(pid, signal)
     } catch {
-      // Already gone, or not ours — either way there is nothing to do.
+      // Already gone, or not ours.
     }
   }
 }
 
 /**
- * Whether `pid` is this workspace's ssh-agent, rather than whatever process
- * has since inherited that number.
- *
- * A recorded pid is advisory — the same reason the tmux one is — but "do not
- * signal it" is the wrong conclusion for this one: the process holds a
- * private key in memory, and leaving it alive until the host reboots is the
- * failure the per-workspace agent exists to prevent. So the identity is
- * checked instead of assumed, against the socket path no other agent binds.
- *
- * Never throws: a `ps` that fails answers "not ours", which loses only a
- * best-effort kill.
+ * Whether `pid` is still this workspace's ssh-agent (checked by its socket
+ * path), not a process that reused the number. It holds a private key, so
+ * teardown should kill it when it can. Never throws.
  */
 export async function isSshAgentFor(pid: number, sock: string): Promise<boolean> {
   try {

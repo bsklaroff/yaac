@@ -1,34 +1,18 @@
 /**
- * A `tui` claude conversation, rendered as the same `AcpEvent[]` an `acp` one
- * produces — so a session that was never driven over ACP still has a readable
- * transcript.
+ * Renders a `tui` claude conversation as the same `AcpEvent[]` an `acp` one
+ * produces, so it has a readable transcript. A tui conversation has no acpd
+ * record, only claude's own session JSONL.
  *
- * An acp conversation has a record: acpd tees the JSON-RPC stream to disk and
- * `replayAcpLog` replays it. A tui conversation has no such thing — the agent
- * was driven through a PTY, and the only history it left is claude's own
- * session JSONL. Something has to translate one into the other.
+ * The translation is not written here. The pinned `claude-agent-acp` adapter
+ * (the version dockerfiles/Dockerfile.tools installs) exposes the two pieces
+ * its `session/load` uses: the SDK's `getSessionMessages` and
+ * `toAcpNotifications`. This module runs them over a transcript file and
+ * feeds the result to `replayAcpLog`, so tui transcripts match what acp
+ * renders and no second translation can drift. claude-acp-replay.test.ts
+ * pins the version equality.
  *
- * That translation is NOT written here. `claude-agent-acp` — the very adapter
- * an acp workspace runs, pinned to the version dockerfiles/Dockerfile.tools
- * installs — exposes as a library the two halves its own `session/load`
- * handler is built from: the SDK's `getSessionMessages` to read a session's
- * messages, and `toAcpNotifications` to turn each one into `session/update`
- * notifications. This module runs that same pair over a transcript file and
- * feeds the result to the same `replayAcpLog` a real record goes through.
- *
- * Reusing the adapter's own function rather than writing a claude-JSONL
- * projector is the whole point: a hand-written one would be a *second*
- * translation of the same data, and the two would disagree the moment claude
- * gained a tool or the adapter changed how it titles one — the transcript a
- * user reads after stopping a workspace would not match what they watched live.
- * Here there is only one translation, and yaac supplies none of it. What is
- * left is plumbing: read the file, hand over the lines, serialize what comes
- * back. `packages/server/test/runtime/agents/claude-acp-replay.test.ts` pins
- * the version equality that makes the reuse honest.
- *
- * No adapter *process* is involved, which is what makes this work for a
- * workspace that is gone: no pod to schedule, no credentials, no claude binary,
- * and the same answer under both drivers.
+ * No adapter process runs, so this works for a stopped workspace with no
+ * credentials or claude binary, under either driver.
  */
 
 import { replayAcpLog } from './acp-log'
@@ -36,49 +20,36 @@ import { ACP } from './acp-protocol'
 import { isUuid } from '#lib/uuid'
 import { serverLog } from '#log'
 import type { AcpEvent } from '@yaac/shared/acp'
-// Type-only, so the lazy runtime import below stays the only load of these
-// packages.
+// Type-only; the lazy import below is the only runtime load.
 import type { SessionStore, SessionStoreEntry } from '@anthropic-ai/claude-agent-sdk'
 
 /**
- * The SDK validates the session id it is handed and answers with nothing at
- * all for one that is not a UUID. Every claude conversation id yaac records
- * is one (the founding conversation is pinned to the workspace id, and a
- * `/clear` mints another), so this is a guard against a malformed row rather
- * than an expected shape — but "no messages" would be an invisible way to
- * fail, so an id that cannot pass is replaced with one that can.
- *
- * Substituting is sound because the id does not select anything: the store
- * below answers with this transcript's lines whatever it is asked for, and the
- * `sessionId` it stamps on each notification is dropped by the projection.
+ * Fallback session id. The SDK returns nothing for a non-UUID id; yaac's
+ * claude ids are always UUIDs, but a malformed row would fail invisibly, so
+ * such an id is replaced. The id selects nothing (the store below returns
+ * this transcript regardless) and is dropped by the projection.
  */
 const PLACEHOLDER_SESSION_ID = '00000000-0000-0000-0000-000000000000'
 
 /**
- * A conversation's history, from claude's own transcript — read by the caller,
- * which decides where from and how much of it (see `getAgentSessionTranscript`).
+ * A conversation's history from claude's transcript, as read by the caller
+ * (see `getAgentSessionTranscript`).
  */
 export async function claudeTranscriptAsAcp(raw: string, agentSessionId: string): Promise<AcpEvent[]> {
   return replayAcpLog(await synthesizeAcpRecord(raw, agentSessionId))
 }
 
 /**
- * One transcript's lines as the record acpd would have written had the same
- * conversation been driven over ACP.
- *
- * Building a record rather than `AcpEvent`s directly is what keeps the second
- * half of the pipeline shared as well: `replayAcpLog` owns tool-call patch
- * merging, sequence numbering and the defensive drops, and it must own them
- * for a synthesized conversation exactly as it does for a recorded one.
+ * A transcript's lines as the record acpd would have written over ACP. A
+ * record rather than events, so `replayAcpLog` also handles tool-call
+ * merging, sequencing and defensive drops for synthesized conversations.
  */
 async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise<string> {
   const entries = raw.split('\n').flatMap(parseLine)
   if (entries.length === 0) return ''
 
-  // Loaded on demand: between them these two packages are megabytes of
-  // adapter and SDK, and nothing else in the server needs them — a transcript
-  // being read is rare, while every server start and every unit file would
-  // otherwise pay for the import.
+  // Loaded on demand: these packages are megabytes, needed only for the
+  // rare transcript read.
   /* eslint-disable no-restricted-syntax -- deferring these is the point; see above */
   const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk')
   const { stripLocalCommandMetadata, toAcpNotifications } =
@@ -86,12 +57,9 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
   /* eslint-enable no-restricted-syntax */
 
   const sessionId = isUuid(agentSessionId) ? agentSessionId : PLACEHOLDER_SESSION_ID
-  // A store that only reads, and only ever has one session to answer with.
-  // `getSessionMessages` is the SDK's own transcript parser — it threads the
-  // `parentUuid` chain, drops summaries and sidechain (subagent) turns, and
-  // hands back the messages in order — and taking a store makes it do that
-  // over bytes we supply instead of over claude's config directory, which is
-  // what lets this run against a project's transcript with no claude install.
+  // A read-only store holding one session. `getSessionMessages` (the SDK's
+  // parser: follows `parentUuid`, drops summaries and subagent turns) then
+  // reads bytes we supply instead of claude's config dir.
   const sessionStore: SessionStore = {
     load: () => Promise.resolve(entries as SessionStoreEntry[]),
     append: () => Promise.reject(new Error('yaac reads transcripts, never writes them')),
@@ -101,41 +69,33 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
   try {
     messages = await getSessionMessages(sessionId, { sessionStore })
   } catch (err) {
-    // A transcript this SDK cannot parse costs the transcript view, never the
-    // request: the stopped workspace still lists, with an empty conversation.
+    // An unparseable transcript yields an empty conversation, not an error.
     serverLog(`[server] claude transcript replay failed: ${String(err)}`)
     return ''
   }
 
-  // The adapter's own `replaySessionHistory` loop, with the pieces that only
-  // make sense for a live session left out (a client to send to, the message
-  // ids `session/rewind` would translate). `toolUseCache` threads across
-  // messages on purpose: it is how a `tool_result` finds the `tool_use` it
-  // completes, and therefore how a tool call gets its title and kind.
+  // The adapter's `replaySessionHistory` loop minus live-session parts.
+  // `toolUseCache` spans messages so a `tool_result` finds its `tool_use`
+  // (and so a tool call gets its title and kind).
   const toolUseCache = {}
   const lines: string[] = []
   for (const message of messages) {
     const api = (message as { message?: { role?: unknown; content?: unknown } }).message
     const role = api?.role
     if (role !== 'assistant' && role !== 'user') continue
-    // The live path turns claude's synthetic "Please run /login" message into
-    // an auth error rather than showing its TUI text; that message stays in
-    // the transcript forever, so a replay that rendered it would resurface a
-    // stale login prompt in every reading of this conversation.
+    // The live path turns claude's synthetic "Please run /login" message
+    // into an auth error; replaying it would show a stale login prompt.
     if (role === 'assistant' && isSyntheticLoginMessage(api)) continue
     let content = api?.content
     if (role === 'user') {
       content = stripLocalCommandMetadata(content as never)
-      // Slash-command bookkeeping — the caveat preamble, the invocation, its
-      // captured stdout. Real entries in the transcript, but not things anyone
-      // said.
+      // Slash-command bookkeeping (caveat preamble, invocation, stdout).
       if (content === null) continue
     }
     for (const notification of toAcpNotifications(
       content as never, role, sessionId, toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
-      // The flag that makes this a pure translation: with hooks off, the
-      // adapter builds notifications and returns them instead of registering
-      // callbacks that would later push through a client we do not have.
+      // With hooks off, the adapter returns notifications instead of pushing
+      // them through a client.
       { registerHooks: false },
     )) {
       lines.push(JSON.stringify({
@@ -148,9 +108,8 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
   return lines.join('\n')
 }
 
-/** One transcript line as an object; anything unparseable contributes
- *  nothing. A transcript can end mid-write, and a tool that printed something
- *  else into it is not a reason to lose the conversation. */
+/** One transcript line as an object; unparseable lines (a mid-write end,
+ *  stray output) are skipped. */
 function parseLine(line: string): unknown[] {
   if (line.trim() === '') return []
   try {
@@ -162,8 +121,8 @@ function parseLine(line: string): unknown[] {
 }
 
 /**
- * claude's synthetic auth message, by the same shape the adapter matches on
- * (`isSyntheticLoginMessage`, not on its public entry).
+ * claude's synthetic auth message, matched like the adapter's internal
+ * `isSyntheticLoginMessage`.
  */
 function isSyntheticLoginMessage(api: { model?: unknown; content?: unknown } | undefined): boolean {
   if (api?.model !== '<synthetic>' || !Array.isArray(api.content) || api.content.length !== 1) {
@@ -175,11 +134,9 @@ function isSyntheticLoginMessage(api: { model?: unknown; content?: unknown } | u
 }
 
 /**
- * The client `toAcpNotifications` takes but never calls when hooks are off:
- * its only use is inside the PostToolUse callbacks `registerHooks: false`
- * declines to register. Reaching it would be a bug in this module's
- * assumptions rather than a runtime condition, so it throws rather than
- * silently doing nothing.
+ * The client `toAcpNotifications` requires but never calls with hooks off
+ * (it is used only by the PostToolUse callbacks). Throws, since reaching it
+ * would be a bug here.
  */
 const ACP_CLIENT_UNUSED = new Proxy({}, {
   get: () => () => {
@@ -187,6 +144,5 @@ const ACP_CLIENT_UNUSED = new Proxy({}, {
   },
 }) as never
 
-/** The adapter logs adapter problems; a transcript read is not the place for
- *  them to reach a user's server log. */
+/** Drops the adapter's own log output. */
 const SILENT_LOGGER = { log: () => {}, error: () => {}, warn: () => {} } as never

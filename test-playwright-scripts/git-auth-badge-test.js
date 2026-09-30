@@ -1,29 +1,24 @@
 /*
- * Verifies the git-auth-failure badge end-to-end against the real stack:
- * the proxy's 401 detection (k8s/proxy/proxy.ts noteGitUpstreamStatus,
- * recorded against the session's PROJECT), the server snapshot plumbing
- * (ServerSnapshot.gitAuthFailures, keyed by project slug), and the webapp
- * badge (GitAuthFailureBadge in the sidebar's project header + session
- * header).
+ * Verifies the git-auth-failure badge against the real k8s stack: the
+ * proxy's 401 detection (noteGitUpstreamStatus in k8s/proxy/proxy.ts,
+ * recorded per project), ServerSnapshot.gitAuthFailures, and the
+ * GitAuthFailureBadge in the sidebar's project header and workspace header.
  *
- * Flow, all against a running server + cluster and a REAL session pod:
- *   1. finds (or requires) an existing running session for --project
- *   2. deploys an in-cluster mock upstream (401 for every git smart-HTTP
- *      path until flipped, then 200) and re-registers the session with the
- *      proxy so github.com's post-MITM upstream is redirected to the mock —
- *      credential injection and detection still run exactly as in production
- *      (same mechanism the e2e suite uses, see sessionUpstreamRedirects)
- *   3. asserts the UI shows no badge, then runs `git fetch` inside the
- *      session pod (fails with 401) and waits for the badge to appear in
- *      the sidebar and header, and for the popover to name the host,
- *      status, and the "Change git credential…" fix
- *   4. flips the mock to 200, re-runs `git fetch`, and waits for the badge
- *      to self-clear
- *   5. cleans up: removes the upstream redirect and the mock pod/service
+ * Flow, against a running server, cluster and real workspace pod:
+ *   1. finds the running workspace for --project;
+ *   2. deploys an in-cluster mock upstream (401 on git smart-HTTP paths
+ *      until flipped to 200) and redirects the workspace's github.com
+ *      upstream to it, so injection and detection run as in production;
+ *   3. checks there is no badge, runs a failing `git fetch` in the pod, and
+ *      waits for the badge in the sidebar and header, with a popover naming
+ *      the host, status and the "Change git credential…" fix;
+ *   4. flips the mock to 200, fetches again, and waits for the badge to
+ *      clear;
+ *   5. removes the redirect and the mock pod and Service.
  *
  * Run: node test-playwright-scripts/git-auth-badge-test.js [--project yaac]
- * Needs a running server with a wired cluster and ONE running session for
- * the project (create one first: `yaac session create <project>`). Reads
+ * Needs a running server with a wired cluster and one running workspace for
+ * the project (`yaac workspace create <project>`). Reads
  * port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac). Screenshots go
  * to $TMPDIR. (playwright is resolved from the global npm root; browsers
  * live under /opt/playwright-browsers)
@@ -75,7 +70,7 @@ function check(name, cond, detail = '') {
   console.log(`${mark}  ${name}${detail ? `  [${detail}]` : ''}`)
 }
 
-/** The same image the session base uses — it has node for the mock server. */
+/** The workspace base image, which has node for the mock server. */
 function resolveMockImage() {
   const pods = JSON.parse(kubectl(['get', 'pods', '-o', 'json']))
   for (const p of pods.items) {
@@ -88,9 +83,7 @@ function resolveMockImage() {
 
 /**
  * Mock github upstream: 401 on everything until /__mode/ok flips it to 200.
- * The proxy only records failures on git smart-HTTP paths, so the always-401
- * default also exercises "non-git 401s are ignored" implicitly (gh API noise
- * from the live agent hits the real upstream, not this mock).
+ * The proxy records failures only on git smart-HTTP paths.
  */
 async function deployMock(image) {
   const script = `
@@ -129,7 +122,7 @@ async function deployMock(image) {
       ports: [{ name: 'http', port: MOCK_PORT, targetPort: MOCK_PORT }],
     },
   }
-  // Pod specs are immutable — clear any leftover from a previous run first.
+  // Pod specs are immutable, so delete any leftover from a previous run.
   kubectl(['delete', 'pod', MOCK_NAME, '--ignore-not-found', '--grace-period=1', '--wait=true'])
   for (const obj of [pod, svc]) {
     kubectl(['apply', '-f', '-'], { input: JSON.stringify(obj) })
@@ -137,10 +130,8 @@ async function deployMock(image) {
   for (let i = 0; i < 120; i++) {
     const phase = kubectl(['get', 'pod', MOCK_NAME, '-o', 'jsonpath={.status.phase}'])
     if (phase === 'Running') {
-      // Redirect by ClusterIP, not DNS name: in a nested yaac the proxy's
-      // resolver chains to the outer proxy's DNS stub, which sinkholes
-      // inner-cluster service names (they resolve to 198.18.0.1 and the
-      // upstream dial blackholes). The ClusterIP works in both layouts.
+      // By ClusterIP, not DNS name: in a nested yaac the outer proxy's DNS
+      // sinkholes inner-cluster Service names.
       return kubectl(['get', 'service', MOCK_NAME, '-o', 'jsonpath={.spec.clusterIP}'])
     }
     await new Promise((r) => setTimeout(r, 1000))
@@ -154,10 +145,9 @@ function setMockMode(mode) {
 }
 
 /**
- * Re-register the session with the proxy, preserving its live registration
- * from the proxy's own write-through file and only changing
- * upstreamRedirects. Talks to the proxy API through a short-lived
- * `kubectl port-forward`.
+ * Re-register the workspace with the proxy, changing only upstreamRedirects
+ * in its current registration. Uses a short-lived `kubectl port-forward` to
+ * the proxy API.
  */
 async function setUpstreamRedirect(sessionId, redirects) {
   const stateFile = path.join(
@@ -212,7 +202,6 @@ async function main() {
   const base = `http://127.0.0.1:${lock.port}`
   const shotDir = process.env.TMPDIR || os.tmpdir()
 
-  // The one running session for the project — its pod is where git runs.
   const list = await (await fetch(`${base}/session/list?project=${PROJECT}`)).json()
   const session = list.sessions[0]
   if (!session) throw new Error(`no running session for project "${PROJECT}" — create one first`)
@@ -221,9 +210,7 @@ async function main() {
     '-o', 'jsonpath={.items[0].metadata.name}'])
   console.log(`session ${sessionId.slice(0, 8)} pod ${podName}`)
 
-  // Deterministic sidebar row text (rows show title || prompt || 'New
-  // session', and the "+ New session" button would collide with the
-  // untitled fallback).
+  // Give the row a known title to find it by.
   const TITLE = 'GIT-AUTH-E2E'
   await fetch(`${base}/session/${sessionId}/title`, {
     method: 'POST',
@@ -255,13 +242,13 @@ async function main() {
     const fail = gitFetchInPod(podName)
     check('git fetch in the pod fails against the 401 upstream', !fail.ok, fail.err)
 
-    // Project-header badge: pushed via the snapshot WebSocket, no reload
-    // needed. Project-wide, so it sits in the sidebar header, not on rows.
+    // The project-wide badge arrives via the snapshot, in the sidebar's
+    // project header.
     await page.waitForSelector(BADGE, { timeout: 60_000 })
     check('badge appears in the sidebar project header', await page.locator(BADGE).count() >= 1)
     await page.screenshot({ path: path.join(shotDir, 'git-auth-badge-sidebar.png') })
 
-    // Open the session: the header badge renders next to the tool label.
+    // Open the workspace: its header badge sits by the tool label.
     await page.getByText(TITLE, { exact: true }).first().click()
     await page.waitForSelector('header ' + BADGE, { timeout: 15_000 })
     check('badge appears in the session header',
@@ -277,7 +264,7 @@ async function main() {
     await page.screenshot({ path: path.join(shotDir, 'git-auth-badge-popover.png') })
     await page.keyboard.press('Escape')
 
-    // Recovery: token "fixed" (mock now accepts), next git op clears the flag.
+    // With the mock accepting, the next git operation clears the badge.
     setMockMode('ok')
     const okFetch = gitFetchInPod(podName)
     console.log(`recovery git fetch ok=${okFetch.ok} (${okFetch.err || 'proxy saw 2xx'})`)

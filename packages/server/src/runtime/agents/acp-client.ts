@@ -1,45 +1,30 @@
 /**
- * One live ACP conversation: the server's half of the JSON-RPC dialogue with
- * an agent running under acpd in a session pod.
+ * One live ACP conversation: the server's side of the JSON-RPC dialogue with
+ * an agent running under acpd in a workspace.
  *
- * An `AcpConversation` owns everything that has to survive a browser tab
- * closing and everything that has to survive the *connection* dropping:
- *
- *  - the ACP session id (`session/new` mints it; a reconnect reuses it),
- *  - whether a prompt turn is in flight, which is this conversation's
- *    running/waiting status.
- *
- * It does not own the conversation's content. That is in acpd's record, which
- * a pane tails; this class never sees a rendered message go past.
- *
- * It does NOT own the connection's retry policy. Like the tmux status
- * watcher, reconnect-with-backoff belongs to the caller (`acp-driver.ts`), so
- * both modes get one respawn strategy instead of two.
+ * An `AcpConversation` holds what must survive a closed tab or a dropped
+ * connection: the ACP session id (minted by `session/new`, reused on
+ * reconnect) and whether a prompt turn is in flight (the running/waiting
+ * status). Content lives in acpd's record, which panes tail. Reconnect
+ * policy belongs to the caller (`acp-driver.ts`), as with the tmux watcher.
  *
  * ## Reconnect
  *
- * acpd keeps the agent alive across detaches, so a reconnect lands on a
- * process mid-conversation — possibly mid-turn. Two things follow, and both
- * are why acpd's `_acpd/hello` carries `firstAttach`:
+ * acpd keeps the agent alive across detaches, so a reconnect may land
+ * mid-turn. acpd's `_acpd/hello` carries `firstAttach` because:
  *
- *  1. The ACP handshake (`initialize`, then `session/new`) runs once per agent
- *     *process*, not once per connection. Re-running it against a live agent
- *     is undefined; on a reattach this class skips straight to consuming
- *     notifications for the session id it already holds.
- *  2. Whether a turn is running is not something the new connection can be
- *     told. ACP scopes turn state to the request — a turn is in flight iff
- *     *your* `session/prompt` is unanswered — and offers no status query, no
- *     busy notification, and no `session/load` semantics for a turn already in
- *     progress. So a reattach reconstructs it from the record instead
- *     (`recoverInFlight`), which has both directions and can therefore say
- *     whether the last prompt was ever answered.
+ *  1. The handshake (`initialize`, `session/new`) runs once per agent
+ *     process. On a reattach this class skips it and consumes notifications
+ *     for the session id it already holds.
+ *  2. ACP has no way to ask whether a turn is running (turn state is tied
+ *     to your own unanswered `session/prompt`). A reattach rebuilds it from
+ *     the record (`recoverInFlight`), which shows whether the last prompt
+ *     was answered.
  *
- * Recovery is a file read, so two faster answers can beat it, and both are
- * newer than the record: a prompt sent since the reattach, and the recovered
- * turn's own reply arriving as an orphan response (its request id belongs to
- * the previous connection, so it can only be read as "that turn ended"). The
- * first classification wins and the scan's verdict is dropped — which is what
- * keeps a stale `true` from pinning a finished conversation busy.
+ * Recovery reads a file, so two newer signals can beat it: a prompt sent
+ * after the reattach, or the old turn's reply arriving as an orphan
+ * response. Whichever classifies first wins, so a stale `true` from the
+ * scan cannot pin a finished conversation busy.
  */
 
 import { JsonRpcCallError, JsonRpcPeer, type JsonRpcTransport } from './acp-jsonrpc'
@@ -70,96 +55,77 @@ import type { PermissionMode } from '@yaac/shared/types'
 export interface AcpConversationDeps {
   /** The pod-side transport, already dialed. */
   transport: JsonRpcTransport
-  /** The agent's working directory — always /workspace in a session pod. */
+  /** The agent's working directory. */
   cwd: string
   /**
-   * The ACP session id to resume, when yaac already recorded one for this
-   * conversation (a restart, or a reconnect after the server itself
-   * restarted). Absent on a genuinely new conversation.
+   * The ACP session id to resume, when one is already recorded (after a
+   * restart). Absent for a new conversation.
    */
   resumeSessionId?: string
-  /** Optional tap on the event stream for the connection that owns this
-   *  conversation. Panes use `subscribe` instead — they come and go, and the
-   *  owner must not have to multiplex them. */
+  /** Event tap for the owning connection. Panes use `subscribe` instead. */
   onEvent?: (event: AcpEventInit) => void
-  /** Fired when the ACP session id is first known, so the caller can record
-   *  it. Not fired on a resume, where the caller supplied it. */
+  /** Fired when the session id is first known, so the caller can record it.
+   *  Not fired on a resume. */
   onSessionId: (agentSessionId: string) => void
   /**
-   * Turn started, turn ended, or the status was resolved for the first time —
-   * this conversation's running/waiting. The first call is what promotes it
-   * from unclassified (`status === undefined`) to something a caller can
-   * publish, so it fires even when the answer is the unremarkable `false`.
+   * Running/waiting changed, or was resolved for the first time. The first
+   * call fires even for `false`, because it is what moves the conversation
+   * out of the unclassified state.
    */
   onBusy: (busy: boolean) => void
   /**
-   * Whether a prompt turn was still in flight when the record was last
-   * written — `readAcpInFlight` over this conversation's record. Consulted
-   * once, on a reattach, because that is the only case where a turn this
-   * connection did not start can be running. Absent (or throwing) means the
-   * conversation resolves to idle, which is what it did before recovery
-   * existed.
+   * Whether a prompt turn was in flight when the record was last written
+   * (`readAcpInFlight`). Used once on a reattach, the only case where a turn
+   * this connection did not start can be running. Absent or throwing means
+   * idle.
    */
   recoverInFlight?: () => Promise<boolean>
   /**
-   * The permission asks the agent was still blocked on when the record was
-   * last written — `readAcpPendingPermissions` over this conversation's
-   * record. Consulted on a reattach for the same reason `recoverInFlight` is:
-   * the ask was delivered to a connection that is gone, and nothing replays
-   * it, so the record is the only evidence that a human is being waited on.
+   * Permission asks the agent was still blocked on per the record
+   * (`readAcpPendingPermissions`). Used on a reattach, since the ask went to
+   * a connection that is gone and nothing replays it.
    */
   recoverPendingPermissions?: () => Promise<Array<string | number>>
   /**
-   * This conversation's permission posture. An accessor rather than a value
-   * because a conversation outlives the connection that built it, and the row
-   * it comes from can be rewritten by a restart in between.
-   *
-   * It may answer `undefined`, meaning the posture is not known *yet* — the
-   * row could not be read, or is not there. That is distinct from the accessor
-   * being absent altogether; see `permissionMode()` for why the two get
-   * opposite answers.
+   * The conversation's permission posture. An accessor because a restart
+   * can rewrite the row while the conversation lives. `undefined` means not
+   * known yet (row missing or unreadable), which differs from the accessor
+   * being absent; see `permissionMode()`.
    */
   permissionMode?: () => PermissionMode | undefined
   /**
-   * What this conversation's adapter can be told, and how. Absent for a
-   * caller that has no adapter in hand — a test driving the protocol directly
-   * — which reads as "tell it nothing": no mode is set and no model is sent,
-   * leaving the adapter in its own default, which is the strict one.
+   * What the adapter can be told, and how. Absent (tests driving the
+   * protocol directly) means tell it nothing: no mode, no model, leaving the
+   * adapter's strict default.
    */
   profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass'>
   /**
-   * The model this conversation was launched to run, for an adapter that can
-   * only be told one over the protocol. Sent once, after `session/new` —
-   * never after a `session/load`, which lands on an adapter that already holds
-   * a model the user may since have changed.
+   * The model to send, for adapters that only accept one over the protocol.
+   * Sent once after `session/new`, never after `session/load` (the user may
+   * have changed the model since).
    */
   launchModel?: string
   /**
-   * An ask started or stopped blocking the agent. Separate from `onBusy`
-   * because it is a different question about the same turn: `busy` says a turn
-   * is running, this says the turn is not going anywhere until a human answers.
+   * An ask started or stopped blocking the agent. Separate from `onBusy`:
+   * busy means a turn is running, this means it is waiting on a human.
    */
   onPermissionPending?: (pending: boolean) => void
   /**
-   * The model the session is running changed — or was first learned, from the
-   * handshake's reply. Fires on the switch itself (the adapter's
-   * `config_option_update`), not on the next answer, and only when the value
-   * actually moves. `name` is what the adapter's own list calls it, when
-   * the list says (see `sessionModel`).
+   * The session's model changed or was first learned. Fires on the switch
+   * (`config_option_update`), only when the value changes. `name` is the
+   * adapter's display name, when known (see `sessionModel`).
    */
   onModel?: (model: string, name: string | undefined) => void
   /**
-   * The adapter says the session moved to another mode — the agent entered
-   * plan mode, a plan-exit answer took effect, or anything else asked it to —
-   * in the adapter's own mode id. Fires on the move itself, and only when the
-   * id actually changes; on a reattach, also with the mode the record shows.
+   * The session moved to another mode (e.g. entered plan mode), as the
+   * adapter's mode id. Fires only on change; on a reattach, also with the
+   * mode the record shows.
    */
   onModeId?: (modeId: string) => void
   /**
-   * The mode this conversation's record last shows the session in —
-   * `readAcpModeId` over it. Consulted on a reattach, which runs no handshake
-   * and so tells the adapter nothing: the conversation it takes over may have
-   * moved while it was away.
+   * The mode the record last shows (`readAcpModeId`). Used on a reattach,
+   * which runs no handshake, since the session may have changed mode while
+   * disconnected.
    */
   recoverModeId?: () => Promise<string | undefined>
   onDown: (reason: string) => void
@@ -174,91 +140,70 @@ export class AcpConversation {
   private sessionId: string | undefined
   private busy = false
   /**
-   * Whether `busy` is an answer yet. A conversation that has only just
-   * attached knows nothing: it may have landed on an agent that is working,
-   * and saying "idle" in the meantime would stamp a waiting spell on it. So
-   * `status` stays undefined until the handshake — or recovery — settles it.
+   * Whether `busy` is known yet. A fresh attach may have landed on a working
+   * agent, so status stays undefined until the handshake or recovery
+   * settles it.
    */
   private statusKnown = false
   /**
-   * Tail of the prompt-turn chain. ACP adapters assume one turn at a time, and
-   * nothing upstream enforces it — a second Enter mid-turn reaches here — so
-   * turns queue rather than overlap. Without this the FIRST reply ends the
-   * turn while the second is still streaming, and the conversation reports
-   * `waiting` while its agent is plainly working.
+   * Tail of the prompt-turn chain. Adapters assume one turn at a time and a
+   * second Enter mid-turn can reach here, so turns queue; otherwise the
+   * first reply would end the turn while the second still streams.
    */
   private turn: Promise<void> = Promise.resolve()
   /**
-   * Woken when a turn ends. A *recovered* turn is running at the adapter but
-   * is not in `turn` — nothing here chained it, since nothing here started it —
-   * so this is the slot it occupies in the queue. Only ever waited on for that
-   * turn: this connection's own are already serialized.
+   * Woken when a turn ends. A recovered turn was not started here and so is
+   * not in `turn`; new prompts wait on this instead.
    */
   private idleWaiters: Array<() => void> = []
   private ready = false
   /**
-   * acpd's greeting is the first line of a connection, always. Accepting a
-   * later one would let the AGENT forge it — acpd is a dumb pipe, so anything
-   * the adapter prints reaches us verbatim — and a forged `firstAttach:true`
-   * would start a second handshake against a live process.
+   * acpd's greeting is always the first line. A later one is ignored: acpd
+   * passes adapter output through verbatim, so the agent could forge a
+   * `firstAttach:true` and trigger a second handshake.
    */
   private helloSeen = false
   private readyWaiters: Array<(err?: Error) => void> = []
   private closed = false
   /**
-   * Permission asks this connection is holding open, by the agent's own
-   * request id. The value settles the served request, which is what unblocks
-   * the agent — so an entry here is a turn parked on a human.
+   * Permission asks held open by this connection, by the agent's request id.
+   * Resolving one answers the request and unblocks the agent.
    */
   private readonly pendingPermissions = new Map<string, (result: unknown) => void>()
   /**
-   * Asks already settled, so a second answer for one is dropped rather than
-   * sent. Two panes can hold the same card, and the loser's click arrives
-   * after the winner's — and across a reconnect an answer takes the
-   * `respondTo` path, which has no pending entry to consume and would
-   * otherwise let every late click write another reply to the agent.
+   * Asks already answered, so later answers are dropped. Two panes can show
+   * the same card, and after a reconnect an answer takes the `respondTo`
+   * path, which has no pending entry to consume.
    */
   private readonly answeredPermissions = new Set<string>()
   /**
-   * Asks recovered from the record on a reattach — outstanding at the agent,
-   * but received by a connection that is gone, so there is no served promise
-   * here to resolve. Valued by the id as the agent wrote it, because that is
-   * what the reply has to carry to be paired with the request.
+   * Asks recovered from the record on a reattach: still outstanding at the
+   * agent, with no served request here. Values are the id exactly as the
+   * agent wrote it, which the reply must carry.
    */
   private readonly recoveredPermissions = new Map<string, string | number>()
   /**
-   * Answers for asks this connection did not know about when they arrived —
-   * a pane clicking a recovered card while `recover()` is still reading the
-   * record. Applied the moment recovery names the ask, so the user's decision
-   * lands instead of vanishing into a window they cannot see.
+   * Answers that arrived before `recover()` identified their ask (a pane
+   * clicking a recovered card mid-read). Applied once recovery finds it.
    */
   private readonly deferredAnswers = new Map<string, unknown>()
-  /** What `session/new` (or `session/load`) said this session's modes are. */
   /**
-   * What this conversation needs to tell a pane that is not there yet.
-   *
-   * The handshake is the one moment nobody can be listening: a pane finds a
-   * conversation by the id `session/new` mints, and that id reaches the
-   * workspace row a reconcile tick later — so every report `applyPermissionMode`
-   * and `applyLaunchModel` make would be emitted into an empty room. They are
-   * also the reports that matter most, being the two that say the conversation
-   * is not running the way it was asked to.
-   *
-   * So they stand until they stop being true: keyed by what they are about, so
-   * a later success drops the notice rather than leaving a pane with a stale
-   * warning, and handed to every pane that attaches (see `attachAcp`).
+   * Notices for panes that are not attached yet. The handshake's reports
+   * (from `applyPermissionMode` and `applyLaunchModel`) happen before any
+   * pane can exist, and they say the conversation is not running as
+   * requested. Keyed by topic so a later success clears the notice; every
+   * attaching pane gets them (see `attachAcp`).
    */
   private readonly notices = new Map<'mode' | 'model', AcpEventInit>()
+  /** The session's modes, per `session/new` or `session/load`. */
   private sessionModes: AcpSessionModes | undefined
-  /** The same facts in the other shape adapters use — opencode v2 sends only
-   *  this one. */
+  /** The same facts as config options; opencode v2 sends only these. */
   private sessionConfig: AcpConfigOption[] | undefined
-  /** The model the session last said it is running; see `onModel`. Unknown
-   *  on a reattach until the adapter next reports it — that skips the
-   *  handshake, and with it the reply that names the model. */
+  /** The model the session last reported; see `onModel`. Unknown after a
+   *  reattach until the adapter next reports it. */
   private currentModel: string | undefined
-  /** The posture a first attach launched the session in; see `posture()`. A
-   *  reattach launched nothing, so it never has one. */
+  /** The posture a first attach launched in; see `posture()`. Never set on
+   *  a reattach. */
   private launchPosture: PermissionMode | undefined
   /** Settles once a reattach has read its mode back (`recoverMode`). */
   private postureRecovery: Promise<void> | undefined
@@ -284,19 +229,16 @@ export class AcpConversation {
   }
 
   /**
-   * This conversation's classification, or undefined while it has none —
-   * mid-handshake, or reading the record to find out whether the agent it just
-   * reattached to is mid-turn. A caller that publishes status must skip an
-   * undefined rather than defaulting it: `waiting` for a working agent is the
-   * exact bug recovery exists to fix.
+   * The conversation's status, or undefined while unclassified (mid-
+   * handshake, or reading the record after a reattach). Callers must skip
+   * undefined rather than default it: reporting `waiting` for a working
+   * agent is the bug recovery exists to prevent.
    */
   get status(): 'running' | 'waiting' | undefined {
     if (!this.statusKnown) return undefined
-    // A turn blocked on a permission ask is `busy` — its `session/prompt` is
-    // unanswered — but it is not working, it is waiting for the user. Reporting
-    // `running` would be the exact inverse of what the sidebar dot, the chime
-    // and the tray badge are for: the one moment the conversation genuinely
-    // wants attention is the one it would look busiest.
+    // A turn blocked on a permission ask is busy but is waiting on the user,
+    // which is exactly when the sidebar dot, chime and tray badge should
+    // fire.
     if (this.isAwaitingPermission) return 'waiting'
     return this.busy ? 'running' : 'waiting'
   }
@@ -311,21 +253,17 @@ export class AcpConversation {
   }
 
   /**
-   * Watch the live stream. Returns the unsubscribe.
-   *
-   * Events arrive unsequenced: history comes from the record acpd writes, and
-   * each attach numbers that record from zero, so only the subscriber knows
-   * where its own numbering has reached. Several panes can watch one
-   * conversation at once (two browser tabs), which is why this is a set rather
-   * than the single-owner callback `onEvent` is.
+   * Watch the live stream; returns the unsubscribe. Events are unsequenced:
+   * each attach numbers its own replay from zero, so only the subscriber
+   * knows its numbering. Several panes may subscribe.
    */
   subscribe(fn: (event: AcpEventInit) => void): () => void {
     this.subscribers.add(fn)
     return () => this.subscribers.delete(fn)
   }
 
-  /** Watch for the conversation being torn down, so an attached pane can grey
-   *  out instead of silently going quiet. Returns the unsubscribe. */
+  /** Watch for the conversation closing, so an attached pane can show it.
+   *  Returns the unsubscribe. */
   onClosed(fn: () => void): () => void {
     if (this.closed) {
       fn()
@@ -336,10 +274,9 @@ export class AcpConversation {
   }
 
   /**
-   * Publish one of the few events the record cannot carry: a turn boundary and
-   * an error, both of which are statements about what is happening *now*
-   * rather than what was said. Content never comes through here — see
-   * `onNotification` — so these can never duplicate what a tail delivers.
+   * Publish a turn boundary or an error: the only live events, since the
+   * record cannot carry them. Content never comes through here (see
+   * `onNotification`), so these never duplicate the tail.
    */
   private emit(event: AcpEventInit): void {
     this.deps.onEvent?.(event)
@@ -347,23 +284,18 @@ export class AcpConversation {
   }
 
   /**
-   * Settle the conversation's status. The first call always publishes, even
-   * when it resolves to the same `false` the field started at: "idle" and "not
-   * classified yet" are different states to a caller, and the first is only
-   * reached by saying so.
+   * Settle the status. The first call always publishes, even for the
+   * initial `false`, since "idle" and "not classified yet" differ.
    */
   private setBusy(busy: boolean): void {
     if (this.statusKnown && this.busy === busy) return
-    // A turn *beginning* — as opposed to a status merely being resolved as
-    // running. Only that is worth an event.
+    // Only a turn beginning, not a status resolved as running, gets an event.
     const started = busy && !this.busy
     this.statusKnown = true
     this.busy = busy
-    // A pane's ONLY start signal, so every start is announced — the recovered
-    // turn nobody typed into this connection included. A pane deliberately
-    // infers nothing from content: a replay is made of `user` messages and the
-    // record carries no boundary to close them with, so reading one as a turn
-    // beginning latches it on history (docs/agent-modes.md).
+    // This is the pane's only turn-start signal, including for recovered
+    // turns. Panes infer nothing from content: a replay's `user` messages
+    // have no closing boundary (docs/agent-modes.md).
     if (started) this.emit({ type: 'turn-start' })
     if (!busy) this.wakeIdleWaiters()
     this.deps.onBusy(busy)
@@ -376,17 +308,14 @@ export class AcpConversation {
   }
 
   /**
-   * Resolve once no turn is running. This connection's own turns are already
-   * serialized by `turn`, so the only thing this ever waits out is a recovered
-   * one — which ends by the same routes that classify it: the orphan reply, the
-   * agent exiting, or the conversation closing.
+   * Resolve once no turn is running. Own turns are serialized by `turn`, so
+   * this only waits out a recovered turn, which ends via the orphan reply,
+   * the agent exiting, or the conversation closing.
    *
-   * A turn recovered from a *torn* record has none of those routes, since the
-   * reply it is waiting for was already produced and lost. That conversation
-   * holds its queue until the workspace restarts (docs/agent-modes.md, "Where
-   * status can mislead"). Deliberate: the alternative is releasing the queue on
-   * a timer, which cannot tell a phantom from an agent that is simply taking a
-   * long time, and would dispatch over a turn that really is running.
+   * A turn recovered from a torn record (its reply already lost) never
+   * ends, so its queue holds until the workspace restarts
+   * (docs/agent-modes.md, "Where status can mislead"). A timer could not
+   * tell that from a long-running turn.
    */
   private whenIdle(): Promise<void> {
     if (!this.busy) return Promise.resolve()
@@ -395,9 +324,8 @@ export class AcpConversation {
 
   private endTurn(stopReason: Parameters<typeof toStopReason>[0]): void {
     const wasBusy = this.busy
-    // Unconditional, so an orphan reply (or the agent exiting) settles a
-    // conversation whose recovery has not answered yet — and, being first,
-    // beats it. There is nothing to end, but there is something to classify.
+    // Unconditional, so an orphan reply or agent exit classifies the
+    // conversation even before recovery answers.
     this.setBusy(false)
     if (wasBusy) this.emit({ type: 'turn-end', stopReason: toStopReason(stopReason) })
   }
@@ -413,26 +341,18 @@ export class AcpConversation {
       }
       case ACPD.exit: {
         const code = (params as { code?: number } | undefined)?.code
-        // Nothing is left to answer: the process that asked is gone, and a
-        // parked promise would keep the conversation reading as `waiting` on a
-        // decision that can no longer reach anyone.
+        // The asking process is gone; release parked asks so the
+        // conversation does not stay `waiting`.
         this.cancelPendingPermissions()
         this.endTurn('cancelled')
         this.emit({ type: 'error', message: `the agent process exited (code ${code ?? '?'})` })
         return
       }
       case ACP.sessionUpdate: {
-        // Content is deliberately ignored. It reaches a pane by one path only —
-        // acpd's record — because the record and this socket carry the same
-        // notifications and ACP gives notifications no identity, so joining the
-        // two at an unknown point would either duplicate the overlap or drop
-        // it. What is left here is the RPC half: our requests and their
-        // replies, the agent's own questions — and the session's state, which
-        // is not content and has no pane to reach. A model switch (a `/model`
-        // typed into the chat) arrives as the adapter's `config_option_update`.
-        //
-        // A mode change is the same kind of state: `current_mode_update`, or a
-        // `config_option_update` naming the `mode` option.
+        // Content is ignored here; panes get it only from acpd's record (see
+        // attachAcp). Session state is tracked: a model switch arrives as
+        // `config_option_update`, a mode change as `current_mode_update` or a
+        // `config_option_update` for the `mode` option.
         const update = asRecord(asRecord(params)?.update)
         if (update?.sessionUpdate === 'config_option_update') this.setModel(sessionModel(update))
         if (update !== undefined) this.setModeId(sessionModeId(update))
@@ -444,63 +364,42 @@ export class AcpConversation {
   }
 
   /**
-   * Serve a request the agent makes of us.
+   * Serve a request from the agent.
    *
-   * Under `bypass` every answer is one this can make on the spot. Under any
-   * other posture a permission ask is the user's to answer, so the promise is
-   * parked — deliberately without a timeout. The agent is blocked until it
-   * settles, and there is no deadline that is right: a person may be at lunch,
-   * and answering *for* them after five minutes is the auto-approval the
-   * posture exists to refuse. What releases it instead is a decision, a cancel,
-   * the agent exiting, or the conversation closing — all of which settle the
-   * map explicitly.
+   * Under `bypass` a permission ask is answered at once. Otherwise it is
+   * parked with no timeout until the user decides: answering for them after
+   * a delay is the auto-approval the posture refuses. A decision, cancel,
+   * agent exit or close releases it.
    */
   private onRequest(method: string, params: unknown, id: string | number): Promise<unknown> {
     if (method === ACP.requestPermission) {
-      // A reattach is still reading which posture it answers by — a moment's
-      // wait, and the answer this ask gets is the one that posture gives.
+      // Wait for a reattach to recover its posture first.
       const recovering = this.postureRecovery
       if (recovering !== undefined) return recovering.then(() => this.onRequest(method, params, id))
-      // `bypass` waives permission prompts, and for most adapters that is all
-      // an ask can be. pi is the exception: it has no permission system, so
-      // what arrives on this method are its extensions' own questions — a
-      // choice a person is being asked to make, which auto-answering would
-      // make for them.
+      // pi's asks are extension questions, not permission prompts, so they
+      // are forwarded even under `bypass`.
       if (this.posture() === 'bypass' && !this.forwardsAsksUnderBypass()) {
-        // See chooseAllowOption: a bypassed session grants rather than prompts.
-        // `selected` with no option id would be malformed, so an agent that
-        // offered none is refused instead.
+        // Grant (see chooseAllowOption); an ask with no option is refused.
         return Promise.resolve(permissionReply(chooseAllowOption(params)))
       }
       const requestId = String(id)
       this.log(`[server] acp: awaiting a permission decision on ${requestId}`)
       return new Promise<unknown>((resolve) => {
         this.pendingPermissions.set(requestId, resolve)
-        // The same ask cannot be both recovered and served — but if the record
-        // scan and the live delivery raced over one, the served promise is the
-        // better handle on it.
+        // If the record scan and live delivery raced, keep the served one.
         this.recoveredPermissions.delete(requestId)
         this.publishPermissionPending()
       })
     }
-    // fs/* and terminal/* are declined in `clientCapabilities`, so an agent
-    // asking anyway is out of contract; JsonRpcPeer answers method-not-found
-    // by throwing here.
+    // fs/* and terminal/* are declined in `clientCapabilities`.
     throw new JsonRpcCallError({ code: -32601, message: `yaac does not serve ${method}` })
   }
 
   /**
-   * The posture to answer by, or undefined when it is not known yet — a row
-   * that could not be read, or one that is not there.
-   *
-   * Unknown is deliberately NOT `bypass`. The two answers are not symmetric:
-   * parking an ask that could have been auto-granted costs the user a click,
-   * while auto-granting one that should have been asked about is irreversible
-   * and silent. So the only thing that reaches the auto-answer is a posture
-   * positively read as `bypass`.
-   *
-   * A caller supplying no accessor at all is a different case — it predates
-   * postures entirely, and gets the answer every ACP conversation used to.
+   * The posture to answer by, or undefined when not known yet (row missing
+   * or unreadable). Unknown is not treated as `bypass`: parking an ask that
+   * could have been granted costs a click, while wrongly granting one is
+   * silent and irreversible. With no accessor at all (tests), `bypass`.
    */
   private permissionMode(): PermissionMode | undefined {
     if (this.deps.permissionMode === undefined) return 'bypass'
@@ -508,20 +407,11 @@ export class AcpConversation {
   }
 
   /**
-   * The posture THIS conversation answers asks by: the one its adapter's
-   * current mode stands for, whichever way it last moved.
-   *
-   * Per conversation, because a workspace can hold several and each adapter
-   * holds its own mode: one entering plan mode says nothing about another
-   * still in `bypassPermissions`, and the workspace's row, which follows every
-   * conversation's moves, is not this one's posture either. Where the
-   * adapter's mode stands for no posture (opencode's agents, pi's thinking
-   * levels), it is the posture this connection launched the conversation in,
-   * read from the row once at launch. A reattach launched nothing, so there
-   * its posture is unknown and every ask is forwarded.
-   *
-   * (An ask arriving while a reattach reads its record waits for it; see
-   * `onRequest`.)
+   * The posture this conversation answers asks by: the one its adapter's
+   * current mode maps to. Per conversation, since each adapter holds its own
+   * mode and the workspace row may follow another one. When the mode maps to
+   * no posture (opencode agents, pi thinking levels), the launch posture is
+   * used; a reattach has none, so every ask is forwarded.
    */
   private posture(): PermissionMode | undefined {
     const modeId = this.currentModeId()
@@ -539,10 +429,9 @@ export class AcpConversation {
   }
 
   /**
-   * Read back the mode a reattached session is in, from its own record, and
-   * report it: the session may have moved while no connection was listening,
-   * including while no server was. A move this conversation followed while
-   * the record was being read is newer, and stands.
+   * Recover a reattached session's mode from its record, since it may have
+   * changed while disconnected. A mode change seen during the read is newer
+   * and wins.
    */
   private async recoverMode(): Promise<void> {
     try {
@@ -559,8 +448,7 @@ export class AcpConversation {
     this.deps.onModel?.(model.id, model.name)
   }
 
-  /** The mode the session says it is in, in whichever shape its adapter
-   *  reports one. */
+  /** The session's current mode, from whichever shape the adapter uses. */
   private currentModeId(): string | undefined {
     if (this.sessionModes?.currentModeId !== undefined) return this.sessionModes.currentModeId
     const mode = this.sessionConfig?.find((o) => o.id === 'mode')?.currentValue
@@ -572,23 +460,20 @@ export class AcpConversation {
     return this.deps.profile?.forwardAsksUnderBypass === true
   }
 
-  /** Say what this conversation's status is now, since a pending ask changes
-   *  it without any turn boundary having happened. */
+  /** Republish status, since a pending ask changes it without a turn
+   *  boundary. */
   private publishPermissionPending(): void {
     this.deps.onPermissionPending?.(this.isAwaitingPermission)
   }
 
   /**
-   * Settle a permission ask with the user's decision. `optionId` absent means
-   * they dismissed it, which the agent is told as `cancelled`.
+   * Settle a permission ask with the user's decision; no `optionId` means
+   * dismissed, sent as `cancelled`.
    *
-   * Two paths, because an ask outlives the connection that received it. The
-   * ordinary one resolves the served request. The other answers an ask this
-   * connection never saw — the relay dropped, or the server restarted, while
-   * the agent sat blocked — by writing the reply against the agent's own id,
-   * which is not namespaced to any connection of ours. Without it a pane could
-   * show a live question that nothing could answer, and the only cure would be
-   * restarting the workspace mid-turn.
+   * An ask can outlive the connection that received it (relay drop, server
+   * restart). Then the reply is written against the agent's own request id,
+   * so a recovered card can still be answered without restarting the
+   * workspace.
    */
   answerPermission(requestId: string, optionId?: string): void {
     if (this.answeredPermissions.has(requestId)) {
@@ -599,18 +484,13 @@ export class AcpConversation {
   }
 
   /**
-   * Send one answer by whichever route this connection has to the agent, and
-   * republish the status the ask was holding down.
+   * Send an answer by whichever route this connection has, and republish
+   * status.
    *
-   * An answer matching neither map is *held* rather than dropped, and
-   * deliberately not recorded as answered. A pane can legitimately answer an
-   * ask this connection does not know about yet: the registry publishes a
-   * conversation the moment it is constructed, and a reattaching pane replays
-   * the pending card straight from the record — but `recover()` only learns
-   * which asks are outstanding after acpd's greeting and two file reads. A
-   * click in that window has a real ask behind it; recording it as answered
-   * would make `recover()` skip the very id it belongs to, leaving the agent
-   * blocked with a dead card until the workspace restarts.
+   * An answer matching neither map is held, not dropped and not marked
+   * answered: a reattaching pane replays pending cards from the record
+   * before `recover()` has identified them, and marking it answered would
+   * make `recover()` skip it, leaving the agent blocked.
    */
   private settlePermission(requestId: string, result: unknown): void {
     const resolve = this.pendingPermissions.get(requestId)
@@ -627,17 +507,14 @@ export class AcpConversation {
       this.answeredPermissions.add(requestId)
       if (!this.closed) {
         this.log(`[server] acp: answering permission ${requestId} across a reconnect`)
-        // Addressed as the AGENT wrote it: JSON-RPC pairs an id by value and
-        // type, so a numeric `42` answered as `"42"` is a reply it never
-        // matches and a turn that stays blocked.
+        // Use the id exactly as the agent wrote it: JSON-RPC matches ids by
+        // value and type, so `42` answered as `"42"` would never pair.
         this.peer.respondTo(recovered, result)
       }
       this.publishPermissionPending()
       return
     }
-    // Unknown to this connection. Held for a recovery that may still name it;
-    // if none ever does, it costs one map entry for the life of a conversation
-    // that is by then answering nothing.
+    // Unknown here: hold it for a recovery that may still name it.
     this.log(`[server] acp: holding an answer for the unrecognized permission ${requestId}`)
     this.deferredAnswers.set(requestId, result)
   }
@@ -653,16 +530,14 @@ export class AcpConversation {
   }
 
   /**
-   * Give up on every open ask. Used where the answer can no longer matter: the
-   * turn is being cancelled, the agent is gone, or this connection is going
-   * away. ACP asks a client to resolve outstanding permission requests when it
-   * cancels, and leaving one unresolved strands the served promise — which is
-   * a request `JsonRpcPeer` is still awaiting and would never reply to.
+   * Abandon every open ask (turn cancelled, agent gone, or connection
+   * closing). ACP expects a cancelling client to resolve outstanding
+   * permission requests, and an unresolved one strands a request
+   * `JsonRpcPeer` would never reply to.
    */
   private cancelPendingPermissions(): void {
-    // Held answers go too: the turn they were meant for is over, and applying
-    // one to a later ask that happened to reuse the id would answer a question
-    // the user never read.
+    // Held answers go too, so one can never apply to a later ask that
+    // reuses the id.
     this.deferredAnswers.clear()
     if (!this.isAwaitingPermission) return
     for (const [requestId, resolve] of [...this.pendingPermissions]) {
@@ -670,18 +545,16 @@ export class AcpConversation {
       this.answeredPermissions.add(requestId)
       resolve(permissionReply(undefined))
     }
-    // A recovered ask has no promise to settle here, and answering it over the
-    // wire would be answering for the user; the turn it belonged to is being
-    // abandoned either way, so it is simply dropped.
+    // Recovered asks have no promise here, and answering over the wire
+    // would answer for the user; just drop them.
     this.recoveredPermissions.clear()
     this.publishPermissionPending()
   }
 
   /**
-   * Bring the conversation to the point where `prompt()` can run: on a first
-   * attach that means the full ACP handshake, and on a reattach it means
-   * nothing at all (the agent is already initialized — re-running `initialize`
-   * against a live process is undefined).
+   * Make the conversation ready for `prompt()`: the full ACP handshake on a
+   * first attach, nothing on a reattach (re-running `initialize` against a
+   * live agent is undefined).
    */
   private async handshake(firstAttach: boolean): Promise<void> {
     try {
@@ -690,9 +563,8 @@ export class AcpConversation {
           throw new Error('reattached to a live agent with no recorded session id')
         }
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
-        // Ready before recovery: a prompt typed into the pane must not wait on
-        // a file read to find out what the *previous* connection was doing.
-        // Its posture does wait: an ask meanwhile holds until it is known.
+        // Ready before recovery so a prompt need not wait on a file read.
+        // Asks do wait for the posture to be recovered.
         this.postureRecovery = this.recoverMode().finally(() => { this.postureRecovery = undefined })
         this.markReady()
         await this.postureRecovery
@@ -707,13 +579,9 @@ export class AcpConversation {
 
       const canLoad = init.agentCapabilities?.loadSession === true
       if (this.sessionId !== undefined && canLoad) {
-        // For most adapters this replays the whole conversation as
-        // `session/update` notifications, which is exactly the pane's history
-        // — so a restarted workspace comes back with its transcript already on
-        // screen. For one that replays nothing (opencode) the history is in
-        // the record instead, which is why acpd was told to keep it
-        // (`--append`); either way the pane reads the record, so the two look
-        // the same from here.
+        // Most adapters replay the conversation as `session/update`
+        // notifications; opencode replays nothing, so acpd keeps its record
+        // (`--append`). Panes read the record either way.
         const loaded = await this.peer.request<AcpLoadSessionResult>(ACP.sessionLoad, {
           sessionId: this.sessionId,
           cwd: this.deps.cwd,
@@ -742,9 +610,7 @@ export class AcpConversation {
       }
       await this.applyPermissionMode()
       this.markReady()
-      // A first attach is a fresh agent process, so nothing can be in flight —
-      // said out loud, because a caller cannot publish an unclassified
-      // conversation and this one is done being unclassified.
+      // A fresh agent process has nothing in flight; classify it now.
       this.setBusy(false)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -755,50 +621,36 @@ export class AcpConversation {
   }
 
   /**
-   * Put the session in the mode its posture names.
+   * Put the session in its posture's mode. Forwarding asks decides who
+   * answers; the mode decides which questions are asked at all. Without it
+   * `accept-edits` would prompt for every edit (the adapter default asks
+   * about everything).
    *
-   * This is what makes a posture mean anything: forwarding asks to the pane
-   * only decides who answers the questions, and the mode decides which
-   * questions get asked at all. Without it `accept-edits` would prompt for
-   * every edit — the adapter's own default is "ask about everything" — and the
-   * user would be answering the restraint they asked to be spared.
+   * First attach only. On a reattach the adapter may be in a mode the user
+   * chose since (accepting "auto-accept edits" when leaving plan mode moves
+   * it to `acceptEdits`), and re-asserting would undo that on every relay
+   * hiccup. The row follows the user's moves instead.
    *
-   * Only on a first attach, and deliberately so. A reattach lands on a live
-   * adapter that is already holding a mode, and that mode may no longer be the
-   * row's: leaving plan mode is itself a permission ask whose options ARE mode
-   * ids, so a user who accepted "yes, and auto-accept edits" moved the session
-   * to `acceptEdits`. Re-asserting a posture here would drag them back into
-   * plan mode on the next relay hiccup; the row follows them instead, so the
-   * next restart relaunches in the mode they left it in.
-   *
-   * A mode the adapter did not advertise is logged and skipped rather than
-   * thrown: create refuses a posture the tool cannot express, so reaching this
-   * means the session clamped one (`auto` on a model with no classifier,
-   * `bypassPermissions` for an adapter running as root outside a sandbox), and
-   * losing the conversation over it would be worse than running in the
-   * adapter's default and prompting.
+   * An unadvertised mode is reported, not thrown: create already refuses
+   * postures a tool cannot express, so this means the session clamped one
+   * (`auto` without a classifier, `bypassPermissions` as root outside a
+   * sandbox), and running in the default beats losing the conversation.
    */
   private async applyPermissionMode(): Promise<void> {
-    // Read here, once: the row moves with every conversation in the workspace,
-    // and what this one launched in is what it was launched in.
+    // Read once: the row follows every conversation in the workspace.
     this.launchPosture = this.permissionMode()
     if (this.sessionId === undefined) return
     const mode = this.launchPosture
     if (mode === undefined) {
-      // Nothing to assert, and the adapter's own default is the strict one —
-      // it asks about everything, and this conversation forwards all of it.
+      // The adapter default is the strict one, and every ask is forwarded.
       this.log('[server] acp: no posture known for this workspace'
         + ' — leaving the session in the adapter default and forwarding its asks')
       return
     }
     const modeId = this.deps.profile?.modeIds[mode]
     if (modeId === undefined) {
-      // Either this adapter has no mode for this posture and is not meant to —
-      // the posture rides its launch environment instead (opencode), or the
-      // tool has no permission system to put in a mode (pi) — or no adapter
-      // was named at all, which is a caller driving the protocol directly.
-      // Create refuses any posture a tool cannot express, so there is nothing
-      // to report here.
+      // No mode for this posture by design (opencode carries it in launch
+      // env; pi has no permission system), or no adapter profile (tests).
       return
     }
     if (this.currentModeId() === modeId) return
@@ -815,30 +667,18 @@ export class AcpConversation {
       this.notices.delete('mode')
       this.log(`[server] acp: session mode set to ${modeId} for "${mode}"`)
     } catch (err) {
-      // The same news as an unadvertised mode, and it has to be said the same
-      // way. An adapter's own default is not always at least as strict as what
-      // was asked — codex-acp's is `agent`, where a reviewer model approves
-      // most actions, so an `accept-edits` conversation that lands here is
-      // running looser than the create asked for. Logging alone would leave
-      // that visible only to whoever reads the server's log, which is not the
-      // person who chose the posture.
+      // Report it in the pane, not just the log: an adapter default is not
+      // always stricter (codex-acp's `agent` lets a reviewer model approve
+      // most actions).
       this.reportModeNotSet(mode, modeId, err instanceof Error ? err.message : String(err))
     }
   }
 
   /**
-   * Tell the pane, and the log, that this conversation is not in the posture
-   * it was created with.
-   *
-   * Deliberately says only what is true in every case it covers: which mode
-   * the session is actually in. What happens to the agent's asks from here
-   * varies — codex's fallback `agent` mode has a reviewer model answering
-   * most of them — so promising they will all arrive in the pane would be
-   * wrong.
-   *
-   * That mode is the conversation's posture from here, as any move would be,
-   * so it is reported upward too: the workspace's row holds the posture the
-   * agent is actually in.
+   * Tell the pane and the log that the conversation is not in its requested
+   * posture, stating only the mode it is actually in (what happens to asks
+   * varies; codex's fallback has a reviewer model answer most). That mode is
+   * also reported upward so the row reflects it.
    */
   private reportModeNotSet(mode: PermissionMode, modeId: string, why: string): void {
     const current = this.currentModeId()
@@ -849,50 +689,37 @@ export class AcpConversation {
     if (current !== undefined) this.deps.onModeId?.(current)
   }
 
-  /** Say it now to anyone listening, and keep saying it to whoever attaches
-   *  later — until the thing it is about goes right. */
+  /** Emit now and keep it for later attachers until it no longer applies. */
   private notice(about: 'mode' | 'model', event: AcpEventInit): void {
     this.notices.set(about, event)
     this.emit(event)
   }
 
   /**
-   * The notices a pane attaching now has missed. Sent after its `hello`, which
-   * is what makes "reported in the pane" true for a pane opened at any point
-   * in the conversation's life rather than only one subscribed during the
-   * handshake — an ordering no real pane gets.
+   * Notices an attaching pane has missed; sent after its `hello`, so a pane
+   * opened at any time sees them.
    */
   get standingNotices(): AcpEventInit[] {
     return [...this.notices.values()]
   }
 
   /**
-   * Name the model on a freshly created session, for an adapter that takes one
-   * no other way.
+   * Set the model on a new session, for adapters that take it no other way.
+   * Only after `session/new`: after `session/load` the adapter holds a model
+   * the user may have changed, and re-asserting would undo it.
    *
-   * Only after `session/new`. A `session/load` lands on an adapter that is
-   * already holding a model — the one this conversation set when it was
-   * created, or one the user has changed since — and re-asserting the launch
-   * value there would quietly undo their choice on the next relay hiccup, the
-   * same reason the posture is not re-asserted on a reattach.
-   *
-   * A refusal is reported and survived. The model is a preference, and losing
-   * the conversation over one the adapter will not take (a provider with no
-   * credential, an id retired upstream) would be worse than running the
-   * adapter's own default — which the pane says out loud, because a workspace
-   * created with `--model` and silently running another is a bill nobody
-   * expects.
+   * A refusal (no credential for the provider, a retired id) is reported in
+   * the pane and survived, since silently running another model than
+   * `--model` asked for could surprise the user's bill.
    */
   private async applyLaunchModel(): Promise<void> {
     const model = this.deps.launchModel
     if (model === undefined || this.sessionId === undefined) return
-    // As the `model` config option, the one route both adapters that take a
-    // model this way answer (see `AcpAdapterProfile.modelVia`).
+    // As the `model` config option (see `AcpAdapterProfile.modelVia`).
     try {
       const reply = await this.peer.request(ACP.sessionSetConfigOption,
         { sessionId: this.sessionId, configId: 'model', value: model })
-      // The reply holds what the adapter resolved the request to, and it
-      // sends no update for it.
+      // The reply holds the resolved model; no update follows.
       this.setModel(sessionModel(reply) ?? { id: model })
       this.notices.delete('model')
       this.log(`[server] acp: session model set to ${model}`)
@@ -906,13 +733,9 @@ export class AcpConversation {
   }
 
   /**
-   * Work out whether the agent this connection just took over is mid-turn, and
-   * classify accordingly.
-   *
-   * Deliberately last-writer-*loses*: anything that resolved the status while
-   * the record was being read knows something newer than the record does — a
-   * prompt sent since, or the in-flight turn's reply arriving as an orphan — so
-   * a scan that comes back afterwards is stale and says nothing.
+   * Work out whether a reattached agent is mid-turn and classify it. Any
+   * status set during the read (a new prompt, an orphan reply) is newer than
+   * the record, so a late scan result is discarded.
    */
   private async recover(): Promise<void> {
     let inFlight = false
@@ -920,15 +743,13 @@ export class AcpConversation {
       try {
         inFlight = await this.deps.recoverInFlight()
       } catch (err) {
-        // Understating costs a `working…` label; overstating pins a finished
-        // conversation busy with no event left to release it.
+        // Erring toward idle only mislabels; erring toward busy pins the
+        // conversation with nothing to release it.
         this.log(`[server] acp: could not recover turn state: ${
           err instanceof Error ? err.message : String(err)}`)
       }
     }
-    // Only worth asking about a turn that is actually running: an ask can only
-    // be outstanding inside one, and a finished turn's asks were all settled to
-    // get it finished.
+    // Asks can only be outstanding inside a running turn.
     let awaiting: Array<string | number> = []
     if (inFlight && this.deps.recoverPendingPermissions !== undefined) {
       try {
@@ -939,8 +760,8 @@ export class AcpConversation {
       }
     }
     if (this.closed || this.statusKnown) return
-    // Recorded before the status is published, so the first classification a
-    // caller sees already accounts for it rather than flipping a moment later.
+    // Record asks before publishing status, so the first classification
+    // already includes them.
     for (const id of awaiting) {
       const requestId = String(id)
       if (this.pendingPermissions.has(requestId) || this.answeredPermissions.has(requestId)) continue
@@ -951,7 +772,7 @@ export class AcpConversation {
     }
     this.setBusy(inFlight)
     if (this.recoveredPermissions.size > 0) this.publishPermissionPending()
-    // Last, so a click that beat this scan settles the ask it was always for.
+    // Last, so an early click settles the ask it was for.
     this.applyDeferredAnswers()
   }
 
@@ -961,16 +782,15 @@ export class AcpConversation {
     this.readyWaiters = []
   }
 
-  /** Fail everything queued behind readiness. A conversation being torn down
-   *  will never become ready, and a caller left waiting out its full timeout
-   *  cannot fail over to the connection that replaces this one. */
+  /** Fail everything waiting for readiness, so callers can fail over to the
+   *  replacement connection instead of timing out. */
   private failWaiters(err: Error): void {
     for (const w of this.readyWaiters) w(err)
     this.readyWaiters = []
   }
 
-  /** Resolve once the session exists. A prompt typed into the pane while the
-   *  agent is still starting waits here instead of failing. */
+  /** Resolve once the session exists, so a prompt sent while the agent
+   *  starts waits rather than fails. */
   private whenReady(timeoutMs: number): Promise<void> {
     if (this.ready) return Promise.resolve()
     if (this.closed) return Promise.reject(new Error('conversation is closed'))
@@ -985,19 +805,16 @@ export class AcpConversation {
   }
 
   /**
-   * Send a user message and run the turn. Resolves when the agent stops; the
-   * caller does not await it (the pane is fed by events, not by this return).
-   * `images` follow the text as image blocks; every adapter yaac runs
-   * advertises `promptCapabilities.image`.
+   * Send a user message and run the turn; resolves when the agent stops.
+   * Callers do not await it (panes are fed by events). `images` follow the
+   * text as image blocks; every adapter yaac runs supports them.
    */
   async prompt(text: string, images: readonly AcpImage[] = [], timeoutMs = 120_000): Promise<void> {
     try {
       await this.whenReady(timeoutMs)
     } catch (err) {
-      // The ask never reached the agent. Both callers are fire-and-forget (the
-      // pane's socket, and session create's initial ask), so without this the
-      // message would vanish leaving nothing but a server log line — the user
-      // sees an idle agent that was never told anything.
+      // Both callers are fire-and-forget, so tell the pane or the message
+      // would vanish with only a log line.
       this.emit({
         type: 'error',
         message: `could not deliver the message: ${err instanceof Error ? err.message : String(err)}`,
@@ -1009,8 +826,7 @@ export class AcpConversation {
       ...(text === '' ? [] : [{ type: 'text', text }]),
       ...images.map(({ mimeType, data }) => ({ type: 'image', mimeType, data })),
     ]))
-    // The chain must survive a failed turn, or one rejection would strand every
-    // message queued behind it.
+    // Keep the chain alive after a failed turn.
     this.turn = run.catch(() => { /* reported to its own caller */ })
     return run
   }
@@ -1018,12 +834,8 @@ export class AcpConversation {
   /** One prompt turn, run only once its predecessor has finished. */
   private async runTurn(prompt: Array<Record<string, string>>): Promise<void> {
     if (this.closed) throw new Error('conversation is closed')
-    // A turn recovered from the record is running at the adapter but was never
-    // put in `turn` — nothing here started it. Waiting it out is the same rule
-    // the queue enforces for this connection's own turns: sending now would
-    // overlap them at an adapter that assumes one at a time, and the first
-    // reply back would end the wrong turn. Nothing running is the ordinary
-    // case, and it costs no tick — the chain has already serialized our own.
+    // Wait out a recovered turn (not in `turn`): the adapter assumes one
+    // turn at a time, and overlapping would end the wrong turn.
     if (this.busy) {
       await this.whenIdle()
       if (this.closed) throw new Error('conversation is closed')
@@ -1044,43 +856,33 @@ export class AcpConversation {
     }
   }
 
-  /** Interrupt the running turn. ACP's cancel is a notification: the agent
-   *  answers by ending the turn with `cancelled`, which arrives as the
-   *  `session/prompt` reply. */
+  /** Interrupt the running turn. ACP's cancel is a notification; the agent
+   *  ends the turn with `cancelled` as the `session/prompt` reply. */
   cancel(): void {
     if (this.sessionId === undefined || !this.busy) return
-    // ACP puts resolving outstanding permission requests on the client when it
-    // cancels. Leaving one parked would strand two things at once: the agent,
-    // still waiting to be told, and the served request the peer is awaiting a
-    // handler for and would never reply to.
+    // ACP makes the cancelling client resolve outstanding permission
+    // requests (see cancelPendingPermissions).
     this.cancelPendingPermissions()
     this.peer.notify(ACP.sessionCancel, { sessionId: this.sessionId })
   }
 
   private onClose(reason: string): void {
     if (this.closed) return
-    // Deliberately NOT an `error` event and NOT a turn end: acpd is still
-    // holding the agent, and the turn may well still be running. The pane
-    // greys out via the health message and picks up where it left off.
+    // Not an error or a turn end: acpd still holds the agent, and the turn
+    // may still be running. The pane greys out and resumes on reconnect.
     this.deps.onDown(reason)
   }
 
   close(): void {
     if (this.closed) return
     this.closed = true
-    // Settles the parked asks WITHOUT any of them reaching the agent, and both
-    // halves of that are deliberate. A parked promise is a request the peer is
-    // awaiting a handler for; left unresolved it is never replied to and never
-    // collected, and this object is meant to be finished with. But the reply a
-    // resolve produces is an `await` continuation — a microtask, which cannot
-    // run before `peer.close()` below — so nothing is written to a live agent.
-    // That is the behavior we want: a detach is not the user declining, and an
-    // ask left unanswered here is one the NEXT connection recovers from the
-    // record and can still put in front of them.
+    // Settle parked asks so their requests are not left pending. The
+    // replies are microtasks that run after `peer.close()` below, so none
+    // reaches the agent: a detach is not the user declining, and the next
+    // connection recovers the asks from the record.
     this.cancelPendingPermissions()
     this.failWaiters(new Error('conversation is closed'))
-    // A prompt held behind a recovered turn would otherwise wait for a boundary
-    // that can no longer arrive; released, it fails on the closed check above it.
+    // Release prompts waiting on a recovered turn; they then fail as closed.
     this.wakeIdleWaiters()
     this.peer.close()
     for (const fn of this.closeSubscribers) fn()

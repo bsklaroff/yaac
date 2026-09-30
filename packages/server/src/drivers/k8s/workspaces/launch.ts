@@ -46,33 +46,27 @@ import type {
 } from '#drivers/contract'
 
 /**
- * How the k8s runtime starts a workspace: what it stands up around one
- * before it can run, and the Job that runs it (docs/layered-server.md).
+ * How the k8s driver starts a workspace (docs/layered-server.md).
  *
- * Split in two because the halves have different lifetimes, and the split
- * is what makes a retry safe. `prepareWorkspaceSubstrate` runs ONCE per
- * create — its products (a proxy registration, a project registry) belong
- * to the workspace, not to an attempt at launching it, and re-running it
- * would re-touch a cluster the workspace is already using. `launchWorkspace` is per attempt: it applies
- * a Job and nothing else, so a failed attempt leaves nothing but a Job to
- * delete (`destroyWorkspace` with `unitOnly`).
+ * Two halves with different lifetimes, which makes retries safe.
+ * `prepareWorkspaceSubstrate` runs once per create and sets up things the
+ * workspace owns (proxy registration, project registry). `launchWorkspace`
+ * runs per attempt and applies only a Job, so a failed attempt leaves just
+ * a Job to delete (`destroyWorkspace` with `unitOnly`).
  *
- * The caller supplies decisions and this decides spellings. Every label,
- * the namespace, the data-dir hash, the manifest and the priority classes
- * are here and nowhere above; what arrives is a `WorkspaceSpec` that could
- * as easily be read by a driver with no cluster at all.
+ * Callers pass a driver-neutral `WorkspaceSpec`; all labels, namespace,
+ * manifest and priority-class details live here.
  */
 
 /**
- * The k8s receipt: what `prepareWorkspaceSubstrate` stood up, in the terms
- * `launchWorkspace` finishes the job in. Opaque to every caller — it
- * travels on the spec and comes back here to be narrowed.
+ * What `prepareWorkspaceSubstrate` set up, for `launchWorkspace` to use.
+ * Opaque to callers: it travels on the spec and is narrowed here.
  */
 interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
-  /** The project's id, which the pod is labelled with: its registry's
-   *  NetworkPolicies select the project's pods by it. */
+  /** The project's id, labelled on the pod so the project registry's
+   *  NetworkPolicies can select it. */
   projectId: string
-  /** Live proxy Service ClusterIP — the pod's resolver and egress target. */
+  /** Proxy Service ClusterIP: the pod's DNS resolver and egress target. */
   proxyHost: string
   /** The per-workspace token streamd's handshake requires. */
   streamToken: string
@@ -81,25 +75,21 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
   /** The project has its own push registry, so the in-pod engine needs its
    *  registries.conf drop-in. */
   projectRegistry: boolean
-  /** The workspace may use the npm cache — which the pod's label admits it
-   *  to, whether or not the cache is serving right now. */
+  /** The pod is labelled for npm-cache access, whether or not the cache is
+   *  serving right now. */
   npmCacheAllowed: boolean
   /** The install's npm cache, when this workspace installs through it. */
   npmRegistry: string | null
-  /** What the proxy is told about this workspace — written by `launch`,
-   *  right before the Job, so a prepare that overlaps a long image build
-   *  never holds a registration with nothing behind it. */
+  /** The workspace's proxy registration. Applied by `launch` just before the
+   *  Job, so a prepare overlapping a long image build never leaves a
+   *  registration with no pod behind it. */
   registration: ProxyRegistration
 }
 
 function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
-  // Checked on a field THIS driver wrote, not on `kind`: the receipt a
-  // foreign caller most plausibly arrives with is a neutral stub, and a
-  // stub carries the discriminant precisely because the contract declares
-  // it. `proxyHost` is the one to test because it is the field whose
-  // absence is quietest — `undefined` lands in the manifest as the pod's
-  // DNS resolver and egress target, and the pod comes up unable to resolve
-  // anything rather than failing here with a name for what went wrong.
+  // Check `proxyHost` rather than `kind`: a foreign stub also carries
+  // `kind`, and a missing proxyHost would otherwise produce a pod that
+  // cannot resolve anything instead of an error here.
   const k8s = substrate as Partial<K8sWorkspaceSubstrate>
   if (typeof k8s.proxyHost !== 'string') {
     throw new Error(
@@ -111,8 +101,8 @@ function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
 }
 
 /**
- * Stand up everything a workspace needs around it: its egress registration
- * and the image plumbing its engine will pull through.
+ * Set up what a workspace needs around it: its egress registration and the
+ * image plumbing its engine pulls through.
  */
 export async function prepareWorkspaceSubstrate(
   intent: SubstrateIntent,
@@ -121,64 +111,46 @@ export async function prepareWorkspaceSubstrate(
   const project = { slug: projectSlug, id: projectId }
   const emit = (m: string): void => intent.onProgress?.(m)
 
-  // The proxy is always required — it injects GitHub / Claude / Codex
-  // tokens into outbound HTTPS requests. BEFORE the registration below: a
-  // stale proxy rolls here, so a create never registers against one that
-  // cannot see the object.
+  // The proxy injects GitHub / Claude / Codex tokens into outbound HTTPS.
+  // Ensure it before building the registration, so a stale proxy is rolled
+  // first and never misses the registration object.
   emit('Ensuring proxy deployment...')
   await proxyClient.ensureRunning()
 
-  // Every nested workspace gets the per-project push registry: it is the
-  // bus the in-pod engine's cross-workspace image cache rides (salvage
-  // pushes, the next workspace pulls — see image-promoter.ts).
+  // Nested workspaces get the per-project push registry, which carries the
+  // cross-workspace image cache (see image-promoter.ts).
   const projectRegistry = intent.nestedContainers
   const storeMounts: PodMount[] = []
   if (projectRegistry) {
     emit('Ensuring project registry...')
     await ensureProjectRegistry(project)
 
-    // The node-local image store: the read-only containers/storage lower
-    // this pod mounts at /var/lib/shared-images, so the project's warm
-    // layers are visible to its engine at first touch with no pull and no
-    // graphroot spend (store-writer.ts).
-    //
-    // The generation is PINNED here, at pod create, and never changes for
-    // this pod's life — which is what lets the builder's GC tell a store in
-    // use from a stale one. A cold node has none yet and simply mounts
-    // nothing. The refresh is fired DETACHED because a build is a pod run
-    // of minutes whose product this pod could not adopt anyway (its mount
-    // is already chosen); what it buys is the generation the NEXT workspace
-    // of the project mounts.
+    // Mount the node-local image store read-only at /var/lib/shared-images
+    // so the project's warm layers are available without a pull
+    // (store-writer.ts). The generation is pinned at pod create, which lets
+    // the builder's GC tell in-use stores from stale ones; a cold node
+    // mounts nothing. The refresh runs detached and benefits the project's
+    // next workspace, since this pod's mount is already chosen.
     const storeMount = await nodeImageStoreMount(projectId)
     if (storeMount) storeMounts.push(storeMount)
     void ensureNodeImageStore(project)
   }
 
-  // Egress: the workspace pod's outbound 443/80 is redirected to the proxy
-  // at the node level by netd's per-pod DNAT rules (k8s/netd) — no per-pod
-  // sidecar. The pod also points its resolver at the proxy (DNS stub) and
-  // dials the SSH tunnel sentinel; both are admitted by the same workspace
-  // NetworkPolicy. The proxy identifies the workspace by the source pod IP
-  // it watches, so nothing per-workspace needs injecting here.
-  //
-  // The proxy Service ClusterIP is allocator-assigned (no longer pinned), so
-  // read it live. Stable for the cluster's lifetime: the Service is never
-  // deleted/recreated.
+  // netd's per-pod DNAT rules (k8s/netd) redirect the pod's outbound 443/80
+  // to the proxy, which identifies the workspace by source pod IP. The pod
+  // also uses the proxy as its DNS resolver and SSH tunnel endpoint. The
+  // ClusterIP is allocator-assigned, so read it live; the Service is never
+  // recreated.
   const proxyHost = await proxyServiceClusterIp()
 
-  // streamd auth: the per-workspace token its handshake requires, derived
-  // from the install's proxy secret (no new storage — survives server
-  // restarts). Leaking it grants nothing: the ingress lock means only the
-  // proxy reaches streamd, and the token only opens the pod's OWN daemon.
+  // Derived from the install's proxy secret, so nothing is stored. Only the
+  // proxy can reach streamd, and the token opens only this pod's daemon.
   const streamToken = await podStreamToken(workspaceId)
 
-  // This workspace's registration (secret-injection rules, allowlist, repo
-  // URL), assembled here from the caller's decisions and written by
-  // `launch`. GitHub / Claude / Codex auth is handled dynamically by the
-  // proxy from the credentials it is handed — no per-workspace rule is
-  // needed for those. The rules reference their values by name; the values
-  // are already in the project's secrets object, kept current on every
-  // edit (`syncProjectSecrets`).
+  // Secret-injection rules, allowlist and repo URL; written by `launch`.
+  // GitHub / Claude / Codex auth needs no per-workspace rule. Rules name
+  // their values, which already sit in the project's secrets object
+  // (`syncProjectSecrets`).
   const registration = buildProxyRegistration({
     config,
     remoteUrl: intent.remoteUrl,
@@ -187,8 +159,7 @@ export async function prepareWorkspaceSubstrate(
     secretRules: intent.proxySecretRules,
   })
 
-  // Where the workspace's installs fetch from. A failed lookup costs the
-  // cache, not the create: npmjs answers the same packages.
+  // A failed lookup just skips the cache; npmjs serves the same packages.
   const npmCacheAllowed = npmCacheApplies(config, registration.allowedHosts, intent.proxySecretRules)
   const npmRegistry = npmCacheAllowed ? await servingNpmCacheUrl().catch(() => null) : null
 
@@ -210,13 +181,12 @@ export async function prepareWorkspaceSubstrate(
 const NPMJS_HOST = 'registry.npmjs.org'
 
 /**
- * Whether a workspace may use the npm cache. Not when its project turns the
- * cache off (`npmCache: false`). Not when its allowlist leaves npmjs out: the cache fetches outside the egress proxy,
- * so pointing it there would hand the workspace what its own allowlist
- * refuses. And not when the project authenticates to npmjs through a
- * proxied secret: the cache fetches anonymously, so the project's private
- * packages would stop resolving. (A token in the project's own `.npmrc` is
- * the project's to route — see the `registry=` note in docs/workspace-storage.md.)
+ * Whether a workspace may use the npm cache. Not when the project sets
+ * `npmCache: false`; not when its allowlist excludes npmjs (the cache
+ * fetches outside the egress proxy); and not when the project
+ * authenticates to npmjs through a proxied secret (the cache fetches
+ * anonymously, so private packages would break). A token in the project's
+ * own `.npmrc` is the project's concern (docs/workspace-storage.md).
  */
 export function npmCacheApplies(
   config: YaacConfig,
@@ -232,79 +202,61 @@ export function npmCacheApplies(
 }
 
 /**
- * Apply the workspace's Job, and answer with the handle that addresses it.
+ * Apply the workspace's Job and return a handle for it.
  *
- * Everything the caller could not have named is added here: the transport
- * token, CA trust, the registries.conf drop-in a nested engine needs, and
- * the SSH transport. The
- * caller's own env and mounts go first so its values are the ones a reader
- * sees at the head of the list — and they are COPIED, never appended to,
- * because the same spec is relaunched after a failed attempt and a second
- * pass must not stack a second set of injections on top of the first.
+ * Adds what the caller cannot name: stream token, CA trust, the nested
+ * engine's registries.conf drop-in, and SSH transport. The spec's env and
+ * mounts are copied, not appended to, because the same spec is relaunched
+ * after a failed attempt.
  *
- * The returned handle is built from what was just stamped rather than read
- * back: the pod does not exist yet (that is `awaitReady`'s wait), and every
- * field here is a fact this function decided.
+ * The handle is built from the values just written; the pod does not exist
+ * yet (`awaitReady` waits for it).
  */
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
   const substrate = narrow(spec.substrate)
   const jobName = workspaceJobName(spec.projectSlug, spec.workspaceId)
-  // The spec's image is optional because a runtime that runs none takes no
-  // ref; for this one it is what the pod starts from, so an absent one is a
-  // caller that skipped `prepareImage` for a driver that needs it — a wiring
-  // bug, and one worth naming before a manifest goes out without an image.
+  // The contract makes `image` optional for runtimes that run none; here a
+  // missing one means `prepareImage` was skipped, a wiring bug.
   if (!spec.image) {
     throw new Error(`launch ${jobName}: no image on the spec (prepareImage was skipped)`)
   }
   const image = spec.image
 
   const env = [...spec.env]
-  // CA-trust env only — no HTTP(S)_PROXY routing vars. Interception is
-  // transparent at the network layer, so the container needs nothing but
-  // trust in the MITM CA.
+  // Only CA trust: interception is transparent, so no HTTP(S)_PROXY vars.
   env.push(...proxyClient.getCaTrustEnv())
   env.push(`YAAC_STREAM_TOKEN=${substrate.streamToken}`)
-  // pnpm's store, one per workspace: a store shared between pods corrupts —
-  // pnpm 11 indexes it in one SQLite database in WAL mode, which needs every
-  // writer on one kernel, and each pod is its own sandbox. It goes INSIDE
-  // the root module dir when that is one, on the same pod-local volume as
-  // `node_modules/.pnpm`, so pnpm hardlinks rather than copies. Otherwise
-  // the pod's own disk, never the checkout pnpm would pick by itself (the
-  // root of the project's filesystem). Under both names, because a project
-  // pins its own pnpm through corepack: 11 reads `pnpm_config_` and ignores
-  // `npm_config_` for this key, and every 10.x does the reverse.
+  // One pnpm store per workspace: pnpm 11 indexes the store in a SQLite WAL
+  // database, which cannot be shared across pods. Put it inside the root
+  // node_modules when that is a module dir, so pnpm hardlinks rather than
+  // copies; otherwise on the pod's own disk. Set under both names: pnpm 11
+  // reads only `pnpm_config_` for this key, pnpm 10 only `npm_config_`.
   const rootModules = `${k8sWorkspacePaths().workspaceDir}/node_modules`
   const store = spec.moduleDirs.includes(rootModules)
     ? `${rootModules}/.pnpm-store`
     : '/home/yaac/.local/share/pnpm/store'
   env.push(`pnpm_config_store_dir=${store}`, `npm_config_store_dir=${store}`)
-  // The npm cache, which the init script writes as the default registry in
-  // the user-level `~/.npmrc` rather than as env: env would outrank the
-  // project's own `.npmrc`, and a project naming a registry of its own —
-  // a private mirror of unscoped packages — must keep it. Both pnpm 10 and
-  // 11 read the file, below the project's.
+  // The init script writes this into the user-level `~/.npmrc`, not env,
+  // because env would override a registry named in the project's `.npmrc`.
   if (substrate.npmRegistry) env.push(`YAAC_NPM_REGISTRY=${substrate.npmRegistry}`)
   if (spec.nestedContainers && substrate.projectRegistry) {
-    // The per-project registries.conf drop-in, written by the in-pod init
-    // script (sudo) before the engine starts. Base64 keeps the TOML free of
-    // env-value quoting concerns. Every nested workspace needs it: the
-    // registry is plain HTTP, and the image cache pushes/pulls through it.
+    // Written by the in-pod init script before the engine starts. Base64
+    // avoids quoting issues. Needed because the registry is plain HTTP.
     const conf = Buffer.from(projectRegistryConfDropIn(substrate.projectId), 'utf8')
       .toString('base64')
     env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
   }
 
   const declared: PodMount[] = [...spec.mounts]
-  // NODE-LOCAL, read-only: this node's image store generation.
+  // Read-only node-local image store.
   declared.push(...substrate.storeMounts)
   if (spec.ssh) {
     const ssh = workspaceSshTransport(spec.ssh.knownHostsFile, substrate.proxyHost)
     declared.push(...ssh.mounts)
     env.push(...ssh.env)
   }
-  // Every mount arrives declared against a tier helper's host path; what
-  // backs it in the cluster — a subPath of the global claim, or the node's
-  // own tree — is resolved here and nowhere above (mount-sources.ts).
+  // Map each declared host path to its cluster source (a subPath of the
+  // global claim, or the node's tree); see mount-sources.ts.
   const mounts = declared.map(resolveMountSource)
 
   const labels: Record<string, string> = {
@@ -313,20 +265,15 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...workspaceIdLabels(spec.workspaceId),
     [LABEL_DATA_DIR_HASH]: dataDirHash(),
     [LABEL_TOOL]: spec.tool,
-    // Stamped only for acp: the status watcher picks its driver from this,
-    // and every pod without it (every TUI pod, and every pod predating
-    // modes) reads as tui.
+    // Only acp pods are labelled; the status watcher reads a missing label
+    // as tui.
     ...(spec.mode === 'acp' ? { [LABEL_MODE]: spec.mode } : {}),
-    // Prewarmed spares carry this until claimed; claiming removes it,
-    // flipping the pod to a normal workspace that lists in user-facing views.
+    // Removed on claim, turning the spare into a normal workspace.
     ...(spec.prewarm ? { [LABEL_PREWARMED]: 'true' } : {}),
-    // Stamped only when this pod runs the in-pod engine, so the image
-    // salvage can tell from a pod alone whether there is anything to
-    // salvage — the engine's own marker (YAAC_NESTED_ENGINE, below) lives
-    // in the spec's env, which the reconciler never has.
+    // Lets image salvage tell from the pod alone whether there is anything
+    // to salvage; the reconciler never sees the spec's env.
     ...(spec.nestedContainers ? { [LABEL_NESTED]: 'true' } : {}),
-    // What admits the pod to the npm cache: both of the cache's workspace
-    // policies select on it.
+    // Both of the npm cache's workspace policies select on this.
     ...(substrate.npmCacheAllowed ? { [LABEL_NPM_CACHE]: 'true' } : {}),
   }
 
@@ -346,33 +293,25 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     proxyHost: substrate.proxyHost,
     nested: spec.nestedContainers,
     moduleDirs: spec.moduleDirs,
-    // In-pod setup (git identity, tmux server + options, streamd, the
-    // nested engine) runs as the container's postStart hook, so the kubelet
-    // holds Ready until it's done and no per-command exec round trips are
-    // paid. Prewarmed spares take this same path.
+    // In-pod setup (git identity, tmux, streamd, nested engine) runs as
+    // postStart, so kubelet holds Ready until it finishes.
     postStartExec: spec.postStartExec,
-    // A preStop hook runs inside the pod's grace period, so a pod that has
-    // one gets a budget sized for the hook (PRE_STOP_GRACE_SECONDS).
+    // preStop runs within the grace period, so size it for the hook.
     ...(spec.preStopExec
       ? { preStopExec: spec.preStopExec, terminationGracePeriodSeconds: PRE_STOP_GRACE_SECONDS }
       : {}),
-    // The node-local directories this pod mounts, created on its node by
-    // its own init container: nothing about a node's disk is written from
-    // the server's filesystem.
+    // Created on the node by the pod's own init container.
     nodeLocalDirs: nodeLocalDirsOf(mounts),
     nodeLocalRoot: nodeLocalNodePath(),
   })
 
   spec.onProgress?.(`Creating session job ${jobName}...`)
 
-  // The pod names a PriorityClass, and the apiserver rejects a pod whose
-  // class is missing — the Job applies and no pod ever appears. The boot
-  // bootstrap ensures the classes, but best-effort (one logged catch), so an
-  // upgraded install whose one boot found the cluster unreachable would fail
-  // every create until a restart. Idempotent and cheap next to a pod create.
+  // A pod whose PriorityClass is missing is rejected and never appears.
+  // Startup ensures the classes best-effort, so ensure them again here;
+  // it is idempotent and cheap.
   await ensurePriorityClasses()
-  // The registration right before the Job it serves: idempotent, so a
-  // relaunch after a failed attempt rewrites the same object.
+  // Idempotent, so a relaunch rewrites the same object.
   await applyProxyRegistration(spec.workspaceId, substrate.registration)
   await kubectlApply(manifest)
 
@@ -383,8 +322,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     tool: spec.tool,
     declaredTool: spec.tool,
     mode: spec.mode,
-    // Applied, not running: the pod is scheduled and booted behind
-    // `awaitReady`, which is the caller's next step.
+    // The caller's next step, `awaitReady`, waits for the pod.
     running: false,
     state: 'pending',
     labels,

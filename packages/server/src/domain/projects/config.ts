@@ -27,9 +27,8 @@ export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[
   return [...config.ephemeralModulesPaths]
 }
 
-/** tmux window names tagged 'reserved' across every supported agent tool —
- *  we reject these so an `initCommands` entry can never clobber the agent
- *  pane on a workspace whose tool is set to that name. */
+/** tmux window names an `initCommands` entry may not use, so it can't
+ *  clobber an agent or yaac window. */
 const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set(
   [...AGENT_TOOLS, 'init', 'yaac'],
 )
@@ -128,11 +127,9 @@ export function parseProjectConfig(raw: string): YaacConfig {
     }
     const volumes = obj.cacheVolumes as Record<string, unknown>
     for (const [key, val] of Object.entries(volumes)) {
-      // The key names a host dir under the project's `cache-volumes/`, which
-      // the server `mkdir -p`s and mounts read-write: one naming a parent
-      // (`..`) mounts some other server dir into the pod, and one naming a
-      // subdir (`a/b`) puts a mount inside another the pod can swap for a
-      // link. A single plain segment rules out both.
+      // The key names a host dir under `cache-volumes/`, mounted read-write.
+      // A single plain segment prevents `..` (mounting another server dir)
+      // and `a/b` (a mount inside one the pod could swap for a link).
       if (!CACHE_VOLUME_KEY_RE.test(key)) {
         throw new Error(
           `yaac-config.json: cacheVolumes key "${key}" must be 1-64 letters, digits, "_", "-" or "." `
@@ -259,16 +256,10 @@ export async function resolveProjectConfig(projectSlug: string): Promise<YaacCon
 }
 
 /**
- * Forget a finished image build and run it again now. `false` when the id
- * is unknown or its build is still running — there was nothing to retry.
- *
- * The one image-build verb that is a mediator's: the reads and the
- * dismissal are display values api asks the runtime for directly, but a
- * rebuild has to know what each owning project's config asks for, and the
- * runtime may not read config at all. The store says "no config" with
- * `null`, the contract with `undefined`; both mean all defaults. A
- * defaulted config would not fail loudly — it would rebuild a nested
- * project without its nestable layer and report success.
+ * Forget a finished image build and rerun it. `false` when the id is unknown
+ * or still running. Lives in domain because a rebuild needs each owning
+ * project's config, which the runtime may not read itself. (`null` from the
+ * store and `undefined` for the contract both mean "no config".)
  */
 export function retryImageBuild(id: string): boolean {
   return workspaceDriver().retryImageBuild(

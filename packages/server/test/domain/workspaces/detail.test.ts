@@ -18,7 +18,6 @@ import { ServerError } from '@yaac/shared/errors'
 import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 import type { WorkspaceChanges } from '@yaac/shared/types'
 
-// Every helper here resolves the workspace through the runtime first.
 const mockFind = vi.fn()
 const mockBlockedHosts = vi.fn<(workspaceId: string) => Promise<string[]>>()
 
@@ -33,9 +32,7 @@ describe('session detail helpers', () => {
       blockedHosts: mockBlockedHosts,
     })
     tmpDir = await createTempDataDir()
-    // The default above is a runtime running nothing: every helper here
-    // resolves the workspace first, so that is what proves each one refuses
-    // rather than half-answering.
+    // By default nothing is running, so each helper must refuse outright.
   })
 
   afterEach(async () => {
@@ -106,10 +103,9 @@ describe('getWorkspaceChanges', () => {
     return workspaceId
   }
 
-  // THE reason this verb exists rather than a bare `changes` call: once the
-  // agent renames and pushes its branch, the current branch's own @{upstream}
-  // is itself, so the runtime's default base collapses the diff to nothing.
-  // The fork point keeps committed work visible until it merges.
+  // Once the agent pushes its branch, @{upstream} is the branch itself and
+  // the runtime's default base shows an empty diff. Diffing against the fork
+  // branch keeps committed work visible until it merges.
   it('passes the fork branch as the default base', async () => {
     const workspaceId = await installRunning()
 
@@ -130,8 +126,6 @@ describe('getWorkspaceChanges', () => {
     )
   })
 
-  // Nothing recorded a fork branch: the runtime is asked with no default
-  // rather than with a guess.
   it('asks with no default when nothing records a fork branch', async () => {
     const workspaceId = await installRunning(null)
 
@@ -149,9 +143,8 @@ describe('getWorkspaceChanges', () => {
     expect(mockChanges).not.toHaveBeenCalled()
   })
 
-  // A ref the CALLER named that resolves nowhere is a bad request, and this
-  // is the only place that knows the ref came from them — left alone it
-  // reaches the route as a bare exec failure and answers 500.
+  // Only this layer knows the ref came from the caller; otherwise it would
+  // reach the route as an exec failure and answer 500.
   it('answers VALIDATION for an explicit base that resolves nowhere', async () => {
     const workspaceId = await installRunning()
     mockChanges.mockRejectedValue(
@@ -161,13 +154,12 @@ describe('getWorkspaceChanges', () => {
     const err = await getWorkspaceChanges(workspaceId, 'no-such-branch').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ServerError)
     expect(err).toMatchObject({ code: 'VALIDATION', httpStatus: 400 })
-    // The message has to name the ref: it is the caller's only clue.
+    // The message must name the ref; it is the caller's only clue.
     expect((err as ServerError).message).toContain('no-such-branch')
   })
 
-  // The same code with no explicit base means the RECORDED fork branch is the
-  // one that resolves nowhere — our inconsistency, not the caller's, so it
-  // must keep surfacing as a fault rather than being blamed on them.
+  // With no explicit base, the recorded fork branch failed to resolve. That
+  // is a server fault, not the caller's.
   it('keeps an unresolvable default base a server fault', async () => {
     const workspaceId = await installRunning()
     const failure = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
@@ -176,9 +168,8 @@ describe('getWorkspaceChanges', () => {
     await expect(getWorkspaceChanges(workspaceId)).rejects.toBe(failure)
   })
 
-  // Every other exec failure stays what it was: a nonzero exit on its own is
-  // no evidence of a bad ref (exit 3 is "this workspace has no /workspace"),
-  // and relabelling those as user error would hide real breakage.
+  // Other nonzero exits say nothing about the ref (exit 3 means "no
+  // /workspace"), and calling them user error would hide real breakage.
   it('leaves other exec failures alone even with an explicit base', async () => {
     const workspaceId = await installRunning()
     const failure = new WorkspaceExecError('command exited 3', 3, '', '')
@@ -189,10 +180,9 @@ describe('getWorkspaceChanges', () => {
 })
 
 /**
- * The founding ask is RECORDED state — a captured row, or a transcript on the
- * host — so every case here answers with no workspace to resolve. That is the
- * state it is asked for in: the stopped list, and a server whose substrate is
- * not up.
+ * The first prompt is recorded state (a captured row, or a transcript on the
+ * host), so these cases need no running workspace. That matches its callers:
+ * the stopped list, and a server whose substrate is down.
  */
 describe('getWorkspacePrompt', () => {
   const SLUG = 'demo'
@@ -220,8 +210,6 @@ describe('getWorkspacePrompt', () => {
     await setAgentSessionCapture(SLUG, 'claude', SESSION, capture)
   }
 
-  // The 503 case: a server whose cluster is not up still knows what every
-  // workspace was asked to do, because the answer was never in the cluster.
   it('answers from the captured row when the substrate cannot be asked', async () => {
     installFakeWorkspaceDriver({
       find: () => Promise.reject(new ServerError('RUNTIME_UNAVAILABLE', 'connection refused')),
@@ -231,9 +219,8 @@ describe('getWorkspacePrompt', () => {
     await expect(getWorkspacePrompt(WORKSPACE)).resolves.toBe('fix the router')
   })
 
-  // Nothing captured a prompt before the pod went away, so the recorded
-  // transcript is read on the host — the path the row holds, since a stopped
-  // workspace has no container to derive one from.
+  // No prompt was captured, so the transcript is read on the host at the
+  // path the row records.
   it('falls back to the recorded transcript of a workspace with no pod', async () => {
     installFakeWorkspaceDriver({ find: () => Promise.resolve(undefined) })
     const file = path.join(claudeDir(SLUG), 'projects', '-workspace', `${SESSION}.jsonl`)

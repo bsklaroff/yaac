@@ -1,11 +1,9 @@
 /**
- * Lockdown helpers for the workspace-preview `<webview>`. The preview embeds a
- * dev server running inside a workspace, reached over a forwarded port this
- * app's own forwarder holds on loopback (`forwarder.ts`) — wherever the
- * attached server runs. These keep the guest constrained to that: no Node
- * access, no rogue preload, and pinned to loopback — anything else (an OAuth
- * hop, a `target=_blank`) is bounced to the system browser instead of
- * rendered.
+ * Lockdown helpers for the workspace-preview `<webview>`. The preview shows a
+ * workspace dev server through a port this app forwards on loopback
+ * (forwarder.ts). The guest gets no Node access or preload and may only load
+ * loopback URLs; anything else (an OAuth hop, a `target=_blank`) opens in the
+ * system browser.
  */
 
 /**

@@ -1,7 +1,6 @@
 FROM docker.io/node:22.22.2-slim
-# ca-certificates: provides /etc/ssl/certs/ca-certificates.crt, the public
-# roots the proxy folds together with the MITM CA into the combined trust
-# bundle nested containers use (see k8s/proxy/ca-bundle.ts).
+# ca-certificates provides the public roots for the combined trust bundle
+# (see ca-bundle.ts).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tor openssh-client socat ca-certificates \
     && rm -rf /var/lib/apt/lists/*

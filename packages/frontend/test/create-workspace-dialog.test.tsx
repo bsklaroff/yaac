@@ -31,9 +31,8 @@ vi.mock('#lib/projectApi', () => ({
 vi.mock('#lib/useProvisionWorkspace', () => ({
   useProvisionWorkspace: () => provision,
 }))
-// The snapshot arrives over the events socket; there is no queryFn, so a
-// component that mounts before the first frame sees `undefined` — which is
-// the case the form's fallbacks have to survive.
+// The snapshot is pushed over the events socket, so it is mocked directly.
+// Before the first frame it is `undefined`, which the form must handle.
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
@@ -142,8 +141,8 @@ beforeEach(() => {
   snapshot.mockReturnValue(project())
   vi.mocked(getAuthList).mockResolvedValue(CLAUDE_ONLY)
   vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
-  // Run the op the button hands the provisioning flow, so what it sends is
-  // what `createWorkspace` is called with.
+  // Run the op passed to the provisioning flow, so the test can check what
+  // `createWorkspace` is called with.
   provision.mockImplementation(
     (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
       void op(sid, () => {})
@@ -235,8 +234,8 @@ describe('CreateWorkspaceDialog', () => {
     await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull()) // closed
   })
 
-  // A missing snapshot would read a containerless server as sandboxed and
-  // offer bypass, so nothing may create until it lands.
+  // Without the snapshot a containerless server would look sandboxed and get
+  // bypass, so creating waits for it.
   it('falls back per field, and offers no create before the snapshot lands', async () => {
     snapshot.mockReturnValue(undefined)
     await openMenu()
@@ -251,7 +250,7 @@ describe('CreateWorkspaceDialog', () => {
     expect(modelInput().value).toBe('Opus 5.5')
     expect(select('Permissions').value).toBe('accept-edits')
     expect(select('UI').value).toBe('tui')
-    // Picking bypass there is allowed, and said out loud.
+    // Bypass can still be picked there, with a warning.
     fireEvent.change(select('Permissions'), { target: { value: 'bypass' } })
     expect(screen.getByText('no sandbox — acts as you')).toBeTruthy()
   })
@@ -279,8 +278,8 @@ describe('CreateWorkspaceDialog', () => {
     expect(modelInput().value).toBe('Claude Opus 4.8')
   })
 
-  // codex's chat adapter has no plan or manual mode, and neither field
-  // quietly moves the other: each disables what the other rules out.
+  // codex's ACP adapter has no plan or manual mode. Each field disables the
+  // options the other rules out, rather than changing it.
   it('disables the postures and UIs that rule each other out', async () => {
     vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
     await openReady()
@@ -334,8 +333,8 @@ describe('CreateWorkspaceDialog', () => {
 
     expect(useUiStore.getState().createWorkspaceDialog).not.toBeNull()
     expect(promptInput().value).toBe('keep me')
-    // With no list open, Escape is the dialog's again — which, with a prompt
-    // typed, asks before letting it go.
+    // With no list open, Escape goes to the dialog, which asks before
+    // discarding a typed prompt.
     fireEvent.keyDown(modelInput(), { key: 'Escape' })
     fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
     await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
@@ -356,7 +355,7 @@ describe('CreateWorkspaceDialog', () => {
       fireEvent.keyDown(input(), { key: 'Enter' })
       expect(createButton().disabled).toBe(true)
       expect(createWorkspace).not.toHaveBeenCalled()
-      // Escape abandons it for what was chosen — not the dialog.
+      // Escape reverts to the chosen value without closing the dialog.
       fireEvent.keyDown(input(), { key: 'Escape' })
       expect(input().value).toBe(shown)
       expect(useUiStore.getState().createWorkspaceDialog).not.toBeNull()
@@ -366,8 +365,7 @@ describe('CreateWorkspaceDialog', () => {
   it('creates on Enter straight after opening, but not from a button', async () => {
     await openReady()
     await waitFor(() => expect(branchInput().value).toBe('main'))
-    // As in the model field, typed text is a search: Enter picks the top
-    // match rather than creating.
+    // As in the model field, Enter picks the top match rather than creating.
     fireEvent.change(branchInput(), { target: { value: 'de' } })
     expect(createButton().disabled).toBe(true)
     fireEvent.keyDown(branchInput(), { key: 'Enter' })
@@ -417,18 +415,17 @@ describe('CreateWorkspaceDialog', () => {
     expect(screen.getByRole('button', { name: /New workspace/ }).textContent).toContain('New workspace')
   })
 
-  // Alt+N and the + button both open here, so "open, type, Enter" is a
-  // create with an opening prompt, and Shift+Enter a second line of it.
+  // The dialog opens with the prompt focused, so "open, type, Enter" creates
+  // with a prompt; Shift+Enter adds a line.
   it('focuses the prompt as it opens, before the dialog\'s own focus handling gets there', () => {
-    // Alt+N then typing straight away is the flow; a key pressed before the
-    // focus lands would go nowhere.
+    // Keys typed right after opening must reach the prompt.
     mount()
     act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', focus: 'prompt' }))
     expect(document.activeElement).toBe(promptInput())
   })
 
-  // Handing focus back would park a focus ring on the + after a keyboard
-  // close; jsdom has no :focus-visible, so this pins where focus lands.
+  // Returning focus to the + would show a focus ring after a keyboard close.
+  // jsdom has no :focus-visible, so the test checks where focus lands.
   it('leaves focus off the + once its dialog closes, dismissed or created', async () => {
     mount()
     const plus = screen.getByRole('button', { name: 'New workspace' })
@@ -463,8 +460,8 @@ describe('CreateWorkspaceDialog', () => {
   it('names and files a create: a title off the heading and a picked or new group ride it', async () => {
     snapshot.mockReturnValue(project({}, 'k8s', { workspaceGroups: GROUPS }))
     await openReady()
-    // Now has no parent to take a group from. Only this project's groups the
-    // sidebar shows are offered: Review is unpinned with nothing in it.
+    // "Now" has no parent to take a group from. Only groups the sidebar
+    // shows are offered; Review is unpinned and empty.
     expect(select('Group').value).toBe('')
     expect([...select('Group').options].map((o) => o.textContent)).toEqual(['None', 'Other', '+ New group'])
     fireEvent.change(select('Group'), { target: { value: 'g-other' } })
@@ -481,11 +478,11 @@ describe('CreateWorkspaceDialog', () => {
     fireEvent.click(createButton())
     expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
       expect.objectContaining({ title: 'Fix the build', group: 'g-other' }))
-    // The optimistic row is filed in the group from its first frame.
+    // The optimistic row is in the group from the start.
     expect(provision.mock.calls[0][5]).toBe('g-other')
 
-    // A group with a live member is offered; "+ New group" is a name box, and
-    // Escape in it goes back to the dropdown rather than closing the dialog.
+    // A group with a live member is offered. "+ New group" shows a name box,
+    // where Escape returns to the dropdown instead of closing the dialog.
     cleanup()
     useUiStore.setState({ createWorkspaceDialog: null })
     snapshot.mockReturnValue(project({}, 'k8s', {
@@ -506,14 +503,14 @@ describe('CreateWorkspaceDialog', () => {
     expect(createButton().title).toBe('Name the new group')
     fireEvent.change(name, { target: { value: ' Release  prep ' } })
     fireEvent.click(createButton())
-    // Sent by name for the server to create; no id yet to file the row under.
+    // Sent by name for the server to create; there is no id yet.
     expect(vi.mocked(createWorkspace)).toHaveBeenLastCalledWith('proj', 'claude', expect.any(Function),
       expect.any(String), expect.objectContaining({ group: 'Release prep' }))
     expect(provision.mock.calls[1][5]).toBeUndefined()
   })
 
-  // The branch last created from is remembered (see the first test) — but
-  // one origin no longer has falls back to origin's default.
+  // The remembered branch (see the first test) falls back to origin's
+  // default when origin no longer has it.
   it('opens on origin\'s default when origin lost the branch last created from', async () => {
     vi.mocked(getProjectBranches).mockResolvedValue({ ...BRANCHES, defaultBranch: 'dev' })
     snapshot.mockReturnValue(project({ lastBranch: 'deleted' }))
@@ -567,9 +564,9 @@ describe('CreateWorkspaceDialog', () => {
   })
 
   describe('queueing', () => {
-    // A parent's settings are what a child defaults to: its first
-    // conversation's agent and current model, its posture, and the branch it
-    // forked from — every one sent concrete.
+    // A child defaults to its parent's settings: the first conversation's
+    // agent and model, the permission mode, and the fork branch. All are sent
+    // as concrete values.
     it('seeds from the parent workspace and queues with every setting concrete', async () => {
       vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
@@ -615,8 +612,8 @@ describe('CreateWorkspaceDialog', () => {
       fireEvent.change(select('Start'), { target: { value: 'w-parent' } })
       // The group follows the parent until it is picked.
       expect(select('Group').value).toBe('g-review')
-      // The agent was untouched, so it follows the parent — and a new agent
-      // brings its own memory, so the posture pick goes with the old one.
+      // The agent was untouched, so it follows the parent, and the new agent
+      // brings its own remembered permission mode.
       expect(select('Agent').value).toBe('codex')
       expect(select('Permissions').value).toBe('accept-edits')
       expect(screen.getByRole('button', { name: 'Queue' })).toBeTruthy()
@@ -648,8 +645,8 @@ describe('CreateWorkspaceDialog', () => {
       fireEvent.keyDown(name, { key: 'Enter' })
       expect(updateQueuedWorkspace).not.toHaveBeenCalled()
 
-      // × puts its own group back. Review holds only a queued entry, which
-      // the sidebar nests under its parent — still offered after moving off it.
+      // × restores its own group. Review holds only a queued entry, and is
+      // still offered after the entry moves off its parent.
       fireEvent.click(screen.getByRole('button', { name: 'Pick an existing group' }))
       expect(select('Group').value).toBe('g-review')
       fireEvent.change(select('Group'), { target: { value: '' } })
@@ -691,7 +688,7 @@ describe('CreateWorkspaceDialog', () => {
       expect(modelInput().value).toBe('Sonnet 5')
       expect(select('Permissions').value).toBe('manual')
       expect(branchInput().value).toBe('release/2.x')
-      // Itself and what hangs under it would be a chain that never starts.
+      // Itself and its descendants would form a chain that never starts.
       const offered = [...select('Start').options].map((o) => o.value)
       expect(offered).toEqual(['', 'w-parent', 'q1', 'q4'])
       expect(submitButton().textContent).toBe('Save')
@@ -760,8 +757,7 @@ describe('CreateWorkspaceDialog', () => {
       retitle('Someday')
       fireEvent.change(select('Permissions'), { target: { value: 'plan' } })
 
-      // Keep editing goes back to the form, prompt and all.
-      // A reload would lose it as surely as a close.
+      // A reload is guarded like a close.
       const unload = new Event('beforeunload', { cancelable: true })
       window.dispatchEvent(unload)
       expect(unload.defaultPrevented).toBe(true)
@@ -820,7 +816,7 @@ describe('CreateWorkspaceDialog', () => {
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
       expect(saveDraftWorkspace).toHaveBeenLastCalledWith('proj', expect.objectContaining({ prompt: 'a whole idea' }), 'd1')
 
-      // Gone meanwhile (another tab created from it): the edit is saved anew.
+      // Deleted meanwhile (another tab created from it): saved as a new draft.
       cleanup()
       vi.mocked(saveDraftWorkspace).mockClear()
         .mockRejectedValueOnce(new ServerError('NOT_FOUND', 'project proj has no draft workspace d1'))
@@ -855,7 +851,7 @@ describe('CreateWorkspaceDialog', () => {
       expect(heading()).toBe('Named')
       expect(select('Group').value).toBe('g-other')
       fireEvent.click(createButton())
-      // The server drops the draft once the create succeeds, so a failed one keeps it.
+      // The server deletes the draft only once the create succeeds.
       expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
         branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea',
         title: 'Named', group: 'g-other', draftId: 'd1',

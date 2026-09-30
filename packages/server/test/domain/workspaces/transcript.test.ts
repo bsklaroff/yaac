@@ -12,15 +12,14 @@ import { getAgentSessionTranscript } from '#domain/workspaces/transcript'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
- * Which file a conversation's history comes out of, which is the whole of what
- * this mediator decides. Both readers behind it run for real against files on
- * disk — the point of the feature is that a conversation is readable with no
- * pod, so a test that mocked the read would be testing nothing.
+ * Which file a conversation's history is read from. Both readers run for
+ * real against files on disk, since the feature exists to read a
+ * conversation with no pod.
  */
 
 const SLUG = 'demo'
 const WORKSPACE = 'wt-1'
-/** claude conversation ids are UUIDs; the founding one is the workspace's. */
+/** claude conversation ids are UUIDs; the first one is the workspace's id. */
 const ACP_SESSION = '11111111-1111-1111-1111-111111111111'
 const TUI_SESSION = '22222222-2222-2222-2222-222222222222'
 
@@ -45,7 +44,7 @@ async function seedSession(
   ])
 }
 
-/** The record acpd tees as it relays — where an `acp` conversation lives. */
+/** Write the record acpd keeps of an `acp` conversation. */
 async function writeAcpRecord(agentSessionId: string, lines: unknown[]): Promise<void> {
   const dir = acpLogDir(SLUG, WORKSPACE)
   await fs.mkdir(dir, { recursive: true })
@@ -55,8 +54,8 @@ async function writeAcpRecord(agentSessionId: string, lines: unknown[]): Promise
   )
 }
 
-/** claude's own transcript, at the layout-derived path — where a `tui`
- *  conversation lives when nothing recorded a path for it. */
+/** Write claude's own transcript at its conventional path, used for a `tui`
+ *  conversation with no recorded path. */
 async function writeClaudeTranscript(agentSessionId: string, at?: string): Promise<string> {
   const file = at ?? path.join(claudeDir(SLUG), 'projects', '-workspace', `${agentSessionId}.jsonl`)
   await fs.mkdir(path.dirname(file), { recursive: true })
@@ -109,8 +108,7 @@ describe('getAgentSessionTranscript', () => {
   })
 
   it('finds a conversation with no recorded path in the workspace\'s own history', async () => {
-    // The layout every tool writes today; the conversation id and the
-    // workspace id are both needed to find it, and are not interchangeable.
+    // Finding it needs both the conversation id and the workspace id.
     await seedSession(TUI_SESSION)
     await writeClaudeTranscript(
       TUI_SESSION,
@@ -123,9 +121,8 @@ describe('getAgentSessionTranscript', () => {
   })
 
   it('prefers a recorded transcript path over the one the layout implies', async () => {
-    // codex's rollout filename is not derivable, and a `/clear`ed claude
-    // conversation can sit anywhere the hook found it — so the recorded path
-    // is what a reader must use when there is one.
+    // codex's rollout filename cannot be derived, and a `/clear`ed claude
+    // conversation can be anywhere, so a recorded path wins.
     await seedSession(TUI_SESSION)
     const elsewhere = path.join(claudeDir(SLUG), 'projects', '-elsewhere', 'moved.jsonl')
     await writeClaudeTranscript(TUI_SESSION, elsewhere)
@@ -138,8 +135,7 @@ describe('getAgentSessionTranscript', () => {
   })
 
   it('answers empty for a conversation whose file was never written', async () => {
-    // An agent that never spoke has an empty history, not a failure — the
-    // same verdict the acp reader reaches for a missing record.
+    // An agent that never spoke has an empty history, as with acp.
     await seedSession(TUI_SESSION)
     expect(await getAgentSessionTranscript(SLUG, WORKSPACE, TUI_SESSION)).toEqual([])
 
@@ -148,20 +144,18 @@ describe('getAgentSessionTranscript', () => {
   })
 
   it('refuses a conversation this install cannot read', async () => {
-    // opencode keeps its history in a sqlite database inside the container, so
-    // once the workspace is gone there is nothing on the host to read. Saying
-    // so beats answering with an empty conversation, which would read as "you
-    // said nothing".
+    // opencode keeps history in a sqlite database inside the container, so
+    // nothing is left on the host. An empty answer would wrongly suggest
+    // nothing was said.
     await seedSession('oc-1', { tool: 'opencode' })
     await expect(getAgentSessionTranscript(SLUG, WORKSPACE, 'oc-1'))
       .rejects.toMatchObject({ code: 'NOT_SUPPORTED' })
   })
 
   it('finds a claude transcript filed under a cwd that is not the pod\'s', async () => {
-    // Only the pod driver runs claude in `/workspace`. A containerless
-    // workspace runs it in the host checkout, so claude files the conversation
-    // under a directory named for that path instead — and this fallback is
-    // exactly the case (no recorded path) where nothing else would find it.
+    // A containerless workspace runs claude in the host checkout, not
+    // `/workspace`, so claude files the conversation under a directory named
+    // for that path.
     await seedSession(TUI_SESSION)
     await writeClaudeTranscript(TUI_SESSION, path.join(
       claudeDir(SLUG), 'projects', '-home-yaac--yaac-projects-demo-workspaces-wt-1',
@@ -173,13 +167,13 @@ describe('getAgentSessionTranscript', () => {
   })
 
   it('refuses a conversation too large to answer with, rather than reading it', async () => {
-    // Whole-file read, projection, one JSON body: a conversation of hundreds
-    // of megabytes would stall the server. Refusing says so; truncating would
-    // look like a conversation that simply started later.
+    // The whole file is read into one JSON body, so a huge one would stall
+    // the server. Truncating would look like a conversation that started
+    // later, so it is refused.
     await seedSession(TUI_SESSION)
     const file = path.join(claudeDir(SLUG), 'projects', '-workspace', `${TUI_SESSION}.jsonl`)
     await fs.mkdir(path.dirname(file), { recursive: true })
-    // Sparse, so the test costs an inode rather than 65 MB of disk.
+    // Sparse, so the file uses no real disk.
     const handle = await fs.open(file, 'w')
     await handle.truncate(65 * 1024 * 1024)
     await handle.close()
@@ -189,9 +183,8 @@ describe('getAgentSessionTranscript', () => {
   })
 
   it('reads nothing through a link or a FIFO planted where a transcript belongs', async () => {
-    // Both files are written from inside the sandbox. A link would render
-    // whatever it names (another project's conversation); a FIFO would park
-    // a thread of the server's fs pool until something wrote to it.
+    // Both files are written from inside the sandbox. A symlink could expose
+    // another project's conversation; a FIFO would block a server fs thread.
     await seedSession(TUI_SESSION)
     await seedSession(ACP_SESSION, { mode: 'acp' })
     const elsewhere = await writeClaudeTranscript(TUI_SESSION, path.join(tmpDir, 'elsewhere', 't.jsonl'))
@@ -215,8 +208,8 @@ describe('getAgentSessionTranscript', () => {
   })
 
   it('reads an acp conversation by its mode, whatever tool it ran', async () => {
-    // The mode decides the file, not the tool: an acp conversation has a
-    // record whether or not its tool leaves a transcript of its own.
+    // The mode picks the file, not the tool: an acp conversation always has
+    // an acpd record.
     await seedSession(ACP_SESSION, { tool: 'opencode', mode: 'acp' })
     await writeAcpRecord(ACP_SESSION, [
       {

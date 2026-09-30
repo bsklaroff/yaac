@@ -14,28 +14,18 @@ import type {
 } from '@yaac/shared/acp'
 
 /**
- * How an ACP conversation is drawn — messages, thinking, tool calls, plans.
+ * Renders an ACP conversation: messages, thinking, tool calls, plans and
+ * permission asks. Shared by the live chat pane and a stopped workspace's
+ * transcript, so it depends only on the events it is given (no socket, store
+ * or workspace id).
  *
- * Split out from the chat pane because a conversation is worth reading in two
- * places that share nothing else: the live pane, which owns a socket, a draft
- * and a composer, and a *stopped* workspace's transcript, which owns none of
- * them and is a plain fetch. Both render the same events, so both render them
- * through here; the transport is the caller's business.
- *
- * Everything below is pure over the events it is handed. Nothing reaches for a
- * connection, a store or a workspace id, which is the property that makes a
- * conversation from a pod that no longer exists render exactly like a live
- * one.
- *
- * Rendering is deliberately chunk-driven. The agent emits text in small pieces
- * and each one is its own event, so consecutive events of the same kind are
- * coalesced into one bubble at render time. Buffering whole messages
- * server-side would be simpler and would cost the thing that makes a live pane
- * feel live.
+ * The agent streams text in small chunks, one event each; consecutive
+ * same-kind chunks are merged into one bubble at render time so a live pane
+ * updates as text arrives.
  */
 
-/** Consecutive same-kind text events read as one message, its images kept
- *  apart from its words so they can be drawn rather than named. */
+/** One rendered unit of a conversation. Text groups keep images separate so
+ *  they can be drawn rather than named. */
 export type Group =
   | { kind: 'user'; seq: number; text: string; images: AcpImage[] }
   | { kind: 'agent'; seq: number; text: string; images: AcpImage[] }
@@ -44,11 +34,7 @@ export type Group =
   | { kind: 'plan'; seq: number; entries: AcpPlanEntry[] }
   | { kind: 'error'; seq: number; message: string }
   | { kind: 'turn-end'; seq: number; stopReason: string }
-  /**
-   * A permission ask and, once it has one, its answer — one group rather than
-   * two events' worth, because they are one thing to a reader: a question that
-   * is either still on the table or already settled.
-   */
+  /** A permission ask, merged with its answer once one arrives. */
   | {
     kind: 'permission'
     seq: number
@@ -62,31 +48,19 @@ function textOf(content: AcpContent[]): string {
   return content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType} image]`)).join('')
 }
 
-/** A tool call's prose — everything it produced that isn't an edit. */
+/** A tool call's non-diff output as text. */
 function toolTextOf(content: AcpToolContent[] | undefined): string {
   return textOf((content ?? []).filter((c): c is AcpContent => c.type !== 'diff'))
 }
 
 /**
- * Fold the event stream into renderable groups.
- *
- * Two collapses happen here, both of which the server deliberately does NOT
- * do: consecutive text chunks of one kind merge into a bubble, and a tool
- * call's successive updates collapse onto its latest state (the server sends
- * each update as its own event so a pane can animate the transition, but the
- * last one is what a reader wants to see).
- *
- * `turn-end` is dropped unless it says something — a plain `end_turn` is the
- * expected outcome and rendering it would put a divider under every reply.
- * `turn-start` is dropped outright: it drives the working indicator, and a
- * turn beginning is already visible as the reply that follows it.
- *
- * A third collapse joins a permission ask to its answer, in place: the pending
- * card BECOMES the decided line, so a settled question does not leave a dead
- * set of buttons above the sentence saying which one was pressed. An answer
- * whose request is not in this stream is dropped — under `bypass` the server
- * settles asks itself and both lines are recorded, so the pair is always
- * whole; a lone answer means the record was truncated ahead of it.
+ * Fold the event stream into renderable groups:
+ * - consecutive text chunks of one kind merge into one group;
+ * - a tool call's updates replace its group in place, keeping the latest;
+ * - a permission answer replaces its ask in place (an answer with no ask in
+ *   the stream, i.e. a truncated record, is dropped);
+ * - `turn-end` is kept only for an unusual stop reason, and `turn-start`
+ *   and `commands` are dropped.
  */
 export function groupEvents(events: AcpEvent[]): Group[] {
   const groups: Group[] = []
@@ -180,14 +154,8 @@ function MessageImage({ image }: { image: AcpImage }): JSX.Element {
   )
 }
 
-/**
- * One file's edit, as the hunks the agent reported for it.
- *
- * An agent sends one diff block per hunk, each naming the same file, so
- * consecutive blocks are gathered back into the file they describe — a reader
- * wants "this file changed, in these three places", not three anonymous
- * fragments.
- */
+/** One file's edit. Agents send one diff block per hunk, so consecutive
+ *  blocks for the same path are gathered into one group. */
 interface EditGroup {
   path: string
   hunks: DiffLine[][]
@@ -204,8 +172,7 @@ function groupDiffs(diffs: AcpDiff[]): EditGroup[] {
   return groups
 }
 
-/** Basename emphasized, directory faint — a long absolute path stays readable
- *  at a glance. */
+/** A path with the directory dimmed and the basename emphasized. */
 function PathLabel({ path }: { path: string }): JSX.Element {
   const cut = path.lastIndexOf('/')
   return (
@@ -227,8 +194,7 @@ function EditGroupView({ group, showPath }: { group: EditGroup; showPath: boolea
       )}
       {group.hunks.map((lines, i) => (
         <div key={i} className={clsx('overflow-x-auto', i > 0 && 'border-t border-hairline')}>
-          {/* No line-number gutter: an edit block is a fragment, and its
-              positions are within the fragment rather than within the file. */}
+          {/* No line numbers: they would count from the hunk, not the file. */}
           <DiffView lines={lines} language={language} showLineNumbers={false} />
         </div>
       ))}
@@ -237,28 +203,16 @@ function EditGroupView({ group, showPath }: { group: EditGroup; showPath: boolea
 }
 
 /**
- * A file read, shown as the file — highlighted for its own path, with the
- * reader's line numbers when it printed any.
+ * A file read's output shown as highlighted source rather than markdown,
+ * which would mangle it (`#` becomes a heading, `_` italicizes).
  *
- * The alternative is what every other tool call gets, which is markdown: fine
- * for prose, wrong for source. A file's text is not a document to reinterpret,
- * and running it through a markdown parser is actively lossy — a leading `#`
- * becomes a heading, an underscore italicizes, indentation collapses. An edit
- * already escapes that by being a diff; this is the same escape for the other
- * half of what an agent does to a file.
+ * Some adapters wrap the output in a markdown fence; it is unwrapped, and its
+ * info string names the language when the path doesn't. A `.md` file is left
+ * as is, since a fence there is part of the document.
  */
 function ReadView({ path, text }: { path?: string; text: string }): JSX.Element {
   const { lines, language } = useMemo(() => {
     const byPath = path !== undefined ? languageForPath(path) : null
-    // Some adapters hand a tool's output back inside a markdown fence. Those
-    // backticks are the adapter's, not the file's — but the fence's info string
-    // is worth keeping: it is what names the language when the call reported no
-    // path, or a path whose extension we don't tokenize.
-    //
-    // Not for a markdown file, though. A `.md` whose whole body is one fenced
-    // block is an ordinary document, and unwrapping it would hide characters
-    // the file really contains; a `.ts` that is nothing but a fence is not a
-    // file that compiles.
     const body = byPath === 'md' ? { text, fence: '' } : unfence(text)
     return {
       lines: codeLines(body.text),
@@ -275,19 +229,11 @@ function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
   )
   const edits = useMemo(() => groupDiffs(diffs), [diffs])
   const body = toolTextOf(call.content)
-  /** A read's body is a file's own text, so it is rendered as source whether or
-   *  not the call said which file: the path picks the highlighting, and a call
-   *  that reported none is still code, just uncolored. */
   const isRead = call.kind === 'read'
   const hasContent = body !== '' || edits.length > 0
-  /**
-   * The user's own choice, or `null` for "hasn't said". An edit opens by
-   * default because the diff is the thing worth reading; everything else stays
-   * a one-line row. This is derived per render rather than seeded into state
-   * because a tool call arrives `pending` and empty, and grows its content
-   * through later updates — an initial value would have been decided before
-   * there was anything to decide on.
-   */
+  /** The user's expand/collapse choice, or `null` if they haven't made one.
+   *  Edits default open. The default is derived each render because a call
+   *  arrives empty and gains content in later updates. */
   const [choice, setChoice] = useState<boolean | null>(null)
   const open = (choice ?? edits.length > 0) && hasContent
   const stats = useMemo(
@@ -334,17 +280,13 @@ function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
         <div className="max-h-96 overflow-auto border-t border-hairline bg-bg">
           {edits.map((group, i) => (
             <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
-              {/* The row's own title already names the file when there is only
-                  one, so a header there would say it twice. */}
               <EditGroupView group={group} showPath={edits.length > 1} />
             </div>
           ))}
           {body !== '' && (isRead ? (
             <div className={clsx('overflow-x-auto', edits.length > 0 && 'border-t border-hairline')}>
-              {/* First location, best-effort: `locations` and `content` are
-                  merged independently, so a call reporting several files may
-                  not name the one this body came from. Picking wrong costs
-                  colors and nothing else — the text is shown either way. */}
+              {/* Best effort: with several locations the first may not be
+                  the file this body came from, which only affects colors. */}
               <ReadView path={call.locations?.[0]?.path} text={body} />
             </div>
           ) : (
@@ -379,31 +321,19 @@ function ThoughtRow({ text }: { text: string }): JSX.Element {
   )
 }
 
-/** Whether an option says yes. Used for styling only, so an option the agent
- *  gave no kind falls in with the refusals: an unlabelled button is not one to
- *  dress up as the safe default. */
+/** Whether an option allows the action. Styling only; an option with no
+ *  kind is styled as a refusal. */
 function isAllow(option: AcpPermissionOption | undefined): boolean {
   return option?.kind === 'allow_once' || option?.kind === 'allow_always'
 }
 
 /**
- * The agent asking to do something, and the answer once there is one.
+ * A permission ask, showing the tool call as a `ToolRow`, with answer
+ * buttons. Once answered it collapses to one line naming the choice.
  *
- * The call being asked about is rendered by `ToolRow` — the same row it will
- * appear as once it runs — because that is exactly the evidence the decision
- * needs: the command, or the diff, not a restatement of it. An answered ask
- * collapses to a single line naming what was chosen, so a `manual` transcript
- * reads back as the decisions that produced it.
- *
- * Answering is optimistic about the click and not about the outcome: the
- * buttons disable the moment one is pressed, but the card retires only when the
- * server's `permission-resolved` arrives. A send that never left (socket down)
- * re-enables them, because nothing on the far side heard it.
- *
- * With no `onAnswer` there is nothing behind the buttons, so they are not
- * offered: a stopped workspace's transcript can contain an ask whose agent died
- * unanswered, and a live-looking button that silently does nothing is worse
- * than plainly saying the question outlived its conversation.
+ * Buttons disable on click, but the card changes only when the server's
+ * `permission-resolved` arrives; a send that fails re-enables them. Without
+ * `onAnswer` (a stopped workspace's transcript) no buttons are shown.
  */
 function PermissionRow({
   requestId,
@@ -468,9 +398,8 @@ function PermissionRow({
               {o.name}
             </button>
           ))}
-          {/* Always available, even when the agent offered only allows: the
-              turn is blocked until this is answered, so a user who wants
-              neither needs a way out that is not "restart the workspace". */}
+          {/* Always offered: the turn is blocked until the ask is answered,
+              even when the agent offered only allow options. */}
           <button
             type="button"
             disabled={sending}
@@ -510,19 +439,12 @@ function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
 }
 
 /**
- * A conversation, rendered.
+ * A conversation, rendered from groups (see `groupEvents`) so a caller that
+ * also needs them folds the stream only once.
  *
- * Takes groups rather than events so a caller that already needs them — the
- * live pane, which keys its empty state and its scroll-follow on them — folds
- * the stream once instead of twice.
- *
- * `break-words` here rather than on each bubble: overflow-wrap is inherited,
- * so one declaration covers every message, plan entry and tool row. What it
- * guards against is the agent's staple — a path, a URL, a hash — arriving as
- * one unbreakable token, which on a phone is wider than the pane and would
- * turn the conversation into a sideways scroller. Fenced code is exempt by
- * construction: it carries its own horizontal scroller, because breaking a
- * line of code is worse than scrolling it.
+ * `break-words` on the container is inherited by every row, so long paths or
+ * URLs wrap instead of widening the pane on a phone. Code blocks scroll
+ * horizontally instead.
  */
 export function AcpTranscript({
   groups,
@@ -531,20 +453,15 @@ export function AcpTranscript({
 }: {
   groups: Group[]
   className?: string
-  /**
-   * How to answer a permission ask, when there is anything to answer it with.
-   * The live pane passes its socket send; a stopped workspace's transcript
-   * passes nothing, and its cards render as the unanswered questions they are.
-   */
+  /** Sends a permission answer; returns false if it could not be sent.
+   *  Omitted for a stopped workspace, whose asks render as unanswered. */
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean
 }): JSX.Element {
   return (
     <div className={clsx('space-y-2.5 break-words text-sm', className)}>
       {groups.map((g) => {
         if (g.kind === 'user') {
-          // Left, like everything else, and left literal: a bubble is what
-          // marks it as the user's, and what they typed is not the agent's
-          // markdown to reinterpret.
+          // Rendered as plain text, not markdown.
           return (
             <div key={g.seq} className="flex justify-start">
               <div className="max-w-[85%] whitespace-pre-wrap rounded-md bg-surface-2 px-2.5 py-1.5 text-text">

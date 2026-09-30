@@ -1,6 +1,3 @@
-// Unit tests for the pty output micro-batcher: leading-edge-immediate
-// flush, in-window coalescing, the size cap, and the drain/dispose
-// lifecycle around stream teardown.
 import { describe, it, expect } from 'vitest'
 // Untyped plain-JS module (it runs under bare node in the pod).
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment

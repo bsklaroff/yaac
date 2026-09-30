@@ -9,9 +9,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 /**
- * The proxy's live view of its input objects, driven the way the informers
- * drive it (add / update / delete of raw objects), with the ssh-agent
- * reload faked at the process boundary — `ssh-add` itself.
+ * The proxy's live view of its input objects, driven with raw add / update
+ * / delete events as the informers would, with `ssh-add` faked.
  */
 
 const b64 = (v: unknown): string => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64')
@@ -46,8 +45,8 @@ const claudeBundle = (accessToken: string, expiresAt: number) => ({
   accessToken, refreshToken: `${accessToken}-refresh`, expiresAt, scopes: [] as string[],
 })
 
-/** A fake `spawn` for ssh-add: records argv, stdin and — since ssh-add
- *  reads it while it runs — the known_hosts file's contents; exits 0. */
+/** A fake `spawn` for ssh-add: records argv, stdin and the known_hosts
+ *  file's contents at spawn time (it is rewritten per key); exits 0. */
 function fakeSshAdd(knownHostsFile: string): {
   spawn: typeof nodeSpawn
   calls: Array<{ args: string[]; stdin: string; knownHosts: string }>
@@ -84,9 +83,7 @@ describe('ProxyObjects', () => {
     expect(objects.credentials.claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant' })
     expect(loads).toEqual([[{ privateKey: 'K', hosts: ['github.com'], knownHosts: ['github.com ssh-ed25519 H'] }]])
 
-    // A token-only change leaves the agent alone: a reload empties it
-    // under whatever ssh operation is in flight, so it runs only when what
-    // the agent holds moved.
+    // A token-only change doesn't reload the agent.
     await objects.applyCredentials(credentialsSecret({
       'claude.json': { kind: 'api-key', apiKey: 'sk-ant-rotated' },
       'ssh-keys.json': [sshKey(grant('demo'))],
@@ -94,16 +91,15 @@ describe('ProxyObjects', () => {
     expect(objects.credentials.claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant-rotated' })
     expect(loads).toHaveLength(1)
 
-    // So does assigning the key to another project on a host it already
-    // serves: which workspaces may use it is the relay's live lookup, and
-    // the decoded set carries the new assignment for it.
+    // Nor does reassigning the key to another project on a host it already
+    // serves; the relay looks up assignments live.
     await objects.applyCredentials(credentialsSecret({
       'ssh-keys.json': [sshKey(grant('other'), grant('demo'))],
     }))
     expect(loads).toHaveLength(1)
     expect(objects.credentials.ssh[0].projects.map((p) => p.slug)).toEqual(['other', 'demo'])
 
-    // A new host is a new constraint, which only a reload can add…
+    // A new host is a new constraint, which needs a reload…
     await objects.applyCredentials(credentialsSecret({
       'ssh-keys.json': [sshKey(grant('demo'), grant('gl', 'gitlab.com'))],
     }))
@@ -129,9 +125,7 @@ describe('ProxyObjects', () => {
   })
 
   it('takes credentials only from the one object that is the credentials Secret, on every verb', async () => {
-    // The label is what the informer selects on; the name is the writer's
-    // invariant, held on the reader too — a stray labelled object must
-    // neither fill the set nor, when it goes, blank it.
+    // A labelled object with the wrong name neither fills nor blanks the set.
     const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
     const stray = {
       metadata: { name: 'something-else' },
@@ -163,8 +157,7 @@ describe('ProxyObjects', () => {
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'oauth', claudeAiOauth: pushed } }))
     expect(objects.claudeOAuthBundle()).toEqual(rotated)
 
-    // The server adopted it and echoed it back: the capture is dropped, and
-    // from here the pushed bundle is the one that moves.
+    // Once the server echoes it back, the capture is dropped.
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'oauth', claudeAiOauth: rotated } }))
     expect(objects.claudeOAuthBundle()).toEqual(rotated)
     const newer = claudeBundle('a3', 3_000)

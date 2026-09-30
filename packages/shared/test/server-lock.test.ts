@@ -96,9 +96,8 @@ describe('server lock', () => {
     })
 
     it('leaves the lock alone when the expected holder does not match', async () => {
-      // Two servers of one install can genuinely both be pid 1 (each pod's
-      // pid namespace hands out the same low numbers), so the holder is the
-      // instance: a successor's lock survives its predecessor's late cleanup.
+      // Two server pods can both be pid 1, so ownership is by instance: a
+      // successor's lock survives its predecessor's late cleanup.
       const lock: ServerLock = { pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
       await writeLock(lock)
       await removeLock('predecessor')
@@ -167,10 +166,8 @@ describe('server lock', () => {
     })
 
     it('judges an off-host lock by its lease, not by a pid or a port here', async () => {
-      // Once the server can be a pod, both local signals lie: every pid
-      // namespace hands out the same low pids, and the lock's port is the
-      // one bound INSIDE the pod — so `127.0.0.1:<that>` on this machine is
-      // an unrelated listener, quite possibly another yaac.
+      // For a server pod, the pid is from another pid namespace and the port
+      // is bound inside the pod, so neither can be checked on this machine.
       const fresh: ServerLock = {
         pid: 1, port: 1, startedAt: 0, buildId: 'b',
         instance: 'i', host: 'yaac-server-abc123', heartbeatAt: Date.now(),
@@ -201,8 +198,7 @@ describe('server lock', () => {
 
   describe('newLeaseFields', () => {
     it('mints the three fields together, so a pid is never read out of context', () => {
-      // A lock carrying an instance but no host would be judged by a pid in
-      // whichever namespace happened to write it.
+      // Without a host, the pid could be from any namespace.
       const a = newLeaseFields()
       const b = newLeaseFields()
       expect(a.instance).not.toBe(b.instance)
@@ -224,10 +220,9 @@ describe('server lock', () => {
     })
 
     it('reports the loss rather than resurrecting us as the owner', async () => {
-      // If another server took the lock over while this one was paused, a
-      // blind rewrite would put a stale identity back on a live install —
-      // and on hostPath storage the lease IS PGlite's single-writer guard,
-      // so the caller has to act on the false rather than retry.
+      // Another server may have taken the lock while this one was paused. On
+      // hostPath storage the lease guards PGlite's single writer, so the
+      // caller must act on `false` rather than retry.
       await writeLock({
         pid: 2, port: 1, startedAt: 0, buildId: 'b',
         instance: 'successor', host: 'other-pod', heartbeatAt: Date.now(),
@@ -242,8 +237,7 @@ describe('server lock', () => {
   })
 
   describe('isLockReady', () => {
-    // Spin up a fake /health that returns `body` so we can vary the `ready`
-    // field independently of liveness.
+    // A fake /health, so `ready` can vary independently of liveness.
     async function withHealth(
       body: string,
       run: (lock: ServerLock) => Promise<void>,
@@ -283,8 +277,7 @@ describe('server lock', () => {
     })
 
     it('returns false when /health is live but reports ready: false', async () => {
-      // The exact race the readiness gate closes: the server is up and
-      // answering, but still initializing, so it must not be treated as ready.
+      // Up and answering but still initializing: not ready.
       await withHealth('{"ok":true,"ready":false}', async (lock) => {
         expect(await isLockReady(lock)).toBe(false)
       })
@@ -353,11 +346,8 @@ describe('server lock', () => {
     })
 
     it('exactly one caller wins when many acquires race concurrently', async () => {
-      // All 16 callers share the same /health port so isLockLive returns
-      // true for whichever caller wins — otherwise losers would see the
-      // winner's lock as stale and clobber it. In the real runServer
-      // flow, each attempt has just bound a real port, so the analog of
-      // this "live port" holds by construction.
+      // All callers share one live /health port, as each real runServer
+      // attempt has bound its own, so losers see the winner's lock as live.
       const server = http.createServer((req, res) => {
         if (req.url === '/api/health') { res.writeHead(200).end('{"ok":true}') }
         else res.writeHead(404).end()

@@ -183,6 +183,27 @@ pass after an upgrade removes them, so a release later is plenty. The cleanup
 pod builder can then take a project id again, and its pods the usual
 project labels.
 
+## A main registry still on a node hostPath
+
+`ensureMainRegistry` (`drivers/k8s/cluster/main-registry.ts`) skips its
+apply when the registry already answers, except when
+`mainRegistryStorageIsClaim` finds the Deployment's `storage` volume is not a
+PVC. Only an install from before registry blobs moved onto a PVC has such a
+Deployment; the re-apply converts it, starting from an empty claim.
+
+**What it reads:** the main registry Deployment's pod-spec volumes.
+
+**What breaks silently if it goes too early:** an old install whose registry
+answers on server start keeps serving from the node's hostPath instead of
+the PVC, until someone runs `yaac cluster install`. Nothing errors; the
+registry's storage is just not the volume the rest of the code expects.
+
+**How to tell it is safe to remove:** `kubectl get deploy yaac-registry -n yaac
+-o jsonpath='{..volumes}'` shows a `persistentVolumeClaim` storage volume on
+every install. One server start after the upgrade converts it, so a release
+later is enough. `specsClaimStorage`, `readMainRegistryDeploy` and
+`RawRegistryDeploy` exist only for this check and go with it.
+
 ## Workspaces started before project ids
 
 The containerless `reapNodeLocal` (`drivers/containerless/teardown.ts`) keeps

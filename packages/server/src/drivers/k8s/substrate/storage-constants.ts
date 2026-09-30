@@ -1,7 +1,7 @@
 /**
- * The storage vocabulary: the names and pod paths every manifest that
- * mounts a tier agrees on. Zero imports, like proxy-constants.ts, so a
- * builder can name a claim without pulling the resolver in.
+ * Claim names and pod paths shared by every manifest that mounts a storage
+ * tier. Has no imports (like proxy-constants.ts), so a manifest builder can
+ * name a claim without pulling in the path resolver.
  *
  * The three tiers (the legend in packages/shared/src/paths.ts) reach the
  * cluster as two claims and one node path (docs/server-in-cluster.md
@@ -31,22 +31,22 @@ export const POD_NODE_LOCAL_ROOT = '/yaac/node-local'
 export const NODE_LOCAL_NODE_ROOT = '/var/lib/yaac/node'
 
 /**
- * Label naming the install namespace on a CLUSTER-SCOPED object (a
- * PersistentVolume, a ClusterRole), which does not cascade when that
- * namespace is deleted — so the e2e sweep can find an interrupted run's
- * leftovers without matching the real install's.
+ * Label naming the install namespace on a cluster-scoped object (a
+ * PersistentVolume, a ClusterRole). Such objects survive namespace
+ * deletion, so the e2e sweep uses this label to find an interrupted run's
+ * leftovers without touching the real install's.
  */
 export const LABEL_INSTALL_NAMESPACE = 'yaac.install-namespace'
 /**
  * Label naming which of the two claims a PersistentVolume backs. A
- * class-provisioned volume's name is the provisioner's, so this — with the
- * install id — is how a later install finds a volume that outlived its
- * claim.
+ * class-provisioned volume's name is chosen by the provisioner, so this
+ * label plus the install id is how a later install finds a volume that
+ * outlived its claim.
  */
 export const LABEL_CLAIM = 'yaac.claim'
 /**
  * Label carrying `server.json`'s `installId` on the server Deployment and
- * on every volume a byo install provisions: which install they are, where
- * the data-dir hash only says which PATH they were installed from.
+ * on every volume a byo install provisions. It identifies the install; the
+ * data-dir hash only identifies the path it was installed from.
  */
 export const LABEL_INSTALL_ID = 'yaac.install-id'

@@ -10,8 +10,7 @@ import {
   getAgentSessionFirstMessage,
   resolveAgentPermissionMode,
 } from '#runtime/agents/agent-tools'
-// The marker lists are the tool modules' business — imported here as setup
-// values so the format assertions survive a wording change to either.
+// Setup values, so a wording change to a marker does not break these tests.
 import { OPENCODE_BUSY_MARKERS } from '#runtime/agents/opencode'
 import { PI_BUSY_MARKERS } from '#runtime/agents/pi'
 
@@ -21,13 +20,8 @@ describe('agentStatusFormat', () => {
     expect(agentStatusFormat('codex')).toBe('#{pane_title}')
   })
 
-  // Pane tools resolve the verdict inside tmux, so the format string IS the
-  // contract with tmux — assert it exactly. The OR nesting, the comma that
-  // separates `#{||:}` arguments, the marker order, and the trailing
-  // `,running,waiting` are each a way for this to keep parsing but stop
-  // meaning what it says. The markers themselves come from the tool modules
-  // (setup values, not the thing under test), so rewording one doesn't drag
-  // this test along.
+  // tmux evaluates this format itself, so assert it exactly: small mistakes
+  // still parse but mean something else.
   it.each(['opencode', 'pi'] as const)('resolves %s tmux-side by content search', (tool) => {
     const [first, second] = tool === 'opencode' ? OPENCODE_BUSY_MARKERS : PI_BUSY_MARKERS
     expect(agentStatusFormat(tool)).toBe(
@@ -35,9 +29,7 @@ describe('agentStatusFormat', () => {
     )
   })
 
-  // The nesting above is only exercised for two markers because that is what
-  // both tools ship. Spelled out for opencode's real list so a reader can see
-  // the shape tmux actually receives.
+  // Spelled out for opencode's real markers, to show what tmux receives.
   it("nests opencode's markers into one case-insensitive content search", () => {
     expect(agentStatusFormat('opencode')).toBe(
       '#{?#{||:#{C/ri:esc\\s+(again\\s+to\\s+)?interrupt},#{C/ri:[■⬝][■⬝][■⬝][■⬝]}},running,waiting}',
@@ -48,8 +40,7 @@ describe('agentStatusFormat', () => {
 
 describe('classifyAgentObservation', () => {
   it('classifies claude/codex titles by their spinner prefix', () => {
-    // claude's spinner glyphs are release-dependent (Braille through
-    // 2.1.226, the circle phases from 2.1.228) — both route to running.
+    // claude's spinner glyphs vary by release; both sets mean running.
     expect(classifyAgentObservation('claude', '⠋ Fixing the bug')).toBe('running')
     expect(classifyAgentObservation('claude', '◐ Fixing the bug')).toBe('running')
     expect(classifyAgentObservation('claude', '✳ idle prompt')).toBe('waiting')
@@ -58,8 +49,6 @@ describe('classifyAgentObservation', () => {
   })
 
   it('passes through opencode/pi verdicts already resolved tmux-side', () => {
-    // The subscription format yields the word directly; the watcher only
-    // trims and maps it (never re-classifies pane content).
     expect(classifyAgentObservation('opencode', 'running')).toBe('running')
     expect(classifyAgentObservation('opencode', 'waiting')).toBe('waiting')
     expect(classifyAgentObservation('pi', ' running ')).toBe('running')
@@ -69,8 +58,7 @@ describe('classifyAgentObservation', () => {
 
 describe('agentWindowName', () => {
   it("gives the workspace's first agent the bare tool name", () => {
-    // Every existing `yaac:<tool>` target — prompt paste, `attach --agent`,
-    // the terminals listing — depends on this staying unsuffixed.
+    // `yaac:<tool>` targets depend on the first window being unsuffixed.
     expect(agentWindowName('claude', 0)).toBe('claude')
     expect(agentWindowName('codex', 0)).toBe('codex')
   })
@@ -91,9 +79,8 @@ describe('agentWindowTool', () => {
   })
 
   it("matches any tool, not just the workspace's own", () => {
-    // A codex conversation opened inside a claude workspace must still be
-    // classified; missing it leaves the pane out of the live set, and the
-    // next restart silently forgets the conversation.
+    // Otherwise a restart would forget a codex conversation in a claude
+    // workspace.
     expect(agentWindowTool('codex-2')).toBe('codex')
   })
 
@@ -119,32 +106,28 @@ describe('getAgentSessionFirstMessage', () => {
   })
 
   it('returns undefined without a recorded path', async () => {
-    // There is deliberately no by-id fallback: a `/clear` conversation has an
-    // id yaac never chose, and codex's rollout filename is derivable from no
-    // id at all — the recorded path is the only handle.
+    // No lookup by id: a `/clear` conversation's id is not yaac's, and a
+    // codex rollout's filename cannot be derived from one.
     await expect(getAgentSessionFirstMessage('claude', undefined)).resolves.toBeUndefined()
     await expect(getAgentSessionFirstMessage('codex', undefined)).resolves.toBeUndefined()
     await expect(getAgentSessionFirstMessage('pi', undefined)).resolves.toBeUndefined()
   })
 
   it('returns undefined for opencode with no live pod to probe', async () => {
-    // opencode keeps its history in a container-local sqlite DB, so its first
-    // message is an HTTP probe into the running pod and is gone with it.
+    // opencode's history is only reachable through the running pod.
     await expect(getAgentSessionFirstMessage('opencode', { slug: 'demo', dir: '/tmp', rel: 'ignored.jsonl' })).resolves.toBeUndefined()
   })
 })
 
 describe('resolveAgentPermissionMode', () => {
-  // An adapter's session mode ids, read back through its profile — including
-  // claude's ids that do not read across (`default` is `manual`, and so is
-  // `dontAsk`, which yaac never launches in).
+  // Each adapter's mode ids map back to postures; claude's `default` and
+  // `dontAsk` both map to `manual`.
   it('reads an acp mode id back through the adapter it came from', () => {
     expect(resolveAgentPermissionMode('acp', 'claude', 'default', 'bypass')).toBe('manual')
     expect(resolveAgentPermissionMode('acp', 'claude', 'dontAsk', 'bypass')).toBe('manual')
     expect(resolveAgentPermissionMode('acp', 'claude', 'plan', 'bypass')).toBe('plan')
     expect(resolveAgentPermissionMode('acp', 'codex', 'agent-full-access', 'accept-edits')).toBe('bypass')
-    // No posture stands for these, so none is recorded: pi's thinking levels,
-    // or a name that is only an Object property.
+    // Not postures: pi's thinking levels, or an Object prototype key.
     expect(resolveAgentPermissionMode('acp', 'pi', 'high', 'bypass')).toBeUndefined()
     expect(resolveAgentPermissionMode('acp', 'claude', 'constructor', 'bypass')).toBeUndefined()
   })
@@ -157,15 +140,13 @@ describe('resolveAgentPermissionMode', () => {
     expect(resolveAgentPermissionMode('tui', 'claude', 'constructor', 'plan')).toBeUndefined()
   })
 
-  // An opencode agent is half a posture; the rules the running process has
-  // are the other half. plan and manual share theirs, so the agent alone
-  // moves between them — and nowhere else.
+  // An opencode posture is the agent plus the process's rules. plan and
+  // manual share rules and differ only by agent.
   it('reads an opencode agent against the rules the workspace runs under', () => {
     expect(resolveAgentPermissionMode('tui', 'opencode', 'build', 'plan')).toBe('manual')
     expect(resolveAgentPermissionMode('tui', 'opencode', 'plan', 'manual')).toBe('plan')
     expect(resolveAgentPermissionMode('tui', 'opencode', 'build', 'accept-edits')).toBe('accept-edits')
-    // The plan agent over looser rules is no posture yaac has; nor is an agent
-    // of a project's own.
+    // Neither plan with looser rules nor a project's own agent is a posture.
     expect(resolveAgentPermissionMode('tui', 'opencode', 'plan', 'bypass')).toBeUndefined()
     expect(resolveAgentPermissionMode('tui', 'opencode', 'reviewer', 'manual')).toBeUndefined()
   })

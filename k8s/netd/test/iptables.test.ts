@@ -46,9 +46,8 @@ describe('scoreBackendDump', () => {
 
 describe('detectBackend', () => {
   it('picks the backend carrying Calico\'s chains', async () => {
-    // The failure this prevents is silent: writing to the backend the node
-    // does NOT use produces a chain that exists, counts nothing, and is
-    // never consulted by the packet path.
+    // Rules written to the backend the node doesn't use are silently
+    // ignored.
     const r = runner((file) =>
       Promise.resolve(file.startsWith('iptables-nft') ? '-A cali-PREROUTING -j x' : ''))
     await expect(detectBackend(r)).resolves.toBe('nft')
@@ -105,8 +104,7 @@ describe('applyRestore', () => {
   })
 
   it('always passes --noflush so only our chain changes', async () => {
-    // Without it, restore flushes every chain in the table it names —
-    // including Calico's and kube-proxy's, i.e. the node's whole datapath.
+    // Without it, restore would flush Calico's and kube-proxy's chains.
     const r = runner(() => Promise.resolve(''))
     await applyRestore('legacy', '*nat\nCOMMIT\n', r)
     expect(r.calls[0][1]).toEqual(['--noflush'])
@@ -128,8 +126,8 @@ describe('teardownChain', () => {
   })
 
   it('treats a missing chain as success', async () => {
-    // Shutdown teardown runs on paths where the chain may never have been
-    // created; a throw here would mask the real exit reason.
+    // The chain may never have been created; a throw would mask the real
+    // exit reason.
     const r = runner(() => Promise.reject(new Error('No chain/target/match')))
     await expect(teardownChain('nft', 'YAAC_RDR_x', r)).resolves.toBeUndefined()
     expect(r.calls).toHaveLength(3)

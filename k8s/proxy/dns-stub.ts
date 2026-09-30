@@ -1,24 +1,16 @@
 /**
- * Minimal DNS wire-format helpers for the proxy's UDP/53 stub — pure (no
- * deps, no I/O). Workspace pods point their resolver (dnsConfig.nameservers) at
- * the proxy; the proxy's UDP handler (proxy.ts) is split-horizon:
+ * DNS wire-format helpers for the proxy's UDP/53 stub. Workspace pods use the
+ * proxy as their resolver, and proxy.ts answers split-horizon:
  *
- *   - EXTERNAL names get a fixed sinkhole IP. That answer is decorative —
- *     netd redirects egress by port (443/80) and the proxy routes by TLS SNI
- *     / HTTP Host, never by the dialed address — so a constant sinkhole is all
- *     a client needs, and resolving nothing real keeps the DNS-tunnelling
- *     channel closed.
- *   - INTERNAL names (`*.cluster.local`, see isInternalName) are forwarded to
- *     the real cluster DNS so the pod learns the live, allocator-assigned
- *     ClusterIP of in-cluster Services (the per-project registry) — which is
- *     what lets yaac stop pinning those ClusterIPs.
+ *   - External names get a fixed sinkhole IP. netd redirects egress by port
+ *     and the proxy routes by SNI / Host, so the address never matters, and
+ *     resolving nothing real keeps DNS tunnelling closed.
+ *   - Internal names (see isInternalName) are resolved by the cluster DNS so
+ *     pods find in-cluster Services such as the per-project registry.
  *
- * This module only parses/classifies/builds; the resolve-or-sinkhole decision
- * and the upstream lookup live in proxy.ts. Everything that is not IN/A (AAAA
- * included) gets an empty NOERROR — not NXDOMAIN — so dual-query resolvers fall
- * through to the A answer, and a failed internal lookup is answered the same
- * way (ip === null below). The TC bit is never set, so resolvers never retry
- * over tcp/53.
+ * Anything other than IN/A (including AAAA) gets an empty NOERROR rather than
+ * NXDOMAIN, so dual-query resolvers fall through to the A answer. The TC bit
+ * is never set, so resolvers never retry over TCP.
  */
 
 export const DNS_QTYPE_A = 1
@@ -39,17 +31,12 @@ export interface DnsQuery {
 }
 
 /**
- * True for names the proxy should resolve against the real cluster DNS rather
- * than sinkhole. ONLY `.cluster.local` qualifies — SECURITY-LOAD-BEARING:
- * CoreDNS is authoritative for exactly that zone, so it answers those names
- * itself (an A record or an authoritative NXDOMAIN) and never reaches its
- * `forward .` upstream. A name outside the zone (a bare `*.svc`, an external
- * host) would instead be forwarded to the node's remote resolver, re-opening a
- * DNS-exfiltration channel — so anything not in-zone is sinkholed. The server
- * emits every in-cluster name it needs resolved as a `.svc.cluster.local` FQDN
- * (the project registry) to match. The host API server
- * (`kubernetes.default.svc.cluster.local`) is deliberately EXCLUDED — no outer
- * workspace has business reaching it by name — so it stays sinkholed in-zone.
+ * True for names the proxy resolves against the cluster DNS instead of
+ * sinkholing. Security-relevant: only `.cluster.local` qualifies, because
+ * CoreDNS answers that zone itself. Any other name would be forwarded to an
+ * outside resolver and open a DNS exfiltration channel, so the server always
+ * uses `.svc.cluster.local` FQDNs. The API server's name is excluded, since
+ * workspaces have no reason to reach it.
  */
 export function isInternalName(name: string): boolean {
   const n = name.toLowerCase().replace(/\.$/, '')
@@ -61,8 +48,8 @@ export function isInternalName(name: string): boolean {
  * Parse a DNS query. Returns null (the caller drops the packet) for anything
  * the stub should not answer: truncated packets, responses (QR=1),
  * multi-question packets, or malformed names. Trailing bytes after the
- * question (EDNS OPT records in the additional section) are tolerated and
- * ignored — the response simply carries no EDNS, which is fine here.
+ * question (such as EDNS OPT records) are ignored; the response carries no
+ * EDNS.
  */
 export function parseDnsQuery(buf: Buffer): DnsQuery | null {
   if (buf.length < 12) return null
@@ -70,8 +57,7 @@ export function parseDnsQuery(buf: Buffer): DnsQuery | null {
   if (flags & 0x8000) return null // QR=1: a response, not a query
   if (buf.readUInt16BE(4) !== 1) return null // exactly one question
 
-  // QNAME: length-prefixed labels, 0-terminated. Compression pointers
-  // (len > 63) never appear in a query's first name, so treat as malformed.
+  // Compression pointers (len > 63) never appear in a query's first name.
   let off = 12
   const labels: string[] = []
   for (;;) {
@@ -98,10 +84,9 @@ export function parseDnsQuery(buf: Buffer): DnsQuery | null {
 
 /**
  * Build the stub's response to a parsed query: a single A answer for IN/A when
- * `ipv4` is a dotted-quad address, an empty NOERROR otherwise. `ipv4 === null`
- * forces the empty-NOERROR form even for an A query — used when an internal
- * name failed to resolve, so the client sees "no A record" (not a sinkhole it
- * would then dial). Never truncated.
+ * `ipv4` is given, an empty NOERROR otherwise. A null `ipv4` is used when an
+ * internal name failed to resolve, so the client sees no A record rather than
+ * a sinkhole address.
  */
 export function buildDnsResponse(query: DnsQuery, ipv4: string | null): Buffer {
   const answers = ipv4 !== null && query.qtype === DNS_QTYPE_A && query.qclass === DNS_QCLASS_IN ? 1 : 0

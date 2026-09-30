@@ -1,24 +1,17 @@
 /**
- * Which cluster an install is in, and the refusal every host-side verb
- * that touches the cluster makes when the kubeconfig now points at another.
+ * Refuse host-side cluster commands when kubectl's current context points
+ * at a different cluster than the one this install is in.
  *
- * Every cluster call uses the kubeconfig's current context, and anyone
- * with a cloud install very likely has other contexts too: a `yaac server
- * restart` from a shell pointed at a work cluster would roll nothing of
- * this install's, and a `yaac cluster install` there would converge a
- * cluster that is not its own. So install records the cluster it installed
- * into (`server.json`'s `clusterUid`: the `kube-system` namespace's uid),
- * and `cluster install|check` and `server start|stop|restart|logs` compare
- * it with the current context's cluster — a refusal rather than pinning,
- * so nothing has to thread `--context` through the substrate. `cluster
- * delete` is not guarded: byo refuses it outright, and kind deletes its
- * cluster by name, never through the current context.
+ * Every cluster call uses the current context, so a shell pointed at
+ * another cluster would otherwise act on the wrong one. Install records the
+ * `kube-system` namespace's uid as `server.json`'s `clusterUid`, and
+ * `cluster install|check` and `server start|stop|restart|logs` compare it
+ * with the current cluster. `cluster delete` is not guarded: byo refuses
+ * it, and kind deletes its cluster by name.
  *
- * The uid, not the context's name: names are local labels that collide
- * across kubeconfigs (`default`, `kubernetes-admin@kubernetes`), so a
- * `KUBECONFIG=` switch to a same-named context, or a context edited to
- * point elsewhere, would pass a name check. The name is recorded only for
- * the refusal's `use-context` hint.
+ * The uid is compared rather than the context name, since names like
+ * `default` collide across kubeconfigs. The name is recorded only for the
+ * `use-context` hint.
  */
 import { execFileAsync, kubectlErrorSummary } from '#drivers/k8s/substrate'
 import { readServerConfig, type InstallRecord } from '@yaac/shared/server-config'
@@ -59,19 +52,17 @@ export async function currentCluster(run: Run = execFileAsync): Promise<CurrentC
 }
 
 /**
- * The refusal for a current cluster that is not the recorded one, or null.
- * A record with no cluster predates it and goes unchecked
- * (docs/legacy-compat-shims.md). A current cluster that cannot be
- * identified is refused rather than let through: on a shared work cluster
- * with namespace-scoped RBAC, reading `kube-system` is Forbidden, and that
- * is exactly a cluster that is not the install's — on the install's own,
- * the read fails only when the apiserver does, which the refusal then says.
+ * The refusal message when the current cluster is not the recorded one, or
+ * null. A record without `clusterUid` is not checked
+ * (docs/legacy-compat-shims.md). A cluster whose uid cannot be read is
+ * refused too: a namespace-scoped user on some other cluster cannot read
+ * `kube-system`, while on the install's own cluster the read fails only
+ * when the apiserver is down.
  */
 export function clusterRefusal(recorded: InstallRecord, current: CurrentCluster): string | null {
   if (!recorded.clusterUid || recorded.clusterUid === current.uid) return null
   if (!current.uid && current.context && current.context === recorded.kubeContext) {
-    // kubectl points through the context the install was made through, so
-    // the likely story is a cluster that is down, not one somewhere else.
+    // Same context as at install, so the cluster is most likely down.
     return `kubectl's current context "${current.context}" is the one this install was made through, but `
       + 'its cluster cannot be reached or identified (reading its kube-system namespace failed: '
       + `${current.unreadable ?? 'no answer'}). If the cluster is down, bring it back — on kind, `
@@ -98,10 +89,7 @@ export function clusterRefusal(recorded: InstallRecord, current: CurrentCluster)
       : ` (its kube-system namespace has uid ${recorded.clusterUid}).`)
 }
 
-/**
- * The CLI's form: this data dir's recorded cluster against the current
- * one, as a message to print, or null when nothing objects.
- */
+/** `clusterRefusal` for this data dir's recorded install, or null. */
 export async function foreignClusterRefusal(): Promise<string | null> {
   const recorded = await readServerConfig()
   if (!recorded?.clusterUid) return null

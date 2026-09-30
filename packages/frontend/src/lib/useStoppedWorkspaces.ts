@@ -7,15 +7,13 @@ import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
 type Live = { workspaceId: string }[]
 
 /**
- * The project's stopped workspaces as the sidebar draws them: optimistic
- * just-stopped entries ahead of the fetched list, minus anything live again —
- * a workspace mid-termination is still in the snapshot (its row renders the
- * stopping placeholder), and one mid-restart has a provisioning row.
+ * The project's stopped workspaces for the sidebar: optimistic just-stopped
+ * entries first, then the fetched list, minus any workspace that is still
+ * stopping or restarting (those have live or provisioning rows).
  *
- * The list isn't snapshot-pushed, so the live set is part of the query key:
- * a change to it (a workspace stopped, a restart landed) is a fresh fetch. The
- * last list for the same project stays on screen until that fetch lands, so
- * the ghost rows and the entry point never blink out while it is in flight.
+ * The list isn't in the snapshot, so the set of live ids is part of the
+ * query key and any change refetches. The previous list for the project
+ * stays shown while that fetch is in flight.
  */
 export function useStoppedWorkspaces(
   projectSlug: string | null,
@@ -32,8 +30,7 @@ export function useStoppedWorkspaces(
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === projectSlug ? prev : undefined),
   })
 
-  // Once the listing catches up to an optimistic entry, the fetched copy takes
-  // over (same id, no flicker).
+  // Drop optimistic entries once the fetched list includes them.
   useEffect(() => {
     const fetched = new Set(data.map((d) => d.workspaceId))
     for (const e of optimistic) if (fetched.has(e.workspaceId)) removeOptimistic(e.workspaceId)
@@ -47,8 +44,8 @@ export function useStoppedWorkspaces(
   ].filter((d) => !live.has(d.workspaceId))
 }
 
-/** Patch a project's cached stopped listing in place — an acknowledgement or
- *  regroup shows at once, and the server write makes it durable. */
+/** Patch a project's cached stopped list so a change (e.g. marking a death
+ *  seen, regrouping) shows before the server write returns. */
 export function patchStopped(
   queryClient: QueryClient,
   projectSlug: string,

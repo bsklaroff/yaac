@@ -17,7 +17,7 @@ import {
   SearchIcon, WholeWordIcon,
 } from '#lib/icons'
 
-/** Quiet time after a keystroke or an edit before the count reruns. */
+/** Delay after a keystroke or edit before the match count reruns. */
 export const COUNT_DEBOUNCE_MS = 80
 
 type QueryFields = Partial<ConstructorParameters<typeof SearchQuery>[0]>
@@ -28,19 +28,15 @@ const sameSearch = (a: SearchQuery, b: SearchQuery): boolean => a.search === b.s
   && a.literal === b.literal
 
 /**
- * CodeMirror's search panel, redrawn in the app's look: one row with the
- * query, its case / whole-word / regex toggles, a live "3 of 12" count and
- * previous / next, plus a replace row behind the chevron. Typing jumps to
- * the first match from the cursor, the way an IDE's find does; Enter and
- * Shift+Enter step, Escape closes back into the editor. The panel is a small
- * React root of its own, fed the editor's state on every update.
+ * CodeMirror's search panel in the app's style: query with case / word /
+ * regex toggles, a "3 of 12" count, previous / next, and a replace row.
+ * Typing jumps to the first match after the cursor; Enter and Shift+Enter
+ * step; Escape returns to the editor. The panel is its own React root.
  *
- * Nothing on the typing or editing path scans the document: the count —
- * and the typing jump, which reads it — comes from a Worker (MatchCounter),
- * so a large file never stalls the page. A regex goes further: the editor's
- * own highlighter and next / previous run it on this thread, so it reaches
- * the editor only once the worker has counted it in time. One that
- * backtracks past the timeout stays in the bar as "Too slow to count".
+ * Match counting runs in a Worker (MatchCounter) so large files never stall
+ * the page. A regex reaches the editor only once the worker has counted it
+ * within its timeout, because the editor's highlighter runs it on the main
+ * thread; a slower one shows "Too slow to count".
  */
 class FindPanel implements Panel {
   readonly dom = document.createElement('div')
@@ -48,8 +44,8 @@ class FindPanel implements Panel {
   private readonly root: Root = createRoot(this.dom)
   private readonly counter = new MatchCounter()
   private matches: Matches = NO_MATCHES
-  /** The editor's query as last seen, and the bar's — ahead of it while a
-   *  regex waits on its count. */
+  /** The editor's last-seen query, and the bar's, which runs ahead while a
+   *  regex awaits its count. */
   private seen: SearchQuery
   private query: SearchQuery
   private debounce: ReturnType<typeof setTimeout> | undefined
@@ -81,8 +77,8 @@ class FindPanel implements Panel {
   destroy(): void {
     clearTimeout(this.debounce)
     this.counter.dispose()
-    // Closing can come from a click inside this very root; unmounting it
-    // synchronously there is refused, so it waits a tick.
+    // React refuses a synchronous unmount from inside the root's own click
+    // handler, so defer it a tick.
     const root = this.root
     queueMicrotask(() => root.unmount())
   }
@@ -124,8 +120,7 @@ class FindPanel implements Panel {
   }
 
   private counted(doc: Text, query: SearchQuery, matches: Matches): void {
-    // Counted against text or a query that has since changed: a recount is
-    // on its way.
+    // Stale count: a recount is on its way.
     if (this.view.state.doc !== doc || query !== this.query) return
     this.matches = matches
     if (matches.slow) {
@@ -172,8 +167,8 @@ function FindBar({ view, query, matches, current, commit }: {
   current: number
   commit: (fields: QueryFields, jump: boolean) => void
 }): JSX.Element {
-  // Local text, so a keystroke never waits on the editor's round trip; an
-  // outside change (Mod-F over a new selection) still lands in the box.
+  // Local text so typing never waits on the editor; outside changes
+  // (Mod-F over a new selection) still update it.
   const [text, setText] = useState(query.search)
   const [replacement, setReplacement] = useState(query.replace)
   const [replaceOpen, setReplaceOpen] = useState(query.replace !== '')
@@ -187,9 +182,8 @@ function FindBar({ view, query, matches, current, commit }: {
   }, [])
 
   const onKeyDown = (e: KeyboardEvent): void => {
-    // The editor's own search keys (Escape, Mod-G, F3, Mod-F) first. What
-    // they handle stops here: a dialog around the editor dismisses on a
-    // document-level Escape, and must not close along with the bar.
+    // Run the editor's search keys (Escape, Mod-G, F3, Mod-F) first and stop
+    // what they handle, so Escape does not also close a surrounding dialog.
     if (runScopeHandlers(view, e.nativeEvent, 'search-panel')) {
       e.preventDefault()
       e.stopPropagation()
@@ -197,7 +191,7 @@ function FindBar({ view, query, matches, current, commit }: {
     }
     if (e.key !== 'Enter') return
     e.preventDefault()
-    // Nothing counted — no match, or a regex still unvetted — nothing to step to.
+    // No counted matches yet: nothing to step to.
     if (matches.froms.length === 0) return
     if (e.target === findRef.current) (e.shiftKey ? findPrevious : findNext)(view)
     else if (e.metaKey || e.ctrlKey) replaceAll(view)
@@ -215,8 +209,7 @@ function FindBar({ view, query, matches, current, commit }: {
 
   const mod = IS_MAC ? '⌘' : 'Ctrl+'
   return (
-    // One grid for both rows, so the replace field lines up under the find
-    // field and each row's buttons sit right against its field.
+    // One grid for both rows so the find and replace fields line up.
     <Tooltip.Provider>
       <div
         onKeyDown={onKeyDown}
@@ -245,7 +238,6 @@ function FindBar({ view, query, matches, current, commit }: {
             spellCheck={false}
             className="min-w-0 flex-1 bg-transparent py-0.5 text-text outline-none placeholder:text-text-faint"
           />
-          {/* The count lives in the field, as in a browser's find bar. */}
           <span role="status" className={clsx('shrink-0 tabular-nums', miss ? 'text-[#f85149]' : 'text-text-faint')}>
             {status}
           </span>

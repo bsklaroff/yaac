@@ -1,17 +1,9 @@
 /**
- * The `yaac server` lifecycle verbs against locks and configs they did not
- * write.
- *
- * `stop`: the in-cluster server's lock crosses a container boundary
- * (docs/server-in-cluster.md), and what this command does with one is the
- * difference between stopping a server and manufacturing the dual-writer
- * the whole lease design exists to prevent.
- *
- * `start`: it is the command that REGISTERS a host server, so what it
- * writes into `server.json` is the whole of "clients on this machine can
- * reach it". Nothing is mocked but the data dir and the server socket: the
- * lock is a real file, the mint is a real request, and the judgment runs
- * for real.
+ * `yaac server stop` and `start` against locks and configs they did not
+ * write. `stop` must not clear a live in-cluster server's lock, which would
+ * let a second server open the same database (docs/server-in-cluster.md).
+ * `start` must register the server in `server.json`. Only the data dir and
+ * the server socket are faked.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import os from 'node:os'
@@ -29,9 +21,7 @@ let stderr: string[]
 /** A lock written by a server in a pod: another host, and a live lease. */
 async function podLock(overrides: Record<string, unknown> = {}): Promise<void> {
   await writeLock({
-    // pid 1 is what a pod's init is, and a number this host also has —
-    // which is the whole reason a cross-boundary lock cannot be judged by
-    // its pid.
+    // pid 1 also exists on this host, so the pid proves nothing here.
     pid: 1,
     port: 8787,
     startedAt: Date.now(),
@@ -60,29 +50,22 @@ afterEach(async () => {
 
 describe('stopServer', () => {
   it('refuses a live in-cluster server rather than clearing its lock', async () => {
-    // Removing it would be the worst answer available: the pod loses its
-    // lease at the next tick and exits, the Deployment restarts it — a
-    // stop that produced a restart — and a `yaac server start` in the same
-    // state would then spawn a host process onto a data dir whose lock
-    // this command had just cleared. Reaching here at all means the
-    // Deployment path could not run (the cluster was unreachable), so the
-    // only correct action is none.
+    // Clearing it would make the pod exit and restart, and let a host
+    // `yaac server start` open the same data dir. This path runs only when
+    // the cluster was unreachable, so the right action is none.
     await podLock()
 
     await stopServer()
 
     expect(await readLock()).not.toBeNull()
     expect(stderr.join('\n')).toMatch(/runs in the cluster/)
-    // Names the fix, and fails: a stop that silently did nothing would be
-    // read as a stop that worked.
+    // Names the fix and fails, rather than silently doing nothing.
     expect(stderr.join('\n')).toMatch(/scale deployment\/yaac-server --replicas=0/)
     expect(process.exitCode).toBe(1)
   })
 
   it('clears an in-cluster lock whose lease went stale', async () => {
-    // The leftover of a server that is really gone — a pod's lock outlives
-    // a deleted Deployment, and nothing else would ever collect it. Judged
-    // by the lease, because the pid and port name another namespace's.
+    // A pod's lock outlives a deleted Deployment; its lease shows it is dead.
     await podLock({ heartbeatAt: Date.now() - LEASE_STALE_MS * 2 })
 
     await stopServer()
@@ -99,9 +82,7 @@ describe('stopServer', () => {
   })
 
   it('treats a lock naming THIS host as its own, whatever its lease says', async () => {
-    // The host path still judges by pid and /health, so a lock this
-    // machine wrote is signalled rather than refused. Nothing answers on
-    // the port, so it reads as stale and is cleared.
+    // Judged by pid and /health; nothing answers on the port, so it is stale.
     await podLock({ pid: process.pid, port: 1, host: os.hostname(), heartbeatAt: 0 })
 
     await stopServer()
@@ -112,7 +93,7 @@ describe('stopServer', () => {
 })
 
 describe('startServer registration', () => {
-  /** A stand-in for the running server: `/health` for the liveness probe. */
+  /** A stand-in server answering `/health`. */
   async function fakeServer() {
     const srv = http.createServer((_req, res) => {
       res.setHeader('content-type', 'application/json')
@@ -126,9 +107,7 @@ describe('startServer registration', () => {
   }
 
   it('registers a server that was already running, instead of no-oping', async () => {
-    // "Already running" includes a server the operator started in the
-    // foreground with `yaac server run`, which registers nothing. Without
-    // this, start would print success against a server no client can reach.
+    // e.g. a foreground `yaac server run`, which registers nothing.
     vi.stubEnv('YAAC_BUILD_ID', 'test-build')
     const server = await fakeServer()
     try {
@@ -161,7 +140,7 @@ describe('startServer registration', () => {
       url: 'http://127.0.0.1:9999', enabled: true, saved: [], driver: 'k8s',
     })
     await expect(startServer()).rejects.toThrow(/yaac cluster install/)
-    // And the refusal did not rewrite the selection on its way out.
+    // The refusal left the selection unchanged.
     expect(await readServerConfig()).toMatchObject({ url: 'http://127.0.0.1:9999' })
     vi.unstubAllEnvs()
   })

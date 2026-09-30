@@ -6,20 +6,14 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * What substrate- and disk-observing code tells db it found — the ONE
- * door through which observed facts become rows (`applyWorkspaceEvent`).
+ * Facts that substrate- and disk-observing code reports to db, applied by
+ * `applyWorkspaceEvent` (docs/layered-server.md). Observers never write rows
+ * themselves; they report a discrete, past-tense event and db decides which
+ * rows change. This keeps observers simple, makes re-reporting after a
+ * restart harmless, and puts the write-side invariants in one handler.
  *
- * Code that watches the substrate or reads a workspace's disk never writes a
- * row: it reports a discrete, past-tense event, and which table that lands
- * in is decided here alone. That inversion is what keeps every observer
- * mechanical, makes re-reporting after a restart a no-op rather than a
- * clobber, and lets one handler own the write-side invariants below
- * (docs/layered-server.md).
- *
- * A `WorkspaceEvent` is discrete and past-tense — something that happened,
- * applied once to a row. That is what separates it from the status store,
- * which answers the continuous "what is this agent doing right now" and is
- * carried in the runtime report rather than here.
+ * Continuous state ("what is this agent doing now") is not an event; it
+ * lives in the status store and the runtime report.
  */
 export type WorkspaceEvent =
   | WorkspaceCreated
@@ -33,43 +27,36 @@ export type WorkspaceEvent =
   | WorkspaceStopped
 
 /**
- * Provisioning has begun for a workspace — emitted before anything is built,
- * so no runtime can ever exist that the server has no row for.
+ * Provisioning has begun. Emitted before anything is built, so every runtime
+ * has a row.
  */
 export interface WorkspaceCreated {
   type: 'workspace-created'
   projectSlug: string
   workspaceId: string
-  /** The branch it forks from — resolved from local reads before anything
-   *  is provisioned, so a row has it from birth. Absent on a resume, whose
-   *  recorded base is left as it was. */
+  /** The branch it forks from, resolved before provisioning. Absent on a
+   *  resume, which keeps the recorded base. */
   baseBranch?: string
-  /** This workspace already existed and is being brought back up. Its row
-   *  carries a history — title, pin, founding prompt, and how it last died —
-   *  which is why a failed resume is put back rather than erased. */
+  /** An existing workspace is being restarted. Its row has history (title,
+   *  founding prompt, how it last died), so a failed resume restores the row
+   *  rather than erasing it. */
   resume?: boolean
-  /** This is a prewarmed spare being warmed, not a workspace being created.
-   *  It gets a row so a reap can still tell it from a stopped workspace once
-   *  its pod is gone, but every listing filters it out until it is claimed. */
+  /** A prewarmed spare. It gets a row so a reap can tell it from a stopped
+   *  workspace once its runtime is gone, but listings hide it until claimed. */
   spare?: boolean
-  /** The permission posture its agents launch in. Recorded with the row
-   *  because a restart has to relaunch them in it rather than re-deriving
-   *  today's default. */
+  /** The permission mode its agents launch in, recorded so a restart reuses
+   *  it rather than today's default. */
   permissionMode?: PermissionMode
-  /** The model and agent mode its first agent launches with — what a spare
-   *  claim matches a request against (see `workspaces.model`). */
+  /** The first agent's model and agent mode, which a spare claim matches a
+   *  request against (see `workspaces.model`). */
   model?: string
   mode?: AgentMode
 }
 
 /**
- * Provisioning gave up. The counterpart to `workspace-created`, and the reason
- * that event can be sent before anything is built: whatever it started, this
- * undoes.
- *
- * What "undo" means is decided by the handler alone, and it differs by
- * `resume` — a fresh workspace is erased, a resumed one is put back exactly as
- * the restart found it. The emitter knows only that it failed.
+ * Provisioning failed; undoes `workspace-created`. The handler decides what
+ * that means: a fresh workspace's row is erased, a resumed one is restored
+ * as the restart found it.
  */
 export interface WorkspaceCreateFailed {
   type: 'workspace-create-failed'
@@ -79,13 +66,10 @@ export interface WorkspaceCreateFailed {
 }
 
 /**
- * A pod has come up for this workspace — a **life** has begun.
- *
- * The event that invalidates the previous life's handles. Handling it NULLs
- * every recorded pane id in the same transaction that stamps the life,
- * because tmux pane ids restart at `%0` in a new pod and a surviving handle
- * would name a pane this life owns. Emitted after the workspace is recorded
- * and before the Job exists.
+ * A new runtime life is starting for this workspace. Handling it clears every
+ * recorded pane id in the same transaction, because tmux pane ids restart at
+ * `%0` in a new runtime and an old handle would name the wrong pane. Emitted
+ * after the row exists and before any handle is recorded.
  */
 export interface WorkspaceLifeStarted {
   type: 'workspace-life-started'
@@ -102,14 +86,13 @@ export interface BaseBranchResolved {
 }
 
 /**
- * The sessions a create started, in the order their windows were laid
- * out — index 0 is the workspace's original agent, the one a restart brings up
- * first and whose opening message becomes the workspace's founding ask.
+ * The sessions a create started, in window order. Index 0 is the original
+ * agent: a restart brings it up first, and its opening message is the
+ * workspace's founding prompt.
  *
- * The list is complete and every entry is live, which is what lets one event
- * carry both halves of the record: which sessions this workspace has, and
- * which of them are running. Discovery reports the two separately, because a
- * sweep finds sessions that ended long ago.
+ * The list is complete and all live, so this one event records both which
+ * sessions exist and which are running. Discovery reports these separately,
+ * since a sweep also finds sessions that ended long ago.
  */
 export interface SessionsLaunched {
   type: 'sessions-launched'
@@ -121,24 +104,23 @@ export interface SessionsLaunched {
 export interface LaunchedSession {
   agentSessionId: string
   tool: AgentTool
-  /** Absent where the create cannot know it: a `tui` conversation's handle is
-   *  a tmux pane id, which does not exist until the pane does. */
   mode?: AgentMode
-  /** The driver's handle for it inside the pod, when knowable at launch. */
+  /** The driver's handle for it, when known at launch. A `tui` pane id is
+   *  not known until the pane exists. */
   paneId?: string
   /** The user's opening message, when they supplied one. */
   firstPrompt?: string
-  /** The model it was launched with — a display value until the agent itself
-   *  reports what it is answering as (see `agent_sessions.model`). */
+  /** The launch model, shown until the agent reports its own (see
+   *  `agent_sessions.model`). */
   model?: string
 }
 
 /**
- * The sessions a pass found running in a workspace — each named by its live
- * agent: a tui pane's reporter, or an acp handshake. Only ever adds: the
- * handler fills in what it did not know and keeps what it did, so a pass that
- * reads a compacted transcript cannot rewrite an opening message, and a
- * conversation a `/clear` replaced stays recorded.
+ * Sessions a discovery pass found in a workspace, each identified by its live
+ * agent (a tui pane's reporter or an acp handshake). Only adds: the handler
+ * fills in unknown fields and keeps known ones, so a compacted transcript
+ * can't rewrite an opening message, and a conversation replaced by `/clear`
+ * stays recorded.
  */
 export interface SessionsDiscovered {
   type: 'sessions-discovered'
@@ -150,35 +132,32 @@ export interface SessionsDiscovered {
 export interface DiscoveredSession {
   agentSessionId: string
   tool: AgentTool
-  /** Only ever recorded on first sighting: a conversation cannot change
-   *  protocol mid-life, and a later sighting that guessed wrong must not
-   *  rewrite what the create path reported. */
+  /** Recorded only on first sighting: a conversation can't change protocol,
+   *  and a later wrong guess must not overwrite what the create reported. */
   mode?: AgentMode
   /** The driver's handle for it, when it is on one right now. */
   paneId?: string
   /** Its opening message, read out of the transcript or the ACP record. */
   firstPrompt?: string
-  /** The transcript, **relative to the project directory** — never absolute.
-   *  Project-relative means the same thing wherever the data dir sits and
-   *  survives it moving. Absent when the tool leaves no transcript, or
-   *  wrote one outside the project directory. */
+  /** The transcript path relative to the project directory (never absolute),
+   *  so it survives the data dir moving. Absent when the tool leaves no
+   *  transcript or wrote one outside the project directory. */
   transcriptPath?: string
   lastActiveMs?: number
-  /** The model it is running, as the agent last reported it. Overwrites —
-   *  a `/model` is a new answer — but absent leaves the row alone. */
+  /** The model the agent last reported. Overwrites (a `/model` changes it);
+   *  absent leaves the row unchanged. */
   model?: string
   /** When the sweep first saw it, used as its birth if it is new. */
   firstSeenMs?: number
 }
 
 /**
- * Which of a workspace's sessions are running right now — the complete
- * live set, so anything linked and unnamed here has stopped.
+ * The complete set of a workspace's sessions running now; any linked session
+ * not listed has stopped.
  *
- * Absence of this event is emphatically NOT an empty set. A watcher that
- * cannot see a workspace's agents says nothing, because blanking the set on
- * a transient gap would look like "every agent exited" — and the frozen set
- * is exactly what a restart brings back up.
+ * No event is not an empty set. A watcher that can't see the agents sends
+ * nothing, since a transient gap must not look like every agent exiting: the
+ * last set is what a restart brings back up.
  */
 export interface SessionsActive {
   type: 'sessions-active'
@@ -194,11 +173,10 @@ export interface ActiveSession {
 }
 
 /**
- * The posture a workspace's running agent is in moved — the user changed mode
- * inside the agent, or the agent moved itself (entering plan mode, a plan-exit
- * answer). The row follows, up or down, because both of its readers mean the
- * posture the agent is in now: a restart relaunches in it, and `yaac-mama
- * create` caps a sibling at it.
+ * The running agent's permission mode changed, by the user or by the agent
+ * itself (entering plan mode, a plan-exit answer). The row follows in either
+ * direction: a restart relaunches in it, and `yaac-mama create` caps a
+ * sibling at it.
  */
 export interface PermissionModeChanged {
   type: 'permission-mode-changed'
@@ -209,9 +187,9 @@ export interface PermissionModeChanged {
 
 
 /**
- * A workspace's runtime went away — a user stop, a project teardown, or a
- * reaper. `cause` is set only when a reaper (not the user) tore it down, so a
- * plain stop cannot inherit an earlier death's reason.
+ * A workspace's runtime went away (user stop, project teardown, or reaper).
+ * `cause` is set only by a reaper, so a plain stop can't inherit an earlier
+ * death's reason.
  */
 export interface WorkspaceStopped {
   type: 'workspace-stopped'

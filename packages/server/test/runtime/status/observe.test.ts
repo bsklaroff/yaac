@@ -1,11 +1,7 @@
 /**
- * The runtime half of a workspace listing — `observeWorkspaces`.
- *
- * Mocked at the contract boundary only, so the classification, the
- * terminating prune and the per-agent liveness join all run for real against
- * the status store. What a driver contributes is exactly what it is asked
- * for here: which workspaces exist, and the four per-workspace facts only it
- * can see.
+ * `observeWorkspaces`. Only the driver is mocked; classification, the
+ * terminating prune and per-agent liveness run for real against the status
+ * store.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { observeWorkspaces } from '#runtime/status/observe'
@@ -88,7 +84,7 @@ describe('observeWorkspaces', () => {
     const [w] = (await observeWorkspaces()).workspaces
 
     expect(w.agents.map((a) => [a.handle, a.status])).toEqual([['%0', 'running'], ['%1', 'waiting']])
-    // Any agent waiting makes the workspace wait — that is the badge's meaning.
+    // Any waiting agent makes the workspace waiting.
     expect(w.status).toBe('waiting')
   })
 
@@ -105,8 +101,7 @@ describe('observeWorkspaces', () => {
   })
 
   it('reports a marked workspace as terminating, with no status read', async () => {
-    // The store was evicted at teardown, so reading it would default to
-    // `waiting` — a spurious attention badge on a row that is disappearing.
+    // The store was cleared at teardown and would default to `waiting`.
     markWorkspaceTerminating('w1')
     list.mockResolvedValue([workspace()])
 
@@ -125,8 +120,7 @@ describe('observeWorkspaces', () => {
 
     await observeWorkspaces()
 
-    // Otherwise the mark leaks, and an id reused by a later workspace renders
-    // permanently greyed.
+    // Otherwise a later workspace reusing the id would render greyed out.
     expect(isWorkspaceTerminating('gone')).toBe(false)
   })
 

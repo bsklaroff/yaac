@@ -5,33 +5,29 @@
  *
  * Run with:  pnpm gen:providers
  *
- * Emits ONE provider-table artifact, written byte-identically to two committed
- * locations:
+ * Writes one file, byte-identically, to two committed locations:
  *   - packages/shared/src/tool-providers.generated.ts  (server/frontend/CLI)
  *   - k8s/proxy/tool-providers.generated.ts            (egress proxy)
- * It carries the provider rows, the proxy's host/default-model lookups, and the
- * full models.dev model catalog (MODELS_BY_PROVIDER). The proxy can't import
- * from packages/shared (it bundles self-only, npm-installed in its image
- * build), so it gets its own copy of the same content in its build context —
- * one source of truth, no drift.
+ * It holds the provider rows, the proxy's host/default-model lookups, and the
+ * model catalogs. The proxy can't import from packages/shared, so it gets its
+ * own copy.
  *
  * Sources:
  *   - opencode: models.dev (https://models.dev/api.json), the provider/model
  *     database opencode itself uses.
  *   - pi: the installed @earendil-works/pi-ai package — its builtinProviders()
  *     (id/label/baseUrl), findEnvKeys() (env var per provider), and
- *     pi-coding-agent's defaultModelPerProvider map. No source parsing: we
- *     import pi's own compiled modules and read their exported values.
+ *     pi-coding-agent's defaultModelPerProvider map, read by importing pi's
+ *     compiled modules.
  *
- * Scope: api-key providers with a single stable https host only. Multi-config
- * backends (azure, bedrock, vertex, per-account gateways) need region/resource/
- * OAuth config beyond a bare key and can't be pinned to one host for the proxy
- * swap, so they're skipped-and-logged, not silently dropped. OAuth-only
- * providers are skipped too (this repo is api-key-only for opencode/pi).
+ * Only api-key providers with a single fixed https host are emitted.
+ * Providers needing region/resource/OAuth config (azure, bedrock, vertex,
+ * per-account gateways) can't be pinned to one host for the proxy's key
+ * swap, so they are skipped and logged. OAuth-only providers are skipped too.
  *
- * Requirements to run: network access to models.dev
- * and a global `pi` install (`@earendil-works/pi-coding-agent`). This is a
- * dev-time step run when bumping either tool — not part of `pnpm build`.
+ * Needs network access to models.dev and a global `pi` install
+ * (`@earendil-works/pi-coding-agent`). Run it when bumping either tool; it
+ * is not part of `pnpm build`.
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -53,11 +49,9 @@ interface ProviderRow {
 // ── opencode: models.dev ────────────────────────────────────────────────
 
 /**
- * Default hosts for the well-known dedicated-SDK providers that models.dev
- * lists without a provider-level `api` (the AI SDK hardcodes their base URL).
- * Keyed by the provider's `npm` package — the one small, stable bit of
- * hand-maintained data here, and it lives only in this generator. These are
- * AI-SDK default base-URL hosts; they effectively never change.
+ * Default hosts for dedicated-SDK providers that models.dev lists without a
+ * provider-level `api` (the AI SDK hardcodes their base URL). Keyed by the
+ * provider's `npm` package. The only hand-maintained data here.
  */
 const OPENCODE_HOST_BY_NPM: Record<string, string> = {
   '@ai-sdk/anthropic': 'api.anthropic.com',
@@ -127,16 +121,13 @@ async function fetchModelsDev(): Promise<Record<string, ModelsDevProvider>> {
  * Pick the api-key env var for a provider, preferring an `*_API_KEY`-shaped
  * candidate over a bearer-token one.
  *
- * The chosen var is seeded with the api-key *placeholder* into a workspace pod
- * that carries every credentialed tool's placeholders at once (the pod spec is
- * immutable, so a prewarmed spare can be retooled). Bearer-token vars are read
- * by other tools with a different precedence: Claude Code ranks
- * ANTHROPIC_AUTH_TOKEN above its OAuth credential, so seeding it for a pi
- * anthropic credential would shadow the login of a claude workspace sharing the
- * pod. Providers list both shapes (pi's anthropic registry offers
- * ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY) and the tool
- * reads whichever is set, so preferring the api-key var costs nothing.
- * Falls back to the first non-OAuth candidate when no `_API_KEY` var exists.
+ * The chosen var gets the placeholder key in a workspace pod that carries
+ * every credentialed tool's placeholders at once. Bearer-token vars can
+ * shadow another tool's login: Claude Code ranks ANTHROPIC_AUTH_TOKEN above
+ * its OAuth credential, so seeding it for pi's anthropic credential would
+ * break a claude login in the same pod. The tool reads whichever var is set,
+ * so preferring the api-key var costs nothing. Falls back to the first
+ * non-OAuth candidate when no `_API_KEY` var exists.
  */
 function pickEnvVar(env: string[]): string | undefined {
   const apiKeyOnly = env.filter((v) => !/OAUTH/i.test(v))
@@ -145,24 +136,13 @@ function pickEnvVar(env: string[]): string | undefined {
 
 /**
  * Bare hostname from a base-URL string, or null if unparseable or not a fixed
- * base URL. Rejects templated/placeholder URLs like models.dev's databricks
- * `https://${databricks_host}/...` — a per-workspace value the proxy can't
- * match on, so the provider is skipped rather than emitted with a bogus host.
+ * base URL.
  *
- * The check covers the whole URL, not just the host: cloudflare-workers-ai
- * templates the account id into the *path* behind a fixed host
- * (`api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1`).
- * Matching on the host alone would emit it with a usable-looking host and a
- * path segment the workspace can never fill in, so every request would fail —
- * it needs per-account config beyond a bare key, like the multi-config
- * providers excluded above.
- *
- * Loopback hosts are rejected for a related reason: they name a server on the
- * *user's own machine* (models.dev lists several local-inference providers
- * this way), which a workspace pod's localhost is not. The transparent proxy
- * only intercepts egress, so it never sees loopback traffic and could not swap
- * the placeholder key there anyway — the provider is unusable from a workspace
- * either way, so it is skipped rather than offered in the credential picker.
+ * Any templated part rejects the URL, including one in the path
+ * (cloudflare-workers-ai puts `${CLOUDFLARE_ACCOUNT_ID}` there): such a
+ * provider needs per-account config beyond a bare key. Loopback hosts are
+ * rejected too: they name a server on the user's machine, which a workspace
+ * pod cannot reach and the egress proxy never sees.
  */
 function isLoopbackHost(host: string): boolean {
   return host === 'localhost'
@@ -184,12 +164,9 @@ function hostFromUrl(url: string): string | null {
 
 /**
  * @param catalog tool-calling model ids per provider (from buildModelsCatalog).
- *   A provider absent from it has no model an agent can drive, so selecting it
- *   is a dead end: the credential picker would offer it, the pod would get its
- *   env var, and `yaac-mama models` would then report no ids for it. Some
- *   have a usable sibling carrying the tool-calling ids under the same key and
- *   host (models.dev splits perplexity into perplexity / perplexity-agent), so
- *   dropping the empty one steers the picker at the entry that works.
+ *   A provider absent from it has no model an agent can drive, so it is
+ *   dropped. Some have a usable sibling under the same key and host
+ *   (models.dev splits perplexity into perplexity / perplexity-agent).
  */
 function buildOpencodeRows(
   db: Record<string, ModelsDevProvider>,
@@ -213,14 +190,10 @@ function buildOpencodeRows(
 }
 
 /**
- * Each models.dev provider's TOOL-CALLING model ids, keyed by provider id.
- * Baked in so `yaac-mama models` can report usable `--model` values with no
- * workspace-time fetch: claude → `anthropic`, codex → `openai`, opencode → its
- * configured provider. Filtered to `tool_call` models because every agent tool
- * drives models via tool calls — this drops embedding/image/tts/realtime
- * entries (e.g. text-embedding-3-large) that an agent can't run, so the list is
- * a set of candidate agent models, not the vendor's full catalog. pi has its
- * own registry (see PI_MODELS_BY_PROVIDER); it does not use this map.
+ * Each models.dev provider's tool-calling model ids, keyed by provider id,
+ * so `yaac-mama models` can report `--model` values without a fetch.
+ * Agents drive models through tool calls, so embedding/image/tts models are
+ * left out. pi uses its own registry (PI_MODELS_BY_PROVIDER) instead.
  */
 function buildModelsCatalog(db: Record<string, ModelsDevProvider>): ModelsCatalog {
   const catalog: ModelsCatalog = { ids: {}, names: {} }
@@ -287,9 +260,8 @@ function piPackageRoot(): string {
 }
 
 async function importPi(file: string): Promise<Record<string, unknown>> {
-  // Dynamic import is required: pi's compiled ESM modules live in a globally
-  // installed package resolved by absolute path at codegen time, so they can't
-  // be statically imported. This is a dev-only script, not shipped src.
+  // pi's modules live in a global install found by absolute path at
+  // codegen time, so they can't be imported statically.
   // eslint-disable-next-line no-restricted-syntax
   return import(pathToFileURL(file).href) as Promise<Record<string, unknown>>
 }
@@ -305,9 +277,8 @@ async function buildPiRows(): Promise<ProviderRow[]> {
   const findEnvKeys = envMod.findEnvKeys as (id: string, env: unknown) => string[] | undefined
   const defaultModelPerProvider = resolver.defaultModelPerProvider as Record<string, string>
 
-  // findEnvKeys returns only the env vars that are *set* in the passed env; a
-  // Proxy that reports every key as present makes it return the full candidate
-  // list for the provider — pi's own map, extracted without parsing source.
+  // findEnvKeys returns only the vars set in the env it is given; a Proxy
+  // reporting every key as set makes it return all candidates.
   const allSet = new Proxy({}, { get: () => 'x', has: () => true })
 
   const rows: ProviderRow[] = []
@@ -336,10 +307,9 @@ async function buildPiRows(): Promise<ProviderRow[]> {
 
 /**
  * pi's own per-provider model ids (bare, e.g. `claude-opus-4-8`), from its
- * installed registry (`getBuiltinModels`). pi's catalog differs from models.dev
- * — it is pi's curated per-provider list — so `yaac-mama models` reports it
- * for pi rather than reusing the models.dev map. (pi still accepts any
- * `provider/model` at runtime; this is the convenience list.)
+ * installed registry (`getBuiltinModels`). It differs from models.dev, so
+ * `yaac-mama models` reports this list for pi. pi still accepts any
+ * `provider/model` at runtime.
  */
 async function buildPiModelsCatalog(): Promise<ModelsCatalog> {
   const root = piPackageRoot()
@@ -432,10 +402,8 @@ function modelsCatalogMap(name: string, catalog: Record<string, string[]>): stri
 }
 
 /**
- * The single generated artifact, emitted byte-identically to both
- * packages/shared/src/ and k8s/proxy/. The proxy bundles self-only (npm-
- * installed in its image build) and can't import from packages/shared, so it
- * carries its own copy — kept in sync by writing the exact same content to both.
+ * The generated file's content, written to both packages/shared/src/ and
+ * k8s/proxy/ (see the file header).
  */
 function generatedFile(
   opencode: ProviderRow[],

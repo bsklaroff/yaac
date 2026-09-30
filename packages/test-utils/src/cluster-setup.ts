@@ -9,65 +9,38 @@ import { installRealWorkspaceDriver } from './real-driver'
 const execFileAsync = promisify(execFile)
 
 /**
- * Register the k8s runtime for these projects.
- *
- * The server registers its own at startup, which covers e2e — those drive
- * the real CLI, so the process under test does it for itself. The api
- * project does NOT: it builds the Hono app in-process (`buildApp`) without
- * going through the composition root, so nothing would have registered one
- * and the first route to reach the substrate would throw. Doing it here is
- * this project's stand-in for that root, and it installs the REAL runtime
- * because these tests talk to a real cluster.
+ * Register the real k8s driver. e2e servers register their own at startup,
+ * but api tests build the app in-process (`buildApp`), skipping the
+ * composition root, so nothing else would.
  */
 installRealWorkspaceDriver()
 
 /**
- * The install namespace, which the composition root's attach ensures
- * before any route can write into it and which the api project — building
- * the app without that root — would otherwise never create. A route that
- * hands the runtime an object (a project's secret values on an env write)
- * applies into it, and the answer to "no such namespace" is an honest 503
- * that these tests are not about.
+ * Create the install namespace, which the composition root would otherwise
+ * ensure. Routes that apply objects (e.g. a project's secrets) need it.
  */
 beforeAll(async () => {
   try {
     await execFileAsync('kubectl', ['create', 'namespace', TEST_NAMESPACE], { timeout: 30_000 })
   } catch (err) {
-    // Already there (a file that deployed a server made it), or no cluster —
-    // in which case every route that needs one says so itself.
+    // Already exists, or there is no cluster.
     if (!/AlreadyExists|already exists/.test(String(err))) return
   }
 })
 
 /**
- * Cluster hygiene for the api/e2e projects — NOT loaded by `unit:*`,
- * which must never touch the cluster (and would pay this module's import
- * graph for nothing).
+ * Delete this file's test namespace (see `TEST_NAMESPACE`) as soon as the
+ * file finishes. A workspace-backed file leaves a netd DaemonSet and a proxy
+ * Deployment in it; kept until the end of the run, a dozen of them would
+ * compete with the files still running.
  *
- * Drops this file's test namespace as soon as the file finishes instead
- * of leaving every one of them to the global teardown. The namespace is
- * per FILE (see `TEST_NAMESPACE`), and a workspace-backed file leaves a
- * netd DaemonSet and a proxy Deployment running in it. Held to the end of
- * the run, a full suite accumulates a dozen-odd netd pods — each running
- * an Envoy and reconciling the SAME single node's iptables — competing
- * with the files still to come. Deleting here keeps the node's
- * steady-state cost flat across the run rather than growing with the
- * number of files already done.
- *
- * Best-effort and non-blocking (`--wait=false`): `test/global-setup.ts`
- * still sweeps whatever an interrupted or crashed file leaves behind,
- * plus netd's cluster-scoped RBAC, which does not cascade with the
- * namespace. A file that never created the namespace deletes nothing.
+ * Best-effort and non-blocking; `test/global-setup.ts` sweeps whatever an
+ * interrupted file leaves, plus netd's cluster-scoped RBAC.
  */
 afterAll(async () => {
-  // The server's ClusterRole/Binding first: cluster-scoped objects do not
-  // cascade with the namespace that owns them (netd's have the same
-  // problem), so a file that deployed a server would otherwise leave a
-  // binding per run behind for the global sweep to find.
+  // Cluster-scoped objects don't go with the namespace, so delete the
+  // server's ClusterRole/Binding and the storage PVs explicitly.
   await deleteTestServerClusterRbac(TEST_NAMESPACE)
-  // The PVs behind this file's claim pair are cluster-scoped too (and on
-  // kind-byo, the classes that provisioned them), and `Retain` means
-  // deleting them touches none of the file's bytes.
   await deleteTestStorage(TEST_NAMESPACE)
   try {
     await execFileAsync(
@@ -75,5 +48,5 @@ afterAll(async () => {
       ['delete', 'namespace', TEST_NAMESPACE, '--ignore-not-found', '--wait=false'],
       { timeout: 30_000 },
     )
-  } catch { /* kubectl or cluster absent — the global teardown still sweeps */ }
+  } catch { /* kubectl or cluster absent */ }
 })

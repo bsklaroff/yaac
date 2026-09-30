@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { findExecutable, resolveCommandPath, resolveToolCliPath } from '#cli-resolve'
 
-// A name no machine has, so PATH/fallback dirs can never produce a hit.
+// A name no machine has, so the $PATH lookup never finds it.
 const MISSING = 'yaac-definitely-missing-cli-xyz'
 
 describe('cli-resolve', () => {

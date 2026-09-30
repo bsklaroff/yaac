@@ -23,11 +23,10 @@ import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 
 /**
- * Push the credential set, and fail the request when the runtime could not
- * take it. For the writes that take a credential AWAY (a delete, a replace
- * — the ways out of a leak): the row is gone either way, so a caller told
- * only "done" would believe the old secret dead while the egress proxy went
- * on injecting it. The next push or server start converges it.
+ * Push the credential set, and fail the request if the runtime could not take
+ * it. Used by writes that remove a credential (delete, replace): the row is
+ * gone either way, and a plain success would hide that the egress proxy still
+ * injects the old secret. The next push or server start fixes it.
  */
 async function requireRuntimeTold(applied: string): Promise<void> {
   const failure = await pushCredentialsToRuntime()
@@ -42,10 +41,9 @@ async function requireRuntimeTold(applied: string): Promise<void> {
 
 export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))
-  // Nudge the server-side plan-usage refresh (fired when the webapp's usage
-  // popover opens). Throttled in server/plan-usage.ts — a nudge within a
-  // minute of the last refresh is ignored — and the data itself always
-  // arrives via the pushed snapshot, never this response.
+  // Request a plan-usage refresh when the webapp's usage popover opens.
+  // Throttled in domain/auth/plan-usage.ts; the data arrives via the
+  // snapshot, not this response.
   .post('/claude/usage/refresh', async (c) => {
     await requestPlanUsageRefresh()
     return c.body(null, 204)
@@ -56,8 +54,7 @@ export const authApp = new Hono()
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
-      // A sign-out reaches running workspaces as surely as a sign-in: the
-      // runtime is handed the set with the credential gone.
+      // Running workspaces lose the credential too.
       await pushCredentialsToRuntime()
       return c.body(null, 204)
     },
@@ -71,17 +68,17 @@ export const authApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // Named git credentials (docs/git-credentials.md). A replace and a delete
-  // push; a new credential serves no project until it is assigned
-  // (`PUT /project/:slug/git-credential`, which pushes), and a rename
-  // changes only a key's comment, which authenticates nothing.
+  // Named git credentials (docs/git-credentials.md). Replace and delete push
+  // to the runtime. Add and rename don't need to: a new credential serves no
+  // project until assigned (`PUT /project/:slug/git-credential` pushes), and a
+  // rename only changes a key's comment.
   .post(
     '/git/credentials',
     zv('json', z.object({ name: z.string(), token: z.string().min(1) })),
     async (c) => c.json(await addHttpsCredential(c.req.valid('json'))),
   )
-  // Generate an SSH key; the answer is its public half, for the user to
-  // register with their git host before a project uses it.
+  // Generate an SSH key and return its public half for the user to register
+  // with their git host.
   .post(
     '/git/ssh-keys',
     zv('json', z.object({ name: z.string() })),
@@ -96,8 +93,8 @@ export const authApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // A new secret under the same name and projects: a pasted token, or a
-  // newly generated key whose public half is the answer.
+  // New secret, same name and projects: a pasted token, or a newly generated
+  // key whose public half is returned.
   .post(
     '/git/credentials/:id/replace',
     zv('param', z.object({ id: z.uuid() })),
@@ -118,11 +115,12 @@ export const authApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // Whether an auth server (the user's-machine login broker) is connected.
+  // Whether an auth server (the login broker on the user's machine) is
+  // connected.
   .get('/agent', (c) => c.json({ connected: authAgentHub.connected() }))
-  // Web-driven sign-in: relayed to the auth server on the user's machine
-  // (the browser and the vendors' localhost callbacks live there); clients
-  // keep polling these routes, which serve the agent-pushed views.
+  // Web-driven sign-in, relayed to the auth server on the user's machine
+  // (where the browser and the vendors' localhost callbacks are). Clients
+  // poll these routes for the state the auth server pushes.
   .post(
     '/:tool/login/start',
     zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
@@ -158,10 +156,8 @@ export const authApp = new Hono()
       z.object({
         kind: z.literal('api-key'),
         apiKey: z.string().min(1),
-        // opencode/pi only — which backend the key authenticates against.
-        // Ignored for claude/codex. Required for opencode/pi and validated
-        // against that tool's registry: a missing or unknown id is rejected
-        // with VALIDATION rather than coerced to a default provider.
+        // The backend the key is for. Required for opencode/pi (a missing or
+        // unknown id is a VALIDATION error); ignored for claude/codex.
         provider: z.string().optional(),
       }),
       z.object({
@@ -173,11 +169,10 @@ export const authApp = new Hono()
       const { tool } = c.req.valid('param')
       const body = c.req.valid('json')
       await persistToolAuthPayload(tool, body)
-      // The host store is only half of a sign-in: every project's tool home
-      // holds its own copy, and that is the one an agent reads. What belongs
-      // there depends on the runtime (a sentinel a proxy will swap, or the
-      // real bundle where nothing would), which is why the fan-out lives
-      // here rather than inside the shared persistence call.
+      // Each project's tool home holds its own copy, which is what the agent
+      // reads. Its content depends on the runtime (a sentinel the proxy swaps,
+      // or the real bundle), so the fan-out happens here rather than in the
+      // shared persistence call.
       await fanOutToolCredentials(tool, { mediatedEgress: runtimeMediatesEgress() })
       await pushCredentialsToRuntime()
       return c.body(null, 204)

@@ -3,41 +3,38 @@
  * Chromium against a live server: the "Stopped workspaces" entry point and a
  * group's ghost rows must never blink out while the list refetches.
  *
- *  1. Creating a workspace (CLI) and stopping workspaces (from the row menu, and
- *     from the CLI) never empties the entry point or drops a ghost row.
- *  2. Restarting a stopped entry — from the overlay and from a ghost row —
- *     takes it off the list on the click, and it never comes back as the
- *     restart finishes.
+ *  1. Creating a workspace (CLI) and stopping workspaces (row menu and CLI)
+ *     never empties the entry point or drops a ghost row.
+ *  2. Restarting a stopped entry, from the overlay or a ghost row, removes it
+ *     from the list on click, and it does not reappear as the restart
+ *     finishes.
  *  3. A failed restart hides its entry while the error row is up; dismissing
  *     the row brings the entry straight back, with no refetch.
  *  4. Switching to a project with no stopped workspaces never shows the first
  *     project's list, and switching back shows its own.
- *  5. An unseen death opened while a refetch is in flight (one fetched before
- *     the acknowledgement, so it still says unseen) stays cleared: no dot, no
- *     row highlight, and the server records it seen.
+ *  5. Opening an unseen death while a refetch is in flight (fetched before
+ *     the acknowledgement, so still unseen) keeps it cleared: no dot, no row
+ *     highlight, and the server records it seen.
  *
- * Every list-stopped response is fetched from the real server and then held
- * for DELAY_MS, which widens each refetch window enough for a blink to show;
- * a sampler in the page records the entry point, the death dot and the ghost
- * rows every 10ms. Check 3 fails the restart by answering POST
- * /workspace/restart with a 500.
+ * Every list-stopped response is held for DELAY_MS so a blink during a
+ * refetch is visible; an in-page sampler records the entry point, the death
+ * dot and the ghost rows every 10ms. Check 3 makes POST /workspace/restart
+ * return 500.
  *
  * Workspaces are `pi` in ACP mode with the fake OpenRouter credential, so no
- * model is ever called — a claude workspace on a containerless host would run
- * on the host's real login. Check 5 needs an unseen death: without one the
- * script makes one by killing a workspace's tmux server and waiting (up to
- * ~4 min) for the stale reaper to record it. Workspaces it creates are titled
- * "PW …" and left stopped at the end.
+ * model is called (a claude workspace on a containerless host would use the
+ * host's real login). If there is no unseen death for check 5, the script
+ * kills a workspace's tmux server and waits (up to ~4 min) for the stale
+ * reaper to record one. Workspaces it creates are titled "PW …" and left
+ * stopped.
  *
- * Drives the app the server itself serves (`dist/`), reading the port from
- * $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to ~/.yaac) —
+ * Drives the app the server serves from `dist/`, reading the port from
+ * $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to ~/.yaac),
  * so run `pnpm build` + `yaac server restart` first. OTHER must be a second
  * project with no stopped workspaces.
  *
  * Run: PROJECT=yaac OTHER=hello-world node test-playwright-scripts/sidebar-stopped-flash-test.js
- * (SCREENSHOT_DIR for screenshots; defaults to /tmp/yaac-shots.
- *  playwright is resolved from the global npm root; browsers live under
- *  /opt/playwright-browsers)
+ * (SCREENSHOT_DIR for screenshots; defaults to /tmp/yaac-shots)
  */
 import fs from 'node:fs'
 import { execSync } from 'node:child_process'
@@ -77,8 +74,7 @@ const PROJECT = process.env.PROJECT
 const OTHER = process.env.OTHER
 if (!PROJECT || !OTHER) throw new Error('set PROJECT=<slug> OTHER=<slug with no stopped workspaces>')
 const GROUP = 'PW'
-// Titles carry a per-run suffix, so a rerun's rows never share a label with
-// the ghosts an earlier run left behind.
+// Per-run suffix so titles never collide with ghosts from an earlier run.
 const RUN = Date.now().toString(36).slice(-4)
 const T = (name) => `PW ${name} ${RUN}`
 const DELAY_MS = 2500
@@ -91,7 +87,6 @@ const api = async (url, init) => {
   try { return await fetch(url, init) } catch { await sleep(200); return fetch(url, init) }
 }
 
-// --- server side: the CLI and the HTTP API ---
 const yaac = (args) => execSync(`yaac ${args}`, { input: '', stdio: ['pipe', 'pipe', 'pipe'] }).toString()
 const stoppedList = async (project) =>
   (await api(`${origin}/api/workspace/list-stopped?project=${project}`)).json()
@@ -119,7 +114,7 @@ const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
 const made = []
 try {
-  // --- fixtures: a live anchor keeps the group on screen; B and C ghost in it ---
+  // A live anchor keeps the group on screen; B and C are its ghost rows.
   console.log('setting up workspaces…')
   made.push(await create(T('anchor')))
   const B = await create(T('ghost B'))
@@ -147,8 +142,8 @@ try {
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   fs.mkdirSync(SHOTS, { recursive: true })
 
-  // Hold every list-stopped response, fetched first so it carries the
-  // server's state from before anything the page does in the meantime.
+  // Fetch first, then hold, so each response reflects the server's state
+  // from before whatever the page does in the meantime.
   let inflight = 0
   let served = 0
   await page.route('**/workspace/list-stopped**', async (route) => {
@@ -171,13 +166,13 @@ try {
   const entry = aside.getByRole('button', { name: /^Stopped workspaces/ })
   const ghost = (label) => aside.locator('button[title="Read this workspace\'s conversation"]', { hasText: label })
   const section = aside.getByRole('group', { name: GROUP, exact: true })
-  // The group's ghost rows stay hidden until its menu shows them, and hide
-  // again whenever the section remounts (a project switch).
+  // Ghost rows stay hidden until the group menu shows them, and hide again
+  // when the section remounts (a project switch).
   const openGhosts = async () => {
     const trigger = section.getByRole('button', { name: 'Group actions' }).first()
     await trigger.waitFor({ state: 'attached', timeout: 20_000 })
-    // The header, not the section: its centre is over a row, and the `…` is
-    // pointer-inert until the header itself is hovered.
+    // Hover the header, not the section: the `…` ignores the pointer until
+    // the header is hovered, and the section's centre is over a row.
     await section.locator('button[aria-expanded]').first().hover()
     await trigger.click()
     const show = page.getByRole('menuitem', { name: 'Show stopped workspaces' })
@@ -191,7 +186,7 @@ try {
   await ghost(T('ghost B')).waitFor({ timeout: 20_000 })
   await settle()
 
-  // The sampler: one record per change to what the sidebar shows.
+  // Records one sample per change to what the sidebar shows.
   await page.evaluate(() => {
     const w = window
     w.__samples = []
@@ -344,7 +339,7 @@ try {
   await page.screenshot({ path: path.join(SHOTS, 'stopped-flash-5.png') })
   await page.keyboard.press('Escape')
   await mark('p5-end')
-  // The sampler records changes only, so the state at a moment is the last
+  // Samples are recorded on change, so the state at a moment is the last
   // sample at or before it.
   const all = (await page.evaluate(() => window.__samples)).filter((s) => !s.mark)
   const settled = clickedAt + 300

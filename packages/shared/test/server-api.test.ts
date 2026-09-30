@@ -41,9 +41,8 @@ describe('createServerFetch', () => {
   })
 
   it('surfaces a refused identity in the server\'s own words, without a retry', async () => {
-    // The 401's message is the only thing that says WHY — a tagged device,
-    // or a name reached without tailscale serve — so it reaches the user
-    // verbatim, and asking again changes nothing.
+    // Only the 401's message says why (a tagged device, or no tailscale
+    // serve), so it is shown verbatim and not retried.
     const remote: ServerTarget = { baseUrl: 'https://srv.ts.net' }
     const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(
       '{"error":{"code":"UNAUTHENTICATED","message":"tailscale serve sent no user identity"}}', 401,
@@ -94,9 +93,8 @@ describe('createServerFetch', () => {
   })
 
   it('warns about build skew on a server on THIS machine too, naming its fix', async () => {
-    // Never an error on the request path: a server on this machine can be a
-    // Deployment carrying an older bundle, and the commands that roll it are
-    // what the warning has to name.
+    // A warning, not an error: a local server may be a Deployment on an
+    // older bundle, and the warning names the commands that roll it.
     vi.stubEnv('YAAC_BUILD_ID', 'local-build')
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
@@ -164,8 +162,7 @@ describe('resolveServerTarget', () => {
   it('resolves the selected server, wherever it runs', async () => {
     await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
     expect(await resolveServerTarget()).toEqual({ baseUrl: 'https://srv.ts.net' })
-    // A server on this machine is resolved the same way — the origin being
-    // loopback is not a different code path.
+    // A loopback origin takes the same path.
     await writeServerConfig({
       url: 'http://127.0.0.1:8787', enabled: true, saved: [],
       driver: 'containerless',
@@ -175,9 +172,8 @@ describe('resolveServerTarget', () => {
   })
 
   it('a deselected server resolves nothing — there is no fallback to look for one', async () => {
-    // A live server could well be listening on this machine right now; with
-    // nothing selected the answer is still "none", because the lock is not a
-    // client's to read.
+    // With nothing selected the answer is "none" even if a local server is
+    // running; clients do not read the lock.
     await writeServerConfig({ url: 'https://srv.ts.net', enabled: false, saved: [] })
     await expect(resolveServerTarget()).rejects.toThrow(/No yaac server selected/)
   })

@@ -51,8 +51,7 @@ describe('parsePp2Header', () => {
   })
 
   it('fails closed (invalid) on a TLS ClientHello — the key fail-closed case', () => {
-    // First byte of a TLS record is 0x16, which diverges from the PP2
-    // signature immediately, so a pod sending raw TLS gets no conversation.
+    // A TLS record starts with 0x16, which fails the PP2 signature at once.
     expect(parsePp2Header(Buffer.from([0x16, 0x03, 0x01, 0x00, 0x05])))
       .toEqual({ kind: 'invalid' })
   })

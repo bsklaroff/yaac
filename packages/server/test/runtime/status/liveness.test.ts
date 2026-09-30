@@ -20,10 +20,8 @@ import { setDataDir } from '@yaac/shared/project-paths'
 import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 
-// Mocked at the contract boundary: every probe in here is one `exec` into
-// the workspace, so the registered driver is the only thing that needs
-// standing in. A transport failure is any other error — what a driver
-// throws when it never reached the workspace at all.
+// Every probe is one driver `exec` into the workspace, so only the driver
+// is mocked. Any error other than a probe result is a transport failure.
 const execMock = vi.fn<WorkspaceDriver['exec']>()
 const transportFailure = (msg: string): Error => new Error(msg)
 
@@ -85,7 +83,7 @@ describe('isTmuxSessionAlive', () => {
   it('serves repeat calls from the TTL cache without re-probing', async () => {
     setProbeResult('p', 's-cache', true)
     expect(await isTmuxSessionAlive(target('p', 's-cache'))).toBe(true)
-    // Flip the probe result — the cache should still return the old value within TTL.
+    // Within the TTL the cached value wins.
     setProbeResult('p', 's-cache', false)
     expect(await isTmuxSessionAlive(target('p', 's-cache'))).toBe(true)
   })
@@ -109,16 +107,13 @@ describe('isTmuxSessionAlive', () => {
     expect(await isTmuxSessionAlive(target('p', 's-b'))).toBe(false)
   })
 
-  // Session teardown calls forgetLiveness so a later probe can't read a
-  // verdict belonging to a session that is gone — or to a new one that
-  // reused the id.
+  // Called at teardown so a later workspace reusing the id starts fresh.
   it('forgetLiveness drops the cache entry for that session', async () => {
     setProbeResult('p', 's-evict', true)
     expect(await isTmuxSessionAlive(target('p', 's-evict'))).toBe(true)
 
     forgetLiveness('p', 's-evict')
 
-    // Cache is gone — flip the probe and observe that the next call re-runs.
     setProbeResult('p', 's-evict', false)
     expect(await isTmuxSessionAlive(target('p', 's-evict'))).toBe(false)
   })
@@ -168,8 +163,7 @@ describe('probeAgentPaneState', () => {
   it('memoizes a started verdict and never re-probes it', async () => {
     setPaneCommand('p', 's-memo', 'claude')
     await expect(probeAgentPaneState(target('p', 's-memo'))).resolves.toBe('started')
-    // Even a later sleep-looking probe result can't demote it (respawn -k
-    // killed the placeholder; started is terminal) — and no exec runs.
+    // `started` is final: no further exec, even if the pane looks idle.
     setPaneCommand('p', 's-memo', 'sleep')
     await expect(probeAgentPaneState(target('p', 's-memo'))).resolves.toBe('started')
     expect(execMock).toHaveBeenCalledTimes(1)
@@ -194,7 +188,6 @@ describe('probeAgentPaneState', () => {
 })
 describe('classifyTmuxProbeError', () => {
   it('is dead only when the probe reached the pod and tmux exited non-zero', () => {
-    // streamd ran tmux and it reported the session absent — conclusive.
     expect(classifyTmuxProbeError(
       new WorkspaceExecError('exit 1', 1, '', "can't find session: yaac"),
     )).toBe('dead')
@@ -257,7 +250,7 @@ describe('probeTmuxLiveness', () => {
     try {
       await expect(probeTmuxLiveness(target('p', 's-streamed'))).resolves.toBe('alive')
       expect(execMock).not.toHaveBeenCalled()
-      // Health gone (stream died) → back to the relay probe.
+      // Stream died, so probing resumes.
       setWorkspaceStreamHealth('p', 's-streamed', false)
       execMock.mockResolvedValue({ stdout: '', stderr: '' })
       await expect(probeTmuxLiveness(target('p', 's-streamed'))).resolves.toBe('alive')

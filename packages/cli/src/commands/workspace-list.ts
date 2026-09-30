@@ -40,8 +40,7 @@ export async function workspaceList(
     renderRunning(result.workspaces, new Map(groups.map((g) => [g.groupId, g.name])))
     renderBlockedHosts(result.workspaces)
   }
-  // Project-wide, so rendered even with zero workspaces — a rejected
-  // credential also blocks creating new ones.
+  // Shown even with no workspaces: a rejected credential also blocks creates.
   renderGitAuthFailures(result.gitAuthFailures)
 }
 
@@ -57,9 +56,6 @@ function renderRunning(workspaces: WorkspaceListEntry[], groupNames: Map<string,
     project: w.projectSlug || '?',
     tool: w.tool,
     status: w.status,
-    // How many conversations are live in this workspace. Shown as a plain
-    // count because 1 is the overwhelmingly common answer and a column of
-    // 1s should stay quiet.
     agents: String(w.agentSessions.filter((a) => a.active).length || 1),
     group: w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
     title: w.title ?? '',
@@ -71,12 +67,9 @@ function renderRunning(workspaces: WorkspaceListEntry[], groupNames: Map<string,
   const toolWidth = Math.max('TOOL'.length, ...rows.map((r) => r.tool.length))
   const statusWidth = Math.max('STATUS'.length, ...rows.map((r) => r.status.length))
   const agentsWidth = Math.max('AGENTS'.length, ...rows.map((r) => r.agents.length))
-  // Like the DIED column in the stopped listing: the column appears only when
-  // something is filed, so an install that never groups looks unchanged.
+  // The GROUP and TITLE columns appear only when some row has a value.
   const hasGroups = rows.some((r) => r.group !== '')
   const groupWidth = hasGroups ? Math.max('GROUP'.length, ...rows.map((r) => r.group.length)) : 0
-  // Same pattern: a user who has never named a workspace sees the listing
-  // unchanged, and one who has can see what they named it.
   const hasTitles = rows.some((r) => r.title !== '')
   const titleWidth = hasTitles ? Math.max('TITLE'.length, ...rows.map((r) => r.title.length)) : 0
 
@@ -154,14 +147,12 @@ function renderStopped(
 
   const projectWidth = Math.max('PROJECT'.length, ...stopped.map((s) => s.projectSlug.length))
   const toolWidth = Math.max('TOOL'.length, ...stopped.map((s) => s.tool.length))
-  // The DIED column (reaper-recorded death reason) appears only when at
-  // least one row carries one, so all-user-stop listings stay unchanged.
+  // DIED (the reaper's recorded reason) and TITLE appear only when some row
+  // has a value.
   const hasDeaths = stopped.some((s) => s.deathReason)
   const diedWidth = hasDeaths
     ? Math.max('DIED'.length, ...stopped.map((s) => (s.deathReason ?? '').length))
     : 0
-  // A stopped workspace keeps the name the user gave it, and renaming one
-  // before restarting it is a normal thing to do — so it has to be visible.
   const hasTitles = stopped.some((s) => s.title)
   const titleWidth = hasTitles
     ? Math.max('TITLE'.length, ...stopped.map((s) => (s.title ?? '').length))
@@ -182,7 +173,7 @@ function renderStopped(
 
   for (const s of stopped) {
     const promptText = truncatePrompt(s.prompt, promptWidth)
-    // The row's sort key: recorded stop time, else last activity, else birth.
+    // Stop time, else last activity, else creation time.
     const when = s.stoppedAt ?? s.lastActiveAt ?? s.createdAt
     const diedCell = hasDeaths ? ` ${(s.deathReason ?? '').padEnd(diedWidth)}` : ''
     const titleCell = hasTitles ? ` ${(s.title ?? '').padEnd(titleWidth)}` : ''

@@ -5,32 +5,21 @@ import path from 'node:path'
 import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@yaac/test-utils/cli'
 
 /**
- * Merged e2e coverage for the `yaac cluster` command family: `check` (no
- * options), `install` (and its `--nodes` / `--byo` / `--rwx-storage-class` /
- * `--rwo-storage-class` / `--tailnet`
- * options), and `delete` (and its `-y/--yes` option). All three are host-side commands —
- * they talk to kubectl/podman/kind/the registry directly, never to the
- * server — so no server is spawned anywhere in this file and every case
- * runs without a cluster: we sabotage the environment (PATH stripping, a
- * bogus KUBECONFIG) and assert the diagnostic output + exit code.
+ * The `yaac cluster` commands: `check`, `install` (with `--nodes`, `--byo`,
+ * `--rwx-storage-class`, `--rwo-storage-class`, `--tailnet`) and `delete`
+ * (with `-y/--yes`). They are host-side commands that never talk to the
+ * server, so no server is spawned and no cluster is needed: each case breaks
+ * the environment (PATH stripping, a bogus KUBECONFIG, a kubectl shim) and
+ * checks the diagnostic and exit code, stopping before any mutating step.
  *
- * The happy paths are excluded by design: `check`'s all-green run needs a
- * fully wired kind cluster, and a full `install` builds every image (and a
- * full `delete` destroys the host's cluster) — all are exercised manually
- * per the README. The guard-rail cases below all stop BEFORE any mutating
- * step.
+ * The happy paths are not covered here: a green `check` needs a wired
+ * cluster, `install` builds every image, and `delete` destroys the host's
+ * cluster. `install --byo`'s happy path runs in `byo-install-suite`, and
+ * the gates' refusal logic is unit-tested in
+ * packages/server/test/drivers/k8s/install/install.test.ts.
  *
- * `install --byo`'s happy path runs against kind-byo, in
- * `byo-install-suite` (the `e2e-byo-install` project). What is covered here is its
- * whole option surface plus its gates — the part that matters, since an
- * unverified install fails silently — each stopping before anything is
- * applied. The gates' per-refusal reasoning is unit-tested against staged
- * cluster reads in packages/server/test/drivers/k8s/install/install.test.ts.
- *
- * One test env is shared for the whole file: these tests never write into
- * the data dir (every path fails preflight), and each test that needs a
- * tweaked environment overrides it per-call via the runYaac env argument,
- * exactly as the per-test originals did.
+ * One test env serves the file; no test writes into its data dir, and a
+ * test that needs a different environment passes it to runYaac.
  */
 
 function onPath(bin: string): boolean {
@@ -59,10 +48,8 @@ afterAll(async () => {
 
 describe('yaac cluster check (real CLI)', () => {
   it('fails with a kubectl diagnostic when kubectl is not on PATH', async () => {
-    // Strip every PATH entry that contains a kubectl binary. Node itself
-    // is spawned via an absolute path (process.execPath), so trimming
-    // PATH only affects the CLI's child-process lookups — exactly the
-    // `execFile('kubectl', ...)` probe under test.
+    // Node is spawned by absolute path, so this only hides kubectl from
+    // the CLI's own child-process lookups.
     const { stdout, stderr, exitCode } = await runYaac(
       { ...testEnv.env, PATH: stripFromPath('kubectl') },
       'cluster', 'check',
@@ -70,15 +57,13 @@ describe('yaac cluster check (real CLI)', () => {
     expect(exitCode).toBe(1)
     expect(stdout).toContain('✗ kubectl')
     expect(stdout).toMatch(/not found on PATH/)
-    // Actionable fix line accompanies the failure.
     expect(stdout).toMatch(/Install kubectl/)
     expect(stderr).toMatch(/Cluster is not ready/)
   }, 30_000)
 
   it('fails with a cluster diagnostic when kubectl is present but the API server is unreachable', async () => {
-    // A KUBECONFIG pointing at a nonexistent file makes kubectl fall back
-    // to an empty config, so `kubectl version` (server half) fails with a
-    // connection error no matter what clusters the host knows about.
+    // A missing KUBECONFIG file leaves kubectl with an empty config, so the
+    // API-server half of `kubectl version` fails.
     const { stdout, stderr, exitCode } = await runYaac(
       { ...testEnv.env, KUBECONFIG: path.join(testEnv.scratchDir, 'no-such-kubeconfig') },
       'cluster', 'check',
@@ -102,13 +87,11 @@ describe('yaac cluster install (real CLI)', () => {
     expect(stderr).toMatch(/Missing required tools/)
     expect(stderr).toMatch(/podman/)
     expect(stderr).toMatch(/kind/)
-    // Actionable installs accompany each entry.
     expect(stderr).toMatch(/brew install/)
   }, 30_000)
 
-  // The --nodes cases below stop in the option check, which runs before
-  // the binary preflight and before anything is created — so they need no
-  // podman, no kind, and no gate.
+  // The option check runs before the binary preflight, so these need no
+  // podman or kind.
   it('rejects a --nodes value outside the supported range', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
 
@@ -116,21 +99,17 @@ describe('yaac cluster install (real CLI)', () => {
       const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'install', '--nodes', value)
       expect(exitCode).toBe(1)
       expect(stderr).toMatch(/--nodes must be an integer between 1 and \d+/)
-      // The message quotes what was typed — the CLI passes the raw text
-      // through rather than converting `three` to NaN first.
+      // The message quotes the raw text, not NaN.
       expect(stderr).toContain(`"${value}"`)
-      // Nothing was created: the check precedes the binary preflight.
       expect(stdout).not.toMatch(/Creating kind cluster/)
       expect(stderr).not.toMatch(/Missing required tools/)
     }
   }, 60_000)
 
-  // The --byo option checks run before the binary preflight too, so they
-  // need no podman, no kind, and no cluster.
+  // These option checks also run before the binary preflight.
   it('rejects --byo with --nodes, --byo without an RWX class, and either class flag without --byo', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
     const cases: Array<[string[], RegExp]> = [
-      // A byo install creates no cluster, so there are no nodes to render.
       [['--byo', '--rwx-storage-class', 'nfs', '--nodes', '3'], /--nodes cannot be combined with --byo/],
       [['--byo'], /--byo needs --rwx-storage-class/],
       [['--rwx-storage-class', 'nfs'], /--rwx-storage-class is for --byo only/],
@@ -145,12 +124,10 @@ describe('yaac cluster install (real CLI)', () => {
     }
   }, 60_000)
 
-  // The gates themselves, against a cluster that answers nothing: a
-  // KUBECONFIG pointing at a nonexistent file makes every read fail. They
-  // must refuse — before anything is applied, and before the podman
-  // bootstrap — with an unknown, never a claim about what the cluster
-  // holds. Needs podman on PATH (a byo install still builds images) but
-  // deliberately NOT kind.
+  // The gates, against a cluster where every read fails (missing
+  // KUBECONFIG). They must refuse before anything is applied and report the
+  // state as unknown rather than guess. Needs podman on PATH (a byo install
+  // still builds images) but not kind.
   it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
     '--byo refuses a cluster it cannot read, without claiming what it found',
     async () => {
@@ -171,10 +148,8 @@ describe('yaac cluster install (real CLI)', () => {
     120_000,
   )
 
-  // Where a refusal needs a cluster that says something specific, a
-  // PATH-shimmed kubectl answers canned node, CNI, operator, class and
-  // Deployment reads (see writeKubectlShim) — every case stopping at a gate,
-  // before anything is applied.
+  // Refusals that need specific cluster answers use a PATH-shimmed kubectl
+  // (see writeKubectlShim).
   describe('against a shimmed cluster', () => {
     let shimEnv: NodeJS.ProcessEnv
     const install = (env: NodeJS.ProcessEnv, ...args: string[]): ReturnType<typeof runYaac> =>
@@ -195,8 +170,7 @@ describe('yaac cluster install (real CLI)', () => {
         expect(arch.exitCode).toBe(1)
         expect(arch.stderr).toContain(`every node is ${other}, and this machine is ${host}`)
 
-        // --tailnet beside --byo is accepted and changes nothing: the
-        // operator is what --byo itself needs.
+        // --tailnet is accepted beside --byo and changes nothing.
         const operator = await install({ FAKE_OPERATOR: 'absent' }, '--rwx-storage-class', 'nfs', '--tailnet')
         expect(operator.exitCode).toBe(1)
         expect(operator.stderr).toMatch(/--byo needs the Tailscale Kubernetes operator/)
@@ -225,9 +199,9 @@ describe('yaac cluster install (real CLI)', () => {
       120_000,
     )
 
-    // The cluster an install is in is its kube-system namespace's uid, not
-    // its context's name: the shim's context has the recorded name and is
-    // another cluster, which is what a KUBECONFIG switch looks like.
+    // A cluster is identified by its kube-system namespace's uid, not its
+    // context name. The shim's context has the recorded name but a
+    // different uid, as after a KUBECONFIG switch.
     it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
       'every cluster verb refuses a same-named context on another cluster; plain install refuses a byo data dir',
       async () => {
@@ -246,7 +220,6 @@ describe('yaac cluster install (real CLI)', () => {
           expect(res.exitCode, verb.join(' ')).toBe(1)
           expect(res.stderr, verb.join(' ')).toMatch(/same name but is a different cluster/)
         }
-        // The recorded cluster passes the gate.
         const same = await runYaac({ ...env, FAKE_CLUSTER_UID: 'uid-recorded' }, 'server', 'stop')
         expect(same.stderr).not.toMatch(/different cluster/)
 
@@ -259,14 +232,12 @@ describe('yaac cluster install (real CLI)', () => {
       120_000,
     )
 
-    // The config knobs are the CNI gate's other surface, and it refuses
-    // rather than narrowing the redirect behind the operator's back.
+    // The CNI gate refuses a bad config value rather than silently
+    // narrowing netd's exclusion set.
     it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
       '--byo refuses a YAAC_POD_CIDRS entry it cannot use, naming the entry',
       async () => {
-        // A plausible typo plus an out-of-range mask. Dropping either
-        // silently would leave netd's exclusion set narrower than what was
-        // configured, and those pods' 443/80 would go into the proxy.
+        // A plausible typo plus an out-of-range mask.
         const { stderr, exitCode } = await install(
           { YAAC_POD_CIDRS: '172.31.0.0/16, 172.31/16, 10.0.0.0/33' }, '--rwx-storage-class', 'nfs',
         )
@@ -282,13 +253,12 @@ describe('yaac cluster install (real CLI)', () => {
 })
 
 /**
- * A `kubectl` for a cluster that is exactly as healthy as a case needs:
- * one Ready node of this machine's architecture running containerd, a
- * rolled-out Calico in its iptables dataplane with kube-proxy beside it, the
- * Tailscale operator, an NFS class and a default block class, and no yaac
- * server yet. `FAKE_NODE_ARCH`, `FAKE_OPERATOR=absent` and `FAKE_CLUSTER_UID`
- * (its kube-system namespace's uid) bend it. Anything
- * it is not taught reads as NotFound.
+ * A fake `kubectl` for a healthy cluster: one Ready node of this machine's
+ * architecture running containerd, Calico (iptables dataplane) with
+ * kube-proxy, the Tailscale operator, an NFS class and a default block
+ * class, and no yaac server. `FAKE_NODE_ARCH`, `FAKE_OPERATOR=absent` and
+ * `FAKE_CLUSTER_UID` (the kube-system namespace's uid) change it. Anything
+ * else reads as NotFound.
  */
 async function writeKubectlShim(dir: string): Promise<void> {
   const host = process.arch === 'x64' ? 'amd64' : process.arch
@@ -332,10 +302,8 @@ notFound()
 }
 
 describe('yaac cluster delete (real CLI)', () => {
-  // Needs a real kind/podman pair (`kind get clusters` must succeed).
-  // Without --yes and with no TTY, the confirmation gate returns false, so
-  // the command aborts BEFORE deleting the cluster or the registry — safe
-  // to run against the dev host.
+  // Needs a real kind/podman pair. Without --yes and with no TTY the
+  // confirmation fails, so the command aborts before deleting anything.
   it.skipIf(process.platform !== 'linux' || !onPath('kind') || !onPath('podman'))(
     'aborts without deleting when not confirmed (no --yes, non-interactive)',
     async () => {

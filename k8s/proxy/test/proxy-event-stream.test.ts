@@ -3,17 +3,13 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 /**
- * Tests for the proxy's `GET /events` change stream. Mirrors the subscriber
- * machinery and route in k8s/proxy/proxy.ts — the proxy runs in its own
- * container and can't be imported directly, so we copy the logic under test
- * (same convention as proxy-git-auth-detect.test.ts) and drive it through a
- * real http.Server.
+ * Tests for the proxy's `GET /events` change stream, mirrored from
+ * k8s/proxy/proxy.ts (which can't be imported) and driven through a real
+ * http.Server.
  *
- * The stream carries the one edge the server has to be woken for — a
- * queued in-workspace `yaac-mama` request — and nothing else: everything
- * the proxy observes travels as objects the server watches. Events carry
- * NO payload (the queue is drained over its own claim protocol), which is
- * what makes a dropped stream cost a reconnect rather than a lost update.
+ * The stream only wakes the server for a queued `yaac-mama` request.
+ * Events carry no payload, so a dropped stream costs a reconnect, never a
+ * lost update.
  */
 
 const SECRET = 'test-secret'
@@ -101,8 +97,7 @@ async function subscribe(auth = `Bearer ${SECRET}`): Promise<{
   return { status: res.status, nextLine, close: () => ctrl.abort() }
 }
 
-/** Let the just-opened subscription land in the Set before emitting: the
- *  client has its headers, but the server's `add` runs on its own turn. */
+/** Wait for the server to register the just-opened subscription. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 20 && eventSubscribers.size === 0; i++) {
     await new Promise((r) => setTimeout(r, 10))
@@ -117,8 +112,7 @@ describe('GET /events', () => {
     expect(eventSubscribers.size).toBe(0)
   })
 
-  // One line per change, in order, and nothing but the type: the server
-  // drains the queue on signal.
+  // One line per change, in order, carrying only the type.
   it('streams one contentless line per change', async () => {
     const sub = await subscribe()
     expect(sub.status).toBe(200)
@@ -133,9 +127,7 @@ describe('GET /events', () => {
     sub.close()
   })
 
-  // The ping is how a peer tells "quiet" from "dead" — without it a wedged
-  // tunnel looks identical to an idle one until TCP notices, which it may
-  // never do through an exec relay.
+  // The ping lets a peer tell a quiet stream from a dead one.
   it('writes pings so silence is distinguishable from a dead tunnel', async () => {
     const sub = await subscribe()
     await settle()
@@ -160,8 +152,6 @@ describe('GET /events', () => {
     b.close()
   })
 
-  // A server that goes away must not leave the proxy writing into a dead
-  // socket forever — the reconnecting one drains the queue anyway.
   it('drops a subscriber when its connection closes', async () => {
     const sub = await subscribe()
     await settle()

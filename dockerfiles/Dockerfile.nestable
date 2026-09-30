@@ -19,13 +19,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends -t plucky podman crun skopeo && \
     rm -rf /var/lib/apt/lists/*
 
-# Docker CLI + compose plugin — both routed at DOCKER_HOST below to the
-# ROOTFUL podman socket, which serves the Docker Engine API. Running a real
-# dockerd here would need a second nested engine under podman; the podman
-# socket avoids that. Buildx is omitted on purpose — its default
-# docker-container driver wants to pull moby/buildkit, which our egress
-# proxy forbids; compose falls back to the classic build endpoint that
-# podman implements.
+# Docker CLI + compose plugin, pointed (DOCKER_HOST below) at the rootful
+# podman socket, which serves the Docker Engine API. No buildx: its default
+# driver pulls moby/buildkit, which the egress proxy blocks; compose falls
+# back to the classic build endpoint podman implements.
 RUN ARCH="$(dpkg --print-architecture)" && \
     if [ "$ARCH" = "amd64" ]; then DOCKER_ARCH=x86_64; COMPOSE_ARCH=x86_64; \
     else DOCKER_ARCH=aarch64; COMPOSE_ARCH=aarch64; fi && \
@@ -36,64 +33,31 @@ RUN ARCH="$(dpkg --print-architecture)" && \
       -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# Rootful-in-sandbox podman: the engine runs as REAL root inside the gVisor
-# sentry — the upstream-tested docker-in-gvisor shape
-# (https://gvisor.dev/docs/tutorials/docker-in-gvisor/). In-sandbox root is a
-# sentry fiction with no host authority, so no rootless apparatus is needed:
-# no id-map ranges, no id-map helper caps, no host userns, no keyring/
-# pivot_root workarounds, no /proc bind — pivot_root, fresh /proc, and kernel
-# keyrings all work under the sentry.
-# The agent runs as the yaac user and drives the engine over the socket
-# (DOCKER_HOST); the socket is served by a root `podman system service` that
-# session-create starts (via sudo) and opens to the yaac user.
+# Rootful podman inside the gVisor sandbox, as in gVisor's docker-in-gvisor
+# tutorial. Root in the sandbox has no host authority, so none of the
+# rootless setup (id maps, userns, /proc binds) is needed. The yaac user
+# drives the engine over a socket served by a root `podman system service`
+# started at workspace setup. See docs/nested-containers.md.
 #
-# Every nested container shares the pod's namespaces: netns=host means a
-# container's listener binds directly in the pod netns (curl localhost just
-# works; `docker run -p` is a no-op) and its egress stays on the session's
-# transparent redirect — netd's DNAT rule matches the pod's host-side veth,
-# which every frame from a nested container leaves by (k8s/netd/rules.ts,
-# docs/workspace-egress.md). base_hosts_file extends the
-# pod's hostAliases (e.g. the per-project registry name) into nested
-# containers. Container-private networks (the default `docker compose`
-# bridge, `docker run --network ...`) are still NOT supported in-pod — the
-# userspace network helpers (pasta/slirp4netns/netavark) don't run under the
-# sentry netstack — so use `network_mode: host`.
+# Nested containers share the pod's namespaces. With netns=host a listener
+# binds in the pod netns (`docker run -p` is a no-op) and egress goes through
+# the pod's transparent redirect (docs/workspace-egress.md). base_hosts_file
+# carries the pod's hostAliases into nested containers. Private container
+# networks (compose's default bridge, `--network`) do not work under gVisor,
+# so use `network_mode: host`.
 #
-# CA trust rides here (rootful engine reads /etc/containers/containers.conf,
-# not the per-user file). Two delivery mechanisms, because env and volumes
-# reach different places:
-#   VOLUMES reach BOTH `podman run` and `docker build` RUN steps; ENV
-#   reaches `podman run` but NOT `docker build` RUN (buildah does not apply
-#   containers.conf [containers] env to build steps — verified by
-#   test/e2e-cli/nested-containers.test.ts). So build-time trust must ride a
-#   volume, not an env var.
-# The trust set must be the union {public roots} ∪ {proxy CA} for the
-# own-bundle tools (curl, requests, cargo, git-libcurl) that ignore
-# SSL_CERT_FILE and REPLACE their whole trust set with a single file —
-# pointed at the lone proxy CA they reject the REAL certs of every tunnelled
-# host (most allowlisted registries/mirrors). The combined bundle (public
-# roots + proxy CA) is written by the proxy beside its CA and mounted here.
-# See docs/nested-containers.md.
-#   CA-CERTIFICATES DROP-IN — the bare proxy CA is bind-mounted as a source
-#     cert in /usr/local/share/ca-certificates/. `update-ca-certificates`
-#     (run by `apt-get install ca-certificates`, the usual way a build gains
-#     HTTPS, and by many packages' triggers) folds it into the image's real
-#     roots, producing the correct union in the image's own
-#     /etc/ssl/certs/ca-certificates.crt — which curl reads by default with
-#     no env. This is the build-time path. We must NOT bind-mount over
-#     /etc/ssl/certs/ca-certificates.crt directly: that file is what
-#     update-ca-certificates rewrites (temp file + rename), and rename() onto
-#     a bind-mountpoint fails EBUSY, so the ca-certificates postinst — and
-#     the whole build — fails. The drop-in composes with
-#     update-ca-certificates instead of fighting it. (A build that runs curl
-#     against a MITM host WITHOUT ever installing/refreshing ca-certificates
-#     won't pick this up; that path is covered at run-time by the env vars
-#     below, or by running update-ca-certificates.)
-#   ENV (run-time) — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS additively on the bare
-#     proxy CA; CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE/CARGO_HTTP_CAINFO/
-#     GIT_SSL_CAINFO on the combined bundle, for the own-bundle tools
-#     (notably requests/cargo) that read neither the OS store nor
-#     SSL_CERT_FILE.
+# CA trust for nested containers. Volumes reach both `podman run` and
+# `docker build` RUN steps; env reaches only `podman run` (buildah ignores
+# containers.conf env for builds). Tools with their own bundle (curl,
+# requests, cargo, git) replace their whole trust set with one file, so they
+# get ca-bundle.pem (public roots + proxy CA, written by the proxy).
+#   - The proxy CA is mounted into /usr/local/share/ca-certificates/, so
+#     `update-ca-certificates` (run by installing ca-certificates) adds it to
+#     the image's system bundle during builds. Mounting over
+#     /etc/ssl/certs/ca-certificates.crt directly would break that command:
+#     it renames onto the file, which fails EBUSY on a bind mount.
+#   - At run time, SSL_CERT_FILE/NODE_EXTRA_CA_CERTS point at the proxy CA
+#     and the per-tool vars at the combined bundle.
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [containers]
 netns="host"
@@ -123,36 +87,23 @@ events_logger="file"
 runtime="crun"
 EOF
 
-# docker-CLI parity for unqualified image names: `docker pull nginx` means
-# docker.io. Static and baked — nested pulls go straight through the MITM
-# proxy (allowlisted upstream registries), so there is no per-project
-# registry remap here.
+# Unqualified image names resolve to docker.io, as with the docker CLI.
+# Nested pulls go through the egress proxy to allowlisted registries.
 RUN cat <<'EOF' > /etc/containers/registries.conf
 unqualified-search-registries = ["docker.io"]
 EOF
 
-# Rootful graphroot. It lives at podman's rootful default
-# (/var/lib/containers/storage), backed by a sentry-internal tmpfs the pod
-# spec mounts at /var/lib/containers: gVisor's gofer filesystem refuses
-# WRITES to the security.* xattr namespace (goferfs checkXattrPermissions
-# → EOPNOTSUPP), so a `docker build` RUN step doing `setcap` (apt/apk
-# postinsts for ping, nginx, …) fails on a gofer-backed graphroot — only
-# a sentry tmpfs upper holds file caps (verified on the dev cluster; the
-# docker-in-gvisor tutorial's shape). The tmpfs is disk-backed (runsc
-# filestore in the emptyDir), so layer data is reclaimable node page cache,
-# not pod-pinned memory.
-# graphroot/runroot are set EXPLICITLY because once a [storage] section
-# exists podman refuses to default them ("runroot must be set").
+# The graphroot sits on a gVisor-internal tmpfs the pod mounts at
+# /var/lib/containers. gVisor's gofer filesystem rejects security.* xattr
+# writes, so `setcap` in a build step (e.g. apt postinsts) would fail there.
+# The tmpfs is disk-backed, so layer data is reclaimable page cache. podman
+# requires graphroot/runroot once a [storage] section exists.
 #
-# additionalimagestores adds ONE read-only lower: the node-local image
-# store, a per-(node, project) containers/storage the server materializes
-# from the project registry and hostPath-mounts here (store-builder.ts).
-# It is a CACHE of the registry, which stays the distribution mechanism and
-# the thing that survives a node dying — this only makes the project's warm
-# layers visible to a fresh session's engine with no pull and no graphroot
-# spend, shared by every session on the node. The directory is baked in
-# EMPTY so a session with no generation to mount (a cold node) still
-# starts: containers/storage treats an empty additional store as no images.
+# additionalimagestores adds the node-local image store, a read-only cache of
+# the project registry that the server writes and hostPath-mounts here
+# (drivers/k8s/images/store-writer.ts), so a new workspace sees warm layers
+# without pulling. The directory is baked empty so a workspace starts when
+# there is nothing to mount.
 RUN mkdir -p /var/lib/containers /var/lib/shared-images
 RUN cat <<'EOF' > /etc/containers/storage.conf
 [storage]
@@ -164,11 +115,8 @@ additionalimagestores = ["/var/lib/shared-images"]
 EOF
 
 USER yaac
-# Both CLIs target the ROOTFUL engine over its socket: docker is always a
-# client (DOCKER_HOST), and podman auto-enters remote mode when CONTAINER_HOST
-# is set — so the yaac user drives the root daemon without sudo, and a bare
-# `podman pull/build/push` (the agent's, and an inner yaac server's image
-# machinery) reaches the same engine. `sudo` strips both via env_reset, so the
-# root `podman system service` and the promoter still run as a local engine.
+# Point docker and podman (remote mode via CONTAINER_HOST) at the rootful
+# engine's socket, so the yaac user needs no sudo. `sudo` drops both vars, so
+# root commands like `podman system service` still use the local engine.
 ENV DOCKER_HOST=unix:///run/podman/podman.sock
 ENV CONTAINER_HOST=unix:///run/podman/podman.sock

@@ -22,11 +22,8 @@ import { testEnv } from '@yaac/shared/env'
 
 /**
  * Take whatever in-workspace `yaac-mama` requests the proxy is holding.
- *
- * `attachIfRunning`, never `ensureRunning`: this must not bootstrap the
- * proxy, which deploys lazily on the first workspace create. No proxy means
- * no workspaces means nothing queued, so an absent proxy is an empty queue
- * rather than a reason to stand one up.
+ * Never deploys the proxy: it deploys on the first workspace create, so no
+ * proxy means no workspaces and an empty queue.
  */
 export async function drainPendingMamaRequests(): Promise<PendingMamaRequest[]> {
   if (!await proxyClient.attachIfRunning()) return []
@@ -39,9 +36,8 @@ export async function drainPendingMamaRequests(): Promise<PendingMamaRequest[]> 
 export const PROXY_CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
 
 /**
- * In-container path of the combined trust bundle `{public roots} ∪ {proxy
- * CA}` (the ConfigMap's second key). The own-bundle tools that ignore
- * SSL_CERT_FILE point their single-file vars here. See
+ * In-container path of the combined trust bundle (public roots plus the
+ * proxy CA), for tools that ignore SSL_CERT_FILE. See
  * docs/nested-containers.md.
  */
 export const PROXY_CA_BUNDLE_PATH = '/etc/yaac/certs/ca-bundle.pem'
@@ -49,37 +45,21 @@ export const PROXY_CA_BUNDLE_PATH = '/etc/yaac/certs/ca-bundle.pem'
 export interface ProxyClientConfig {
   image: string
   /**
-   * Where THIS process reaches the proxy's control API, when that is not
-   * where the server reaches it.
-   *
-   * The server dials the proxy's Service — it is a pod of the same
-   * namespace, and the proxy's ingress policy admits its pod selector on
-   * this port (docs/server-in-cluster.md). Nothing in production sets this.
-   *
-   * What does is the e2e harness, which drives the driver's own modules
-   * from the HOST, where a ClusterIP names nothing: it hands in a loopback
-   * origin of its own making. A resolver rather than a string because the
-   * proxy pod does not exist until `ensureRunning` has applied it, so the
-   * reachability cannot be established before the client is constructed.
+   * Overrides where this process reaches the proxy's control API. The
+   * server dials the proxy's Service (docs/server-in-cluster.md) and never
+   * sets this. The e2e harness runs on the host, where a ClusterIP is
+   * unreachable, so it supplies a loopback origin. It is a function because
+   * the proxy pod doesn't exist until `ensureRunning` has deployed it.
    */
   controlOrigin?: () => Promise<string>
 }
 
 /**
- * fetch for the control tunnel, fixing the two things the bare global
- * fetch gets wrong for an exec-relay transport:
- *  - a 15s default timeout restores the deleted ServicePortForward's
- *    fail-fast: the tunnel's local listener always accepts instantly, so
- *    a wedged apiserver otherwise black-holes every proxy call for
- *    fetch's ~300s header timeout.
- *  - connection reuse across the ~5s background reconcile ticks rides
- *    the SERVER side: the proxy's API responses carry a
- *    `Keep-Alive: timeout=60` hint, which fetch's pool honors over its
- *    4s idle default (verified) — one exec relay serves many requests
- *    instead of a fresh kubectl exec + apiserver round trip per tick.
- * Deliberately the global fetch, not a custom undici dispatcher: Node's
- * fetch bundles its own undici, and a dispatcher from the npm package
- * is rejected across majors (and tests stub globalThis.fetch).
+ * fetch for request/response calls to the proxy's control API, with a 15s
+ * timeout so an unresponsive proxy fails fast instead of waiting out
+ * fetch's ~300s header timeout. Uses the global fetch rather than a custom
+ * undici dispatcher: Node's bundled undici rejects a dispatcher from a
+ * different undici major, and tests stub globalThis.fetch.
  */
 const tunnelFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
   fetch(url, { signal: AbortSignal.timeout(15_000), ...init })
@@ -92,28 +72,19 @@ function proxyControlOrigin(): string {
 export class ProxyClient {
   private running = false
   /**
-   * The deployed Deployment has been verified current (image content hash
-   * + runtime shape) by THIS process. Once true, ensureRunning()'s fast
-   * path skips the per-create `isDeployedProxyCurrent` re-check (a kubectl
-   * get + a proxy-context rehash): the expected image can only change with
-   * new server code, i.e. a server restart. attachIfRunning() never sets
-   * it — it marks a pre-existing proxy running without inspecting it, so
-   * the first ensureRunning() still performs the real check.
+   * This process has confirmed the deployed proxy matches its own build
+   * (`isDeployedProxyCurrent`). The expected image only changes with a
+   * server restart, so the check runs once per process. attachIfRunning()
+   * never sets it, so the first ensureRunning() still checks.
    */
   private deployVerifiedCurrent = false
   private authSecret: string | null = null
-  // In-flight ensureRunning() promise used as a mutex so concurrent
-  // callers (e.g. two parallel workspace creates) don't race into two
-  // parallel bootstrap passes.
+  /** In-flight ensureRunning(), shared so concurrent callers run one
+   *  bootstrap. */
   private ensureInflight: Promise<void> | null = null
 
   constructor(private config: ProxyClientConfig) {}
 
-  /**
-   * Base URL of the proxy's control API for this process — the proxy's own
-   * Service, unless the caller was handed somewhere else to dial (see
-   * `ProxyClientConfig.controlOrigin`).
-   */
   private async controlBase(): Promise<string> {
     return this.config.controlOrigin?.() ?? proxyControlOrigin()
   }
@@ -124,24 +95,15 @@ export class ProxyClient {
   }
 
   /**
-   * CA-trust (and prompt-suppression) env for workspace containers. No
-   * routing vars: egress interception is transparent — the pod's
-   * redirect init container DNATs outbound 443/80 to the proxy at the
-   * network layer, so `HTTP(S)_PROXY`/`NO_PROXY` cooperation is gone and
-   * tools that ignore proxy env vars are intercepted all the same. Only
-   * trust in the MITM CA still needs to ride env.
-   *
-   * Two trust shapes, by what each tool reads:
-   *  - ADDITIVE (proxy CA alongside the image's real roots): SSL_CERT_FILE
-   *    for OpenSSL-default tooling and NODE_EXTRA_CA_CERTS for Node, which
-   *    keep consulting the default store/bundled roots too.
-   *  - REPLACE (single-file bundle): CURL_CA_BUNDLE / REQUESTS_CA_BUNDLE /
-   *    CARGO_HTTP_CAINFO / GIT_SSL_CAINFO for the own-bundle tools (curl,
-   *    requests, cargo, git-libcurl) that ignore SSL_CERT_FILE. Pointing
-   *    those at the lone proxy CA would make them reject the real cert of
-   *    every tunnelled host, so they get the combined bundle (roots + CA) —
-   *    a superset, which makes "replace" correct on both intercepted and
-   *    tunnelled hosts. See docs/nested-containers.md.
+   * CA-trust env for workspace containers. Egress interception is
+   * transparent (no HTTP(S)_PROXY vars), so only trust in the proxy's CA
+   * goes in env:
+   *  - SSL_CERT_FILE and NODE_EXTRA_CA_CERTS get the bare proxy CA; their
+   *    tools still consult the default roots too.
+   *  - CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE, CARGO_HTTP_CAINFO and
+   *    GIT_SSL_CAINFO replace the default roots, so they get the combined
+   *    bundle, or they would reject hosts the proxy tunnels untouched.
+   * See docs/nested-containers.md.
    */
   getCaTrustEnv(): string[] {
     return [
@@ -156,13 +118,10 @@ export class ProxyClient {
   }
 
   /**
-   * Open the proxy's change stream (`GET /events`, NDJSON, held open).
-   *
-   * Deliberately the bare `fetch`, not `tunnelFetch`: that one arms a 15s
-   * `AbortSignal.timeout`, which is exactly right for a request/response
-   * call and fatal for a stream meant to live for the server's whole
-   * lifetime. Liveness is the caller's job instead — the proxy pings, and
-   * `ProxyEventStream` aborts through `signal` when the pings stop.
+   * Open the proxy's change stream (`GET /events`, NDJSON, held open). Uses
+   * the bare `fetch`, since `tunnelFetch`'s 15s timeout would kill a
+   * long-lived stream; `ProxyEventStream` aborts via `signal` when the
+   * proxy's pings stop.
    */
   async openEvents(signal: AbortSignal): Promise<Response> {
     return fetch(`${await this.controlBase()}/events`, {
@@ -172,9 +131,9 @@ export class ProxyClient {
   }
 
   /**
-   * Drain the proxy's queued in-workspace `yaac-mama` requests. A drain is a
-   * claim — the proxy hands each request out exactly once and holds the
-   * workspace's HTTP response open until `postMamaResults` (or its TTL).
+   * Claim the proxy's queued in-workspace `yaac-mama` requests. Each is
+   * handed out once; the proxy holds the workspace's HTTP response open
+   * until `postMamaResults` answers it or its TTL expires.
    */
   async fetchPendingMamaRequests(): Promise<PendingMamaRequest[]> {
     const res = await tunnelFetch(`${await this.controlBase()}/cmd/pending`, {
@@ -205,11 +164,8 @@ export class ProxyClient {
   }
 
   /**
-   * Attach to an already-deployed proxy without bootstrapping anything.
-   * Returns true if the proxy answers /healthz through a fresh tunnel,
-   * false otherwise. Used by cleanup paths that want to talk to the proxy
-   * only if it already exists — they must not build images or apply
-   * manifests.
+   * Attach to an already-deployed proxy without deploying anything.
+   * Returns true if its auth secret exists and it answers /healthz.
    */
   async attachIfRunning(): Promise<boolean> {
     if (this.running) {
@@ -242,15 +198,9 @@ export class ProxyClient {
   }
 
   private async ensureRunningImpl(): Promise<void> {
-    // Fast path: already verified in this process. Gated on the deployed
-    // Deployment still matching this build (image content hash + the
-    // stamped RuntimeClass) — attachIfRunning() (background reconciles,
-    // cleanup) marks a pre-existing proxy running without ever looking at
-    // it, so without this check a healthy-but-outdated proxy would never
-    // pick up new k8s/proxy code or a manifest-shape change. On mismatch,
-    // fall through to the full bootstrap: it re-resolves the image under
-    // its content-hash tag and re-applies the Deployment, whose Recreate
-    // strategy swaps the pod.
+    // Fast path when healthy and current. attachIfRunning() marks a proxy
+    // running without checking its version, so an outdated one falls
+    // through to the full bootstrap, which re-applies the Deployment.
     if (this.running) {
       try {
         const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
@@ -276,33 +226,20 @@ export class ProxyClient {
 
     await this.waitForHealthy()
     this.running = true
-    // The bootstrap just (re)applied the current manifest — no re-check
-    // needed until the next process.
     this.deployVerifiedCurrent = true
 
-    // Distribute the proxy's CA to workspace pods via the ConfigMap: the bare
-    // CA (additive trust) plus the combined bundle (roots + CA) the
-    // own-bundle tools point CURL_CA_BUNDLE & friends at. Cheap no-op when
-    // both stored values already match.
+    // Publish the proxy CA and combined bundle for workspace pods.
     await ensureCaConfigMap()
   }
 
   /**
-   * True when the deployed proxy Deployment matches what this server
-   * would deploy: the image carries the current content hash of the
-   * proxy source (the tag encodes the build context's hash — see
-   * resolveProxyImageTag) AND the pod template carries no RuntimeClass,
-   * matching the manifest builder (trusted infra runs on runc — see the
-   * gvisor.ts module doc). The runtime half is what lets a
-   * manifest-shape-only upgrade (gVisor on, then infra back off it)
-   * converge: attachIfRunning() marks a healthy pre-existing proxy
-   * running without inspecting it, and the proxy image alone can be
-   * byte-identical across such an upgrade, so an image-only check would
-   * keep the old pod forever. A missing Deployment counts as stale so
-   * the bootstrap recreates it. kubectl errors count as current: the
-   * caller is on the fast path with a demonstrably healthy proxy, and
-   * falling through to a bootstrap would just fail on the same broken
-   * kubectl.
+   * True when the deployed proxy matches what this server would deploy: the
+   * image has the current content-hash tag (`resolveProxyImageTag`) and the
+   * pod sets no RuntimeClass (the proxy is trusted infra and runs on runc;
+   * see cluster/proxy-manifests.ts). The image can be unchanged across a
+   * manifest-only change, hence the second check. A missing Deployment is
+   * stale. kubectl errors count as current: the proxy just answered
+   * /healthz, and a bootstrap would fail on the same kubectl error.
    */
   async isDeployedProxyCurrent(): Promise<boolean> {
     try {
@@ -314,8 +251,6 @@ export class ProxyClient {
         } } }
       }>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
       const podSpec = deployment?.spec?.template?.spec
-      // The builder (bootstrap.ts) stamps no runtimeClassName, so a stamped
-      // deployment (a gVisor-era proxy) is stale and gets re-rolled.
       return podSpec?.containers?.[0]?.image === expected
         && podSpec?.runtimeClassName === undefined
     } catch {
@@ -324,10 +259,8 @@ export class ProxyClient {
   }
 
   /**
-   * The proxy image's in-cluster ref, under the content-hash tag this
-   * source tree hashes to. A lookup, never a build: the image is
-   * yaac-shipped, so `yaac cluster install` is what puts it in the
-   * registry (see proxy-image.ts).
+   * The proxy image's in-cluster ref under its content-hash tag. A lookup,
+   * never a build: `yaac cluster install` pushes it (cluster/proxy-image.ts).
    */
   private ensureProxyImage(): Promise<string> {
     return lookupProxyImage(this.config.image)
@@ -339,28 +272,20 @@ export class ProxyClient {
         const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
         if (res.ok) return
       } catch {
-        // not ready yet — the Deployment is still rolling, or its Service
-        // has no endpoint behind it. Both heal on the next tick.
+        // Not ready yet: the Deployment is still rolling out.
       }
       await new Promise((r) => setTimeout(r, 500))
     }
     throw new Error('Proxy did not become healthy within 15 seconds')
   }
 
-  /**
-   * Forget that the proxy was verified running, without touching the
-   * deployed proxy. Called from server shutdown, and from anywhere the
-   * control API stops answering: the next call then re-verifies rather
-   * than trusting a cached `running`.
-   */
+  /** Forget that the proxy was verified running, so the next call
+   *  re-checks. Leaves the deployed proxy alone. */
   disconnect(): void {
     this.running = false
   }
 
-  /**
-   * Tear down the proxy Deployment/Service and the control tunnel. Used
-   * by test teardown; production servers leave the proxy deployed.
-   */
+  /** Delete the proxy Deployment and Service. Used by test teardown. */
   async stop(): Promise<void> {
     console.log('Stopping proxy...')
     this.running = false
@@ -379,8 +304,7 @@ export class ProxyClient {
     this.running = false
     this.deployVerifiedCurrent = false
     this.authSecret = null
-    // The Service was just deleted — a later ensure may allocate a new
-    // ClusterIP, so the per-process cache must not vouch for the old one.
+    // A recreated Service may get a new ClusterIP.
     resetProxyClusterIpCache()
   }
 }
@@ -393,7 +317,6 @@ async function readExistingProxyAuthSecret(): Promise<string | null> {
   return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : null
 }
 
-// Default singleton. YAAC_PROXY_IMAGE is a test-only hook that lets the
-// e2e suite point a server subprocess at pre-built test images. Unset in
-// production.
+/** Default singleton. The image name comes from YAAC_PROXY_IMAGE, which
+ *  only tests set. */
 export const proxyClient = new ProxyClient({ image: testEnv.proxyImage })

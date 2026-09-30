@@ -33,24 +33,18 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 
 /**
- * ssh-agent forwarding over the network, end to end: a session pod's
- * `ssh-add -l` must list an identity that exists only in the proxy pod's
- * in-memory agent, with no shared filesystem anywhere in between.
+ * ssh-agent forwarding over the network: a workspace pod's `ssh-add -l`
+ * must list an identity held only in the proxy pod's in-memory agent. The
+ * pod shares no filesystem with the proxy and reaches the agent through
+ * the proxy Service, so nothing assumes the pods share a node. This covers
+ * the whole chain: NetworkPolicy admits the port, the proxy maps the source
+ * pod to a workspace, the SSH-remote check passes, and a real ssh client
+ * talks to the agent. The proxy-side check alone is unit-tested in
+ * k8s/proxy/test/proxy-ssh-agent-relay.test.ts.
  *
- * This is the multi-node property under test. The old transport was a
- * hostPath UNIX socket, which rendezvous only between pods on the SAME
- * node; the pod here mounts nothing but a pod-local emptyDir and reaches
- * the agent through the proxy Service, so nothing about it assumes
- * co-scheduling. What it proves on this single-node cluster is that the
- * whole chain works: NetworkPolicy admits the port, the proxy resolves the
- * source pod to a session, the SSH-remote entitlement passes, and a real
- * ssh client speaks the agent protocol across the splice.
- *
- * The complement — that the transport is not a hole — is the refusal
- * cases: a session whose registered remote is HTTPS gets nothing (that is
- * exactly the set of pods the server used to withhold the socket mount
- * from), a pod with no session identity cannot even connect, and a session
- * of a project the key is not assigned to is shown no key.
+ * The refusal cases: a workspace with an HTTPS remote gets nothing, a pod
+ * with no workspace identity cannot connect, and a workspace of a project
+ * the key is not assigned to sees no key.
  */
 
 const execFileAsync = promisify(execFile)
@@ -83,7 +77,6 @@ async function makeTestKey(dir: string): Promise<{
   const hostPub = await fs.readFile(`${hostKeyPath}.pub`, 'utf8')
   const [keyType, keyBlob] = hostPub.trim().split(/\s+/)
   return {
-    // The key itself: what the server holds sealed, and what it uploads.
     privateKey: await fs.readFile(keyPath, 'utf8'),
     publicKey: (await fs.readFile(`${keyPath}.pub`, 'utf8')).trim(),
     fingerprint: stdout.trim().split(/\s+/)[1],
@@ -92,10 +85,9 @@ async function makeTestKey(dir: string): Promise<{
 }
 
 /**
- * A session-shaped pod carrying exactly the ssh-agent wiring
- * `buildPodJobManifest` + session-create give a real session: the
- * pod-local emptyDir at SSH_AGENT_MOUNT, SSH_AUTH_SOCK, and the forwarder's
- * upstream. `workspaceId` is what the proxy's pod-watch attributes it to.
+ * A pod with the same ssh-agent wiring a real workspace gets: a pod-local
+ * emptyDir at SSH_AGENT_MOUNT, SSH_AUTH_SOCK, and the forwarder's upstream.
+ * The proxy attributes it to `workspaceId` by label.
  */
 async function startWorkspacePod(name: string, workspaceId: string): Promise<void> {
   await kubectlApply({
@@ -128,7 +120,7 @@ async function startWorkspacePod(name: string, workspaceId: string): Promise<voi
   })
 }
 
-/** A pod with no session identity at all — the "should reach nothing" case. */
+/** A pod with no workspace identity, which should reach nothing. */
 async function startStrayPod(name: string): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
@@ -185,9 +177,8 @@ async function shInProxy(script: string): Promise<string> {
 }
 
 /**
- * Why a hop failed, in the order the connection crosses them: the proxy's
- * own listener, then the pod→proxy TCP hop (NetworkPolicy), then what the
- * proxy logged about the connection.
+ * Which hop failed, checked in connection order: the proxy's listener, the
+ * pod-to-proxy TCP hop (NetworkPolicy), then the proxy's log.
  */
 async function proxyAgentLog(): Promise<string> {
   const log = await kubectlWithRetry([
@@ -208,8 +199,8 @@ async function diagnose(pod: string): Promise<string> {
 }
 
 /**
- * Start the in-pod forwarder — the same socat line `yaac-workspace-init`
- * runs from the pod's postStart hook, off the same two env vars.
+ * Start the in-pod forwarder: the same socat line `yaac-workspace-init`
+ * runs from the pod's postStart hook.
  */
 async function startForwarder(pod: string): Promise<void> {
   const { exit, out } = await shInPod(pod,
@@ -232,8 +223,7 @@ beforeAll(async () => {
 
   const key = await makeTestKey(keyDir)
   fingerprint = key.fingerprint
-  // The key reaches the proxy's agent through the credentials Secret,
-  // exactly as the server hands it over, assigned to the sessions' project.
+  // The key reaches the proxy's agent through the credentials Secret.
   await syncProxyCredentials({
     claude: null, codex: null, opencode: null, pi: null, git: [],
     ssh: [{
@@ -243,8 +233,7 @@ beforeAll(async () => {
     }],
   })
 
-  // The entitlement the proxy gates on is the session's registered remote:
-  // an SSH one is exactly when session-create provisions SSH_AUTH_SOCK.
+  // The proxy only serves the agent to workspaces with an SSH remote.
   await applyProxyRegistration(sshSession, {
     rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
     repoUrl: `git@${SSH_HOST}:acme/app.git`,
@@ -279,42 +268,34 @@ afterAll(async () => {
   keyDir = null
 }, 300_000)
 
-// The proxy-side gate is covered runtime-free in
-// k8s/proxy/test/proxy-ssh-agent-relay.test.ts; this file drives the whole
-// path against a real proxy and real pods.
 describe('ssh-agent forwarding over the proxy', () => {
   it('lists the proxy-held identity from inside a session pod, over a pod-local socket', async () => {
     await startForwarder(sshPod)
 
-    // Bounded: a dropped TCP hop leaves ssh-add waiting on a connect that
-    // never completes, and a bare exec timeout says nothing about which hop
-    // failed — `diagnose` walks them in order.
+    // Bounded, so a dropped hop fails fast and `diagnose` can say which.
     const listed = await shInPod(sshPod, 'timeout 30 ssh-add -l')
     expect(listed.exit, `ssh-add -l failed: ${listed.out}${await diagnose(sshPod)}`).toBe(0)
     expect(listed.out).toContain(fingerprint)
 
-    // Nothing but the forwarder's own socket lives in the mount: no host
-    // directory is shared with the proxy, which is the whole point.
+    // Only the forwarder's socket is in the mount; nothing is shared with
+    // the proxy.
     const dir = await shInPod(sshPod, `ls -A ${SSH_AGENT_MOUNT}`)
     expect(dir.out.trim().split(/\s+/).filter(Boolean)).toEqual(['socket'])
 
-    // The private key never reaches the pod — the agent only ever signs.
+    // The private key never reaches the pod.
     const keyGrep = await shInPod(sshPod,
       `grep -rl 'PRIVATE KEY' ${SSH_AGENT_MOUNT} /tmp 2>/dev/null | head -5`)
     expect(keyGrep.out).not.toContain('PRIVATE KEY')
   }, 300_000)
 
   it('refuses a session whose registered remote is not SSH', async () => {
-    // Same pod shape, same network path, different registration: the proxy
-    // hands the agent only to the sessions the server would have mounted
-    // the socket into.
+    // Same pod shape and network path, but an HTTPS remote.
     await startForwarder(httpsPod)
 
     const listed = await shInPod(httpsPod, 'timeout 30 ssh-add -l')
     expect(listed.exit).not.toBe(0)
     expect(listed.out).not.toContain(fingerprint)
-    // Refused BY THE GATE, not by a broken hop: a bare non-zero exit is also
-    // what a dropped connection looks like, so assert the proxy said why.
+    // Check the proxy refused it, not that a hop was dropped.
     expect(await proxyAgentLog()).toMatch(/BLOCKED ssh-agent from .*no SSH remote/)
   }, 300_000)
 
@@ -322,17 +303,15 @@ describe('ssh-agent forwarding over the proxy', () => {
     await startStrayPod(strayPod)
     await waitForPodRunning(strayPod)
 
-    // `timeout` bounds the wait: a policy DROP is silent, so the connect
-    // would otherwise sit through the kernel's full SYN retry schedule.
+    // A policy DROP is silent, so bound the connect with `timeout`.
     const dial = await shInPod(strayPod,
       `timeout 15 socat -T5 /dev/null TCP:${proxyHost}:${SSH_AGENT_PORT}`)
     expect(dial.exit, `a non-session pod reached the agent port: ${dial.out}`).not.toBe(0)
   }, 300_000)
 
-  // Last: it moves the SSH session to another project.
+  // Last: it moves the SSH workspace to another project.
   it('shows a session only the keys assigned to its own project', async () => {
-    // Same pod, same forwarder, same agent: re-registered under a project
-    // the key is not assigned to, the session's next request lists nothing.
+    // Re-registered under a project the key is not assigned to.
     await applyProxyRegistration(sshSession, {
       rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd-other',
       repoUrl: `git@${SSH_HOST}:acme/app.git`,

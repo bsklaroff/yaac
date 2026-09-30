@@ -92,10 +92,9 @@ describe('reportAgentLaunchFailure', () => {
     reportAgentLaunchFailure({ workspaceId: id, projectSlug: 'p', tool: 'codex', kind: 'create', error })
 
   it('lands a failed row for a launch that died after its create resolved', async () => {
-    // The window probe is deliberately not awaited (its settle sleep would
-    // sit on every create's wall clock), so its verdict arrives with the
-    // create already gone. Re-registering is how it still reaches the user,
-    // in the same overlay a create failure uses.
+    // The window probe is not awaited (its settle sleep would slow every
+    // create), so its verdict can arrive after the create finished. It
+    // re-registers a row so the user still sees the failure.
     await report('a')
     expect(listProvisioning()[0]).toMatchObject({
       workspaceId: 'a', tool: 'codex', kind: 'create',
@@ -104,19 +103,16 @@ describe('reportAgentLaunchFailure', () => {
   })
 
   it('keeps the failed row out of the in-flight set, so the reaper still owns the workspace', async () => {
-    // Nothing is provisioning any more — the workspace is dying, and the
-    // liveness watch and stale reaper are what handle that. A row that
-    // shielded it would leave the corpse in the sidebar forever.
+    // The liveness watch and stale reaper handle a dying workspace. A row
+    // that shielded it would leave it in the sidebar forever.
     await report('a', 'dead')
     expect(inFlightWorkspaceIds()).toEqual([])
   })
 
   it('waits for the create still in flight, so its success cannot erase the verdict', async () => {
-    // The probe fires from INSIDE the create, so "the verdict comes after"
-    // is arithmetic, not an ordering anyone enforces. Report first and
-    // runProvisioned's success path removes the row on its way out — the
-    // silent ghost this reporting exists to kill. Here the verdict is filed
-    // at the worst possible moment: mid-create.
+    // The probe fires from inside the create, so its report can land first,
+    // and runProvisioned's success path would then remove the failed row.
+    // Here the verdict is filed mid-create.
     register('a')
     let filed: Promise<void> | undefined
     let release!: () => void
@@ -126,21 +122,19 @@ describe('reportAgentLaunchFailure', () => {
       await blocked
       return 'ok'
     })
-    // Still mid-create: the verdict must not have touched the registry yet.
+    // Mid-create, the verdict must not have touched the registry yet.
     await Promise.resolve()
     expect(listProvisioning()[0]?.error).toBeUndefined()
 
     release()
     await run
     await filed
-    // The create dropped its row, and the verdict then put one back.
     expect(listProvisioning()[0]).toMatchObject({ workspaceId: 'a', error: 'agent "codex" exited right after launch' })
   })
 
   it('leaves a create that failed on its own to say why', async () => {
-    // Waiting out the create means the verdict can find a row that already
-    // failed. That error is the CAUSE and a missing agent window is its
-    // consequence, so the useful message stays and the symptom is dropped.
+    // The create's own error is the cause and the dead agent window only a
+    // symptom, so the create's message is kept.
     register('a')
     let filed: Promise<void> | undefined
     const run = runProvisioned('a', () => {
@@ -194,10 +188,10 @@ describe('runProvisioned', () => {
     })
   })
 
-  // The create route claims the id before it streams. A run refused before
-  // it took the reservation over (a typo'd group, a bad model) drops the
-  // entry — its error is already in the caller's stream — while one that
-  // got under way leaves the usual failed row.
+  // The create route reserves the id before it streams. A run refused before
+  // taking over the reservation (a bad group or model) drops the entry, since
+  // its error already reached the caller. A run that started leaves the usual
+  // failed row.
   it('drops a reservation the run never took over, and fails one it did', async () => {
     registerProvisioning({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create', reserved: true })
     await expect(runProvisioned('a', () => Promise.reject(new Error('no such group')))).rejects.toThrow()
@@ -220,7 +214,7 @@ describe('runProvisioned', () => {
       return Promise.resolve(1)
     })
     expect(listProvisioning()).toEqual([])
-    // Only the post-success snapshot push — registry no-ops don't notify.
+    // Only the post-success snapshot push; registry no-ops don't notify.
     expect(notify).toHaveBeenCalledTimes(1)
   })
 })
@@ -230,16 +224,14 @@ describe('listProvisioning', () => {
     register('b')
     register('a')
     const list = listProvisioning()
-    // Ordered by a monotonic insertion counter, so 'b' (registered first)
-    // comes first regardless of whether the two share a millisecond clock
-    // read — the workspaceId tiebreak used to flip this under parallel load.
+    // Ordered by an insertion counter, so the order holds even when both
+    // share a millisecond timestamp.
     expect(list.map((e) => e.workspaceId)).toEqual(['b', 'a'])
     expect(list[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
   })
 
-  // A create names its model from the row's first frame, before any agent has
-  // answered; a restart names none, and the row says nothing rather than
-  // something empty.
+  // A create shows its model from the start; a restart has none, so the key
+  // is absent rather than empty.
   it('carries the model a create launches with, and its name', () => {
     register('c', { model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
     register('r')
@@ -263,16 +255,15 @@ describe('inFlightWorkspaceIds', () => {
     expect(inFlightWorkspaceIds().sort()).toEqual(['a', 'b'])
   })
 
-  // THE reason this is a function and not `listProvisioning().map(…)`: the
-  // set is what stops a sweep reaping mid-create, and a failed create's row
-  // lingers with no TTL until the user dismisses it. Shielding on that row
-  // would make one failed create protect its leftovers forever.
+  // The in-flight set keeps sweeps from reaping mid-create. A failed row
+  // lingers until dismissed, so counting it would shield the leftovers
+  // forever.
   it('drops a failed entry, which is not still running', () => {
     registerProvisioning({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create' })
     registerProvisioning({ workspaceId: 'gone', projectSlug: 'p', tool: 'claude', kind: 'create' })
     failProvisioning('gone', 'image build exploded')
     expect(inFlightWorkspaceIds()).toEqual(['a'])
-    // The row itself survives for the user to dismiss.
+    // The row survives for the user to dismiss.
     expect(listProvisioning().map((e) => e.workspaceId).sort()).toEqual(['a', 'gone'])
   })
 

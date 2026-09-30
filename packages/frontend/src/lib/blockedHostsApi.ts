@@ -1,11 +1,10 @@
 import { api } from './api'
 
 /**
- * Allow a previously-blocked host for a workspace. `persist: false` widens only
- * the running workspace's live allowlist; `persist: true` also writes the host
- * into the project's yaac-config.json so future workspaces inherit it. Either way
- * the proxy unblocks the host immediately and the server pushes a fresh
- * snapshot, so the blocked-hosts badge updates on its own.
+ * Allow a blocked host for a workspace. `persist: false` changes only the
+ * running workspace's allowlist; `persist: true` also writes the host into
+ * the project's yaac-config.json so future workspaces inherit it. The server
+ * then pushes a snapshot, which updates the blocked-hosts badge.
  */
 export async function allowBlockedHost(
   workspaceId: string,

@@ -45,15 +45,12 @@ describe('parseMamaEnvelope', () => {
   it('hands on a prototype-less arg map, so no name can reach an inherited member', () => {
     const parsed = parseMamaEnvelope('{"command":"list","args":{"tool":"claude"}}')
     expect(Object.getPrototypeOf(parsed!.args)).toBeNull()
-    // The point of it: an ordinary-looking lookup finds nothing but what the
-    // caller actually sent.
+    // Lookups find only what the caller sent, not prototype members.
     expect((parsed!.args as Record<string, unknown>).constructor).toBeUndefined()
   })
 
   it('drops arg values that are not strings rather than refusing the request', () => {
-    // They cannot be what any command meant, and the server re-validates
-    // whatever survives — so the request still reaches the one place that
-    // can explain what was wrong with it.
+    // Dropped rather than rejected; the server re-validates the rest.
     expect(parseMamaEnvelope('{"command":"create","args":{"tool":["x"],"model":"opus"}}'))
       .toEqual({ command: 'create', args: { model: 'opus' }, body: '' })
   })
@@ -82,8 +79,7 @@ describe('validateMamaRequest', () => {
   })
 
   it('rejects command names outside the safe charset', () => {
-    // A shape, not the allowlist — the server holds that, so an unknown but
-    // well-formed command is queued and refused there.
+    // Only the shape is checked; the server refuses unknown commands.
     expect(validateMamaRequest('not-a-command', {}, '')).toEqual({ ok: true })
     expect(validateMamaRequest('', {}, '').ok).toBe(false)
     expect(validateMamaRequest('Create', {}, '').ok).toBe(false)
@@ -105,10 +101,7 @@ describe('validateMamaRequest', () => {
   })
 
   it('rejects a prototype member by name instead of throwing on it', () => {
-    // A truthiness index would return the inherited member here, pass the
-    // "unknown option" guard, and then throw on `.test` — inside a request
-    // handler, in a process with no uncaughtException handler. One crafted
-    // request from any sandbox would take egress down for the whole node.
+    // An uncaught throw here would crash the proxy for the whole node.
     for (const name of ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__']) {
       const result = validateMamaRequest('list', { [name]: 'x' }, '')
       expect(result.ok, name).toBe(false)
@@ -139,8 +132,7 @@ describe('validateMamaRequest', () => {
     expect(validateMamaRequest('create', { branch: 'two words' }, 'p').ok).toBe(false)
     expect(validateMamaRequest('create', { branch: 'x'.repeat(256) }, 'p').ok).toBe(false)
 
-    // Group names are free-form user text, but bounded and single-line so
-    // they cannot smuggle a second line into anything rendering them.
+    // Group names are free-form but bounded and single-line.
     expect(validateMamaRequest('group-move', { group: 'release train' }, 'p')).toEqual({ ok: true })
     expect(validateMamaRequest('group-move', { group: 'a\nb' }, 'p').ok).toBe(false)
     expect(validateMamaRequest('group-move', { group: 'x'.repeat(201) }, 'p').ok).toBe(false)
@@ -167,8 +159,7 @@ describe('MamaQueue', () => {
     expect(drained[0].command).toBe('create')
     expect(drained[0].body).toBe('do the thing')
     expect(q.complete({ requestId, ok: true, output: 'new-id' })).toBe(true)
-    // The envelope shape, which is also what the containerless route
-    // answers — one parser in the script serves both substrates.
+    // The containerless route answers with the same envelope.
     expect(completed()).toEqual({ status: 200, body: '{"output":"new-id"}' })
   })
 
@@ -192,8 +183,7 @@ describe('MamaQueue', () => {
   })
 
   it('completes an ok result with no output as an empty 200', () => {
-    // A command whose whole answer is "it worked" still has to release the
-    // caller, not hang until the TTL.
+    // An empty result still releases the caller.
     const q = new MamaQueue()
     const { requestId, completed } = enqueue(q)
     q.drain()
@@ -241,9 +231,7 @@ describe('MamaQueue', () => {
   })
 
   it('tells a timed-out caller whether its command could have run', () => {
-    // The difference decides whether retrying is safe: `create` is not
-    // idempotent, so a blind retry after a CLAIMED timeout duplicates a
-    // workspace. Pending never reached the server; claimed did.
+    // Pending never reached the server; claimed did and may have run.
     const q = new MamaQueue()
     // Handed over, then never answered.
     const claimed = enqueue(q, 's1', 0)

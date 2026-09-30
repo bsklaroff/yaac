@@ -1,20 +1,14 @@
 /*
  * Verifies that no text control in the mobile shell is small enough to make
- * mobile Safari zoom the page.
+ * mobile Safari zoom the page. Focusing a control under 16px zooms iOS
+ * Safari, and it never zooms back out. `index.css` raises inputs, textareas,
+ * selects and CodeMirror to 16px below the mobile breakpoint; this walks the
+ * phone-width UI, opens everything with a control, and measures the computed
+ * sizes.
  *
- * Focusing a control under 16px zooms iOS Safari and it never zooms back out;
- * what the user is left with reads as a layout bug (the pane runs off to the
- * right, the whole shell pans under a finger). `index.css` raises every
- * input/textarea/select and CodeMirror's contenteditable to 16px below the
- * mobile breakpoint, over the app's text-xs / text-[11px] utilities — this
- * walks the phone-width UI, opens everything that has a control in it, and
- * measures what actually computed.
- *
- * It is a *sweep*, so it prints the inventory it found (label, tag, px) as well
- * as passing or failing: a control that never appeared is a hole in the walk,
- * not a pass, and the printed list is how you see that. Read all three lists —
- * what was measured, what would not open (a renamed label lands here), and what
- * this walk never attempts (NOT_WALKED).
+ * It prints three lists: what it measured, what it could not open (e.g. a
+ * renamed label), and what it never tries (NOT_WALKED). A control that never
+ * appeared is a gap in the walk, not a pass.
  *
  * Drives the app the server itself serves (`dist/`), reading the port
  * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
@@ -72,14 +66,12 @@ const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const PHONE = { width: 390, height: 844 }
 /** Below this a focused control zooms mobile Safari. */
 const FLOOR = 16
-/** Below this a control is on screen but too narrow to type into — the failure
- *  the `min-width: 0` rule makes possible in exchange for the one it fixes. */
-const USABLE = 48
 /**
- * Controls the walk does not reach at all, printed with the verdict so the
- * sweep's edge is stated rather than implied. These are where an unshrinkable
- * row would still hide.
+ * Below this a control is too narrow to type into, which the `min-width: 0`
+ * rule makes possible.
  */
+const USABLE = 48
+/** Controls the walk never reaches, printed with the verdict. */
 const NOT_WALKED = [
   'BranchPicker inside the new-workspace sheet (needs the picker opened)',
   'the badge popovers (unforwarded ports, blocked hosts, usage, image builds)',
@@ -87,20 +79,16 @@ const NOT_WALKED = [
 ]
 
 /**
- * Every visible text control on screen right now, with the size it computed to.
- * xterm's hidden helper textarea is excluded: it is the terminal's own input
- * sink, sized by xterm inline to line up an IME with the cursor, and it is not
- * something a finger ever lands in.
+ * Every visible text control on screen, with its computed size. xterm's
+ * hidden helper textarea is excluded, since no finger ever lands in it.
  */
 function controlsOnScreen() {
   return () => {
     const out = []
     for (const el of document.querySelectorAll('input, textarea, select, .cm-content')) {
       if (el.classList.contains('xterm-helper-textarea')) continue
-      // Not rendered at all (`display: none` — the file inputs behind
-      // BuildFiles' upload buttons) versus rendered and crushed to nothing:
-      // the second is a finding, so only the first is skipped. A zero-size
-      // filter would swallow exactly the failure the width check looks for.
+      // Skip `display: none` (e.g. hidden file inputs), but not a control
+      // squeezed to zero width, which is a finding.
       if (el.getClientRects().length === 0) continue
       if (getComputedStyle(el).visibility === 'hidden') continue
       const r = el.getBoundingClientRect()
@@ -109,11 +97,8 @@ function controlsOnScreen() {
         label: (el.getAttribute('aria-label') || el.getAttribute('placeholder')
           || el.className?.toString().split(' ')[0] || '').slice(0, 34),
         px: Math.round(parseFloat(getComputedStyle(el).fontSize) * 10) / 10,
-        // The two directions a 16px control can cost its row, one per rule.
-        // Without `min-width: 0` it refuses to shrink and pushes its own submit
-        // button off the right edge; with it, an overfull row can squeeze it
-        // toward zero instead. Both leave the app unusable, so both are
-        // measured.
+        // A 16px control can either push its row off screen (without
+        // `min-width: 0`) or be squeezed toward zero (with it). Check both.
         overhang: Math.round(r.right - document.documentElement.clientWidth),
         width: Math.round(r.width),
       })
@@ -140,7 +125,7 @@ const APP_URL = process.env.APP_URL ?? `http://127.0.0.1:${lock.port}`
 const browser = await chromium.launch()
 /** name -> controls found there; the inventory printed at the end. */
 const seen = new Map()
-/** Stops the walk could not open at all — a hole in the sweep, not a pass. */
+/** Stops the walk could not open (a gap in the sweep, not a pass). */
 const unreached = []
 try {
   const ctx = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true })
@@ -163,10 +148,8 @@ try {
   const projectsLayer = shell.locator('> div').nth(0)
   const workspacesLayer = shell.locator('> div').nth(1)
   const paneLayer = shell.locator('> div').nth(2)
-  // Twice, deliberately: one press closes a menu nested in a dialog only as far
-  // as the dialog, and a popup left open swallows the *next* stop's tap — which
-  // then reads as a stop that would not open rather than as this one not
-  // closing.
+  // Twice: one press only closes a nested menu, and a popup left open would
+  // swallow the next stop's tap.
   const escape = async () => {
     for (const _ of [0, 1]) {
       await page.keyboard.press('Escape')
@@ -174,12 +157,7 @@ try {
     }
   }
 
-  /**
-   * Open one stop and measure it. Every failure to get there is recorded, not
-   * dropped: a renamed label or a moved button would otherwise make a stop that
-   * *stopped opening* indistinguishable from one that never existed, and the
-   * size check would keep passing on whatever the walk still reaches.
-   */
+  /** Open one stop and measure it, recording any failure to open it. */
   const stop = async (where, locator, timeout) => {
     if (!await tapIfPresent(locator, timeout)) { unreached.push(where); return false }
     await sweep(where)
@@ -188,10 +166,8 @@ try {
 
   // ---- projects screen: new project, settings sections ----
   if (await stop('new-project', projectsLayer.getByText('Add project', { exact: true }))) await escape()
-  // The section nav is a row of chips below md; each pane owns its own
-  // controls, and only some sections have any. Server is desktop-bridge only
-  // (`visibleSections` drops it in a browser), so it lands in the hole list on
-  // every browser run — which is the point of printing that list.
+  // Settings sections are chips below md. Server is desktop-only, so in a
+  // browser it always lands in the could-not-open list.
   const SECTIONS = ['Credentials', 'Server', 'Project Config', 'User Dockerfile']
   const sectionStop = (tab) => `settings-${tab.toLowerCase().replace(/ /g, '-')}`
   if (await tapIfPresent(projectsLayer.getByText('Settings', { exact: true }))) {
@@ -215,8 +191,7 @@ try {
     unreached.push('project-menu', 'remove-project')
   }
   if (await stop('skills', workspacesLayer.getByLabel('Skills'))) await escape()
-  // Only rendered once the project has a stopped workspace — absent is a fact
-  // about the environment, and the hole list says so either way.
+  // Present only if the project has a stopped workspace.
   if (await stop('stopped', workspacesLayer.getByText('Stopped workspaces', { exact: true }))) await escape()
   if (await stop('new-workspace', workspacesLayer.getByTitle('New workspace'))) await escape()
 
@@ -232,8 +207,7 @@ try {
     await stop('pane-rename', paneLayer.getByLabel('Rename workspace'))
     await escape()
     if (await tapIfPresent(paneLayer.getByLabel('More pane actions'))) {
-      // Swept by hand rather than through `stop`: the diff has to load before
-      // its find box exists to measure.
+      // By hand, since the diff must load before its find box exists.
       if (await tapIfPresent(page.getByText('Review changes', { exact: true }))) {
         await page.waitForTimeout(3000)
         await sweep('changes')
@@ -264,7 +238,6 @@ try {
   const crushed = all.filter((c) => c.width < USABLE)
   check(`no control is squeezed below ${USABLE}px of usable width`, crushed.length === 0,
     crushed.map((c) => `${c.where}/${c.label} ${c.width}px`).join(' '))
-  // A walk that opened nothing would pass the size check vacuously.
   check('the walk actually opened controls to measure', all.length >= 8, `${all.length} found`)
   const bare = [...seen].filter(([, list]) => list.length === 0).map(([where]) => where)
   if (bare.length > 0) console.log(`  (no controls on: ${bare.join(', ')})`)

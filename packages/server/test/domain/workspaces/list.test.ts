@@ -13,9 +13,8 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   }
 })
 
-// The join under test reads the recorded rows alongside the real
-// observation half, so the leaf mocks above drive it end to end — only the
-// substrate is stubbed.
+// Only the substrate is stubbed; the listing joins real rows with real
+// status observation.
 import { listWorkspacePods, LABEL_PREWARMED } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { markWorkspaceTerminating, isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'

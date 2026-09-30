@@ -2,14 +2,11 @@ import { formatCheckResult } from '@yaac/shared/checks'
 import { runHostCheck } from '@yaac/server/drivers/containerless/check'
 
 /**
- * `yaac host check` — verify this machine can run workspaces without
- * containers, and print actionable fixes for anything missing. Exits 1 on
- * hard failures.
+ * `yaac host check`: verify this machine can run containerless workspaces
+ * and print a fix for anything missing. Exits 1 on hard failures.
  *
- * The containerless parallel of `yaac cluster check`: with no image to
- * install anything into, every tool a workspace needs has to already be on
- * this host, and without this the failure is a tmux window that opens and
- * exits with nobody watching.
+ * With no image, every tool a workspace needs must already be on the host;
+ * otherwise the workspace's tmux window just opens and exits.
  */
 export async function hostCheck(): Promise<void> {
   const results = await runHostCheck()

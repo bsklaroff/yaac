@@ -82,7 +82,7 @@ describe('Settings → Shortcuts', () => {
   it('rejects a chord already bound to another command', () => {
     openShortcuts()
     fireEvent.click(screen.getByRole('button', { name: 'Alt+N' }))
-    // Alt+D is the delete-workspace default.
+    // Alt+D is the default for delete-workspace (Stop workspace).
     fireEvent.keyDown(window, { code: 'KeyD', altKey: true })
 
     expect(screen.getByText(/Already bound to/)).toBeTruthy()

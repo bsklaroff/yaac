@@ -1,10 +1,6 @@
 /**
- * The desktop shell as the resident port forwarder.
- *
- * The reconciler has its own suite in `@yaac/shared`; what is tested here
- * is the wiring — that a snapshot becomes the desired set, that snapshots
- * arriving faster than binds settle do not stack up, and that a switched
- * server takes its forwards with it.
+ * The desktop forwarder's wiring. The reconciler itself is tested in
+ * `@yaac/shared`.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { snapshotForwards, startForwarder } from '#forwarder'
@@ -38,8 +34,7 @@ function snapshot(
   return { driver, workspaces } as unknown as ServerSnapshot
 }
 
-/** A fake reconciler standing in for the shared one: records every desired
- *  set it was handed, and how many sets it has been given. */
+/** A fake reconciler that records every desired set it is handed. */
 function fakeSet(): {
   create: ReturnType<typeof vi.fn>
   reconciled: ForwardSpec[][]
@@ -91,9 +86,7 @@ describe('snapshotForwards', () => {
   })
 
   it('offers nothing against a containerless server on this machine', () => {
-    // Not an empty listing — a listing this client must not act on. Those
-    // ports are already bound on this machine by the dev servers
-    // themselves, so binding them is a retry loop that can never settle
+    // The workspace processes already hold these ports on this machine
     // (docs/port-forward-tunnel.md).
     expect(snapshotForwards(snapshot([
       workspace('a', [[3000, 3000]]),
@@ -101,8 +94,7 @@ describe('snapshotForwards', () => {
   })
 
   it('binds a remote containerless server\'s mappings, which is what makes the preview pane true', () => {
-    // From here the server host's loopback is as unreachable as a pod's;
-    // the identity mapping is bound on this machine and tunnelled back.
+    // A remote host's loopback is unreachable, so the ports are bound here.
     expect(snapshotForwards(snapshot([
       workspace('a', [[3000, 3000]]),
     ], 'containerless'), OTHER.baseUrl)).toEqual([
@@ -123,9 +115,7 @@ describe('startForwarder', () => {
   })
 
   it('coalesces a burst of snapshots down to the newest', async () => {
-    // Snapshots arrive faster than binds settle; replaying every one would
-    // walk the set through states the server has already left, unbinding
-    // and rebinding ports for no reason.
+    // Replaying every snapshot would needlessly unbind and rebind ports.
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
 
     forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
@@ -137,9 +127,6 @@ describe('startForwarder', () => {
   })
 
   it('rebuilds against a switched server rather than reconciling onto it', async () => {
-    // A different server is a different set of forwards; carrying the old
-    // ones over would leave the tray tunnelling to a server nobody is
-    // looking at.
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
     forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
@@ -172,8 +159,7 @@ describe('startForwarder', () => {
   })
 
   it('says so and carries on when the target cannot be resolved', async () => {
-    // A server that is down between snapshots; the next snapshot resolves
-    // it again.
+    // The next snapshot resolves the target again.
     resolveTarget.mockRejectedValueOnce(new Error('yaac server is not running'))
     const said: string[] = []
     const forwarder = startForwarder({

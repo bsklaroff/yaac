@@ -10,10 +10,8 @@ import { ServerError } from '@yaac/shared/errors'
 import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-// The live workspace count comes off the substrate; stubbed so the count a
-// case asserts on is the one it set up.
-// The live count comes off the runtime; what it includes is asserted in
-// locate.test.ts.
+// The live workspace count comes from the driver, stubbed here. What it
+// includes is asserted in test/drivers/k8s/workspaces/locate.test.ts.
 const count = vi.fn()
 
 let tmpDir: string
@@ -63,8 +61,8 @@ describe('getProjectDetail', () => {
     expect(count).toHaveBeenCalledWith('foo')
   })
 
-  // The count answers zero for an unreachable substrate rather than throwing
-  // (see locate.test.ts), so a project still renders with no cluster at all.
+  // An unreachable substrate counts zero rather than throwing, so a project
+  // still renders with no cluster.
   it('renders with a zero count when the substrate has nothing to report', async () => {
     await writeProject('foo', {
       slug: 'foo',

@@ -24,15 +24,12 @@ import { serverLog } from '#log'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**
- * Every informer the server runs, in one registry: the install-scoped
- * workspace pods and workspace Jobs watches, and the two objects the egress
- * proxy reports through. Consumers — the reconciler, the status-watcher
- * sync, the display path — read the caches and subscribe to `onDelta`
- * instead of listing the cluster.
+ * Every informer the server runs: workspace pods, workspace Jobs, and the
+ * two objects the egress proxy reports through. Consumers read the caches
+ * and subscribe to `onDelta` instead of listing the cluster.
  */
-/** The install-scoped informers: a workspace and the unit holding it. The
- *  two the layers above have their own words for, and so the two anything
- *  forwarding a delta upward has to translate. */
+
+/** Informers over workspace pods and the Jobs that own them. */
 export const WORKSPACE_DELTA_SOURCES = ['workspace-pods', 'workspace-jobs'] as const
 
 export type WorkspaceDeltaSource = typeof WORKSPACE_DELTA_SOURCES[number]
@@ -75,9 +72,8 @@ export class ClusterCache {
       mapItem: mapJobObject,
       keyOf: (j) => j.jobName,
     })
-    // One object each, selected by label: the proxy's outputs are
-    // pre-created by the server and patched by the proxy, so the cache
-    // holds either the one object or nothing.
+    // The server pre-creates these and the proxy patches them, so each
+    // cache holds one object or nothing.
     this.proxyState = this.buildCache('proxy-state', {
       path: `/api/v1/namespaces/${ns}/configmaps`,
       labelSelector: proxyOutputSelector('state'),
@@ -166,10 +162,9 @@ export class ClusterCache {
 }
 
 /**
- * Server-set singleton so the display path and reconcile steps can read
- * the watch-fed caches without threading the registry through every call
- * site. Null outside the server (unit tests, direct lib use) — callers
- * fall back to one-shot kubectl lists.
+ * The running server's cache, readable without threading it through every
+ * call site. Null outside the server (unit tests, direct lib use), where
+ * callers fall back to one-shot lists.
  */
 let activeClusterCache: ClusterCache | null = null
 

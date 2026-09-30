@@ -1,26 +1,16 @@
 /**
- * Source-IP → workspace resolution for the transparent listeners.
+ * Maps a source pod IP to its workspace for the transparent listeners.
  *
- * netd's node-local Envoy receives redirected workspace-pod egress and stamps
- * the real source pod IP in the upstream PROXY-protocol header (it cannot be
- * spoofed — Envoy reads it off the connection's own peer address). This module
- * turns that IP into a workspace id by reading the pod's own
- * `yaac.workspace-id` label, keeping a `podIP → workspaceId` index fresh from a client-node
- * informer over this namespace's workspace pods. Authoritative and self-
- * correcting: a DELETED event evicts the IP, so a reused IP can never be
- * misattributed, and the informer's every (re)list diffs against its own
- * store and emits `delete` for anything that vanished while it was
- * disconnected — so the index cannot accumulate ghosts.
+ * netd's node-local Envoy stamps the real source pod IP in a PROXY-protocol
+ * header (taken from the connection's peer address, so it can't be spoofed).
+ * This module keeps a `podIP → workspaceId` index, built from each pod's
+ * `yaac.workspace-id` label via a client-node informer over this namespace's
+ * workspace pods. DELETED events evict IPs, so a reused IP is never
+ * misattributed, and each relist evicts pods that vanished meanwhile.
  *
- * Using the library rather than a hand-rolled watch also fixes credential
- * lifetime: the in-cluster config registers a `tokenFile` auth provider
- * that re-reads the projected ServiceAccount token kubelet rotates. Reading
- * that token once at startup eventually 401s a long-lived proxy, and the
- * failure is quiet — the index simply stops learning about new workspace
- * pods, whose traffic then fails closed as "unknown source".
- *
- * The index (PodWorkspaceIndex) is pure and unit-tested; the informer wiring
- * (startPodWatch) is covered by e2e.
+ * The in-cluster config re-reads the rotating ServiceAccount token. A token
+ * read once at startup would eventually 401, and the index would silently
+ * stop learning about new pods.
  */
 
 import {
@@ -32,8 +22,8 @@ import {
 } from '@kubernetes/client-node'
 /**
  * Must match LABEL_WORKSPACE_ID in
- * packages/server/src/drivers/k8s/substrate/pods.ts (proxy can't import
- * src/) — the key every workspace pod carries and every selector matches on.
+ * packages/server/src/drivers/k8s/substrate/pods.ts (the proxy can't import
+ * server code).
  */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
 
@@ -58,17 +48,13 @@ export function podWorkspaceId(pod: WatchedPod): string | null {
 }
 
 /**
- * In-memory `podIP → workspaceId` index. Updated incrementally from watch
- * events (apply) and wholesale on a re-list (replaceAll, which evicts pods
- * that vanished while disconnected).
+ * In-memory `podIP → workspaceId` index, plus the reverse map the relay
+ * listener uses. A DELETED event removes the reverse entry only if it still
+ * points at that pod's IP, so a replacement pod's entry survives the old
+ * pod's late deletion event.
  */
 export class PodWorkspaceIndex {
   private byIp = new Map<string, string>()
-  // Reverse map for the relay listener (workspaceId → podIP). Maintained
-  // alongside byIp; a replaced pod's upsert repoints the workspace at its new
-  // IP, and a DELETED event only evicts the reverse entry when it still
-  // points at the deleted pod's IP (the new pod's entry must survive the
-  // old pod's deletion event arriving late).
   private byId = new Map<string, string>()
 
   /** Apply one watch event. ADDED/MODIFIED upsert; DELETED (or a pod that
@@ -87,14 +73,14 @@ export class PodWorkspaceIndex {
     this.byId.set(sid, ip)
   }
 
-  /** Rebuild the whole index from a list (the re-seed after a (re)connect). */
+  /** Rebuild the whole index from a pod list. */
   replaceAll(pods: WatchedPod[]): void {
     this.byIp.clear()
     this.byId.clear()
     for (const object of pods) this.apply({ type: 'ADDED', object })
   }
 
-  /** Synchronous cache lookup (the hot path). */
+  /** The workspace for a pod IP. */
   resolve(ip: string): string | undefined {
     return this.byIp.get(ip)
   }
@@ -114,23 +100,16 @@ export class PodWorkspaceIndex {
   }
 }
 
-// ── In-cluster API access (client-node) ────────────────────────────────────
-
-/** Lazily-built in-cluster client + the namespace this proxy serves. */
+/** In-cluster API client and the namespace this proxy serves. */
 interface ApiClient {
   core: CoreV1Api
   namespace: string
-  /** Kept so the informer and the API client share one credential source. */
   kubeConfig: KubeConfig
 }
 
 let cachedClient: ApiClient | null = null
 
-/**
- * In-cluster config: API host from the injected env, CA and namespace from
- * the ServiceAccount mount, and a `tokenFile` auth provider that re-reads
- * the rotating token rather than snapshotting it.
- */
+/** Memoized in-cluster client, built from the ServiceAccount mount. */
 export function inClusterClient(supplied?: KubeConfig): ApiClient {
   if (cachedClient) return cachedClient
   let kubeConfig = supplied
@@ -151,17 +130,13 @@ export function _resetInClusterClientForTests(): void {
   cachedClient = null
 }
 
-/** Every workspace pod in this namespace — the informer's scope and its seed. */
+/** Selects every workspace pod in this namespace. */
 const WORKSPACE_POD_SELECTOR = LABEL_WORKSPACE_ID
 
-/**
- * Feed `index` from an informer over this namespace's workspace pods, for the
- * proxy's lifetime.
- */
+/** Keep `index` fed from an informer over this namespace's workspace pods. */
 export function startPodWatch(index: PodWorkspaceIndex, client = inClusterClient()): void {
   const path = `/api/v1/namespaces/${client.namespace}/pods`
-  // client-node applies labelSelector to the WATCH only, so the list must
-  // carry it too or the seed would pull in every pod in the namespace.
+  // client-node applies the selector to the watch only; the list needs it too.
   const listFn = (): ReturnType<CoreV1Api['listNamespacedPod']> =>
     client.core.listNamespacedPod({
       namespace: client.namespace,
@@ -179,17 +154,10 @@ export function startPodWatch(index: PodWorkspaceIndex, client = inClusterClient
 }
 
 /**
- * Run an informer for the process's lifetime.
- *
- * The informer owns the list→watch cycle, resourceVersion bookkeeping, and
- * relist-on-410; what it does NOT own is restart, because on any non-410
- * error (a failed initial list included) it emits `error` and stops. Hence
- * the backoff loop here — an index that stops updating fails every new
- * workspace closed, so giving up is not an option.
- *
- * `onSeeded` fires once the initial list has been applied (that is what
- * `start()` resolving means), which is the edge the readiness probe waits
- * for.
+ * Run an informer for the process's lifetime. On any error other than 410
+ * (including a failed initial list) client-node's informer emits `error` and
+ * stops, so this restarts it with backoff. `onSeeded` fires each time the
+ * initial list has been applied; the readiness probe waits for it.
  */
 export function superviseInformer(
   informer: Pick<Informer<KubernetesObject>, 'on' | 'start'>,
@@ -204,14 +172,10 @@ export function superviseInformer(
     informer.start().then(() => { onSeeded?.() }, (err: unknown) => { onError(err) })
   }
   const onError = (err: unknown): void => {
-    // A watch the apiserver dropped after a long, healthy life is routine;
-    // only rapid failures back off.
+    // Only rapid repeat failures back off.
     if (Date.now() - startedAtMs >= 60_000) backoffMs = 1_000
     console.error(`[proxy] ${label}: ${String(err)} — restart in ${backoffMs}ms`)
-    // One pending restart at a time: a failing start can emit both a
-    // rejected promise and an 'error' event, and each stacked timer would
-    // start another informer that never stops (same guard as netd's
-    // startResourceWatch).
+    // A failing start can both reject and emit 'error'; schedule one restart.
     if (restartTimer) return
     restartTimer = setTimeout(() => {
       restartTimer = null
@@ -225,9 +189,9 @@ export function superviseInformer(
 }
 
 /**
- * Relay cache-miss fallback: a stream dial can beat the pod's watch event.
- * Look the pod up by its workspace-id label, populate the index, and return
- * its IP (or undefined → the relay fails closed).
+ * Relay cache-miss fallback, for a dial that beats the pod's watch event.
+ * Looks the pod up by label, records it, and returns its IP (undefined makes
+ * the relay fail closed).
  */
 export async function fetchPodIpByWorkspaceId(
   index: PodWorkspaceIndex,
@@ -249,9 +213,9 @@ export async function fetchPodIpByWorkspaceId(
 }
 
 /**
- * Cache-miss fallback: a brand-new pod's first packet can beat its watch
- * event. Look the pod up directly by IP, populate the index, and return its
- * workspace (or undefined → the caller fails closed).
+ * Cache-miss fallback, for a new pod's first packet that beats its watch
+ * event. Looks the pod up by IP, records it, and returns its workspace
+ * (undefined makes the caller fail closed).
  */
 export async function fetchWorkspaceByPodIp(
   index: PodWorkspaceIndex,

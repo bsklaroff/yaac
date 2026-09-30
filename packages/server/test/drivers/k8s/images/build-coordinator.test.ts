@@ -1,22 +1,13 @@
 /**
- * The image build coordinator — `ensureImage` and `pushImageShared`.
+ * The image build coordinator: `ensureImage` and `pushImageShared`.
  *
- * A DELIBERATE exception to "one describe per barrel function": only
- * `ensureImage` is on the images barrel, and `pushImageShared` is
- * folder-internal, reached from `workspace-image.ts`. Its describe stays
- * because the coverage rule outranks the layout rule here — that caller
- * mocks this module wholesale (it must: ESM intra-module calls bypass
- * `vi.mock`, which is why they are siblings at all), so the push
- * short-circuits and the coalescing are exercised nowhere else. Fold it
- * upward only if a barrel-level test ever drives those paths for real.
+ * `pushImageShared` is not on the images barrel, but it keeps a describe
+ * here: its callers' tests mock this module, so its short-circuits and
+ * coalescing are covered nowhere else.
  *
- * Nothing under features/images is mocked here: the trust-split routing in
- * build-engine and the whole builder-pod flow (manifests, in-pod scripts,
- * build argv, context tar) run for real, and the fakes start at kubectl,
- * spawn, podman and the registry. A chain build is therefore covered end to
- * end by the entry point that production actually calls, and the internal
- * generators are covered by the argument sets these tests drive rather than
- * by tests of their own.
+ * Nothing in the images folder is mocked. build-engine routing and the whole
+ * builder-pod flow (manifests, in-pod scripts, build argv, context tar) run
+ * for real; the fakes are kubectl, spawn, podman and the registry.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -30,13 +21,12 @@ import type * as imageBuilderModule from '#drivers/k8s/image-engine/image-builde
 import type * as mainRegistryModule from '#drivers/k8s/cluster/main-registry'
 
 /**
- * spawn fake: records invocations and returns an inert child that closes
- * with `spawnState.closeCode` on the next tick. Context file lists are read
- * at spawn time — builder-pod deletes the list file once tar exits.
+ * spawn fake: records invocations and returns a child that closes with
+ * `spawnState.closeCode` on the next tick. Context file lists are read at
+ * spawn time, since builder-pod deletes the list file once tar exits.
  *
- * `spawnState.hold` keeps matching children open instead, so a test can own
- * when they speak and when they die — that is the only way to drive the
- * idle build timeout.
+ * `spawnState.hold` keeps matching children open so a test controls their
+ * output and exit, which is how the idle build timeout is driven.
  */
 type FakeStream = EventEmitter & {
   write: (chunk: unknown) => boolean
@@ -50,18 +40,18 @@ interface FakeChild extends EventEmitter {
   stderr: FakeStream
   stdin: FakeStream
   pid: number
-  /** Null while running — `killGroup` refuses to signal a reaped pid. */
+  /** Null while running; `killGroup` will not signal an exited pid. */
   exitCode: number | null
   signalCode: string | null
 }
 /** A held child: its output tap, its exit hook, and the signals it got. */
 interface HeldChild {
   log: (line: string) => void
-  /** Let it exit with this code — the test owns when a build finishes. */
+  /** Exit with this code. */
   close: (code: number) => void
   signals: string[]
 }
-/** Fictional pids: the process.kill spy never lets one reach the OS. */
+/** Fake pids; the process.kill spy keeps them from reaching the OS. */
 const FAKE_PID_BASE = 990_001
 const spawned = vi.hoisted(() => [] as Array<{ file: string; args: string[]; stdin: string }>)
 const held = vi.hoisted(() => [] as HeldChild[])
@@ -126,9 +116,8 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-// Only chain resolution and the host build are faked; the rest of
-// image-builder (context collection, .containerignore) runs for real
-// because builder-pod's context planning goes through it.
+// Only chain resolution and the host build are faked; context collection
+// and .containerignore handling run for real, since builder-pod uses them.
 vi.mock('#drivers/k8s/image-engine/image-builder', async (importOriginal) => ({
   ...(await importOriginal<typeof imageBuilderModule>()),
   buildImage: vi.fn(),
@@ -171,9 +160,8 @@ vi.mock('#drivers/k8s/cluster/main-registry', async (importOriginal) => ({
   ensureMainRegistry: mockEnsureMainRegistry,
 }))
 
-// serverLog is silenced, but the line SPLIT is kept: an in-pod build's
-// output reaches the build registry through this, so a no-op mock would
-// make the fan-out untestable from the path production uses.
+// serverLog is silenced, but line splitting is kept: in-pod build output
+// reaches the build registry through it.
 vi.mock('#log', () => ({
   serverLog: vi.fn(),
   pipeToServerLog: (
@@ -200,7 +188,7 @@ import { buildImage, resolveImageChain, type ImageLayer } from '#drivers/k8s/ima
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { pushImageToRegistry, registryHasTag } from '#drivers/k8s/container/registry'
 import { clearAllImageBuildsForTests, listImageBuilds } from '#drivers/k8s/image-engine/image-builds'
-// Bounds and layout constants: expected values, not units under test.
+// Setup values, not units under test.
 import {
   BUILDER_ACTIVE_DEADLINE_SECONDS,
   BUILDER_AUTHFILE,
@@ -233,8 +221,8 @@ const GRANT_SECRET = {
 }
 
 /**
- * The grant an authfile hands a builder pod, verified the way the
- * registry's write gate does: its scope, or null for a bad signature.
+ * Verify a builder pod's authfile grant as the registry's write gate does.
+ * Returns its scope, or null for a bad signature.
  */
 function grantScopeOf(authFile: string): { repos: string[]; expiry: number } | null {
   const { auths } = JSON.parse(authFile) as { auths: Record<string, { auth: string }> }
@@ -254,8 +242,8 @@ const PROJ_B = { slug: 'proj-b', id: 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5' }
 const LAYERED_DOCKERFILE = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n'
 
 /**
- * A yaac-shipped layer. Nothing builds one — `yaac cluster install` does —
- * so it is only ever looked up, and its paths can be fake.
+ * A yaac-shipped layer. `yaac cluster install` builds these; here they are
+ * only looked up, so the paths can be fake.
  */
 function layer(tag: string, name: ImageLayerName = 'base'): ImageLayer {
   return { tag, name, dockerfile: '/df', context: '/ctx', contentHash: 'h' }
@@ -364,8 +352,7 @@ beforeEach(() => {
   spawnState.codeFor = null
   spawnState.hold = null
   spawnState.onHold = null
-  // Held children are killed by pid (negated: the group). Spied, so a
-  // fictional pid can never reach a real process group.
+  // Held children are killed by -pid (the group).
   vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal: string) => {
     const die = killers.get(pid)
     if (!die) throw new Error(`ESRCH: unexpected process.kill(${pid})`)
@@ -373,9 +360,8 @@ beforeEach(() => {
     return true
   }) as typeof process.kill)
   mockImageExists.mockResolvedValue(false)
-  // Registry state, the process boundary the builder pod's own image
-  // ensure also crosses: only the pinned podman-stable mirror is present,
-  // so `ensureBuilderImage` resolves to its ref without pulling or pushing.
+  // Only the pinned podman-stable mirror is in the registry, so
+  // `ensureBuilderImage` resolves without pulling or pushing.
   mockHasTag.mockImplementation((tag: string) => Promise.resolve(tag === BUILDER_LOCAL_TAG))
   mockEnsureKubernetes.mockResolvedValue(undefined)
   mockEnsureMainRegistry.mockResolvedValue(undefined)
@@ -400,9 +386,8 @@ afterEach(async () => {
 
 describe('ensureImage', () => {
   /**
-   * Hold every in-pod `podman build` open, and hand back a waiter for the
-   * next one to start. The only way to own when a build finishes: pod
-   * builds run for real here, so there is no engine mock to defer.
+   * Hold every in-pod `podman build` open, and return a waiter for the next
+   * one to start.
    */
   function holdInPodBuilds(): () => Promise<void> {
     spawnState.hold = (file, args) => file === 'kubectl' && args.includes('build')
@@ -427,10 +412,8 @@ describe('ensureImage', () => {
     const a = ensureImage(PROJ_A, undefined, false, false, { reason: 'prewarm' })
     const b = ensureImage(PROJ_B, undefined, false, false, { reason: 'prewarm' })
 
-    // Both chains wait on ONE shared build, and both projects attach to its
-    // single registry entry. Which of them registered and which attached is
-    // a race — they resolve their chains independently — and the entry is
-    // the same either way, so the slugs are compared as a set.
+    // Both chains wait on one shared build and attach to its single entry.
+    // Which project registered first is a race, so compare slugs as a set.
     await nextBuild()
     await flush()
     expect(held).toHaveLength(1)
@@ -439,7 +422,7 @@ describe('ensureImage', () => {
     expect(entries[0].status).toBe('running')
     expect([...entries[0].projectSlugs].sort()).toEqual(['proj-a', 'proj-b'])
 
-    // Shared resolves → both downstream layers build.
+    // Once the shared layer finishes, both downstream layers build.
     held[0].close(0)
     await vi.waitFor(() => { expect(held.length).toBe(3) })
 
@@ -464,7 +447,7 @@ describe('ensureImage', () => {
     await expect(b).rejects.toThrow(/exit(ed with)? code 1/)
 
     expect(listImageBuilds()[0]).toMatchObject({ status: 'failed' })
-    // A failed tag is not memoized as realized — the next ensure retries.
+    // A failed tag is not remembered as built, so the next ensure retries.
     const retry = nextBuild()
     const again = ensureImage(PROJ_A)
     await retry
@@ -498,8 +481,7 @@ describe('ensureImage', () => {
     expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
     expect(mockHasTag.mock.calls.filter(([tag]) => tag === 't:1')).toHaveLength(1)
 
-    // Content-hash tags are immutable: neither the probed nor the freshly
-    // built tag is re-checked on the next ensure.
+    // Content-hash tags never change, so neither tag is re-checked.
     mockHasTag.mockClear()
     mockKubectlApply.mockClear()
     await ensureImage(PROJ)
@@ -527,8 +509,8 @@ describe('ensureImage', () => {
   })
 
   it('refuses a yaac-shipped layer the registry does not have, naming the install', async () => {
-    // Nothing else produces base/tools/nestable: the server has no engine
-    // to build them with, so the actionable answer is which command does.
+    // The server cannot build base/tools/nestable, so the error names the
+    // command that does.
     chain([layer('yaac-base:missing')])
     await expect(ensureImage(PROJ)).rejects.toThrow(
       /yaac-base:missing is missing from the local registry.*yaac cluster install/s,
@@ -538,9 +520,8 @@ describe('ensureImage', () => {
   })
 
   it('builds an untrusted layer in a gvisor builder pod and pushes the product', async () => {
-    // The whole cluster-pod path in one pass: pod manifest, storage
-    // bootstrap, parent pull, context tar, cached build, delta push, pod
-    // teardown.
+    // The whole builder-pod path: manifest, storage setup, parent pull,
+    // context tar, cached build, push, teardown.
     const tools = layer('yaac-tools:t1', 'tools')
     const project = await podLayer({}, {
       'Dockerfile.yaac': LAYERED_DOCKERFILE,
@@ -549,9 +530,8 @@ describe('ensureImage', () => {
       '.containerignore': 'skipped\n',
     })
     chain([tools, project])
-    // The parent is a yaac-shipped layer, so it is already in the registry
-    // — which is also what the pod pulls it from. Nothing is pushed from
-    // this process: the product's only publish is the pod's own delta push.
+    // The yaac-shipped parent is already in the registry, where the pod
+    // pulls it from. Only the pod pushes; this process pushes nothing.
     mockHasTag.mockImplementation((tag: string) =>
       Promise.resolve(tag === tools.tag || tag === BUILDER_LOCAL_TAG))
 
@@ -560,7 +540,6 @@ describe('ensureImage', () => {
     expect(mockBuildImage).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
 
-    // Infra ensured, then the role guard, egress policy and pod applied.
     expect(mockEnsureKubernetes).toHaveBeenCalled()
     expect(mockEnsureMainRegistry).toHaveBeenCalled()
     expect(appliedKinds()).toEqual(expect.arrayContaining([
@@ -574,10 +553,8 @@ describe('ensureImage', () => {
       'yaac.data-dir-hash': 'ddh0000000000000',
       'yaac.role': 'builder',
     })
-    // Sandboxed, bounded and unprivileged pod-side.
     expect(pod.spec.runtimeClassName).toBe('gvisor')
-    // Above sessions for eviction, but on the no-preemption tier: a build
-    // must never displace a running session to start.
+    // Outranks workspaces for eviction, but never preempts a running one.
     expect(pod.spec.priorityClassName).toBe('yaac-builder')
     expect(pod.spec.restartPolicy).toBe('Never')
     expect(pod.spec.activeDeadlineSeconds).toBe(BUILDER_ACTIVE_DEADLINE_SECONDS)
@@ -585,21 +562,19 @@ describe('ensureImage', () => {
     expect(pod.spec.enableServiceLinks).toBe(false)
     expect(pod.spec.securityContext.seccompProfile.type).toBe('RuntimeDefault')
     expect(pod.spec.containers[0].resources.limits.memory).toBe(String(BUILDER_MEMORY_LIMIT_BYTES))
-    // Requested explicitly, well under the limit: kubernetes defaults an
-    // omitted request UP TO the limit, which would reserve the whole 8Gi
-    // ceiling — 8 sessions' worth of node — for one routine build.
+    // An explicit request well under the limit; Kubernetes would otherwise
+    // default the request to the full 8Gi limit.
     expect(pod.spec.containers[0].resources.requests).toEqual({
       cpu: `${BUILDER_CPU_REQUEST_MILLIS}m`,
       memory: String(BUILDER_MEMORY_REQUEST_BYTES),
     })
     expect(BUILDER_MEMORY_REQUEST_BYTES).toBeLessThan(BUILDER_MEMORY_LIMIT_BYTES)
     expect(pod.spec.containers[0].command).toEqual(['sleep', 'infinity'])
-    // The pinned podman-stable mirror, resolved by the module's own image
-    // ensure — never the session's user-customizable image.
+    // The pinned podman-stable mirror, never the user-customizable image.
     expect(pod.spec.containers[0].image).toBe(`${CLUSTER_HOST}/${BUILDER_LOCAL_TAG}`)
     expect(pod.spec.containers[0].imagePullPolicy).toBe('IfNotPresent')
     expect(pod.spec.containers[0].securityContext.capabilities.add).toContain('SETFCAP')
-    // Graphroot on a sentry tmpfs emptyDir.
+    // Graphroot on a gVisor tmpfs emptyDir.
     expect(pod.metadata.annotations['dev.gvisor.spec.mount.podman-graphroot.type']).toBe('bind')
     expect(pod.metadata.annotations['dev.gvisor.spec.mount.podman-graphroot.options'])
       .toBe(`rw,size=${BUILDER_GRAPHROOT_TMPFS_BYTES}`)
@@ -616,32 +591,30 @@ describe('ensureImage', () => {
     }>('NetworkPolicy')
     expect(np.spec.podSelector.matchLabels).toEqual({ 'yaac.role': 'builder' })
     expect(np.spec.policyTypes).toEqual(['Egress'])
-    // Everywhere a build fetches from, but never the kind fronting's node
-    // port: a RUN step comes from an agent-editable Dockerfile, and from
-    // there the server would take it for its owner.
+    // Anywhere except the kind fronting's node port: a RUN step comes from
+    // an agent-editable Dockerfile, and the server would see it as the node.
     expect(np.spec.egress).toEqual(egressAllButServerFront(['10.89.0.7/32']))
 
     // storage.conf bootstrap, parent pull, extract, grant, build, push — in order.
     const remote = remoteCommands()
     expect(remote).toHaveLength(6)
-    // Native overlay: the stock image forces fuse-overlayfs, broken on runsc.
+    // Native overlay: the stock image's fuse-overlayfs is broken on gVisor.
     expect(remote[0][2]).toContain('driver = "overlay"')
     expect(remote[0][2]).not.toContain('fuse-overlayfs')
     expect(remote[0][2]).toContain('enable_partial_images = "true"')
     expect(remote[0][2]).toContain('graphroot = "/var/lib/containers/storage"')
-    // Parent materialized under the bare tag so --build-arg BASE_IMAGE matches.
+    // Parent retagged to the bare tag so --build-arg BASE_IMAGE matches.
     expect(remote[1][2]).toContain(`podman pull --tls-verify=false ${CLUSTER_HOST}/${tools.tag}`)
     expect(remote[1][2]).toContain(`podman tag ${CLUSTER_HOST}/${tools.tag} ${tools.tag}`)
     expect(remote[1][2]).toContain(`if podman image exists ${tools.tag}; then exit 0; fi`)
     expect(remote[2][2]).toContain(`tar -xf - -C ${BUILDER_CONTEXT_DIR}`)
-    // The registry write grant arrives over stdin, never argv, and covers
-    // exactly the product's repo and the project's step-cache repo — the
-    // registry's gate refuses the pod a write to anything else.
+    // The write grant arrives over stdin, not argv, and covers only the
+    // product's repo and the project's step-cache repo.
     expect(remote[3][2]).toBe(`umask 077 && cat > ${BUILDER_AUTHFILE}`)
     const grantExec = spawned.filter((s) => s.file === 'kubectl')[3]
     const grant = grantScopeOf(grantExec.stdin)
     expect(grant?.repos).toEqual([`yaac-proj-${PROJ.id}`, `yaac-buildcache-${PROJ.id}`])
-    // Valid for as long as the pod itself can live, and not much longer.
+    // Valid for the pod's maximum lifetime, and not much longer.
     expect(grant!.expiry - Date.now() / 1000).toBeGreaterThan(BUILDER_ACTIVE_DEADLINE_SECONDS)
     expect(grant!.expiry - Date.now() / 1000).toBeLessThan(BUILDER_ACTIVE_DEADLINE_SECONDS + 120)
     expect(grantExec.args.join(' ')).not.toContain(grantExec.stdin)
@@ -658,11 +631,11 @@ describe('ensureImage', () => {
     expect(remote[5].slice(0, 5)).toEqual(['podman', 'push', '--tls-verify=false', '--authfile', BUILDER_AUTHFILE])
     expect(remote[5]).toContain(`${CLUSTER_HOST}/${project.tag}`)
 
-    // Context honors .containerignore exactly like contextHash().
+    // The context honors .containerignore exactly like contextHash().
     expect(tarLists[0]).toEqual(expect.arrayContaining(['keep.txt', '.containerignore', 'Dockerfile.yaac']))
     expect(tarLists[0].some((f) => f.startsWith('skipped/'))).toBe(false)
 
-    // ensureImage owns the lease, so the pod dies with the chain.
+    // ensureImage owns the lease, so the pod is deleted after the chain.
     expect(deleteCalls()).toHaveLength(1)
     expect(deleteCalls()[0]).toContain(pod.metadata.name)
   })
@@ -678,15 +651,13 @@ describe('ensureImage', () => {
     const scripts = remoteCommands().map((argv) => argv.join(' '))
     expect(scripts.some((s) => s.includes('podman pull'))).toBe(false)
     expect(scripts.some((s) => s.includes('--build-arg HTTP_PROXY=http://proxy:8080'))).toBe(true)
-    // No parent tag means nothing to push ahead of the build.
     expect(mockPush).not.toHaveBeenCalled()
-    // The dockerfile always ships, ignore file or not.
+    // The Dockerfile is always sent, ignore file or not.
     expect(tarLists[0]).toContain('Dockerfile.yaac')
   })
 
   it('names the step-cache repo by the project id, never its slug', async () => {
-    // A project re-added under a freed slug must not read the old one's
-    // entries as cache hits.
+    // A project re-added under an old slug must not hit the old cache.
     chain([await podLayer({ buildArgs: undefined })])
     await ensureImage({ slug: 'demo', id: PROJ_B.id })
     const build = remoteCommands()[3].join(' ')
@@ -706,8 +677,7 @@ describe('ensureImage', () => {
     expect(mockKubectlApply.mock.calls
       .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
     expect(deleteCalls()).toHaveLength(1)
-    // A shared pod still gets a fresh grant per layer, each naming only the
-    // repo that layer publishes to.
+    // A shared pod gets a fresh grant per layer, for that layer's repo only.
     const grants = spawned
       .filter((s) => s.file === 'kubectl' && s.args.at(-1)?.includes(BUILDER_AUTHFILE) && s.args.at(-1)?.startsWith('umask'))
       .map((s) => grantScopeOf(s.stdin)?.repos)
@@ -731,7 +701,7 @@ describe('ensureImage', () => {
   })
 
   it('sandboxes any non-whitelisted layer name', async () => {
-    // Whitelist semantics: an unknown name must not fall through to host podman.
+    // An unknown layer name must not fall through to host podman.
     chain([await podLayer({ name: 'some-future-layer' as ImageLayerName, buildArgs: undefined })])
     await ensureImage(PROJ)
     expect(appliedKinds()).toContain('Pod')
@@ -739,15 +709,13 @@ describe('ensureImage', () => {
   })
 
   it('fails closed when the ValidatingAdmissionPolicy API is unavailable', async () => {
-    // Probed at the kubectl boundary, the way `vapAvailable` probes it: an
-    // apiserver with no such resource type answers with an error.
     mockKubectlWithRetry.mockImplementation((args: string[]) =>
       args.includes('validatingadmissionpolicies')
         ? Promise.reject(new Error("the server doesn't have a resource type"))
         : Promise.resolve({ stdout: '', stderr: '' }))
     chain([await podLayer({ buildArgs: undefined })])
     await expect(ensureImage(PROJ)).rejects.toThrow(/ValidatingAdmissionPolicy/)
-    // Without the guard the builder role label is forgeable — no pod may exist.
+    // Without the guard the builder label could be forged, so no pod.
     expect(appliedKinds()).not.toContain('Pod')
   })
 
@@ -758,8 +726,8 @@ describe('ensureImage', () => {
   })
 
   it('explains a Ready timeout with whatever the pod status accounts for', async () => {
-    // A bare `kubectl wait` timeout reads as a broken build; the node
-    // refusing to schedule the pod is the far likelier cause.
+    // A bare `kubectl wait` timeout looks like a broken build, but an
+    // unschedulable pod is far more likely.
     mockKubectlWithRetry.mockImplementation((args: string[]) =>
       args[0] === 'wait'
         ? Promise.reject(new Error('timed out'))
@@ -777,7 +745,7 @@ describe('ensureImage', () => {
     chain([await podLayer({ buildArgs: undefined })])
     await expect(ensureImage(PROJ))
       .rejects.toThrow(/not scheduled \(Unschedulable\): 0\/1 nodes are available/)
-    // The pod is torn down even though provisioning failed after apply.
+    // The pod is deleted even though setup failed.
     expect(deleteCalls().length).toBeGreaterThan(0)
 
     // A container stuck pulling is named the same way.
@@ -794,7 +762,7 @@ describe('ensureImage', () => {
     chain([await podLayer({ tag: 'yaac-base:p2', buildArgs: undefined })])
     await expect(ensureImage(PROJ)).rejects.toThrow(/container waiting \(ImagePullBackOff\)/)
 
-    // A status that explains nothing leaves the bare timeout.
+    // An uninformative status leaves the bare timeout.
     _clearBuildCoordinatorForTests()
     mockKubectlGetJson.mockResolvedValue({ status: {} })
     chain([await podLayer({ tag: 'yaac-base:p3', buildArgs: undefined })])
@@ -802,8 +770,8 @@ describe('ensureImage', () => {
   })
 
   it('kills an in-pod build only once it stops producing output', async () => {
-    // The in-pod build budget is idle, not total: a slow layer that keeps
-    // logging must outlive it, and only silence ends the build.
+    // The timeout is on idle time: a slow build that keeps logging
+    // survives, and only silence ends it.
     spawnState.hold = (file, args) => file === 'kubectl' && args.includes('build')
     const reachedBuild = new Promise<void>((r) => { spawnState.onHold = r })
     chain([await podLayer({ buildArgs: undefined })])
@@ -812,8 +780,7 @@ describe('ensureImage', () => {
     const settled = vi.fn()
     void build.then(settled, settled)
 
-    // The steps before the build (context stat, tar) are filesystem IO,
-    // which no amount of timer advancing completes — wait them out for real.
+    // The steps before the build do real filesystem IO, so wait for them.
     await reachedBuild
     expect(held).toHaveLength(1)
 
@@ -828,14 +795,13 @@ describe('ensureImage', () => {
       /builder exec \[podman build .*\] produced no output for 600s/,
     )
     expect(held[0].signals).toEqual(['SIGTERM'])
-    // The pod the wedged build was holding is released, not leaked.
+    // The pod is released, not leaked.
     expect(deleteCalls().length).toBeGreaterThan(0)
   })
 
   it('blames the whole-pod deadline when the pod dies under the build', async () => {
-    // A build that keeps printing never trips an idle budget, so the pod's
-    // deadline is what ends it — and kubectl, whose connection died with the
-    // pod, can only report a signal. The pod's own status has the reason.
+    // A chatty build is ended by the pod's deadline. kubectl can report
+    // only a signal, so the reason comes from the pod's status.
     spawnState.codeFor = (file, args) =>
       (file === 'kubectl' && args.includes('build') ? 137 : undefined)
     mockKubectlGetJson.mockImplementation((args: string[]) => Promise.resolve(

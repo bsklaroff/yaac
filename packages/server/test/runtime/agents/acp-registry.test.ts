@@ -9,9 +9,8 @@ import {
 import type { AcpConversation } from '#runtime/agents/acp-client'
 
 /**
- * The registry is a lookup table, so a stand-in object is enough — what it has
- * to get right is that a conversation is reachable under BOTH names, and that
- * neither name outlives it.
+ * A stand-in conversation. The registry must find it under both its
+ * session id and its handle, and drop both names together.
  */
 const fake = (id: string): AcpConversation => ({ id }) as unknown as AcpConversation
 
@@ -23,7 +22,6 @@ describe('acpConversation', () => {
     registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, c)
 
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBe(c)
-    // The driver's own name for it resolves to the same object.
     expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBe(c)
   })
 
@@ -32,8 +30,7 @@ describe('acpConversation', () => {
 
     expect(acpConversation('demo', 'wt-2', 'acp-1')).toBeUndefined()
     expect(acpConversation('other', 'wt-1', 'acp-1')).toBeUndefined()
-    // Handles are reused across workspaces by construction — every workspace's
-    // primary window is named for its tool.
+    // Handles repeat across workspaces (each primary window is named for its tool).
     registerAcpConversation('demo', 'wt-2', { handle: 'claude', agentSessionId: 'acp-2' }, fake('b'))
     expect(acpConversationByHandle('demo', 'wt-1', 'claude'))
       .not.toBe(acpConversationByHandle('demo', 'wt-2', 'claude'))
@@ -41,7 +38,7 @@ describe('acpConversation', () => {
 
   it('is reachable by handle before the handshake mints an id, and by both after', () => {
     const c = fake('a')
-    // A fresh conversation has no id yet — `session/new` has not answered.
+    // No session id until `session/new` answers.
     registerAcpConversation('demo', 'wt-1', { handle: 'claude' }, c)
     expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBe(c)
 

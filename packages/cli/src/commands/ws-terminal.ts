@@ -2,16 +2,13 @@ import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-api'
 
 /**
- * CLI-side terminal transport: attach the user's terminal to a workspace
- * over the server's /pty/attach WebSocket — the same path the webapp
- * uses — instead of a client-side `kubectl exec`. This is what makes
- * attach/shell/stream work identically against a local and a remote
- * server: the kubectl invocation happens server-side, next to the
- * cluster.
+ * Attach the user's terminal to a workspace over the server's /pty/attach
+ * WebSocket, the same path the web app uses, so it works the same against a
+ * local or remote server.
  *
- * Wire protocol (see src/server/pty-bridge.ts): binary frames are PTY
- * bytes both ways; text frames are JSON control messages (resize /
- * ping / error).
+ * Protocol (packages/server/src/runtime/terminals/pty-bridge.ts): binary
+ * frames are PTY bytes both ways; text frames are JSON control messages
+ * (resize / ping / error).
  */
 
 /** http(s) origin → ws(s) origin. */
@@ -36,10 +33,9 @@ const PING_INTERVAL_MS = 30_000
 
 /**
  * Attach the current terminal to a workspace PTY until the server closes
- * the stream (tmux detach, shell exit, or workspace death). Resolves on
- * a clean close; a server-reported error (e.g. workspace not running) is
- * printed and sets exitCode 1 rather than throwing, matching how the
- * old kubectl path surfaced mid-attach failures.
+ * the stream (tmux detach, shell exit, or the workspace dies). A
+ * server-reported error (e.g. workspace not running) is printed and sets
+ * exitCode 1 instead of throwing.
  */
 export async function attachWorkspacePty(
   workspaceId: string,
@@ -107,7 +103,6 @@ export async function attachWorkspacePty(
         console.error(msg.message ?? 'terminal error')
         process.exitCode = 1
       }
-      // 'pong' and anything else: ignore.
     })
 
     ws.on('close', () => {

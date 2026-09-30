@@ -1,57 +1,46 @@
 import type { ConfinedRoot } from '#lib/confined-fs'
 
 /**
- * The in-tool halves of agent reporting: what each tool is made to run so it
- * puts what it says about itself on its tmux pane, where the status watcher is
- * subscribed — the conversation it holds (`workspace-bin/yaac-agent-links`),
- * the model it is running and the permission mode it is in
- * (`workspace-bin/yaac-agent-report`). claude and codex run hooks; pi and
- * opencode load code of their own. codex reports no model or mode: its model
- * is read from its title and its posture from its rollout.
+ * The in-tool half of agent reporting: what each tool runs so it writes its
+ * conversation (`workspace-bin/yaac-agent-links`) and its model and
+ * permission mode (`workspace-bin/yaac-agent-report`) onto its tmux pane,
+ * where the status watcher reads them. claude and codex use hooks; pi and
+ * opencode load a small extension/plugin. codex reports no model or mode
+ * (they come from its title and rollout).
  *
- * Written into the project's tool homes at create rather than staged per
- * workspace or passed on a launch command: every workspace of the project
- * mounts those homes, the bytes are the same for all of them, and a tool the
- * user starts by hand in a shell reads them too — which is how a conversation
- * begun there is recorded like any other. The reporters themselves are
- * staged per workspace onto its PATH and named bare, so one form serves both
- * substrates.
+ * Installed into the project's tool homes at create, since every workspace
+ * mounts them and a tool started by hand in a shell then reports too. The
+ * reporter scripts are on each workspace's PATH, so one form works on both
+ * drivers.
  *
- * Each report is best-effort — an absent script (a stripped build) is a
- * failed report, never a failed agent — and pi's and opencode's run one at a
- * time, in order: the pane options are last-write-wins, so two reports in
- * flight at once can land out of order and leave the pane on the older value.
+ * Reports are best-effort (a missing script never fails the agent). pi's and
+ * opencode's run one at a time, in order, since pane options are
+ * last-write-wins.
  *
- * Verified against the pinned binaries (claude 2.1.282, codex-cli 0.156.1,
- * pi 0.84.4, @opencode/cli 2.0.12).
+ * Verified against claude 2.1.282, codex-cli 0.156.1, pi 0.84.4 and
+ * @opencode/cli 2.0.12.
  */
 
 /**
  * claude's and codex's session hook. `SessionStart` fires on `startup`,
- * `resume`, `clear` and `compact` — exactly the events that change which
- * conversation a pane is in — and `SessionEnd` ends it, which matters in a
- * shell the pane outlives and when an agent runs another inside its own pane
- * (see the script). Hooks run through
- * `/bin/sh -c` with the agent's environment, which is what resolves the home.
+ * `resume`, `clear` and `compact` (every change of conversation);
+ * `SessionEnd` ends it. Hooks run via `/bin/sh -c` with the agent's env,
+ * which resolves the home.
  */
 const sessionHook = (home: string, tool: string): string => `yaac-agent-links "${home}" ${tool}`
 
 /**
- * claude's model and mode reporter, run on the events whose payload can name
- * either. The model: `PostModelSwitch` (its `to_model`), fired the moment
- * `/model` lands, and `SessionStart` (its `model`) — on an interactive
- * startup, NOT on a CLI `--resume` or a `/clear`, so a restarted claude pane
- * keeps its row's model until its first `/model` (claude 2.1.282). The mode:
- * `UserPromptSubmit` and `Stop` (their `permission_mode`). No event fires on a
- * mode change itself — Shift+Tab runs nothing — so the mode is reported when
- * it takes hold: a mode picked between turns is in force by the next prompt,
- * and one the agent moved to mid-turn (EnterPlanMode, a plan-exit answer) as
- * the turn ends. Its stdout must stay empty: claude hands a hook's stdout to
- * the model on these events.
+ * claude's model and mode reporter. Model: `PostModelSwitch` (`to_model`)
+ * and `SessionStart` (`model`), which fires on interactive startup but not
+ * on `--resume` or `/clear`, so a restarted pane keeps its row's model until
+ * the next `/model`. Mode: `UserPromptSubmit` and `Stop`
+ * (`permission_mode`); no event fires on Shift+Tab, so a mode change is
+ * reported at the next prompt or turn end. Stdout must stay empty, because
+ * claude passes it to the model on these events.
  *
- * Guarded, because claude hot-reloads this project-shared file: a workspace
- * whose staged bin predates the script would otherwise show a hook error on
- * every prompt and `/model`. `exec` keeps the payload on stdin.
+ * Guarded because claude hot-reloads this shared file, and a workspace
+ * whose staged bin lacks the script would show a hook error on every
+ * prompt. `exec` keeps the payload on stdin.
  */
 const CLAUDE_REPORT_HOOK = 'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true'
 
@@ -67,12 +56,11 @@ const CLAUDE_HOOKS: Hooks = [
 ]
 
 /**
- * codex's, from `$CODEX_HOME/hooks.json`. codex fires `SessionStart` at a
- * conversation's first turn, not at startup, and a resumed one's at its next
- * turn — which is why a resume launch names its conversation itself
- * (`buildAgentCmd`). yaac's launch passes `--dangerously-bypass-hook-trust`,
- * so these run unreviewed there; a codex started by hand asks once whether to
- * trust them, and remembers the answer in the project's `config.toml`.
+ * codex's hooks (`$CODEX_HOME/hooks.json`). codex fires `SessionStart` at a
+ * conversation's first turn, not at startup, so a resume launch names its
+ * conversation itself (`buildAgentCmd`). yaac launches with
+ * `--dangerously-bypass-hook-trust`; a hand-started codex asks once whether
+ * to trust them.
  */
 const CODEX_HOOKS: Hooks = [
   ['SessionStart', sessionHook('$CODEX_HOME', 'codex')],
@@ -80,11 +68,10 @@ const CODEX_HOOKS: Hooks = [
 ]
 
 /**
- * pi: an extension, auto-discovered from `$PI_CODING_AGENT_DIR/extensions`.
- * `session_start` fires on startup, resume and `/new`, with the session's id,
- * its log and its current model; `model_select` the moment the model changes
- * (`/model`, Ctrl+P, a restore); `session_shutdown` as a session ends, for a
- * `/new` or a resume as well as a quit.
+ * pi's extension, auto-discovered from `$PI_CODING_AGENT_DIR/extensions`.
+ * `session_start` (startup, resume, `/new`) gives the session id, log and
+ * model; `model_select` fires on any model change; `session_shutdown` fires
+ * as a session ends.
  */
 const PI_EXTENSION = `// Written by yaac: reports the conversation and model to the pane
 // (see yaac-agent-links and yaac-agent-report).
@@ -109,36 +96,23 @@ export default function (pi) {
 `
 
 /**
- * opencode: a server plugin, auto-discovered from `plugins/<name>/index.ts`
- * in its config dir — so a hand-run opencode loads it too. It runs in the
- * server child `--standalone` gives each TUI, which inherits the pane's env.
- * A plain `opencode` instead joins a background service (`serve --service`)
- * shared by every TUI that did not ask for its own, which keeps the env of
- * whichever pane started it and outlives each TUI: no pane is its own, so it
- * reports nothing there — a conversation is recorded from a hand-run
- * `opencode --standalone`, not a plain `opencode` (opencode 2.0.12).
+ * opencode's server plugin, auto-discovered from `plugins/<name>/index.ts`
+ * in its config dir. It runs in the per-TUI server `--standalone` starts,
+ * which inherits the pane's env. A plain `opencode` joins a shared
+ * background service that belongs to no pane, so the plugin reports nothing
+ * there; only a hand-run `opencode --standalone` is recorded.
  *
- * The conversation: opencode creates a session lazily, at its first prompt,
- * and says so in `session.created` — whose `parentID` marks a subagent's,
- * which is not the pane's. A new one (`/new`) ends the one it replaces, which
- * opencode announces no end for. A resumed session emits no such event at
- * all, and none that tells its turns from a subagent's, so yaac's resume
- * launch names it itself (`buildAgentCmd`). The plugin ends the one it named
- * as it is disposed.
+ * Conversation: opencode creates a session lazily at the first prompt
+ * (`session.created`; a `parentID` marks a subagent's). `/new` implicitly
+ * ends the previous one. A resumed session emits no event, so yaac's resume
+ * launch names it (`buildAgentCmd`). The plugin ends its session on dispose.
  *
- * The model: opencode's TUI keeps a model picked with `/models` to itself
- * until the next prompt is submitted, and only then tells the server
- * (`session.model.selected`), so that is the earliest anything can hear a
- * switch. `session.created` names the model a new session starts on, and
- * `session.step.started` the one each step of a turn runs on — which covers a
- * resumed conversation, which creates no session, and a first prompt that
- * lands before the plugin has loaded (plugins load in the background after the
- * server starts serving).
- *
- * The agent is heard the same way and at the same moment: a Tab between
- * `build` and `plan` changes only the TUI's draft until a prompt is sent, when
- * the server emits `session.agent.selected`, and every step names its agent
- * too. Both halves go out in one report whenever either moves.
+ * Model and agent: the TUI tells the server about a `/models` pick or a Tab
+ * between `build` and `plan` only when the next prompt is sent
+ * (`session.model.selected`, `session.agent.selected`). `session.created`
+ * and each `session.step.started` also name them, which covers resumed
+ * conversations and a first prompt sent before the plugin loaded. Both are
+ * reported together whenever either changes.
  */
 const OPENCODE_PLUGIN = `// Written by yaac: reports the conversation, model and agent to the pane
 // (see yaac-agent-links and yaac-agent-report).
@@ -188,11 +162,10 @@ export default {
 `
 
 /**
- * Install every tool's reporter into a project's tool homes (each opened with
- * `openSandboxDir`): claude's hooks into its `settings.json`, codex's into
- * `hooks.json` in its home, pi's extension into its agent dir (what
- * `PI_CODING_AGENT_DIR` names) and opencode's plugin into its config dir.
- * Idempotent, and leaves a file that already holds these bytes untouched.
+ * Install every tool's reporter into a project's tool homes (opened with
+ * `openSandboxDir`): claude's hooks into `settings.json`, codex's into
+ * `hooks.json`, pi's extension into its agent dir and opencode's plugin into
+ * its config dir. Idempotent; unchanged files are not rewritten.
  */
 export async function ensureAgentReporters(homes: {
   claude: ConfinedRoot
@@ -211,21 +184,16 @@ interface HookMatcher {
   hooks?: Array<{ type?: string; command?: string; timeout?: number }>
 }
 
-/** More than any settings file a person writes; past it, the file is not
- *  read (and so is replaced) rather than read without bound. */
+/** Larger than any hand-written settings file; a bigger file is replaced
+ *  rather than read. */
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
 /**
- * Merge `wanted` into a settings file's `hooks`, in the shape claude's
- * `settings.json` and codex's `hooks.json` share.
- *
- * Additive: unrelated keys (the bypass-prompt flag `seedClaudeSettings`
- * writes, whatever theme claude wrote itself) and any user-registered hooks
- * survive, and a file that already carries every entry is left byte-identical.
- * A malformed file is replaced rather than propagated — the tool would ignore
- * it anyway, and what yaac cares about is re-seeded on every create. So is
- * anything that is not a regular file: a link planted in its place is
- * replaced, never read through or written through.
+ * Merge `wanted` into a settings file's `hooks` (claude's `settings.json`
+ * and codex's `hooks.json` share the shape). Other keys and user hooks are
+ * kept, and a file already containing every entry is left untouched. A
+ * malformed file, or anything that is not a regular file (e.g. a planted
+ * link), is replaced; yaac re-seeds its entries on every create.
  */
 async function mergeHooks(home: ConfinedRoot, rel: string, wanted: Hooks): Promise<void> {
   let settings: { hooks?: Record<string, HookMatcher[] | undefined>; [key: string]: unknown } = {}
@@ -233,27 +201,23 @@ async function mergeHooks(home: ConfinedRoot, rel: string, wanted: Hooks): Promi
     const raw = await home.readFile(rel, { maxBytes: MAX_SETTINGS_BYTES })
     if (raw !== null) settings = JSON.parse(raw.toString('utf8')) as typeof settings
   } catch {
-    // invalid or oversized — start fresh
+    // Invalid or oversized: start fresh.
   }
   const hooks = { ...settings.hooks }
   const missing = wanted.filter(([event, command]) =>
     !(hooks[event]?.some((m) => m.hooks?.some((h) => h.command === command)) ?? false))
   if (missing.length === 0) return
   for (const [event, command] of missing) {
-    // 3s: codex clamps a SessionEnd hook to it, with a warning on every launch.
+    // 3s: codex clamps SessionEnd hooks to this and warns otherwise.
     hooks[event] = [...hooks[event] ?? [], { matcher: '*', hooks: [{ type: 'command', command, timeout: 3 }] }]
   }
   await install(home, rel, JSON.stringify({ ...settings, hooks }, null, 2) + '\n')
 }
 
 /**
- * Written atomically (`writeAtomic`): each of these has other readers and
- * writers — a tool starting in another workspace of the project, the user
- * editing it, claude rewriting its settings when a theme changes — and a
- * plain write truncates first, so a reader landing in that window sees an
- * empty or invalid file. Our own answer to invalid JSON is "start fresh", so
- * a torn read would compound into discarding the user's settings on the next
- * create.
+ * Write atomically: these files have other readers and writers (tools in
+ * other workspaces, the user, claude itself), and a torn read of invalid
+ * JSON would make the next create discard the user's settings.
  */
 async function install(home: ConfinedRoot, rel: string, content: string): Promise<void> {
   const current = await home.readFile(rel, { maxBytes: MAX_SETTINGS_BYTES }).catch(() => null)

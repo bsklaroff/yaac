@@ -45,10 +45,9 @@ async function waitFor<T>(fn: () => Promise<T | undefined | false>, timeoutMs: n
 }
 
 /**
- * End-to-end coverage for prewarmed workspaces: with the pool enabled, a project
- * that has an open session gets a hidden spare warmed by the background loop;
- * the next `session create` claims it instead of cold-provisioning; and a fresh
- * spare is warmed to replace it.
+ * Prewarmed workspaces: with the pool enabled, a project with an open
+ * workspace gets a hidden spare, the next `workspace create` claims it
+ * instead of provisioning from scratch, and a new spare replaces it.
  */
 describe('yaac prewarmed sessions', () => {
   let testEnv: YaacTestEnv
@@ -62,16 +61,12 @@ describe('yaac prewarmed sessions', () => {
   })
 
   beforeEach(async () => {
-    // The listing and the project count are JOINS: the rows are read here,
-    // and what a substrate is running comes back across the boundary. This
-    // file asserts on both in-process, so it needs a substrate of its own — the
-    // spawned server under test has its own (docs/layered-server.md).
     testEnv = await createYaacTestEnv()
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
     await seedMockGitRepo(mockGit, 'repo-demo', {
       files: { 'README.md': '# demo\n' },
-      // A second branch so the claim-time re-branch prep has a target.
+      // A second branch for the claim to switch to.
       extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
     })
   })
@@ -88,9 +83,10 @@ describe('yaac prewarmed sessions', () => {
 
   const FAKE_REMOTE = 'https://github.com/test-org/repo-demo.git'
 
-  /** Stage a yaac project + fake tool creds on disk (same shape as
-   *  `project add`); it is recorded, and given its git credential, once the
-   *  server is up. */
+  /**
+   * Put a project and fake claude creds on disk, as `project add` would.
+   * It is registered with the server once the server is up.
+   */
   async function stageProject(): Promise<void> {
     const projectDir = path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo')
     const repoDir = path.join(projectDir, 'repo')
@@ -108,14 +104,9 @@ describe('yaac prewarmed sessions', () => {
   }
 
 /**
- * Is the pod's tmux server up? Asked with `kubectl exec`, the way this
- * harness asks a pod anything.
- *
- * Deliberately not the server's own `isTmuxSessionAlive`: that probes
- * through the stream relay, which is a dial to the proxy's Service — right
- * for the server, which is a pod of that namespace, and unreachable from
- * here (docs/server-in-cluster.md). The question is the same either way:
- * does `tmux has-session` exit 0 inside the workspace.
+ * Whether the pod's tmux server is up, checked with `kubectl exec`. The
+ * server's own `isTmuxSessionAlive` dials an in-cluster Service that is
+ * unreachable from the test host (docs/server-in-cluster.md).
  */
 async function tmuxAliveInPod(jobName: string): Promise<boolean> {
   try {
@@ -151,13 +142,12 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     await registerTestProject(server, 'repo-demo', FAKE_REMOTE)
     await assignTestGitCredential(server, 'repo-demo', 'fake-ghp-token')
 
-    // 1. First (cold) create — the project now has an open session.
+    // 1. A cold create gives the project an open workspace.
     const first = await runYaac(serverEnv, 'workspace', 'create', 'repo-demo', '--tool', 'claude')
     if (first.exitCode !== 0) console.error(first.stdout, first.stderr)
     expect(first.exitCode).toBe(0)
 
-    // 2. The background loop warms a spare. Wait until it is Running AND its
-    //    tmux is alive (so the next create can actually claim it).
+    // 2. Wait for a spare that is running with tmux up, so it is claimable.
     const spare = await waitFor(async () => {
       const pods = await listWorkspacePods('repo-demo')
       const s = pods.find((p) => isPrewarmed(p) && p.running)
@@ -166,8 +156,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     }, 150_000)
     const spareJob = spare.jobName
 
-    // 3. The spare is hidden from user-facing views: one active session, one
-    //    project session-count — even though two pods exist.
+    // 3. The spare is hidden from listings and the project's count.
     const allPods = await listWorkspacePods('repo-demo')
     expect(allPods.filter(isPrewarmed)).toHaveLength(1)
     expect(allPods.filter((p) => !isPrewarmed(p))).toHaveLength(1)
@@ -179,15 +168,9 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     const proj = (await listProjects()).find((p) => p.slug === 'repo-demo')
     expect(proj?.workspaceCount).toBe(1)
 
-    // 4. Spares are tool- AND branch-agnostic: a create for a different tool
-    //    and a different reference branch claims the claude/main-warmed spare,
-    //    re-branches its workspace, and retools it — no cold provisioning.
-    //
-    //    This is also the plain-claim case. A same-tool, same-branch create
-    //    asserts a strict subset of what this one does — the "Using
-    //    prewarmed session..." line and the reused pod — so running it first
-    //    only bought a second cold create and a second wait for the pool to
-    //    refill, on the suite's longest test.
+    // 4. Spares work for any tool and branch: a codex create on `dev`
+    //    claims the claude/main spare, switching its branch and tool. This
+    //    also covers the plain same-tool, same-branch claim.
     const third = await runYaac(
       serverEnv, 'workspace', 'create', 'repo-demo', '--tool', 'codex', '--branch', 'dev',
     )
@@ -197,32 +180,26 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     expect(third.stdout).toContain('Switching prewarmed session to codex...')
     expect(third.stdout).toContain('Using prewarmed session...')
 
-    // Same pod as the spare — label gone, tool label flipped. Proves the
-    // claim reused the warmed pod rather than minting one.
+    // The spare's own pod, no longer marked prewarmed and retooled.
     const retooled = (await listWorkspacePods('repo-demo')).find((p) => p.jobName === spareJob)
     expect(retooled).toBeDefined()
     expect(isPrewarmed(retooled!)).toBe(false)
     expect(retooled!.tool).toBe('codex')
 
-    // The re-branch actually landed: the workspace tracks origin/dev and has
-    // the branch's file, and the workspace's row records the new base.
+    // The checkout tracks origin/dev and the row records the new base.
     const { stdout: upstream } = await execInJob(retooled!.jobName, [
       'git', '-C', '/workspace', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}',
     ])
     expect(upstream.trim()).toBe('origin/dev')
     const { stdout: devFile } = await execInJob(retooled!.jobName, ['cat', '/workspace/dev-only.txt'])
     expect(devFile).toBe('dev content\n')
-    // Read through the server: its claim wrote the row, and this process's
-    // own DB handle does not see that write.
+    // Read through the server; this process's DB handle cannot see its write.
     const listed = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/list?project=repo-demo`))
       .json() as { workspaces: Array<{ workspaceId: string; baseBranch?: string }> }
     expect(listed.workspaces.find((w) => w.workspaceId === retooled!.workspaceId)?.baseBranch).toBe('dev')
 
-    // 5. The claim leaves the pool short, so a fresh spare is warmed to
-    //    replace it — as the project's untouched create, and the `--tool
-    //    codex` claim just made codex the agent this project was last created
-    //    with. Running is enough here: nothing claims this one, and waiting on
-    //    its tmux would just be waiting.
+    // 5. A replacement spare is warmed with the project's last-used tool
+    //    (codex). Nothing claims it, so running is enough.
     const refilled = await waitFor(async () => {
       const pods = await listWorkspacePods('repo-demo')
       return pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)

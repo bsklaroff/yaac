@@ -1,33 +1,28 @@
 /*
- * Verifies the image-build UX end-to-end against the real stack: a live
- * image build flows through the server's build registry and the snapshot
- * WebSocket into the sidebar-header pill (ImageBuildIndicator) and the
- * fullscreen overlay (ImageBuildsOverlay).
+ * Verifies the image-build UX against the real k8s stack: a live build
+ * reaches the sidebar-header pill (ImageBuildIndicator) and the fullscreen
+ * overlay (ImageBuildsOverlay) through the snapshot.
  *
- * The build is started the way every build starts now that tags are
- * immutable — by moving a layer's content hash. The script PUTs a
- * Dockerfile.yaac carrying a unique RUN line, which gives the project layer
- * a tag nothing has built, and the prewarm sweep (every 60s) picks it up.
+ * To force a build, it PUTs a Dockerfile.yaac with a unique RUN line, which
+ * gives the project layer a new content-hash tag; the prewarm sweep (every
+ * 60s) builds it.
  *
- * IT THEREFORE MUTATES THE NAMED PROJECT'S Dockerfile.yaac, and restores it
- * on the way out (including on SIGINT — the script sits in waits of up to
- * 150s, so it invites a Ctrl-C). A run that dies without restoring leaves
- * the project layer repriced, and every workspace created afterwards builds
- * and runs the junk `RUN echo ibux-…` image until someone puts the original
- * back. The script says so loudly if its own restore fails; if it is killed
- * outright (SIGKILL), restore by hand with `yaac config edit-dockerfile
- * <project>`. Default target is the `hello-world` scratch project — a real
- * project has to be named explicitly with --project.
+ * This changes the named project's Dockerfile.yaac. The script restores it
+ * on exit, including on Ctrl-C, and reports loudly if that fails. If killed
+ * outright, restore it with `yaac config edit-dockerfile <project>`, or new
+ * workspaces keep using the junk image. The default target is the
+ * `hello-world` scratch project; name a real one with --project.
  *
- * Exercises, against a running server + cluster:
- *   1. lands in the webapp at the server's loopback origin
- *   2. PUTs a cache-busting Dockerfile.yaac, waits for the "building"
- *      pill (scoped to the active project) — screenshot
- *   3. opens the overlay on the running build (layer + step N/M) — screenshot
- *   4. waits for the build to finish and asserts the finished rows PERSIST
- *      (no age-out) with a hide-only dismiss × on each — screenshot
- *   5. closes the overlay and asserts the pill stays in its muted "builds"
- *      history state (persisted rows remain reachable) — screenshot
+ * Against a running server and cluster, it:
+ *   1. opens the webapp at the server's loopback origin;
+ *   2. PUTs the changed Dockerfile.yaac and waits for the "building" pill
+ *      for the active project (screenshot);
+ *   3. opens the overlay on the running build, showing layer and step N/M
+ *      (screenshot);
+ *   4. waits for the build to finish; finished rows stay listed, each with a
+ *      hide-only dismiss × (screenshot);
+ *   5. closes the overlay; the pill stays in its muted "builds" history
+ *      state (screenshot).
  *
  * Run: node test-playwright-scripts/image-build-ux-test.js [--project hello-world]
  * Needs a running server with a wired cluster and the project registered
@@ -97,10 +92,8 @@ function warnManualRestore() {
 }
 
 /**
- * Put the project's Dockerfile.yaac back. A failed restore is the one
- * failure the operator MUST hear about — swallowing it exits clean while
- * leaving the project mutated — so it counts into `failures` and says how
- * to fix it by hand.
+ * Put the project's Dockerfile.yaac back. A failed restore counts as a
+ * failure and prints how to fix it by hand.
  */
 async function restoreDockerfile(base, original) {
   try {
@@ -134,9 +127,7 @@ async function main() {
 
   const originalDockerfile = await readDockerfile(base)
 
-  // Node's default SIGINT disposition terminates without unwinding, so the
-  // `finally` restore below never runs on a Ctrl-C — and this script sits in
-  // waits of up to 150s, which is exactly when someone reaches for one.
+  // Node's default SIGINT handling skips `finally`, so restore explicitly.
   process.once('SIGINT', () => {
     console.error('\ninterrupted — restoring Dockerfile.yaac...')
     void restoreDockerfile(base, originalDockerfile).finally(() => process.exit(130))
@@ -144,20 +135,18 @@ async function main() {
 
   try {
     await page.goto(`${base}/`)
-    // Only project registered → auto-selected; the sidebar's + button proves
-    // we're in the workspace (not the connect splash).
+    // The only project is auto-selected; the sidebar's + button shows the
+    // app has loaded.
     await page.waitForSelector('[title="New session"]', { timeout: 20_000 })
     check('workspace loaded, project auto-selected', true)
 
-    // Move the project layer's content hash so a build becomes necessary.
-    // The unique RUN line is the whole point: an identical Dockerfile would
-    // resolve to a tag the registry already holds and build nothing.
+    // A unique RUN line gives the layer a tag the registry does not hold.
     const bust = `ARG BASE_IMAGE\nFROM \${BASE_IMAGE}\nRUN echo ibux-${process.pid}-${Date.now()}\n`
     const put = await writeDockerfile(base, bust)
     check('cache-busting Dockerfile.yaac accepted', put.ok, `HTTP ${put.status}`)
 
-    // 1. Building pill, scoped to the active project. The prewarm sweep runs
-    // on a 60s tick, so this waits out a full interval plus the build's start.
+    // 1. The building pill. The prewarm sweep runs every 60s, so this may
+    // wait a full interval.
     await page.waitForSelector(BUILDING, { timeout: 150_000 })
     check('scoped "building" pill appears', await page.locator(BUILDING).count() === 1)
     await shot(page, 'ibux-1-building-pill.png')
@@ -172,7 +161,7 @@ async function main() {
 
     // 3. Wait for completion; finished rows persist with a hide-only dismiss ×.
     await page.waitForSelector(BUILDING, { state: 'detached', timeout: 180_000 })
-    // Overlay stays mounted (kept open) — the succeeded rows are still listed.
+    // The overlay stays open with the finished rows listed.
     const dismissCount = await page.locator(DISMISS).count()
     check('finished rows persist with a dismiss × (no age-out)', dismissCount >= 1, `${dismissCount} rows`)
     await shot(page, 'ibux-3-overlay-history.png')
@@ -184,8 +173,7 @@ async function main() {
     check('pill stays as a muted history entry point after close', hasHistory)
     await shot(page, 'ibux-4-history-pill.png')
   } finally {
-    // Put the project back where it was; the busted layer's tag is left in
-    // the registry for the main registry GC to age out.
+    // Restore the project; registry GC removes the extra tag later.
     await restoreDockerfile(base, originalDockerfile)
     await browser.close()
   }

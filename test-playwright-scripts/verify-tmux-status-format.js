@@ -2,33 +2,25 @@
 /*
  * verify-tmux-status-format.js
  *
- * WHAT IT VERIFIES
- *   The tmux-side status classification used by the opencode and pi session
- *   status watchers. packages/server/src/features/status/status-watcher.ts
- *   builds a content-search format (`busyStatusFormat`) from the per-agent
- *   marker lists (OPENCODE_BUSY_MARKERS / PI_BUSY_MARKERS) and subscribes a
- *   no-output control-mode client to it, so tmux resolves running/waiting
- *   inside the pod and only the word crosses the exec stream. This script
- *   renders a corpus of real pane snapshots and asserts the verdict tmux
- *   pushes back over exactly that path (`refresh-client -B "status:…:<fmt>"`).
+ * Verifies the tmux-side status classification for opencode and pi.
+ * `busyStatusFormat` in packages/server/src/runtime/agents/agent-tools.ts
+ * builds a content-search format from OPENCODE_BUSY_MARKERS /
+ * PI_BUSY_MARKERS, and the status watcher subscribes a no-output
+ * control-mode client to it, so tmux decides running/waiting and only that
+ * word is sent back. This script renders sample pane contents and checks
+ * the verdict tmux pushes over the same path (`refresh-client -B`).
  *
- * WHY A SCRIPT (not a unit test)
- *   The formats are POSIX/GNU-ERE strings sent through tmux's own
- *   double-quote parser. Their failure modes — backslash escapes not
- *   surviving the quotes, a `{n,}` interval's `}` closing the `#{…}`, a
- *   PCRE-only `(?:…)` group silently never matching — can only be caught by
- *   running a real tmux. Unit tests pin the marker strings; this proves they
- *   actually classify a live pane.
+ * This is a script rather than a unit test because the formats are ERE
+ * strings passed through tmux's own quote parsing. Their failure modes
+ * (escapes lost in quoting, a `{n,}` interval's `}` closing the `#{…}`, a
+ * PCRE-only `(?:…)` that never matches) only show up in a real tmux.
  *
- * HOW TO RUN
- *   node test-playwright-scripts/verify-tmux-status-format.js
- *   Requires `tmux` on PATH (>=3.1 for `#{C/ri:}`; the session image ships
- *   3.4). Exits 0 when every case matches, 1 otherwise.
+ * Run: node test-playwright-scripts/verify-tmux-status-format.js
+ * Requires `tmux` on PATH (>= 3.1 for `#{C/ri:}`). Exits 0 when every case
+ * matches, 1 otherwise.
  *
- * KEEP IN SYNC
- *   MARKERS below mirrors OPENCODE_BUSY_MARKERS / PI_BUSY_MARKERS and
- *   buildFormat mirrors busyStatusFormat. If you change either in the server,
- *   update this file and re-run.
+ * MARKERS and buildFormat below are copies of the server's markers and
+ * busyStatusFormat; update them here when those change.
  */
 
 import { spawn, execFileSync } from 'node:child_process'
@@ -36,14 +28,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-// Mirror of the server's OPENCODE_BUSY_MARKERS / PI_BUSY_MARKERS.
+// Copy of OPENCODE_BUSY_MARKERS (opencode.ts) and PI_BUSY_MARKERS (pi.ts).
 const MARKERS = {
   opencode: ['esc\\s+(again\\s+to\\s+)?interrupt', '[■⬝][■⬝][■⬝][■⬝]'],
   pi: ['esc\\s+(to\\s+)?(interrupt|cancel|stop)', '\\b(thinking|working|generating|streaming|running)\\b'],
 }
 
-// Mirror of busyStatusFormat(): OR each marker into a case-insensitive
-// content search, then resolve to running/waiting.
+// Copy of busyStatusFormat().
 function buildFormat(markers) {
   const anyBusy = markers
     .map((m) => `#{C/ri:${m}}`)
@@ -51,8 +42,7 @@ function buildFormat(markers) {
   return `#{?${anyBusy},running,waiting}`
 }
 
-// Corpus: [paneLines, expectedVerdict]. Lifted from the classifier unit tests
-// the tmux formats replaced, so the two stay behaviourally equivalent.
+// [paneLines, expectedVerdict] per tool.
 const CORPUS = {
   opencode: [
     [['Some output here', '  esc interrupt'], 'running'],
@@ -86,9 +76,9 @@ function tmux(socket, args) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /**
- * Render `lines` into a fresh tmux pane, subscribe a no-output control-mode
- * client to `format`, and resolve with the first running/waiting value tmux
- * pushes — the exact production path.
+ * Renders `lines` into a fresh tmux pane, subscribes a no-output
+ * control-mode client to `format` as the server does, and resolves with the
+ * first value tmux pushes.
  */
 async function classify(format, lines) {
   const socket = path.join(os.tmpdir(), `verify-status-${process.pid}-${Math.floor(performance.now())}.sock`)
@@ -96,7 +86,7 @@ async function classify(format, lines) {
   fs.writeFileSync(corpusFile, lines.join('\n'))
   try {
     tmux(socket, ['new-session', '-d', '-s', 'yaac', '-x', '120', '-y', '40'])
-    // Render the snapshot exactly (cat a file — no shell-quoting of markers).
+    // cat a file so the text needs no shell quoting.
     tmux(socket, ['send-keys', '-t', 'yaac', `clear; cat '${corpusFile}'`, 'Enter'])
     await sleep(300)
     const paneId = tmux(socket, ['display-message', '-p', '-t', 'yaac', '#{pane_id}'])
@@ -122,8 +112,7 @@ async function classify(format, lines) {
         }
       })
       cm.on('error', (err) => { clearTimeout(timer); reject(err) })
-      // Subscribe exactly as the watcher does (single-quoted -B arg so tmux
-      // doesn't C-unescape `\b` etc. out of the format).
+      // Single-quote the -B arg so tmux doesn't unescape `\b` in the format.
       cm.stdin.write(`refresh-client -B 'status:${paneId}:${format}'\n`)
     })
   } finally {

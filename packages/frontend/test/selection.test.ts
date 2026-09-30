@@ -33,9 +33,8 @@ describe('patchForcedSelection', () => {
     expect(patchForcedSelection({ _core: {} } as unknown as Terminal)).toBe(false)
   })
 
-  // Canaries for the pinned dependency: the patches reach into private xterm
-  // internals, so an upgrade that renames or mangles them must fail here
-  // rather than silently reverting the webapp to modifier-to-select.
+  // The patches use private xterm internals, so an upgrade that renames them
+  // must fail here.
   it('finds _core on a real Terminal instance', () => {
     const term = new Terminal()
     expect((term as unknown as { _core?: object })._core).toBeDefined()
@@ -98,8 +97,7 @@ describe('patchClickForwarding', () => {
         // Listeners bind to element; screenElement only feeds coordinates.
         element: { ...el, ownerDocument: doc },
         screenElement: { addEventListener() {}, removeEventListener() {} },
-        // These read `this` (like the real services), so the patch must call
-        // them bound — a bare-reference call would throw here.
+        // These use `this`, like the real services, so the patch must bind them.
         _mouseService: {
           _coords: { col: 4, row: 2, x: 40, y: 20 },
           getMouseReportCoords(): { col: number; row: number; x: number; y: number } {
@@ -116,8 +114,7 @@ describe('patchClickForwarding', () => {
         },
       },
     } as unknown as Terminal
-    // element is a shallow copy, so bind listeners on the same object the patch
-    // will (its addEventListener closes over `el`'s listener map).
+    // `element` is a shallow copy whose addEventListener uses `el`'s listeners.
     return { term, el, doc, sent, setSelection: (v) => (hasSelection = v) }
   }
 
@@ -187,9 +184,7 @@ describe('patchClickForwarding', () => {
     ).toBeNull()
   })
 
-  // Canaries for the pinned dependency, like the patchForcedSelection ones: an
-  // xterm upgrade that renames these must fail here, not silently send clicks
-  // back to needing Alt.
+  // As above: an xterm upgrade that renames these must fail here.
   it('finds coreMouseService on a real Terminal instance', () => {
     const term = new Terminal()
     const core = (term as unknown as { _core?: { coreMouseService?: object } })._core
@@ -209,9 +204,8 @@ describe('patchClickForwarding', () => {
 })
 
 describe('patchKeepSelection', () => {
-  // Mimics the xterm wiring: sending user input synchronously fires the
-  // selection-clearing listener from inside triggerDataEvent, and disable()
-  // (called on every mouse-protocol DECSET) clears too.
+  // Mimics xterm: triggerDataEvent synchronously clears the selection, and so
+  // does disable() (called on every mouse-protocol DECSET).
   const fakeTerm = (): {
     svc: { clearSelection: () => void; disable: () => void; cleared: number; enabled: boolean }
     coreService: { triggerDataEvent: (data: string, wasUserInput?: boolean) => void; sent: string[] }

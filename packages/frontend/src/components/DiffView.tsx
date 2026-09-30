@@ -4,13 +4,9 @@ import { highlightLine, type HighlightLanguage } from '#lib/highlight'
 import type { DiffLine } from '#lib/diff'
 
 /**
- * Rendered diff lines: +/− gutters, tinted rows, syntax-highlighted code.
- *
- * Shared by the two panes that show a diff — the changes pane (a parsed `git
- * diff`) and the chat pane (an agent's edit tool call) — so an edit looks the
- * same wherever the user meets it. What differs between them is only what
- * their source can honestly claim: a git hunk knows its file line numbers, an
- * agent's edit fragment does not, so the gutter is optional.
+ * Diff lines with +/− markers, tinted rows and syntax highlighting. Used by
+ * the changes pane (git diffs) and the chat pane (agent edits). Line numbers
+ * are optional because an agent's edit fragment has no file line numbers.
  */
 export function DiffView({
   lines,
@@ -21,8 +17,7 @@ export function DiffView({
   language: HighlightLanguage | null
   showLineNumbers?: boolean
 }): JSX.Element {
-  // Tokenize each code line once per (lines, language); hunk headers and the
-  // no-language case stay plain. `diff-hl` scopes the tok-* colors (index.css).
+  // `diff-hl` below scopes the tok-* colors (index.css).
   const highlighted = useMemo(
     () => (language ? lines.map((line) => (line.kind === 'hunk' ? null : highlightLine(line.text, language))) : null),
     [lines, language],

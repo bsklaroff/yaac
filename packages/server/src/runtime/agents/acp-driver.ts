@@ -1,14 +1,12 @@
 /**
  * The `acp` driver: a coding agent speaking the Agent Client Protocol
- * (JSON-RPC over stdio) instead of rendering a TUI.
+ * (JSON-RPC over stdio) instead of rendering a TUI (docs/agent-modes.md).
  *
- * The agent still runs in a tmux window — that is not incidental. tmux is what
- * makes an agent survive the thing watching it: a closed tab, a dropped relay,
- * a restarted server. A plain streamd `ctrl` stream owns its child (socket
- * close ⇒ SIGTERM), which would put a running turn's life back on the
- * connection, and a PTY would corrupt the protocol outright. So the window
+ * The agent still runs in a tmux window so it survives a closed tab, a
+ * dropped relay or a server restart. A streamd `ctrl` stream would kill its
+ * child on disconnect, and a PTY would corrupt the protocol, so the window
  * runs `acpd`, which owns the agent's stdio and republishes it on a UNIX
- * socket that can be attached to and detached from freely:
+ * socket that can be attached and detached freely:
  *
  *     tmux window                                   this driver
  *     ┌─────────────────────────────┐               ┌──────────────────┐
@@ -16,18 +14,13 @@
  *     │   └── /tmp/yaac-acp/<w>.sock│◄──ctrl+socat──┤ (JSON-RPC peer)  │
  *     └─────────────────────────────┘               └──────────────────┘
  *
- * Keeping the agent in a window also means everything downstream of "a
- * conversation is a tmux window" keeps working untouched: the launch exec, the
- * restart path that respawns what was live, window-close teardown, and session
- * GC. The window is simply not PTY-attachable in the webapp — its pane renders
- * chat instead.
+ * Because a conversation is still a tmux window, launch, restart,
+ * window-close teardown and session GC work unchanged; the webapp just
+ * renders a chat pane instead of attaching a PTY.
  *
- * Status is exact here, unlike the TUI mode's title scraping: a conversation is
- * `running` for precisely as long as a `session/prompt` request is in flight,
- * and `waiting` the moment the agent answers with a stop reason. That holds
- * across reconnects, where the request in flight belongs to a connection that
- * is gone — acpd's record is what makes such a turn knowable, since ACP itself
- * lets only the sender of a prompt know it is running.
+ * Status is exact: `running` while a `session/prompt` is in flight,
+ * `waiting` once the agent answers. Across reconnects acpd's record tells
+ * whether the old connection's turn is still running.
  */
 
 import { StringDecoder } from 'node:string_decoder'
@@ -62,68 +55,46 @@ import type {
 import { agentSessionIdSchema, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 
 /**
- * One conversation's acpd socket, inside the workspace.
- *
- * Named for the tmux window that supervises it (`claude`, `claude-2`) —
- * the same handle the status store keys the conversation by, which is what
- * lets a reattach find the socket from the window list alone. The directory
- * is the driver's (`WorkspacePaths.acpSockDir`) because a UNIX socket only
- * rendezvouses within the kernel that bound it: one fixed path per pod is
- * safe, one shared by every host process is not.
+ * One conversation's acpd socket inside the workspace, named for its tmux
+ * window (`claude`, `claude-2`) so a reattach can find it from the window
+ * list. The directory comes from the driver (`WorkspacePaths.acpSockDir`)
+ * because one fixed path is safe per pod but not shared by host processes.
  */
 function acpSockPath(paths: Pick<WorkspacePaths, 'acpSockDir'>, handle: string): string {
   return `${paths.acpSockDir}/${handle}.sock`
 }
 
-/** One conversation's ACP log, inside the workspace. Named for the
- *  CONVERSATION rather than its window — see `launchCmd` for why. */
+/** One conversation's ACP log inside the workspace, named for the
+ *  conversation rather than its window (see `launchCmd`). */
 function acpLogPath(paths: Pick<WorkspacePaths, 'acpLogDir'>, name: string): string {
   return `${paths.acpLogDir}/${name}.jsonl`
 }
 
-/** How often the connection re-enumerates the pod's ACP windows, picking up a
- *  conversation opened (or closed) since the last look. */
+/** How often the connection re-lists the workspace's ACP windows. */
 const DEFAULT_SWEEP_MS = 20_000
 
 /**
- * Sweep cadence while some window this connection knows about is not attached.
+ * Sweep interval while some known window is not attached. Covers two cases
+ * of a conversation starting up: the agent window is created after the pod
+ * is Ready, and acpd binds its socket a moment after tmux spawns it, so the
+ * first dial often finds nothing. Until a dial lands there is no handshake,
+ * conversation id, row or chat pane, and session create waits on it to
+ * deliver the initial prompt.
  *
- * Two states need it, and they are the same state. A session's agent window is
- * created by the host *after* the pod is Ready, so a connection that opened
- * first would otherwise sit out a full sweep before noticing it — and session
- * create waits on that attach to deliver the initial prompt. And a window that
- * exists is not yet a socket to connect to: acpd binds a moment after tmux
- * spawns it, so the first dial into a brand-new window usually finds nothing
- * listening and drops straight back off. Both are "a conversation is coming
- * up", and both are resolved by looking again in a second.
- *
- * The cadence rises to `DEFAULT_SWEEP_MS` once every enumerated window is
- * attached — or has spent its `MAX_FAST_ATTACH_ATTEMPTS` — so an idle workspace
- * costs one cheap exec every 20s rather than one per second. The cost of
- * getting this wrong is not a slow log line: until the dial lands there is no
- * handshake, so no conversation id, no row, and no chat pane — a fresh ACP
- * workspace stares at acpd's own output for the length of one sweep.
+ * Falls back to `DEFAULT_SWEEP_MS` once every window is attached or has used
+ * its `MAX_FAST_ATTACH_ATTEMPTS`.
  */
 const EMPTY_SWEEP_MS = 1_000
 
 /**
- * How many times a window may fail to hold an attach before it stops earning
- * the fast cadence and is only retried on the settled one.
+ * Attach failures after which a window drops to the slow sweep. A window
+ * failing this often is broken (acpd crashed, socket gone), and fast retries
+ * would cost an exec and dial per second for the pod's life; it is still
+ * retried every `DEFAULT_SWEEP_MS`.
  *
- * A window that has bounced this many times is not starting — acpd crashed or
- * wedged and tmux left the window behind, or its socket is gone — and retrying
- * it every second forever costs an exec and a dial per second, per broken
- * window, for as long as the pod lives. It still gets re-dialed every
- * `DEFAULT_SWEEP_MS`, so a window that heals is picked up; it just stops
- * holding its workspace's whole connection at the fast cadence while it does
- * not.
- *
- * Ten rather than a snug two or three, because the two sides of this budget
- * are not symmetric. Spending it costs ten dials, once — trivial. Running out
- * of it early costs a real conversation a full settled sweep, which is the
- * pane delay this whole path exists to remove. acpd binds before it spawns the
- * adapter, so a healthy window is attachable in milliseconds; ten seconds is
- * headroom for a gVisor pod on a loaded node, not the expected cost.
+ * Generous because giving up early delays a real conversation by a full
+ * sweep, while ten extra dials are cheap. A healthy window is attachable in
+ * milliseconds; this is headroom for a loaded gVisor node.
  */
 export const MAX_FAST_ATTACH_ATTEMPTS = 10
 
@@ -135,19 +106,13 @@ const PROMPT_ATTACH_TIMEOUT_MS = 60_000
 const DEFAULT_COMMAND_MS = 10_000
 
 /**
- * Wrap a streamd `ctrl` stream as the duplex the JSON-RPC peer wants. The
- * stream carries newline-delimited JSON in both directions with no framing of
- * its own, which is exactly what `ctrl` was built for (it is how tmux control
- * mode rides the relay too).
+ * Wrap a streamd `ctrl` stream as the JSON-RPC peer's transport. `ctrl`
+ * carries newline-delimited JSON with no framing of its own.
  */
 function ctrlTransport(child: StreamChild): JsonRpcTransport {
-  // A relay stream delivers raw Buffers on TCP read boundaries, which fall
-  // wherever the network puts them — including the middle of a multi-byte
-  // character. Decoding each chunk on its own would turn a split emoji or CJK
-  // glyph into replacement characters in both halves, and because the split can
-  // only ever land inside a JSON string the result still parses: the corruption
-  // would be silent, and line-buffering downstream cannot undo it. A
-  // StringDecoder holds the incomplete tail until its remaining bytes arrive.
+  // Chunks split on TCP boundaries, possibly mid-character. Decoding each
+  // chunk alone would silently corrupt multi-byte characters inside JSON
+  // strings; StringDecoder holds the incomplete tail.
   const decoder = new StringDecoder('utf8')
   return {
     write: (data) => child.stdin?.write(data),
@@ -167,8 +132,8 @@ function ctrlTransport(child: StreamChild): JsonRpcTransport {
 interface Attached {
   handle: string
   tool: AgentTool
-  /** Undefined only for the instant between the entry being registered and
-   *  the conversation being constructed (see `attach`). */
+  /** Undefined only briefly, between registration and construction (see
+   *  `attach`). */
   conversation?: AcpConversation
   child: StreamChild
   agentSessionId?: string
@@ -183,10 +148,10 @@ class AcpConnection implements AgentConnection {
   private sweeping = false
   private done = false
   private up = false
-  /** The last enumeration's handles — what the cadence is judged against. */
+  /** Handles from the last enumeration; drives the sweep cadence. */
   private lastWindows: string[] = []
-  /** Consecutive attaches that did not survive a sweep, per handle. Bounds
-   *  the fast cadence — see `MAX_FAST_ATTACH_ATTEMPTS`. */
+  /** Consecutive attaches per handle that did not survive a sweep; see
+   *  `MAX_FAST_ATTACH_ATTEMPTS`. */
   private readonly attachFailures = new Map<string, number>()
   private readonly sweepMs: number
   private readonly commandTimeoutMs: number
@@ -195,18 +160,12 @@ class AcpConnection implements AgentConnection {
   private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
   /**
-   * The posture as of the last sweep, or undefined while no sweep has
-   * successfully read one. Held rather than fetched per use because a
-   * conversation asks for it on the synchronous path where an ask arrives, and
-   * re-reading it there would put a database round trip between the agent
-   * blocking and yaac noticing. Refreshed every sweep, so a restart that
-   * rewrote the row is picked up without the connection being rebuilt.
+   * The posture as of the last successful sweep read. Cached because a
+   * conversation needs it synchronously when an ask arrives; refreshed every
+   * sweep so a rewritten row is picked up.
    *
-   * Starts unknown rather than at a default. Seeding it with `bypass` would
-   * mean a read that failed on the very first sweep — before there is any
-   * "last known answer" to keep — attaches the conversation to the auto-answer
-   * while the row says `manual`, and the handshake would then lock that in at
-   * the adapter.
+   * Starts unknown, not `bypass`: otherwise a failed first read could lock
+   * a `manual` workspace into auto-answering at the handshake.
    */
   private permissionMode: PermissionMode | undefined
 
@@ -233,10 +192,8 @@ class AcpConnection implements AgentConnection {
   }
 
   /**
-   * Whether some conversation is still on its way up — the state
-   * `EMPTY_SWEEP_MS` exists for. Either no window has appeared yet, or one has
-   * and this connection is not holding it, having not yet spent its fast
-   * attempts on it.
+   * Whether a conversation is still starting up (see `EMPTY_SWEEP_MS`): no
+   * window yet, or an unattached window with fast attempts left.
    */
   private fastSweepWanted(): boolean {
     if (this.lastWindows.length === 0) return true
@@ -246,21 +203,17 @@ class AcpConnection implements AgentConnection {
   }
 
   /**
-   * Reconcile the conversations we hold against the pod's ACP windows. The
-   * window list is authoritative — it is what the launch exec created and what
-   * a restart recreates — so this both attaches to new windows and drops
-   * conversations whose window is gone.
+   * Reconcile held conversations against the workspace's ACP windows, which
+   * are authoritative (the launch creates them, a restart recreates them):
+   * attach new windows and drop conversations whose window is gone.
    *
-   * Doubles as the health probe: the enumeration is a round trip through the
-   * relay into the pod's tmux, so its success is the same end-to-end proof the
-   * TUI driver's heartbeat gets from `display-message`.
+   * Also the health probe: listing windows is a round trip to the
+   * workspace's tmux, like the TUI driver's `display-message` heartbeat.
    */
   private async sweep(): Promise<void> {
     if (this.done) return
-    // A sweep can outlive its interval (a slow relay round trip), and two
-    // overlapping ones would both see a window as unattached and dial it
-    // twice — acpd would then displace one of the two, losing whichever
-    // client had the live handshake.
+    // Overlapping sweeps would dial a window twice, and acpd would displace
+    // whichever client held the live handshake.
     if (this.sweeping) return
     this.sweeping = true
     try {
@@ -285,9 +238,8 @@ class AcpConnection implements AgentConnection {
       this.sink({ kind: 'up' })
     }
 
-    // Anything still attached a whole sweep later held: that is what separates
-    // a real attach from a dial that bounced off a socket acpd had not bound
-    // yet, which is gone again within milliseconds.
+    // Still attached a full sweep later means the attach held, not a dial
+    // that bounced before acpd bound its socket.
     for (const handle of this.attached.keys()) this.attachFailures.delete(handle)
 
     const live = new Set(windows.map((w) => w.handle))
@@ -299,14 +251,10 @@ class AcpConnection implements AgentConnection {
     const recorded = new Map(
       (await this.recordedSessions().catch(() => [])).map((r) => [r.handle, r.agentSessionId]),
     )
-    // Refreshed before the attach loop, so a conversation built on this sweep
-    // handshakes with the posture the row holds now rather than the one the
-    // connection started with. A failed read keeps the last known answer — the
-    // posture this workspace has been running under — rather than resolving to
-    // anything: relaxing to `bypass` on a transient database error would
-    // quietly stop enforcing what the user asked for, and before the first
-    // successful read there is no answer to keep, so it stays unknown and every
-    // ask is forwarded.
+    // Refresh before attaching so new conversations handshake with the
+    // current posture. On a failed read keep the last known value (falling
+    // back to `bypass` would silently stop enforcing the user's choice);
+    // before any successful read it stays unknown and every ask is forwarded.
     try {
       this.permissionMode = await this.readPermissionMode()
     } catch (err) {
@@ -318,19 +266,17 @@ class AcpConnection implements AgentConnection {
       this.attach(w.handle, w.tool, recorded.get(w.handle))
     }
 
-    // What the cadence is judged against, recorded after the attach loop so a
-    // dial that failed synchronously already counts as unattached. A window
-    // that has gone keeps no failure tally: the next one to use that name is
-    // a new conversation, not the broken one continued.
+    // Recorded after the attach loop so a synchronous dial failure counts as
+    // unattached. A vanished window's failure tally is dropped; a new window
+    // with that name is a new conversation.
     this.lastWindows = windows.map((w) => w.handle)
     for (const handle of [...this.attachFailures.keys()]) {
       if (!live.has(handle)) this.attachFailures.delete(handle)
     }
 
     if (windows.length === 0) {
-      // Same rule as the TUI driver: an empty set is never published for a
-      // session whose agent simply has not started, because it would read as
-      // "every agent exited" and deactivate the workspace's conversations.
+      // As in the TUI driver: never publish an empty set, which would read
+      // as "every agent exited" before the agent has even started.
       return
     }
     this.publishAgents()
@@ -355,9 +301,8 @@ class AcpConnection implements AgentConnection {
   private attach(handle: string, tool: AgentTool, resumeSessionId: string | undefined): void {
     let child: StreamChild
     try {
-      // socat, not a new streamd kind: `ctrl` already gives us a raw duplex to
-      // an argv in the pod, and the agent's endpoint is a UNIX socket rather
-      // than a port precisely so it stays out of the auto-forward port scan.
+      // socat over `ctrl` gives a raw duplex to the socket. The endpoint is a
+      // UNIX socket so it stays out of the auto-forward port scan.
       const paths = workspaceDriver().workspacePaths(this.session.jobName)
       child = this.dial(this.session, [
         'socat', '-', `UNIX-CONNECT:${acpSockPath(paths, handle)}`,
@@ -367,27 +312,24 @@ class AcpConnection implements AgentConnection {
       return
     }
 
-    // The entry goes into the map BEFORE the conversation is built: a
-    // transport that fails during construction calls `onDown` synchronously,
-    // and a `detach` that could not find its entry would leave a dead
-    // conversation registered until the window closed.
+    // Register the entry before constructing the conversation: a transport
+    // failing during construction calls `onDown` synchronously, and `detach`
+    // must find the entry.
     const entry: Attached = { handle, tool, child }
     this.attached.set(handle, entry)
-    // The id this conversation was LAUNCHED under, which is what a launch-time
-    // model was parked against: the recorded id on a resume, the workspace's own
-    // on a fresh create (see the `launching` list session create builds).
+    // The launch-time model was parked under the launch id: the recorded id
+    // on a resume, the workspace id on a fresh create.
     const launchId = resumeSessionId ?? this.session.workspaceId
     const profile = acpAdapterFor(tool)
-    // Only an adapter that cannot be launched with a model has one waiting,
-    // and only its first attach takes it.
+    // Only protocol-model adapters have one parked, and only the first
+    // attach takes it.
     const launchModel = acpModelIsProtocol(profile)
       ? takeAcpLaunchModel(launchId)
       : undefined
     if (acpModelIsProtocol(profile) && launchModel === undefined && resumeSessionId === undefined) {
-      // A fresh conversation whose launch parked no model: this server did not
-      // author the launch (it restarted between the two), so the adapter keeps
-      // whatever its own settings name — for pi, a provider whose key the
-      // egress proxy never swapped. Worth a line, since nothing else says so.
+      // The server restarted between launch and attach, so the adapter runs
+      // its own default (for pi, possibly a provider whose key the proxy
+      // does not swap). Log it, since nothing else will.
       this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: no launch model`
         + ' was parked for this conversation — the agent runs its own default')
     }
@@ -399,30 +341,26 @@ class AcpConnection implements AgentConnection {
       ...(launchModel !== undefined ? { launchModel } : {}),
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
-        // Only a conversation we can already name has a record to read, and it
-        // is exactly those that can be mid-turn: a reattach happens on a
-        // conversation yaac already recorded.
+        // Only a recorded conversation can be mid-turn on attach, and only
+        // it has a record to read.
         recoverInFlight: () => readAcpInFlight(this.record(resumeSessionId)),
         recoverPendingPermissions: () => readAcpPendingPermissions(this.record(resumeSessionId)),
         recoverModeId: () => readAcpModeId(this.record(resumeSessionId)),
       } : {}),
       onSessionId: (agentSessionId) => {
-        // The id is the agent's to mint, and a recorded one is later joined
-        // into paths and a restart's launch line: one of the wrong shape is
-        // not recorded at all, and the conversation runs unnamed.
+        // The agent mints the id, and it is later joined into paths and a
+        // launch line, so a malformed one is not recorded.
         if (!agentSessionIdSchema.safeParse(agentSessionId).success) {
           this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: not recording malformed id ${JSON.stringify(agentSessionId.slice(0, 200))}`)
           return
         }
         entry.agentSessionId = agentSessionId
-        // acpd opened the record before the agent had an id to give, so rename
-        // it onto the one the conversation will be addressed by from now on.
+        // acpd opened the record before the id existed; rename it.
         void adoptLog(this.session, resumeSessionId, agentSessionId, this.log)
         if (entry.conversation) {
           registerAcpConversation(this.session.slug, this.session.workspaceId, { handle, agentSessionId }, entry.conversation)
         }
-        // The registry reconciler turns this into the conversation's DB row,
-        // as it does a tui pane's named conversation.
+        // The registry reconciler turns this into the conversation's row.
         this.publishAgents()
       },
       onModel: (model, name) => {
@@ -435,10 +373,8 @@ class AcpConnection implements AgentConnection {
         this.publishAgents()
       },
       onBusy: (busy) => {
-        // Asked of the conversation rather than derived from `busy`, because a
-        // turn parked on a permission ask is busy and waiting at once, and only
-        // it knows which. Falls back while it is still being constructed —
-        // `onBusy` fires from the handshake, so in practice never.
+        // Ask the conversation: a turn parked on a permission ask is busy
+        // but `waiting`. The fallback only covers construction.
         this.sink({
           kind: 'status',
           handle,
@@ -446,16 +382,13 @@ class AcpConnection implements AgentConnection {
         })
       },
       onPermissionPending: () => {
-        // A status change with no turn boundary behind it: the agent stopped
-        // working and started waiting on a person, which is exactly the
-        // transition the sidebar dot, the chime and the tray badge exist for.
+        // The agent went from working to waiting on the user (or back).
         const status = entry.conversation?.status
         if (status !== undefined) this.sink({ kind: 'status', handle, status })
       },
       onDown: (reason) => {
-        // One conversation's stream dropped; the others are unaffected, and
-        // acpd is still holding this one's agent. Drop the entry so the next
-        // sweep re-attaches (and, on a reattach, skips the handshake).
+        // Only this conversation's stream dropped, and acpd still holds its
+        // agent. The next sweep re-attaches without a handshake.
         this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: ${reason}`)
         this.detach(entry, reason)
       },
@@ -469,7 +402,7 @@ class AcpConnection implements AgentConnection {
     }, entry.conversation)
   }
 
-  /** Which of this workspace's records acpd keeps one conversation in. */
+  /** The record acpd keeps for one of this workspace's conversations. */
   private record(agentSessionId: string): AcpRecordRef {
     return { slug: this.session.slug, workspaceId: this.session.workspaceId, agentSessionId }
   }
@@ -483,12 +416,9 @@ class AcpConnection implements AgentConnection {
     })
     entry.conversation?.close()
     this.log(`[server] acp-driver ${this.session.workspaceId}/${entry.handle}: detached (${reason})`)
-    // A conversation that dropped is one this connection owes a re-attach, and
-    // the drop can land between sweeps — the dial into a window whose acpd is
-    // still binding fails milliseconds after a sweep armed the settled
-    // cadence. Recompute now rather than waiting out an interval armed for a
-    // state this connection is no longer in; the tally is what keeps a window
-    // that can never hold an attach from doing this forever.
+    // A drop can land between sweeps (e.g. a dial into a window whose acpd
+    // is still binding), so re-evaluate the cadence now. The failure tally
+    // keeps a broken window from forcing the fast cadence forever.
     this.attachFailures.set(entry.handle, (this.attachFailures.get(entry.handle) ?? 0) + 1)
     this.rearm()
   }
@@ -504,16 +434,10 @@ class AcpConnection implements AgentConnection {
       ...(e.modeId !== undefined ? { reportedMode: e.modeId } : {}),
     }))
     this.sink({ kind: 'live-agents', agents })
-    // Each conversation's status is pushed on every turn boundary, but a
-    // freshly attached one has never had a boundary — publish its current
-    // state so the store is never left with an unclassified conversation.
-    //
-    // Unless it genuinely has none: a conversation still handshaking, or still
-    // reading the record to find out whether the agent it reattached to is
-    // mid-turn, has no answer to give. Guessing `waiting` here is what used to
-    // paint a working agent idle on every sweep — and stamp it with a waiting
-    // spell the sidebar reads as "wants attention". It publishes itself the
-    // moment it knows, through `onBusy`.
+    // A newly attached conversation has had no turn boundary yet, so publish
+    // its status. Skip unclassified ones (handshaking or recovering):
+    // guessing `waiting` would mark a working agent as wanting attention.
+    // They publish through `onBusy` once known.
     for (const e of this.attached.values()) {
       const status = e.conversation?.status
       if (status === undefined) continue
@@ -541,15 +465,11 @@ class AcpConnection implements AgentConnection {
 }
 
 /**
- * Move a fresh conversation's record from the name acpd was launched with onto
- * the id the agent minted. A rename rather than a copy so acpd's open
- * descriptor keeps writing to the same file, and a no-op on a resume, where the
- * launch name was already the final one.
- *
- * Only ever handed an id `onSessionId` has held to `agentSessionIdSchema`.
- * The rename is by name within one directory, and
- * `rename` never follows its last segment, so a link planted at either name
- * is moved or replaced, never written through.
+ * Rename a fresh conversation's record from its launch name to the id the
+ * agent minted. A rename keeps acpd's open descriptor writing to the same
+ * file; a no-op on a resume. The id was validated by `onSessionId`, and
+ * `rename` never follows its last segment, so a planted link is moved or
+ * replaced, never written through.
  */
 async function adoptLog(
   session: DrivenWorkspace,
@@ -563,8 +483,7 @@ async function adoptLog(
   try {
     await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${agentSessionId}.jsonl`))
   } catch (err) {
-    // Losing the adoption costs this conversation its history on the next
-    // attach, not the conversation itself — so it is logged, not fatal.
+    // Only costs this conversation its history on the next attach.
     log(`[server] acp-driver ${session.workspaceId}: could not adopt log for ${agentSessionId}: ${String(err)}`)
   }
 }
@@ -588,15 +507,12 @@ async function waitForConversation(
 }
 
 /**
- * Park the model a conversation launched under `launchId` must be told once
- * its adapter handshakes — for the adapters told it over the protocol
- * (opencode, pi); the others took it on their command line, and a no-op here.
+ * Park the model to send once the adapter handshakes, for adapters told
+ * over the protocol (opencode, pi); a no-op for others.
  *
- * The launch parks it, but the parking is this process's memory, and a spare
- * waits in the pool across server restarts with nothing attached. So a spare
- * claim that hands the agent over as warmed parks it again: without that, the
- * attach after a restart would find nothing and the adapter would run its own
- * default — for pi, a provider whose key the proxy never swaps.
+ * Parking is in-memory, and a spare can wait across server restarts, so a
+ * spare claim parks it again; otherwise the adapter would run its default
+ * (for pi, a provider whose key the proxy does not swap).
  */
 export function parkAcpLaunchModel(tool: AgentTool, launchId: string, model: string | undefined): void {
   if (model !== undefined && acpModelIsProtocol(acpAdapterFor(tool))) stashAcpLaunchModel(launchId, model)
@@ -607,39 +523,26 @@ export const acpDriver: AgentDriver = {
 
   /**
    * The tmux window's command: acpd supervising the tool's ACP adapter, with
-   * the conversation's socket named for the window it runs in.
+   * the socket named for the window. Per-adapter argv and env come from the
+   * adapter profile. The string is embedded in a single-quoted
+   * `respawn-window '<cmd>'`, so it has no quotes beyond those escaped
+   * inside env JSON values.
    *
-   * What differs per adapter — the argv, and the environment that carries a
-   * model or a posture — is the adapter's profile, not a branch here. The whole string is embedded in a
-   * single-quoted `respawn-window '<cmd>'`, so it deliberately contains no
-   * quotes of its own beyond the escaped ones inside an env JSON value.
-   *
-   * No `--resume` flag: resuming an ACP conversation is a protocol call
-   * (`session/load`) the client makes after connecting, not a launch argument.
-   *
-   * No permission posture on the command line either, except where the tool
-   * reads one from its environment (opencode). A posture is something the
-   * adapter is *told* (`session/set_mode`, once the handshake has a session to
-   * set it on), and the connection that tells it is rebuilt on every reattach
-   * long after this string was written; putting it here as well would give a
-   * reconnect two sources for one answer, and only one of them refreshed.
+   * No `--resume`: resuming is a `session/load` call after connecting. No
+   * posture either (except opencode's env): the adapter is told it with
+   * `session/set_mode` after the handshake, which avoids two sources for
+   * one answer across reconnects.
    */
   launchCmd(spec: AgentLaunchSpec): string {
     const adapter = acpAdapterFor(spec.tool)
-    // An adapter that can only be told its model over the protocol is handed
-    // one here anyway: the launch is where the workspace's provider default is
-    // known, and the handshake is where it can be delivered.
+    // Park the model now, where the provider default is known; the
+    // handshake delivers it.
     parkAcpLaunchModel(spec.tool, spec.agentSessionId, acpLaunchModel(spec))
-    // The record is named for the CONVERSATION, not the window: a window name
-    // is a slot, and a restart that drops an earlier conversation shifts every
-    // later one down a slot — which under slot-naming would truncate a live
-    // conversation's history onto another's file. On a resume the id is
-    // already known and this is its final name; on a fresh create the agent has
-    // not minted one yet, so it starts under the workspace id and is adopted
-    // once `session/new` answers (see `adoptLog`).
-    // `--cwd` is the workspace the adapter runs in, named rather than
-    // inherited: it is the one thing here that differs per runtime, and acpd
-    // is shared code that cannot know a checkout's path.
+    // Name the record for the conversation, not the window: window names are
+    // slots that shift when a restart drops an earlier conversation, which
+    // would mix histories. A fresh create starts under the workspace id and
+    // is renamed once `session/new` answers (see `adoptLog`). `--cwd` is
+    // passed because acpd cannot know the checkout path.
     return [
       ...adapter.env(spec),
       `node ${spec.paths.acpdEntry}`,
@@ -656,13 +559,10 @@ export const acpDriver: AgentDriver = {
   },
 
   /**
-   * Deliver a user message. Resolves once the turn has been *dispatched*, not
-   * once the agent answers — the pane is fed by events, and session create
-   * must not block for the length of a turn.
-   *
-   * Waits for the conversation to exist because the only caller that races it
-   * is session create, which runs the moment the agent window is made and
-   * before the driver's sweep has attached to it.
+   * Deliver a user message. Resolves once dispatched, not when the agent
+   * answers, so session create does not block for a turn. Waits for the
+   * conversation to attach, since session create runs before the sweep
+   * has found the new window.
    */
   async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
     const conversation = await waitForConversation(

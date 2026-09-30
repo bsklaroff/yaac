@@ -6,8 +6,8 @@ import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS } from '#types'
 
 describe('AGENT_PACKAGES', () => {
   it('pins every binary a launch can exec to the version its behavior was verified against', () => {
-    // A tool or adapter with no entry is one a create cannot install, and a
-    // version off the pin is one whose postures were never checked.
+    // A missing entry can't be installed, and an unpinned version's
+    // postures were never checked.
     for (const tool of AGENT_TOOLS) {
       expect(AGENT_PACKAGES[tool]).toMatchObject(AGENT_CLIS[tool])
       const { binary, package: pkg, verified } = ACP_ADAPTERS[tool]
@@ -27,8 +27,8 @@ describe('agentPackagePrefix', () => {
     const codex = AGENT_PACKAGES.codex
     const prefix = agentPackagePrefix(codex)
     expect(path.dirname(prefix)).toBe(path.join(nodeLocalRoot(), 'agent-tools'))
-    // A bump installs beside the old version rather than over it, which is
-    // what lets a workspace launched against the old one keep running it.
+    // A bump installs beside the old version, so running workspaces keep
+    // theirs.
     expect(agentPackagePrefix({ ...codex, version: '9.9.9' })).not.toBe(prefix)
     // A scoped package stays one path segment.
     expect(path.basename(prefix)).toBe(`@openai+codex@${codex.version}`)

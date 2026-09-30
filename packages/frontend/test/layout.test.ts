@@ -88,7 +88,7 @@ describe('removeTarget', () => {
     let ws = addTab(singleColumn('agent'), 0, 'shell:a')
     ws = addTab(ws, 0, 'shell:b') // tabs: [agent, shell:a, shell:b], active shell:b
     expect(removeTarget(ws, 'shell:b')).toEqual([{ tabs: ['agent', 'shell:a'], active: 'shell:a' }])
-    // removing a non-active tab keeps the active one
+    // Removing a non-active tab keeps the active one.
     const ws2 = withActive(ws, 'agent')
     expect(removeTarget(ws2, 'shell:b')).toEqual([{ tabs: ['agent', 'shell:a'], active: 'agent' }])
   })
@@ -116,7 +116,7 @@ describe('moveTargetToGroup', () => {
 describe('moveTargetToColumn', () => {
   it('pulls a tab out into its own column at the given index', () => {
     const ws = addTab(singleColumn('agent'), 0, 'shell:a') // one column, two tabs
-    // insert as the first column
+    // Insert as the first column.
     expect(moveTargetToColumn(ws, 'shell:a', 0)).toEqual([
       { tabs: ['shell:a'], active: 'shell:a' },
       { tabs: ['agent'], active: 'agent' },
@@ -124,7 +124,7 @@ describe('moveTargetToColumn', () => {
   })
 
   it('reorders a lone column, adjusting for the collapse it leaves behind', () => {
-    // columns: [agent, shell:a, shell:b]; move agent to the end
+    // Columns [agent, shell:a, shell:b]; move agent to the end.
     let ws = addColumn(singleColumn('agent'), 'shell:a')
     ws = addColumn(ws, 'shell:b')
     expect(paneTargets(moveTargetToColumn(ws, 'agent', 3))).toEqual(['shell:a', 'shell:b', 'agent'])
@@ -152,7 +152,7 @@ describe('moveColumn', () => {
   })
 
   it('moves the whole column when the target is a tab within a multi-tab column', () => {
-    // columns: [agent, shell:x] | [shell:b]; moving shell:x right carries agent with it
+    // Columns [agent, shell:x] | [shell:b]; moving shell:x moves its column.
     const ws = addColumn(addTab(singleColumn('agent'), 0, 'shell:x'), 'shell:b')
     expect(moveColumn(ws, 'shell:x', 1)).toEqual([
       { tabs: ['shell:b'], active: 'shell:b' },
@@ -183,10 +183,10 @@ describe('moveTabInStrip', () => {
   })
 
   it('preserves the column sizes, refilling them from the reordered strip', () => {
-    // columns sized [2, 1]: [agent, shell:a] | [shell:b]; move shell:a right.
+    // Columns [agent, shell:a] | [shell:b]; move shell:a right.
     const ws = addColumn(addTab(singleColumn('agent'), 0, 'shell:a'), 'shell:b')
     const moved = moveTabInStrip(ws, 'shell:a', 1)
-    // Strip agent, shell:a, shell:b → agent, shell:b, shell:a; refilled 2 then 1.
+    // Strip becomes agent, shell:b, shell:a, refilled into columns of 2 and 1.
     expect(moved).toEqual([
       { tabs: ['agent', 'shell:b'], active: 'agent' },
       { tabs: ['shell:a'], active: 'shell:a' },

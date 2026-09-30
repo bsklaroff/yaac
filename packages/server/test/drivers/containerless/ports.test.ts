@@ -15,8 +15,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   descendantPids: mockDescendants,
 }))
-// The sweep's process boundary is the lsof it spawns; the fake below is
-// what answers it.
+// The sweep spawns lsof; this fake answers it.
 const mockSpawn = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof childProcess>()),
@@ -37,8 +36,8 @@ import {
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 let dataDir: string
 
-/** What lsof prints for `-Ftn`: one field per line, the family before the
- *  name, exactly as the real binary emits it for these listeners. */
+/** lsof's `-Ftn` output for these listeners: one field per line, family
+ *  before name, as the real binary prints it. */
 function lsofOutput(...listeners: Array<[family: 'IPv4' | 'IPv6', name: string]>): string {
   return ['p4242', ...listeners.flatMap(([t, n]) => [`t${t}`, `n${n}`])].join('\n') + '\n'
 }
@@ -55,15 +54,15 @@ function fakeChild(stdout: string, code: number): EventEmitter {
   return child
 }
 
-/** lsof answering with these listeners — or, with none, exiting 1 the way
- *  it does when nothing matches. */
+/** Make lsof report these listeners, or exit 1 as it does when nothing
+ *  matches. */
 function listening(...listeners: Array<[family: 'IPv4' | 'IPv6', name: string]>): void {
   mockSpawn.mockImplementation(() => listeners.length === 0
     ? fakeChild('', 1)
     : fakeChild(lsofOutput(...listeners), 0))
 }
 
-/** The argv of the one command the sweep spawned. */
+/** The argv of the command the sweep spawned. */
 function spawnedArgv(): string[] {
   const [cmd, args] = mockSpawn.mock.calls[0] as [string, string[]]
   return [cmd, ...args]
@@ -95,9 +94,7 @@ describe('sweepPorts', () => {
   it('scans only the workspace\'s own process tree, not the host\'s', async () => {
     running()
     await sweepPorts()
-    // A workspace's ports are its own tree's: every other listener on the
-    // machine belongs to someone else and must never surface as this
-    // workspace's.
+    // Only listeners in the workspace's own process tree count.
     expect(mockDescendants).toHaveBeenCalledWith([4242])
     const argv = spawnedArgv()
     expect(argv[0]).toBe('lsof')
@@ -108,10 +105,9 @@ describe('sweepPorts', () => {
   it('asks lsof for listeners without stat-ing any path', async () => {
     running()
     await sweepPorts()
-    // `-b`: without it lsof stats every mount on the host first, and one
-    // hung network mount hangs the sweep past its timeout — a host with a
-    // live dev server then reports no ports at all. The hang itself cannot
-    // be reproduced in a test; this is what guards the flag.
+    // Without `-b`, lsof stats every mount first, and one hung network
+    // mount makes the sweep time out and report no ports. The hang cannot
+    // be reproduced here, so the test guards the flag.
     const argv = spawnedArgv()
     expect(argv.slice(1, 3)).toEqual(['-b', '-w'])
     expect(argv).toContain('-Ftn')
@@ -121,9 +117,8 @@ describe('sweepPorts', () => {
     running()
     listening(['IPv4', '127.0.0.1:3000'])
     await sweepPorts()
-    // The workspace bound the host port itself, so there is nothing to
-    // relay — the "mapping" is the port reaching itself, which is what
-    // makes the webapp's link work with no forwarder behind it.
+    // The workspace bound the host port itself, so it maps to itself and
+    // the webapp's link works without a forwarder.
     expect(workspacePorts(UUID)).toEqual([{ containerPort: 3000, hostPort: 3000 }])
   })
 
@@ -148,8 +143,8 @@ describe('sweepPorts', () => {
     running()
     listening(['IPv4', '127.0.0.1:3000'])
     expect(await sweepPorts()).toBe(true)
-    // An unchanged sweep must push no snapshot, or an idle host would
-    // broadcast one every few seconds forever.
+    // An unchanged sweep pushes no snapshot, or an idle host would
+    // broadcast one every few seconds.
     expect(await sweepPorts()).toBe(false)
     listening(['IPv4', '127.0.0.1:3000'], ['IPv4', '127.0.0.1:5173'])
     expect(await sweepPorts()).toBe(true)
@@ -165,8 +160,7 @@ describe('sweepPorts', () => {
   })
 
   it('reports nothing for a workspace whose tmux pid was never recorded', async () => {
-    // Without a tree root there is nothing to walk; the workspace still runs
-    // fine, its ports just go unreported.
+    // Without a tree root pid, the workspace's ports go unreported.
     rememberWorkspace({
       projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
       prewarm: false, createdAtMs: 1_000,
@@ -177,9 +171,8 @@ describe('sweepPorts', () => {
   })
 })
 
-/** A real listener on `host`, echoing a greeting the moment a client
- *  connects and every byte it is sent — the process boundary this dial
- *  crosses. Resolves null when the host cannot be bound here. */
+/** A real listener on `host` that sends a greeting on connect and echoes
+ *  what it receives. Resolves null when `host` cannot be bound here. */
 async function listener(host: string): Promise<{ port: number; close: () => void } | null> {
   const server = net.createServer((sock) => {
     sock.write('hello')
@@ -199,8 +192,8 @@ async function listener(host: string): Promise<{ port: number; close: () => void
   }
 }
 
-/** Sweep an lsof answer naming `port` bound at `name`, so it is one this
- *  workspace is offering. */
+/** Run a sweep that finds `port` bound at `name`, so the workspace offers
+ *  it. */
 async function offered(port: number, name = `127.0.0.1:${String(port)}`): Promise<void> {
   running()
   listening([name.startsWith('[') ? 'IPv6' : 'IPv4', name])
@@ -219,9 +212,8 @@ function read(stream: NodeJS.ReadableStream, n: number): Promise<string> {
 
 describe('dialWorkspacePort', () => {
   it('refuses a port the sweep has not surfaced for this workspace', async () => {
-    // The tunnel is authenticated but this host is the user's machine: an
-    // unoffered port is every other loopback service on it, and the dial
-    // must not become a door onto those.
+    // This host is the user's machine, so dialing an unoffered port would
+    // reach any loopback service on it.
     const srv = await listener('127.0.0.1')
     try {
       await offered(3000)
@@ -236,8 +228,8 @@ describe('dialWorkspacePort', () => {
     try {
       await offered(srv!.port)
       const stream = await dialWorkspacePort(UUID, srv!.port)
-      // The greeting was written on connect, before any reader existed: a
-      // stream handed over flowing would have dropped it on the floor.
+      // The greeting was sent before any reader attached; a stream handed
+      // over in flowing mode would have dropped it.
       const got = read(stream, 'hello'.length + 'ping'.length)
       stream.write('ping')
       stream.resume()
@@ -249,11 +241,9 @@ describe('dialWorkspacePort', () => {
   })
 
   it('dials the listener the workspace holds, not a stranger on the other loopback', async () => {
-    // A dev server bound to `localhost` lands on `::1` alone on plenty of
-    // hosts, and any local process can take `127.0.0.1` on the same
-    // number. The sweep recorded WHICH address the workspace bound, and the
-    // dial goes exactly there — a guessed loopback would hand the tunnel
-    // to the stranger.
+    // A dev server bound to `localhost` often lands only on `::1`, and
+    // another process can hold `127.0.0.1` on the same port. The dial must
+    // use the address the sweep recorded, not a guessed loopback.
     const mine = await listener('::1')
     if (!mine) return // no IPv6 loopback on this host
     const stranger = net.createServer((sock) => sock.end('stranger'))

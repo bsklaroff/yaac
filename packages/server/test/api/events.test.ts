@@ -8,8 +8,8 @@ vi.mock('#domain/projects/list', () => ({
   listProjects: vi.fn().mockResolvedValue([]),
 }))
 
-// The real slice reads the credentials file and kicks upstream refreshes —
-// keep unit-test snapshot builds inert.
+// The real slice reads the credentials file and triggers upstream
+// refreshes; keep snapshot builds inert.
 vi.mock('#domain/auth/plan-usage', () => ({
   planUsageForSnapshot: vi.fn().mockResolvedValue(null),
   codexPlanUsageForSnapshot: vi.fn().mockResolvedValue(null),
@@ -130,12 +130,10 @@ describe('EventHub', () => {
     expect(good.sent).toHaveLength(1)
   })
 
-  // A build is several awaited substrate reads long, so two in flight can
-  // resolve out of order. Left concurrent, the older one broadcasts last and
-  // sets `lastSerialized` to state that has already been superseded — after
-  // which the diff believes clients hold the stale snapshot and nothing
-  // repairs it until the next unrelated mutation. Serializing is what makes
-  // the last thing on the wire also the newest.
+  // Builds are async, so two in flight can resolve out of order; the older
+  // one would then broadcast last and leave `lastSerialized` stale until an
+  // unrelated mutation. Serializing keeps the newest snapshot last on the
+  // wire.
   it('never lets a slower build overwrite a newer one', async () => {
     const releases: Array<() => void> = []
     let n = 0
@@ -168,9 +166,8 @@ describe('EventHub', () => {
     expect(last.data.projects[0].slug).toBe('p2')
   })
 
-  // The trailing call of a coalesced burst is exactly when a second publish
-  // lands mid-build, so folding must not swallow it — otherwise the last
-  // snapshot after a storm is the one built before the storm ended.
+  // The trailing call of a coalesced burst often lands mid-build; folding
+  // must not drop it, or the final snapshot would predate the burst's end.
   it('runs a final build for a publish that arrived mid-build', async () => {
     let builds = 0
     let current = emptySnapshot()
@@ -189,9 +186,8 @@ describe('EventHub', () => {
   })
 })
 
-// The build registry is the runtime's, so the snapshot asks for it across
-// the boundary — which is also why every case below installs a fake one:
-// a snapshot build with no runtime registered is a wiring bug, and says so.
+// The build registry comes from the runtime, so each case installs a fake
+// one; building a snapshot with no runtime registered is a wiring bug.
 
 describe('buildSnapshot', () => {
   beforeEach(() => { installFakeWorkspaceDriver() })
@@ -240,9 +236,9 @@ describe('buildSnapshot provisioning', () => {
   })
 
   it('hides a listed session that is still provisioning, keeping the row', async () => {
-    // A pod lists as an active session mid-setup (Running + tmux up, but no
-    // agent/init windows yet) — the provisioning row must win until the
-    // create route removes it, or clients attach to a half-built session.
+    // A workspace lists as active mid-setup (running, tmux up, no agent
+    // windows yet); the provisioning row must win until the create route
+    // removes it, or clients attach to a half-built workspace.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'prov-2', projectSlug: 'p', tool: 'claude',
@@ -259,9 +255,8 @@ describe('buildSnapshot provisioning', () => {
   })
 
   it('hides a claimed spare under the create row that claimed it', async () => {
-    // A claim unhides the spare's own row long before the create resolves;
-    // listing it then would put it in the sidebar beside the row still
-    // creating it.
+    // A claim unhides the spare's row before the create resolves; listing it
+    // would show it beside the row still creating it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'spare-1', projectSlug: 'p', tool: 'claude',
@@ -279,9 +274,9 @@ describe('buildSnapshot provisioning', () => {
   })
 
   it('lists a claimed spare once the create that claimed it fails', async () => {
-    // The claim went through, then the route failed after it (filing its
-    // group, delivering its prompt): the failed row lingers until dismissed,
-    // and the running workspace it claimed must not linger hidden with it.
+    // The claim succeeded but the route failed afterwards (filing its group,
+    // delivering its prompt): the failed row lingers until dismissed, and
+    // the claimed workspace must not stay hidden with it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'spare-2', projectSlug: 'p', tool: 'claude',

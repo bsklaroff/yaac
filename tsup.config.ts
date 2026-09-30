@@ -6,20 +6,17 @@ export default defineConfig({
   target: 'node22',
   outDir: 'dist',
   clean: true,
-  // Consumed (and then removed) by scripts/check-cli-externals.ts, which
-  // fails the build when the bundle imports an external package missing
-  // from the root manifest's dependencies.
+  // Read (then deleted) by scripts/check-cli-externals.ts, which fails the
+  // build if the bundle imports a package missing from the root manifest.
   metafile: true,
   banner: { js: '#!/usr/bin/env node' },
   env: {
     YAAC_BUNDLED: 'true',
   },
-  // Bundle the workspace packages (@yaac/cli, @yaac/server, @yaac/shared,
-  // @yaac/auth-daemon) into dist/; runtime npm deps stay external (they're in
-  // the published package's dependencies). The CLI's deliberate `import()`
-  // deferrals (see packages/cli/src/cli.ts) make esbuild emit sibling chunks
-  // next to the dist/cli.js entry, which is what keeps the server graph —
-  // and the 2.2s @kubernetes/client-node load — off `yaac --version`. The
-  // whole dist dir is published, so the chunks ship with the entry.
+  // Bundle the @yaac/* workspace packages; npm deps stay external and
+  // resolve from the published package's dependencies. The CLI's dynamic
+  // `import()`s (see packages/cli/src/cli.ts) become separate chunks in
+  // dist/, which keeps the server graph and the slow @kubernetes/client-node
+  // load off fast commands like `yaac --version`.
   noExternal: [/^@yaac\//],
 })

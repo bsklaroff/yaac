@@ -1,37 +1,18 @@
-// The public interface of the container folder: the host's container engine,
-// which is the image BUILD engine only — workspaces run as Jobs, so nothing
-// here addresses the cluster's workloads. Everything outside this directory
-// imports `#drivers/k8s/container`; the SEALED_FOLDERS lint rule stops src
-// from reaching past this file. Modules in here import each other by relative
-// path, which is why they are unaffected by that rule.
+// The public interface of the container folder (a sealed folder; see
+// SEALED_FOLDERS): the host's podman, used only to build images at install
+// (docs/trust-split-builds.md), plus the main registry's client.
 //
-// Five modules. runtime.ts is the host side of the split runtime: the
-// CONTAINER_HOST lever that points every podman call at the rootful engine,
-// and the two image-store queries the image and cluster features make. The
-// engine itself is now install-time only — `yaac cluster install` builds and
-// pushes every yaac-shipped image, and the server resolves them all from the
-// registry (docs/trust-split-builds.md).
-// registry.ts is the CLIENT of the main OCI registry — the two addresses it
-// has (the cluster ref every image name carries, and the port-forwarded
-// endpoint this process pushes and HEADs through) plus the push itself. The
-// registry workload lives in the cluster and is owned by `#drivers/k8s/cluster`.
-// registry-grant.ts holds the registry's write-grant key and mints grants
-// from it: an admin grant for every host push, a repo-scoped authfile for a
-// builder pod, and the public half the registry's write gate verifies with.
-// host-procs.ts owns every long-running podman child (`build` / `push`) —
-// all of them install-time now: it runs them, and it makes an interrupted
-// install's orphans die before the next one starts, which is where duplicate
-// builds come from.
-// streaming-proc.ts is the runner underneath them — the child-process engine
-// that streams a build's output line by line and enforces the silence and
-// hard-cap timeouts. host-procs runs podman on it; images runs its builder-pod
-// `kubectl exec` on it, which is why `runStreamingProcess` is on this barrel
-// while `killGroup` (host-procs' own reaping primitive) stays internal.
+//  - runtime.ts: points podman at the rootful engine; image-store queries.
+//  - registry.ts: the registry client (cluster ref vs this process's
+//    endpoint) and pushes. The registry workload is `#drivers/k8s/cluster`'s.
+//  - registry-grant.ts: the write-grant key and the grants minted from it.
+//  - host-procs.ts: runs podman build/push and kills an interrupted
+//    install's leftovers.
+//  - streaming-proc.ts: streams a child's output and enforces timeouts
+//    (also used for builder-pod `kubectl exec`).
 //
-// Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/drivers/k8s/container/. What is not re-exported — the
-// platform-specific podman install instructions, the registry's readiness
-// wait — is internal, and covered through the entry points below.
+// Each name added here needs a unit test in
+// packages/server/test/drivers/k8s/container/.
 
 export { reapOrphanedPodmanProcs, runTrackedPodman } from './host-procs'
 export { runStreamingProcess } from './streaming-proc'

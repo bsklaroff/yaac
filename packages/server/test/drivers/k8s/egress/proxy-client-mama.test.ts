@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// `drainPendingMamaRequests` composes the module's own singleton, so the
-// singleton is what a test drives. Only its two methods are replaced —
-// everything else in the module (and every other importer of it) is untouched.
+// `drainPendingMamaRequests` uses the module's singleton client, so the
+// tests stub two of its methods.
 const mockAttach = vi.hoisted(() => vi.fn())
 const mockFetchPending = vi.hoisted(() => vi.fn())
 
@@ -25,17 +24,17 @@ describe('drainPendingMamaRequests', () => {
     await expect(drainPendingMamaRequests()).resolves.toEqual(PENDING)
   })
 
-  // The proxy deploys lazily on the first workspace create, so no proxy means
-  // no workspaces means nothing queued. Attaching rather than ensuring is what
-  // stops a background drain from standing one up on a fresh install.
+  // The proxy is deployed on the first workspace create, so no proxy means
+  // nothing is queued. Attaching (not ensuring) keeps a background drain from
+  // deploying one.
   it('reports an empty queue rather than bootstrapping an absent proxy', async () => {
     mockAttach.mockResolvedValue(false)
     await expect(drainPendingMamaRequests()).resolves.toEqual([])
     expect(mockFetchPending).not.toHaveBeenCalled()
   })
 
-  // A drain is a claim: the caller has to know it failed, because a request
-  // taken and never answered leaves its workspace waiting for the timeout.
+  // The caller must know a drain failed, or a claimed request is never
+  // answered and its workspace waits for the timeout.
   it('propagates a failed fetch', async () => {
     mockFetchPending.mockRejectedValue(new Error('tunnel down'))
     await expect(drainPendingMamaRequests()).rejects.toThrow('tunnel down')

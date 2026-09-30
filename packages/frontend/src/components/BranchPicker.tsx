@@ -3,10 +3,8 @@ import { BranchIcon } from '#lib/icons'
 import { Typeahead } from '#components/ui/Typeahead'
 
 /**
- * The branch typeahead shared by the create dialog, the Changes-view base
- * picker and the skills picker: `Typeahead` over branch names, each row a
- * branch glyph and the default branch tagged. The parent owns the `query`
- * text, the branch list, and what a selection does.
+ * `Typeahead` over branch names, with the default branch tagged. The parent
+ * owns the query text, the branch list and what a selection does.
  */
 export function BranchPicker({
   branches,

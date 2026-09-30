@@ -1,42 +1,26 @@
 /**
- * Server-resident store of agent status, fed by the status watchers
- * (`status-watcher.ts`) and read by every display path (`/workspace/list`,
- * snapshots, the stream picker).
+ * In-memory store of agent status, fed by the status watchers
+ * (`status-watcher.ts`) and read by every display path.
  *
- * Status is per *conversation*, not per workspace: a workspace can hold several
- * agent sessions at once (a second terminal, or a `/clear` that left the old
- * conversation's window open), and each has its own busy/idle. The workspace's
- * own status — what the sidebar row shows — is an aggregate over them.
+ * Status is per conversation: a workspace can hold several, each with its
+ * own busy/idle, and the workspace's status is an aggregate. Conversations
+ * are keyed by the driver's handle (tmux pane id `%3` for `tui`, acpd window
+ * name `claude-2` for `acp`), so the store is mode-agnostic; the registry
+ * maps handles back to conversations.
  *
- * A conversation is keyed by its driver's **handle**: the address the driver
- * uses for it inside the pod. For `tui` that is a tmux pane id (`%3`); for
- * `acp` it is the acpd socket's window name (`claude-2`). Keying on the handle
- * rather than on anything tmux-shaped is what makes this store mode-agnostic —
- * it never learns which protocol produced a status, only that some
- * conversation at some address is running or waiting. Joining a handle back to
- * the conversation it belongs to is the registry's job, not this store's.
- *
- * Status is pushed in the moment a driver observes a change — a pane's OSC
- * title (claude/codex), its rendered content (opencode/pi), or an ACP prompt
- * turn starting and ending — so reads are synchronous map lookups and never
- * trigger a `kubectl exec`.
+ * Drivers push changes as they observe them, so reads are synchronous
+ * lookups and never trigger an exec.
  *
  * Semantics:
- * - No entry for a conversation → `waiting`. Matches the probe-era answer for
- *   a workspace that hasn't set a title yet (booting) or whose pod isn't
- *   exec-able yet.
- * - The workspace aggregate is `waiting` if ANY of its agents is waiting.
- *   Waiting is the actionable state — an agent that needs you needs you
- *   whether or not a sibling is still working.
+ * - No entry → `waiting` (booting, or not yet reachable).
+ * - The aggregate is `waiting` if any agent waits: an agent that needs you
+ *   needs you regardless of its siblings.
  * - Status is sticky across watcher respawns: a dropped stream flips
- *   `streamHealthy` but keeps the last classified status, so a transient
- *   transport hiccup never flaps the UI.
- * - `streamHealthy` doubles as the display-path tmux-liveness signal: a
- *   healthy driver connection is conclusive proof the in-pod tmux server is
- *   up (both drivers reach it through tmux). It is deliberately NOT a death
- *   signal — only the stale reaper's own probes may conclude `dead`. Losing
- *   health is, however, the *edge* on which those probes are worth running:
- *   see `onStreamHealthLost`.
+ *   `streamHealthy` but keeps the last status, so blips do not flap the UI.
+ * - `streamHealthy` is the display path's tmux-liveness signal (both
+ *   drivers reach the agent through tmux). It is never a death signal; only
+ *   the reaper's probes decide `dead`, and losing health is when they run
+ *   (`onStreamHealthLost`).
  */
 
 import { notifyWorkspaceListChanged } from '#notify'
@@ -46,7 +30,7 @@ export type { AgentPaneStatus }
 
 export interface AgentStatusEntry {
   status: AgentPaneStatus
-  /** Epoch ms when this conversation's current waiting spell began; set iff
+  /** Epoch ms when the current waiting spell began; set only while
    *  waiting. */
   waitingSinceMs?: number
   updatedAtMs: number
@@ -60,17 +44,15 @@ export interface WorkspaceStatusEntry {
   /** Per-conversation status, keyed by the driver's handle. */
   agents: Map<string, AgentStatusEntry>
   /**
-   * Every conversation the watcher last saw running, or undefined before it
-   * has ever enumerated them. The distinction matters: undefined means "not
-   * known yet" and callers must not read it as "no agents are running", which
-   * would make a stream gap look like every agent exiting.
+   * Every conversation the watcher last saw running, or undefined before the
+   * first enumeration. Undefined means unknown, not "no agents", which would
+   * make a stream gap look like every agent exiting.
    */
   liveAgents?: LiveAgent[]
   /**
-   * Spell start for a workspace whose connection is up but whose conversations
-   * have not been classified yet — a workspace still booting its agent. Without
-   * it a booting workspace reads as `waiting` with no spell, and a client
-   * keying unread marks on the spell has nothing to key on.
+   * Waiting-spell start for a workspace whose connection is up but whose
+   * agent is not classified yet (still booting), so clients keying unread
+   * marks on the spell have something to key on.
    */
   attachedWaitingSinceMs?: number
 }
@@ -85,52 +67,33 @@ function key(slug: string, workspaceId: string): string {
 }
 
 /**
- * Announce a change in what this store contributes to the snapshot — a
- * workspace's aggregate status, its waiting spell, or its stream health.
- * Emitted straight onto `#notify` because this store is itself a snapshot
- * input, so it is its own mutation site (docs/layered-server.md).
+ * Announce a change to this store's snapshot inputs (aggregate status,
+ * waiting spell, stream health) on `#notify` (docs/layered-server.md).
  */
 function notifyChanged(): void {
   notifyWorkspaceListChanged()
 }
 
 /**
- * Register the handler fired when a workspace's driver connection goes from
- * healthy to unhealthy. This is the reaper's edge: `probeTmuxLiveness`
- * short-circuits "stream healthy ⇒ tmux alive", so losing health is exactly
- * the transition after which the answer can no longer be inferred and the
- * real probe has to run.
- *
- * The transition, and nothing else, on purpose. `notifyChanged` above fires
- * on every turn boundary and its consumer only rebuilds a snapshot; this one
- * dirties a reconcile pass, and a pass per turn would be a pod sweep per
- * turn (the same reasoning as `onLiveAgentsChanged`).
- *
- * Losing health is not a death verdict and this hook does not make it one —
- * the reaper's own probes stay the arbiter, and an inconclusive probe still
- * reaps nothing. It only decides when to look.
- *
- * Single-listener, same convention as below.
+ * Register the handler fired when a driver connection goes from healthy to
+ * unhealthy. `probeTmuxLiveness` infers "stream healthy ⇒ tmux alive", so
+ * after this transition the reaper's real probes are needed. Fires only on
+ * that transition, since it triggers a reconcile pass (a pass per turn
+ * would be too costly). It decides when to probe, not whether a workspace
+ * is dead. Single listener.
  */
 export function onStreamHealthLost(fn: () => void): void {
   streamHealthLostListener = fn
 }
 
 /**
- * Register the handler fired when a workspace's *set* of live conversations
- * changes — one appeared, one went, one learned its id (a new conversation
- * on a pane, too), or one switched model or permission mode (which is how a `/model` or a Shift+Tab
- * reaches the row: pushed, not polled out of a transcript). Separate from the
- * snapshot notification on purpose: that one fires on every turn boundary,
- * and its consumer only pushes a snapshot. This one drives a reconcile pass,
- * and a pass per turn would be a pod sweep per turn.
- *
- * The signal matters most for `acp`, where the conversation id arrives from
- * the handshake rather than from a substrate event: nothing else would mark
- * the reconciler dirty, so the conversation's row — and the chat pane that
- * waits on it — would sit out the rest of the 60s resync interval.
- *
- * Single-listener, same convention as above.
+ * Register the handler fired when a workspace's set of live conversations
+ * changes: one appears or goes, learns its id, or switches model or
+ * permission mode (how `/model` and Shift+Tab reach the row). Separate from
+ * the snapshot notification, which fires every turn, because this triggers
+ * a reconcile pass. Matters most for `acp`, whose id arrives from the
+ * handshake with no substrate event; without it the row and chat pane would
+ * wait for the 60s resync. Single listener.
  */
 export function onLiveAgentsChanged(fn: () => void): void {
   liveAgentsListener = fn
@@ -161,9 +124,8 @@ export function readWorkspaceStatus(slug: string, workspaceId: string): AgentPan
 
 /**
  * Start of the workspace's current waiting spell (epoch ms), or undefined
- * while nothing is waiting. The *earliest* waiting conversation wins: a second
- * agent going idle joins the spell already in progress rather than restarting
- * it, so a client's per-spell read mark isn't cleared by an unrelated agent.
+ * while nothing waits. The earliest waiting conversation wins, so a second
+ * agent going idle does not reset a client's per-spell read mark.
  */
 export function readWorkspaceWaitingSince(slug: string, workspaceId: string): number | undefined {
   const e = store.get(key(slug, workspaceId))
@@ -173,8 +135,7 @@ export function readWorkspaceWaitingSince(slug: string, workspaceId: string): nu
     if (a.status !== 'waiting' || a.waitingSinceMs === undefined) continue
     if (earliest === undefined || a.waitingSinceMs < earliest) earliest = a.waitingSinceMs
   }
-  // Nothing classified yet — the workspace is waiting on its agent to come up,
-  // and that spell started when the connection attached.
+  // Nothing classified yet: the spell started when the connection attached.
   return earliest ?? (e.agents.size === 0 ? e.attachedWaitingSinceMs : undefined)
 }
 
@@ -188,37 +149,28 @@ export function readAgentStatus(
 }
 
 /**
- * Every conversation the watcher currently sees running, or undefined when it
- * has not enumerated them yet. The agent-session registry records every one
- * that names its conversation, and those alone are active — and it skips the
- * update entirely on undefined.
+ * Every conversation the watcher sees running, or undefined before the
+ * first enumeration. The agent-session registry marks those naming a
+ * conversation active, and skips the update on undefined.
  */
 export function liveAgents(slug: string, workspaceId: string): LiveAgent[] | undefined {
   return store.get(key(slug, workspaceId))?.liveAgents
 }
 
 /**
- * True when the workspace's watcher connection is currently healthy — i.e. a
- * driver is attached to the in-pod tmux server right now. Absent entry → false
- * (unknown, not dead).
+ * Whether the workspace's watcher connection is healthy, i.e. a driver is
+ * attached to its tmux right now. No entry → false (unknown, not dead).
  */
 export function isWorkspaceStreamHealthy(slug: string, workspaceId: string): boolean {
   return store.get(key(slug, workspaceId))?.streamHealthy ?? false
 }
 
 /**
- * Record a freshly classified status for one conversation. Creates the entry
- * (marked healthy — a classification only ever comes from a live connection)
- * and announces it whenever anything a client can see actually changed.
- *
- * "Anything a client can see" is per-conversation, not just the workspace
- * aggregate: each conversation's own status and waiting spell ride the
- * snapshot too (`agentLiveness` → `liveStatus`), so a sibling's flip that
- * leaves the aggregate alone still moves a per-tab dot, and a waiting
- * workspace whose earliest waiter changes still moves its spell. Gating on
- * the aggregate alone left those stale until some unrelated notify landed.
- * A genuine no-op — the same status re-published on a healthy entry — still
- * says nothing.
+ * Record a classified status for one conversation. Creates the entry
+ * (healthy, since classifications come only from live connections) and
+ * notifies when anything clients see changed. That includes per-
+ * conversation status and spells (shown as per-tab dots via
+ * `agentLiveness`), not just the aggregate. A true no-op does not notify.
  */
 export function setAgentStatus(
   slug: string,
@@ -232,8 +184,8 @@ export function setAgentStatus(
   const wasHealthy = store.get(k)?.streamHealthy ?? false
   const e = entry(k)
   const prev = e.agents.get(handle)
-  // A waiting spell keeps its original stamp while waiting persists and
-  // restarts whenever waiting is entered anew; running clears it.
+  // A spell keeps its stamp while waiting continues, restarts on entering
+  // waiting, and clears on running.
   const waitingSinceMs = status === 'waiting'
     ? (prev?.status === 'waiting' && prev.waitingSinceMs !== undefined
       ? prev.waitingSinceMs
@@ -248,8 +200,8 @@ export function setAgentStatus(
   delete e.attachedWaitingSinceMs
   e.streamHealthy = true
   e.updatedAtMs = Date.now()
-  // Also fires when health became visible again: a classification proves the
-  // connection is back, which clients render even when the status itself held.
+  // Also notify when health returns, which clients render even if the
+  // status held.
   const entryChanged = !prev
     || prev.status !== status
     || prev.waitingSinceMs !== waitingSinceMs
@@ -260,10 +212,8 @@ export function setAgentStatus(
 }
 
 /**
- * Publish the conversations currently running an agent. Ones that vanished
- * lose their status with the same call — a classification for a conversation
- * that no longer exists would keep a dead agent's "waiting" in the aggregate
- * forever.
+ * Publish the conversations running now. Vanished ones lose their status,
+ * or a dead agent's `waiting` would stay in the aggregate forever.
  */
 export function setLiveAgents(slug: string, workspaceId: string, agents: LiveAgent[]): void {
   const k = key(slug, workspaceId)
@@ -279,19 +229,17 @@ export function setLiveAgents(slug: string, workspaceId: string, agents: LiveAge
   e.liveAgents = agents
   for (const handle of [...e.agents.keys()]) if (!next.has(handle)) e.agents.delete(handle)
   e.updatedAtMs = Date.now()
-  // A membership, id, model or mode change is what the agent-session registry joins
-  // against, so it gets its own notification: the reconcile pass it kicks is
-  // how a just-handshaken ACP conversation becomes a row without waiting for
-  // the resync.
+  // Membership, id, model or mode changes trigger a reconcile pass (the
+  // registry joins against them), so a new ACP conversation becomes a row
+  // without waiting for the resync.
   if (changed) liveAgentsListener?.()
   if (changed || readWorkspaceStatus(slug, workspaceId) !== before) notifyChanged()
 }
 
 /**
- * Flip the stream-health bit while keeping the sticky status. Marking
- * an absent workspace healthy creates an entry: the attach itself proves
- * tmux is up even before the first classification lands. Marking an absent
- * workspace unhealthy is a no-op.
+ * Set stream health, keeping the sticky status. Marking an absent workspace
+ * healthy creates an entry (the attach proves tmux is up); marking it
+ * unhealthy does nothing.
  */
 export function setWorkspaceStreamHealth(slug: string, workspaceId: string, healthy: boolean): void {
   const k = key(slug, workspaceId)
@@ -308,15 +256,15 @@ export function setWorkspaceStreamHealth(slug: string, workspaceId: string, heal
   prev.streamHealthy = healthy
   prev.updatedAtMs = Date.now()
   notifyChanged()
-  // Health just went healthy → unhealthy: the display path can no longer
-  // infer tmux liveness for this workspace, so the reaper is owed a pass.
+  // healthy → unhealthy: tmux liveness can no longer be inferred, so the
+  // reaper needs a pass.
   if (!healthy) streamHealthLostListener?.()
 }
 
 /**
- * Drop a workspace's entry. Called on teardown (cleanup.ts) and when the
- * watcher manager retires a workspace, so a restart that reuses the same
- * id never sees the previous life's status.
+ * Drop a workspace's entry, on teardown (`#domain/workspaces` cleanup) and
+ * when the watcher manager retires a workspace, so a reused id never sees
+ * the previous status.
  */
 export function evictWorkspaceStatus(slug: string, workspaceId: string): void {
   if (store.delete(key(slug, workspaceId))) notifyChanged()

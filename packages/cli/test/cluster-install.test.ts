@@ -27,8 +27,7 @@ describe('clusterInstall (CLI)', () => {
 
   it('passes the flags through as typed and exits clean on success', async () => {
     mockRun.mockResolvedValue(true)
-    // --nodes stays raw text: the command owns the bounds, and converting
-    // here would make a bad value report `NaN` instead of what was typed.
+    // --nodes is passed through unparsed; see clusterInstall.
     await clusterInstall({ nodes: '3', byo: true, rwxStorageClass: 'nfs', rwoStorageClass: 'ssd', tailnet: true })
     expect(mockRun).toHaveBeenCalledWith({
       nodes: '3', byo: true, rwxStorageClass: 'nfs', rwoStorageClass: 'ssd', tailnet: true,

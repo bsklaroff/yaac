@@ -12,14 +12,12 @@ import {
 } from '#runtime/agents/codex'
 import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 
-/** A path as the readers take it: a file under the dir it sits in. */
+/** A file as the readers take it: its dir plus its name. */
 const at = (file: string): SandboxFile => ({ slug: 'demo', dir: path.dirname(file), rel: path.basename(file) })
 
-// Title fixtures below reproduce states observed against a live Codex
-// session (codex-cli 0.142.4): a running turn animates a Braille spinner
-// ahead of the project name; idle drops back to the bare project name;
-// a user-blocked approval prompt swaps the spinner for a blinking
-// "[ ! ] Action Required" prefix.
+// Titles observed from codex-cli 0.142.4: a running turn shows a Braille
+// spinner before the project name, idle shows just the name, and an
+// approval prompt shows a blinking "[ ! ] Action Required" prefix.
 describe('classifyCodexTitle', () => {
   it('returns running for a Braille-spinner title (turn in flight)', () => {
     expect(classifyCodexTitle('⠴ workdir')).toBe('running')
@@ -27,8 +25,7 @@ describe('classifyCodexTitle', () => {
   })
 
   it('returns running across the whole Braille block', () => {
-    // The animation cycles through ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ — accept the full
-    // U+2800–U+28FF range, including the endpoints.
+    // Accept the whole U+2800–U+28FF range.
     expect(classifyCodexTitle('⠀ edge of block')).toBe('running')
     expect(classifyCodexTitle('⣿ edge of block')).toBe('running')
   })
@@ -42,17 +39,13 @@ describe('classifyCodexTitle', () => {
   })
 
   it('returns waiting while an approval prompt is up', () => {
-    // Codex suppresses the spinner while blocked on user input and
-    // instead blinks an Action Required prefix — both phases must
-    // classify as waiting. This is the case the JSONL transcript could
-    // not reliably detect.
+    // Both blink phases read as waiting.
     expect(classifyCodexTitle('[ ! ] Action Required workdir')).toBe('waiting')
     expect(classifyCodexTitle('[ . ] Action Required workdir')).toBe('waiting')
   })
 
   it('returns waiting for the tmux default title (codex has not set one)', () => {
-    // Until a program emits an OSC title, #{pane_title} is the pod
-    // hostname — a session still booting reads as waiting.
+    // Until codex sets a title, #{pane_title} is the hostname.
     expect(classifyCodexTitle('yaac-yaac-ee9cb586-74d3-4a1f-9d1f-482839b26d70-5tfxq')).toBe('waiting')
   })
 
@@ -61,8 +54,6 @@ describe('classifyCodexTitle', () => {
   })
 
   it('only matches the spinner at the first character', () => {
-    // A project name that itself contains a Braille glyph must not
-    // false-positive when the title has no leading spinner.
     expect(classifyCodexTitle('fix ⠋ spinner rendering')).toBe('waiting')
     expect(classifyCodexTitle(' ⠋ leading space')).toBe('waiting')
   })
@@ -194,9 +185,8 @@ describe('getCodexPermissionMode', () => {
     return jsonl
   }
 
-  // The permission profiles codex 0.156.1 writes: full access is `disabled`,
-  // and a managed profile is workspace-write when it grants a write, read-only
-  // when it grants none.
+  // Profiles codex 0.156.1 writes: full access is `disabled`; a managed
+  // profile is workspace-write if it grants a write, else read-only.
   const FULL = { type: 'disabled' }
   const WORKSPACE = {
     type: 'managed',
@@ -226,7 +216,6 @@ describe('getCodexPermissionMode', () => {
     payload: { type: 'thread_settings_applied', thread_id: 't', thread_settings: settings(s) },
   })
 
-  // Each of yaac's codex launches, read back out of the settings it produced.
   it('inverts every codex launch the posture table makes', async () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ approval_policy: 'never', permission_profile: FULL }, 'bypass'],
@@ -239,29 +228,26 @@ describe('getCodexPermissionMode', () => {
     }
   })
 
-  // A `/permissions` pick or a Shift+Tab lands in the rollout as a settings
-  // event straight away — the newest entry wins, whichever kind it is.
+  // `/permissions` or Shift+Tab writes a settings event at once; the newest
+  // entry wins.
   it('follows a mid-session change without waiting for the next turn', async () => {
     const jsonl = await rollout([
       turnContext(),
       { type: 'response_item', payload: { type: 'message', role: 'assistant' } },
       { ...applied({ approval_policy: 'never', permission_profile: FULL }) as object, timestamp: '2026-09-24T20:21:41.151Z' },
     ])
-    // With when it was written — which is what tells this process's settings
-    // from the ones a restart resumed.
+    // The timestamp tells this run's settings from ones a restart resumed.
     await expect(getCodexPermissionMode(at(jsonl)))
       .resolves.toEqual({ permissionMode: 'bypass', atMs: Date.parse('2026-09-24T20:21:41.151Z') })
 
-    // Codex's own plan mode is only instructions to the model, over whatever
-    // sandbox is in force, so it says nothing about the posture.
+    // Plan mode only instructs the model; it does not change the sandbox.
     await fs.appendFile(jsonl, JSON.stringify(applied({
       approval_policy: 'never', permission_profile: FULL, collaboration_mode: { mode: 'plan' },
     })) + '\n')
     expect((await getCodexPermissionMode(at(jsonl)))?.permissionMode).toBe('bypass')
   })
 
-  // Settings the launch table never makes read as the most permissive posture
-  // that lets the agent do no more unasked than they do.
+  // Unknown settings map to the loosest posture that is no looser than them.
   it('reads settings past the launch table as the nearest posture no looser', async () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ permission_profile: FULL }, 'bypass'],
@@ -274,8 +260,7 @@ describe('getCodexPermissionMode', () => {
     }
   })
 
-  // Settings nothing can be said about are the answer — not an older entry
-  // that named one, which would claim a posture codex has since left.
+  // Unrecognized settings yield nothing, not an older entry's posture.
   it('answers nothing for settings no posture stands for', async () => {
     const jsonl = await rollout([turnContext(), applied({ approval_policy: { granular: {} } })])
     await expect(getCodexPermissionMode(at(jsonl))).resolves.toBeUndefined()
@@ -303,7 +288,7 @@ describe('codexRolloutParent', () => {
 
   async function rollout(meta: Record<string, unknown>, type = 'session_meta'): Promise<SandboxFile> {
     const file = path.join(dir, `r-${String(Math.random()).slice(2)}.jsonl`)
-    // The base instructions make the real first line some 20 KB.
+    // Real first lines are around 20 KB because of the base instructions.
     const payload = { id: 'child', base_instructions: 'x'.repeat(30_000), ...meta }
     await fs.writeFile(file, `${JSON.stringify({ type, payload })}\n{"type":"event_msg"}\n`)
     return at(file)

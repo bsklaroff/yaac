@@ -5,22 +5,16 @@ import { retryImageBuild } from '#domain/projects'
 import { requireDriverFeature } from '#http'
 
 /**
- * Image-build registry reads and mutations. The snapshot pushed over `/events`
- * already carries the build metadata; the log route exists because the raw
- * podman output is deliberately kept out of snapshots (it changes at line
- * rate) — the webapp's build overlay polls it only while open.
+ * Image-build registry routes. The `/events` snapshot carries build metadata;
+ * the raw podman log is kept out of it (it changes every line), so the
+ * webapp's build overlay polls the log route while open.
  *
- * The reads and the dismiss ask the runtime directly, because it is the
- * thing that holds them: a mediator forwarding the call would hide it
- * rather than mediate it. Retry is the exception, and goes through
- * `#domain/projects` — it has to hand the runtime something the runtime may
- * not fetch for itself, a reader for each owning project's config.
+ * Reads and dismiss call the driver directly. Retry goes through
+ * `#domain/projects`, which hands the driver a reader for each owning
+ * project's config.
  *
- * Every route here refuses outright on a runtime that builds no images.
- * The DRIVER still answers empty there — the snapshot composes the feed
- * unconditionally and must keep rendering — but a client asking this route
- * directly is asking about a feature this server does not have, and `[]`
- * would tell it "no builds are running" instead (see `requireDriverFeature`).
+ * Every route refuses on a runtime that builds no images (see
+ * `requireDriverFeature`).
  */
 export const imageApp = new Hono()
   .get('/builds', (c) => {
@@ -35,16 +29,15 @@ export const imageApp = new Hono()
     }
     return c.json({ log })
   })
-  // Dismiss hides a finished row without rebuilding (a failed chain keeps
-  // backing off the prewarm sweep until its window lapses).
+  // Dismiss hides a finished row without rebuilding. A failed chain still
+  // backs off the prewarm sweep until its window lapses.
   .delete('/builds/:id', (c) => {
     requireDriverFeature('images')
     workspaceDriver().dismissImageBuild(c.req.param('id'))
     return c.body(null, 204)
   })
-  // Retry forgets the entry and rebuilds now. What that means — which chain
-  // re-runs, and what happens to a build no project owns — is the runtime's;
-  // the route only decides that an unknown id is a 404.
+  // Retry forgets the entry and rebuilds now; the driver decides what that
+  // rebuilds. An unknown id is a 404.
   .post('/builds/:id/retry', (c) => {
     requireDriverFeature('images')
     if (!retryImageBuild(c.req.param('id'))) {

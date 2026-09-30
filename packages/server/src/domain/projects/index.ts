@@ -1,19 +1,11 @@
-// The public interface of the projects feature: a project WHOLE — the rows
-// that say which exist, and the disk half those rows name. The clone and its
-// branches, the two config layers, the Dockerfile and support files in its
-// build dir, and the git credentials every one of those leans on all live
-// here now, beside the lifecycle verbs that used to reach across a layer for
-// them.
+// Public interface of the sealed projects folder (`#domain/projects`): a
+// project's rows and its files on disk. That covers the clone and its
+// branches, both config layers, the Dockerfile and build-dir files, the git
+// credentials, and the project lifecycle verbs. Nothing below this layer
+// reads project state; a driver that needs a project's config is handed it
+// (`PassContext.projectConfig`, a launch intent).
 //
-// One project has one owner, which is what the merge buys: "which projects
-// exist" is a row question and "what is in this one" is a disk question, but
-// both are answered here, and nothing below this layer asks either. A driver
-// that needs a project's config is handed it (`PassContext.projectConfig`, a
-// launch intent) rather than reading it.
-//
-// Everything outside this directory imports `#domain/projects`; the
-// SEALED_FOLDERS lint rule stops src from reaching past this file. Adding a
-// name here widens the interface and obliges a unit test in
+// Adding a name here widens the interface and requires a unit test in
 // packages/server/test/domain/projects/.
 
 export { addProject, registerStagedProject } from './add'

@@ -3,13 +3,11 @@ import { stripAnsi } from '@yaac/shared/ansi'
 import type { AgentTool } from '@yaac/shared/types'
 
 /**
- * Shared core of the server's polled CLI sessions — the web-driven tool
- * sign-in (tool-login.ts) and CLI install (tool-install.ts) flows. Both run
- * a vendor CLI in a subprocess the webapp starts and then polls: one live
- * session per tool, killed after 15 minutes unfinished, and kept pollable
- * for a linger window after finishing so polling sees the terminal state.
- * The two managers layer their specifics (claude's credential poller and
- * scratch config dirs, the post-install resolve check) on top.
+ * Shared core of the polled CLI sessions behind tool sign-in (tool-login.ts)
+ * and CLI install (tool-install.ts). Each runs a vendor CLI in a subprocess
+ * that the webapp starts and then polls. There is one live session per tool;
+ * it is killed after 15 minutes unfinished, and stays pollable for a while
+ * after finishing so the webapp sees the final status.
  */
 
 /** How long a flow may sit unfinished before it is killed. */
@@ -112,8 +110,6 @@ export function createCliSessionRegistry<S extends CliSession<CliSessionView>>(o
   }
 
   function create(view: S['view'], timeoutError: string, extra: Omit<S, keyof CliSession>): S {
-    // The timer closes over `s`, so it is armed right after construction;
-    // the cast bridges base + extra back to the caller's session type.
     const s = { view, buf: '', proc: null, poller: null, ...extra } as unknown as S
     s.timer = setTimeout(() => { finish(s, 'error', timeoutError) }, TIMEOUT_MS)
     s.timer.unref?.()

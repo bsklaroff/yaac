@@ -15,11 +15,9 @@ import type {
  * A `WorkspaceDriver` for unit tests: every verb answers empty (or
  * succeeds) until a test overrides the one it cares about.
  *
- * This is what lets a mediator's tests run without the substrate at all —
- * no cluster, and crucially no `@kubernetes/client-node`, whose import
- * alone costs a couple of seconds per test file. A test that reaches the
- * runtime without installing one gets a loud error from `workspaceDriver()`
- * rather than a silent null branch.
+ * Lets a mediator's tests run with no cluster and without importing
+ * `@kubernetes/client-node` (seconds per file). A test that reaches the
+ * runtime without installing one gets an error from `workspaceDriver()`.
  */
 export type FakeWorkspaceDriver = WorkspaceDriver & {
   /** Replace some verbs mid-test without rebuilding the whole fake. */
@@ -46,10 +44,8 @@ export function handleFixture(overrides: Partial<RuntimeHandle> = {}): RuntimeHa
 }
 
 /**
- * The paths a k8s workspace sees — the container constants, spelled out
- * rather than imported so a test asserting on command text is pinned to the
- * exact strings it expects rather than to whatever the driver currently
- * answers. A containerless case overrides what it is about.
+ * The paths a k8s workspace sees, written out rather than imported so tests
+ * asserting on command text pin the exact strings.
  */
 export function workspacePathsFixture(
   overrides: Partial<WorkspacePaths> = {},
@@ -68,18 +64,15 @@ export function workspacePathsFixture(
 }
 
 /**
- * A stand-in for whatever a runtime prepared around a workspace. Opaque by
- * contract, so a fake's is empty — a mediator can only pass it along, which
- * is exactly what a test of one should be able to assert.
+ * A stand-in for what a runtime prepared around a workspace. Opaque by
+ * contract, so empty; a mediator can only pass it along.
  */
 export function substrateFixture(): WorkspaceSubstrate {
   return { kind: 'workspace-substrate' }
 }
 
 /**
- * A snapshot over fixed lists. Not memoized on purpose: a test that wants
- * to prove the pass takes ONE view asserts on its own call counts, and a
- * fake that hid repeat reads would make that unprovable.
+ * A snapshot over fixed lists. Not memoized, so a test can count reads.
  */
 export function snapshotFixture(
   workspaces: RuntimeHandle[] = [],
@@ -93,11 +86,8 @@ export function snapshotFixture(
   }
 }
 
-// Importing this module arms the teardown: whatever a test installed is
-// forgotten after it, so one test's stubbing can never answer another's
-// call. Registered here rather than left to each file because a forgotten
-// hook fails silently and in the direction of a false pass — the next test
-// quietly reads the previous one's runtime.
+// Importing this module registers the teardown, so one test's fake never
+// answers another test's calls.
 afterEach(resetWorkspaceDriver)
 
 /**
@@ -109,9 +99,7 @@ export function installFakeWorkspaceDriver(
 ): FakeWorkspaceDriver {
   let current: WorkspaceDriver = { ...defaultRuntime(), ...overrides }
   const fake: FakeWorkspaceDriver = {
-    // Read through `current` like every verb, so `override({kind})` moves
-    // them: a test about what a containerless server does differently flips
-    // the kind and asserts on the mediator, with no second fake to build.
+    // Read through `current`, so `override({kind})` changes them too.
     get kind() { return current.kind },
     workspacePaths: (ref) => current.workspacePaths(ref),
     start: (sinks) => current.start(sinks),
@@ -198,14 +186,10 @@ function deadStreamPty(): StreamPty {
 
 function defaultRuntime(): WorkspaceDriver {
   return {
-    // k8s by default, and the container paths with it, so a mediator test
-    // asserting on command text keeps asserting the same strings it always
-    // did. A containerless case says so with `override({kind, workspacePaths})`.
+    // A containerless case uses `override({kind, workspacePaths})`.
     kind: 'k8s',
     workspacePaths: () => workspacePathsFixture(),
-    // Attaches instantly and reports nothing: a test that drives the
-    // lifecycle overrides these, and one that does not must not have a
-    // fake quietly watching anything.
+    // Attaches instantly and reports nothing unless overridden.
     start: async (sinks) => { await sinks.recover(); sinks.attached() },
     stop: () => {},
     release: () => {},
@@ -226,9 +210,7 @@ function defaultRuntime(): WorkspaceDriver {
     unforwardedPorts: () => Promise.resolve([]),
     allowHost: () => Promise.resolve(),
     forwardPort: (_t, containerPort) => Promise.resolve({ containerPort, hostPort: containerPort }),
-    // "Not an unforwarded listener" is the default for both of the
-    // answer-shaped verbs below: a test about the refusal path needs no
-    // setup, and one about the happy path says which port is live.
+    // By default no port has an unforwarded listener.
     dismissPort: () => false,
     listImageBuilds: () => [],
     imageBuildLog: () => undefined,
@@ -236,9 +218,7 @@ function defaultRuntime(): WorkspaceDriver {
     retryImageBuild: () => false,
     exec: () => Promise.resolve({ stdout: '', stderr: '' }),
     awaitAgentTransport: () => Promise.resolve(),
-    // A stream that never connects and never dies: enough for a mediator
-    // that only passes one along. A test of the drivers themselves installs
-    // its own fake child, which is the process boundary they are mocked at.
+    // Enough for a mediator that only passes the stream along.
     dialCtrl: () => deadStreamChild(),
     dialPty: () => deadStreamPty(),
     reviveStatusStream: () => Promise.resolve(),
@@ -250,9 +230,8 @@ function defaultRuntime(): WorkspaceDriver {
     syncCredentials: () => Promise.resolve(),
     syncProjectSecrets: () => Promise.resolve(),
     refreshedCredentials: () => ({}),
-    // Echoes the spec back as a handle, the way a real launch does: a
-    // mediator that goes on to exec into what it just launched addresses
-    // the workspace it asked for rather than the fixture's default one.
+    // Echoes the spec back as a handle, as a real launch does, so a later
+    // exec addresses the workspace that was asked for.
     launch: (spec) => Promise.resolve(handleFixture({
       workspaceId: spec.workspaceId,
       projectSlug: spec.projectSlug,
@@ -265,17 +244,14 @@ function defaultRuntime(): WorkspaceDriver {
       state: 'pending',
     })),
     awaitReady: () => Promise.resolve(),
-    // The identity, which is what a runtime whose workspaces bind their own
-    // ports answers. A case about allocation overrides it.
+    // The identity, as for a runtime whose workspaces bind their own ports.
     declareForwards: (_w, forwards) =>
       forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
     dialPort: () => Promise.reject(new Error('fake driver has no port to dial')),
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: () => Promise.resolve(),
     salvageImages: () => Promise.resolve(),
-    // The default is "it really went away": a mediator that gates checkout
-    // removal on this verdict must exercise its happy path without every
-    // test having to opt in, and a case about the timeout says so.
+    // Defaults to "it really went away"; timeout cases override it.
     destroy: () => Promise.resolve(true),
     detachedTeardownCommand: () => 'true',
     destroyProjectSubstrate: () => Promise.resolve(),

@@ -33,39 +33,26 @@ import type { TeardownTarget } from '#drivers/contract'
 import { serverLog } from '#log'
 
 /**
- * Detached teardowns this server spawned and has not yet seen exit, by
- * workspace id — what a restart waits on before relaunching into the same
- * checkout. A detached script cannot gate its removals the way
- * `cleanupWorkspace` does, and under containerless the runtime forgets the
- * workspace before the script even starts: from the moment a stop returns,
- * a restart resolves to the stopped row, skips the in-process wait, and
- * would relaunch while the script is still taking the tmux server down and
- * walking the checkout's `node_modules`, with the state roots queued behind.
- * In-memory: a script outlives a server restart, but the stale reaper's
- * resumption of it does too.
+ * Detached teardown scripts still running, by workspace id. A restart waits
+ * on these before relaunching into the same checkout: under containerless
+ * the runtime forgets the workspace as soon as the stop returns, while the
+ * script is still removing tmux and `node_modules`.
  */
 const detachedTeardowns = new Map<string, Promise<void>>()
 
-/** Resolves once no detached teardown this server spawned is still running
- *  for the workspace — at once when there is none. */
+/** Resolves once no detached teardown is running for the workspace. */
 function detachedTeardownSettled(workspaceId: string): Promise<void> {
   return detachedTeardowns.get(workspaceId) ?? Promise.resolve()
 }
 
 /**
- * The ephemeral-modules paths as they exist IN the checkout — where a
- * host-run workspace keeps them, since that substrate realizes no mount into
- * the checkout (docs/containerless-driver.md). Removing them at stop is
- * what "ephemeral" means on both substrates: under a pod the contents were
- * on a pod-local volume that went with the pod, and the target here is an
- * empty placeholder the restart's `prepareModuleDirs` recreates. The
- * restart's init commands rebuild them either way.
+ * The ephemeral-modules paths inside the checkout, to remove at stop. Under
+ * containerless they hold the real contents; under a pod they are empty
+ * mount points. The restart's init commands rebuild them.
  *
- * A path that is a symlink, or that reaches its parent through one leading
- * out of the checkout, is left alone — the same refusal the mkdir at create
- * makes, and for the same reason: the checkout is full of agent-authored
- * content by now, and an `rm -rf` through a committed `foo -> /anywhere`
- * would be a host-side delete.
+ * Symlinks, and paths reached through a symlink leading out of the
+ * checkout, are skipped: the checkout holds agent-written content, and
+ * `rm -rf` through a link would delete host files.
  */
 async function checkoutEphemeralPaths(
   projectSlug: string,
@@ -81,59 +68,35 @@ async function checkoutEphemeralPaths(
     const stat = await fs.lstat(at.dir.child(at.name)).catch(() => null)
     await at.dir.close()
     if (stat === null || stat.isSymbolicLink()) continue
-    // `remove` goes through the checkout's confined root, so a parent swapped
-    // for a link after this check cannot steer it out. `abs` is for the
-    // detached teardown's `rm -rf`, which runs after the runtime's own delete
-    // and so leans on the pod being gone by then, as the whole-tree deletes
-    // do (`deleteWorkspaceState`).
+    // `remove` is confined to the checkout. `abs` is for the detached
+    // script's `rm -rf`, which runs only after the runtime is gone.
     paths.push({ abs: path.join(checkout.real, rel), remove: () => checkout.removeTree(rel) })
   }
   return paths
 }
 
 /**
- * Remove everything on disk that belongs to one workspace, in one call.
+ * Remove everything on disk that belongs to one workspace: the checkout, its
+ * legacy git worktree admin dir (docs/legacy-compat-shims.md), the opencode
+ * checkpoint, ACP records and agent history. Node-local working copies are
+ * the driver's sweep's.
  *
- * The counterpart to a create: the checkout, git's admin dir for it, the
- * per-workspace opencode database, its ACP conversation records and its agent
- * history. Every one of them is keyed by the workspace id, which is what makes
- * this a single function rather than a list each caller has to remember —
- * the opencode checkpoint included, which is global; a node-local working
- * copy is the runtime's sweep's.
+ * Not used by an ordinary stop, which keeps the checkout for restart. Used
+ * when the workspace itself goes away: a reaped spare, a fresh create that
+ * gave up, a claim that failed after changing its spare.
  *
- * NOT called by an ordinary stop. A stopped workspace is a checkout still on
- * disk, diff and all, waiting to be restarted; this is for the cases where the
- * workspace itself goes away — an unclaimed spare being reaped, and the two
- * failures that leave a checkout no row will ever name again: a fresh create
- * that gave up, and a claim that failed after mutating its spare. (A failed
- * *resume* is not one of those: its row is put back as the restart found it,
- * and its checkout is the work the user came back for.)
+ * Callers run this only once the pod is gone, so plain recursive `rm` is
+ * safe (it does not follow links, and nothing can swap one in mid-walk).
  *
- * A checkout an older install made as a linked git worktree also has an admin
- * dir in the main clone, which goes with it (docs/legacy-compat-shims.md).
- *
- * Plain recursive `rm`s over trees a sandbox wrote, which is sound only
- * because every caller runs this once the pod is gone (its `podGone` gate):
- * Node's `rm` does not follow a link it meets, and with nothing live left to
- * swap a directory for one mid-walk, a walk by path cannot be steered out.
- *
- * Every path is still best-effort — a workspace that half-goes-away beats a
- * reap that aborts and leaves the rest for nobody — but the verdict is
- * REPORTED rather than swallowed. Callers delete the workspace's row next, and
- * the row is the last name anything has for these bytes: erasing it after a
- * failed rm is what turns a retryable leftover into a permanent one. `false`
- * therefore means "keep the row", and the caller that keeps it hands the
- * workspace to the stale reaper, which surfaces it as an ordinary stopped
- * workspace the user can see and delete.
+ * Best-effort per path, but returns `false` if anything failed. Callers then
+ * keep the row, since it is the only record of the leftover bytes; the stale
+ * reaper surfaces it as a stopped workspace the user can delete.
  */
 export async function deleteWorkspaceState(
   projectSlug: string,
   workspaceId: string,
 ): Promise<boolean> {
-  // Structural, not incidental: every id reaching here today is a
-  // server-minted UUID or one read back off a row or a pod label, but an
-  // empty one would resolve `workspaceDir` to the workspaces ROOT and take
-  // every workspace of the project with it.
+  // An empty id would resolve to the workspaces root and delete them all.
   if (!workspaceId) {
     serverLog(`[server] delete workspace state ${projectSlug}: refused an empty workspace id`)
     return false
@@ -152,14 +115,7 @@ export async function deleteWorkspaceState(
   return outcomes.every(Boolean)
 }
 
-/**
- * What a teardown addresses, from the identity a caller already holds.
- *
- * Assembling the struct is not deriving a name: every `jobName` reaching
- * these functions came out of the runtime in the first place (a
- * `findForTeardown`, a `RuntimeHandle`, the prewarm plan), so this only
- * re-packages what the runtime already said.
- */
+/** Repackage a runtime-supplied `jobName` as a `TeardownTarget`. */
 function teardownTarget(params: {
   jobName: string
   projectSlug: string
@@ -173,70 +129,43 @@ function teardownTarget(params: {
 }
 
 /**
- * Tear a running workspace's runtime down. Resolves `true` when the runtime
- * is really gone, `false` when it could not be confirmed — a unit still
- * shutting down may still be writing to /workspace, so callers that go on
- * to remove the checkout must gate on that.
+ * Tear down a running workspace. Resolves `false` if the runtime could not
+ * be confirmed gone; a unit still shutting down may write to the checkout,
+ * so callers removing it must check.
  *
- * What stays here is bookkeeping about the WORKSPACE — the terminating
- * mark, the stop record, the evictions, and the directories a workspace owns
- * on disk. How the runtime itself comes down, and in what order, is
- * `destroy`'s (docs/layered-server.md).
+ * This handles the workspace bookkeeping (terminating mark, stop record,
+ * status eviction, per-workspace dirs); `destroy` handles the runtime.
  */
 export async function cleanupWorkspace(params: {
   jobName: string
   projectSlug: string
   workspaceId: string
-  /** Why the workspace died, when a reaper (not the user) is tearing it
-   *  down — persisted so the deleted-workspace view can say so. */
+  /** Why the workspace died, when a reaper is tearing it down. Shown in the
+   *  deleted-workspace view. */
   cause?: WorkspaceDeathCause
 }): Promise<boolean> {
   const { projectSlug, workspaceId, cause } = params
 
-  // Mark terminating BEFORE evicting the status below: in the gap before
-  // the runtime reports the workspace as going away, this is what keeps the
-  // display path rendering "terminating…" instead of a stray waiting spell.
+  // Mark before evicting status, so the UI shows "terminating…" until the
+  // runtime reports the teardown.
   markWorkspaceTerminating(workspaceId)
 
-  // Report the stop (and death cause, when a reaper supplied one) so the
-  // deleted-workspace view can order by recency and say why the workspace went
-  // away (best-effort; falls back to transcript mtime if unrecorded).
   await applyWorkspaceEvent({
     type: 'workspace-stopped', projectSlug, workspaceId, cause,
   })
 
-  // Drop any cached tmux-alive entry and the watcher-fed status-store row
-  // so a subsequent caller doesn't see a stale value from this workspace (or,
-  // in the worst case, a value belonging to a brand-new workspace with the
-  // same id).
+  // Drop cached liveness and status so nothing stale outlives the stop.
   forgetLiveness(projectSlug, workspaceId)
   evictWorkspaceStatus(projectSlug, workspaceId)
 
   const runtimeGone = await workspaceDriver().destroy(teardownTarget(params))
 
-  // Every removal below is gated on the verdict, for the same reason the
-  // CHECKOUT removal callers chain off it is: these are mount sources — the
-  // per-workspace dirs holding the staged skills and workspace bin — or, for
-  // the ephemeral paths a host-run workspace keeps in the checkout itself,
-  // its working directory. A workspace the runtime could not confirm gone
-  // may still be running on them.
-  //
-  // `false` covers two cases and the worse one is not the obvious one. A
-  // delete that timed out leaves a workspace in its grace period, and
-  // removing its mounts is a narrowed race. A delete that never landed at
-  // all — the runtime unreachable through every attempt — leaves it fully
-  // alive and indefinitely so, and on the prewarm-reap path that spare is
-  // still claimable: its row survives (gated on this same verdict) and its
-  // agent is still up, so the next claim would hand a user a workspace
-  // whose state dirs were rm'd out from under it.
-  //
-  // Keeping them costs nothing. The runtime's own sweep resumes the
-  // teardown against the unit this left behind, and its detached script
-  // removes exactly these dirs; the server-start orphan sweep collects them
-  // too. Both are idempotent, so the only price is that they go later.
+  // Remove the workspace's mount sources only if the runtime is confirmed
+  // gone; otherwise it may still be using them (an unreachable runtime may
+  // leave a spare fully alive and claimable). The driver's sweep and the
+  // startup orphan sweep remove them later.
   if (runtimeGone) {
-    // Best-effort, like the script's `|| true`: under a pod this is the
-    // mount target, and a node still unwinding the mount answers EBUSY.
+    // Best-effort: a node still unmounting answers EBUSY.
     for (const p of await checkoutEphemeralPaths(projectSlug, workspaceId)) {
       await p.remove().catch((err: unknown) => {
         serverLog(`[server] remove ${p.abs} at stop: ${String(err)}`)
@@ -250,31 +179,23 @@ export async function cleanupWorkspace(params: {
 }
 
 /**
- * Stop routing for the workspace (in-process, fast), then spawn a detached
- * background process to do the slow runtime teardown so the calling process
- * can return immediately.
+ * Deregister the workspace in-process, then spawn a detached script for the
+ * slow teardown so the caller returns immediately.
  */
 export async function cleanupWorkspaceDetached(params: {
   jobName: string
   projectSlug: string
   workspaceId: string
-  /** Why the workspace died, when a reaper (not the user) is tearing it
-   *  down — persisted so the deleted-workspace view can say so. */
+  /** Why the workspace died, when a reaper is tearing it down. */
   cause?: WorkspaceDeathCause
-  /** Skip the deletion write, leaving whatever cause is already
-   *  recorded intact. Set when the caller is *resuming* a teardown yaac
-   *  already recorded — e.g. the stale reaper re-issuing the delete for a
-   *  workspace whose in-memory terminating mark was lost to a server restart
-   *  or the TTL. Re-recording there would overwrite the true cause (a plain
-   *  user delete, or an earlier reaped death) with a spurious out-of-band
-   *  reason. */
+  /** Skip recording the stop, keeping the recorded cause. Set when resuming
+   *  an already-recorded teardown (e.g. the stale reaper after a server
+   *  restart), which would otherwise overwrite the real cause. */
   preserveDeletedRecord?: boolean
 }): Promise<void> {
   const { jobName, projectSlug, workspaceId, cause, preserveDeletedRecord } = params
 
-  // Registered before the first await, so a restart arriving at any point
-  // from here on waits for the script this will spawn; settled when that
-  // script exits, or here if the spawn is never reached.
+  // Register before the first await so a restart always waits for it.
   let settle: () => void = () => undefined
   const settled = new Promise<void>((resolve) => { settle = resolve })
   detachedTeardowns.set(workspaceId, settled)
@@ -282,22 +203,15 @@ export async function cleanupWorkspaceDetached(params: {
     if (detachedTeardowns.get(workspaceId) === settled) detachedTeardowns.delete(workspaceId)
   })
   try {
-    // Audit every teardown: the actual work below runs as a detached,
-    // stdio-ignored child, so without this line a workspace reaped by the
-    // reconciler vanishes with no trace in the server log.
+    // The detached script's output is discarded, so log the teardown here.
     serverLog(
       `[server] session teardown: session=${workspaceId} job=${jobName} project=${projectSlug}`
       + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),
     )
 
-    // Mark terminating BEFORE evicting the status below (see cleanupWorkspace).
+    // Before evicting status (see cleanupWorkspace).
     markWorkspaceTerminating(workspaceId)
 
-    // Report the stop (and death cause, when a reaper supplied one) so the
-    // deleted-workspace view can order by recency and say why the workspace went
-    // away (best-effort; falls back to transcript mtime if unrecorded). Skipped
-    // when resuming a teardown yaac already recorded, so the existing cause
-    // survives (see `preserveDeletedRecord`).
     if (!preserveDeletedRecord) {
       await applyWorkspaceEvent({
         type: 'workspace-stopped', projectSlug, workspaceId, cause,
@@ -310,9 +224,8 @@ export async function cleanupWorkspaceDetached(params: {
     const runtime = workspaceDriver()
     const target = teardownTarget(params)
 
-    // The half of a teardown that must happen in-process: host port forwards
-    // and the egress registration are this server's own state as much as the
-    // runtime's, and a detached shell could do neither.
+    // Forwards and egress registration are in-process state a shell script
+    // cannot reach.
     await runtime.deregisterWorkspace(workspaceId)
 
     const ephemeralModulesRms = (await checkoutEphemeralPaths(projectSlug, workspaceId))
@@ -321,10 +234,8 @@ export async function cleanupWorkspaceDetached(params: {
     const workspaceDirRm =
       `rm -rf ${shellQuote(workspaceStateDir(projectSlug, workspaceId))} 2>/dev/null || true`
 
-    // The runtime's own teardown, then the dirs the workspace owns — which is
-    // this layer's half, and the reason the script is composed here rather
-    // than handed over whole. Every line on both sides tolerates having
-    // already run, so a resumed teardown re-issues the lot.
+    // The runtime's teardown, then the workspace's own dirs. Every command is
+    // idempotent, so a resumed teardown can re-run it all.
     const script = [
       runtime.detachedTeardownCommand(target),
       ...ephemeralModulesRms,
@@ -341,12 +252,9 @@ export async function cleanupWorkspaceDetached(params: {
       child.unref()
     }
 
-    // Salvage first: it reaches INTO the workspace, which the script above
-    // destroys. Server-orchestrated rather than part of that script, and
-    // bounded by its own timeouts so a wedged salvage can't strand the
-    // teardown. If the server dies in this window the runtime survives and
-    // the stale reaper resumes the (idempotent) teardown — the same recovery
-    // as a lost detached script. Failures never block.
+    // Salvage first, since it reaches into the workspace the script
+    // destroys. It has its own timeouts and never blocks the teardown. If
+    // the server dies meanwhile, the stale reaper resumes the teardown.
     void runtime.salvageImages(target)
       .catch(() => undefined)
       .then(() => { spawnDetachedTeardown() })
@@ -357,23 +265,16 @@ export async function cleanupWorkspaceDetached(params: {
 }
 
 /**
- * How far before the sweep's own start a write still counts as "in use".
- * The data dir can sit on a mount with second-granularity timestamps (the
- * node-shared mount a nested workspace gets), so an mtime is a lower bound on
- * when the write happened, not the moment. The slack costs a genuine orphan
- * one extra sweep to collect; too little would cost a live workspace its dirs.
+ * How long before the sweep started a write still counts as "in use". The
+ * data dir may be on a filesystem with coarse timestamps, so allow slack;
+ * too little could delete a live workspace's dirs.
  */
 const RECENT_WRITE_SLACK_MS = 10_000
 
 /**
- * Is this workspace dir off-limits to the orphan sweep? Either the server is
- * still provisioning that workspace — its Job may not be applied yet, so no
- * cluster listing can vouch for it, and only the provisioning registry
- * knows — or the directory has been written since the sweep took its
- * listing, which is what a create staging into it looks like. Both mean
- * "in use", and the sweep only ever wants genuine leftovers.
- * Unreadable stat is treated as in-use: refusing to delete costs a stale dir
- * the next sweep collects, deleting wrongly costs a live workspace.
+ * Whether the orphan sweep must skip this workspace dir: the workspace is
+ * still provisioning (not yet visible to the runtime), or the dir was
+ * written since the sweep's listing. An unreadable stat counts as in use.
  */
 async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number): Promise<boolean> {
   if (inFlightWorkspaceIds().includes(sid)) return true
@@ -386,18 +287,10 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
 }
 
 /**
- * Collect the workspace state of prewarmed spares whose pod is gone.
- *
- * The reap path removes a spare's state with its pod, but only while it is
- * running: its plan is derived from live pods, so a spare whose pod died out
- * from under it — a crash, a reboot, the server down in that window — leaves
- * a checkout and a git admin dir that no other sweep can even see. Every
- * other sweep works from workspaces, and a spare is not one.
- *
- * The `spare` flag is what makes this answerable after the fact: the pod that
- * carried the label is gone, so the row is the only surviving record that
- * this checkout was never a workspace. A real workspace is never touched here —
- * a stopped one is a checkout the user is expected to restart into.
+ * Remove the state of spares whose pod is gone (crash, reboot). The normal
+ * reap only sees live pods, so these would otherwise leak. The row's `spare`
+ * flag is the only record that the checkout was never a user's workspace;
+ * real workspaces are never touched.
  */
 async function gcOrphanSpares(
   slug: string,
@@ -405,16 +298,11 @@ async function gcOrphanSpares(
   sweepStartedAtMs: number,
 ): Promise<void> {
   const rows = await listProjectWorkspaceIds(slug).catch(() => undefined)
-  // A failed read must not reap: every id would look like nothing at all to
-  // the spare sweep, and guessing here deletes checkouts.
   if (rows === undefined) return
   for (const [sid, spare] of rows) {
     if (!spare || liveWorkspaceIds.has(sid)) continue
     if (await inUseBySweep(workspaceDir(slug, sid), sid, sweepStartedAtMs)) continue
-    // The row goes only once the bytes actually did: it is the flag on this
-    // row that lets the sweep recognize the checkout at all, so dropping it
-    // after a failed rm would strand whatever is left for good. Keeping it
-    // costs nothing — the next sweep retries.
+    // Keep the row if the delete failed, so the next sweep can retry.
     if (!await deleteWorkspaceState(slug, sid)) continue
     await deleteSpareWorkspaceRow(slug, sid).catch(() => { /* next sweep */ })
     console.log(`Removed orphan prewarmed spare ${slug}/${sid}`)
@@ -422,35 +310,19 @@ async function gcOrphanSpares(
 }
 
 /**
- * The orphan sweep: what a workspace that no longer exists left behind, on
- * both tiers. The GLOBAL half — dead spares' checkouts and `sessions/<id>`
- * dirs — is walked here, on the server's own
- * filesystem. The NODE-LOCAL half — opencode working copies, and whole
- * project trees no live project owns — is handed to the runtime
- * (`reapNodeLocal`) with the same live set plus the live project ids,
- * because on a cluster those bytes are on whichever node the workspace ran
- * on. Runs every pass; the global walk is a readdir per
- * project and the runtime throttles its own half.
+ * Remove what workspaces that no longer exist left behind. The global tier
+ * (dead spares' checkouts, `sessions/<id>` dirs) is swept here; the
+ * node-local tier goes to the driver's `reapNodeLocal`, since those bytes
+ * are on whichever node the workspace ran on. Runs every pass.
  */
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
-  // Everything this sweep deletes belongs to a workspace that no longer
-  // exists — and "no longer exists" is read from a cluster listing taken
-  // here, seconds before the removals below. A create that stages its dirs
-  // inside that gap looks exactly like an orphan: its Job is not applied
-  // yet, so it is in no listing, and the sweep deletes the workspace dir
-  // out from under the pod that is about to mount it. The pod then sits in
-  // ContainerCreating on FailedMount until the create gives up. This runs fire-and-forget at server startup, and a
-  // `workspace create` right after `server start` is the normal way to hit
-  // it. Two guards below: a workspace the process is provisioning is never
-  // swept, and neither is a directory touched since this listing was taken.
+  // A create that stages dirs before its unit exists looks like an orphan.
+  // `inUseBySweep` guards against that.
   const sweepStartedAtMs = Date.now()
   let liveWorkspaceIds: Set<string>
   try {
-    // Workspaces UNION the units holding no workspace: a unit mid-recreate
-    // (workspace evicted, replacement not scheduled yet) appears only as a
-    // stray, and must not have its dirs swept. Both reads reject rather
-    // than resolving empty, so "I could not see" never reads as "nothing is
-    // there" — which is what the catch below is for.
+    // Include stray units: one mid-recreate appears only as a stray. Both
+    // reads reject rather than resolve empty on failure.
     const view = workspaceDriver().snapshot()
     const [workspaces, strays] = await Promise.all([view.workspaces(), view.strayUnits()])
     liveWorkspaceIds = new Set(
@@ -462,12 +334,8 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
     return
   }
 
-  // The node-local half: keyed by project ID there, so the live projects
-  // are read from rows — and an unreadable list skips the half rather than
-  // handing down an empty one, which would collect every project's tree. A
-  // create the process is still provisioning is spared the same way its
-  // global dirs are: its id joins the live set, since no listing can vouch
-  // for it yet.
+  // Node-local half. Skipped if projects cannot be read (an empty set would
+  // delete every tree). Provisioning workspaces count as live.
   const liveProjectIds = await listProjectRows()
     .then((rows) => new Set(rows.map((r) => r.id)))
     .catch((err: unknown) => {
@@ -490,10 +358,7 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
   for (const slug of projectSlugs) {
     await gcOrphanSpares(slug, liveWorkspaceIds, sweepStartedAtMs)
 
-    // Per-session dirs live under `<slug>/sessions/<sid>` on the global
-    // root (the staged skills and workspace bin). The `sessions/` dir is
-    // unique to this feature, so a flat readdir gives the workspace id list
-    // directly.
+    // Per-workspace staging dirs (skills, workspace bin), one per id.
     const workspacesRoot = globalProjectPath(slug, 'sessions')
     let workspaceEntries: string[] = []
     try {
@@ -514,26 +379,13 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
 }
 
 /**
- * Tear a workspace's runtime down and make its id reusable — the whole of
- * what a restart needs before bringing the same workspace back up.
+ * Tear down a workspace's runtime (awaited) so a restart can reuse its id.
+ * `jobName: null` means nothing was running; only the terminating mark is
+ * cleared, so the new workspace does not show as "stopping…".
  *
- * Awaited rather than detached: a restart re-creates against this very id, so
- * the old runtime has to be gone before the new one is launched. `jobName:
- * null` means nothing was running (a stopped workspace being restarted), and
- * only the marks are cleared — which still has to happen, because a
- * terminating mark left by an earlier teardown would render the fresh
- * workspace as "stopping…".
- *
- * The one caller of `cleanupWorkspace` that DISCARDS the verdict, deliberately.
- * The two things a `false` endangers elsewhere are both absent here: a restart
- * never removes the checkout (that is the work the user is coming back to),
- * and the dirs are now kept on `false` anyway. What is left is a launch
- * against a workspace that may not have finished going away, and the launch
- * already owns that case — its retry loop re-deletes the half-started unit
- * with a foreground cascade before each attempt. Failing the restart here
- * instead would turn a slow teardown into a user-visible error for something
- * the next attempt resolves on its own; the cost of absorbing it is one
- * burned attempt.
+ * Ignores `cleanupWorkspace`'s verdict: a restart never removes the
+ * checkout, and a launch against a unit still going away is handled by the
+ * create's retry loop.
  */
 export async function teardownForRestart(params: {
   jobName: string | null
@@ -541,10 +393,7 @@ export async function teardownForRestart(params: {
   workspaceId: string
 }): Promise<void> {
   const { jobName, projectSlug, workspaceId } = params
-  // A stopped workspace whose detached teardown is still running is the
-  // case `jobName: null` hides: the runtime already answers "not found",
-  // and the script it left is still removing what the relaunch is about to
-  // stage (see `detachedTeardowns`).
+  // A detached teardown may still be running even when `jobName` is null.
   await detachedTeardownSettled(workspaceId)
   if (jobName) {
     await cleanupWorkspace({ jobName, projectSlug, workspaceId: workspaceId })

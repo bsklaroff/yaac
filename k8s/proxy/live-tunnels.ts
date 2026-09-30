@@ -1,18 +1,14 @@
 /**
- * The tunnels each workspace holds open, and the admission each was accepted
- * under.
+ * Tracks each workspace's open tunnels and plain-HTTP requests, with the
+ * admission (allowlist result plus injection rules) each was accepted under.
  *
- * The proxy checks the allowlist and picks the injection rules once per
- * tunnel, and once per plain-HTTP request, so either outlives the
- * registration it was accepted under. When a registration changes, every
- * one of that workspace's is re-admitted against it: one whose host is no
- * longer allowed, or whose admission (the rules and redirect it applies)
- * differs, is destroyed, and the client reconnects under the registration
- * as it is now. An unchanged admission keeps its tunnel, so widening an
- * allowlist drops nothing.
+ * Admission is decided once per connection, so a connection can outlive a
+ * registration change. On a change, every connection is re-admitted; any
+ * whose host is no longer allowed or whose admission differs is destroyed,
+ * and the client reconnects. Unchanged admissions keep their connection, so
+ * widening an allowlist drops nothing.
  *
- * A pure, dependency-free helper (like refresh-flight.ts) so it is
- * unit-testable by import — proxy.ts starts listeners at module load.
+ * Dependency-free so tests can import it; proxy.ts starts listeners at load.
  */
 
 import type { Readable, Writable } from 'node:stream'

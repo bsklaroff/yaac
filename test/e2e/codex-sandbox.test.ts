@@ -19,19 +19,17 @@ import {
 
 /**
  * codex's sandbox inside a workspace pod (docs/permission-modes.md). Every
- * codex posture but `bypass` runs its commands through bubblewrap with the
- * network unshared, and gVisor hands a new network namespace an `lo` that
- * bubblewrap cannot configure — so the image ships a patched `bwrap`
- * (dockerfiles/Dockerfile.tools) and codex has to keep choosing it over the
- * one it bundles. Nothing else would notice either going wrong: the sandbox
- * fails closed, so a broken one reads as codex reporting each command's
- * failure and carrying on without it, not as an error.
+ * codex posture but `bypass` runs commands through bubblewrap with the
+ * network unshared. gVisor gives a new network namespace an `lo` that
+ * bubblewrap cannot configure, so the image ships a patched `bwrap`
+ * (dockerfiles/Dockerfile.tools) that codex must keep choosing over its
+ * own. A broken sandbox fails closed, so without this test it would only
+ * show up as codex quietly reporting failed commands.
  *
- * Each pod is the workspace manifest's own pod (`buildPodJobManifest`), on
- * both gVisor tiers, with the checkout a mounted volume at /workspace as it
- * is in a workspace, and the two share one codex home as a project's
- * workspaces do (`codexHomeMounts`). It drives `codex sandbox`, which is the
- * same code path an agent's commands take, and needs no credentials.
+ * Both gVisor tiers run the real workspace pod spec (`buildPodJobManifest`)
+ * with the checkout mounted at /workspace and one shared codex home
+ * (`codexHomeMounts`). `codex sandbox` takes the same code path as an
+ * agent's commands and needs no credentials.
  */
 
 const WORKSPACE = k8sWorkspacePaths().workspaceDir
@@ -80,10 +78,9 @@ async function inSandbox(pod: string, profile: string): Promise<string> {
 }
 
 /**
- * The pod a workspace Job would run, less the one volume this namespace
- * cannot satisfy: the proxy-CA ConfigMap lives in the install namespace,
- * and would hold the pod in ContainerCreating. Everything else — runtime
- * class, securityContext, workingDir, caps, annotations — is the manifest's.
+ * The pod a workspace Job would run, minus the proxy-CA volume: its
+ * ConfigMap lives in the install namespace and would leave the pod stuck in
+ * ContainerCreating.
  */
 async function workspacePod(pod: string, nested: boolean): Promise<Record<string, unknown>> {
   const { tools, nestable } = await resolveTrustedLayers('yaac-test')
@@ -177,8 +174,7 @@ describe.each(TIERS)("codex's sandbox in a $tier workspace pod", ({ pod }) => {
   })
 
   it('still needs the patched bwrap: the one codex bundles fails here', async () => {
-    // The tripwire for the Dockerfile.tools bwrap stage (see the removal
-    // conditions there and in docs/permission-modes.md).
+    // Tripwire for the Dockerfile.tools bwrap stage (docs/permission-modes.md).
     const glob = '"$(npm root -g)"/@openai/codex/node_modules/@openai/codex-linux-*'
       + '/vendor/*/codex-resources/bwrap'
     const found = await sh(pod, `ls ${glob}`)
@@ -195,18 +191,14 @@ describe.each(TIERS)("codex's sandbox in a $tier workspace pod", ({ pod }) => {
 
 describe('a project\'s codex pods', () => {
   it('leave each other\'s sandbox helper in place', async () => {
-    // Every codex process keeps its `codex-linux-sandbox` alias in a
-    // directory under $CODEX_HOME/tmp/arg0, locked for as long as it runs,
-    // and each codex start deletes every one there whose lock it can take.
-    // gVisor keeps locks per sandbox, so over one shared home a start in the
-    // other pod would take this one's lock and delete it — unless tmp is
-    // pod-local. The app-server (what codex-acp drives) is the long-lived
-    // codex here: `codex sandbox` hands its process over to the command and
-    // gives the lock up.
+    // Each running codex holds a lock on its helper dir under
+    // $CODEX_HOME/tmp/arg0, and each codex start deletes every dir whose lock
+    // it can take. gVisor locks are per sandbox, so over a shared home the
+    // other pod would delete this one's dir unless tmp is pod-local. The
+    // long-running app-server (what codex-acp drives) holds the lock here.
     const [a, b] = TIERS.map((t) => t.pod)
     const arg0 = `${CODEX_CONTAINER_HOME}/tmp/arg0`
-    // The cases above leave their own, unlocked, dirs behind; clear them so
-    // the one found is the app-server's.
+    // Clear the unlocked dirs the cases above left behind.
     const started = await sh(a, `rm -rf ${arg0}/*; `
       + 'setsid sh -c "sleep 300 | codex app-server" >/dev/null 2>&1 </dev/null & '
       + `for i in $(seq 1 30); do ls ${arg0} 2>/dev/null | grep -q . && break; sleep 1; done; ls ${arg0}`)

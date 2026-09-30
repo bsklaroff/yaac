@@ -11,19 +11,14 @@ import {
 /**
  * Every WebSocket the webapp holds open must negotiate permessage-deflate.
  *
- * This is a tripwire, not a feature test. The server cannot ask
- * @hono/node-ws for compression — it builds its WebSocketServer itself with
- * no options pass-through — so server-run sets it on the returned `wss`
- * afterwards, which works only because `ws` reads that option once per
- * upgrade rather than in its constructor. Nothing about that arrangement is
- * load-bearing to `ws`'s API contract, so a version bump could move the read
- * into the constructor and silently drop compression from the whole app: the
- * sockets would keep working, and only a slow link would ever notice. Hence
- * an assertion on the negotiated extension itself.
+ * @hono/node-ws builds its WebSocketServer without passing options through,
+ * so the server sets compression on the returned `wss` afterwards. That
+ * works only because `ws` reads the option on each upgrade, which a `ws`
+ * upgrade could change without breaking anything visible. This test catches
+ * that.
  *
- * The handshake is done by hand rather than with a WebSocket client because
- * the answer lives in the upgrade response headers, which is exactly where a
- * client would hide it.
+ * The handshake is done by hand because a WebSocket client hides the
+ * upgrade response headers.
  */
 
 /** Complete a WebSocket upgrade and resolve the server's response headers.
@@ -44,9 +39,8 @@ function upgrade(
         upgrade: 'websocket',
         'sec-websocket-version': '13',
         'sec-websocket-key': crypto.randomBytes(16).toString('base64'),
-        // What a browser offers. The server may only answer with an
-        // extension the client put on the table, so the offer is part of
-        // what's being asserted.
+        // What a browser offers; the server can only accept an offered
+        // extension.
         'sec-websocket-extensions': 'permessage-deflate; client_max_window_bits',
       },
     })
@@ -69,10 +63,9 @@ describe('WebSocket compression', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
 
-  // One server for the file: both cases are a single upgrade against an
-  // otherwise untouched server, and neither mutates any state. It admits a
-  // tailnet name, so the refusal below is the identity gate's rather than
-  // the Host guard's.
+  // One server for the file; no case mutates state. It admits a tailnet
+  // name, so the refusal below comes from the identity gate, not the Host
+  // guard.
   beforeAll(async () => {
     testEnv = await createYaacTestEnv()
     server = await spawnYaacServer({ ...testEnv.env, YAAC_ALLOWED_HOSTS: TAILNET_HOST })
@@ -84,36 +77,30 @@ describe('WebSocket compression', () => {
   })
 
   it('negotiates permessage-deflate on the snapshot and terminal sockets', async () => {
-    // /events carries the whole server snapshot on every state change and is
-    // the most compressible payload in the app; /pty/attach carries the
-    // ANSI-heavy terminal repaints. The PTY route closes the socket right
-    // after the upgrade here (no such workspace), which is fine — the
-    // handshake, and so the negotiation, has already happened by then.
+    // The PTY route closes the socket right after the upgrade (no such
+    // workspace), but negotiation has already happened by then.
     for (const path of ['/api/events', '/api/pty/attach?id=nonexistent']) {
       const headers = await upgrade(server.lock.port, path)
       expect(headers['sec-websocket-extensions'], path).toMatch(/permessage-deflate/)
     }
   })
 
-  // An attach names its workspace by exact id, and one naming none is refused
-  // before any lookup: an empty id must never match whichever workspace the
-  // runtime lists first.
+  // An empty id must never match whichever workspace the runtime lists
+  // first, so it is refused before any lookup.
   it('refuses an attach with no workspace id, before upgrading', async () => {
     for (const path of ['/api/pty/attach', '/api/pty/attach?id=', '/api/forward/attach?port=80', '/api/acp/attach?session=s1']) {
       await expect(upgrade(server.lock.port, path), path)
         .rejects.toThrow(/no upgrade: HTTP 400/)
     }
-    // The conversation id is joined into a path downstream, so it is checked
-    // against the agent-session charset first.
+    // The session id is later joined into a path, so its charset is
+    // checked first.
     await expect(upgrade(server.lock.port, '/api/acp/attach?id=x&session=..%2F..%2Fetc'))
       .rejects.toThrow(/no upgrade: HTTP 400/)
   })
 
   it('still refuses an unidentified upgrade', async () => {
-    // Compression is negotiated by the same `ws` server for every route, so
-    // it must not have become a way to reach one unidentified: the identity
-    // gate runs on the upgrade request like any other — here a tailnet name
-    // reached without tailscale serve.
+    // The identity gate still runs on the upgrade request (here a tailnet
+    // name reached without tailscale serve).
     await expect(upgrade(server.lock.port, '/api/events', TAILNET_HOST))
       .rejects.toThrow(/no upgrade: HTTP 401/)
   })

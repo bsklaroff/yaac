@@ -5,42 +5,29 @@ import type { PodMount } from './pod-spec'
 import { GLOBAL_CLAIM_NAME, NODE_LOCAL_NODE_ROOT } from './storage-constants'
 
 /**
- * This install's NODE-LOCAL tree on a node: `/var/lib/yaac/node/<hash>`.
- * Hashed by the install identity so the real install and every e2e
- * namespace on one cluster keep separate node directories; on kind the
- * second extraMount binds it to `<dataDir>/node-local` on the host
- * (docs/server-in-cluster.md "Storage is two claims").
+ * This install's node-local directory on a node:
+ * `/var/lib/yaac/node/<hash>`. The install hash keeps installs (and e2e
+ * namespaces) on one cluster apart. On kind an extraMount binds it to
+ * `<dataDir>/node-local` on the host (docs/server-in-cluster.md).
  */
 export function nodeLocalNodePath(): string {
   return `${NODE_LOCAL_NODE_ROOT}/${dataDirHash()}`
 }
 
 /**
- * Where a workspace mount's bytes come from, resolved from the storage
- * tier its path declares.
+ * Turn a workspace `hostPath` mount into its real source, based on which
+ * storage root the path is under. Callers declare mounts with the tier
+ * helpers (`workspaceDir`, `cachedPackagesDir`, …); only this function
+ * knows how each tier is stored.
  *
- * The layers above the driver declare every mount as a `hostPath` against
- * a tier helper (`workspaceDir`, `cachedPackagesDir`, …) and never learn
- * how the tier is realized; this is the one place that knows. A path under
- * the GLOBAL root becomes a subPath of the `yaac-global` claim — the same
- * claim the server pod has mounted whole, so the subtree the pod sees is
- * the one the server wrote. A path under the NODE-LOCAL root becomes the
- * matching path under the node's own tree, which is host disk on kind
- * (through the second kind extraMount) and node disk on a cloud node. An
- * `emptyDir` or `pvc` source passes through: it declared no host path to
- * resolve.
+ * - Global root: a subPath of the `yaac-global` claim, which the server
+ *   pod also mounts, so the pod sees what the server wrote.
+ * - Node-local root: the matching path under this install's node directory.
+ * - Server-local root, or no root at all: an error.
+ * - `emptyDir` and `pvc` sources pass through unchanged.
  *
- * The roots are siblings on the host and inside the pod, so this is a
- * plain prefix test with no ordering concern. A path under SERVER-LOCAL
- * is a thrown error — a workspace pod may not mount the server's claim —
- * and so is a path under no root at all, because every product path is
- * tiered and an untiered one is a caller that bypassed the helpers.
- *
- * A `File` hostPath becomes a subPath to that file. kubelet bind-mounts an
- * existing file at a subPath; a subPath that does not exist is created as
- * a root-owned DIRECTORY, so the create's ordering — every global file
- * and directory a pod mounts exists before the Job is applied — is what
- * replaced the `type: File` guard that used to fail such a mount loudly.
+ * kubelet creates a missing subPath as a root-owned directory, so every
+ * global file a pod mounts must exist before its Job is applied.
  */
 export function resolveMountSource(m: PodMount): PodMount {
   const { source } = m
@@ -72,8 +59,8 @@ export function resolveMountSource(m: PodMount): PodMount {
 }
 
 /**
- * The node path of a NODE-LOCAL server-side path — what the store writer
- * and the sweep pods mount. Throws for a path outside the tier.
+ * The node path for a server-side node-local path, as mounted by the store
+ * writer and sweep pods. Throws for a path outside the node-local root.
  */
 export function nodeLocalHostPath(serverPath: string): string {
   const rel = under(serverPath, nodeLocalRoot())
@@ -84,11 +71,9 @@ export function nodeLocalHostPath(serverPath: string): string {
 }
 
 /**
- * The node paths of every NODE-LOCAL directory among RESOLVED mounts that
- * the pod WRITES, for its init container to create and chown. Read-only
- * mounts are excluded — an image-store generation is a node-side writer's
- * to own, and kubelet creates a missing one on its own — and so are File
- * mounts: a file subPath has to exist already, and none is node-local.
+ * Node-local directories among already-resolved mounts that the pod
+ * writes, for its init container to create and chown. Read-only and file
+ * mounts are skipped.
  */
 export function nodeLocalDirsOf(mounts: PodMount[]): string[] {
   const dirs: string[] = []

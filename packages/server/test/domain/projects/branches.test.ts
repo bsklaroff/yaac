@@ -21,7 +21,7 @@ describe('getProjectBranches', () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-branches-test-'))
     setDataDir(tmp)
     sourceRepo = path.join(tmp, 'source')
-    // The row's remote is the one a refresh fetches from — a local path here.
+    // A refresh fetches from the row's remote, a local path here.
     await fs.mkdir(projectDir(slug), { recursive: true })
     await recordProject({ slug, remoteUrl: sourceRepo, addedAt: '2026-01-01T00:00:00.000Z' })
 
@@ -64,7 +64,7 @@ describe('getProjectBranches', () => {
     await expect(attempt).rejects.toMatchObject({ code: 'INTERNAL' })
     await expect(attempt).rejects.toThrow(/could not fetch from remote/)
 
-    // The instant (non-refresh) read still works off the local refs.
+    // A non-refresh read still works off the local refs.
     expect((await getProjectBranches(slug)).branches).toContain('main')
   })
 
@@ -77,14 +77,12 @@ describe('getProjectBranches', () => {
   })
 
   it('surfaces a rejected credential as VALIDATION, pointing at Settings', async () => {
-    // git's `ext::` transport runs an arbitrary command as the wire protocol,
-    // so a stub can produce the exact stderr a real rejected credential does
-    // — the string isGitAuthError classifies on — with no network.
+    // git's `ext::` transport runs a command as the wire protocol, so a stub
+    // can print the stderr isGitAuthError matches, with no network.
     const stub = path.join(tmp, 'reject-auth.sh')
     await fs.writeFile(stub, '#!/bin/sh\necho "fatal: Authentication failed for xyz" >&2\nexit 128\n')
     await fs.chmod(stub, 0o755)
-    // The row is the only place a fetch's URL comes from; the transport it
-    // names is the one transport the fetch may use.
+    // The fetch takes its URL, and so its transport, from the row.
     await recordProject({ slug, remoteUrl: `ext::${stub}`, addedAt: '2026-01-01T00:00:00.000Z' })
 
     await expect(getProjectBranches(slug, { refresh: true })).rejects.toMatchObject({

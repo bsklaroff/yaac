@@ -13,9 +13,7 @@ describe('GET /health', () => {
   })
 
   it('reports a null driver rather than failing when none is registered', async () => {
-    // /health is what a caller probes before it knows anything about the
-    // server, including whether its substrate came up — so it must answer
-    // during the window before the composition root has registered one.
+    // /health must answer even before a driver is registered.
     const app = buildApp({ buildId: 'b' })
     const res = await app.request('/api/health')
     expect(res.status).toBe(200)
@@ -29,8 +27,7 @@ describe('GET /health', () => {
   })
 
   it('reflects the injected isReady, reading it live on each request', async () => {
-    // The runServer wiring passes `() => ready`, a flag flipped true only
-    // after DB init — so /health must call it per request, not cache it.
+    // runServer's flag flips after DB init, so it must not be cached.
     let ready = false
     const app = buildApp({ buildId: 'b', isReady: () => ready })
 

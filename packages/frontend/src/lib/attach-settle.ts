@@ -1,34 +1,24 @@
 /**
- * Reveal gate for a freshly mounted terminal pane (WorkspaceTerminal).
+ * Decides when a newly mounted terminal pane (WorkspaceTerminal) becomes
+ * visible.
  *
- * Attaching to a workspace's tmux repaints the whole screen at the client's
- * size: the window is created oversized so TUIs shrink-then-render (see
- * workspace-create), and on attach tmux reflows it down to the browser's grid
- * — a frame of rewrapped garbage — before the agent's SIGWINCH repaint
- * settles the screen. On cold (non-prewarmed) workspaces the agent's own
- * startup renders interleave too. Watching that settle live is the flash on
- * every new workspace, so the terminal stays invisible until the attach burst
- * goes quiet and only the settled frame is revealed.
+ * The tmux window is created larger than any real terminal, so on attach
+ * tmux shrinks it to the browser's size. That produces a frame of rewrapped
+ * garbage before the agent repaints. The terminal stays hidden until this
+ * burst of output settles, so the user sees only the final frame.
  *
- * The gate settles exactly once, on the earliest of:
- *  - quiet gap: `quietMs` passed with no output after some output arrived —
- *    the attach repaint is done;
- *  - cap: `capMs` after the first output — startup screens that animate
- *    continuously (spinners) never go quiet, and past this point the churn
- *    is the agent legitimately rendering, not attach garbage;
- *  - close-after-open: the socket dropped, so the disconnect notice the
- *    terminal writes must be visible;
- *  - fallback: `fallbackMs` after open with nothing else firing — a safety
- *    net so no edge case can leave a terminal permanently invisible.
- * A close before open stays hidden: nothing was written, and the reconnect
- * loop retries silently.
+ * The gate settles once, on the earliest of:
+ *  - quiet: `quietMs` with no output after some output arrived;
+ *  - cap: `capMs` after the first output, since animated startup screens
+ *    (spinners) never go quiet;
+ *  - close after open: the disconnect notice must be visible;
+ *  - fallback: `fallbackMs` after open, so a terminal is never left hidden.
+ * A close before open stays hidden while the reconnect loop retries.
  *
- * Quiet-gap and cap reveals additionally require `hasContent()` (when
- * given): a cold workspace's attach can land before the agent has painted
- * anything, so the first burst is only tmux's attach preamble — revealing
- * on it would show a blank screen and then the agent's first paint as a
- * pop. A contentless quiet/cap fire defers instead; the next output re-arms
- * the quiet gap, and the fallback still reveals unconditionally.
+ * Quiet and cap also require `hasContent()` when given: on a cold workspace
+ * the first burst may be only tmux's attach preamble, and revealing a blank
+ * screen would make the agent's first paint pop. The next output re-arms
+ * the quiet timer, and the fallback reveals regardless.
  */
 
 export const SETTLE_QUIET_MS = 200
@@ -54,9 +44,8 @@ export interface SettleGate {
   dispose(): void
 }
 
-/** Create a gate that calls `onSettle` once, per the policy above. All
- *  methods are no-ops after settling, so one gate spans reconnects: only
- *  the first attach of a mounted terminal is masked. */
+/** Create a gate that calls `onSettle` once. All methods are no-ops after
+ *  that, so only the first attach of a mounted terminal is hidden. */
 export function createSettleGate(
   onSettle: () => void,
   opts: { hasContent?: () => boolean; timings?: SettleTimings } = {},
@@ -86,8 +75,6 @@ export function createSettleGate(
     onSettle()
   }
 
-  // Quiet/cap fires defer while the screen is still blank; the fallback
-  // (and close-after-open) settle regardless.
   const settleIfContent = (): void => {
     if (done) return
     if (opts.hasContent && !opts.hasContent()) return

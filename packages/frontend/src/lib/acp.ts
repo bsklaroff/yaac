@@ -1,19 +1,14 @@
 /**
- * Client half of the ACP conversation stream: one WebSocket per attached chat
- * pane, mirroring `WorkspaceTerminal`'s PTY socket (same reconnect-with-backoff,
- * same "the agent outlives this tab" assumption).
+ * Client side of an ACP conversation: one WebSocket per mounted chat pane,
+ * with the same reconnect backoff as `WorkspaceTerminal`'s PTY socket. The
+ * server translates ACP into the small `AcpEvent` union, so this module only
+ * handles transport and ordering.
  *
- * The pane never sees ACP itself — the server projects every `session/update`
- * into the small `AcpEvent` union before it reaches the wire — so everything
- * here is about *transport* and *ordering*, not protocol.
- *
- * Ordering is the one subtlety. History does not live in the server — it is
- * the record acpd writes as it relays — so every attach reads that record and
- * numbers it from zero. A pane therefore REPLACES its list on `hello` rather
- * than merging into it: the record is authoritative and complete, so what it
- * says supersedes whatever the pane was holding, and a dropped connection
- * costs nothing but a repaint. Live events append behind it, merged by `seq`
- * so an out-of-order or repeated delivery cannot double a message.
+ * History is the record acpd writes, and each attach numbers it from zero.
+ * So the pane replaces its list on `hello` rather than merging, and a
+ * dropped connection costs only a repaint. Live events after that are
+ * merged by `seq`, so a repeated or out-of-order delivery can't duplicate a
+ * message.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -22,7 +17,7 @@ import type { AcpClientMessage, AcpEvent, AcpServerMessage } from '@yaac/shared/
 
 export interface AcpStream {
   events: AcpEvent[]
-  /** A prompt turn is in flight — the agent is working. */
+  /** A prompt turn is in flight (the agent is working). */
   busy: boolean
   /** The pane has a live connection to the conversation. False while
    *  reconnecting, or when the workspace has no live conversation yet. */
@@ -32,11 +27,8 @@ export interface AcpStream {
   send: (msg: AcpClientMessage) => boolean
 }
 
-/**
- * Merge a batch of events into the list, keyed by `seq`. Exported for its own
- * test: this is where a reconnect's replay either de-duplicates cleanly or
- * silently doubles the whole conversation.
- */
+/** Merge a batch of events into the list, keyed by `seq`, so a replayed
+ *  event replaces its earlier copy instead of duplicating it. */
 export function mergeEvents(existing: AcpEvent[], incoming: AcpEvent[]): AcpEvent[] {
   if (incoming.length === 0) return existing
   const bySeq = new Map(existing.map((e) => [e.seq, e]))
@@ -45,16 +37,12 @@ export function mergeEvents(existing: AcpEvent[], incoming: AcpEvent[]): AcpEven
 }
 
 /**
- * Attach to one conversation, for as long as the pane is mounted.
+ * Attach to one conversation for as long as the pane is mounted.
  *
- * Mounting is the whole gate: a hidden pane keeps its socket, exactly as a
- * hidden terminal keeps its PTY. What there is to keep warm is not the
- * conversation — that lives on the server and replays on any attach — but the
- * *transport*: an attach costs a WebSocket handshake and then the entire
- * conversation as one `hello` frame, which on a slow or lossy link is the
- * "Connecting to the agent…" wait, and re-paying it on every tab switch is the
- * one cost a pane can simply not incur. `WorkspaceView` decides which panes stay
- * mounted; there is nothing left for this hook to second-guess.
+ * A hidden pane keeps its socket, as a hidden terminal keeps its PTY: each
+ * attach re-sends the whole conversation in its `hello` frame, which is slow
+ * on a poor link, so it shouldn't be repeated on every tab switch.
+ * `WorkspaceView` decides which panes stay mounted.
  */
 export function useAcpStream(
   workspaceId: string,
@@ -87,9 +75,7 @@ export function useAcpStream(
           return
         }
         if (msg.type === 'hello') {
-          // Replace, never merge: `events` is the conversation as recorded,
-          // renumbered from zero for this attach, so the numbers a pane already
-          // holds refer to a different numbering of the same history.
+          // Replace, don't merge: each attach renumbers history from zero.
           setEvents(msg.events)
           setBusy(msg.busy)
           setConnected(true)
@@ -98,14 +84,10 @@ export function useAcpStream(
         }
         if (msg.type === 'event') {
           setEvents((prev) => mergeEvents(prev, [msg.event]))
-          // Explicit boundaries only. A `user` event looks like a turn
-          // beginning and mostly is, but it is also what a *replay* is made of:
-          // `session/load` re-emits every past message as a live update, and
-          // the record carries no boundary to close them with — so inferring
-          // from it leaves a restarted workspace pinned at `working…` with a
-          // Stop button and no turn to stop. `turn-start` has no such second
-          // meaning: the server emits it when a turn actually begins, including
-          // one it recovered on reattaching to a working agent.
+          // Only explicit boundaries set `busy`. A `user` event can't be used:
+          // `session/load` replays past messages as live updates with no
+          // closing boundary, which would leave a restarted workspace stuck
+          // at "working…".
           if (msg.event.type === 'turn-end' || msg.event.type === 'error') setBusy(false)
           if (msg.event.type === 'turn-start') setBusy(true)
           return
@@ -123,8 +105,8 @@ export function useAcpStream(
     }
 
     connect()
-    // A tab returning to the foreground, or a machine coming back online,
-    // reattaches immediately rather than waiting out the backoff.
+    // Reattach right away when the tab returns to the foreground or the
+    // machine comes back online, instead of waiting out the backoff.
     const wake = (): void => {
       if (closed || socketRef.current) return
       if (retry) clearTimeout(retry)

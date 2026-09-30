@@ -9,27 +9,20 @@ import { serverLocalPath } from '@yaac/shared/paths'
 import { gitSshAgentSock } from './agent'
 
 /**
- * How a resolved credential becomes a git invocation the host can run:
- * the token-bearing URL, the ssh command and the two public files it names,
- * and the environment that carries either (Tor included, when the install
- * routes through it).
- *
- * Separate from `repo.ts` because it is the half with no repository in it —
- * every function here is about the transport, and the operations next door
- * are what use them.
+ * Turns a resolved credential into a runnable git invocation: the
+ * token-bearing URL, the ssh command and the public files it names, and the
+ * environment (including Tor when enabled). Repository operations live in
+ * `repo.ts`.
  */
 
 /**
- * Everything git needs to authenticate against a remote, in the two forms it
- * accepts. Defined here rather than where credentials are looked up because
- * this is what consumes it: the lookup in #domain/projects resolves a
- * project's assigned credential down to this shape precisely so the git
- * primitives never have to know about projects.
+ * What git needs to authenticate against a remote. #domain/projects resolves
+ * a project's credential to this shape so the git code needn't know about
+ * projects.
  *
- * The ssh form carries NO private material. The server's git signs through
- * the in-process agent (`agent.ts`), which opens the seed itself; what the
- * invocation needs is the public half, to pin ssh to one identity, and the
- * host key to verify the remote against.
+ * The ssh form holds no private key: signing goes through the in-process
+ * agent (`agent.ts`). The public key pins ssh to one identity, and the host
+ * key verifies the remote.
  */
 export type ResolvedGitCredential =
   | { kind: 'https'; token: string }
@@ -43,11 +36,9 @@ export function injectTokenIntoUrl(url: string, token: string): string {
 }
 
 /**
- * Heuristic for git transport errors caused by rejected credentials
- * (expired/revoked token, insufficient scopes, rejected SSH key), as
- * opposed to network failures or missing refs. Matches the messages git
- * emits for HTTP 401/403 and SSH auth rejection, so callers can replace
- * the raw stderr with an actionable "fix your credential" message.
+ * Heuristic: whether a git error is a rejected credential (expired or
+ * revoked token, missing scopes, rejected SSH key) rather than a network or
+ * ref problem, so callers can show a "fix your credential" message.
  */
 export function isGitAuthError(message: string): boolean {
   return [
@@ -60,13 +51,12 @@ export function isGitAuthError(message: string): boolean {
   ].some((re) => re.test(message))
 }
 
-// When Tor is enabled on the server process, route the git subprocess
-// through the user's host-machine Tor (assumed already running at
-// YAAC_HOST_TOR_SOCKS_URL, default socks5h://127.0.0.1:9050). Returns
-// undefined when the toggle is off so git inherits the server's env.
-//
-// `runGit` takes a given env as the child's whole env, so we must
-// spread process.env to preserve PATH, HOME, etc.
+/**
+ * With Tor enabled, the env that routes git through the host's Tor
+ * (YAAC_HOST_TOR_SOCKS_URL, default socks5h://127.0.0.1:9050). Undefined when
+ * off. Includes the full process env, since `runGit` uses it as the child's
+ * whole environment.
+ */
 export function torEnv(): NodeJS.ProcessEnv | undefined {
   if (!env.useTor) return undefined
   const url = env.torSocksUrl
@@ -74,9 +64,7 @@ export function torEnv(): NodeJS.ProcessEnv | undefined {
   return { ...process.env, ALL_PROXY: url, NO_PROXY: 'localhost,127.0.0.1' }
 }
 
-/**
- * Write a known_hosts file atomically with mode 0600. Idempotent.
- */
+/** Write a known_hosts file atomically with mode 0600. */
 export async function writeKnownHostsFile(entries: string[], destPath: string): Promise<void> {
   const content = entries.join('\n') + (entries.length ? '\n' : '')
   await fs.mkdir(path.dirname(destPath), { recursive: true })
@@ -85,9 +73,8 @@ export async function writeKnownHostsFile(entries: string[], destPath: string): 
   await fs.rename(tmp, destPath)
 }
 
-/** A stable, content-keyed file under `dir` holding `content`, for the two
- *  public files an ssh invocation names. Concurrent callers converge on
- *  the same path. */
+/** A file under `dir` named by a hash of `content`, so concurrent callers
+ *  share one path. */
 async function contentKeyedFile(dir: string, suffix: string, content: string): Promise<string> {
   const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 12)
   const dest = path.join(dir, `${hash}${suffix}`)
@@ -96,15 +83,11 @@ async function contentKeyedFile(dir: string, suffix: string, content: string): P
 }
 
 /**
- * The environment for `runGit` under a credential.
- *
- * For ssh, two PUBLIC files are written for the command to name: the host
- * key (so an unknown host fails here rather than being trusted on first
- * use) and the public key (so ssh offers exactly this identity under
- * `IdentitiesOnly`, rather than every key the agent holds against a host
- * that may lock the account out after a few failures). Signing happens in
- * the in-process agent the `IdentityAgent` option names; nothing private is
- * written.
+ * The environment for `runGit` under a credential. For ssh, writes two
+ * public files: the host key (so an unknown host fails rather than being
+ * trusted) and the public key (so `IdentitiesOnly` offers only this key, not
+ * every key the agent holds, which could trigger a lockout). Signing uses the
+ * in-process agent named by `IdentityAgent`.
  */
 export async function gitEnvForCredential(
   credential: ResolvedGitCredential | null,
@@ -131,18 +114,14 @@ export async function gitEnvForCredential(
 }
 
 /**
- * Fetch a known_hosts entry for `host` by driving `ssh` (not `ssh-keyscan`).
+ * Fetch a known_hosts entry for `host` using `ssh` rather than
+ * `ssh-keyscan`, which can't take a ProxyCommand and so can't use Tor. With
+ * `StrictHostKeyChecking=accept-new` and a temp `UserKnownHostsFile`, ssh
+ * saves the host key during key exchange, before BatchMode fails auth.
  *
- * Why ssh: ssh-keyscan does not accept `-o ProxyCommand=…` (its `-O` flag
- * only takes `hashalg`), so it can't be routed through Tor. ssh does honor
- * `-o ProxyCommand=…`, and with StrictHostKeyChecking=accept-new +
- * UserKnownHostsFile=<tmp> it persists the negotiated host key to the temp
- * file during KEX, before BatchMode kills the auth step.
- *
- * Returns the single key type ssh actually negotiated — which is the entry
- * the subsequent git-over-ssh connection will use, so it's what we want.
- * Trust on first use, by construction: the caller shows the user what came
- * back.
+ * Returns the one key type ssh negotiated, which later git-over-ssh
+ * connections will use. Trust on first use: the caller shows the user the
+ * result.
  */
 export async function fetchKnownHostsEntry(host: string): Promise<string> {
   const tmp = path.join(

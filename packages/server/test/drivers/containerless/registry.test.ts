@@ -52,8 +52,7 @@ describe('rememberWorkspace', () => {
 })
 
 describe('findWorkspace', () => {
-  // Prefix expansion is domain's, over rows; the unit name is this driver's
-  // own. Only the exact workspace id matches.
+  // Prefix expansion happens in the domain layer, over rows.
   it('resolves by exact id only', () => {
     rememberWorkspace(marker(A))
     expect(findWorkspace(A)?.workspaceId).toBe(A)
@@ -109,8 +108,8 @@ describe('createRuntimeSnapshot', () => {
     rememberWorkspace(marker(A))
     const snap = createRuntimeSnapshot(true)
     expect((await snap.workspaces()).map((w) => w.workspaceId)).toEqual([A])
-    // A stray unit is a Job outliving its pod; when this substrate's unit is
-    // gone there is nothing left holding anything.
+    // A stray unit is a k8s Job outliving its pod; here there is no
+    // equivalent.
     expect(await snap.strayUnits()).toEqual([])
   })
 
@@ -118,8 +117,7 @@ describe('createRuntimeSnapshot', () => {
     rememberWorkspace(marker(A))
     const snap = createRuntimeSnapshot()
     rememberWorkspace(marker(B))
-    // A destructive step must never judge absence against a view another
-    // step already invalidated.
+    // Destructive steps must all judge absence against the same view.
     expect(await snap.workspaces()).toHaveLength(1)
   })
 })
@@ -133,8 +131,7 @@ describe('readMarkers', () => {
   })
 
   it('takes identity from the path, not from what the file claims', async () => {
-    // A state dir copied along with a project would otherwise announce
-    // itself as the workspace it was copied from.
+    // Otherwise a copied state dir would claim to be its source workspace.
     await writeMarker(marker(A))
     const file = markerPath('demo', A)
     await fsp.writeFile(file, JSON.stringify({
@@ -148,7 +145,6 @@ describe('readMarkers', () => {
     await writeMarker(marker(A))
     await fsp.mkdir(path.dirname(markerPath('demo', B)), { recursive: true })
     await fsp.writeFile(markerPath('demo', B), 'not json')
-    // One corrupt file must not cost every other workspace its recovery.
     expect((await readMarkers()).map((m) => m.workspaceId)).toEqual([A])
   })
 
@@ -167,9 +163,8 @@ describe('writeMarker', () => {
 
 describe('sshAgentPidOf', () => {
   it('answers for a live workspace and for one recovered after a restart', async () => {
-    // Teardown reads this to end the process holding the workspace's ssh key,
-    // so it has to answer for a workspace this server did not launch — a
-    // restart repopulates the same entries from the markers on disk.
+    // Teardown uses this to kill the workspace's ssh-agent, so it must work
+    // for a workspace recovered from its marker after a restart.
     rememberWorkspace(marker(A, { sshAgentPid: 777 }))
     expect(sshAgentPidOf(A)).toBe(777)
 

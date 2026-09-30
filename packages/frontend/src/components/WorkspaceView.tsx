@@ -64,19 +64,17 @@ import type {
 const GAP = 8
 /** Pane card header (tab strip) height. */
 const HEADER_H = 28
-/** The same strip on touch, where a tab has to be a finger-sized target. */
+/** The same strip on mobile, tall enough for a finger. */
 const MOBILE_HEADER_H = 38
 /** Pane card inner padding around the terminal block. */
 const PAD = 3
 /** Pointer must travel this far before a tab-drag becomes a move. */
 const DRAG_THRESHOLD = 5
-/** Most workspaces eagerly attached (hidden) after a page load — each costs a
- *  kubectl-exec PTY on the server, so a large install shouldn't fan out
- *  dozens at once. Workspaces past the cap attach on first view, as before. */
+/** Most workspaces attached in the background after a page load. Each costs
+ *  a server-side PTY, so a large install shouldn't open dozens at once;
+ *  the rest attach when first viewed. */
 const EAGER_ATTACH_MAX = 12
-/** The same budget on a phone. Twelve pre-attached PTYs, each a live stream,
- *  is a desktop-on-LAN number; on a metered radio the instant switch-back
- *  isn't worth it beyond the workspace the user is actually in. */
+/** The same limit on a phone, where each live stream costs mobile data. */
 const MOBILE_EAGER_ATTACH_MAX = 2
 
 interface DragState {
@@ -88,17 +86,11 @@ interface DragState {
 }
 
 /**
- * An agent pane is named for what is answering in it — "Claude · Opus 5" —
- * rather than the bare word "Agent", which said nothing a workspace with one
- * agent didn't already know. Both modes resolve the same way, from the
- * conversation the target names: `agent` is the workspace's primary tui window
- * (ordinal 0, the one a restart brings up first), and an `acp:<id>` target
- * names its conversation outright.
- *
- * `workspace` is absent on the paths that only ever name a terminal (the
- * kill-confirm chord), where the fallback is unreachable rather than wrong.
- * A file pane is named by `fileLabels` (see `fileTabLabels`), falling back
- * to its path.
+ * A pane's tab label. An agent pane is named for its tool and model
+ * ("Claude · Opus 5"): `agent` is the primary tui window (lowest ordinal),
+ * and `acp:<id>` names its conversation. A file pane uses `fileLabels`
+ * (see `fileTabLabels`), else its path. `workspace` is omitted only by
+ * callers that name terminals.
  */
 function paneName(
   target: string,
@@ -123,15 +115,10 @@ function paneName(
 }
 
 /**
- * Special (non-terminal) panes: kept out of the tmux-window sync, closed
- * without a kill-confirm (a file pane saves first, and asks only when that
- * cannot land).
- *
- * An ACP conversation is special in the same way even though it *does* have a
- * tmux window behind it — the window runs acpd, not a TUI, so attaching a PTY
- * to it would show a supervisor's log instead of the conversation. It is
- * addressed by conversation id (`acp:<id>`), which the snapshot carries, not
- * by window id like a terminal.
+ * Non-terminal panes: left out of the tmux-window sync and closed without a
+ * kill confirmation (a file pane saves first, and asks only if that fails).
+ * ACP chat panes count too: their tmux window runs acpd, not the
+ * conversation, and they are addressed by conversation id.
  */
 function isSpecialPane(target: string): boolean {
   return isPreviewTarget(target) || isChangesTarget(target) || isFilesTarget(target)
@@ -163,42 +150,37 @@ export function WorkspaceView({
   const openChanges = useUiStore((s) => s.openChanges)
   const openFiles = useUiStore((s) => s.openFiles)
   const dirtyFiles = useUiStore((s) => s.dirtyFiles)
-  // On a phone this pane is a screen of its own: back replaces the sidebar
-  // toggle, the header's control cluster folds into an overflow menu, and
-  // tiles mode is off the table (docs/mobile-layout.md).
+  // On a phone this pane is its own screen, with a back button, an overflow
+  // menu and no tiles mode (docs/mobile-layout.md).
   const isMobile = useIsMobile()
-  // The tab strip is part of the pane's pixel math (every terminal's rect is
-  // measured below it), so its height is a number here rather than a class.
+  // A number, not a class: pane rects are computed below the tab strip.
   const headerH = isMobile ? MOBILE_HEADER_H : HEADER_H
   const queryClient = useQueryClient()
   const workspaces = snapshot?.workspaces ?? []
   const workspace = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
   const sid = workspace?.workspaceId ?? null
-  // Project-wide flag; shown in the header because a rejected credential
-  // fails git fetch/push inside this workspace too.
+  // Project-wide, but shown here since it breaks git in this workspace too.
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectSlug]) || []
 
-  // Forwarded (portForward-config) ports drive the embedded preview in the
-  // desktop app; in a browser build there's no embedded webview, so they fall
-  // back to external-tab chips instead.
+  // Forwarded ports open in the embedded preview in the desktop app, and as
+  // external-link chips in a browser.
   const embedPreview = isElectron()
   const previewPorts = workspace?.forwardedPorts ?? []
   const chipPorts = embedPreview ? [] : previewPorts
   const previewPortForWorkspace = sid ? previewPortMap[sid] : undefined
 
-  // The provisioning placeholder owns the main pane only when its row is the
-  // selected one (and no real workspace of that id exists yet) — so it never
-  // hijacks a workspace you're viewing; you click the row to see its status.
+  // Show the provisioning placeholder only when its row is selected and the
+  // workspace isn't listed yet.
   const creatingHere = workspace ? null : provisioning.find((p) => p.workspaceId === selectedWorkspaceId) ?? null
 
-  // The workspace's pane layout: missing key = the default single agent column;
-  // null = explicitly emptied.
+  // The workspace's layout: a missing key means the default single column;
+  // null means explicitly emptied.
   const layout: PaneLayout | null = sid
     ? (sid in layouts ? layouts[sid] : singleColumn(defaultPaneTarget(workspace)))
     : null
 
-  // The container's terminals beyond the agent (initCommands windows and
-  // scratch shells) — drives which panes exist, and their names.
+  // The workspace's non-agent terminals, which decide which panes exist and
+  // their names.
   const { data: terminals } = useQuery({
     queryKey: ['terminals', sid],
     queryFn: () => getWorkspaceTerminals(sid ?? ''),
@@ -207,7 +189,7 @@ export function WorkspaceView({
     staleTime: 5_000,
   })
 
-  // Layout pixel size (columns are absolutely positioned from it).
+  // Pane area size; columns are absolutely positioned from it.
   const wsRef = useRef<HTMLDivElement>(null)
   const [wsSize, setWsSize] = useState({ w: 0, h: 0 })
   useEffect(() => {
@@ -220,71 +202,54 @@ export function WorkspaceView({
     return () => ro.disconnect()
   }, [])
 
-  // A pane per live tmux window: the layout follows the container's window
-  // list, so init windows and scratch shells show up by default (splitting
-  // the largest pane; the user's arrangement is otherwise kept) and killed
-  // windows drop out — including kills from another client, and stale
-  // targets restored from localStorage after a workspace restart reassigned
-  // the window ids. The size fallbacks only matter before the first
-  // measure; the split heuristic just needs an aspect ratio.
+  // Keep one pane per live tmux window: new windows (init commands, scratch
+  // shells) are added as columns, and killed windows are removed, including
+  // kills by another client and stale ids restored from localStorage after
+  // a restart. The user's arrangement is otherwise kept.
   useEffect(() => {
     if (!sid || !workspace || !terminals) return
     const cur: PaneLayout | null = sid in layouts ? layouts[sid] : singleColumn(defaultPaneTarget(workspace))
-    // An ACP workspace's conversations are panes too, but they come off the
-    // snapshot rather than the window list: the tmux window behind one runs
-    // acpd, and its name says nothing about which conversation it holds.
+    // ACP conversations come from the snapshot, not the window list. When
+    // any exist, the `agent` window is acpd's log and is left out.
     const acpPanes = acpPaneTargets(workspace)
     const isAcp = acpPanes.length > 0
-    // With chat panes present the raw agent window is acpd's log, not
-    // something to attach a terminal to — drop it from the live set.
     const live = [...(isAcp ? [] : ['agent']), ...acpPanes, ...terminals.map((t) => t.target)]
     const liveSet = new Set(live)
     let next: PaneLayout | null = cur
     for (const t of paneTargets(next)) {
-      // Preview/changes panes aren't tmux windows — they're owned by their own
-      // open/close logic, so this window-driven sync must leave them be. An
-      // ACP pane IS in the live set when its conversation is active, so it is
-      // checked like a window and removed when the conversation ends.
+      // Other special panes manage themselves; an ACP pane is removed once
+      // its conversation ends.
       if (liveSet.has(t)) continue
       if (isAcpTarget(t) || !isSpecialPane(t)) next = removeTarget(next, t)
     }
     for (const t of live) {
-      // New windows (init commands, scratch shells) show up as their own
-      // equal-width column; the user's arrangement is otherwise kept.
       next = addColumn(next, t)
     }
     if (next !== cur) setWorkspaceLayout(sid, next)
   }, [sid, workspace, terminals, layouts, setWorkspaceLayout])
 
-  // Tabs mode renders all the workspace's panes as one tabbed window; the
-  // workspace stays canonical so toggling back to tiles restores the columns.
+  // Tabs mode shows all panes as one tab strip; the column layout is kept so
+  // switching back to tiles restores it.
   const targets = paneTargets(layout)
   const activeTab = sid
     ? (activeTabs[sid] && targets.includes(activeTabs[sid]) ? activeTabs[sid] : targets[0])
     : undefined
-  // Forced off on mobile at render, never written back to the store: a user
-  // who prefers tiles on their desktop must not have that preference rewritten
-  // by opening the same server on a phone.
+  // Tiles is turned off on mobile at render only, so a phone doesn't
+  // overwrite the desktop preference in the store.
   const tiled = viewMode === 'tiles' && !isMobile
-  // The pane to drop focus into when this workspace is selected/opened or a
-  // shortcut switches panes — only that one terminal (or Changes pane) gets
-  // a live focusKey, so a bumped focusNonce focuses it without disturbing
-  // any other (kept-alive, off-screen) terminal. Fed the raw stored tab:
-  // focusPaneTarget validates it and prefers the agent pane in tiles mode
-  // when nothing was made active yet.
+  // Only this pane gets a focusKey, so bumping focusNonce focuses it and no
+  // hidden pane.
   const focusTarget = sid ? focusPaneTarget(targets, activeTabs[sid], tiled) : null
-  // Equal-width columns; each column shows its active tab. Off-screen tabs are
-  // the other tabs of a column (kept alive, hidden). No dividers — widths are
-  // always equal.
+  // Equal-width columns, each showing its active tab; other tabs stay
+  // mounted but hidden.
   const cols = computeColumns(layout, { x: 0, y: 0, w: wsSize.w, h: wsSize.h }, GAP)
   const colsRef = useRef<ColumnRect[]>(cols)
   colsRef.current = cols
-  // The visible pane rect per column (its active tab) — drives keep-alive
-  // positioning and the drop highlight.
+  // Each column's visible pane rect, for positioning and the drop highlight.
   const activePaneRect = new Map(cols.map((c) => [c.group.active, c.rect]))
 
-  // Keep-alive: every workspace|target ever shown stays mounted (hidden) so
-  // switching back is instant. Panes closed explicitly are dropped.
+  // Keep-alive: every pane ever shown stays mounted (hidden) so switching
+  // back is instant. Explicitly closed panes are dropped.
   const [opened, setOpened] = useState<string[]>([])
   useEffect(() => {
     if (!sid || !layout) return
@@ -300,16 +265,11 @@ export function WorkspaceView({
     workspaces.find((s) => s.workspaceId === key.slice(0, key.indexOf('|')))
   const keyTarget = (key: string): string => key.slice(key.indexOf('|') + 1)
 
-  // A pane whose workspace stops having it is dropped from the open set for
-  // good, the way an explicit close already drops one. Filtering it out of
-  // `mounted` on the way past would not be enough: `paneStillLive` answers
-  // about the workspace's state *now*, so a key left lying around can come back
-  // to life. The boot-window `agent` key of an ACP workspace is the one that
-  // does — the terminating placeholder reports no conversations, so the key
-  // resurrects as the workspace stops and dials a PTY into a container being
-  // torn down. Only a workspace we can actually see settles it; one missing
-  // from this snapshot is left alone, since that may be a gap rather than an
-  // ending.
+  // Permanently drop a pane its workspace no longer has. Filtering `mounted`
+  // alone isn't enough: an ACP workspace's early `agent` key would come back
+  // while the workspace stops (it then reports no conversations) and attach
+  // a PTY to a workspace being torn down. Workspaces missing from this
+  // snapshot are left alone.
   useEffect(() => {
     setOpened((prev) => {
       const next = prev.filter((key) => {
@@ -320,8 +280,7 @@ export function WorkspaceView({
     })
   }, [workspaces])
 
-  // A file pane whose target left its workspace's layout — a rename moved it,
-  // a delete closed it — is dropped the same way: it has nothing to show.
+  // Likewise drop a file pane that left its layout (renamed or deleted).
   useEffect(() => {
     setOpened((prev) => {
       const next = prev.filter((key) => {
@@ -334,39 +293,25 @@ export function WorkspaceView({
     })
   }, [layouts])
 
-  // A pane stays mounted until its workspace goes — or, for the agent-side
-  // targets, until the workspace stops having it. The prune above is what makes
-  // that permanent; this is what makes it immediate.
+  // The panes to render now; the prune effects above make removals permanent.
   const mounted = opened.filter((key) => {
     const wt = keyWorkspace(key)
     return wt !== undefined && paneStillLive(wt, keyTarget(key))
   })
 
-  // Last shown rect per kept-alive terminal — hidden panes freeze here so
-  // re-showing them is resize-free (see the style computation below). Render-
-  // time cache writes are idempotent, so this is safe under re-renders.
+  // Last shown rect per mounted pane. Hidden panes keep it, so showing them
+  // again needs no resize.
   const lastRects = useRef(new Map<string, { left: number; top: number; width: number; height: number }>())
   for (const k of [...lastRects.current.keys()]) {
     if (!mounted.includes(k)) lastRects.current.delete(k)
   }
 
-  // Eager attach: after a reload the keep-alive set starts empty, so every
-  // workspace's first click paid the attach chain plus the settle-gate
-  // "Connecting…" mask. Instead, mount every live workspace's agent pane
-  // (hidden) as soon as the workspace is measured — they attach and settle
-  // off-screen, and a sidebar click becomes the same pure visibility flip
-  // as switching back to an already-viewed workspace. The agent pane only:
-  // it's the tab a fresh page reveals (activeTabs don't persist), it exists
-  // for every workspace, and it avoids trusting persisted layouts whose
-  // window ids may be stale. Which pane that is depends on the mode — a
-  // `tui` workspace's PTY, an `acp` one's chat — so it comes from the same
-  // `defaultPaneTarget` a fresh layout opens with, or the warm-up would
-  // attach a terminal to acpd's log and leave the conversation cold. Each
-  // pane's rect is pre-seeded to the tabs-mode rect so the hidden terminal
-  // attaches at exactly the size a click reveals — no resize round trip at
-  // reveal. Capped so a large install doesn't fan out dozens of kubectl
-  // PTYs at once; uncovered workspaces just keep the old click-to-attach
-  // behavior.
+  // Eager attach: after a page load, mount each live workspace's default
+  // pane (`defaultPaneTarget`) hidden, so it attaches in the background and
+  // the first click shows it instantly. Only the default pane, since it
+  // exists for every workspace and persisted window ids may be stale. Its
+  // rect is set to the tabs-mode rect so it attaches at the size it will be
+  // shown at. Limited by EAGER_ATTACH_MAX.
   const eagerKeys = workspaces
     .filter((s) => !s.stopping)
     .slice(0, isMobile ? MOBILE_EAGER_ATTACH_MAX : EAGER_ATTACH_MAX)
@@ -394,8 +339,7 @@ export function WorkspaceView({
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
   }
 
-  /** Create a scratch-shell window and open its pane as a new column. The
-   *  server returns the new window id up front, so the pane opens without
+  /** Create a scratch-shell window and open it as a new column, without
    *  waiting for the next terminals poll. */
   const openShell = (): void => {
     if (!sid) return
@@ -413,24 +357,15 @@ export function WorkspaceView({
       .catch((e: unknown) => console.error('new shell failed', e))
   }
 
-  // Pane (x) / Alt+W → confirm → kill the tmux window (and whatever runs
-  // in it).
+  // The pane's × or the kill shortcut asks before killing a tmux window.
   const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
   // A file pane whose unsaved text could not be saved on close.
   const [confirmDiscard, setConfirmDiscard] = useState<{ target: string; name: string } | null>(null)
 
-  // Pane shortcuts (all rebindable — these are the defaults): Alt+H/Alt+L
-  // cycle terminals left/right and Alt+Shift+H/Alt+Shift+L move the active one
-  // (its window in tiles mode) — the webapp-level replacement for tmux's prefix
-  // bindings (webapp panes run with `prefix None`) — Alt+T opens a new scratch
-  // shell, Alt+G opens the changes pane, Alt+E opens the file tree and focuses
-  // its filter, Alt+P opens the preview pane, Alt+,/Alt+. switch the
-  // tabbed/window view, and Alt+W kills the active terminal through the same
-  // confirm dialog as the pane × (Alt+N, new workspace, and Alt+K/Alt+J,
-  // workspace cycle, live in App's Shell, which owns project scope).
-  // Captured on window so the chord is swallowed before xterm's textarea
-  // handler could forward it to the PTY; the ref keeps the single listener
-  // reading the current render's state.
+  // Pane-scoped shortcuts (see SHORTCUTS in #lib/shortcuts); Shell handles
+  // the project-scoped ones. Captured on window so a chord is consumed
+  // before xterm could send it to the PTY. The ref gives the listener the
+  // current render's state.
   const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell, previewPorts, isMobile })
   shortcutCtx.current = { sid, targets, activeTab, terminals, openShell, previewPorts, isMobile }
   useEffect(() => {
@@ -438,11 +373,8 @@ export function WorkspaceView({
       const ctx = shortcutCtx.current
       if (!ctx.sid) return
       const state = useUiStore.getState()
-      // A rebind being recorded, or the create dialog open: the keypress is
-      // theirs.
+      // A rebind being recorded, or the create dialog open.
       if (shortcutsSuspended(state)) return
-      // Only the terminal-scoped commands are handled here; project-scoped ones
-      // belong to App's listener, so their ids fall through the switch.
       const id = matchShortcut(state.bindings, e)
       switch (id) {
         case 'new-shell':
@@ -450,10 +382,10 @@ export function WorkspaceView({
           ctx.openShell()
           return
         case 'kill-terminal': {
-          // The agent pane isn't killable — leave the chord alone then.
+          // The agent pane can't be killed.
           if (!ctx.activeTab || ctx.activeTab === 'agent') return
           claimChord(e)
-          // A special pane just closes (no tmux window, no confirm).
+          // A special pane just closes, without confirmation.
           if (isSpecialPane(ctx.activeTab)) {
             closePaneRef.current(ctx.activeTab)
             return
@@ -462,8 +394,7 @@ export function WorkspaceView({
           return
         }
         case 'open-files':
-          // Open (or surface) the explorer and focus its filter — the
-          // quick-open: Alt+E, a few letters, Enter.
+          // Open the explorer with its filter focused, for quick-open.
           claimChord(e)
           state.openFiles(ctx.sid)
           state.setFilesFindPending(true)
@@ -473,29 +404,23 @@ export function WorkspaceView({
           state.openChanges(ctx.sid)
           return
         case 'open-preview':
-          // Nothing to preview without a forwarded port — leave the chord alone.
+          // Nothing to preview without a forwarded port.
           if (ctx.previewPorts.length === 0) return
-          // Open/focus the preview pane; the store seeds the shown port lazily
-          // (the first forwarded port until the toolbar dropdown picks another).
           claimChord(e)
           state.openPreview(ctx.sid)
           return
         case 'view-tabs':
         case 'view-tiles':
-          // Mobile forces tabs at render, so the chord would have no visible
-          // effect — but it would still persist the mode, silently rewriting a
-          // desktop tiles preference from a phone-width viewport with a
-          // hardware keyboard attached. Leave the chord alone there, the same
-          // way the header's toggle button is `!isMobile`-gated.
+          // On mobile the chord would do nothing visible but still overwrite
+          // the saved desktop preference.
           if (ctx.isMobile) return
           claimChord(e)
           state.setViewMode(id === 'view-tabs' ? 'tabs' : 'tiles')
           return
         case 'move-terminal-left':
         case 'move-terminal-right': {
-          // Reorder the active pane with wraparound: its whole window in tiles
-          // mode, its slot in the flat strip in tabs mode. Then re-focus it so
-          // it stays the visible/active pane after the shuffle.
+          // Move the active pane's column (tiles) or tab (tabs), then keep it
+          // focused.
           if (!ctx.activeTab) return
           claimChord(e)
           const dir = id === 'move-terminal-right' ? 1 : -1
@@ -529,10 +454,8 @@ export function WorkspaceView({
 
   const killPane = (target: string): void => {
     if (!sid || !layout) return
-    // Drop the cache entry alongside the pane so the layout-sync effect
-    // doesn't re-add the window while the kill is in flight. A failed kill
-    // self-heals: the next terminals poll lists the window again and the
-    // sync reopens its pane.
+    // Remove the cached window too, so the layout sync doesn't re-add it
+    // mid-kill. If the kill fails, the next poll brings the pane back.
     queryClient.setQueryData<WorkspaceTerminalEntry[]>(
       ['terminals', sid],
       (old) => old?.filter((t) => t.target !== target),
@@ -544,10 +467,8 @@ export function WorkspaceView({
       .finally(refetchTerminals)
   }
 
-  // Close a special pane: just drop the leaf — there's no tmux window to
-  // kill, and no confirm (all are cheap to reopen). A file pane first saves
-  // what it holds, closing once that lands; only a save that cannot land (a
-  // paused conflict, a failing save) asks before its text is thrown away.
+  // Close a special pane without confirmation. A file pane saves first and
+  // asks only if the save fails.
   const dropPane = (id: string, target: string): void => {
     if (isFileTarget(target)) discardFileSavers([fileKey(id, fileTargetPath(target))])
     const st = useUiStore.getState()
@@ -575,18 +496,15 @@ export function WorkspaceView({
   const dragRef = useRef<DragState | null>(null)
   dragRef.current = drag
 
-  // A tab is both a drag handle and a click target: a press that never crosses
-  // the threshold selects the tab (onSelect), one that does moves the pane —
-  // onto another column's central band it becomes a tab there, into a gap /
-  // outer third it becomes a new column at that index.
+  // A tab is a drag handle and a click target: a press that stays within
+  // DRAG_THRESHOLD selects it; a drag moves the pane (see dropTargetAt).
   const onTabDown = (e: ReactPointerEvent, src: string, onSelect: () => void): void => {
     e.preventDefault()
     if (!sid) return
     const ws = wsRef.current
     if (!ws) return
     const wsRect = ws.getBoundingClientRect()
-    // Write the ref directly too: the move handler may fire before React
-    // re-renders (which is when the ref would otherwise sync).
+    // Set the ref too; the move handler may fire before the next render.
     const init: DragState = { src, startX: e.clientX, startY: e.clientY, active: false }
     dragRef.current = init
     setDrag(init)
@@ -623,8 +541,8 @@ export function WorkspaceView({
     window.addEventListener('pointerup', onUp)
   }
 
-  // While dragging: a filled box over the column the pane would tab into, or a
-  // thin insertion bar where a new column would open.
+  // While dragging: a box over the target column, or a bar where a new
+  // column would open.
   const dropHighlight: { rect: { x: number; y: number; w: number; h: number }; bar: boolean } | null =
     drag?.active && drag.over
       ? (() => {
@@ -649,8 +567,7 @@ export function WorkspaceView({
   const fileLabels = fileTabLabels(targets.filter(isFileTarget).map(fileTargetPath))
   const tabName = (t: string): string => paneName(t, terminals, previewPortForWorkspace, workspace, fileLabels)
 
-  /** A tab in a column strip (tiles) or the single tab bar (tabs). Draggable
-   *  tabs double as click targets — see onTabDown. */
+  /** A tab in a column strip (tiles) or the single tab bar (tabs). */
   const renderTab = (
     t: string,
     opts: { isActive: boolean; onSelect: () => void; draggable: boolean },
@@ -663,8 +580,7 @@ export function WorkspaceView({
           onClick={opts.draggable ? undefined : opts.onSelect}
           className={clsx(
             'rounded px-2 py-0.5 text-[11px] transition',
-            // Finger-sized on touch — with tiles mode off, this strip is the
-            // only way to move between a workspace's panes.
+            // Finger-sized on mobile, where this strip is the only pane switcher.
             'max-md:h-8 max-md:rounded-md max-md:px-3 max-md:text-xs',
             opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
             t !== 'agent' && 'pr-5 max-md:pr-7',
@@ -705,10 +621,8 @@ export function WorkspaceView({
     )
   }
 
-  /** The header's leading affordance. On a phone this pane is a screen of its
-   *  own, so it is the back chevron to the workspace list; on desktop it is the
-   *  show-sidebar toggle, and only while the sidebar is hidden — when it's
-   *  open, its toggle lives in the sidebar header next to +. */
+  /** The header's leading button: back to the workspace list on mobile, or
+   *  the show-sidebar toggle on desktop while the sidebar is hidden. */
   const leading: ReactNode = isMobile ? (
     <button
       onClick={goBackScreen}
@@ -731,21 +645,18 @@ export function WorkspaceView({
     </button>
   ) : null
 
-  // Desktop lays eleven controls across the workspace bar; a phone has room for
-  // the title and about three. The alarm chits (git auth, blocked hosts,
-  // unforwarded ports) stay in the bar — they mean something is wrong and
-  // shouldn't be buried — and the rest folds into this menu.
+  // On mobile the warning badges (git auth, blocked hosts, unforwarded ports)
+  // stay in the bar and other controls move to an overflow menu.
   const headerClass = isMobile
     ? 'flex h-12 shrink-0 items-center gap-1 border-b border-hairline pl-1 pr-1.5 text-xs'
     : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
 
-  // The terminal accessory keys: only on a phone, only over a real terminal
-  // pane. A preview, a diff or an ACP chat pane has nothing to send Esc to.
+  // The mobile key bar, only over a terminal pane.
   const keyBarTarget = isMobile && workspace && activeTab && !isSpecialPane(activeTab) ? activeTab : null
 
   return (
     <main className="flex h-full min-w-0 flex-col">
-      {/* Slim workspace bar on the base layer — the panes are the cards. */}
+      {/* The workspace bar. */}
       {creatingHere ? (
         <header className={headerClass}>
           {leading}
@@ -860,10 +771,8 @@ export function WorkspaceView({
 
       {workspace && <GitStatusBar key={workspace.workspaceId} workspaceId={workspace.workspaceId} />}
 
-      {/* `isolate`: the provisioning overlay below is z-30, and without an
-          isolating stacking context here it escapes into the root context and
-          paints over portaled dropdowns (e.g. "+ New workspace"). Isolating
-          confines its z-index so those popups render above it. */}
+      {/* `isolate` keeps the z-30 provisioning overlay below from painting
+          over portaled dropdowns such as "+ New workspace". */}
       <div ref={wsRef} className="relative isolate min-h-0 flex-1">
         {!workspace && !creatingHere && (
           <EmptyState
@@ -877,9 +786,8 @@ export function WorkspaceView({
           />
         )}
 
-        {/* Column cards (chrome) for the selected workspace — tiles mode. Each
-            column is a tabbed window; its body is filled by the kept-alive
-            terminals below. */}
+        {/* Tiles mode: one card per column, with its tab strip. The panes
+            below are positioned into the card bodies. */}
         {workspace && tiled && cols.map(({ group, rect }, gi) => (
           <section
             key={gi}
@@ -897,12 +805,9 @@ export function WorkspaceView({
           </section>
         ))}
 
-        {/* Tabs mode: one full-bleed card; the strip switches between all the
-            workspace's panes the tiles mode arranges into columns. */}
+        {/* Tabs mode: one card whose strip lists every pane. */}
         {workspace && !tiled && targets.length > 0 && (
-          // Full-bleed on a phone: the screen is the card, so the rounding,
-          // border and drop shadow (which exist to lift the pane off the base
-          // layer it floats on) have nothing left to lift it from.
+          // Full-bleed on mobile, without rounding, border or shadow.
           <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
             border-hairline bg-surface shadow-[0_8px_24px_var(--shadow-color)]
             max-md:rounded-none max-md:border-0 max-md:shadow-none">
@@ -919,7 +824,7 @@ export function WorkspaceView({
           </section>
         )}
 
-        {/* Kept-alive terminals, positioned into their pane bodies. */}
+        {/* Mounted panes, positioned into their pane bodies. */}
         {mounted.map((key) => {
           const sep = key.indexOf('|')
           const id = key.slice(0, sep)
@@ -929,30 +834,17 @@ export function WorkspaceView({
           const explorer = isFilesTarget(target)
           const file = isFileTarget(target)
           const chat = acpTargetSession(target)
-          // Which panes are unmounted the moment they leave the screen. A
-          // preview/changes pane polls the pod, so a hidden one is pure cost.
-          // A chat pane holds one WebSocket to the server and polls nothing —
-          // and re-attaching it is the expensive part (handshake, then the
-          // whole conversation replayed in `hello`, which on a slow link is
-          // seconds of "Connecting to the agent…"). So it is laid out like a
-          // terminal instead: kept mounted at a frozen rect and merely
-          // invisible, which makes a switch back a pure visibility flip. A file
-          // pane is kept mounted for the same reason and more: unmounting it
-          // would throw away its undo history, cursor and unsaved text.
+          // Panes unmounted when off-screen, since they poll the workspace.
+          // Chat panes stay mounted (re-attaching replays the conversation),
+          // and so do file panes (unmounting loses undo history, cursor and
+          // unsaved text).
           const ephemeral = preview || changes || explorer
-          // In tiles mode a pane is on-screen when it's the active tab of its
-          // column; its rect is that column's body.
+          // In tiles mode, a column's active tab is on-screen in its body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
-          // Hidden terminals never change size. A pane resize round-trips to
-          // the workspace before tmux redraws at the new grid, so a switch that
-          // changed the pane's size flashed the stale frame until the redraw
-          // landed. So in tabs mode every terminal tab of the selected
-          // workspace shares the active tab's rect (the inactive ones merely
-          // invisible), and any other kept-alive pane freezes at the last rect
-          // it was shown with — switching tabs or workspaces is a pure
-          // visibility flip, no resize at all. Chat panes
-          // ride along (same keep-alive, no resize round trip to freeze for);
-          // ephemeral panes still unmount off-screen (below).
+          // Hidden panes never change size, since a resize round-trips to
+          // tmux and would flash a stale frame when shown. In tabs mode all
+          // of the selected workspace's tabs share one rect; other hidden
+          // panes keep the last rect they were shown at.
           const tabsRect = {
             left: PAD,
             top: headerH,
@@ -973,25 +865,15 @@ export function WorkspaceView({
                 ? undefined
                 : lastRects.current.get(key)
           if (!ephemeral && style) lastRects.current.set(key, style)
-          // Terminals and chat panes stay mounted while hidden (instant
-          // switch-back, live PTY / live conversation socket); a
-          // preview/changes pane is torn down off-screen (a hidden one keeps
-          // polling the pod) and cheaply re-mounts on return. The latter only
-          // has a `style` for the selected workspace, so previewPorts /
-          // previewPortForWorkspace (both for sid) apply.
+          // Ephemeral panes only have a `style` for the selected workspace,
+          // so previewPorts and previewPortForWorkspace apply to them.
           if (ephemeral && !style) return null
           return (
             <div
               key={key}
-              // The wrapper (bg-bg) mirrors the xterm background exactly, so the
-              // padding around the terminal is seamless — both follow the app
-              // theme (dark terminal on the dark shell, light on the light one).
-              // A preview fills its pane flush (its own chrome, no padding).
               style={style}
-              // Keep the active-terminal record in step with focus changes
-              // the DOM makes on its own (clicking into a tiled pane), so
-              // the cycle shortcut steps from the pane the user is actually
-              // in. Re-recording a shortcut-driven focus is a store no-op.
+              // Track focus from clicks too, so the cycle shortcut starts
+              // from the pane the user is in.
               onFocusCapture={() => useUiStore.getState().setActiveTab(id, target)}
               className={clsx('absolute', !onScreen && 'invisible', !style && 'left-0 top-0 h-full w-full')}
             >
@@ -1041,9 +923,6 @@ export function WorkspaceView({
                     key={`${key}:${terminalNonces[id] ?? 0}`}
                     workspaceId={id}
                     target={target}
-                    // On-screen panes render; the rest are kept-alive but
-                    // hidden (a hidden tab keeps its rect, so it's the right
-                    // size the instant it's shown). Drives the WebGL context.
                     visible={onScreen}
                     focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
                   />
@@ -1053,8 +932,7 @@ export function WorkspaceView({
           )
         })}
 
-        {/* Drop highlight while dragging a pane: a filled box to tab into a
-            column, or a thin bar where a new column would open. */}
+        {/* Drop highlight while dragging a pane. */}
         {dropHighlight && (
           <div
             style={{
@@ -1072,8 +950,7 @@ export function WorkspaceView({
           />
         )}
 
-        {/* Provisioning overlay — covers the workspace until ready. Scoped to
-            the active project so it can't cover another project's workspace. */}
+        {/* Provisioning overlay, covering the pane area until ready. */}
         {creatingHere && (
           <div className="absolute inset-0 z-30 bg-shell">
             <CreatingPlaceholder creating={creatingHere} />
@@ -1081,9 +958,8 @@ export function WorkspaceView({
         )}
       </div>
 
-      {/* A sibling of the measured workspace, not an overlay on it: the space
-          the bar takes comes out of the terminal's height, so the PTY's row
-          count follows and nothing ends up hidden behind it. */}
+      {/* Outside the measured pane area rather than over it, so the
+          terminal shrinks to make room. */}
       {keyBarTarget && sid && <TerminalKeyBar workspaceId={sid} target={keyBarTarget} />}
 
       <ConfirmDialog
@@ -1113,12 +989,8 @@ export function WorkspaceView({
 }
 
 /**
- * The mobile workspace bar's ⋯ menu: everything the desktop bar lays out
- * horizontally and a 390px screen has no room for.
- *
- * The alarm chits (git auth, blocked hosts, unforwarded ports) deliberately
- * stay out of here and remain in the bar — they say something is wrong, and
- * burying that behind a tap defeats the point.
+ * The mobile workspace bar's ⋯ menu, holding the desktop bar's controls
+ * that don't fit on a phone. Warning badges stay in the bar.
  */
 function PaneOverflowMenu({
   tool,
@@ -1130,9 +1002,9 @@ function PaneOverflowMenu({
   onOpenPreview,
 }: {
   tool: WorkspaceListEntry['tool']
-  /** Forwarded ports as external links (browser builds — no embedded webview). */
+  /** Forwarded ports shown as external links (browser only). */
   chipPorts: WorkspaceListEntry['forwardedPorts']
-  /** Forwarded ports the embedded preview pane can show (Electron only). */
+  /** Forwarded ports for the embedded preview pane (Electron only). */
   previewPorts: WorkspaceListEntry['forwardedPorts']
   onNewShell: () => void
   onOpenChanges: () => void
@@ -1174,8 +1046,7 @@ function PaneOverflowMenu({
                 Preview
               </Menu.Item>
             )}
-            {/* Opened imperatively rather than as an <a>: this is a menu item,
-                and the click is a user gesture, so no popup blocker applies. */}
+            {/* window.open from a click, which popup blockers allow. */}
             {chipPorts.map((p) => (
               <Menu.Item
                 key={`${p.hostPort}:${p.containerPort}`}

@@ -66,8 +66,8 @@ function renderPane(
 
 const BASE_TRIGGER = 'Choose the branch this diff is compared against'
 
-// jsdom has no layout engine, so scrollTop is inert there. Back it with a real
-// per-element value so the pane's scroll save + restore can be exercised.
+// jsdom has no layout, so scrollTop does nothing. Give it a per-element value
+// so the pane's scroll save and restore can be tested.
 const realScrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop')
 beforeAll(() => {
   // jsdom has no ResizeObserver; Base UI's popover positioner needs one to exist.
@@ -90,8 +90,8 @@ beforeEach(() => {
   vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
 })
 
-// The expanded-files set, scroll offset, and chosen base live in the shared
-// store keyed by session id, so clear them between tests to keep them isolated.
+// The pane's view state and chosen base live in the shared store, so clear
+// them between tests.
 afterEach(() => {
   cleanup()
   mock.mockReset()
@@ -130,8 +130,7 @@ describe('WorkspaceChanges', () => {
     expect(screen.getByText('alpha')).toBeTruthy() // new.ts open
     expect(screen.queryByText('new1')).toBeNull() // src/app.ts collapsed
 
-    // Navigating away tears the pane down (a different tab/session). Remounting
-    // must reproduce exactly the same accordion state, not re-auto-open.
+    // Remounting after navigating away restores the same expanded files.
     cleanup()
     renderPane()
     await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
@@ -220,9 +219,8 @@ describe('WorkspaceChanges', () => {
     await waitFor(() => expect(screen.getByText('No changes yet')).toBeTruthy())
   })
 
-  // An unresolved fork point means the diff only covered uncommitted work, so
-  // an empty result says nothing about what was committed. Calling that "no
-  // changes" is the lie; name the branch we couldn't find instead.
+  // Without a fork point the diff covers only uncommitted work, so an empty
+  // result must name the missing branch rather than say "No changes".
   it('distinguishes an unresolved fork point from having no changes', async () => {
     mock.mockResolvedValue({ base: 'abc', baseResolved: false, files: [], diff: '', truncated: false })
     renderPane({ baseBranch: 'never-pushed' })
@@ -266,11 +264,9 @@ describe('WorkspaceChanges', () => {
     await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'dev'))
   })
 
-  // Picking the session's own base branch must send it explicitly rather than
-  // fall back to the server default: that default is read from the workspace's
-  // git config, which the session's own `git push -u` repoints at the branch it
-  // just pushed — a base whose fork point is HEAD, so a session with a pushed
-  // PR renders as "No changes".
+  // Picking the workspace's own base branch sends it explicitly. The server
+  // default comes from git config, which the agent's `git push -u` points at
+  // the pushed branch, so a pushed PR would show "No changes".
   it('sends the session’s own base branch explicitly when it is picked', async () => {
     useUiStore.setState({ changesBase: { s1: 'dev' } })
     mock.mockResolvedValue(PAYLOAD)
@@ -343,7 +339,7 @@ describe('WorkspaceChanges', () => {
     fireEvent.keyDown(inPane, { code: 'KeyF', altKey: true })
     fireEvent.keyDown(inPane, { code: 'KeyF', metaKey: meta, ctrlKey: ctrl, shiftKey: true })
     expect(document.activeElement).not.toBe(input)
-    // Handled, so the browser's own find stays shut.
+    // Handled, so the browser's find doesn't open.
     expect(fireEvent.keyDown(inPane, { code: 'KeyF', metaKey: meta, ctrlKey: ctrl })).toBe(false)
     expect(document.activeElement).toBe(input)
   })

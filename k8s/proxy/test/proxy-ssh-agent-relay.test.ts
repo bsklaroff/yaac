@@ -12,16 +12,11 @@ import {
 } from 'yaac-proxy-sidecar/ssh-agent-relay'
 
 /**
- * The ssh-agent forwarding transport: workspace pods reach the proxy's
- * in-memory agent over TCP (a hostPath UNIX socket only rendezvous between
- * pods on one node), and the proxy decides per connection whether the
- * source is entitled to it.
- *
- * The listener is driven for real here — a stand-in "agent" on a UNIX
- * socket, a client on TCP — because the properties under test are what
- * crosses the relay each way: an admitted request reaches the agent intact,
- * a refused one never does, a refused connection gets nothing at all, and a
- * workspace only ever sees and signs with its own project's keys.
+ * The ssh-agent relay, driven for real: a stand-in agent on a UNIX socket
+ * and a client on TCP. The tests check what crosses the relay each way: an
+ * admitted request reaches the agent intact, a refused one never does, a
+ * refused connection gets nothing, and a workspace only sees and signs with
+ * its own project's keys.
  */
 
 const cleanups: Array<() => void | Promise<void>> = []
@@ -143,10 +138,8 @@ async function startListener(opts: {
 }
 
 /**
- * Connect, send one request, and resolve with the reply (or '' on refusal).
- * A refusal is a destroy, which the client sees as ECONNRESET — exactly what
- * an ssh client reports as "error connecting to agent", so it resolves empty
- * rather than throwing.
+ * Connect, send one request, and resolve with the reply, or '' when the
+ * relay refuses the connection (seen as ECONNRESET).
  */
 function ask(port: number, payload: Buffer | Buffer[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -207,8 +200,7 @@ describe('sshAgentGate', () => {
   })
 
   it('refuses an unresolvable source — the pod-watch is the only identity', () => {
-    // Nothing else authenticates the connection, so a source the proxy
-    // cannot place must never reach the agent.
+    // The source IP is the only authentication.
     expect(sshAgentGate(undefined, 'git@github.com:acme/app.git').ok).toBe(false)
   })
 
@@ -252,11 +244,9 @@ describe('createAgentRequestFilter', () => {
   }
 
   it('admits identity listing, signing with a project key and the session bind, and nothing else', () => {
-    // The three an ssh client needs against constrained keys: without the
-    // bind, an agent refuses to sign with a `-h <host>` key at all. Every
-    // other request — add, remove-all, lock, any other extension — would
-    // mutate an agent every workspace shares, and a signature with another
-    // project's key is that project's credential.
+    // Only list, sign and session-bind pass; the bind is required before
+    // an agent signs with a `-h <host>` key. Anything else could mutate the
+    // shared agent.
     const res = run([
       agentMessage(REQUEST_IDENTITIES),
       extension('session-bind@openssh.com'),
@@ -346,8 +336,7 @@ describe('createSshAgentServer', () => {
   })
 
   it('shows and signs with only the keys of the workspace\'s project, re-read per message', async () => {
-    // The agent holds every project's keys; the relay is what keeps one
-    // project's workspace from listing or spending another's.
+    // The agent holds every project's keys; the relay filters them.
     const agent = await startFakeAgent([KEY_A, KEY_B])
     let allowed = new Set([b64(KEY_A)])
     const { port, logs } = await startListener({
@@ -360,8 +349,7 @@ describe('createSshAgentServer', () => {
     expect(agent.received()).toEqual(agentMessage(REQUEST_IDENTITIES))
     expect(logs.join('\n')).toContain('not assigned to its project')
 
-    // The key is reassigned while the connection is open: its next
-    // requests see the new set, not the one it connected under.
+    // A reassignment applies to an open connection's next request.
     allowed = new Set([b64(KEY_B)])
     expect(await conn.request(agentMessage(REQUEST_IDENTITIES))).toEqual(identitiesAnswer([KEY_B]))
     expect(await conn.request(signRequest(KEY_A))).toEqual(agentMessage(AGENT_FAILURE))
@@ -369,8 +357,7 @@ describe('createSshAgentServer', () => {
   })
 
   it('answers a mutating request itself and never lets it reach the agent', async () => {
-    // The cross-workspace DoS this closes: the agent is install-wide, so one
-    // workspace locking or emptying it would strand every other workspace.
+    // The agent is shared, so one workspace must not lock or empty it.
     const agent = await startFakeAgent()
     const { port, logs } = await startListener({
       agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
@@ -435,10 +422,8 @@ describe('createSshAgentServer', () => {
   })
 
   it('releases the agent fd as soon as the client half-closes', async () => {
-    // The filter replaced a `pipe`, which used to carry the client's FIN
-    // across. Without that, a finished `git push` would pin an agent
-    // connection until the idle reaper — so the reaper is set far out here
-    // and only real propagation can pass this.
+    // The idle reaper is set far out, so only half-close propagation can
+    // close the agent side in time.
     const agent = await startFakeAgent()
     const { port } = await startListener({
       agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',

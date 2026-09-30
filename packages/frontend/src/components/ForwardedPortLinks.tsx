@@ -4,10 +4,8 @@ import { OpenLinkIcon } from '#lib/icons'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * Chip label for one forwarded port. The host port leads — it is the
- * localhost URL the chip opens — with the container port appended when
- * it differs, so the in-container server ("my dev server on 8787")
- * stays recognizable.
+ * Chip label for a forwarded port: the host port the chip opens, plus the
+ * container port when it differs.
  */
 export function portLinkLabel(p: PortMapping): string {
   return p.hostPort === p.containerPort
@@ -16,16 +14,11 @@ export function portLinkLabel(p: PortMapping): string {
 }
 
 /**
- * One link chip per forwarded port; clicking opens the port on the host
- * the webapp itself was loaded from. The server binds no forwarded port
- * (docs/port-forward-tunnel.md): a client does, so the link is true when
- * a forwarder holds that interface — `yaac forward --bind` on the server
- * host, or a loopback forwarder on the machine showing the page. The
- * desktop app's own preview pane goes to loopback directly (`#lib/preview`).
- * This is the webapp's replacement for the tmux
- * status-right port readout — webapp panes attach through view workspaces
- * with `status off`, so the server-pushed snapshot is the only place the
- * mapping can surface.
+ * URL for a forwarded port on the host the webapp was loaded from. The
+ * server binds no forwarded ports; a client forwarder does
+ * (docs/port-forward-tunnel.md), so the link works only where one is
+ * listening on that interface. The desktop preview pane uses loopback
+ * instead (`#lib/preview`).
  */
 export function portLinkHref(hostname: string, p: PortMapping): string {
   return `http://${hostname}:${p.hostPort}`

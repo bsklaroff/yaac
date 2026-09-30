@@ -1,5 +1,5 @@
 /**
- * The one rule for "is this an editable text file", shared by the build-files
+ * The "is this an editable text file" rule, shared by the build-files
  * editor and the workspace file editor.
  */
 

@@ -1,28 +1,19 @@
 /**
- * The seam between yaac and *how* it drives a coding agent.
+ * The seam between yaac and how it drives a coding agent
+ * (docs/agent-modes.md). A driver answers, independent of protocol:
  *
- * A driver answers the two questions the rest of the server asks about an
- * agent, in a form that does not depend on which protocol it speaks:
+ *   - how to launch one (`launchCmd`)
+ *   - what it is doing  (`connect`, which streams observations)
  *
- *   - how do I launch one? (`launchCmd`)
- *   - what is it doing?    (`connect`, which streams observations)
+ * One implementation per `AgentMode`: `tui-driver` watches the terminal UI
+ * through tmux control mode, `acp-driver` speaks JSON-RPC to an agent under
+ * acpd. Both run the agent in a tmux window and connect over the workspace
+ * driver's `ctrl` stream.
  *
- * Two implementations, one per `AgentMode`: `tui-driver` watches an agent's
- * terminal UI through tmux control mode, and `acp-driver` talks JSON-RPC to an
- * agent under acpd. Both launch into a tmux window and both ride a streamd
- * `ctrl` stream — tmux is the process supervisor either way, and only the
- * presentation transport differs.
- *
- * What is deliberately NOT in this interface is content. PTY bytes and ACP
- * message events have nothing in common, and forcing them into one union
- * would produce a protocol neither side can implement honestly. The webapp
- * already models that split (a pane target picks its renderer), so the
- * abstraction stops at lifecycle and status — the part that is genuinely
- * shared — and content stays mode-specific by design.
- *
- * Retry policy is not here either. A connection reports that it went down and
- * the caller decides what to do about it, so both modes get one respawn
- * strategy (`WorkspaceStatusWatcher`) rather than two that drift.
+ * Content is not part of this interface: PTY bytes and ACP events have
+ * nothing in common, and the webapp picks a renderer per pane. Retry policy
+ * is not either: a connection reports `down` and `WorkspaceStatusWatcher`
+ * handles respawn for both modes.
  */
 
 import { acpDriver } from './acp-driver'
@@ -35,80 +26,66 @@ import type { AgentPaneStatus } from './agent-tools'
 /** The session a driver is connected to. */
 export interface DrivenWorkspace {
   slug: string
-  /** The workspace id — what the relay addresses streams by. */
+  /** The workspace id, which streams are addressed by. */
   workspaceId: string
   jobName: string
   tool: AgentTool
 }
 
 /**
- * One conversation a driver can see running right now.
- *
- * `handle` is the driver's address for it *inside the pod*, and it is what
- * the status store keys statuses by: a tmux pane id (`%3`) for `tui`, the
- * acpd socket's window name (`claude`, `claude-2`) for `acp`. Both are
- * per-conversation addresses that outlive a single observation, which is all
- * the store needs them to be.
+ * One conversation the driver sees running. `handle` is its address inside
+ * the workspace and the status store's key: a tmux pane id (`%3`) for `tui`,
+ * the window/acpd socket name (`claude`, `claude-2`) for `acp`.
  */
 export interface LiveAgent {
   handle: string
   tool: AgentTool
   /**
-   * The conversation's own id, once the driver knows it. `acp` learns it from
-   * `session/new`; `tui` from the pane itself, where the tool's reporter names
-   * the conversation it runs (`PANE_SESSION_FORMAT`). Absent until then —
-   * a codex or opencode pane says nothing before its first turn.
+   * The conversation's id, once known: from `session/new` for `acp`, from
+   * the pane's reporter (`PANE_SESSION_FORMAT`) for `tui`. codex and opencode
+   * panes report nothing before their first turn.
    */
   agentSessionId?: string
   /** Its transcript, project-relative, when the pane named one (`tui`). */
   transcriptPath?: string
   /**
-   * The model it is running, as the agent itself last reported it — pushed
-   * the moment it switches, never polled. `acp` hears it from the adapter
-   * (the handshake's reply, then each `config_option_update`); `tui` from a
-   * pane option the tool's own reporter sets (see `MODEL_PANE_OPTION`).
-   * Absent until the agent has said.
+   * The model as the agent last reported it, pushed on change. `acp` gets it
+   * from the adapter (handshake reply, `config_option_update`); `tui` from a
+   * pane option set by the tool's reporter (`MODEL_PANE_OPTION`).
    */
   model?: string
-  /**
-   * What the agent itself calls that model, when it says — only `acp` does,
-   * from its adapter's model list. Rides with `model` and moves with it.
-   */
+  /** The agent's display name for `model` (`acp` only, from the adapter's
+   *  model list). */
   modelName?: string
   /**
-   * The permission mode it is in, in the agent's own words, as it last
-   * reported moving there: a session mode id under `acp`, and under `tui` the
-   * value its reporter publishes on the pane (claude's mode name, opencode's
-   * agent). `resolveAgentPermissionMode` reads it as a posture. Absent until
-   * the agent has said — which, for a tool with nothing to say, is always.
+   * The permission mode as the agent last reported it, in its own terms: a
+   * session mode id under `acp`, the reporter's value under `tui` (claude's
+   * mode name, opencode's agent). `resolveAgentPermissionMode` maps it to a
+   * posture. Absent until reported, which for some tools is never.
    */
   reportedMode?: string
 }
 
 /**
- * What a connection reports upward. This is the whole common protocol: a
- * connection's health, the set of conversations, and each one's busy/idle.
+ * What a connection reports upward: its health, the set of conversations,
+ * and each one's busy/idle.
  */
 export type AgentObservation =
   /** The connection is proven end to end and classifying. */
   | { kind: 'up' }
   /** It dropped. The caller respawns; status stays sticky. */
   | { kind: 'down'; reason: string }
-  /** The conversations running right now. Never emitted empty for a session
-   *  that simply has not started its agent yet — an empty set means "every
-   *  agent exited", which deactivates the workspace's conversations. */
+  /** The conversations running now. Never emitted empty before the agent
+   *  starts, since an empty set means "every agent exited" and deactivates
+   *  the workspace's conversations. */
   | { kind: 'live-agents'; agents: LiveAgent[] }
   | { kind: 'status'; handle: string; status: AgentPaneStatus }
   /**
-   * A read-only command channel into the pod, or null when it goes away.
-   * `tui` publishes its tmux control-mode client here so unrelated read-only
-   * tmux queries (the webapp's terminal listing) ride the open stream instead
-   * of dialing their own; `acp` has no such channel and never emits this.
-   *
-   * It travels as an observation rather than the driver registering it
-   * directly because the registry lives in `#runtime/status`, which already
-   * imports this feature — publishing it upward is what keeps the dependency
-   * one-directional.
+   * A read-only command channel into the workspace, or null when it goes
+   * away. `tui` publishes its control-mode client so other read-only tmux
+   * queries (the terminal listing) reuse it; `acp` never emits this. Sent as
+   * an observation because the registry lives in `#runtime/status`, which
+   * imports this module.
    */
   | { kind: 'command-channel'; send: ((cmd: string) => Promise<string>) | null }
 
@@ -116,35 +93,28 @@ export interface AgentConnection {
   close(): void
 }
 
-/** Everything a connection needs that this feature is not allowed to reach
- *  for itself (the DB) or should not hard-code (timeouts, the dial). */
+/** What a connection needs but may not fetch itself (the DB) or should not
+ *  hard-code (timeouts, the dial). */
 export interface AgentConnectDeps {
   /**
-   * The conversations yaac has already recorded for this workspace, keyed by
-   * handle. `acp` needs them to re-address a live agent after a reconnect
-   * (and to `session/load` after a restart) — the ACP session id is the
-   * agent's to mint, and only the database remembers it across a server
-   * restart. Supplied by the caller because the agents feature has no
-   * database access, which is exactly what keeps it sealed.
+   * The workspace's recorded conversations, by handle. `acp` needs them to
+   * re-address a live agent after a reconnect (or `session/load` after a
+   * restart); the agent mints the id and only the DB remembers it.
    */
   recordedSessions?: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   /**
-   * The workspace's permission posture. `acp` needs it because the posture is
-   * something it tells the *adapter* over the protocol (`session/set_mode`)
-   * and uses to decide who answers a permission ask — and a connection is
-   * rebuilt independently of the launch that carried `AgentLaunchSpec`, so it
-   * cannot be read from there. A row, hence injected: the agents feature has
-   * no database access, which is what keeps it sealed.
+   * The workspace's permission posture. `acp` sends it to the adapter
+   * (`session/set_mode`) and uses it to decide who answers asks; a
+   * connection is rebuilt apart from the launch, so it cannot come from
+   * `AgentLaunchSpec`.
    *
-   * Resolving to `undefined` means the posture is not known — no row, or a
-   * read that failed — and is deliberately not the same as `bypass`: an ask is
-   * forwarded rather than auto-granted, because a needless prompt is
-   * recoverable and a needless approval is not. Omitting the accessor entirely
-   * is the legacy case, and gets `bypass`.
+   * `undefined` means unknown (no row, failed read) and is not `bypass`:
+   * asks are forwarded, since a needless prompt is recoverable and a
+   * needless approval is not. Omitting the accessor gives `bypass`.
    */
   permissionMode?: () => Promise<PermissionMode | undefined>
-  /** Injected by tests — replaces the real relay ctrl-stream dial, which is
-   *  the process boundary both drivers are mocked at. */
+  /** Test hook replacing the ctrl-stream dial, the process boundary both
+   *  drivers are mocked at. */
   dial?: (session: DrivenWorkspace, argv: string[]) => StreamChild
   /** Heartbeat cadence over the open connection. */
   heartbeatIntervalMs?: number
@@ -157,23 +127,20 @@ export interface AgentConnectDeps {
 export interface AgentLaunchSpec {
   tool: AgentTool
   /**
-   * Where the workspace's things are, in its own world. Passed in rather
-   * than fetched because a launch command is authored before the workspace
-   * runs it, sometimes before anything has been launched at all — and
-   * because keeping it a parameter is what makes the command text a pure
-   * function of the spec, which is how it is tested.
+   * The workspace's paths. A parameter because the launch command is built
+   * before the workspace runs it, and so the command is a pure function of
+   * the spec (which is how it is tested).
    */
   paths: WorkspacePaths
   /**
-   * The conversation to create or resume. For `tui` this is the id passed to
-   * the tool's own `--session-id`/`resume` flag. For `acp` it is only used on
-   * a resume — a fresh ACP conversation's id comes back from `session/new`,
-   * so the agent, not yaac, chooses it.
+   * The conversation to create or resume. For `tui`, the id passed to the
+   * tool's `--session-id`/resume flag. For `acp`, used only on resume; a new
+   * conversation's id comes from `session/new`.
    */
   agentSessionId: string
   resume: boolean
-  /** The tmux window it runs in. For `acp` this also names its acpd socket,
-   *  which is why it is the conversation's handle. */
+  /** The tmux window it runs in; for `acp` also its acpd socket name, hence
+   *  its handle. */
   windowName: string
   model?: string
   piProvider?: PiProvider
@@ -182,10 +149,9 @@ export interface AgentLaunchSpec {
 }
 
 /**
- * The driver for a mode. The one place the two implementations are chosen
- * between — every caller downstream holds an `AgentDriver` and never a
- * mode-specific type, which is what keeps the mode from leaking into session
- * create, the status watcher, or the registry.
+ * The driver for a mode. The only place the two are chosen between, so the
+ * mode does not leak into session create, the status watcher or the
+ * registry.
  */
 export function agentDriver(mode: AgentMode): AgentDriver {
   return mode === 'acp' ? acpDriver : tuiDriver
@@ -195,8 +161,8 @@ export interface AgentDriver {
   readonly mode: AgentMode
   /** The shell command that runs one conversation in its tmux window. */
   launchCmd(spec: AgentLaunchSpec): string
-  /** Open the observation stream. Never throws — a failed dial is reported
-   *  as a `down` observation so the caller's backoff owns it. */
+  /** Open the observation stream. Never throws; a failed dial is reported
+   *  as `down` so the caller's backoff handles it. */
   connect(
     session: DrivenWorkspace,
     sink: (obs: AgentObservation) => void,

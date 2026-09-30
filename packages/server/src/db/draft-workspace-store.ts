@@ -6,9 +6,9 @@ import { isUuid } from '#lib/uuid'
 import type { AgentMode, AgentTool, DraftWorkspaceSettings, PermissionMode } from '@yaac/shared/types'
 
 /**
- * Draft workspaces: create-dialog contents the user kept instead of running
- * (docs/draft-workspaces.md). Pure intent, like groups — nothing observes a
- * draft, so every write here notifies the snapshot hub itself.
+ * Draft workspaces: create-dialog contents saved instead of run
+ * (docs/draft-workspaces.md). Nothing observes a draft, so every write here
+ * notifies the snapshot hub itself.
  */
 
 export interface DraftWorkspaceRow extends DraftWorkspaceSettings {
@@ -67,17 +67,15 @@ export async function insertDraftWorkspace(
 }
 
 /**
- * Replace one of a project's drafts' settings. A changed prompt drops the
- * generated title, which described the old one. Answers undefined when the
- * project has no such draft — it was discarded, or created from, since the
- * dialog opened.
+ * Replace a draft's settings. A changed prompt clears the generated title.
+ * Returns undefined if the project has no such draft (for example, it was
+ * discarded since the dialog opened).
  */
 export async function updateDraftWorkspace(
   projectSlug: string,
   id: string,
   settings: DraftWorkspaceSettings,
 ): Promise<DraftWorkspaceRow | undefined> {
-  // Draft ids are uuids; anything else names no draft.
   if (!isUuid(id)) return undefined
   const db = await getDb()
   const rows = await db.transaction(async (tx) => {
@@ -97,7 +95,7 @@ export async function updateDraftWorkspace(
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
-/** Answers whether there was one to delete. */
+/** Returns whether a draft was deleted. */
 export async function deleteDraftWorkspace(id: string): Promise<boolean> {
   if (!isUuid(id)) return false
   const db = await getDb()
@@ -113,10 +111,9 @@ export async function listDraftWorkspaceRows(): Promise<DraftWorkspaceRow[]> {
 }
 
 /**
- * Record a generated title — only while the draft is untitled, by the user
- * or the model, and still holds the prompt it was generated from, so an edit
- * that lands while the model runs is not labelled with a summary of what it
- * replaced.
+ * Record a generated title, only if the draft has no title yet and still
+ * holds the prompt the title was generated from (the prompt may have been
+ * edited while the model ran).
  */
 export async function setDraftWorkspaceTitle(id: string, prompt: string, title: string): Promise<void> {
   const db = await getDb()
@@ -132,7 +129,7 @@ export async function setDraftWorkspaceTitle(id: string, prompt: string, title: 
   if (rows.length > 0) notifyWorkspaceListChanged()
 }
 
-/** Forget a project's drafts — the project going away. */
+/** Delete a project's drafts when the project is removed. */
 export async function deleteProjectDraftWorkspaces(projectSlug: string): Promise<void> {
   const db = await getDb()
   await db.delete(draftWorkspaces).where(eq(draftWorkspaces.projectSlug, projectSlug))

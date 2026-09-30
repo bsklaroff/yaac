@@ -39,10 +39,9 @@ const SAMPLE_CODEX: CodexOAuthBundle = {
   accountId: 'acct_x',
 }
 
-/** Everything a clear could plausibly remove, and a git credential it must
- *  not: all four
- *  tool bundles, and the two per-project placeholder files. Each test seeds
- *  the lot so the assertions can say what survived as well as what went. */
+/** Everything a clear might remove (all four tool bundles and the two
+ *  per-project placeholder files) plus a git credential it must not. Each
+ *  test seeds all of it so assertions cover what survived too. */
 async function seedEverything(): Promise<void> {
   await addHttpsCredential({ name: 'gh', token: 'ghp_x' })
   await saveClaudeOAuthBundle(SAMPLE_CLAUDE)

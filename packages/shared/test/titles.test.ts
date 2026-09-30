@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest'
-// The cap is a policy constant of the module under test, read here as a
-// bound rather than re-stated as a magic number.
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 
 describe('normalizeTitle', () => {

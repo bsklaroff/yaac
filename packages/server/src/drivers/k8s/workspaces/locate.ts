@@ -11,28 +11,19 @@ import { ServerError } from '@yaac/shared/errors'
 import type { RuntimeHandle, TeardownTarget } from '#drivers/contract'
 
 /**
- * Answering "which workspace does this id name", and "how many is each
- * project running" — the substrate half of every resolve above the boundary.
- *
- * Runtime-side on purpose: all of it is substrate behavior — which view to
- * trust, when a miss is a miss, what a listing failure means — described in
- * the vocabulary of `#drivers/contract` so nothing above has to know a pod
- * carries a raw label string (docs/layered-server.md).
+ * Find workspaces by id and count them per project. Which view to trust
+ * and what a listing failure means are substrate decisions, so they live
+ * here and answer in contract terms (docs/layered-server.md).
  */
 
 /**
- * Locate a workspace by its exact workspace id; spares never match.
+ * Locate a workspace by exact id; spares never match.
  *
- * `preferCache` answers from the informer's push-fed view when it is healthy.
- * A MISS still falls through to a live listing rather than concluding the
- * workspace is gone: the informer learns of a new pod from a watch event, so
- * there is a brief window after a create where a real workspace is not in the
- * cache yet, and the PTY attach that runs right after create would otherwise
- * fail with "not found". A HIT is deliberately not re-verified — for one
- * watch-latency window a pod that just died still reads as running, which is
- * the same exposure the display path already accepts. An unseeded or
- * disconnected cache cannot be trusted for presence either, so it is bypassed
- * rather than consulted.
+ * With `preferCache`, a healthy informer cache is checked first. A miss
+ * still falls through to a live listing, because a just-created pod may not
+ * be in the cache yet and the PTY attach right after create would fail. A
+ * hit is not re-verified, so a pod that just died may briefly read as
+ * running.
  */
 export async function findWorkspace(
   workspaceId: string,
@@ -50,18 +41,12 @@ export async function findWorkspace(
 }
 
 /**
- * Every workspace the substrate is holding, optionally one project's.
+ * Every workspace, optionally for one project.
  *
- * `preferCache` answers from the informer's push-fed view, which the display
- * path takes on every snapshot rather than making the apiserver list what a
- * watch is already streaming. Gated on `healthy()` for the same reason
- * `find` gates on it, and it bites harder here: this answers with the WHOLE
- * set, so there is no "miss" to fall through on, and an unseeded cache does
- * not read as "I don't know" — it reads as an empty cluster. Ungated, the
- * window between registering a cache and its first list completing would
- * blank the workspace list, and a dropped watch would keep serving a stale
- * one until the relist healed it. Unhealthy therefore takes the live
- * listing, which is what `find` does with the same fact.
+ * With `preferCache`, a healthy informer cache answers (the display path
+ * uses this on every snapshot). An unhealthy cache is bypassed: unseeded,
+ * it would read as an empty cluster, and with a dropped watch it would
+ * serve a stale list.
  */
 export async function listWorkspaces(
   projectSlug?: string,
@@ -77,13 +62,10 @@ export async function listWorkspaces(
 }
 
 /**
- * What a stop should address, by exact workspace id, including a workspace
- * whose Job outlived its pod — and, with `spares`, an unclaimed spare, since
- * a failed warm tears down its own unit.
- *
- * A pod deleted out-of-band leaves a Job with nothing to match on, and that
- * Job is exactly what still needs deleting — so a pod miss falls through to
- * the Job listing.
+ * What a stop should target, by exact workspace id. With `spares`, an
+ * unclaimed spare also matches (a failed warm tears down its own unit). A
+ * pod miss falls through to the Job listing, since a pod deleted
+ * out-of-band leaves a Job that still needs deleting.
  */
 export async function findWorkspaceForTeardown(
   workspaceId: string,
@@ -95,8 +77,7 @@ export async function findWorkspaceForTeardown(
     return { projectSlug: pod.projectSlug, workspaceId: pod.workspaceId, unitName: pod.jobName }
   }
 
-  // A spare's pod is what says it is one; with the pod skipped as a spare,
-  // its Job must not answer in its place.
+  // The pod exists but was skipped as a spare; don't match its Job instead.
   if (pods.some((p) => p.workspaceId === workspaceId)) return undefined
 
   let jobs
@@ -112,11 +93,9 @@ export async function findWorkspaceForTeardown(
 }
 
 /**
- * Live workspace counts per project, spares excluded — a spare is not a
- * user's workspace until it is claimed.
- *
- * Unlike a listing, a count is a display detail: an unreachable substrate
- * reports nothing rather than failing the project listing that wanted it.
+ * Live workspace counts per project, excluding unclaimed spares. A count is
+ * only for display, so an unreachable substrate yields empty counts rather
+ * than an error.
  */
 export async function countWorkspaces(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
@@ -131,8 +110,8 @@ export async function countWorkspaces(): Promise<Record<string, number>> {
   return counts
 }
 
-/** How many one project is running, spares INCLUDED — what a project's own
- *  detail page reports. Zero when the substrate cannot be asked. */
+/** Workspaces one project is running, spares included (the project detail
+ *  page's count). Zero when the substrate is unreachable. */
 export async function countProjectWorkspaces(projectSlug: string): Promise<number> {
   try {
     return (await listWorkspacePods(projectSlug)).length
@@ -141,9 +120,8 @@ export async function countProjectWorkspaces(projectSlug: string): Promise<numbe
   }
 }
 
-/** One listing, with the substrate's failure surfaced the way every resolver
- *  expects it: a caller with a recorded row to fall back on catches it, and
- *  one without lets it through as RUNTIME_UNAVAILABLE. */
+/** List pods, turning a failure into RUNTIME_UNAVAILABLE. Callers with a
+ *  recorded row to fall back on catch it. */
 async function listPodsOrUnavailable(projectSlug?: string): Promise<PodInfo[]> {
   try {
     return await listWorkspacePods(projectSlug)

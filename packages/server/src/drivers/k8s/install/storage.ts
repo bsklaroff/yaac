@@ -1,36 +1,19 @@
 /**
- * The two claims the server workload mounts, and what backs them
- * (docs/server-in-cluster.md "Storage is two claims").
+ * The two claims the server mounts, and the volumes behind them
+ * (docs/server-in-cluster.md "Storage is two claims"). `yaac-global` (RWX)
+ * holds the global tier: the server mounts it whole and workspace pods
+ * mount subPaths. `yaac-server-local` (RWO) is the server's alone.
  *
- * `yaac-global` (RWX) carries the GLOBAL tier: the server pod mounts it
- * whole and every workspace pod mounts subPaths of it. `yaac-server-local`
- * (RWO) carries the SERVER-LOCAL tier and is the server's alone. The claims
- * are the same on every backend; what differs is the volume behind each,
- * and that is the storage SHAPE install hands in:
+ * The storage shape decides what backs them:
+ *  - `static` (kind): a hostPath PV per claim into the host's data dir, so
+ *    the data stays on the host and survives `yaac cluster delete`.
+ *  - `classes` (byo): each claim is provisioned from a named StorageClass
+ *    (NFS-family for RWX), then a one-shot binder pod claims each volume
+ *    root for this install, and the volume is labeled with the install id.
  *
- *  - `static` (kind): a hostPath PV per claim into the host's data dir —
- *    `<dataDir>/global` and `<dataDir>/server-local` — so the bytes stay on
- *    the host disk under `~/.yaac`, and `yaac cluster delete` keeps
- *    touching none of them. Kubernetes enforces no access mode on hostPath,
- *    so the claim spec is the one the class shape binds.
- *  - `classes` (byo): each claim provisioned from a named StorageClass — an
- *    NFS-family class for the RWX one, any block class for the RWO one —
- *    then claimed for the install and made its uid's by a one-shot binder
- *    pod, pinned `Retain`, given the NFS coherence option on the RWX
- *    volume, and labelled with the install id so this install — and only
- *    this one — finds it again after a namespace delete.
- *
- * Either way every volume is `Retain`: a claim or namespace delete never
- * takes the data with it. PV names and labels carry `dataDirHash()` because
- * PVs are cluster-scoped and one cluster hosts more than one install (the
- * real one, and every e2e namespace); the claims are namespaced and carry
- * no hash, because a namespace belongs to one install. The hash names a
- * static volume, whose host path is this machine's own; a class volume is
- * matched by the install id, because the same data-dir path on two
- * machines is two installs.
- *
- * Install-only, like the rest of this folder: the server references the
- * claim names and never applies a claim.
+ * Every volume is `Retain`, so deleting a claim or namespace keeps the
+ * data. PVs are cluster-scoped and shared by several installs, so static PV
+ * names carry `dataDirHash()`; class volumes are matched by install id.
  */
 import fs from 'node:fs/promises'
 import {
@@ -50,17 +33,13 @@ import {
   type InstallIdentity,
 } from '#drivers/k8s/substrate'
 
-/**
- * Nominal: a hostPath PV enforces no quota, and a claim has to ask for
- * SOMETHING for the binder to match it to the volume.
- */
+/** Nominal size: hostPath enforces no quota, but a claim must ask for one. */
 const NOMINAL_CAPACITY = '1Gi'
 
 /**
- * What a class-provisioned claim asks for. The RWX size is nominal as
- * well — the NFS-family drivers provision a directory or an elastic share
- * and enforce no quota at it — while the RWO one is a real disk: the
- * database, the logs, the build scratch and any downloaded models.
+ * Size requested by class-provisioned claims. RWX is nominal (NFS-family
+ * drivers enforce no quota); RWO is a real disk holding the database,
+ * logs, build scratch and downloaded models.
  */
 const CLASS_CAPACITY = { ReadWriteMany: '100Gi', ReadWriteOnce: '50Gi' } as const
 
@@ -101,9 +80,8 @@ function staticVolumeName(claimName: string): string {
 }
 
 /**
- * The install's labels on a storage object. `LABEL_CLAIM` and
- * `LABEL_INSTALL_ID` are what re-adoption finds a Released class volume by
- * — its name is the provisioner's, not ours.
+ * Labels on a storage object. Re-adoption finds a Released class volume by
+ * `LABEL_CLAIM` and `LABEL_INSTALL_ID`, since the provisioner names it.
  */
 function storageLabels(claimName: string, installId?: string): Record<string, string> {
   return {
@@ -116,12 +94,10 @@ function storageLabels(claimName: string, installId?: string): Record<string, st
 }
 
 /**
- * A static hostPath PV into the data dir, pre-bound to its claim by
- * `claimRef` so no other claim in any namespace can take it.
- *
- * `type: Directory`, never `DirectoryOrCreate`: a directory the kubelet
- * creates is root-owned, and a root-owned `server-local/` is a database
- * PGlite cannot open. `ensureStorageClaims` pre-creates both as the user.
+ * A static hostPath PV into the data dir, pre-bound to its claim. Uses
+ * `type: Directory` because kubelet would create a missing directory as
+ * root, which PGlite cannot open; `ensureStorageClaims` creates both
+ * directories as the user first.
  */
 function buildStaticPvManifest(shape: ClaimShape, hostPath: string): Record<string, unknown> {
   return {
@@ -132,8 +108,7 @@ function buildStaticPvManifest(shape: ClaimShape, hostPath: string): Record<stri
       capacity: { storage: NOMINAL_CAPACITY },
       accessModes: [shape.accessMode],
       persistentVolumeReclaimPolicy: 'Retain',
-      // The empty class is what makes this a STATIC volume: a claim naming
-      // the same empty class binds it and never asks a provisioner.
+      // Empty class: a static volume, never provisioned.
       storageClassName: '',
       claimRef: { namespace: k8sNamespace(), name: shape.claimName },
       hostPath: { path: hostPath, type: 'Directory' },
@@ -141,10 +116,7 @@ function buildStaticPvManifest(shape: ClaimShape, hostPath: string): Record<stri
   }
 }
 
-/**
- * A claim naming its class, and — when it is re-adopting a volume of this
- * install — that volume, which pre-binds it rather than provisioning.
- */
+/** A claim; with `volumeName` it pre-binds to an existing volume. */
 function buildPvcManifest(
   shape: ClaimShape,
   opts: { storageClassName: string; volumeName?: string; storage: string },
@@ -185,14 +157,10 @@ interface RawPv {
 }
 
 /**
- * Converge both claims for the storage shape, and wait for both to read
- * `Bound`.
- *
- * A claim that is already bound is left alone — a claim's spec is
- * immutable after binding, so re-applying a differing one is an apiserver
- * error that should name the claim rather than surface as a generic apply
- * failure. A claim bound to some OTHER volume (static) or through some
- * other class (classes) is exactly that error, raised here with both names.
+ * Create both claims for the storage shape and wait until both are
+ * `Bound`. An existing claim is left alone, since a bound claim's spec is
+ * immutable; if it is bound to a different volume or class, this throws
+ * a message naming both.
  */
 export async function ensureStorageClaims(opts: {
   shape: StorageShape
@@ -239,11 +207,9 @@ async function ensureStaticClaims(
 }
 
 /**
- * The class path, in the order that makes every step load-bearing:
- * re-adopt a Released volume of this install before provisioning a new
- * one; apply the claims; run the binder, which is the first consumer a
- * `WaitForFirstConsumer` class needs and the one place a volume root is
- * made the install uid's; then pin and label what bound.
+ * Class-provisioned claims: re-adopt this install's Released volumes, apply
+ * the claims, run the binder (the first consumer a `WaitForFirstConsumer`
+ * class waits for), then pin and label the bound volumes.
  */
 async function ensureClassClaims(
   shape: Extract<StorageShape, { kind: 'classes' }>,
@@ -275,18 +241,14 @@ async function ensureClassClaims(
 }
 
 /**
- * Re-adopt a volume of this install that lost its claim. `Retain` only
- * protects data a later install can find again: a namespace delete leaves
- * both volumes `Released`, and a fresh claim would otherwise provision two
- * empty volumes beside them. So look for one carrying this install's id,
- * namespace and the claim's name, clear the stale claim reference if it is
- * Released, and hand back what the new claim must name to pre-bind it.
+ * Find this install's volume for a claim that was deleted (e.g. with its
+ * namespace), so the new claim binds to it instead of provisioning an empty
+ * one. Returns what the claim must name, or undefined if there is none.
  *
- * Refused rather than guessed at: this install's volume under another
- * class (the claim would silently skip the class gate), and a volume left
- * from this data-dir PATH by another install — the same path on another
- * machine, or this one's `server.json` lost — which is someone's database
- * and credentials, adopted only on purpose.
+ * Throws when this install's volume is in a different class, or when a
+ * volume from the same data-dir path belongs to a different install id
+ * (another machine, or a lost `server.json`); the latter is only adopted
+ * when the user relabels it.
  */
 async function readoptVolume(
   claim: ClaimShape,
@@ -333,10 +295,8 @@ async function readoptVolume(
 }
 
 /**
- * A Retain volume whose claim was deleted (by hand, or with its namespace)
- * is `Released`: its claimRef still carries the old claim's uid, and it
- * binds to nothing until that is cleared. Pointed at the claim about to be
- * applied, in this namespace, so nothing else can take it meanwhile.
+ * A Released volume's claimRef still holds the deleted claim's uid, so it
+ * binds to nothing. Point it at the claim about to be applied.
  */
 async function clearStaleClaimRef(
   volume: string,
@@ -354,25 +314,18 @@ async function clearStaleClaimRef(
   log(`Storage volume ${volume} was Released; cleared its stale claim reference.`)
 }
 
-/**
- * The file at each volume root that says which install the root is.
- * Claimed by the binder, never by the server, and checked on every run.
- */
+/** File at each volume root naming the install that owns it. */
 const INSTALL_MARKER = '.yaac-install'
 
 /**
- * The binder's script. For each volume root: refuse it if it is another
- * install's — a marker naming another install id, or no marker over
- * content (`lost+found` aside, which a freshly formatted block volume
- * carries) — and otherwise claim it with this install's marker, chown it
- * (never recursively: everything below the root is created by the server
- * at that identity) and make it setgid group-writable. A refusal is
- * reported by name and fails the pod; nothing is retried.
+ * The binder's script. For each volume root it refuses one that belongs to
+ * another install (a marker with another id, or unmarked content besides
+ * `lost+found`). Otherwise it writes this install's marker, chowns the root
+ * (not recursively) and makes it setgid group-writable. Refusals are
+ * printed and fail the pod.
  *
- * The marker, not the owner, is what tells installs apart: every byo
- * install runs as the same uid, and a class with a fixed `subDir` or base
- * path hands every claim the SAME directory, so a second install on it
- * would otherwise be handed the first one's data and write into it.
+ * A marker is needed because every byo install runs as the same uid, and a
+ * class with a fixed `subDir` gives every claim the same directory.
  */
 const BINDER_SCRIPT = [
   'uid=$1; gid=$2; id=$3; rc=0',
@@ -396,13 +349,10 @@ const BINDER_SCRIPT = [
 ].join('\n')
 
 /**
- * The one-shot binder pod: runc, root, mounting both claims. It is the
- * first consumer a `WaitForFirstConsumer` class — the usual block class,
- * and local-path's — waits for before binding anything, so install cannot
- * wait on `Bound` alone; and it makes each volume root the install uid's,
- * once. That replaces `fsGroup`, which is the kubelet doing the same chown
- * as root on every mount of every pod, and which root squash defeats
- * exactly as it defeats this — except that this fails loudly, once.
+ * Run the one-shot binder pod (root, mounting both claims). It is the
+ * first consumer that a `WaitForFirstConsumer` class waits for, and it
+ * chowns each volume root once, instead of `fsGroup` chowning on every
+ * mount. If NFS root squash blocks the chown, it fails with a clear error.
  */
 async function runBinder(
   shape: Extract<StorageShape, { kind: 'classes' }>,
@@ -415,7 +365,6 @@ async function runBinder(
     metadata: { name: BINDER_POD_NAME, namespace: k8sNamespace(), labels: { app: BINDER_POD_NAME } },
     spec: {
       restartPolicy: 'Never',
-      // An aborted install leaves nothing lingering past this.
       activeDeadlineSeconds: BINDER_TIMEOUT_MS / 1000,
       automountServiceAccountToken: false,
       enableServiceLinks: false,
@@ -493,12 +442,9 @@ async function waitForBound(claims: ClaimShape[], log: (message: string) => void
 }
 
 /**
- * Make a class-provisioned volume this install's, after it bound: `Retain`
- * whatever the class said, the install's labels, and on the RWX volume the
- * NFS coherence option — the spike's finding (`actimeo=1`), applied to the
- * volume yaac owns rather than demanded of a class the operator owns. The
- * binder's own mount predates the options and is gone before any real pod
- * mounts the volume, and a PV's `mountOptions` are read at each mount.
+ * After a class volume binds, set it to `Retain`, add the install's labels,
+ * and on the RWX volume add the NFS coherence mount option. Mount options
+ * are read at each mount, so later pods get them.
  */
 async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
   const pvc = await readClaim(claim.claimName)
@@ -520,15 +466,12 @@ async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
 }
 
 /**
- * An RWX volume's mount options with yaac's coherence bound merged in:
- * `actimeo=1` bounds how long one client serves another's stale
- * attributes (cross-client visibility of 25–57ms in the spike, against
- * NFS's default of up to a minute). It costs a GETATTR per file per second
- * of use, which on EFS is billed latency — the price of a workspace seeing
- * the server's writes before its agent acts on them. Every other option the
- * class set is kept, `soft` or `hard` included: that trade (an EIO versus a
- * hang when the server goes away) is the operator's, and Linux's default is
- * `hard` (docs/cluster-setup.md "Bring your own cluster").
+ * Add `actimeo=1` to an RWX volume's mount options, replacing any
+ * attribute-cache options. It keeps NFS clients from seeing each other's
+ * stale attributes for up to a minute (measured 25–57ms visibility with
+ * it), at the cost of a GETATTR per file per second. Other options,
+ * including `soft`/`hard`, are kept (docs/cluster-setup.md "Bring your
+ * own cluster").
  */
 export function withNfsCoherence(options: string[]): string[] {
   const superseded = /^(actimeo|acregmin|acregmax|acdirmin|acdirmax)=|^noac$/
@@ -536,9 +479,9 @@ export function withNfsCoherence(options: string[]): string[] {
 }
 
 /**
- * Whether a StorageClass (or a volume, by its CSI driver) is NFS-family —
- * the only RWX kind the spike measured, and so the only one a byo install
- * accepts for the global claim. Azure Files counts only when it speaks NFS.
+ * Whether a StorageClass or CSI driver is NFS-family, the only RWX kind a
+ * byo install accepts for the global claim. Azure Files counts only over
+ * NFS.
  */
 export function isNfsFamily(provisioner: string, parameters: Record<string, string> = {}): boolean {
   if (provisioner === 'nfs.csi.k8s.io' || provisioner === 'efs.csi.aws.com') return true
@@ -550,10 +493,8 @@ async function readClaim(name: string): Promise<RawPvc | null> {
 }
 
 /**
- * Delete this install's PVs — the cluster-scoped half of the pair, which
- * does not cascade with the namespace. For the e2e harness; `yaac cluster
- * delete` takes the whole cluster and needs no per-object delete. The
- * bytes are untouched either way (`Retain`).
+ * Delete this install's PVs, which are not deleted with the namespace. Used
+ * by the e2e harness. The data is kept (`Retain`).
  */
 export async function deleteStorageVolumes(installNamespace: string): Promise<void> {
   await kubectlWithRetry([

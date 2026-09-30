@@ -1,8 +1,8 @@
 import { api } from './api'
 import type { AgentTool, ProjectSkills, SkillDetail } from '@yaac/shared/types'
 
-/** The personal + plugin + project skills the project's agent can use. `branch`
- *  selects the origin branch project (repo) skills are read from. */
+/** The personal, plugin and project skills the project's agent can use.
+ *  `branch` selects the origin branch the repo's skills are read from. */
 export async function getProjectSkills(
   slug: string,
   tool: AgentTool = 'claude',

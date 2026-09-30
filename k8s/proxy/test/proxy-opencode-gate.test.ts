@@ -3,17 +3,14 @@ import type http from 'node:http'
 import { OPENCODE_PROVIDER_HOSTS } from 'yaac-proxy-sidecar/tool-providers.generated'
 
 /**
- * Tests for the proxy's placeholder-gated opencode credential injection.
- * Mirrors the relevant slice of `buildDynamicRules` in k8s/proxy/proxy.ts —
- * the proxy runs in its own container and can't be imported directly, so we
- * copy the logic under test. The provider→host table, though, is the real
- * generated one (imported), so a regen that drops/moves a host is caught here.
+ * Tests for the proxy's placeholder-gated opencode credential injection,
+ * mirrored from `buildDynamicRules` in k8s/proxy/proxy.ts (which can't be
+ * imported). The provider→host table is the real generated one, so a regen
+ * that drops or moves a host is caught here.
  *
- * opencode is api-key only, against any provider in the generated registry.
- * Injection fires when the workspace is registered as tool=opencode AND the
- * request host matches the credential's provider host AND the inbound request
- * carries the api-key placeholder (in whichever auth header the tool used).
- * Every other combination passes through unchanged.
+ * Injection fires only when the workspace is registered as tool=opencode,
+ * the request host is the credential's provider host, and the request
+ * carries the api-key placeholder.
  */
 
 const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
@@ -154,11 +151,9 @@ describe('opencode credential injection gating', () => {
 })
 
 /**
- * Mirror of readOpencodeCreds' provider validation in proxy.ts. The proxy
- * re-reads the credential file itself at request time, so this guard is what
- * stops it from disagreeing with the server about whether a credential is
- * usable — and, before it existed, a file with no provider was read as
- * openrouter and the key was injected on openrouter.ai.
+ * Mirror of the provider validation in `decodeApiKeyTool` (objects.ts). It
+ * keeps the proxy agreeing with the server about whether a credential is
+ * usable, and never injects a key on a provider the user didn't choose.
  */
 function readCreds(file: Record<string, unknown>): OpencodeCreds | null {
   if (file.kind === 'api-key' && typeof file.apiKey === 'string' && file.apiKey) {
@@ -176,8 +171,7 @@ describe('opencode credential-file reading', () => {
   })
 
   it('rejects a credential with no provider instead of assuming openrouter', () => {
-    // The pre-provider file shape. Defaulting it would swap this key on
-    // openrouter.ai — a vendor the user never named.
+    // Defaulting would inject this key on a vendor the user never named.
     expect(readCreds({ kind: 'api-key', apiKey: 'sk-legacy' })).toBeNull()
     expect(readCreds({ kind: 'api-key', apiKey: 'sk-legacy', provider: '' })).toBeNull()
   })
@@ -187,11 +181,8 @@ describe('opencode credential-file reading', () => {
   })
 
   it('rejects a prototype-chain key rather than reading it as a provider', () => {
-    // The map is a plain object, so `MAP['constructor']` indexes to a truthy
-    // inherited member — a truthiness check would accept it and report the
-    // credential usable on /tools. Injection was never reachable (the swap
-    // sites compare hostname === MAP[provider], and no Function equals a
-    // hostname), so this is the residue that hasOwn closes.
+    // A truthiness check on `MAP['constructor']` would report the
+    // credential usable on /tools.
     for (const key of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
       expect(readCreds({ kind: 'api-key', apiKey: 'sk-x', provider: key })).toBeNull()
     }

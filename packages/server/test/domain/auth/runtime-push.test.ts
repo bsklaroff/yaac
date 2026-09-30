@@ -24,9 +24,9 @@ import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 import type { CredentialBundle } from '#drivers/contract'
 
 /**
- * The host store's link with the runtime, run for real against a temp data
- * dir: the credential files and the git credential rows are the actual store, and the
- * only stand-in is the driver, which is the thing being handed the bundle.
+ * Pushing the host credential store to the runtime. The credential files and
+ * git credential rows are real, in a temp data dir; only the driver that
+ * receives the bundle is faked.
  */
 
 const BASE_EXPIRY = 4102444800000 // 2100-01-01
@@ -70,8 +70,8 @@ describe('pushCredentialsToRuntime', () => {
     await saveClaudeCredentialsFile({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant' })
     await saveCodexOAuthBundle(codexBundle())
     await saveOpencodeCredentialsFile({ kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or' })
-    // Only a credential a project uses is handed over, with the projects
-    // that may use it (runtimeGitCredentials' own tests cover the ssh half).
+    // Only credentials a project uses are sent, each with its projects.
+    // runtimeGitCredentials' tests cover ssh keys.
     await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
     await assignProjectCredential('web', (await addHttpsCredential({ name: 'gh', token: 'ghp' })).id)
     await addHttpsCredential({ name: 'unused', token: 'ghp_unused' })
@@ -83,17 +83,16 @@ describe('pushCredentialsToRuntime', () => {
     expect(bundle.claude).toEqual({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant' })
     expect(bundle.codex).toMatchObject({ kind: 'oauth', codexOauth: codexBundle() })
     expect(bundle.opencode).toMatchObject({ provider: 'openrouter', apiKey: 'sk-or' })
-    // Signed out is carried as such: a runtime replacing its set whole must
-    // learn an absence too.
+    // Signed out is sent as null; the runtime replaces its whole set, so it
+    // must learn about absences too.
     expect(bundle.pi).toBeNull()
     expect(bundle.git).toEqual([{ token: 'ghp', projects: ['web'] }])
     expect(bundle.ssh).toEqual([])
   })
 
   it('coalesces overlapping pushes so the runtime ends on the store’s latest state', async () => {
-    // Two writers whose pushes overlap must not land out of order. One push
-    // runs at a time, and one more follows for whoever asked meanwhile —
-    // reading the store after the write that asked.
+    // One push runs at a time. Requests made meanwhile collapse into one
+    // follow-up push, which reads the store after their writes.
     const gate: Array<() => void> = []
     installFakeWorkspaceDriver({
       syncCredentials: (bundle) => new Promise<void>((resolve) => {
@@ -115,8 +114,8 @@ describe('pushCredentialsToRuntime', () => {
   })
 
   it('never rejects on a runtime that refuses, but reports the failure to a caller that asks', async () => {
-    // The write it followed already succeeded; a delete or replace still
-    // needs to know the runtime holds the old secret.
+    // The store write already succeeded, but a delete or replace needs to
+    // know the runtime still holds the old secret.
     installFakeWorkspaceDriver({ syncCredentials: () => Promise.reject(new Error('no cluster')) })
     await expect(pushCredentialsToRuntime()).resolves.toMatchObject({ message: 'no cluster' })
     installFakeWorkspaceDriver({ syncCredentials: () => Promise.resolve() })
@@ -135,7 +134,7 @@ describe('adoptRefreshedToolCredentials', () => {
 
     expect(await loadClaudeCredentialsFile()).toMatchObject({ kind: 'oauth', claudeAiOauth: rotatedClaude })
     expect(await loadCodexCredentialsFile()).toMatchObject({ kind: 'oauth', codexOauth: rotatedCodex })
-    // Echoed back, so the runtime stops preferring its own capture.
+    // Pushed back so the runtime stops preferring its own captured copy.
     expect(synced).toHaveLength(1)
     expect(synced[0].claude).toMatchObject({ claudeAiOauth: rotatedClaude })
   })
@@ -153,15 +152,14 @@ describe('adoptRefreshedToolCredentials', () => {
     })
     expect((await loadClaudeCredentialsFile())).toMatchObject({ claudeAiOauth: claudeBundle() })
 
-    // An api-key store has no bundle a rotation could supersede, and a
-    // signed-out one must not be signed back in by a stale capture.
+    // An api-key store has no bundle to rotate, and a signed-out store must
+    // not be signed back in by a stale capture.
     await saveClaudeCredentialsFile({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant' })
     await adoptRefreshedToolCredentials({ claude: claudeBundle({ accessToken: 'new', expiresAt: BASE_EXPIRY + 9 }) })
     expect(await loadClaudeCredentialsFile()).toMatchObject({ kind: 'api-key' })
     await adoptRefreshedToolCredentials({ codex: codexBundle() })
     expect(await loadCodexCredentialsFile()).toBeNull()
 
-    // Nothing was adopted, so nothing was pushed.
     expect(synced).toEqual([])
   })
 })

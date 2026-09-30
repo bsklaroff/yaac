@@ -1,8 +1,6 @@
 /**
- * Test-side client for the server's `/events` WebSocket — the snapshot
- * stream the webapp sidebar hydrates from. E2e suites use it to assert on
- * exactly what a browser would render (provisioning rows, workspace lists)
- * while a create/spawn/restart is in flight.
+ * Test client for the server's `/events` WebSocket, the snapshot stream the
+ * webapp renders from.
  */
 import WebSocket from 'ws'
 import type { ServerSnapshot } from '@yaac/shared/types'
@@ -30,8 +28,7 @@ export function collectSnapshots(port: number): SnapshotWatch {
   return { ws, opened, latest: () => latest }
 }
 
-/** Open a WS and resolve the first `snapshot` frame's data (what a connecting
- *  or reloading browser hydrates from). */
+/** Open a WS and resolve the first `snapshot` frame's data. */
 export async function firstSnapshot(port: number): Promise<ServerSnapshot> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/api/events`)
   try {

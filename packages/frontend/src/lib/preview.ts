@@ -1,9 +1,7 @@
 /**
- * Preview panes live in the same tiling layout tree as terminals, keyed by a
- * `target` string. There is at most one preview pane per workspace — the single
- * `preview` target — and which forwarded port it shows lives in the store
- * (so a port switch is a state change, not a leaf swap, and never a new split).
- * WorkspaceView branches on `isPreviewTarget` to render a browser pane.
+ * The preview pane shares the layout with terminals. A workspace has at most
+ * one, under the `preview` target; which forwarded port it shows is kept in
+ * the store, so switching ports doesn't change the layout.
  */
 
 /** The one layout target a workspace's preview pane uses. */
@@ -21,12 +19,9 @@ export function previewLabel(port: number | undefined): string {
 
 /**
  * The URL the preview webview loads for a forwarded host port. Always
- * loopback, whatever host the app was served from: the server binds no
- * forwarded port (docs/port-forward-tunnel.md), and the listener the webview
- * reaches is the one the desktop app itself holds — on `127.0.0.1` only, so
- * not `localhost`, which may resolve to `::1` first. Always plain http:
- * forwarded dev-server ports carry no TLS even when the app is served over
- * https.
+ * `127.0.0.1`: the listener is held by the desktop app on this machine
+ * (docs/port-forward-tunnel.md), and `localhost` may resolve to `::1`.
+ * Always http, since forwarded dev-server ports have no TLS.
  */
 export function previewUrl(hostPort: number): string {
   return `http://127.0.0.1:${hostPort}/`

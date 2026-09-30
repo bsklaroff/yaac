@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 /*
- * column-tabs-dnd-test.js
- *
- * Verifies the equal-width-columns window manager's drag-and-drop in tiles
- * mode against a running server with one active session that has several
- * terminals (agent + a few shells):
+ * Verifies drag-and-drop in the tiles layout (equal-width columns) against a
+ * running server with a workspace that has several terminals (agent plus
+ * some shells):
  *   1. baseline: every pane is its own equal-width column (N columns, one tab
  *      each);
  *   2. drag a shell tab onto the Agent column's centre band -> it becomes a
@@ -13,11 +11,11 @@
  *      again (back to N columns, one tab each).
  * A column is a positioned <section> (inline left/top/width/height); each
  * column's tabs are the non-empty button labels in its header. Screenshots
- * land in /tmp/yaac-shots/dnd-*.png. Prints PASS/FAIL and leaves the session
- * untouched (it is not created or deleted here).
+ * land in /tmp/yaac-shots/dnd-*.png. Prints PASS/FAIL and leaves the
+ * workspace running.
  *
- * Run (needs a running server + one active multi-terminal session, named by
- * its sidebar title):
+ * Run (needs a running server and that workspace, named by its sidebar
+ * title):
  *   node test-playwright-scripts/column-tabs-dnd-test.js "<workspace title>"
  */
 import { execSync } from 'node:child_process'
@@ -45,8 +43,7 @@ function readLock() {
 const lock = readLock()
 const origin = `http://127.0.0.1:${lock.port}`
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-// Per-column tab labels: each tiles column is a <section> positioned by an
-// inline style; its tabs are the non-empty button labels.
+// Per-column tab labels (see the header for how columns are found).
 const readColumns = (page) => page.evaluate(() => {
   const secs = [...document.querySelectorAll('section')]
     .filter((s) => s.hasAttribute('style'))
@@ -74,8 +71,7 @@ async function main() {
   let pass = false
   try {
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
-    // Force tiles mode; start from a clean layout so the columns match the
-    // live windows one-to-one.
+    // Tiles mode from a clean layout, one column per window.
     await ctx.addInitScript(() => {
       try {
         localStorage.setItem('yaac.viewmode.v1', 'tiles')
@@ -85,7 +81,6 @@ async function main() {
     const page = await ctx.newPage()
     page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
     await page.goto(`${origin}/?project=yaac`)
-    // Select the session from the sidebar by its title.
     const title = process.argv[2]
     if (!title) throw new Error('usage: column-tabs-dnd-test.js "<workspace title>"')
     await page.locator('aside').getByText(title, { exact: true }).first().click({ timeout: 15000 })
@@ -99,9 +94,8 @@ async function main() {
     // Every column holds exactly one tab, and there is more than one column.
     const baselineOk = base.length >= 3 && base.every((c) => c.length === 1)
 
-    // Pick a shell tab to move and the Agent column to drop it into. A fresh
-    // layout starts from the agent's column, so its tab is the first one; its
-    // label names the tool and model (e.g. "Claude · Opus 5.5").
+    // The agent's column comes first in a fresh layout; its tab label names
+    // the tool and model (e.g. "Claude · Opus 5.5").
     const agent = base[0][0]
     const shell = base.map((c) => c[0]).find((t) => t.startsWith('shell'))
     if (!shell) throw new Error('no shell column to drag')
@@ -126,8 +120,7 @@ async function main() {
     const agentCol = merged.find((c) => c.includes(agent))
     const mergedOk = merged.length === base.length - 1 && agentCol && agentCol.includes(shell)
 
-    // Now drag the shell tab (living in the Agent column) back out to the far
-    // right edge -> its own column again.
+    // Drag the shell tab out to the right edge -> its own column again.
     const ws = await page.locator('.relative.isolate.min-h-0.flex-1').first().boundingBox()
     const src2 = await tabBox(page, shell)
     await drag(page,

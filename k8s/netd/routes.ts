@@ -1,41 +1,19 @@
 /**
- * pod IP → host-side veth resolution.
+ * Maps pod IPs to host-side veths by parsing `ip route show` output.
  *
- * The redirect is keyed on the interface a frame ARRIVES on, not on its
- * source IP: that is the one property a sandboxed workload cannot forge
- * (a gVisor netstack guest cannot emit raw frames at all, and Felix's
- * per-endpoint anti-spoof plus rp_filter cover the runc case). So netd
- * needs the pod → veth binding, and it must come from something
- * declarative rather than CRI inspection.
- *
- * Calico supplies exactly that in the node's routing table: for every
- * local workload it installs a host route `<podIP> dev cali<hash> scope
- * link`. (The `WorkloadEndpoint` resource would be the tidier source, but
- * it is served only by the optional Calico apiserver, which yaac
- * deliberately does not install — the vendored manifest is the plain
- * KDD one.)
- *
- * Pure parsing here; the caller supplies `ip route show` output.
+ * Redirect rules match the interface a packet arrives on rather than its
+ * source IP, because a workload cannot forge its interface. Calico
+ * installs a host route `<podIP> dev cali<hash> scope link` for each local
+ * workload, which gives the mapping. (WorkloadEndpoint objects would too,
+ * but they need the optional Calico apiserver, which yaac does not
+ * install.)
  */
 
-/** A workload veth as seen from the node root netns. */
-export interface PodVeth {
-  podIp: string
-  /** Host-side interface name, e.g. `calia132c78e002`. */
-  iface: string
-}
-
 /**
- * Interface-name prefix Calico gives every workload veth, and the default
- * everywhere Calico does the IPAM.
- *
- * Matching on a prefix (rather than on any `dev` in the table) keeps
- * node-level routes — the default route, the podman bridge, tunnel devices
- * — out of the map, so a malformed table can never make netd redirect
- * something that is not a workload. That is why the prefix stays required
- * when it becomes configurable: an adopted CNI may name its veths
- * differently (policy-only Calico over the AWS VPC CNI gives `eni*`), but
- * "any device" is never the answer.
+ * Interface-name prefix Calico gives workload veths. Other CNIs may use a
+ * different one (e.g. `eni` with the AWS VPC CNI), but a prefix is always
+ * required so node-level routes (default route, bridges, tunnels) are
+ * never treated as workloads.
  */
 export const DEFAULT_VETH_PREFIX = 'cali'
 
@@ -43,14 +21,9 @@ export const DEFAULT_VETH_PREFIX = 'cali'
 const VETH_PREFIX_RE = /^[A-Za-z0-9_.@-]+$/
 
 /**
- * The veth prefix to match on, from a configured value.
- *
- * Empty, whitespace, or anything that is not a plausible interface-name
- * fragment falls back to the default rather than being honored: an empty
- * prefix would match EVERY device in the table, which is exactly the
- * "redirect something that is not a workload" failure the prefix exists to
- * prevent. A misconfiguration therefore costs the adopted cluster its
- * redirect (fail-closed) instead of widening it.
+ * The veth prefix to match on, from a configured value. Empty or
+ * implausible values fall back to the default, since an empty prefix
+ * would match every device.
  */
 export function normalizeVethPrefix(raw: string | undefined): string {
   const value = raw?.trim() ?? ''
@@ -62,18 +35,13 @@ export function normalizeVethPrefix(raw: string | undefined): string {
 const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/
 
 /**
- * Parse `ip route show` output into the podIP → veth map.
- *
- * Matches only single-address (`/32`, i.e. no prefix suffix) `scope link`
- * routes pointing at a `<prefix>*` device — the exact shape Calico writes
- * per workload:
+ * Parse `ip route show` output into a podIP → veth map. Only single-address
+ * `scope link` routes on a `<prefix>*` device count, the shape Calico
+ * writes per workload:
  *
  *     10.244.169.197 dev calia132c78e002 scope link
  *
- * Anything else (blackhole aggregates for the node's IPAM block, the
- * default route, tunnel routes) is ignored. Later entries win, matching
- * the kernel's own "most recently installed route for this destination"
- * behaviour after a pod is replaced on the same IP.
+ * Later entries win, for a pod replaced on the same IP.
  */
 export function parsePodVeths(
   ipRouteOutput: string,
@@ -91,17 +59,9 @@ export function parsePodVeths(
     if (devIdx < 0) continue
     const iface = fields[devIdx + 1]
     if (!iface?.startsWith(vethPrefix)) continue
-    // `scope link` is what distinguishes a workload route from a via-route
-    // that happens to egress a cali device.
+    // Excludes via-routes that happen to use a cali device.
     if (!/\bscope link\b/.test(line)) continue
     map.set(dest, iface)
   }
   return map
-}
-
-/** Sorted podVeth list — deterministic ordering for rendering and tests. */
-export function podVethList(map: Map<string, string>): PodVeth[] {
-  return [...map.entries()]
-    .map(([podIp, iface]) => ({ podIp, iface }))
-    .sort((a, b) => (a.podIp < b.podIp ? -1 : a.podIp > b.podIp ? 1 : 0))
 }

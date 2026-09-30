@@ -83,8 +83,7 @@ describe('RefreshFlights', () => {
     const first = flights.run('claude', 'rt0', spend())
     await vi.advanceTimersByTimeAsync(REFRESH_WAIT_MS)
     expect(await first).toBe(TIMED_OUT)
-    // Still in flight: a refresh in the gap joins it rather than spending the
-    // token upstream may already have rotated.
+    // A refresh while one is in flight joins it instead of spending again.
     const gap = flights.run('claude', 'rt0', spend())
     await vi.advanceTimersByTimeAsync(REFRESH_WAIT_MS / 2)
     expect(spent()).toBe(1)

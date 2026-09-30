@@ -1,38 +1,24 @@
 /**
- * Taint/toleration matching, as kubernetes itself defines it.
+ * Taint/toleration matching, following kubernetes'
+ * `v1helper.TolerationsTolerateTaint`.
  *
- * "Can this pod land on that node?" is a per-taint question, and answering
- * it with "the node carries no taint at all" is only right for a pod that
- * tolerates nothing. That used to describe every yaac pod bar netd, so the
- * blanket answer was indistinguishable from the real one — until a
- * dedicated workspace pool, which is built the conventional way: taint the
- * pool so nothing else drifts onto it, and tolerate that taint from the
- * workload that belongs there. Under the blanket rule such a pool reads as
- * *zero* nodes a workspace can use, and the only repair it can suggest is
- * removing the taint — dismantling the isolation the pool exists for.
+ * Asking "does the node have no taints?" is wrong for a dedicated workspace
+ * pool, which is tainted so other pods stay off and tolerated by workspace
+ * pods. Each taint must be checked against the pod's tolerations.
  *
- * Where a workspace pod's tolerations come from is the other half: nothing
- * stamps them per-pod. `RuntimeClass.scheduling.tolerations` is merged by
- * the RuntimeClass admission controller into every pod naming the class, so
- * declaring the pool's toleration once on `gvisor` reaches workspace pods,
- * builder pods and cluster check's own pinned probes
- * alike (those bypass the scheduler, but kubelet still admits them, and a
- * `NoExecute` taint evicts what it does not tolerate).
+ * Workspace pods get their tolerations from `RuntimeClass.scheduling
+ * .tolerations`: the RuntimeClass admission controller merges them into
+ * every pod naming the `gvisor` class, so declaring the pool's toleration
+ * there covers workspace pods, builder pods and cluster check's pinned
+ * probes. (Pinned pods bypass the scheduler, but kubelet still admits them
+ * and a `NoExecute` taint evicts what it does not tolerate.)
  *
- * The rules below are `v1helper.TolerationsTolerateTaint`'s, and are worth
- * spelling out because two of them are easy to get subtly wrong: an empty
- * toleration `effect` matches EVERY effect (not "no effect"), and an empty
- * `operator` means `Equal` (not `Exists`).
+ * Two easy-to-miss rules: an empty toleration `effect` matches every
+ * effect, and an empty `operator` means `Equal`.
  *
- * One rule is deliberately NOT modelled: `tolerationSeconds`, which bounds
- * how long a `NoExecute` taint is tolerated before the taint manager evicts
- * the pod. This answers the scheduler's question — may the pod land here —
- * and a time-bounded toleration lands the pod, so it counts as tolerated.
- * That makes a time-bounded pool toleration a configuration yaac cannot warn
- * about: every gate passes, and workspaces are evicted when the clock runs
- * out. Declare a pool's toleration without `tolerationSeconds`; there is no
- * reason to bound it, since the taint is the pool's identity rather than a
- * condition expected to clear.
+ * `tolerationSeconds` is not modelled. A time-bounded toleration still lets
+ * the pod land, so it counts as tolerated here, but workspaces are evicted
+ * when it expires. Declare a pool's toleration without `tolerationSeconds`.
  */
 
 /** A node taint as the apiserver serves it (`spec.taints[]`). */
@@ -51,43 +37,34 @@ export interface PodToleration {
 }
 
 /**
- * Effects that keep a pod off a node (or throw it off). `PreferNoSchedule`
- * is deliberately absent: it is a scheduler preference, so a pod that does
- * not tolerate it still lands when nothing better exists, and treating it
- * as blocking would report a perfectly usable node as unusable.
+ * Effects that keep a pod off a node (or evict it). `PreferNoSchedule` is
+ * absent: it is only a scheduler preference, and a pod that does not
+ * tolerate it still lands when nothing better exists.
  */
 const BLOCKING_EFFECTS = new Set(['NoSchedule', 'NoExecute'])
 
 function tolerates(toleration: PodToleration, taint: NodeTaint): boolean {
-  // Empty effect is the wildcard: this toleration covers every effect of
-  // the key it names.
+  // An empty effect matches every effect.
   if (toleration.effect && toleration.effect !== taint.effect) return false
-  // Only these two operators exist; empty means Equal. Unknown ones tolerate
-  // NOTHING, which is upstream's verdict and the safe direction — falling
-  // through to a value comparison would let a typo'd operator quietly grant
-  // a node. The apiserver rejects them anyway, so this is a floor, not a
-  // path anything reaches.
+  // An unknown operator tolerates nothing, as upstream does. (The
+  // apiserver rejects them, so this is only a safety floor.)
   if (toleration.operator && toleration.operator !== 'Equal'
     && toleration.operator !== 'Exists') {
     return false
   }
-  // Empty key is the wildcard, and is only legal with Exists — which is
-  // what netd and the gVisor installer's `{operator: Exists}` says: tolerate
-  // everything, this is node infrastructure.
+  // An empty key matches every taint and is only legal with Exists (netd
+  // and the gVisor installer tolerate everything this way).
   if (!toleration.key) return toleration.operator === 'Exists'
   if (toleration.key !== taint.key) return false
   if (toleration.operator === 'Exists') return true
-  // Equal compares values — a valueless taint (`key:NoSchedule`) matches a
-  // toleration with no value.
+  // A valueless taint (`key:NoSchedule`) matches a toleration with no value.
   return (toleration.value ?? '') === (taint.value ?? '')
 }
 
 /**
- * The taints on a node that would actually keep the pod off it: the
- * scheduling-blocking ones no toleration matches. Empty means the pod can
- * land there as far as taints are concerned (cordoning — `spec.unschedulable`
- * — is a separate question, and one the caller asks separately because it
- * has its own repair).
+ * The blocking taints on a node that none of the pod's tolerations match.
+ * Empty means taints do not keep the pod off. Cordoning
+ * (`spec.unschedulable`) is not considered; callers check it separately.
  */
 export function untoleratedTaints(
   taints: NodeTaint[] | undefined,

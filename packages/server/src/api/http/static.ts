@@ -4,15 +4,11 @@ import { readFile } from 'node:fs/promises'
 import type { Env, Hono } from 'hono'
 
 /**
- * CSP for the SPA shell. Loopback-only http server, so cookies can't be
- * `Secure`; the CSP is the main hardening on the HTML response.
- * `connect-src` allows ws/wss for the `/events` and future PTY sockets.
- * `style-src 'unsafe-inline'` is the one relaxation — Vite/React inject a
- * little inline style; tightening to hashes is a later polish pass.
- * Inline <script> bodies in the served index.html (the pre-paint theme
- * init) are admitted by hash, computed from the html itself so the policy
- * can never drift from the markup — script-src stays 'self'-only for
- * everything else.
+ * CSP for the SPA shell, the main hardening on the HTML response.
+ * `connect-src` allows ws/wss for the WebSocket routes. `style-src
+ * 'unsafe-inline'` is needed because Vite/React inject some inline style.
+ * Inline <script> bodies in index.html (the pre-paint theme init) are allowed
+ * by hash, computed from the served html so the policy always matches it.
  */
 export function spaCsp(html: string): string {
   const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]

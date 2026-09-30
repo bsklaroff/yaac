@@ -1,8 +1,8 @@
 /**
- * The streaming process runner, driven against real short-lived processes:
- * its whole job is signals, pipes and process death, and a fake child cannot
- * tell you whether a grandchild survived a kill. Budgets are shrunk to
- * hundreds of milliseconds so the real thing stays fast.
+ * The streaming process runner, run against real short-lived processes: its
+ * job is signals, pipes and process death, and a fake child cannot show
+ * whether a grandchild survived a kill. Timeouts are shrunk to hundreds of
+ * milliseconds to keep the tests fast.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -48,8 +48,8 @@ describe('runStreamingProcess', () => {
   })
 
   it('kills a silent run, and only after it has gone quiet', async () => {
-    // Output every 100ms for ~500ms — five times the idle budget in total
-    // elapsed, and never killed for it; then silence, which is.
+    // Output every 100ms for ~500ms (longer than the idle timeout in total,
+    // but never idle), then silence, which is killed.
     const started = Date.now()
     await expect(runStreamingProcess('sh', [
       '-c', 'for i in 1 2 3 4 5; do echo tick; sleep 0.1; done; sleep 30',
@@ -70,9 +70,8 @@ describe('runStreamingProcess', () => {
   })
 
   it('takes the grandchildren with it, and settles without waiting for the pipes', async () => {
-    // `sleep 300 &` inherits the stdio pipes, so `close` cannot arrive until
-    // it dies — the hang this runner exists to avoid. Killing the process
-    // group is what makes it die at all.
+    // `sleep 300 &` holds the stdio pipes open, so `close` would never
+    // arrive. Killing the process group is what kills it.
     let grandchild = 0
     const started = Date.now()
     await expect(runStreamingProcess('sh', [
@@ -92,10 +91,9 @@ describe('runStreamingProcess', () => {
     expect(alive(grandchild)).toBe(false)
   })
 
-  // The symmetric case to the kill path: the process ends on its own while a
-  // grandchild holds the pipes. Its own exit status is the verdict, and a
-  // held pipe may not postpone it — least of all into a timeout that never
-  // happened, which would report a successful build as a failure.
+  // The process exits on its own while a grandchild holds the pipes. Its
+  // exit status must be reported promptly, not turned into a timeout that
+  // would fail a successful build.
   it('reports the exit status of a run whose grandchild holds the pipes open', async () => {
     const started = Date.now()
     await expect(runStreamingProcess('sh', ['-c', 'echo boom >&2; sleep 20 & exit 3'], {

@@ -13,16 +13,14 @@ import {
 import { acpLogDir, setDataDir } from '@yaac/shared/project-paths'
 
 /**
- * The record acpd writes is now a conversation's history, so this projection
- * is what a pane actually renders. It runs against raw text rather than a
- * conversation object because the point of the design is that the file stands
- * alone: no server, no agent, no pod required to read it.
+ * The log acpd writes is a conversation's history and what a pane renders.
+ * These tests use raw file text, since reading it needs no server, agent or
+ * pod.
  */
 
 const line = (msg: unknown): string => JSON.stringify(msg)
 
-/** acpd stamps one of these as byte 0 of every life; the tail tells lives
- *  apart by its id. */
+/** The first line acpd writes for each agent run; its id tells runs apart. */
 const life = (id: string): string =>
   line({ jsonrpc: '2.0', method: '_acpd/life', params: { id } })
 
@@ -39,7 +37,7 @@ const prompt = (text: string): string => line({
   params: { workspaceId: 'acp-1', prompt: [{ type: 'text', text }] },
 })
 
-/** The agent asking permission, as acpd recorded it coming the other way. */
+/** A permission request from the agent, as acpd records it. */
 const ask = (id: string | number, title = 'rm -rf build'): string => line({
   jsonrpc: '2.0',
   id,
@@ -54,7 +52,7 @@ const ask = (id: string | number, title = 'rm -rf build'): string => line({
   },
 })
 
-/** yaac's answer to one, which acpd tees back into the same record. */
+/** yaac's answer to one, also recorded by acpd. */
 const answer = (id: string | number, optionId?: string): string => line({
   jsonrpc: '2.0',
   id,
@@ -73,8 +71,7 @@ afterAll(async () => {
 })
 
 let seq = 0
-/** A fresh conversation's record: the file acpd would write, and the name a
- *  reader asks for it by. */
+/** A fresh conversation log and the ref a reader uses for it. */
 async function record(): Promise<{ file: string; ref: AcpRecordRef }> {
   const ref = { slug: 'demo', workspaceId: `wt-${String(++seq)}`, agentSessionId: 'acp-1' }
   const dir = acpLogDir(ref.slug, ref.workspaceId)
@@ -102,8 +99,7 @@ describe('tailAcpLog', () => {
     const batches: Array<{ events: unknown[]; reset: boolean }> = []
     tails.push(tailAcpLog((await scratch()).ref, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
 
-    // A conversation whose agent has not spoken has an empty history, not a
-    // missing one — a pane must still learn that it is attached.
+    // An empty history is still reported, so the pane knows it is attached.
     await until(() => batches.length > 0)
     expect(batches[0]).toEqual({ events: [], reset: true })
   })
@@ -119,8 +115,7 @@ describe('tailAcpLog', () => {
 
     await fs.appendFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'two' } }) + '\n')
     await until(() => batches.length > 1)
-    // Only the new line — a tail that re-sent its history would double every
-    // message on every pass.
+    // Only the new line, not the whole history again.
     expect(batches[1]).toMatchObject({ reset: false })
     expect(batches[1].events).toHaveLength(1)
   })
@@ -132,7 +127,7 @@ describe('tailAcpLog', () => {
     const batches: Array<{ events: unknown[] }> = []
     tails.push(tailAcpLog(ref, (events) => batches.push({ events }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
-    // acpd appends as the agent streams, so a pass always lands mid-line.
+    // A pass can land mid-line while acpd is appending.
     expect(batches[0].events).toEqual([])
 
     await fs.appendFile(file, full.slice(20) + '\n')
@@ -145,10 +140,8 @@ describe('tailAcpLog', () => {
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old life' } }),
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'more' } }),
     ].join('\n') + '\n')
-    // What a pane holds, built the way the pane builds it: replace on reset,
-    // append otherwise. Asserting on this rather than on one batch is the
-    // point — `writeFile` truncates before it writes, so a pass can legally
-    // land on an empty record and report the reset with no events in it.
+    // Rebuild the pane's view (replace on reset, else append), since a pass
+    // may see the truncated file empty and report the reset with no events.
     let view: Array<{ content?: Array<{ text?: string }> }> = []
     tails.push(tailAcpLog(ref, (events, reset) => {
       const batch = events as typeof view
@@ -156,22 +149,20 @@ describe('tailAcpLog', () => {
     }, { intervalMs: 20 }))
     await until(() => view.length === 2)
 
-    // acpd opens the record with 'w', so a restart shortens it. Appending from
-    // the old position would splice two conversations together.
+    // A restart truncates the log; appending from the old offset would mix
+    // two runs.
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'new life' } }) + '\n')
     await until(() => view.length === 1)
     expect(view[0]).toMatchObject({ content: [{ text: 'new life' }] })
 
-    // And it stays that way: the old life must not come back on a later pass.
+    // The old run must not reappear on a later pass.
     await new Promise((r) => setTimeout(r, 100))
     expect(view).toHaveLength(1)
   })
 
   it('still reports the restart when it catches the record empty', async () => {
-    // The race the previous test can only hit by luck. acpd's open(…, 'w')
-    // empties the file before writing a byte, so a pass can see size 0: there
-    // is nothing to project yet, but forgetting the reset would append the new
-    // life's first events to the old life's transcript.
+    // acpd's open(…, 'w') empties the file first, so a pass can see size 0.
+    // The reset must still be reported.
     const { file, ref } = await scratch()
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old life' } }) + '\n')
     const batches: Array<{ events: unknown[]; reset: boolean }> = []
@@ -184,22 +175,19 @@ describe('tailAcpLog', () => {
 
     await fs.appendFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'new life' } }) + '\n')
     await until(() => batches.length > 2)
-    // Already reset above, so this is an ordinary append — not a second reset.
+    // An ordinary append, not a second reset.
     expect(batches[2]).toMatchObject({ reset: false })
     expect(batches[2].events).toHaveLength(1)
   })
 
   it('holds a character split across a pass boundary', async () => {
-    // acpd appends one writeSync per agent stdout chunk and those chunks split
-    // characters, so a pass can see the file ending mid-sequence. Decoding
-    // each pass's bytes on their own would put a U+FFFD on each side of the
-    // split, inside JSON that still parses — silent corruption.
+    // Chunks can split a UTF-8 sequence; decoding each pass separately would
+    // insert U+FFFD into JSON that still parses.
     const { file, ref } = await scratch()
     const full = Buffer.from(
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'héllo 😀 世界' } }) + '\n',
       'utf8',
     )
-    // Split inside the emoji's 4-byte sequence.
     const at = full.indexOf(Buffer.from('😀', 'utf8')) + 2
     await fs.writeFile(file, full.subarray(0, at))
 
@@ -214,10 +202,8 @@ describe('tailAcpLog', () => {
   })
 
   it('starts over when a new life reuses the byte count of the one before', async () => {
-    // Truncation is not always visible as a shrink: a restart whose
-    // session/load replay regrows the file past where we were reading, inside
-    // one tick, looks like an ordinary append. The life id is what makes the
-    // distinction exact.
+    // A restart's session/load replay can regrow the file past the old
+    // offset within one tick, so only the run id reveals the truncation.
     const { file, ref } = await scratch()
     const a = update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old' } })
     await fs.writeFile(file, [life('life-1'), a].join('\n') + '\n')
@@ -228,18 +214,15 @@ describe('tailAcpLog', () => {
     }, { intervalMs: 20 }))
     await until(() => view.length === 1)
 
-    // Same length, different life: byte-identical size, wholly different
-    // conversation.
+    // Same size, different run.
     const b = update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'new' } })
     await fs.writeFile(file, [life('life-2'), b].join('\n') + '\n')
     await until(() => view.length === 1 && view[0].content?.[0].text === 'new')
   })
 
   it('flushes what has been appended even while a pass is already running', async () => {
-    // `flush()` exists so the bridge can order a turn-end after the record's
-    // contents. A flush that returned early because the interval had just
-    // fired would resolve without reading the answer's last bytes, and the
-    // turn would render above them.
+    // The bridge relies on flush() to send a turn-end after the log's last
+    // bytes, even when a timed pass is already running.
     const { file, ref } = await scratch()
     await fs.writeFile(file, '')
     const events: unknown[] = []
@@ -251,13 +234,12 @@ describe('tailAcpLog', () => {
       sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'the last words' },
     }) + '\n')
     await tail.flush()
-    // Not "eventually" — by the time flush resolves.
+    // Already there when flush resolves.
     expect(events).toHaveLength(1)
   })
 
   it('follows no record past the cap, whatever size it claims', async () => {
-    // A sparse file costs the pod that plants it nothing; reading to its size
-    // would cost the server that much memory on every pass.
+    // A huge sparse file is cheap to create but costly to read.
     const { file, ref } = await scratch()
     const handle = await fs.open(file, 'w')
     await handle.truncate(MAX_ACP_RECORD_BYTES + 1)
@@ -285,8 +267,7 @@ describe('tailAcpLog', () => {
 
 describe('readAcpFirstPrompt', () => {
   it('finds the opening message without a live conversation', async () => {
-    // The registry labels a workspace from this, on a reconciler tick — so it
-    // must come off disk rather than from something attached.
+    // The reconciler labels workspaces from this, so it must read from disk.
     const { file, ref } = await record()
     await fs.writeFile(file, [
       line({ jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } }),
@@ -299,8 +280,7 @@ describe('readAcpFirstPrompt', () => {
   })
 
   it('labels from an opening message whose images run it past the scan', async () => {
-    // Megabytes of base64 on one line: the scan cannot parse it, but the text
-    // is written ahead of the images, so the label is still in reach.
+    // Too large to parse, but the text precedes the images on the line.
     const { file, ref } = await record()
     await fs.writeFile(file, [
       life('life-1'),
@@ -334,9 +314,8 @@ describe('readAcpFirstPrompt', () => {
 })
 
 /**
- * How a reconnecting server learns the agent is blocked on a human. Nothing
- * replays a permission ask — acpd holds nothing for an absent client — so the
- * record is the only evidence, exactly as it is for turn state.
+ * How a reconnecting server learns the agent is waiting on a permission
+ * answer. acpd does not replay asks, so the log is the only record.
  */
 describe('readAcpPendingPermissions', () => {
   const write = async (lines: string[]): Promise<AcpRecordRef> => {
@@ -346,9 +325,7 @@ describe('readAcpPendingPermissions', () => {
   }
 
   it('returns an unanswered ask with the id the agent used, type included', async () => {
-    // Verbatim, not stringified: JSON-RPC pairs an id by value AND type, so a
-    // numeric 42 answered as "42" is a reply the agent never matches — and a
-    // turn that stays blocked forever.
+    // JSON-RPC matches ids by value and type, so 42 must not become "42".
     const file = await write([life('l1'), prompt('go'), ask(42)])
     expect(await readAcpPendingPermissions(file)).toEqual([42])
 
@@ -366,9 +343,7 @@ describe('readAcpPendingPermissions', () => {
   })
 
   it('forgets asks the agent died holding, which nobody can answer any more', async () => {
-    // The bound on "unanswered ⇒ still blocked". Without acpd's exit line the
-    // scan would report a conversation waiting on a decision whose process is
-    // gone, and nothing would ever clear it.
+    // acpd's exit line ends every pending ask of that run.
     const file = await write([
       life('l1'),
       ask(1),
@@ -394,9 +369,7 @@ describe('replayAcpLog', () => {
   })
 
   it('replays a message\'s images with its words', () => {
-    // The user's own turn exists only as the client's `session/prompt` line,
-    // so an image the user sent is in the history only if that projection
-    // keeps it.
+    // User turns exist only as `session/prompt` lines, images included.
     const raw = (line({
       jsonrpc: '2.0',
       id: 'abc-1',
@@ -420,9 +393,8 @@ describe('replayAcpLog', () => {
   })
 
   it('reconstructs user turns from the client\'s own prompts', () => {
-    // The agent echoes a user message only when replaying under `session/load`,
-    // so for anything said live these request lines are the only record that a
-    // user spoke at all — which is why acpd tees both directions.
+    // The agent echoes user messages only on `session/load`, so live turns
+    // come from these request lines.
     const events = replayAcpLog([
       prompt('first ask'),
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working' } }),
@@ -444,8 +416,7 @@ describe('replayAcpLog', () => {
   })
 
   it('merges a tool call across its updates, as the live path does', () => {
-    // Same `mergeToolCall` the live translation uses — one projection, so a
-    // replayed conversation cannot disagree with the one that was watched.
+    // Uses the same `mergeToolCall` as the live path.
     const events = replayAcpLog([
       update({
         sessionUpdate: 'tool_call',
@@ -459,7 +430,7 @@ describe('replayAcpLog', () => {
     ].join('\n'))
 
     expect(events).toHaveLength(2)
-    // The patch carried only a status, so title, kind and content are inherited.
+    // The update carried only a status; the rest is inherited.
     expect(events[1]).toMatchObject({
       call: { toolCallId: 't1', title: 'Edit a.ts', kind: 'edit', status: 'completed' },
     })
@@ -480,7 +451,6 @@ describe('replayAcpLog', () => {
   })
 
   it('survives a partial trailing line, which a live record always has', () => {
-    // acpd appends as the agent streams, so a read can land mid-write.
     const raw = [
       prompt('go'),
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } }),
@@ -491,10 +461,8 @@ describe('replayAcpLog', () => {
   })
 
   it('projects a permission ask and the answer that settled it', () => {
-    // Both directions are in the record, which is why a pane can be shown a
-    // question the agent asked a connection that no longer exists — and why a
-    // `bypass` conversation, whose asks the server answers itself, still reads
-    // back as the decisions that were made.
+    // The log records both directions, including asks the server answered
+    // itself under `bypass`.
     const events = replayAcpLog([
       prompt('clean the build'),
       ask(42),
@@ -520,8 +488,7 @@ describe('replayAcpLog', () => {
 
   it('reads a dismissal as cancelled, and ignores a reply to something else', () => {
     const events = replayAcpLog([
-      // A reply whose request was never an ask — the handshake's, say — must
-      // not become a permission event just for being an anonymous result.
+      // A reply to a non-permission request (e.g. the handshake).
       line({ jsonrpc: '2.0', id: 'x-1', result: { protocolVersion: 1 } }),
       ask(7),
       answer(7),
@@ -539,10 +506,7 @@ describe('replayAcpLog', () => {
   })
 
   it('hands an edit to the pane as a diff, not as prose about one', () => {
-    // An agent reports an edit as before/after texts — one entry per hunk, all
-    // naming the same file. Flattening that into a string would be
-    // irreversible: the pane renders it as a real diff, and no arrangement of
-    // markers in text gets the pair back.
+    // One before/after entry per hunk; the pane renders each as a diff.
     const events = replayAcpLog([
       update({
         sessionUpdate: 'tool_call',
@@ -551,8 +515,7 @@ describe('replayAcpLog', () => {
         kind: 'edit',
         content: [
           { type: 'diff', path: '/workspace/a.ts', oldText: 'one', newText: 'ONE' },
-          // `null` is how "this file is new" arrives; it must not become the
-          // string "null" in front of a reader.
+          // `null` means a new file, not the text "null".
           { type: 'diff', path: '/workspace/b.ts', oldText: null, newText: 'fresh' },
         ],
       }),
@@ -581,7 +544,7 @@ describe('replayAcpLog', () => {
         content: [
           { type: 'content', content: { type: 'text', text: 'writing the file' } },
           { type: 'diff', path: '/workspace/a.ts', newText: 'body' },
-          // A terminal yaac declined to provide; there is nothing to show.
+          // yaac provides no terminals, so there is nothing to show.
           { type: 'terminal', terminalId: 'term-1' },
         ],
       }),

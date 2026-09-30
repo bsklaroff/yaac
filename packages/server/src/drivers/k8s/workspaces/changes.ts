@@ -1,12 +1,8 @@
 /**
- * The review diff for a workspace pod, computed pod-side.
- *
- * Pod-side because it has to be: the workspace's git metadata points at
- * container paths, so host-side git cannot read it. What the diff IS — the
- * script that stages the working tree into a private index and prints it,
- * and the parser for what comes back — is driver-neutral and lives in
- * `#lib/workspace-changes`; this file is the pod half, which is the exec, the
- * paths it runs against, and the concurrency around a shared index.
+ * The review diff for a workspace pod, computed inside the pod because the
+ * workspace's git metadata points at container paths. The script and its
+ * output parser are driver-neutral and live in `#drivers/shared`; this file
+ * runs the script in the pod and serializes access to its shared index.
  */
 
 import { RelayExecError, k8sWorkspacePaths, podExec } from '#drivers/k8s/substrate'
@@ -19,8 +15,8 @@ import {
 } from '#drivers/shared'
 import type { WorkspaceChanges } from '@yaac/shared/types'
 
-/** Where the diff runs inside a workspace pod. The index is a stable
- *  pod-local path so git's stat cache survives between polls. */
+/** Where the diff runs in the pod. The index path is stable so git's stat
+ *  cache survives between polls. */
 function podLocation(): ChangesLocation {
   const paths = k8sWorkspacePaths()
   return {
@@ -31,32 +27,24 @@ function podLocation(): ChangesLocation {
 }
 
 /**
- * One run at a time per workspace. The runs share a single pod-side index, and
- * two overlapping `git add -A` calls would collide on its lock; serializing
- * also keeps a polling client from stacking work on a pod whose workspace is
- * slow to walk.
+ * One run at a time per workspace: runs share one index, and overlapping
+ * `git add -A` calls would collide on its lock.
  */
 const changesMutex = createKeyedMutex()
 
-/** Runs in flight, keyed by the exact request. The pane polls every few
- *  seconds and every open tab polls independently, so identical concurrent
- *  requests share one pod exec instead of queueing behind each other. */
+/** Runs in flight, keyed by request. Every open tab polls independently, so
+ *  identical concurrent requests share one exec. */
 const inFlight = new Map<string, Promise<WorkspaceChanges>>()
 
-/** Compute the review diff for a running workspace's checkout. `base`, when
- *  given, is a user-picked branch whose fork point the diff is taken against.
- *  `defaultBase` is the workspace's recorded fork branch (e.g. `main`), used as
- *  the default when no explicit `base` is given so committed work stays
- *  visible even after the agent renames and pushes its branch.
+/** Compute the review diff for a running workspace. `base` is an optional
+ *  user-picked branch whose fork point the diff is taken against;
+ *  `defaultBase` is the workspace's recorded fork branch (e.g. `main`), used
+ *  otherwise so committed work stays visible after the agent renames and
+ *  pushes its branch.
  *
- *  A script that RAN and exited nonzero crosses the contract as a
- *  `WorkspaceExecError` carrying the exit code, because that code is the
- *  whole of what the mediator has to tell a base that yielded nothing
- *  (`CHANGES_BASE_UNRESOLVED` — the one failure a caller can be at fault
- *  for) from a workspace that is not what we think it is. A transport
- *  failure proves neither and passes through as itself. The same
- *  distinction `exec` makes, drawn here because this is where the exit
- *  codes are defined — and it is what decides 400 vs 500 upstream. */
+ *  A nonzero exit becomes a `WorkspaceExecError` with the exit code, so the
+ *  caller can tell a bad base (`CHANGES_BASE_UNRESOLVED`, a 400) from other
+ *  failures (500). Transport errors pass through unchanged. */
 export async function getWorkspaceChanges(jobName: string, base?: string, defaultBase?: string): Promise<WorkspaceChanges> {
   const key = [jobName, base ?? '', defaultBase ?? ''].join('\0')
   const shared = inFlight.get(key)

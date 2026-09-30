@@ -1,22 +1,14 @@
 
 /**
- * The `cluster install`/`cluster delete` checks that can be answered from
- * the flags and the environment alone — no cluster, no binaries, no
- * kubeconfig.
+ * `cluster install`/`cluster delete` flag checks that need no cluster,
+ * binaries or kubeconfig.
  *
- * They live apart from install.ts and delete.ts for import cost, not
- * tidiness. Reaching either of those modules pulls
- * `@kubernetes/client-node` (~2.8s to evaluate; see the note in
- * packages/cli/src/cli.ts), and every one of these answers is already known
- * before a single k8s type is needed. `yaac cluster install --nodes three`
- * should cost the ~0.6s a CLI start costs, not ~3.7s to be told a number
- * was mistyped.
- *
- * So this module imports nothing but `env`, and the CLI calls
- * `clusterArgError` *before* it dynamically imports the command. install.ts
- * and delete.ts still run the same guards themselves — they are the entry
- * points the server and the tests use — so the CLI's early call is a
- * fast path, never the only enforcement.
+ * Kept apart from install.ts and delete.ts because those load
+ * `@kubernetes/client-node`, which takes seconds (see
+ * packages/cli/src/cli.ts). This module has no imports, so the CLI can
+ * call `clusterArgError` before loading the command and reject a typo
+ * quickly. install.ts runs the same checks itself, so the CLI's call is
+ * only a fast path.
  */
 
 /** An install step failed in a way the user must resolve; message is the fix. */
@@ -26,11 +18,8 @@ export class ClusterInstallError extends Error {}
 export class ClusterDeleteError extends Error {}
 
 /**
- * Node-count ceiling for `--nodes`. Every kind node is a full node
- * container (kubelet, containerd, calico-node, netd, a runsc install) on
- * ONE host, so this is a rehearsal knob, not a capacity knob: 2–3 is what
- * shakes out scheduling assumptions, and anything past this is a way to
- * wedge a laptop rather than a supported topology.
+ * Max `--nodes`. Every kind node is a full node container on one host, so
+ * multiple nodes are for testing multi-node behavior, not for capacity.
  */
 const MAX_KIND_NODES = 5
 
@@ -44,9 +33,8 @@ export interface ClusterInstallArgs {
 }
 
 /**
- * The flag combinations `--byo` makes meaningless or incomplete: its
- * storage classes belong to it alone, and it cannot install without the
- * RWX one — there is no default NFS-family class to fall back on.
+ * Storage-class flags are only valid with `--byo`, and `--byo` requires
+ * `--rwx-storage-class` (there is no default NFS-family class).
  */
 function checkByoFlags(opts: ClusterInstallArgs): void {
   if (!opts.byo) {
@@ -72,13 +60,9 @@ function checkByoFlags(opts: ClusterInstallArgs): void {
 }
 
 /**
- * Validate `--nodes` and return the node count to build. Runs before any
- * binary probe or podman call so a bad value costs nothing.
- *
- * The count only ever applies to a cluster this run CREATES — install never
- * recreates an existing one — which is why an existing cluster ignores the
- * flag with a note rather than failing here: re-running the command with
- * the flags you first typed has to stay the ordinary thing to do.
+ * Validate `--nodes` (and the `--byo` flags) and return the node count to
+ * build. The count applies only to a cluster this run creates; install
+ * never recreates one, so an existing cluster ignores it with a note.
  */
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
@@ -101,10 +85,8 @@ export function resolveNodeCount(opts: ClusterInstallArgs): number {
 }
 
 /**
- * Run the guards a command can answer from its flags alone and return the
- * message to print, or null when nothing objects. Message-valued rather
- * than throwing so the CLI can reject without importing the error classes
- * (or anything else) from the command it is about to skip loading.
+ * Run the flag-only checks for a command and return the error message, or
+ * null when the flags are fine.
  */
 export function clusterArgError(
   command: 'install' | 'delete',

@@ -1,31 +1,23 @@
 # The yaac server itself, as a container image.
 #
-# Under the k8s driver the server is a single-replica in-cluster Deployment
-# (docs/server-in-cluster.md), so this is the image that Deployment runs.
-# Its build context is the BUNDLE — `dist/`, the one directory the npm
-# tarball ships — which is why the COPY below is a bare `.`: cli.js, the
-# SPA, the drizzle migrations, the build contexts of every other yaac image,
-# and the `package.json` that names the externals cli.js does not bundle
-# (scripts/write-dist-manifest.ts writes it with the catalog pins already
-# resolved, because the machine building this image may have no pnpm).
+# Under the k8s driver the server runs as an in-cluster Deployment
+# (docs/server-in-cluster.md). The build context is `dist/`, the npm bundle:
+# cli.js, the SPA, drizzle migrations, the other images' build contexts, and a
+# `package.json` naming cli.js's externals with catalog pins resolved
+# (scripts/write-dist-manifest.ts), since the build host may lack pnpm.
 #
-# Built and pushed by `yaac cluster install` on the machine running the CLI,
-# never in-cluster (docs/trust-split-builds.md), and tagged by the content
-# hash of that context — so a rebuilt server bundle is a different image and
-# the Deployment rolls onto it.
+# Built by `yaac cluster install` on the CLI's machine, never in-cluster
+# (docs/trust-split-builds.md), and tagged by the context's content hash.
 FROM docker.io/ubuntu:24.04
 
-# Kept in step with dockerfiles/Dockerfile.default's Node: the server and the
-# workspaces it launches should not disagree about the runtime.
+# Keep in step with Dockerfile.default's Node version.
 ARG NODE_VERSION=22.22.2
-# kubectl is how the server writes to and execs into the cluster (the typed
-# client covers reads/watches). Within one minor of the kind node's server,
-# which is the whole supported skew.
+# The server uses kubectl for cluster writes and execs. Keep it within one minor
+# version of the kind node's Kubernetes.
 ARG KUBECTL_VERSION=v1.37.0
-# Baked so auto-titles work with no runtime download: the server resolves the
-# runtime under $HOME/.cache (see domain/titles/llama-cpp.ts), and a pod's
-# $HOME does not survive a roll. Passed in by the builder from LLAMA_CPP_TAG
-# so the two can never drift.
+# Baked so auto-titles need no download, since a pod's $HOME does not
+# survive a roll. The builder passes LLAMA_CPP_TAG from
+# domain/titles/llama-cpp.ts.
 ARG LLAMA_CPP_TAG=b9940
 
 # catatonit: node is PID 1 here and would never reap the orphans of the
@@ -47,14 +39,10 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     chmod 0755 /usr/local/bin/kubectl && \
     kubectl version --client
 
-# ubuntu:24.04 ships its own uid-1000 `ubuntu` user, which is the uid this
-# image bakes; drop it first (same idiom as Dockerfile.default).
-#
-# The uid is FIXED, and the pod's is not it: like the workspace chain, this
-# image is uid-agnostic (docs/arbitrary-uid-images.md). `yaac` has primary
-# group 0 and everything it owns is group-writable, so the pod's host uid —
-# which carries a supplementary group 0 — can write it all. /etc/passwd is
-# group-writable so the entrypoint can re-point the entry at that uid.
+# Replace ubuntu's uid-1000 user with `yaac`. The image works under any uid
+# (docs/arbitrary-uid-images.md): `yaac` has primary group 0 and its files are
+# group-writable, so the pod's uid (with supplementary group 0) can write
+# them. /etc/passwd is group-writable so the entrypoint can fix the entry.
 RUN userdel -r ubuntu 2>/dev/null; useradd -m -u 1000 -g 0 -s /bin/bash yaac && \
     chmod -R g=u /home/yaac && \
     chgrp 0 /etc/passwd && chmod g=u /etc/passwd
@@ -66,9 +54,8 @@ RUN mkdir -p /home/yaac/.cache/yaac/llama-cpp && \
     chown -R yaac:0 /home/yaac && chmod -R g=u /home/yaac
 
 COPY . /opt/yaac/
-# The externals cli.js leaves unbundled, from the manifest that ships beside
-# it. No hand-kept list: the contract is the root manifest, already enforced
-# at build time by scripts/check-cli-externals.ts.
+# Install cli.js's unbundled externals from the manifest shipped beside it
+# (checked at build time by scripts/check-cli-externals.ts).
 RUN cd /opt/yaac && npm install --omit=dev --no-audit --no-fund --no-package-lock && \
     npm cache clean --force && \
     chown -R yaac:0 /opt/yaac && chmod -R g=u /opt/yaac && \
@@ -77,8 +64,6 @@ RUN cd /opt/yaac && npm install --omit=dev --no-audit --no-fund --no-package-loc
 USER yaac
 ENV HOME=/home/yaac
 WORKDIR /home/yaac
-# The entrypoint re-points the `yaac` passwd entry at the uid the pod runs as
-# before starting the server; see the script. It execs catatonit, which stays
-# PID 1 to reap the orphans of what the server spawns (kubectl, git).
+# See server-entrypoint.sh.
 ENTRYPOINT ["/opt/yaac/dockerfiles/server-entrypoint.sh"]
 CMD ["server", "run"]

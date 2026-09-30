@@ -5,45 +5,38 @@ import { readRepoConfig, runGit } from './run'
 import { NEVER_PRUNE_KEYS, ensureNeverPrune, initClone, mainRefs, stagingGitDir } from './repo'
 
 /**
- * The conversion of a checkout made before workspaces were clones — a `git
- * worktree add` linked checkout whose git state lives in the main clone's
- * `worktrees/<id>` — into one (docs/legacy-compat-shims.md). Everything here
- * reads state a legacy pod could write, so it goes through the hardened
- * runner, copies only regular files, and never follows a link.
+ * Converts a legacy linked checkout (`git worktree add`, with its git state
+ * in the main clone's `worktrees/<id>`) into a standalone clone
+ * (docs/legacy-compat-shims.md). A legacy pod could have written this state,
+ * so everything goes through the hardened runner, copies only regular files,
+ * and never follows a link.
  */
 
 /** One conversion per checkout at a time: the startup sweep and a restart
- *  can reach the same one together, and both stage in the same place. */
+ *  may race, and both stage in the same place. */
 const adopting = createKeyedMutex()
 
 /** The admin dir entries that describe the link itself, not the checkout. */
 const LINK_FILES = new Set(['gitdir', 'commondir', 'locked'])
 
 /**
- * Convert the stopped linked checkout at `workspacePath` into a clone, in
+ * Convert the stopped linked checkout at `workspacePath` into a clone in
  * place, keeping its index, HEAD, reflog and any in-progress merge or rebase.
- * A no-op for a checkout that already is one. Idempotent at every step, so a
- * crash anywhere is finished by the next call. Must not run while a pod
- * still has the checkout.
+ * A no-op if already converted. Every step is idempotent, so a crash is
+ * finished by the next call. Must not run while a pod uses the checkout.
  *
- * The admin dir is found by workspace id, never through the `.git` file,
- * which names it as whichever substrate last launched the checkout saw it —
- * for one last run in a pod, a path that resolves nowhere here.
+ * The admin dir is found by workspace id, not through the `.git` file, whose
+ * path may be the one a pod saw.
  *
- * Local branches were one namespace shared by every workspace of the project
- * and cannot be attributed, so each converted clone gets all of them — bar
- * the `agent/<id>` of the project's OTHER rows (`rowIds`), which their own
- * conversion carries — and a copy of the stash. Every other `agent/*`
- * comes along too: an agent's `agent/<id>-wip`, a user's `agent/foo`, and
- * the branches of workspaces deleted before the upgrade, which nothing else
- * still names. The agent's commits stay in the main clone's objects,
- * borrowed like everything else — safe because `ensureNeverPrune` has run
- * first.
+ * Local branches were shared by all the project's workspaces and can't be
+ * attributed, so each converted clone gets all of them (except other rows'
+ * `agent/<id>`, which their own conversion carries) plus a copy of the
+ * stash. Commits stay in the main clone's objects and are borrowed, which is
+ * safe because `ensureNeverPrune` runs first.
  *
- * The main clone's `agent/<id>` is dropped only once a clone holds it. A
- * checkout whose `.git` is gone loses just its admin dir, which is what
- * would hold up the sanitize; its branch stays the one name its commits
- * have.
+ * The main clone's `agent/<id>` is deleted only once a clone holds it. If the
+ * checkout's `.git` is gone, only the admin dir is removed (so it doesn't
+ * block the sanitize) and the branch is kept.
  */
 export function adoptLinkedCheckout(
   repoPath: string,
@@ -95,17 +88,18 @@ async function adopt(
         }),
         originHead,
       })
-      // HEAD as the admin dir has it, else on the workspace's own branch.
+      // Default HEAD to the workspace's branch; the admin dir's copy below
+      // overrides it.
       await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`])
       if (!await copyRegularFiles(admin, gitDir, '')) {
-        // No admin dir, so no index: one read from HEAD, rather than a
-        // checkout whose every tracked file reads as deleted.
+        // No admin dir means no index: build one from HEAD, or every tracked
+        // file would read as deleted.
         await runGit({ kind: 'private', gitDir, workTree: workspacePath }, ['read-tree', 'HEAD'])
       }
       await copyRegularFiles(path.join(repoPath, '.git', 'logs', 'refs'), path.join(gitDir, 'logs', 'refs'), '', (rel) =>
         rel === 'stash' || rel === `heads/${branch}`)
-      // The swap: a crash after the first rename leaves `.git.linked` and no
-      // `.git`, which the next call resumes from here.
+      // A crash after the first rename leaves `.git.linked` and no `.git`,
+      // which the next call resumes from.
       if (await kind(dotGit) === 'file') await fs.rename(dotGit, linked)
       await fs.rename(gitDir, dotGit)
       await fs.rm(linked, { force: true })
@@ -113,9 +107,8 @@ async function adopt(
       await fs.rm(path.dirname(gitDir), { recursive: true, force: true })
     }
   }
-  // What the main clone kept for the checkout — the admin dir also when
-  // there is no checkout left to convert, so a vanished one cannot hold up
-  // the sanitize; the branch only once a clone holds it.
+  // Remove the main clone's admin dir (even if the checkout is gone, so it
+  // can't block the sanitize), and the branch only once a clone holds it.
   if (await kind(admin) === null) return
   await fs.rm(admin, { recursive: true, force: true })
   if (await kind(dotGit) !== 'dir') return
@@ -124,9 +117,8 @@ async function adopt(
 
 /**
  * Copy every regular file under `from/rel` to the same place under `to`,
- * skipping links and the link files, creating directories as needed.
- * `keep`, when given, picks which files (by path relative to `from`) come
- * along. Answers whether `from/rel` existed.
+ * skipping symlinks and (by default) the link files. `keep` filters by path
+ * relative to `from`. Returns whether `from/rel` existed.
  */
 async function copyRegularFiles(
   from: string,
@@ -152,12 +144,11 @@ async function copyRegularFiles(
 const SANITIZED_KEYS = /^(core\.(repositoryformatversion|bare|logallrefupdates)|extensions\.objectformat)$/
 
 /**
- * Once no linked checkout a row still owns is left in the main clone, make
- * it the server's alone (docs/legacy-compat-shims.md): no pod can write it
- * from here on, so whatever a pod ever wrote into it goes. Refuses a
- * `.git` holding any symlink. Answers whether the clone is (now) clean; a
- * project with no `worktrees/` never held a linked checkout, or was
- * sanitized already.
+ * Once no row owns a linked checkout of the main clone, strip everything a
+ * pod could have written into it: config is rebuilt from an allowlist, and
+ * hooks, attributes, alternates and `worktrees/` are removed
+ * (docs/legacy-compat-shims.md). Refuses a `.git` containing a symlink.
+ * Returns whether the clone is clean; one with no `worktrees/` already is.
  */
 export async function sanitizeMainClone(
   repoPath: string,

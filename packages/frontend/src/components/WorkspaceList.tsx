@@ -52,9 +52,7 @@ import { patchStopped, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { isUnreadWaiting, isUnseenDeath, useUiStore } from '#lib/store'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
-// A group name is stored under this cap, and the routes refuse a longer one
-// — so the fields that mint names stop there rather than taking a name the
-// server will not keep.
+// The server refuses longer group names, so the name fields stop here.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import type {
   DraftWorkspaceEntry,
@@ -67,11 +65,9 @@ import type {
 } from '@yaac/shared/types'
 import { relativeAge } from '#lib/time'
 
-/** A workspace is stopping when the server has marked it (its pod has a
- *  deletionTimestamp, or a delete was just issued) or a client-side optimistic
- *  delete is still in flight. Such a row stays exactly where it sits — in the
- *  default list or in its group — but renders as a non-interactive, greyed
- *  placeholder and can't be selected or dragged (see WorkspaceRow). */
+/** Whether a workspace is stopping, per the server or an optimistic stop in
+ *  flight. Its row stays in place but is greyed out and can't be selected
+ *  or dragged (see WorkspaceRow). */
 function isTerminating(
   workspace: Pick<WorkspaceListEntry, 'workspaceId' | 'stopping'>,
   pendingDeleteIds: string[],
@@ -79,9 +75,8 @@ function isTerminating(
   return Boolean(workspace.stopping) || pendingDeleteIds.includes(workspace.workspaceId)
 }
 
-/** Newest first, by the UTC 'YYYY-MM-DD HH:MM:SS' stamp — which compares
- *  lexicographically — with the id as a stable tiebreak for workspaces created
- *  inside the same second. */
+/** Newest first (UTC timestamps compare as strings), with the id as a
+ *  tiebreak. */
 function byCreatedAt<T extends { createdAt: string; workspaceId: string }>(a: T, b: T): number {
   return b.createdAt.localeCompare(a.createdAt) || b.workspaceId.localeCompare(a.workspaceId)
 }
@@ -89,39 +84,36 @@ function byCreatedAt<T extends { createdAt: string; workspaceId: string }>(a: T,
 /** One group's section of the list. */
 export interface SidebarGroupSection {
   group: WorkspaceGroupSummary
-  /** Members still provisioning — a create filed here, or a member being
-   *  restarted — rendered above the live rows. */
+  /** Members being created or restarted, shown above the live rows. */
   provisioning: ProvisioningWorkspaceEntry[]
   /** Live (and terminating) members, newest first. */
   members: WorkspaceListEntry[]
-  /** Held members — stopped, with queued workspaces still waiting on them —
-   *  newest first, as stopped rows after the live ones. */
+  /** Held members (stopped, with queued workspaces waiting on them), newest
+   *  first, shown as stopped rows after the live ones. */
   held: StoppedWorkspaceEntry[]
-  /** The other stopped members, newest first — ghost rows at the foot of the
-   *  section, collapsed behind a count by default. */
+  /** Other stopped members, newest first: ghost rows at the end of the
+   *  section, collapsed by default. */
   ghosts: StoppedWorkspaceEntry[]
 }
 
 export interface SidebarLayout {
-  /** Ungrouped provisioning rows, in the order they were started — the top of
-   *  the list. A provisioning row that names a group is in that section
-   *  instead. */
+  /** Ungrouped provisioning rows at the top of the list, in the order they
+   *  were started. */
   provisioning: ProvisioningWorkspaceEntry[]
   /** Ungrouped workspaces, newest first. Terminating rows sit in place. */
   defaultList: WorkspaceListEntry[]
-  /** Ungrouped held workspaces — stopped, with queued workspaces still waiting
-   *  on them — newest first, as stopped rows after the live ones. */
+  /** Ungrouped held workspaces, newest first, after the live ones. */
   defaultHeld: StoppedWorkspaceEntry[]
   /** The groups that are shown, newest group first. */
   groups: SidebarGroupSection[]
   /** Queued workspaces by the id they wait on, each nested under that row. */
   queuedChildren: Map<string, QueuedWorkspaceEntry[]>
-  /** Queued workspaces with no row on screen to nest under — a parent whose
-   *  own create failed — shown at the top of the list. */
+  /** Queued workspaces whose parent has no row (e.g. its create failed),
+   *  shown at the top of the list. */
   orphans: QueuedWorkspaceEntry[]
 }
 
-/** A held workspace as the stopped row that draws it. */
+/** A held workspace as a stopped row. */
 function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
   return {
     workspaceId: h.workspaceId,
@@ -140,40 +132,27 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
 }
 
 /**
- * The sidebar's shape: every ungrouped workspace newest first, then one section
- * per shown group, also newest first — so the workspace or group just created is
- * at the top of whatever it belongs to, and the ungrouped list stays above the
- * sections. Nothing is bucketed by status — a workspace's own markers (the
- * running spinner, the unread dot, the stopping placeholder) say what state it
- * is in, and its position says where the user filed it.
+ * The sidebar's layout: ungrouped workspaces newest first, then one section
+ * per shown group, newest group first. Rows are not grouped by status; each
+ * row's markers show its state.
  *
- * A provisioning row is filed the same way: one that names a group leads that
- * group's section rather than the whole list. That is what keeps a restart in
- * place — the workspace is out of the snapshot while its container is recreated,
- * so its restarting row is all there is to hold its section, and a row that
- * jumped to the top would read as somewhere else entirely.
+ * A provisioning row that names a group goes at the top of that group, so a
+ * restarting workspace (absent from the snapshot meanwhile) stays in place.
  *
- * A group is shown when it is pinned, holds at least one live workspace, or has
- * one provisioning into it, and a shown group lists ALL its members: live ones
- * as ordinary rows, stopped ones as ghost rows with a restart action, hidden
- * at the foot of the section until asked for so they don't crowd it. So an
- * unpinned group whose workspaces have all stopped simply disappears — its row
- * survives on the server, and restarting a member brings the whole section
- * back — while pinning keeps it on screen as somewhere to restart into.
+ * A group is shown when it is pinned or has a live, provisioning or held
+ * member. A shown group lists all its members, with stopped ones as
+ * collapsed ghost rows that can be restarted. An unpinned group whose
+ * members have all stopped disappears until one is restarted.
  *
- * `stopped` is the project's stopped listing, already de-duped against the
- * active and provisioning ids by the caller; only entries belonging to a shown
- * group are rendered, the rest live in the "Stopped workspaces" overlay. A
- * workspace naming a group that no longer exists falls back to the default
- * list, which is what a snapshot arriving mid-delete looks like.
+ * `stopped` is the project's stopped list, already filtered against live
+ * and provisioning ids by the caller; entries outside a shown group appear
+ * only in the "Stopped workspaces" overlay. A workspace whose group no
+ * longer exists falls back to the default list.
  *
- * A `held` workspace — stopped, with queued workspaces still waiting on it —
- * is the exception: it keeps a stopped row in its normal place, the default
- * list included, and holds its group on screen as a live member would, so
- * what is queued under it stays visible until it has run or been discarded —
- * which is also why it is never hidden with the ghosts.
- * Each queued workspace nests under the row it waits on; one whose parent has
- * no row here goes to the top of the list (`orphans`).
+ * A held workspace (stopped, with queued workspaces waiting on it) keeps a
+ * stopped row in its usual place and keeps its group shown, so its queue
+ * stays visible. Each queued workspace nests under the row it waits on;
+ * those without one go in `orphans`.
  */
 export function sidebarLayout(
   workspaces: WorkspaceListEntry[],
@@ -188,10 +167,9 @@ export function sidebarLayout(
     entry.groupId !== undefined && known.has(entry.groupId) ? entry.groupId : null
   const live = [...workspaces].sort(byCreatedAt)
   const liveIds = new Set([...workspaces, ...provisioning].map((w) => w.workspaceId))
-  // A parent still stopping is already held but keeps its live row until the
-  // snapshot drops it; drawing both would show it, and its queue, twice.
+  // A held workspace still stopping keeps its live row; don't draw it twice.
   const shownHeld = held.filter((h) => !liveIds.has(h.workspaceId))
-  // The stopped listing's row wins over the snapshot's slimmer held entry.
+  // Prefer the stopped list's fuller entry over the snapshot's held entry.
   const stoppedIds = new Set(stopped.map((d) => d.workspaceId))
   const heldIds = new Set(shownHeld.map((h) => h.workspaceId))
   const heldRows = [
@@ -199,10 +177,8 @@ export function sidebarLayout(
     ...shownHeld.filter((h) => !stoppedIds.has(h.workspaceId)).map(heldAsStopped),
   ].sort(byCreatedAt)
   const ghosts = stopped.filter((d) => !heldIds.has(d.workspaceId)).sort(byCreatedAt)
-  // Provisioning rows keep the order they were started in (the caller's merge
-  // already sorts them oldest-first): they have no place among the live rows
-  // to sort into, and a row moving under the pointer while it provisions is
-  // exactly what this ordering is here to avoid.
+  // Provisioning rows keep the order they were started in (the caller sorts
+  // them), so they don't move under the pointer.
   const sections = shownGroups(groups, [...workspaces, ...provisioning, ...shownHeld])
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.groupId.localeCompare(a.groupId))
     .map((group) => ({
@@ -229,13 +205,9 @@ export function sidebarLayout(
 }
 
 /**
- * The list's selectable rows in display order — the ungrouped provisioning
- * rows, then the ungrouped workspaces, then each shown group's own provisioning
- * rows and live members. This is the list the Alt+↑/↓ workspace-switch shortcut
- * steps through (Shell owns the handler). Terminating rows (server-marked,
- * or a mid-flight optimistic delete) still render, greyed, but aren't
- * selectable — nor are ghost rows, which have nothing to open until they're
- * restarted.
+ * The list's selectable rows in display order, for the workspace-cycle
+ * shortcut (handled in Shell). Stopping, stopped and ghost rows are not
+ * selectable.
  */
 export function sidebarRowIds(
   provisioning: ProvisioningWorkspaceEntry[],
@@ -243,7 +215,7 @@ export function sidebarRowIds(
   groups: WorkspaceGroupSummary[],
   pendingDeleteIds: string[],
 ): string[] {
-  // Built on the layout itself, so the cycle can't drift from what is drawn.
+  // Derived from the layout so it always matches what is drawn.
   const layout = sidebarLayout(workspaces, groups, [], provisioning)
   const selectable = (list: WorkspaceListEntry[]): string[] =>
     list.filter((w) => !isTerminating(w, pendingDeleteIds)).map((w) => w.workspaceId)
@@ -257,8 +229,8 @@ export function sidebarRowIds(
   ]
 }
 
-/** Pointer travel that turns a press on a row into a drag rather than a
- *  selection — the same threshold the pane tabs use. */
+/** Pointer travel that turns a press on a row into a drag (same as pane
+ *  tabs). */
 const DRAG_THRESHOLD = 5
 
 interface DragState {
@@ -271,28 +243,23 @@ interface DragState {
   /** The press has travelled far enough to be a drag. */
   active: boolean
   /** The drop zone under the pointer: a group id, null for the default list,
-   *  or undefined when the pointer is over neither. */
+   *  or undefined for none. */
   over?: string | null
 }
 
-/** What a row needs to take part in dragging, handed down from the list. */
+/** Drag support the list passes down to its rows. */
 interface SidebarDrag {
-  /** Track a press on a row. A press that never crosses the threshold calls
-   *  `onSelect` instead, so a row stays a click target. */
+  /** Track a press on a row; a press below the threshold calls `onSelect`. */
   start: (e: ReactPointerEvent, workspace: WorkspaceListEntry, onSelect: () => void) => void
   /** The row being dragged right now, if any. */
   activeId: string | null
 }
 
 /**
- * The scrollable body of the workspace list: the ungrouped provisioning rows,
- * the ungrouped workspaces, the group sections (each leading with its own
- * provisioning rows), and the stopped-workspaces entry point.
- *
- * Chrome-free on purpose — the desktop `Sidebar` wraps it in its fixed-width
- * card and the mobile workspaces screen gives it the whole viewport, and both
- * get the same rows in the same order (which is also the order
- * `sidebarRowIds` promises the Alt+K/J cycle).
+ * The scrollable workspace list: drafts, provisioning rows, ungrouped
+ * workspaces, group sections and the stopped-workspaces button. It has no
+ * outer chrome, so the desktop `Sidebar` and the mobile workspaces screen
+ * can each wrap it.
  */
 export function WorkspaceList({
   projectSlug,
@@ -308,41 +275,34 @@ export function WorkspaceList({
   /** The active project's groups, from the snapshot. */
   groups: WorkspaceGroupSummary[]
   provisioning: ProvisioningWorkspaceEntry[]
-  /** The active project's queued workspaces, and the stopped workspaces they
-   *  still wait on. */
+  /** The active project's queued workspaces, and the stopped workspaces
+   *  they wait on. */
   queued?: QueuedWorkspaceEntry[]
   held?: HeldWorkspaceEntry[]
   /** The active project's draft workspaces. */
   drafts?: DraftWorkspaceEntry[]
 }): JSX.Element {
-  // A mid-flight optimistic delete doesn't move a row any more — it greys it
-  // where it sits — so the list needs pendingDeleteIds only to keep the
-  // already-deleting rows out of the delete successor order; each row reads it
-  // again for its own placeholder.
+  // Keeps stopping rows out of `rowIds`.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
-  // Only for the empty-state copy: there is no rail on a phone to point at.
+  // For the empty-state text: there's no project rail on a phone.
   const isMobile = useIsMobile()
-  // Only members of a shown group become ghost rows — the layout's call; the
-  // rest are in the overlay behind the entry point at the foot of the list.
   const stopped = useStoppedWorkspaces(projectSlug, workspaces, provisioning)
 
   const layout = sidebarLayout(workspaces, groups, stopped, provisioning, queued, held)
-  // Display order of the selectable rows, so a stop from a row's menu can hand
-  // the selection to the row below it. Same list the Alt+K/J cycle steps through.
+  // So a stop from a row's menu can select the next row.
   const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
   const visibleCount = layout.defaultList.length + layout.defaultHeld.length + layout.orphans.length
     + layout.groups.reduce((n, s) => n + s.members.length + s.held.length + s.ghosts.length, 0)
-  // What a queued row's discard needs to say about the row its children would
-  // move under.
+  // Names of possible parents, for a queued row's discard dialog.
   const names = new Map<string, QueueParent>([
     ...provisioning.map((p) => [p.workspaceId, { name: 'New workspace', kind: 'live' }] as const),
     ...workspaces.map((w) => [w.workspaceId, { name: w.title || w.prompt || 'New workspace', kind: 'live' }] as const),
     ...held.map((h) => [h.workspaceId, { name: h.title || h.prompt || 'New workspace', kind: 'held' }] as const),
     ...queued.map((e) => [e.id, { name: queuedTitle(e), kind: 'queued' }] as const),
   ])
-  // Held here rather than in each set, so a set stays open while its
-  // workspace moves between sections (stops, restarts, changes group). Sets
-  // start collapsed; only the one the user just queued into opens itself.
+  // Which queued sets are expanded. Kept here so a set stays open when its
+  // workspace moves between sections. Sets start collapsed, except the one
+  // the user just queued into.
   const [expandedQueues, setExpandedQueues] = useState<ReadonlySet<string>>(new Set())
   const setOpen = (id: string, open: boolean): void => setExpandedQueues((prev) => {
     const next = new Set(prev)
@@ -357,14 +317,13 @@ export function WorkspaceList({
     const landed = byId.get(revealQueued.id)
     // Not in the snapshot yet, or still under the parent it is moving from.
     if (landed === undefined || queuedParentId(landed) !== revealQueued.parent) return
-    // The set is the whole chain's, so open the one its top entry nests in.
+    // Open the set of the chain's top entry.
     let top = revealQueued.id
     for (let e = byId.get(top); e !== undefined; e = byId.get(e.parentQueuedId ?? '')) top = queuedParentId(e)
     setExpandedQueues((prev) => prev.has(top) ? prev : new Set([...prev, top]))
     useUiStore.getState().setRevealQueued(null)
   }, [revealQueued, queued])
-  // Forget a set once it empties, so the next one queued under that workspace
-  // starts collapsed like any other.
+  // Forget an emptied set so the next one starts collapsed.
   const queuedParents = [...layout.queuedChildren.keys()].join('\n')
   useEffect(() => {
     const parents = new Set(queuedParents.split('\n'))
@@ -384,14 +343,11 @@ export function WorkspaceList({
   const [drag, setDrag] = useState<DragState | null>(null)
   const dragRef = useRef<DragState | null>(null)
   dragRef.current = drag
-  // How to take the in-flight drag's window listeners back down, so an unmount
-  // mid-drag (switching projects, say) doesn't leave them attached to a list
-  // that is gone.
+  // Removes an in-flight drag's window listeners if the list unmounts.
   const detachDrag = useRef<(() => void) | null>(null)
   useEffect(() => () => { detachDrag.current?.() }, [])
-  // Every drop zone that is currently on screen, keyed by the group it files
-  // into (null = the default list). Rects are read live on each move, so a
-  // section growing or collapsing mid-drag can't leave a stale target.
+  // On-screen drop zones by group id (null = the default list). Rects are
+  // read on each move, so they are never stale.
   const zones = useRef(new Map<string | null, HTMLElement>())
   const zoneRef = (groupId: string | null) => (el: HTMLDivElement | null): void => {
     if (el) zones.current.set(groupId, el)
@@ -405,19 +361,16 @@ export function WorkspaceList({
     return undefined
   }
 
-  // A row is both a drag handle and a click target, so the press is tracked
-  // here rather than left to the button: below the threshold it selects, above
-  // it moves the workspace. Mouse only — a pointerdown that preventDefaults
-  // would fight the scroll on touch, where the group dialog is the way to move
-  // a workspace.
+  // A row is a drag handle and a click target: below the threshold a press
+  // selects, above it moves the workspace. Mouse only, so touch can scroll;
+  // on touch the group dialog moves workspaces.
   const startDrag = (
     e: ReactPointerEvent,
     workspace: WorkspaceListEntry,
     onSelect: () => void,
   ): void => {
     if (e.pointerType !== 'mouse') return
-    // Suppresses the compatibility click, which is why the sub-threshold case
-    // below has to call `onSelect` itself.
+    // Suppresses the click, so onUp calls `onSelect` itself.
     e.preventDefault()
     const init: DragState = {
       workspaceId: workspace.workspaceId,
@@ -429,8 +382,7 @@ export function WorkspaceList({
       startY: e.clientY,
       active: false,
     }
-    // Write the ref directly too: a move can fire before React re-renders,
-    // which is when the ref would otherwise sync.
+    // Set the ref too; a move may fire before the next render.
     dragRef.current = init
     setDrag(init)
 
@@ -459,16 +411,13 @@ export function WorkspaceList({
       if (!d) return
       if (!d.active) { onSelect(); return }
       if (d.over === undefined || d.over === d.from) return
-      // Not optimistic: the server pushes a snapshot and the row regroups,
-      // the same way the rename does. A group deleted mid-drag answers
-      // NOT_FOUND, and the snapshot already has the workspace where it belongs.
+      // Not optimistic: the next snapshot moves the row. If the group was
+      // deleted mid-drag the server answers NOT_FOUND.
       void setWorkspaceGroup(d.projectSlug, d.workspaceId, d.over)
         .catch((e: unknown) => console.error('group move failed', e))
     }
-    // A cancelled pointer (the OS took it, a native drag started) is not a
-    // drop: it only puts the row back. Without it the listeners would stay
-    // armed and the next unrelated pointerup anywhere would run `onUp` against
-    // whatever zone the pointer had since wandered over — a move nobody made.
+    // A cancelled pointer is not a drop. Without this the listeners would
+    // stay armed and a later pointerup would move the workspace.
     const onCancel = (): void => { clear() }
     detachDrag.current = detach
     window.addEventListener('pointermove', onMove)
@@ -480,10 +429,8 @@ export function WorkspaceList({
   /** Whether a drop here would actually move the dragged workspace. */
   const dropTarget = (groupId: string | null): boolean =>
     Boolean(drag?.active) && drag?.over === groupId && drag.over !== drag.from
-  // What a row's dialog can move it into: the sections actually on screen, so
-  // it offers exactly the drop targets a drag has. A hidden group is one whose
-  // workspaces have all stopped, and moving a live workspace into it would make
-  // it reappear somewhere the user was not told about.
+  // The groups a row's dialog offers: those on screen, the same targets a
+  // drag has.
   const shownGroups = layout.groups.map((s) => s.group)
 
   return (
@@ -522,10 +469,8 @@ export function WorkspaceList({
           </Fragment>
         ))}
 
-        {/* The default list is a drop zone in its own right — dragging a row out
-            of a group and onto it files the workspace back under no group. It
-            keeps a placeholder while a drag is in flight so an empty list is
-            still somewhere to drop. */}
+        {/* The default list is a drop zone that ungroups a workspace. While
+            dragging, an empty list shows a placeholder to drop on. */}
         <div
           ref={zoneRef(null)}
           role="group"
@@ -569,8 +514,8 @@ export function WorkspaceList({
   )
 }
 
-/** Selectable row for a workspace that's still provisioning. Clicking it opens
- *  the provisioning status in the main pane; a failed one offers a dismiss ×. */
+/** Row for a workspace still provisioning. Clicking it shows the progress in
+ *  the main pane; a failed one has a dismiss ×. */
 function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
@@ -591,8 +536,7 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }): JSX.
           selectedWorkspaceId === entry.workspaceId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
-        {/* The dismiss × never hides on touch, so the tool label insets clear
-            of it there rather than only on hover. */}
+        {/* The dismiss × is always visible on touch, so leave room for it. */}
         <span className={clsx('flex items-center gap-2', entry.error && 'max-md:pr-9')}>
           <span className="truncate font-medium text-text-dim">
             {entry.kind === 'restart' ? 'Restarting workspace' : 'New workspace'}
@@ -628,16 +572,13 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }): JSX.
 }
 
 /**
- * One named group: a collapsible section holding its live rows, its held
- * rows, and then its ghost rows, and a whole-section drop zone. The header
- * counts live members against all of them, and its `…` menu renames inline,
- * pins (keep the section when nothing in it is live), shows or hides the
- * ghost rows, and deletes, which needs no confirmation because it only
- * releases the workspaces back to the default list.
+ * One group: a collapsible section and drop zone holding its live, held and
+ * ghost rows. The header shows live members out of the total; its `…` menu
+ * renames, pins, shows or hides ghost rows, and deletes (no confirmation,
+ * since members just return to the default list).
  *
- * Ghost rows start hidden and come back hidden whenever the section remounts.
- * A section with nothing but ghosts has nothing else to expand to, so there
- * its caret and the menu item are one toggle.
+ * Ghost rows start hidden on each mount. In a section of only ghosts, the
+ * caret and the menu item toggle the same thing.
  */
 function GroupSection({
   section,
@@ -648,10 +589,10 @@ function GroupSection({
   zoneRef,
 }: {
   section: SidebarGroupSection
-  /** The groups on screen — a member row's dialog can move it into any. */
+  /** The groups on screen, offered by a member row's group dialog. */
   shownGroups: WorkspaceGroupSummary[]
   drag: SidebarDrag
-  /** The whole sidebar's rows in display order, for a member's delete. */
+  /** The whole sidebar's selectable rows, for a member's stop. */
   rowIds: string[]
   /** A drop here would move the dragged workspace into this group. */
   dropTarget: boolean
@@ -662,11 +603,10 @@ function GroupSection({
   const [showStopped, setShowStopped] = useState(false)
   const onlyGhosts = provisioning.length + members.length + held.length === 0
   const expanded = onlyGhosts ? showStopped : open
-  // A failed provisioning row is on screen, but nothing is running behind it.
+  // A failed provisioning row isn't counted as active.
   const active = provisioning.filter((p) => !p.error).length + members.length
   const total = provisioning.length + members.length + held.length + ghosts.length
-  // An unread death is flagged on the header, or hidden ghosts would hide
-  // which group it happened in.
+  // Flag unseen deaths on the header, since ghost rows may be hidden.
   const died = ghosts.filter(isUnseenDeath).length
   const {
     editing,
@@ -680,14 +620,14 @@ function GroupSection({
       .catch((e: unknown) => console.error('group rename failed', e))
   })
 
-  // In the all-stopped case the caret writes both, so the section keeps its
-  // state when a live row (a restart, say) hands the caret back to `open`.
+  // With only ghosts, the caret sets both, so the state carries over when a
+  // live row returns.
   const toggleExpanded = (next: boolean): void => {
     if (onlyGhosts) setShowStopped(next)
     setOpen(next)
   }
   const toggleStopped = (): void => {
-    // Showing them opens the section too, or the pick would do nothing visible.
+    // Showing ghosts also opens the section.
     if (!showStopped) setOpen(true)
     setShowStopped(!showStopped)
   }
@@ -728,15 +668,14 @@ function GroupSection({
               <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
                 text-text-faint outline-none transition hover:text-text-dim group-hover:pr-9 max-md:pr-11">
                 <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', expanded && 'rotate-90')} />
-                {/* Pinned is a property of the group, not a hover action's
-                    state, so it stays visible next to the name. */}
+                {/* The pin icon is always shown, not only on hover. */}
                 {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
                 <span className="truncate">{group.name}</span>
                 <span className="text-text-faint/70">({active}/{total})</span>
                 {died > 0 && <span className="text-[#d65858]">· {died} died</span>}
               </Collapsible.Trigger>
 
-              {/* A sibling of the trigger, which is itself a button. */}
+              {/* Outside the trigger, which is itself a button. */}
               <RowMenu
                 label="Group actions"
                 position="right-2 top-0.5"
@@ -754,9 +693,7 @@ function GroupSection({
           )}
         </div>
         <Collapsible.Panel>
-          {/* Leads the section, as provisioning rows lead the whole list: a
-              workspace being restarted has no live row to sit next to, and its
-              placeholder belongs where the workspace is filed. */}
+          {/* Provisioning rows lead the section, as they lead the list. */}
           {provisioning.map((p) => (
             <Fragment key={p.workspaceId}>
               <ProvisioningRow entry={p} />
@@ -783,11 +720,9 @@ function GroupSection({
 }
 
 /**
- * Workspace title that fills the row's width, truncating with an ellipsis when it
- * doesn't fit. On row hover it un-clips and marquee-scrolls the full text (the
- * row has already inset its right edge to clear its actions menu). The scroll
- * distance is measured live at the hovered width, so titles that do fit stay
- * put and the animation always reveals exactly the hidden tail.
+ * A workspace title truncated with an ellipsis. On row hover it scrolls to
+ * reveal the hidden tail; the distance is measured at the hovered width, so
+ * titles that fit don't move.
  */
 function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JSX.Element {
   const ref = useRef<HTMLSpanElement>(null)
@@ -804,8 +739,7 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
       el.style.animation = ''
       return
     }
-    // Constant-ish reveal speed (~55px/s across the two scroll legs), floored so
-    // a short overflow still reads as a deliberate scroll, not a twitch.
+    // Roughly constant speed, with a minimum so short scrolls aren't a twitch.
     const duration = 1400 + shift * 34
     el.style.setProperty('--marquee-shift', `-${shift}px`)
     el.style.animation = `marquee ${duration}ms ease-in-out infinite`
@@ -820,9 +754,8 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
   )
 }
 
-/** How many of a workspace's agent workspaces are currently open. A workspace
- *  from an older server (or one whose registry tick hasn't landed) reports
- *  none, which reads as the ordinary single-agent case. */
+/** How many of a workspace's agent sessions are active. Zero reads as the
+ *  ordinary single-agent case. */
 function openAgentCount(workspace: WorkspaceListEntry): number {
   return workspace.agentSessions.filter((a) => a.active).length
 }
@@ -836,8 +769,7 @@ function WorkspaceRow({
   workspace: WorkspaceListEntry
   shownGroups: WorkspaceGroupSummary[]
   drag: SidebarDrag
-  /** The sidebar's rows in display order — deleting this one moves the
-   *  selection to the next of them. */
+  /** The sidebar's selectable rows, so stopping this one selects the next. */
   rowIds: string[]
 }): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
@@ -856,26 +788,18 @@ function WorkspaceRow({
     handleKeyDown: handleRenameKeyDown,
     handleBlur: handleRenameBlur,
   } = useInlineRename(workspace.workspaceId, workspace.title || workspace.prompt || '')
-  // Touch has no hover, so the row's actions menu is always shown on mobile
-  // and the marquee never runs — a long title simply stays truncated, and the
-  // pane header shows it in full.
+  // No hover on touch: the actions menu is always shown and the marquee
+  // never runs.
   const isMobile = useIsMobile()
   const unread = isUnreadWaiting(workspace, readWaiting)
-  // The container is being torn down — server-marked, or an optimistic delete
-  // not yet reflected in the snapshot. The row stays where it is and renders
-  // as a placeholder until the snapshot drops the workspace.
   const stopping = isTerminating(workspace, pendingDeleteIds)
 
-  // Close the dialog immediately; the shared flow marks the row stopping
-  // optimistically and restores it if the delete fails.
   const onConfirmDelete = (): void => {
     setConfirmDelete(false)
     stopWorkspaceOptimistic(workspace, rowIds)
   }
 
-  // A stopping row is a non-interactive, greyed placeholder: no pulse, no
-  // unread bubble, no actions menu — just a spinner and a "stopping…" line. It
-  // vanishes when the snapshot drops the workspace.
+  // A stopping row is a greyed, inert placeholder until the snapshot drops it.
   if (stopping) {
     return (
       <div className="mx-2">
@@ -898,14 +822,11 @@ function WorkspaceRow({
     )
   }
 
-  // The age/agents/tool line, unchanged whether the title above it is
-  // the marquee display or the rename input.
+  // The age, agent count and tool line, shown under the title or rename input.
   const metaLine = (
     <span className="flex items-center gap-2 text-xs text-text-faint">
       <span className="shrink-0">{relativeAge(workspace.createdAt)}</span>
-      {/* Only when a workspace holds more than one live conversation —
-          one is the overwhelmingly common case and a column of "1
-          agent" would be pure noise. */}
+      {/* Only shown for more than one active agent. */}
       {openAgentCount(workspace) > 1 && (
         <span
           className="shrink-0"
@@ -914,9 +835,7 @@ function WorkspaceRow({
           {openAgentCount(workspace)} agents
         </span>
       )}
-      {/* Tool name moved off the title line so the title can run full-width;
-          hidden when the blocked-hosts badge claims the bottom-right. Carries
-          the model beside it once the agent has answered as one. */}
+      {/* Tool and model; hidden when the blocked-hosts badge takes the spot. */}
       {workspace.blockedHosts.length === 0 && (
         <span className="ml-auto shrink-0">
           {agentLabel(workspace.tool, workspaceModel(workspace))}
@@ -950,28 +869,23 @@ function WorkspaceRow({
       ) : (
         <>
           <button
-            // Dragging is tracked from the press so the row can be both a
-            // handle and a click target; the list calls this select back when
-            // the press turns out not to be a drag. Touch never starts one, so
-            // its click still fires here.
+            // A mouse press may become a drag; if not, the list calls the
+            // select callback. Touch uses onClick.
             onPointerDown={(e) => drag.start(e, workspace, () => selectWorkspace(workspace.workspaceId))}
             onClick={() => selectWorkspace(workspace.workspaceId)}
             className={clsx(
               'flex w-full flex-col gap-0.5 rounded-lg px-2.5 text-left text-sm transition hover:bg-surface-2/60',
-              // A taller row on touch: the whole thing is the tap target.
+              // Taller on touch.
               'py-2 max-md:py-2.5',
               'cursor-grab active:cursor-grabbing max-md:cursor-pointer',
               drag.activeId === workspace.workspaceId && 'opacity-60',
               selectedWorkspaceId === workspace.workspaceId && 'bg-surface-2 hover:bg-surface-2',
             )}
           >
-            {/* Title fills the row; only on hover does it inset to clear the
-                actions menu and marquee-scroll when it's too long to fit. On
-                mobile the menu never hides, so the inset is permanent. */}
+            {/* On hover (always on mobile) the title insets to clear the
+                actions menu. */}
             <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
-              {/* Braille spinner: the workspace's agent is actively running. The
-                  cycling glyph reads as "working" and can't be mistaken for the
-                  round unread bubble below (which is a solid, still dot). */}
+              {/* Spinner while the agent is running. */}
               {workspace.status === 'running' && (
                 <span className="braille-spinner shrink-0 text-emerald-400" aria-hidden>
                   <i />
@@ -982,7 +896,7 @@ function WorkspaceRow({
                   <i />
                 </span>
               )}
-              {/* Unread bubble: this workspace started waiting and hasn't been viewed. */}
+              {/* Unread dot: waiting and not yet viewed. */}
               {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
               <MarqueeTitle
                 text={workspace.title || workspace.prompt || 'New workspace'}
@@ -992,9 +906,8 @@ function WorkspaceRow({
             {metaLine}
           </button>
 
-          {/* Overlaid as a sibling for the same reason as the actions menu:
-              the badge is a button and can't nest inside the row button. The
-              wrapper is pointer-inert so only the badge itself takes clicks. */}
+          {/* A sibling, since a button can't nest in the row button. Only the
+              badge itself takes clicks. */}
           {workspace.blockedHosts.length > 0 && (
             <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
               <BlockedHostsBadge
@@ -1006,10 +919,8 @@ function WorkspaceRow({
             </span>
           )}
 
-          {/* Overlaid as a sibling (not nested in the row button) and
-              pointer-inert until hover, so it can't swallow clicks meant for
-              selecting the row. Touch has no hover: below md it is always live
-              and visible, with a bigger target. */}
+          {/* A sibling of the row button, inert until hover so it doesn't
+              take clicks meant for the row. Always shown on mobile. */}
           <RowMenu
             label="Workspace actions"
             items={[
@@ -1044,10 +955,8 @@ function WorkspaceRow({
 }
 
 /**
- * Name-a-group popup: the way a group is created, and — once a project has
- * some — the way a workspace is filed into an existing one without a mouse.
- * Dragging the row is the quicker path, but it is the only one touch and
- * keyboard users don't have.
+ * Dialog to create a group or move a workspace into an existing one. This
+ * is how touch and keyboard users group workspaces; mouse users can drag.
  */
 function GroupDialog({
   open,
@@ -1058,8 +967,7 @@ function GroupDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   workspace: WorkspaceListEntry
-  /** Where this workspace can be moved: the groups the sidebar is showing,
-   *  which is exactly the set a drag could drop it on. */
+  /** The groups on screen, the same targets a drag has. */
   shownGroups: WorkspaceGroupSummary[]
 }): JSX.Element {
   const [busy, setBusy] = useState(false)
@@ -1178,12 +1086,9 @@ function GroupDialog({
 }
 
 /**
- * A stopped member of a shown group — the group keeps its row so the workspace
- * can be restarted from where it was filed (they also appear in the full
- * "Stopped workspaces" overlay). Non-selectable: there's nothing to open until
- * it's restarted. Hover offers removal from the group (which drops the row)
- * and a restart, which reuses the deleted-overlay flow: a provisioning row
- * replaces this one while the container is recreated.
+ * A stopped workspace's row in a group (ghost or held). Not selectable. Its
+ * hover actions remove it from the group or restart it; a restart shows a
+ * provisioning row in its place.
  */
 function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry }): JSX.Element {
   const provision = useProvisionWorkspace()
@@ -1195,16 +1100,14 @@ function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry }): JSX.E
   const onConfirmRestart = (): void => {
     setConfirmRestart(false)
     removeOptimisticStopped(entry.workspaceId)
-    // The group goes with it, so the restarting row replaces this ghost right
-    // here instead of jumping to the top of the sidebar.
+    // Pass the group so the restarting row appears in the same place.
     provision(entry.projectSlug, entry.tool, 'restart', entry.workspaceId,
       (sid, onProgress) => restartWorkspace(sid, onProgress),
       entry.groupId)
   }
 
-  // The stopped list isn't snapshot-pushed, so clear the membership in the
-  // cached query (and any optimistic copy) for an instant regroup; the server
-  // write makes it durable.
+  // The stopped list isn't in the snapshot, so update the cached list
+  // directly to show the change right away.
   const ungroup = (): void => {
     patchStopped(queryClient, entry.projectSlug,
       (e) => (e.workspaceId === entry.workspaceId ? { ...e, groupId: undefined } : e))
@@ -1244,8 +1147,7 @@ function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry }): JSX.E
         </span>
       </button>
 
-      {/* Same overlay-button pattern as live rows: leave the group on the left
-          of the action slot, which here restarts instead of deletes. */}
+      {/* Overlay buttons as on live rows: remove from group, then restart. */}
       {entry.groupId !== undefined && <button
         onClick={ungroup}
         title="Remove from group"
@@ -1282,8 +1184,8 @@ function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry }): JSX.E
   )
 }
 
-/** What a queued row's discard confirmation says about the row its children
- *  would move under. */
+/** The row a discarded entry's children would move under, as its discard
+ *  confirmation describes it. */
 interface QueueParent {
   name: string
   kind: 'live' | 'held' | 'queued' | 'gone'
@@ -1298,9 +1200,8 @@ interface QueueContextValue {
   setOpen: (id: string, open: boolean) => void
 }
 
-/** Handed through the list rather than threaded through every section and
- *  row: any row — live, provisioning, held, or queued — can have entries
- *  nested under it. */
+/** A context rather than props, since any row (live, provisioning, held or
+ *  queued) can have entries nested under it. */
 const QueueContext = createContext<QueueContextValue>({
   children: new Map(),
   parent: () => ({ name: '', kind: 'gone' }),
@@ -1308,10 +1209,9 @@ const QueueContext = createContext<QueueContextValue>({
   setOpen: () => {},
 })
 
-/** Everything queued under a workspace row, behind one expander counting it
- *  at every depth. Only this top-level set collapses; the chains inside it
- *  always show in full. A failed launch is shown only on its own row, so the
- *  expander counts those too, or a collapsed set would hide one. */
+/** Everything queued under a workspace row, behind one expander that counts
+ *  entries at every depth, including failed launches (which would otherwise
+ *  be hidden when collapsed). Chains inside it always show in full. */
 function QueuedSet({ parentId }: { parentId: string }): JSX.Element | null {
   const { children, expanded, setOpen } = useContext(QueueContext)
   if (!children.has(parentId)) return null
@@ -1342,7 +1242,7 @@ function QueuedSet({ parentId }: { parentId: string }): JSX.Element | null {
 }
 
 /** The queued workspaces waiting on `parentId`, each followed by its own
- *  chain, one indent step deeper per link. */
+ *  chain, indented one step per level. */
 function QueuedRows({ parentId, depth }: { parentId: string; depth: number }): JSX.Element | null {
   const { children } = useContext(QueueContext)
   const entries = children.get(parentId)
@@ -1378,11 +1278,8 @@ function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextVa
 /**
  * A queued workspace: a create saved to start when the row above it stops
  * (docs/queued-workspaces.md). Clicking it edits it; its menu runs it now,
- * edits it, queues another after it, or discards it. A launch that failed
- * shows why, in place of its settings, until it is run again.
- *
- * Not selectable — there is nothing to open until it starts — so it stays
- * out of the Alt+J/K cycle (`sidebarRowIds`).
+ * edits it, queues another after it, or discards it. A failed launch shows
+ * its error until run again. Not selectable (see `sidebarRowIds`).
  */
 function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEntry; depth: number }): JSX.Element {
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
@@ -1450,9 +1347,8 @@ function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEntry; dep
 }
 
 /**
- * The project's draft workspaces (docs/draft-workspaces.md), collapsible, at
- * the top of the list — above everything that exists, since none of these
- * does yet. Only rendered when there is at least one.
+ * The project's draft workspaces (docs/draft-workspaces.md), in a
+ * collapsible section at the top of the list.
  */
 function DraftsSection({ drafts }: { drafts: DraftWorkspaceEntry[] }): JSX.Element {
   const [open, setOpen] = useState(true)
@@ -1466,7 +1362,7 @@ function DraftsSection({ drafts }: { drafts: DraftWorkspaceEntry[] }): JSX.Eleme
           <span className="text-text-faint/70">{drafts.length}</span>
         </Collapsible.Trigger>
         <Collapsible.Panel>
-          {/* Newest first, as everything else in the list is. */}
+          {/* Newest first, like the rest of the list. */}
           {[...drafts].reverse().map((d) => <DraftWorkspaceRow key={d.id} draft={d} />)}
         </Collapsible.Panel>
       </Collapsible.Root>
@@ -1474,9 +1370,8 @@ function DraftsSection({ drafts }: { drafts: DraftWorkspaceEntry[] }): JSX.Eleme
   )
 }
 
-/** A saved draft: clicking it reopens the create dialog on it; its menu can
- *  also discard it. Not selectable — there is nothing to open until it is
- *  created — so it stays out of the Alt+J/K cycle. */
+/** A saved draft: clicking it reopens the create dialog; its menu can also
+ *  discard it. Not selectable. */
 function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Element {
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
@@ -1534,29 +1429,26 @@ const MENU_ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2
   + 'outline-none data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
 
 /**
- * A row's `…` actions menu, overlaid at its top right and revealed on hover
- * (always, on touch).
+ * A row's `…` actions menu at its top right, shown on hover (always on
+ * touch).
  *
- * A picked item runs once the menu has finished closing, and the menu then
- * leaves focus where the item put it: a rename's input, or a dialog it
- * opened, rather than taking it back to the trigger. What the item sees
- * focused first is where such a dialog returns focus: the trigger after a
- * keyboard pick, so a keyboard user keeps their place, and nothing after a
- * pointer pick, whose `…` would otherwise stay pinned on a row the pointer
- * has left.
+ * A picked item runs after the menu finishes closing, and focus stays where
+ * the item put it (a rename input, or a dialog). Before the item runs,
+ * focus is on the trigger after a keyboard pick, so a dialog returns there,
+ * and on nothing after a pointer pick, so the hover-only `…` isn't left
+ * showing.
  */
 function RowMenu({ label, items, position = 'right-2 top-2' }: {
   label: string
   items: RowMenuItem[]
-  /** Where the trigger sits in its row — a group header is shorter. */
+  /** The trigger's position; a group header is shorter than a row. */
   position?: string
 }): JSX.Element {
   const trigger = useRef<HTMLButtonElement>(null)
-  // Kept until the next open: the popup reads it for `finalFocus` as it
-  // unmounts, after the item has already run.
+  // Kept until the next open, since `finalFocus` reads it after the item runs.
   const picked = useRef<(() => void) | null>(null)
-  // The input that last acted in the popup. Not the click's `detail`: a
-  // press-drag-release pick is a pointer gesture that clicks programmatically.
+  // Whether the last input in the popup was a key. The click's `detail` can't
+  // tell, since a press-drag-release pick clicks programmatically.
   const byKey = useRef(false)
   return (
     <Menu.Root

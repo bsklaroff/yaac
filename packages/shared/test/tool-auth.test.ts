@@ -54,8 +54,7 @@ const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
 
 /**
  * Capture a rejected ServerError so assertions can read `code` and `message`
- * directly — asymmetric matchers inside `toMatchObject` type as `any` and trip
- * no-unsafe-assignment.
+ * directly (asymmetric matchers type as `any` and trip no-unsafe-assignment).
  */
 async function rejection(p: Promise<unknown>): Promise<ServerError> {
   try {
@@ -244,7 +243,6 @@ describe('tool-auth', () => {
 
     it('fan-out is a no-op when no projects exist', async () => {
       await fanOutClaudePlaceholders(SAMPLE_BUNDLE)
-      // should not throw
     })
   })
 
@@ -259,15 +257,14 @@ describe('tool-auth', () => {
     }
 
     it('round-trips the real bundle a proxyless runtime writes, and reports a sentinel as-is', async () => {
-      // The read side of the containerless credential loop: an agent refreshes
-      // in place, so the project home is where the live token is.
+      // A containerless agent refreshes its token in place, so the project
+      // home holds the live one.
       await writeProjectClaudeCredentials('demo', SAMPLE_BUNDLE)
       expect(await readProjectClaudeBundle('demo')).toEqual(SAMPLE_BUNDLE)
       expect(isPlaceholderClaudeBundle(SAMPLE_BUNDLE)).toBe(false)
 
-      // A sentinel is reported rather than filtered — whether it counts as a
-      // credential is the caller's question, and seeding has to be able to
-      // see that a project is holding one.
+      // A sentinel is reported, not filtered: seeding needs to see that a
+      // project holds one.
       await writeProjectClaudePlaceholder('demo', SAMPLE_BUNDLE)
       const placeholder = await readProjectClaudeBundle('demo')
       expect(placeholder?.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
@@ -422,10 +419,9 @@ describe('tool-auth', () => {
     })
 
     it('treats creds without the provider field as unconfigured', async () => {
-      // A credential file written before `provider` existed. Save once to
-      // create the credentials dir, then overwrite with the legacy shape.
-      // Inferring openrouter would scope the key to a vendor it may not
-      // belong to, so the file is unusable until `yaac auth` rewrites it.
+      // A file from before `provider` existed. Inferring openrouter could send
+      // the key to the wrong vendor, so it stays unusable until `yaac auth`
+      // rewrites it.
       await saveToolAuth('opencode', 'sk-or-legacy', 'api-key', 'openrouter')
       await fs.writeFile(
         opencodeCredentialsPath(),
@@ -506,10 +502,8 @@ describe('tool-auth', () => {
     })
 
     it('treats a stored provider the registry no longer carries as unconfigured', async () => {
-      // Coercing it to the default would seed this key under openrouter's env
-      // var and inject it on openrouter's host — a key the user scoped to
-      // another vendor. Reading it as "not configured" is the safe repair
-      // path: `yaac auth` re-records a provider that still exists.
+      // Falling back to the default would send the key to openrouter.
+      // "Not configured" lets `yaac auth` record a valid provider.
       await saveToolAuth('pi', 'sk-or-legacy', 'api-key', 'openrouter')
       await fs.writeFile(
         piCredentialsPath(),
@@ -577,11 +571,10 @@ describe('tool-auth', () => {
 
   describe('credential file writes', () => {
     it('never exposes a torn file to a concurrent reader', async () => {
-      // These files are read continuously while they are rewritten — the
-      // plan-usage poller, session registration, `yaac auth update`. A
-      // non-atomic write truncates in place, so an interleaved reader sees
-      // an empty file and concludes there are no credentials (which reset
-      // the plan-usage poller mid-refresh and made its test flaky).
+      // These files are read while being rewritten (plan-usage poller,
+      // session registration, `yaac auth update`). A non-atomic write would
+      // let a reader see an empty file and conclude there are no
+      // credentials.
       const bundle = (token: string): ClaudeOAuthBundle => ({
         accessToken: token,
         refreshToken: `ref-${token}`,
@@ -602,8 +595,7 @@ describe('tool-auth', () => {
       const reads = Array.from({ length: 200 }, () => loadClaudeCredentialsFile())
       const [, ...results] = await Promise.all([Promise.all(writes), ...reads])
 
-      // Every read landed on a complete file — some old value, some new,
-      // never null.
+      // Every read saw a complete file, old or new, never null.
       expect(results.every((r) => r?.kind === 'oauth')).toBe(true)
     })
 

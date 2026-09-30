@@ -1,15 +1,10 @@
 /**
- * Claude's bundled ("system") skills — the `/`-invokable built-ins baked into
- * the Claude binary (code-review, dataviz, verify, deep-research, …). Their
- * names and descriptions live in no mounted dir, but Anthropic publishes them
- * in the official commands reference, where each bundled row is marked
- * `[Skill]` (or `[Workflow]`, e.g. deep-research). We fetch that page once on
- * server start and cache it in memory — the set changes only across Claude
- * releases, so a per-start refresh is plenty and a failed fetch just means no
- * bundled tier that run (the viewer degrades to the on-disk tiers).
- *
- * This is deliberately unofficial-but-stable: it reads human-maintained docs,
- * not the minified binary, so it never needs per-release deobfuscation.
+ * Claude's bundled skills: the `/` built-ins in the Claude binary
+ * (code-review, verify, deep-research, …). They are in no mounted dir, but
+ * the official commands reference marks each with `[Skill]` or `[Workflow]`.
+ * The page is fetched once per server start and cached in memory; a failed
+ * fetch just omits this tier until the next start. Reading the docs avoids
+ * reverse-engineering the minified binary.
  */
 
 const COMMANDS_MD_URL = 'https://code.claude.com/docs/en/commands.md'
@@ -21,7 +16,7 @@ export interface BundledSkill {
 
 let cache: BundledSkill[] = []
 
-/** The bundled skills fetched at startup — empty until the fetch resolves. */
+/** The bundled skills fetched at startup; empty until the fetch resolves. */
 export function getClaudeBundledSkills(): BundledSkill[] {
   return cache
 }
@@ -32,12 +27,10 @@ export function setClaudeBundledSkills(skills: BundledSkill[]): void {
 }
 
 /**
- * Parse the commands-reference markdown, returning every bundled row (a table
- * row whose Purpose cell is marked `[Skill]`/`[Workflow]` and links to the
- * bundled-skills/-workflows anchor) as a name + cleaned description. Pure.
- *
- * Cells split on *unescaped* pipes — the docs escape literal pipes in argument
- * lists (`[low\|medium\|…]`) as `\|`, so those stay inside a cell.
+ * Parse the commands-reference markdown into name and description for every
+ * table row whose Purpose cell links to the bundled-skills or
+ * bundled-workflows anchor. Cells split on unescaped pipes only, since the
+ * docs write literal pipes as `\|`.
  */
 export function parseBundledSkills(md: string): BundledSkill[] {
   const out: BundledSkill[] = []
@@ -76,9 +69,8 @@ function cleanDescription(purpose: string): string {
 }
 
 /**
- * Fetch the commands reference and refresh the in-memory cache. Best-effort:
- * a failed/empty fetch leaves the cache untouched, so a transient network
- * error at startup just means the bundled tier is absent until the next start.
+ * Fetch the commands reference and refresh the cache. Best-effort: a failed
+ * or empty fetch leaves the cache unchanged.
  */
 export async function refreshClaudeBundledSkills(): Promise<void> {
   try {
@@ -87,6 +79,6 @@ export async function refreshClaudeBundledSkills(): Promise<void> {
     const skills = parseBundledSkills(await res.text())
     if (skills.length > 0) setClaudeBundledSkills(skills)
   } catch {
-    // offline / unreachable / parse yield-nothing → keep whatever we had
+    // Keep the existing cache.
   }
 }

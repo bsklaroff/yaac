@@ -1,18 +1,12 @@
 /**
- * Provider registries + helpers for the api-key-only agent tools (`opencode`
- * and `pi`). The user stores an api-key for one provider; yaac seeds that
- * provider's env var into the pod with a placeholder, and the egress proxy
- * swaps the placeholder for the real key on that provider's host.
+ * Provider registries and helpers for the api-key-only agent tools
+ * (`opencode` and `pi`). The user stores an api key for one provider; yaac
+ * seeds that provider's env var into the pod with a placeholder, and the
+ * egress proxy swaps in the real key on that provider's host.
  *
- * The provider *data* is code-generated from each tool's own registry
- * (opencode → models.dev, pi → the installed pi package) into
- * `tool-providers.generated.ts` — regenerate with `pnpm gen:providers`. This
- * module adds the hand-written helpers and the runtime-validated provider
- * types on top. Adding a provider is not a code change here; it's a regen.
- *
- * The proxy (k8s/proxy) can't import this module (it bundles self-only), so it
- * carries its own generated host copy (`k8s/proxy/tool-providers.generated.ts`)
- * emitted by the same codegen — no hand-maintained parallel table.
+ * The provider data is generated into `tool-providers.generated.ts` by
+ * `pnpm gen:providers` (scripts/gen-tool-providers.ts), which also writes
+ * the proxy's copy.
  */
 import {
   OPENCODE_PROVIDERS,
@@ -26,25 +20,21 @@ export { OPENCODE_PROVIDERS, PI_PROVIDERS }
 export type { ToolProviderInfo }
 
 /**
- * A provider id for the corresponding tool. A runtime-validated string union
- * derived from the generated registry — regenerating widens/narrows it to
- * whatever providers the tool currently ships. Coerce raw wire strings with
- * `parseOpencodeProvider` / `parsePiProvider`.
+ * A provider id for the tool, from the generated registry. Parse raw
+ * strings with `parseOpencodeProvider` / `parsePiProvider`.
  */
 export type OpencodeProvider = OpencodeProviderId
 export type PiProvider = PiProviderId
 
-/** Provider selected when none is stored/chosen (picker default). Both tools
- *  ship OpenRouter, a pay-per-token aggregator that's a sensible default. */
+/** The picker's default provider. */
 export const OPENCODE_DEFAULT_PROVIDER: OpencodeProvider = 'openrouter'
 export const PI_DEFAULT_PROVIDER: PiProvider = 'openrouter'
 
 /**
  * The model a claude / codex create runs when its project remembers none for
- * that tool. Pinned by hand because neither CLI is pinned in the tools image
- * and nothing generated names a current default for them (pi's registry lags
- * its own release). Review both whenever the tools image refreshes claude or
- * codex; a test fails if a regen drops either from the catalog.
+ * that tool. Maintained by hand because nothing generated names a current
+ * default. Review both when the tools image updates claude or codex; a test
+ * fails if a regen drops either from the catalog.
  */
 export const FALLBACK_MODELS = {
   claude: 'claude-opus-5-5',
@@ -62,12 +52,9 @@ function infoOrDefault(
 }
 
 /**
- * Recognized ids pass through; everything else — unknown, empty, or absent —
- * yields undefined for the caller to handle. Nothing is coerced to a default:
- * the provider decides which env var carries the key and which host the proxy
- * swaps it on, so guessing one sends a credential to a vendor the user never
- * chose. A provider must be recorded explicitly, and an id the registry no
- * longer carries (a regen can retire one) is a repair prompt, not a remap.
+ * A recognized id, or undefined. Never falls back to a default: the
+ * provider decides where the key is sent, so a guess could leak it to a
+ * vendor the user never chose.
  */
 function parseProvider<T extends string>(
   list: readonly ToolProviderInfo[],

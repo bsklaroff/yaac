@@ -2,8 +2,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 
-// CodeMirror's contenteditable doesn't work under jsdom; the pane's save
-// lifecycle is what is under test, so the editor is a textarea.
+// CodeMirror's contenteditable doesn't work under jsdom, and these tests cover
+// the save lifecycle, so the editor is replaced with a textarea.
 vi.mock('#components/ui/CodeEditor', () => ({
   CodeEditor: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
@@ -15,7 +15,7 @@ import { discardFileSavers, fileKey, fileSaver, flushFileSavers } from '#lib/fil
 import { useUiStore } from '#lib/store'
 
 /**
- * The server, at `fetch`: one file whose version is a counter. A test can
+ * Fake server behind `fetch`: one file whose version is a counter. A test can
  * hold the next PUT or GET open, fail PUTs, or change the file behind the
  * pane's back.
  */
@@ -125,7 +125,7 @@ describe('WorkspaceFile', () => {
     expect(screen.getByRole('alert').textContent).toContain('Changed on disk')
     expect(editor().value).toBe('mine\n')
     expect(screen.getByText('Paused: conflict')).toBeTruthy()
-    // Paused: the autosave that was pending never runs.
+    // While paused, the pending autosave never runs.
     await tick(AUTOSAVE_MS * 5)
     expect(puts).toEqual([])
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
@@ -318,7 +318,7 @@ describe('WorkspaceFile', () => {
     await tick(AUTOSAVE_MS)
     view.unmount()
     await tick(RETRY_MS[2])
-    // Still guarded: the page will not unload it silently.
+    // Still marked dirty, so the page warns before unloading.
     expect(useUiStore.getState().dirtyFiles).toEqual({ [fileKey('w1', 'a.ts')]: true })
     await mount()
     expect(editor().value).toBe('mine')

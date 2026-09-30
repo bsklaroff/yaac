@@ -11,13 +11,12 @@ import {
   type ToolCreateDefaults,
 } from '@yaac/shared/types'
 
-/**
- * Which projects exist, as the server records them.
- *
- * The clone, the config and the tool homes are the substrate's bytes; this is
- * the metadata, so that answering "which projects are there" never depends on
- * a filesystem the server may not share (docs/layered-server.md).
+/*
+ * Which projects exist, as the server records them. The clone, config and
+ * tool homes live on the substrate; these rows let the server list projects
+ * without reading a filesystem it may not share (docs/layered-server.md).
  */
+
 export async function recordProject(
   meta: ProjectMeta,
   gitCredential?: { id: string; knownHostsEntry: string | null },
@@ -31,8 +30,7 @@ export async function recordProject(
     target: projects.slug,
     set: {
       remoteUrl: meta.remoteUrl,
-      // A host key was trusted for the remote it was fetched from; a
-      // different remote has to earn its own.
+      // A trusted host key belongs to one remote; a new remote needs its own.
       knownHostsEntry: sql`case when ${projects.remoteUrl} = excluded.remote_url
         then ${projects.knownHostsEntry} end`,
     },
@@ -41,9 +39,8 @@ export async function recordProject(
 }
 
 /**
- * Assign the project's git credential, with the host key that goes with it
- * (null for an https token). Written together because a host key was
- * trusted for one credential's assignment; the next one fetches its own.
+ * Assign the project's git credential together with its trusted host key
+ * (null for an https token); each assignment fetches its own host key.
  * False when there is no such project.
  */
 export async function setProjectGitCredential(
@@ -59,27 +56,26 @@ export async function setProjectGitCredential(
 }
 
 /**
- * A project as this table holds it: its identity plus the create form's
- * memory. Separate from `ProjectMeta` because that is the shape the wire
- * carries for a project, and the memory is the server's own.
+ * A project row: the wire `ProjectMeta` plus server-only state (remembered
+ * create-form defaults and the git credential).
  */
 export interface ProjectRow extends ProjectMeta {
-  /** The immutable id the substrate names this project's objects by — see
-   *  the `projects.id` column. */
+  /** Immutable id the substrate names this project's objects by (see the
+   *  `projects.id` column). */
   id: string
   lastTool?: AgentTool
   lastBranch?: string
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
   gitCredentialId: string | null
-  /** The remote's host key, for an SSH credential. Null for a token, and
-   *  once the remote changed — until the key is assigned again. */
+  /** The remote's host key for an SSH credential. Null for a token, and
+   *  after the remote changes until the key is assigned again. */
   knownHostsEntry: string | null
 }
 
 type DefaultsRow = typeof projectToolDefaults.$inferSelect
 
-/** Read back with casts, like the workspace posture column: every value here
- *  is re-checked against the tool before anything launches with it. */
+/** Values are cast without checking; each is validated against the tool
+ *  before anything launches with it. */
 function toProjectRow(
   r: typeof projects.$inferSelect,
   defaults: DefaultsRow[],
@@ -124,15 +120,12 @@ export async function listProjectRows(): Promise<ProjectRow[]> {
 }
 
 /**
- * Remember a create as the project's next defaults: `tool` becomes the agent
- * this project was last created with, a named `branch` the branch it was
- * last created from, and whichever of model, posture and mode the request
- * named become that agent's. A field the request left out is left as it
- * was — a create that took the resolved default for a field must not
- * overwrite what a person picked for it.
+ * Remember a create's choices as the project's next defaults: the tool, the
+ * branch if named, and whichever of model, permission mode and agent mode
+ * were given (for that tool). Omitted fields are left unchanged.
  *
- * Called by the create route alone, since only there is the choice known to
- * be a person's rather than a restart's, a prewarm's or the spawn policy's.
+ * Only the create route calls this, since only there is the choice known to
+ * be the user's (not a restart, prewarm or spawn policy).
  */
 export async function recordProjectCreate(
   slug: string,
@@ -150,13 +143,12 @@ export async function recordProjectCreate(
     const updated = await tx.update(projects)
       .set({ lastTool: tool, ...(branch !== undefined ? { lastBranch: branch } : {}) })
       .where(eq(projects.slug, slug)).returning({ slug: projects.slug })
-    // No such project (the create is about to fail for it): nothing to
-    // remember, and a row here would be inherited by a later project of the
-    // same name.
+    // No such project: skip, or a later project with the same slug would
+    // inherit the row.
     if (updated.length === 0) return
     const insert = tx.insert(projectToolDefaults).values({ projectSlug: slug, tool, ...set })
-    // An empty `set` is an error rather than a no-op, so a create that named
-    // nothing but its tool only makes sure the row exists.
+    // drizzle rejects an empty `set`, so with nothing to update just ensure
+    // the row exists.
     await (Object.keys(set).length > 0
       ? insert.onConflictDoUpdate({
         target: [projectToolDefaults.projectSlug, projectToolDefaults.tool],
