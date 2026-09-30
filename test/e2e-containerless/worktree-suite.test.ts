@@ -504,11 +504,14 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const dir = path.join(
       testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId,
     )
-    // No path translation: the checkout the server made IS the workspace,
-    // which is why the create skips the in-pod gitdir rewrite.
+    // No path translation: the checkout the server made IS the workspace.
     await expect(fs.stat(path.join(dir, 'README.md'))).resolves.toBeDefined()
     const { stdout } = await execFileAsync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'])
     expect(stdout.trim()).toBe(`agent/${worktreeId}`)
+    // A clone of its own, borrowing every object from the main clone.
+    expect((await fs.stat(path.join(dir, '.git'))).isDirectory()).toBe(true)
+    expect(await fs.readFile(path.join(dir, '.git', 'objects', 'info', 'alternates'), 'utf8'))
+      .toBe(`${path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git', 'objects')}\n`)
   })
 
   it('runs the review diff with host git in that checkout', async () => {
@@ -1184,13 +1187,14 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     }
   }, 120_000)
 
-  it('creates a worktree without running what another worktree planted in the shared repo', async () => {
-    // Every worktree can write the project's shared `.git`. Here that crosses
-    // no boundary, but the server's checkout is the same code the k8s server
-    // runs against a pod-writable repo (docs/server-git.md), so this is where
-    // it is cheap to prove end to end: a filter driver every path selects and
-    // hooks in a pinned hooks dir, each of which would leave a marker, and
-    // the checkout still lands as committed.
+  it('creates a worktree without running what was planted in the main clone or a sibling', async () => {
+    // Until a project's last linked checkout from an older install is
+    // converted, a pod can still write its main clone. Here that crosses no
+    // boundary, but the server's checkout is the same code the k8s server
+    // runs (docs/server-git.md), so this is where it is cheap to prove end to
+    // end: a filter driver every path selects and hooks in a pinned hooks
+    // dir, each of which would leave a marker, and the checkout still lands
+    // as committed. The same planted in a sibling's clone stays its own.
     const gitDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
     const markers = path.join(testEnv.scratchDir, 'planted-markers')
     const hooks = path.join(testEnv.scratchDir, 'planted-hooks')
@@ -1206,12 +1210,15 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     const configPath = path.join(gitDir, 'config')
     const attributesPath = path.join(gitDir, 'info', 'attributes')
     const configBefore = await fs.readFile(configPath, 'utf8')
+    const sibling = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId, '.git')
+    const siblingConfigBefore = await fs.readFile(path.join(sibling, 'config'), 'utf8')
     for (const [key, value] of [
       ['filter.planted.smudge', `"${evil}" smudge`],
       ['filter.planted.clean', `"${evil}" clean`],
       ['core.hooksPath', hooks],
     ]) {
       await execFileAsync('git', ['--git-dir', gitDir, 'config', key, value])
+      await execFileAsync('git', ['--git-dir', sibling, 'config', key, value])
     }
     await fs.mkdir(path.dirname(attributesPath), { recursive: true })
     await fs.writeFile(attributesPath, '* filter=planted\n')
@@ -1222,9 +1229,12 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', id)
       expect(await fs.readFile(path.join(checkout, 'README.md'), 'utf8')).toBe('# Test repo\n')
       expect(await fs.readdir(markers)).toEqual([])
+      // The new clone's config is the server's, with nothing planted in it.
+      await expect(execFileAsync('git', ['-C', checkout, 'config', 'core.hooksPath'])).rejects.toThrow()
     } finally {
       // Planted state would reach every later case's git in this project.
       await fs.writeFile(configPath, configBefore)
+      await fs.writeFile(path.join(sibling, 'config'), siblingConfigBefore)
       await fs.rm(attributesPath, { force: true })
       if (id !== undefined) await runYaac(serverEnv, 'worktree', 'stop', id)
     }
@@ -1379,10 +1389,12 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     }
   }, 60_000)
 
-  it('still reads the checkout\'s files once the worktree is stopped', async () => {
+  it('still reads the checkout\'s files once the worktree is stopped, but lists them only while it runs', async () => {
     const res = await fetch(`${origin()}/api/worktree/${worktreeId}/file?path=notes/todo.md`)
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ path: 'notes/todo.md', content: 'mine\n' })
+    // The listing is the checkout's own git, run inside the workspace.
+    expect((await fetch(`${origin()}/api/worktree/${worktreeId}/files`)).status).toBe(409)
   })
 
   // And it really restarts — the assertion above used to stop at "the
@@ -1390,16 +1402,26 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   // driver's own node_modules symlink tripped the ephemeral-modules guard,
   // so every stopped worktree was permanently unrestartable.
   //
-  // Restarted from the pointers a k8s launch leaves in the data dir, so it
-  // also pins the switch k8s → containerless: the checkout's `.git` and its
-  // admin `gitdir` name pod paths that exist nowhere on this host, and the
-  // launch has to point them back or the agent's git dies in its checkout.
+  // Restarted from the shape an older install's k8s launch left in the data
+  // dir: a `git worktree add` linked checkout whose `.git` and admin
+  // `gitdir` name pod paths that exist nowhere on this host. The launch
+  // converts it to a clone of its own, keeping its index, and brings its
+  // `origin/*` up to the main clone's.
   it('restarts the stopped worktree back onto a live tmux server', async () => {
     const repoGit = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
     const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees', worktreeId)
     const admin = path.join(repoGit, 'worktrees', worktreeId)
+    const staged = path.join(testEnv.scratchDir, 'linked', worktreeId)
+    const base = (await execFileAsync('git', ['--git-dir', repoGit, 'symbolic-ref', 'refs/remotes/origin/HEAD'])).stdout.trim()
+    await execFileAsync('git', ['--git-dir', repoGit, 'worktree', 'add', '-q', '-b', `agent/${worktreeId}`, staged, base])
+    await fs.rm(path.join(checkout, '.git'), { recursive: true })
     await fs.writeFile(path.join(checkout, '.git'), `gitdir: /repo/.git/worktrees/${worktreeId}\n`)
     await fs.writeFile(path.join(admin, 'gitdir'), '/workspace/.git\n')
+    // Origin moved on since the checkout was made.
+    const upstream = (await execFileAsync('git', [
+      '--git-dir', repoGit, 'commit-tree', '-p', base, '-m', 'upstream', `${base}^{tree}`,
+    ], { env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' } })).stdout.trim()
+    await execFileAsync('git', ['--git-dir', repoGit, 'update-ref', base, upstream])
     // And the history a pod leaves: every conversation in the worktree's own
     // `history/`, which a pod reaches through mounts and this host must reach
     // through links (docs/worktree-storage.md "Agent history").
@@ -1428,13 +1450,18 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
         .toContain('--permission-mode auto')
     }, { timeout: 30_000, interval: 250 })
 
-    expect((await fs.readFile(path.join(checkout, '.git'), 'utf8')).trim())
-      .toBe(`gitdir: ${admin}`)
-    expect((await fs.readFile(path.join(admin, 'gitdir'), 'utf8')).trim())
-      .toBe(path.join(checkout, '.git'))
+    expect((await fs.stat(path.join(checkout, '.git'))).isDirectory()).toBe(true)
+    expect(await fs.readFile(path.join(checkout, '.git', 'objects', 'info', 'alternates'), 'utf8'))
+      .toBe(`${path.join(repoGit, 'objects')}\n`)
+    await expect(fs.access(admin)).rejects.toThrow()
     // Host git in the checkout is exactly what the agent runs.
     await expect(execFileAsync('git', ['-C', checkout, 'status', '--porcelain']))
       .resolves.toBeDefined()
+    expect((await execFileAsync('git', ['-C', checkout, 'rev-parse', base])).stdout.trim())
+      .toBe(upstream)
+    // And the explorer lists it, from inside the running workspace.
+    const files = await (await fetch(`${origin()}/api/worktree/${worktreeId}/files`)).json() as { paths: string[] }
+    expect(files.paths).toEqual(expect.arrayContaining(['README.md', 'notes/todo.md']))
 
     // The pod's conversations resume here: claude files this checkout's under
     // a folder of the shared home now linked to the history (claude 2.1.282

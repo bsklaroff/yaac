@@ -1,10 +1,11 @@
 // The public interface of git: the server's only process boundary onto
-// git. Four parts — `transport.ts` turns a resolved credential into a
+// git. Five parts — `transport.ts` turns a resolved credential into a
 // runnable git invocation, `agent.ts` is the ssh-agent that invocation signs
-// through, `repo.ts` runs the operations against a project's clone and the
-// worktrees cut from it, and `run.ts` is how every one of them starts git
-// without letting it read the pod-writable config (docs/server-git.md) —
-// public only for the startup sweep of its scratch.
+// through, `repo.ts` runs the operations against a project's main clone and
+// creates the checkouts that borrow from it, `adopt.ts` converts the linked
+// checkouts an older install made, and `run.ts` is how every one of them
+// starts git without letting it read a pod-writable config
+// (docs/server-git.md) — public only for the startup sweep of its scratch.
 //
 // A domain module rather than a lower layer for two reasons: nothing under
 // `src/runtime` runs git (a driver mounts a checkout, it does not make one),
@@ -25,17 +26,16 @@ export {
 export { startGitSshAgent, stopGitSshAgent } from './agent'
 export { clearGitScratch } from './run'
 export {
-  addWorktree,
   cloneRepo,
+  createCheckout,
   fetchOrigin,
   getDefaultBranch,
-  listCheckoutFiles,
+  lastFetchedAtMs,
   listRemoteBranches,
   listTreeSubdirs,
+  maintainRepo,
   readBlobAt,
   remoteBranchExists,
-  resolveLocalBranch,
   resolveRemoteRef,
-  worktreeAheadBehind,
-  worktreeUpstreamBranch,
 } from './repo'
+export { adoptLinkedCheckout, sanitizeMainClone } from './adopt'

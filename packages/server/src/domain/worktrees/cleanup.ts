@@ -109,10 +109,8 @@ async function checkoutEphemeralPaths(
  * *resume* is not one of those: its row is put back as the restart found it,
  * and its checkout is the work the user came back for.)
  *
- * The admin dir needs its `locked` file cleared first: worktree setup writes it
- * precisely so `git worktree prune` can never reap a live worktree from
- * outside its own pod (see buildWorktreeLinkExec), and it would otherwise
- * outlive the checkout it protects.
+ * A checkout an older install made as a linked worktree also has an admin
+ * dir in the main clone, which goes with it (docs/legacy-compat-shims.md).
  *
  * Plain recursive `rm`s over trees a sandbox wrote, which is sound only
  * because every caller runs this once the pod is gone (its `podGone` gate):
@@ -143,8 +141,7 @@ export async function deleteWorktreeState(
   const adminDir = path.join(repoDir(projectSlug), '.git', 'worktrees', worktreeId)
   const outcomes = await Promise.all([
     fs.rm(worktreeDir(projectSlug, worktreeId), { recursive: true, force: true }),
-    fs.rm(path.join(adminDir, 'locked'), { force: true })
-      .then(() => fs.rm(adminDir, { recursive: true, force: true })),
+    fs.rm(adminDir, { recursive: true, force: true }),
     fs.rm(opencodeCheckpointDir(projectSlug, worktreeId), { recursive: true, force: true }),
     fs.rm(acpLogDir(projectSlug, worktreeId), { recursive: true, force: true }),
     removeAgentHistory(projectSlug, worktreeId),

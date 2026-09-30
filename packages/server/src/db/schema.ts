@@ -124,9 +124,9 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
  * `stoppedAt` row IS the stopped-worktree listing, and a restart clears the
  * column again because worktree ids are reused verbatim.
  *
- * A row is 1-1 with a git worktree, which is why stopping keeps it: teardown
- * prunes the worktree dir but never `worktreeDir`, so a stopped row is a
- * worktree still on disk, diff and all, waiting to be restarted.
+ * A row is 1-1 with a checkout, which is why stopping keeps it: teardown
+ * never removes `worktreeDir`, so a stopped row is a checkout still on disk,
+ * diff and all, waiting to be restarted.
  *
  * Neither the tool nor the founding ask lives here: both are read off the
  * worktree's *first* agent session, which is the thing that actually has

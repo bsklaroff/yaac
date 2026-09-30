@@ -11,10 +11,8 @@
 #
 # Steps that need host coordination stay server-side and ride the stream
 # relay once streamd (started last, below) answers:
-#   - the worktree gitdir rewrite (must wait for the host-side
-#     `git worktree add`, which runs concurrently with pod boot),
-#   - the branch-upstream write (serialized against other sessions of the
-#     project by a host-side lock),
+#   - the checkout's alternates line and origin refresh (must wait for the
+#     host-side checkout, which runs concurrently with pod boot),
 #   - init windows + the agent respawn (need the populated worktree).
 #
 # Inputs (env, set by session-create): YAAC_TOOL, YAAC_GIT_NAME,
@@ -111,20 +109,17 @@ if [ -d "$OPENCODE_DATA" ]; then
 fi
 
 # Run from /, never the container's /workspace workingDir: the host-side
-# `git worktree add` populates /workspace CONCURRENTLY with this hook, and
-# its `.git` link file names the HOST admin path until the in-pod rewrite
-# (a later relay exec) fixes it. git does repository discovery from the
-# cwd even for `config --global`, and a gitfile pointing at a nonexistent
-# path is fatal — from / there is no repo to discover.
+# checkout populates /workspace CONCURRENTLY with this hook, and git does
+# repository discovery from the cwd even for `config --global` — from /
+# there is no half-made repo to discover.
 cd /
 
-# Git identity and trust for the two mounted repo roots. --global writes the
-# image-local ~/.gitconfig (not a shared mount), so this is per-pod and never
-# races another session.
+# Git identity and trust for the checkout. --global writes the image-local
+# ~/.gitconfig (not a shared mount), so this is per-pod and never races
+# another session.
 git config --global user.name "$YAAC_GIT_NAME"
 git config --global user.email "$YAAC_GIT_EMAIL"
 git config --global --add safe.directory /workspace
-git config --global --add safe.directory /repo
 
 # The install's npm cache as the DEFAULT registry, at user-config
 # precedence: pnpm (10 and 11) and npm read ~/.npmrc below the project's own

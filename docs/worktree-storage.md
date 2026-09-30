@@ -15,9 +15,10 @@ Deriving the founding ask the same way is what makes it survive a `/clear`
 for free: the new conversation is a second row, so the first one's opening
 message stays the label, with no write-once rule to enforce.
 
-A row is 1-1 with a git worktree, and that is why stopping keeps it: teardown
-prunes the worktree dir but never `worktreeDir`, so a stopped row is a checkout
-still on disk, diff and all, waiting to be restarted.
+A row is 1-1 with a checkout — a clone of its own that borrows the main
+clone's objects (docs/server-git.md) — and that is why stopping keeps it:
+teardown never removes `worktreeDir`, so a stopped row is a checkout still on
+disk, git state, diff and all, waiting to be restarted.
 
 That correspondence is also the limit of what can be collected. A checkout
 whose row is gone answers to nothing — every sweep is row-driven — so the
@@ -83,7 +84,7 @@ goes through them, and they are the only writers.
 
   A claim that fails *after* mutating the spare cannot do that — the spare is
   tainted — so it takes the whole thing down instead, in the same order the
-  ordinary reap uses: pod, then checkout and git admin dir, then row. The
+  ordinary reap uses: pod, then checkout, then row. The
   order is the point, and each step gates the next on having actually
   happened. The flag is already off by then, so the startup sweep can no
   longer see this checkout, and the row is the last name anything has for it:
@@ -396,11 +397,14 @@ homes* instead. Every conversation is filed under `-workspace` in the history
 on both drivers — a pod's cwd — which is what makes one folder link enough on a
 host.
 
-Auto-memory stays shared: claude keys it on the canonical git root, `/repo` in
-a pod, so `claude/projects/-repo/memory` is mounted back on top of the
-`projects/` overlay. On a host the key is the munged host repo path, which a
-host create links to `-repo`, so memory is one thing on both drivers (two real
-folders are left alone; memory is never merged). The munging is claude's own
+Auto-memory stays shared: claude keys it on the checkout's git root — the
+checkout itself, `/workspace` in a pod — so the project's
+`claude/projects/-repo/memory` is mounted back on top of the `projects/`
+overlay as `-workspace/memory`. On a host a create links the history's
+`-workspace/memory` to it instead, and folds in the folder the host repo path
+names, where memory lived while checkouts were linked worktrees of the repo
+(two real folders are left alone; memory is never merged). So memory is one
+thing across a project's worktrees and on both drivers. The munging is claude's own
 rule (`claudeProjectDirName`, pinned against the binary by a test).
 
 The boundary is the worktree, not the conversation. Several conversations in

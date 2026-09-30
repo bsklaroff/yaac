@@ -161,12 +161,13 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // never about which driver is installed.
   { method: 'GET', path: '/api/worktree/:id/agent-sessions/:sessionId/transcript', request: '/api/worktree/nope/agent-sessions/s1/transcript', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/worktree/:id/changes', request: '/api/worktree/nope/changes', k8s: [404, 503], containerless: MISSING },
-  // Read off the server's own refs, resolved from the record like the file
-  // editor below — no workspace needed, so both substrates answer alike.
+  // Both are the checkout's own git, run inside the running workspace: a
+  // stopped worktree is 409 on either substrate, an unknown one 404.
   { method: 'GET', path: '/api/worktree/:id/git-status', request: '/api/worktree/nope/git-status', k8s: MISSING, containerless: MISSING },
-  // The file editor reads the checkout on the server's own disk, resolved from
-  // the record — so it needs no workspace and answers alike on both substrates.
   { method: 'GET', path: '/api/worktree/:id/files', request: '/api/worktree/nope/files', k8s: MISSING, containerless: MISSING },
+  // The rest of the file editor reads the checkout on the server's own disk,
+  // resolved from the record — so it needs no workspace and answers alike on
+  // both substrates.
   { method: 'GET', path: '/api/worktree/:id/dir', request: '/api/worktree/nope/dir?path=a', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/worktree/:id/file', request: '/api/worktree/nope/file?path=a', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/worktree/:id/file', request: '/api/worktree/nope/file', body: { path: 'a', content: '', baseVersion: null }, k8s: MISSING, containerless: MISSING },

@@ -24,7 +24,6 @@ export function k8sWorkspacePaths(): WorkspacePaths {
   return {
     tmuxSock: CONTAINER_TMUX_SOCK,
     workspaceDir: '/workspace',
-    repoGitDir: '/repo/.git',
     scratchDir: '/tmp',
     acpSockDir: CONTAINER_ACP_DIR,
     // The pod's ssh identities come from the egress proxy's forwarded agent,

@@ -94,9 +94,9 @@ export interface AgentCmdSpec {
    * and the worktree's row is what remembers the answer across a restart.
    */
   permissionMode: PermissionMode
-  /** codex only — the workspace to run it in and the repository to launch
-   *  it trusting (`codexLaunchConfig`). The tui driver always passes it. */
-  paths?: Pick<WorkspacePaths, 'workspaceDir' | 'repoGitDir'>
+  /** codex only — the workspace to run it in and launch it trusting
+   *  (`codexLaunchConfig`). The tui driver always passes it. */
+  paths?: Pick<WorkspacePaths, 'workspaceDir'>
 }
 
 /**
@@ -259,7 +259,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // the same reason `envJsonAssignment` is.
     const config = [
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
-      ...codexLaunchConfig(spec.paths?.repoGitDir),
+      ...codexLaunchConfig(spec.paths?.workspaceDir),
     ]
     // `-C` names the workspace outright rather than leaving codex to take the
     // pane's cwd: a resume whose cwd differs from the one the conversation

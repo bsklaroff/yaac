@@ -63,7 +63,7 @@ describe('buildAgentCmd', () => {
         tool: 'codex',
         worktreeId: 'sess-1',
         permissionMode: 'accept-edits',
-        paths: { workspaceDir: '/data/wt', repoGitDir: '/data/repo/.git' },
+        paths: { workspaceDir: '/data/wt' },
       })
       const argv = execFileSync('sh', ['-c', cmd.replace(/^codex /, `printf '%s\\n' `)], {
         env: { ...process.env, CODEX_HOME: '/must/not/expand' },
@@ -82,7 +82,7 @@ describe('buildAgentCmd', () => {
         // hook — yaac's own, from its home's hooks.json — untrusted: with the
         // update check off, codex opens no startup screen, which would swallow
         // the prompt pasted into it.
-        '-c', 'projects={"/data/repo"={trust_level="trusted"}}',
+        '-c', 'projects={"/data/wt"={trust_level="trusted"}}',
         '--dangerously-bypass-hook-trust',
       ])
     })

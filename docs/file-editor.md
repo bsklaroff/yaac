@@ -22,9 +22,13 @@ filter box (quick-open) covers tabs mode and phones.
 `fs` against `worktreeDir(slug, id)`. That path is GLOBAL-tier, mounted by the
 server pod under k8s, and it is the host checkout itself under containerless,
 so there is no driver verb and no in-workspace script, and both drivers answer
-identically. Every route resolves the worktree's **record**
-(`resolveWorktreeRecord`), so a stopped worktree browses and edits like a
-running one — its checkout stays on disk (docs/worktree-storage.md).
+identically. Every file route resolves the worktree's **record**
+(`resolveWorktreeRecord`), so a stopped worktree's files open and save like a
+running one's — its checkout stays on disk (docs/worktree-storage.md). The
+listing and the git status bar are the exceptions: they need the checkout's
+git, which runs inside the workspace, so they answer only while it runs
+(`CONFLICT` otherwise, which the explorer shows as "Start the worktree to
+browse its files").
 
 Ownership needs nothing: the server already runs as the worktree's user. On
 k8s the server Deployment, every worktree pod and the proxy share
@@ -47,13 +51,13 @@ The cost is coupling to where the checkout lives: node-local checkouts
 
 ### Listing
 
-`listCheckoutFiles` in `#domain/git` runs git on a `worktree` target
-(docs/server-git.md), which names the admin dir, the shared repo and the work
-tree explicitly. It has to: the in-pod setup rewrites the checkout's `.git`
-file to the container's own view (`/repo/...`), which means nothing to the
-server. The runner also keeps git off the agent-writable repo config, so no
-filter, fsmonitor or hook it names runs here. Four read-only calls run
-concurrently:
+A checkout's git dir is the workspace's own, and the server never runs git
+against it (docs/server-git.md), so `listCheckoutFiles` (`checkout-git.ts`)
+runs one script INSIDE the running workspace over the driver's `exec`. Its
+git reads its own config, and whatever that config names runs in the
+workspace, as the workspace. Five read-only commands, each NUL-separated and
+ended by a section marker, so a run that died partway cannot pass for an
+empty checkout:
 
 1. `ls-files --cached --others --exclude-standard`, minus `ls-files --deleted`
    — the paths, gitignore-aware with no JS reimplementation.
@@ -65,19 +69,12 @@ concurrently:
    descriptors, never following a link, skipping ignored folders) for the
    folders holding no listed file: `emptyDirs`, which is what makes "New
    folder" survive the next poll.
-4. `status --porcelain=v1 -z --untracked-files=all --ignore-submodules=all`
-   (never entering a submodule's pod-written git dir) — `status`, one
-   `FileStatus` per path (`modified`, `added` including a rename's new path,
-   `untracked`, `conflicted`; a deletion is dropped). The colors mean
-   "differs from HEAD"; Changes answers "differs from the fork base".
-
-**Server-side git never writes.** A write to the worktree's index from outside
-the pod is a lock in-pod git can collide with, and a replaced inode under the
-VM's cached view (see `addWorktree`'s `--no-track` note). `ls-files` never
-writes; `status` runs with `--no-optional-locks` so its opportunistic index
-refresh is never written back, and with `core.checkStat=minimal` /
-`core.trustctime=false` so stat data written by in-pod git through another
-mount does not make every file look dirty.
+4. `status --porcelain=v1 -z --untracked-files=all --ignore-submodules=all` —
+   `status`, one `FileStatus` per path (`modified`, `added` including a
+   rename's new path, `untracked`, `conflicted`; a deletion is dropped). The
+   colors mean "differs from HEAD"; Changes answers "differs from the fork
+   base". It runs with `--no-optional-locks`, so polling never writes the
+   index under the agent's own git.
 
 The listing is capped at 50,000 paths (`truncated`). git reports a symlink as
 one entry, so each path is `lstat`ed and links answer `{ target, dir }`, the
@@ -87,18 +84,19 @@ target relative to the worktree or null when broken or outside.
 
 The strip above a worktree's panes (`GitStatusBar`) names its reference
 branch and how many commits HEAD is ahead of and behind it:
-`worktreeAheadBehind` runs `rev-list --left-right --count <base>...HEAD` on
-the same `worktree` target, so HEAD is read through the admin dir and follows
-the agent across a branch rename. The base is the Changes pane's pick, else
-the fork branch (`worktreeForkBranch`), tried as `origin/<base>` and then the
-local branch, as the Changes diff does. It reads refs only and never fetches,
-so `behind` is as fresh as the project's last fetch — and the bar says when
-that was. No one file records it: the server's own fetches run in a throwaway
-git dir whose `FETCH_HEAD` goes with it, so each writes its time to a
-server-private record (`server-local/git-fetched/`); a fetch inside a worktree
-leaves that worktree's `FETCH_HEAD`; and a fetch that moved the branch appends
-to its reflog. The newest of those (the repo's files read only for their
-mtimes, with `lstat`) is `fetchedAt`.
+`checkoutAheadBehind` runs `rev-list --left-right --count <base>...HEAD`
+inside the running workspace, so HEAD follows the agent across a branch
+rename. The base is the Changes pane's pick, else the fork branch the
+worktree's row records (`worktreeForkBranch`), tried as `origin/<base>` and
+then the local branch, as the Changes diff does. It reads refs only and never
+fetches, so `behind` is as fresh as the checkout's `origin/*` — which the
+server keeps within minutes of origin (docs/server-git.md) — and the bar says
+when that was. No one file records it: the server's own fetches run in a
+throwaway git dir whose `FETCH_HEAD` goes with it, so each writes its time to
+a server-private record (`server-local/git-fetched/`); a fetch the agent ran
+leaves the checkout's `FETCH_HEAD`; and a fetch that moved the branch, in the
+main clone or in the checkout, appends to its reflog. The newest of those
+(read only for their mtimes, with `lstat`) is `fetchedAt`.
 
 ### Confinement
 

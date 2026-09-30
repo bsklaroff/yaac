@@ -42,12 +42,14 @@ describe('buildRebranchPrep', () => {
     expect(prep.resetExec).not.toContain('.cache/x')
   })
 
-  it('rewrites the upstream to the new branch, shell-escaped', () => {
+  it('records the resolved tip as the clone\'s origin ref and tracks it, shell-escaped', () => {
+    // The clone's origin refs are a snapshot that may predate the branch.
     const prep = buildRebranchPrep({
       branch: 'release/2.x', sha: 'abc123', config: {}, worktreeId: 's1', respawn: null, paths: PATHS,
     })
     expect(prep.upstreamExec).toBe(
-      "git -C /workspace branch --set-upstream-to 'origin/release/2.x'",
+      "git -C /workspace update-ref 'refs/remotes/origin/release/2.x' abc123"
+      + " && git -C /workspace branch --set-upstream-to 'origin/release/2.x'",
     )
   })
 

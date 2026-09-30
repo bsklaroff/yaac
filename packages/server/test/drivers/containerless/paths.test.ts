@@ -53,10 +53,8 @@ describe('refFromJobName', () => {
 describe('containerlessWorkspacePaths', () => {
   it('points the workspace at the checkout the server already made', () => {
     const paths = containerlessWorkspacePaths(containerlessJobName('demo', UUID))
-    // No path translation: what the agent sees IS the host checkout, which
-    // is why the create path skips the in-pod gitdir rewrite entirely.
+    // No path translation: what the agent sees IS the host checkout.
     expect(paths.workspaceDir).toBe(worktreeDir('demo', UUID))
-    expect(paths.repoGitDir).toBe(path.join(dataDir, 'global', 'projects', 'demo', 'repo', '.git'))
   })
 
   it('gives each worktree its own tmux socket', () => {

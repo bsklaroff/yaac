@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir, setDataDir, worktreeDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
-import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import { addWorktree } from '#domain/git'
+import { handleFixture, installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import { closeDb } from '#db/client'
+import { recordWorktreeCreated } from '#db/worktree-store'
+import { createCheckout } from '#domain/git'
+import { execFileAsync } from '#lib/shell'
 import {
   createWorktreeFolder,
   deleteWorktreeEntry,
@@ -21,11 +22,11 @@ import {
 import { git } from '@yaac/test-utils/git'
 
 /**
- * Real checkouts made by `addWorktree`, each with its `.git` file then
- * rewritten to a `/repo/...` path that does not exist here — exactly the
- * shape the server sees under k8s, where the in-pod setup points it at the
- * container's own view. Only the record lookup is faked: the driver answers
- * `find` with a handle naming the worktree asked for.
+ * Real checkouts made by `createCheckout` from a main clone on this disk.
+ * Only the substrate is faked: the driver answers `find` with a running
+ * handle for the worktree asked for (a stopped one for `stopped`), and runs
+ * what it is asked to run inside a workspace as a host shell in that
+ * worktree's checkout — which, for a host workspace, is what it is.
  */
 
 const SLUG = 'demo'
@@ -35,19 +36,13 @@ let outside: string
 
 async function makeCheckout(id: string): Promise<string> {
   const dir = worktreeDir(SLUG, id)
-  await addWorktree(repoDir(SLUG), dir, `agent/${id}`)
-  await fs.writeFile(path.join(dir, '.git'), `gitdir: /repo/.git/worktrees/${id}\n`)
+  await createCheckout(repoDir(SLUG), dir, { branch: `agent/${id}`, baseBranch: 'main', remoteUrl: 'https://example.invalid/r.git' })
   return dir
 }
 
-/** git inside a checkout whose `.git` file no longer resolves. */
+/** git inside a checkout. */
 function wtGit(id: string): (args: string[]) => Promise<string> {
-  const env = {
-    ...process.env,
-    GIT_DIR: path.join(repoDir(SLUG), '.git', 'worktrees', id),
-    GIT_WORK_TREE: worktreeDir(SLUG, id),
-  }
-  return (args) => git(worktreeDir(SLUG, id), args, { env })
+  return (args) => git(worktreeDir(SLUG, id), args)
 }
 
 async function refusal(p: Promise<unknown>): Promise<{ code: string; message: string }> {
@@ -80,16 +75,25 @@ beforeAll(async () => {
   await write(repo, 'src/lib/util.ts', 'export {}\n')
   await git(repo, ['add', '.'])
   await git(repo, ['commit', '-m', 'initial'])
+  // A main clone's shape: the remote's branches under origin/.
+  await git(repo, ['update-ref', 'refs/remotes/origin/main', 'main'])
+  await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
 })
 
 // The fake is reset after every test, so it is installed before each.
 beforeEach(() => {
   installFakeWorktreeDriver({
-    find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectSlug: SLUG })),
+    find: (id) => Promise.resolve(handleFixture({
+      workspaceId: id, projectSlug: SLUG, jobName: id,
+      ...(id === 'stopped' ? { running: false, state: 'stopped' } : {}),
+    })),
+    workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: worktreeDir(SLUG, jobName) }),
+    exec: async (_jobName, cmd) => execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }),
   })
 })
 
 afterAll(async () => {
+  await closeDb()
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
@@ -162,8 +166,10 @@ describe('listWorktreeFiles', () => {
     await git(repoDir(SLUG), ['commit', '-m', 'theirs'])
     await write(wt, 'conflict.txt', 'ours\n')
     await inWt(['add', 'conflict.txt'])
-    await inWt(['commit', '-m', 'ours'])
-    await inWt(['merge', 'main']).catch(() => { /* conflicts, as intended */ })
+    await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'ours'])
+    // Borrowed through the alternate: the clone sees main's objects.
+    const theirs = (await git(repoDir(SLUG), ['rev-parse', 'main'])).trim()
+    await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'merge', theirs]).catch(() => { /* conflicts, as intended */ })
 
     await write(wt, 'a.txt', 'changed\n')
     await write(wt, 'staged.txt', 'new\n')
@@ -172,7 +178,7 @@ describe('listWorktreeFiles', () => {
     await inWt(['mv', 'b.txt', 'renamed.txt'])
     await fs.rm(path.join(wt, 'd.txt'))
 
-    const index = path.join(repoDir(SLUG), '.git', 'worktrees', 'status', 'index')
+    const index = path.join(wt, '.git', 'index')
     // Make a tracked file's stat data stale so a status WOULD refresh it.
     const future = new Date(Date.now() + 60_000)
     await fs.utimes(path.join(wt, 'src/lib/util.ts'), future, future)
@@ -209,20 +215,18 @@ describe('listWorktreeFiles', () => {
 })
 
 describe('getWorktreeGitStatus', () => {
-  // One commit on the checkout's branch and one on main after the fork. The
-  // repo has no remote, so every count here comes off the local-branch
-  // fallback — the one a never-pushed base takes.
+  // One commit on the checkout's branch, and one on main after the fork that
+  // the origin refresh brings into the checkout.
   beforeAll(async () => {
+    // Forked from main as the tests above left it.
+    await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
     await makeCheckout('gs')
     const run = wtGit('gs')
-    await run(['config', 'user.email', 'test@test.com'])
-    await run(['config', 'user.name', 'Test'])
-    await run(['commit', '--allow-empty', '-m', 'agent work'])
+    await run(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'agent work'])
     await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'landed on main'])
-    // What a fetch leaves: the remote-tracking ref, and its reflog entry.
     await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
-    // No worktree row here, so the fork branch is the checkout's own upstream.
-    await git(repoDir(SLUG), ['config', 'branch.agent/gs.merge', 'refs/heads/main'])
+    await run(['fetch', '-q', path.join(repoDir(SLUG), '.git'), 'refs/remotes/origin/*:refs/remotes/origin/*'])
+    await recordWorktreeCreated({ projectSlug: SLUG, worktreeId: 'gs', baseBranch: 'main' })
   })
 
   it('counts against the fork branch by default and an explicit base on request', async () => {
@@ -236,9 +240,17 @@ describe('getWorktreeGitStatus', () => {
       base: 'agent/gs', comparison: { ref: 'agent/gs', ahead: 0, behind: 0 },
     })
     await expect(getWorktreeGitStatus('gs', 'gone')).resolves.toEqual({ base: 'gone', comparison: null })
+    // Not a branch name: a range would otherwise count something else.
+    await expect(getWorktreeGitStatus('gs', 'main..HEAD')).resolves.toEqual({ base: 'main..HEAD', comparison: null })
   })
 
-  it('refuses a worktree with no checkout', async () => {
+  it('answers only while the worktree runs, as the listing does', async () => {
+    expect((await refusal(getWorktreeGitStatus('stopped', 'main'))).code).toBe('CONFLICT')
+    expect((await refusal(listWorktreeFiles('stopped'))).code).toBe('CONFLICT')
+    // Stopped with nothing left on the substrate — a host workspace, say —
+    // is still a worktree to start, not one that does not exist.
+    installFakeWorktreeDriver({ find: () => Promise.resolve(undefined) })
+    expect((await refusal(getWorktreeGitStatus('gs'))).code).toBe('CONFLICT')
     expect((await refusal(getWorktreeGitStatus('nope'))).code).toBe('NOT_FOUND')
   })
 })
@@ -326,7 +338,7 @@ describe('readWorktreeFile', () => {
   })
 
   it('refuses a FIFO at once rather than waiting for a writer', async () => {
-    await promisify(execFile)('mkfifo', [path.join(dir, 'pipe')])
+    await execFileAsync('mkfifo', [path.join(dir, 'pipe')])
     expect(await refusal(readWorktreeFile('read', 'pipe')))
       .toEqual({ code: 'VALIDATION', message: 'pipe is not a regular file' })
   })

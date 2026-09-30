@@ -927,9 +927,8 @@ export interface WorktreeListEntry {
    *  sensitive, and infra ports. Drives the "forward this port?" badge;
    *  self-clears when a port is forwarded or its listener stops. */
   unforwardedPorts: number[]
-  /** The remote branch this worktree tracks (its reference branch), read
-   *  from the worktree branch's recorded upstream. Unset when the upstream
-   *  record is missing or unreadable. */
+  /** The branch this worktree forked from (its reference branch), as its
+   *  row records it. Unset when the row records none. */
   baseBranch?: string
   /** The sidebar group this worktree is filed under (see
    *  `WorktreeGroupSummary`); absent means the default list. Server-persisted

@@ -160,7 +160,7 @@ export async function restartWorktree(
 
     const result = await createWorktree(projectSlug, {
       // Always reuse the checkout — that is what a restart *is*. Clearing this
-      // would send the create down `git worktree add` against a checkout that
+      // would send the create down `createCheckout` against a checkout that
       // is still there, fail, and roll the worktree row away with it.
       resume: true,
       worktreeId,

@@ -17,8 +17,8 @@ import type { WorkspaceGitCredential } from '#drivers/contract'
  * so the workspace has to hold it (docs/containerless-driver.md).
  *
  * HTTPS goes through git's own credential store rather than a token in a
- * remote URL: git worktrees share the repository's config, so a URL rewrite
- * would put the token in the server's mirror and in every sibling worktree.
+ * remote URL, which would sit in the checkout's config — the agent's to read
+ * and to push anywhere it likes — rather than in the workspace's home.
  * The store's default file IS `$HOME/.git-credentials`, so the helper takes
  * no argument — no path has to survive gitconfig parsing and then a shell —
  * and the file is reaped with the worktree, since that HOME sits inside the

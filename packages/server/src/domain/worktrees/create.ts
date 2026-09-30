@@ -2,7 +2,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto, { createHash } from 'node:crypto'
 import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
-import { createKeyedMutex } from '#lib/keyed-mutex'
 import { buildStatusRight } from '#lib/status-right'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
 import { testEnv } from '@yaac/shared/env'
@@ -40,7 +39,7 @@ import {
   CONTAINER_OPENCODE_DATA,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { missingCredentialError, parseGitRemote, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { fetchProjectOrigin, missingCredentialError, parseGitRemote, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -50,8 +49,8 @@ import {
 } from '@yaac/shared/tool-auth'
 import { defaultModelFor, seedProjectToolHome } from '#domain/auth'
 import {
-  addWorktree,
-  fetchOrigin,
+  adoptLinkedCheckout,
+  createCheckout,
   getDefaultBranch,
   isGitAuthError,
   remoteBranchExists,
@@ -62,10 +61,10 @@ import {
   agentDriver,
   AgentLaunchDeadError,
   agentWindowName,
+  CLAUDE_POD_CWD,
   CLAUDE_POD_REPO,
-  buildUpstreamExec,
+  buildCloneLinkExec,
   buildWindowsExec,
-  buildWorktreeLinkExec,
   ensureAgentReporters,
   openSandboxDir,
   validateInitWindows,
@@ -77,6 +76,7 @@ import {
   getGitIdentity,
   getProjectRow,
   listActiveAgentSessions,
+  listProjectWorktreeIds,
   setWorktreeGroup,
   setWorktreeMamaTokenHash,
   setWorktreeTitle,
@@ -328,15 +328,12 @@ interface WorktreeSetupParams {
   options: WorktreeCreateOptions
   /**
    * The concurrent host-side worktree provisioning (fetch → branch checks
-   * → `git worktree add`), started before the Job so the checkout overlaps
-   * pod boot. Resolves `origin/<refBranch>` for a fresh worktree (its
-   * upstream is then set from inside the pod) or undefined when resuming
-   * onto an existing worktree, whose upstream is left untouched. A
-   * rejection (bad branch, fetch failure) is the caller's input being
-   * wrong, not the pod's — surfaced as SetupInputError so the Job retry
-   * loop fails fast instead of recreating the pod against it.
+   * → `createCheckout`), started before the Job so the checkout overlaps
+   * pod boot. A rejection (bad branch, fetch failure) is the caller's input
+   * being wrong, not the pod's — surfaced as SetupInputError so the Job
+   * retry loop fails fast instead of recreating the pod against it.
    */
-  worktree: Promise<{ upstreamStartPoint?: string }>
+  worktree: Promise<void>
 }
 
 /** Wraps worktree-provisioning failures so the Job retry loop can tell
@@ -345,26 +342,6 @@ class SetupInputError extends Error {
   constructor(readonly inner: unknown) {
     super(inner instanceof Error ? inner.message : String(inner))
   }
-}
-
-/**
- * Per-project queue for the in-flight in-pod upstream-config execs. Each
- * fresh worktree sets its branch upstream from inside its own pod (see
- * below), and that write takes git's config lock on the shared
- * `/repo/.git/config` — two concurrent creates on one project (a user
- * create and a prewarm spare warm, say) would race it and fail one side
- * with "could not lock config file".
- */
-const upstreamConfigMutex = createKeyedMutex()
-
-/**
- * Run `task` serialized against every other in-flight upstream-config write
- * for the project. Both the fresh-create setup and the claim-time re-branch
- * prep write `branch.<name>.merge` into the shared `/repo/.git/config`
- * (taking git's config lock), so all such writes flow through here.
- */
-export async function withUpstreamConfigLock(projectSlug: string, task: () => Promise<void>): Promise<void> {
-  await upstreamConfigMutex(projectSlug, task)
 }
 
 /**
@@ -431,28 +408,16 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   // everything below reads /workspace, so join it now. Its failures are the
   // create's inputs being bad — never the pod's fault — so they must not
   // burn Job-recreate retries (SetupInputError fails the retry loop fast).
-  let upstreamStartPoint: string | undefined
   try {
-    ({ upstreamStartPoint } = await worktree)
+    await worktree
   } catch (err) {
     throw new SetupInputError(err)
   }
 
-  // Re-point the worktree's git plumbing at this substrate's view and lock
-  // it against `git worktree prune` — one exec (see buildWorktreeLinkExec).
-  // Run on every launch, on every driver: a checkout last started under the
-  // other substrate carries that one's paths.
-  await runtime.exec(jobName, buildWorktreeLinkExec(worktreeId, paths))
-
-  // Fresh worktree: set the worktree branch's upstream from inside the pod
-  // (virtiofs cache coherence — see buildUpstreamExec), serialized against
-  // every other in-flight upstream write on this project's shared config.
-  if (upstreamStartPoint) {
-    const upstream = upstreamStartPoint
-    await withUpstreamConfigLock(projectSlug, async () => {
-      await runtime.exec(jobName, buildUpstreamExec(upstream, paths))
-    })
-  }
+  // Point the checkout's clone at the main clone's objects and bring its
+  // `origin/*` up to the main clone's — one exec (see buildCloneLinkExec).
+  // Run on every launch, on every driver, so the agent starts current.
+  await runtime.exec(jobName, buildCloneLinkExec(path.join(repoDir(projectSlug), '.git'), paths))
 
   // Nested worktrees: the postStart hook started the rootful in-pod engine
   // in the background (yaac-worktree-init, which also writes the project
@@ -1020,7 +985,7 @@ export async function createWorktree(
   // provisioning leg starts — rather than leaving them to the pod: the pod
   // creates them root-owned 0700 whenever it happens to win the race with
   // the checkout, and either way the checkout must cope with a destination
-  // that is not empty (see addWorktree, which is what makes that legal).
+  // that is not empty (see createCheckout, which is what makes that legal).
   const moduleDirs = await prepareModuleDirs(wtDir, resolveEphemeralModulesPaths(config))
 
   // File it under its group now that the row exists, before provisioning
@@ -1085,6 +1050,24 @@ export async function createWorktree(
     }
   }
 
+  // A checkout an older install left linked is converted to a clone by the
+  // worktree leg below, which must not happen under a workspace that still
+  // has it — and a restart whose teardown did not land (a delete that timed
+  // out or never took) arrives here with the old one still up. Asked now,
+  // before this create launches one of its own under the same id.
+  if (options.resume) {
+    const linked = await fs.lstat(path.join(wtDir, '.git')).then((st) => !st.isDirectory(), () => false)
+      || await fs.lstat(path.join(wtDir, '.git.linked')).then(() => true, () => false)
+    if (linked && await runtime.find(worktreeId) !== undefined) {
+      // Put back as the stopped worktree it was, as any failed resume is.
+      await reportCreateFailed(projectSlug, worktreeId, options)
+      throw new ServerError(
+        'CONFLICT',
+        `worktree ${worktreeId}'s previous workspace is still shutting down; retry the restart in a moment`,
+      )
+    }
+  }
+
   // ── Concurrent provisioning ─────────────────────────────────────────
   // The independent legs of provisioning run concurrently: image
   // ensure+push (podman + registry), fetch + worktree checkout (network +
@@ -1107,14 +1090,14 @@ export async function createWorktree(
   // another leg from turning it into an unhandled rejection.
   imageTask.catch(() => { /* awaited at the join */ })
 
-  const worktreeTask = (async (): Promise<{ upstreamStartPoint?: string }> => {
+  const worktreeTask = (async (): Promise<void> => {
     // Test-only: e2e fixtures pre-populate the bare repo, so skip the
-    // host-side fetchOrigin (which would try to reach the real remote from
-    // the server process — outside the proxy's reach).
+    // host-side fetch (which would try to reach the real remote from the
+    // server process — outside the proxy's reach).
     if (!testEnv.e2eSkipFetch) {
       emit('Fetching latest from remote...', options)
       try {
-        await fetchOrigin(repo, remoteUrl, credential)
+        await fetchProjectOrigin(projectSlug)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         if (isGitAuthError(msg)) {
@@ -1131,12 +1114,16 @@ export async function createWorktree(
 
     // Create the worktree (or reuse an existing one when resuming). The
     // wtDir itself was pre-created above, holding the /workspace mount
-    // points; a populated worktree is recognized by its `.git` link file.
-    const worktreeExists = await fs.access(path.join(wtDir, '.git'))
-      .then(() => true).catch(() => false)
-    if (options.resume && worktreeExists) {
+    // points; a populated worktree is recognized by its `.git` — or by the
+    // `.git.linked` a conversion that crashed mid-swap leaves instead.
+    const exists = (name: string): Promise<boolean> =>
+      fs.access(path.join(wtDir, name)).then(() => true, () => false)
+    if (options.resume && (await exists('.git') || await exists('.git.linked'))) {
+      // A checkout an older install made is converted to a clone first; a
+      // no-op for one that already is.
+      await adoptLinkedCheckout(repo, wtDir, worktreeId, remoteUrl, new Set((await listProjectWorktreeIds(projectSlug)).keys()))
       emit(`Reusing existing worktree at ${wtDir}`, options)
-      return {}
+      return
     }
     // An explicitly requested branch must exist as a remote-tracking ref
     // (fetchOrigin above brought down all heads, so a just-pushed branch is
@@ -1147,11 +1134,10 @@ export async function createWorktree(
     // A resume whose checkout is gone recreates it from the default.
     const base = refBranch ?? options.branch ?? await getDefaultBranch(repo)
     emit(`Creating worktree from ${base}...`, options)
-    // addWorktree checks out into the pre-created dir whether or not it is
-    // empty; nothing pod-side reads /workspace before launchWithSetup
+    // createCheckout checks out into the pre-created dir whether or not it
+    // is empty; nothing pod-side reads /workspace before launchWithSetup
     // joins this task.
-    await addWorktree(repo, wtDir, `agent/${worktreeId}`, `origin/${base}`)
-    return { upstreamStartPoint: `origin/${base}` }
+    await createCheckout(repo, wtDir, { branch: `agent/${worktreeId}`, baseBranch: base, remoteUrl })
   })()
   // Joined inside launchWithSetup (or surfaced by the retry loop); this
   // marker only keeps a failure in another leg from turning a still-running
@@ -1292,7 +1278,7 @@ export async function createWorktree(
     const claudeHome = await openSandboxDir(projectSlug, claude)
     await seedClaudeJson(
       claudeHome,
-      mediatedEgress ? ['/workspace', '/repo'] : await withResolved([wtDir, repo]),
+      mediatedEgress ? ['/workspace'] : await withResolved([wtDir]),
     )
     await seedClaudeSettings(claudeHome)
     // Point every tool at the reporters that name its conversation, model and
@@ -1310,6 +1296,14 @@ export async function createWorktree(
     // root-owned via DirectoryOrCreate — the in-container yaac user carries
     // the server's uid, so server-owned means yaac-writable.
     const cacheVolumeEntries = Object.entries(config.cacheVolumes ?? {})
+    // The main clone is mounted at the server's own path (see the mounts
+    // below), which a cache volume must not overlap.
+    const repoMount = `${repo}/.git`
+    for (const [key, p] of cacheVolumeEntries) {
+      if (p === repoMount || p.startsWith(`${repoMount}/`) || repoMount.startsWith(`${p}/`)) {
+        throw new ServerError('VALIDATION', `cacheVolumes.${key} (${p}) overlaps the project's git mount at ${repoMount}`)
+      }
+    }
     for (const [key] of cacheVolumeEntries) {
       await fs.mkdir(cacheVolumeDir(projectSlug, key), { recursive: true })
     }
@@ -1618,7 +1612,10 @@ export async function createWorktree(
   const mounts: WorkspaceMount[] = [
     // GLOBAL.
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
-    { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: '/repo/.git' },
+    // GLOBAL, read-only, at the path the server sees it at: the clone in
+    // /workspace borrows its objects through an alternates line naming that
+    // path, and refreshes its `origin/*` from it (docs/server-git.md).
+    { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: `${repo}/.git`, readOnly: true },
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
     // Tool-agnostic on purpose: an ACP record belongs to the protocol, not to
     // whichever agent happens to speak it.
@@ -1645,7 +1642,7 @@ export async function createWorktree(
         { source: { kind: 'hostPath' as const, path: history('claude') }, mountPath: `${CLAUDE_CONTAINER_HOME}/projects` },
         {
           source: { kind: 'hostPath' as const, path: path.join(claude, 'projects', CLAUDE_POD_REPO, 'memory') },
-          mountPath: `${CLAUDE_CONTAINER_HOME}/projects/${CLAUDE_POD_REPO}/memory`,
+          mountPath: `${CLAUDE_CONTAINER_HOME}/projects/${CLAUDE_POD_CWD}/memory`,
         },
         { source: { kind: 'hostPath' as const, path: history('claude-file-history') }, mountPath: `${CLAUDE_CONTAINER_HOME}/file-history` },
         { source: { kind: 'hostPath' as const, path: history('codex') }, mountPath: `${CODEX_CONTAINER_HOME}/sessions` },
@@ -1825,7 +1822,7 @@ export async function createWorktree(
         // race in one direction that matters. The leg is usually the very
         // thing that failed — then it has settled and this runs at once —
         // but a POD-side failure (image pull, never Ready, all attempts
-        // burned) arrives while it can still be mid-fetch, and `addWorktree`
+        // burned) arrives while it can still be mid-fetch, and `createCheckout`
         // re-creates its destination before checking out. Deleting first
         // would leave a complete checkout staged *after* the rm: precisely
         // the orphan this exists to prevent. Waiting for the leg inline would

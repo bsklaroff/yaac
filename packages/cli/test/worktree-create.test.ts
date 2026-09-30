@@ -26,7 +26,17 @@ const { fsFake } = vi.hoisted(() => ({
     // afterwards, so this survives the `resetAllMocks` in each suite's
     // beforeEach without having to be re-primed in all three.
     rename: vi.fn(() => Promise.resolve()),
+    // Nothing on disk is a legacy linked checkout: the resume conversion
+    // guard finds no `.git` file to worry about.
+    lstat: vi.fn((_p: string): Promise<{ isDirectory: () => boolean }> => Promise.reject(new Error('missing'))),
   },
+}))
+
+// The agent-history converge walks and moves real files; this file asserts
+// on the create around it, not on the history.
+vi.mock('@yaac/server/domain/agent-history', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  convergeAgentHistory: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('node:fs/promises', () => ({ default: fsFake }))
 
@@ -139,6 +149,9 @@ vi.mock('@yaac/shared/project-paths', () => ({
   // runs. Independent of how stream-relay is mocked.
   CALICO_DIR: '/tmp/yaac-package/k8s/calico',
   repoDir: vi.fn((slug: string) => `/tmp/${slug}/repo`),
+  agentHistoryDir: vi.fn((slug: string, worktreeId: string, part?: string) =>
+    `/tmp/${slug}/history/${worktreeId}${part !== undefined ? `/${part}` : ''}`),
+  AGENT_HISTORY_PARTS: ['claude', 'claude-file-history', 'codex', 'codex-sqlite', 'pi'],
   claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
   opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
@@ -216,7 +229,10 @@ vi.mock('@yaac/shared/tool-auth', () => ({
 }))
 
 vi.mock('@yaac/server/domain/git', () => ({
-  addWorktree: vi.fn().mockResolvedValue(undefined),
+  adoptLinkedCheckout: vi.fn().mockResolvedValue(undefined),
+  createCheckout: vi.fn().mockResolvedValue(undefined),
+  // Inline: survives resetAllMocks, and nothing re-primes it.
+  maintainRepo: vi.fn(() => Promise.resolve()),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
   remoteBranchExists: vi.fn().mockResolvedValue(true),
@@ -247,6 +263,7 @@ vi.mock('@yaac/server/db/worktree-store', () => ({
   getWorktreeRow: vi.fn(),
   priorStopOf: vi.fn(),
   restoreWorktreeStop: vi.fn(),
+  listProjectWorktreeIds: vi.fn(() => Promise.resolve(new Map<string, boolean>())),
 } satisfies Partial<typeof storeModule>))
 
 // The git identity a create commits under: a preferences row on the server.
@@ -302,7 +319,7 @@ import { resolveProjectCredential } from '@yaac/server/domain/projects/credentia
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
-import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/domain/git'
+import { adoptLinkedCheckout, createCheckout, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/domain/git'
 import { getProjectRow } from '@yaac/server/db/project-store'
 import { podExec, waitForStreamd } from '@yaac/server/drivers/k8s/substrate/stream-relay'
 import type * as streamRelayModule from '@yaac/server/drivers/k8s/substrate/stream-relay'
@@ -314,7 +331,7 @@ import {
 } from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
 import { buildStatusRight } from '@yaac/server/lib/status-right'
 import type * as statusRightModule from '@yaac/server/lib/status-right'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorktreeDriver, type FakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/drivers/k8s/worktrees/launch'
 import { destroyWorkspace } from '@yaac/server/drivers/k8s/worktrees/teardown'
 import { prepareWorkspaceImage } from '@yaac/server/drivers/k8s/images/workspace-image'
@@ -388,6 +405,7 @@ function appliedJobManifest(): JobManifest {
 }
 
 describe('createWorktree', () => {
+  let fake: FakeWorktreeDriver
   beforeEach(() => {
     vi.resetAllMocks()
 
@@ -417,7 +435,8 @@ describe('createWorktree', () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveProjectCredential).mockResolvedValue({ kind: 'https', token: 'token' } as never)
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
-    vi.mocked(addWorktree).mockResolvedValue(undefined)
+    vi.mocked(createCheckout).mockResolvedValue(undefined)
+    vi.mocked(adoptLinkedCheckout).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
     vi.mocked(getProjectRow).mockResolvedValue(projectRow('https://github.com/example/repo.git'))
@@ -454,7 +473,7 @@ describe('createWorktree', () => {
     // The process boundary below it is mocked as it always was (kubectl,
     // the proxy client, the relay, podman), so nothing here reaches a
     // cluster.
-    installFakeWorktreeDriver({
+    fake = installFakeWorktreeDriver({
       ensureRuntimeReachable: () => ensureKubernetes(),
       prepareImage: (o) => prepareWorkspaceImage(o),
       prepareSubstrate: (i) => prepareWorkspaceSubstrate(i),
@@ -468,16 +487,16 @@ describe('createWorktree', () => {
   })
 
 
-  it('creates the worktree from an explicitly requested branch and tracks it', async () => {
+  it('creates the worktree from an explicitly requested branch, borrowing from the main clone', async () => {
     const result = await createWorktree('demo', { tool: 'claude', branch: 'dev' })
-    expect(vi.mocked(addWorktree)).toHaveBeenCalledWith(
+    expect(vi.mocked(createCheckout)).toHaveBeenCalledWith(
       '/tmp/demo/repo',
       `/tmp/demo/worktrees/${result?.worktreeId}`,
-      `agent/${result?.worktreeId}`,
-      'origin/dev',
+      { branch: `agent/${result?.worktreeId}`, baseBranch: 'dev', remoteUrl: 'https://github.com/example/repo.git' },
     )
-    const upstreamCall = mockPodExec.mock.calls.find(([, cmd]) => cmd.includes('--set-upstream-to'))
-    expect(upstreamCall?.[1]).toContain("'origin/dev'")
+    // The launch points the clone at the main clone as the server sees it.
+    const linkCall = mockPodExec.mock.calls.find(([, cmd]) => cmd.includes('objects/info/alternates'))
+    expect(linkCall?.[1]).toContain("'/tmp/demo/repo/.git/objects'")
   })
 
   it('records the worktree and its first conversation before the Job', async () => {
@@ -582,8 +601,8 @@ describe('createWorktree', () => {
 
   it('creates from the requested branch without asking origin for its default', async () => {
     await createWorktree('demo', { tool: 'claude', branch: 'dev' })
-    expect(vi.mocked(addWorktree)).toHaveBeenLastCalledWith(
-      expect.anything(), expect.anything(), expect.anything(), 'origin/dev',
+    expect(vi.mocked(createCheckout)).toHaveBeenLastCalledWith(
+      expect.anything(), expect.anything(), expect.objectContaining({ baseBranch: 'dev' }),
     )
     expect(vi.mocked(getDefaultBranch)).not.toHaveBeenCalled()
   })
@@ -592,7 +611,7 @@ describe('createWorktree', () => {
     vi.mocked(remoteBranchExists).mockResolvedValue(false)
     await expect(createWorktree('demo', { tool: 'claude', branch: 'ghost' }))
       .rejects.toThrow(/branch "ghost" not found on origin/)
-    expect(vi.mocked(addWorktree)).not.toHaveBeenCalled()
+    expect(vi.mocked(createCheckout)).not.toHaveBeenCalled()
   })
 
   it('a bad branch fails fast: one Job apply, one delete, no recreate retries', async () => {
@@ -665,7 +684,7 @@ describe('createWorktree', () => {
     // anthropic provider → ANTHROPIC_API_KEY placeholder (claude is unconfigured here).
     expect(env).toContainEqual({ name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' })
     // pi session-log dir + version-check skip are seeded unconditionally.
-    expect(env).toContainEqual({ name: 'PI_CODING_AGENT_SESSION_DIR', value: '/home/yaac/.pi/agent/sessions' })
+    expect(env).toContainEqual({ name: 'PI_CODING_AGENT_SESSION_DIR', value: '/home/yaac/.yaac-pi-sessions' })
     expect(env).toContainEqual({ name: 'PI_SKIP_VERSION_CHECK', value: '1' })
   })
 
@@ -1064,16 +1083,17 @@ describe('createWorktree', () => {
     expect(respawn).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id abcd1234')
   })
 
-  it('sets the branch upstream from inside the pod, not on the host', async () => {
-    // Host-side writes to the shared /repo/.git/config go stale under the
-    // virtiofs cache session pods read through (transient "unknown error
-    // occurred while reading the configuration files" in-pod), so tracking
-    // is configured by an in-pod exec after worktree creation.
+  it('mounts the main clone read-only, at the path the server sees it at', async () => {
+    // The checkout borrows its objects through an alternates line naming
+    // that path, and refreshes its origin/* from it — but never writes it.
     await createWorktree('demo', { tool: 'claude', worktreeId: 'abcd1234' })
 
-    const cmds = mockPodExec.mock.calls.map((args) => args[1])
-    expect(cmds.some((c) =>
-      c.includes("git -C /workspace branch --set-upstream-to 'origin/main'"))).toBe(true)
+    const spec = appliedJobManifest().spec.template.spec
+    const volume = spec.volumes.find((v) => v.hostPath?.path === '/tmp/demo/repo/.git')
+    const mounts = spec.containers[0].volumeMounts
+    expect(mounts.find((m) => m.name === volume?.name))
+      .toMatchObject({ mountPath: '/tmp/demo/repo/.git', readOnly: true })
+    expect(mounts.some((m) => m.mountPath.startsWith('/repo'))).toBe(false)
   })
 
   it('wires the postStart setup hook and the env that drives it', async () => {
@@ -1127,7 +1147,7 @@ describe('createWorktree', () => {
       })
     })
 
-    it('reuses an existing worktree instead of calling addWorktree', async () => {
+    it('reuses an existing worktree instead of creating a checkout', async () => {
       mockAccess.mockResolvedValue(undefined)
       const messages: string[] = []
       await createWorktree('demo', {
@@ -1135,19 +1155,34 @@ describe('createWorktree', () => {
         worktreeId: 'abcd1234',
         onProgress: (m) => messages.push(m),
       })
-      expect(addWorktree).not.toHaveBeenCalled()
+      expect(createCheckout).not.toHaveBeenCalled()
       expect(messages.some((m) => m.includes('Reusing existing worktree'))).toBe(true)
     })
 
-    it('leaves the upstream of a reused worktree untouched', async () => {
+    it('converts a reused checkout an older install left linked', async () => {
       mockAccess.mockResolvedValue(undefined)
       await createWorktree('demo', { resume: true, worktreeId: 'abcd1234' })
-
-      const cmds = mockPodExec.mock.calls.map((args) => args[1])
-      expect(cmds.some((c) => c.includes('--set-upstream-to'))).toBe(false)
+      expect(adoptLinkedCheckout).toHaveBeenCalledWith(
+        '/tmp/demo/repo', '/tmp/demo/worktrees/abcd1234', 'abcd1234', 'https://github.com/example/repo.git',
+        expect.any(Set),
+      )
     })
 
-    it('still calls addWorktree when the worktree directory is missing', async () => {
+    it('refuses to convert a linked checkout its previous workspace still has', async () => {
+      // A restart whose teardown did not land: the old pod is still up, with
+      // the linked checkout mounted read-write.
+      mockAccess.mockResolvedValue(undefined)
+      vi.mocked(fsFake.lstat).mockImplementation((p) => p.endsWith('/.git')
+        ? Promise.resolve({ isDirectory: () => false })
+        : Promise.reject(new Error('missing')))
+      fake.override({ find: () => Promise.resolve(handleFixture({ workspaceId: 'abcd1234', projectSlug: 'demo' })) })
+
+      await expect(createWorktree('demo', { resume: true, worktreeId: 'abcd1234' }))
+        .rejects.toMatchObject({ code: 'CONFLICT' })
+      expect(adoptLinkedCheckout).not.toHaveBeenCalled()
+    })
+
+    it('still creates a checkout when the worktree directory is missing', async () => {
       mockAccess.mockImplementation((target) => {
         if (typeof target === 'string' && target.includes('/worktrees/abcd1234')) {
           return Promise.reject(new Error('missing'))
@@ -1155,7 +1190,7 @@ describe('createWorktree', () => {
         return Promise.resolve(undefined)
       })
       await createWorktree('demo', { resume: true, worktreeId: 'abcd1234' })
-      expect(addWorktree).toHaveBeenCalledTimes(1)
+      expect(createCheckout).toHaveBeenCalledTimes(1)
     })
   })
 

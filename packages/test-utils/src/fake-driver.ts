@@ -57,7 +57,6 @@ export function workspacePathsFixture(
   return {
     tmuxSock: '/tmp/yaac-tmux/server',
     workspaceDir: '/workspace',
-    repoGitDir: '/repo/.git',
     scratchDir: '/tmp',
     acpSockDir: '/tmp/yaac-acp',
     sshAgentSock: '/tmp/yaac-ssh-agent.sock',

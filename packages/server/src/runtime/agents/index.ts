@@ -88,8 +88,8 @@ export { ensureAgentReporters } from './agent-reporters'
 // How the server reads and writes the project dirs an agent can write too.
 export { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 export {
-  buildUpstreamExec,
+  buildCloneLinkExec,
+  buildOriginRefreshExec,
   buildWindowsExec,
-  buildWorktreeLinkExec,
   validateInitWindows,
 } from './setup-commands'

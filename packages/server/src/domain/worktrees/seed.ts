@@ -21,10 +21,10 @@ interface ClaudeJsonState {
  *
  * `trustedDirs` are the roots the agent will open, **as the agent sees
  * them** — which is the whole reason they are a parameter. Under a pod that
- * is the mount layout (`/workspace`, and `/repo` for the git worktree
- * root); under containerless nothing is mounted anywhere and the agent runs
- * in the real host checkout, so those two constants would name directories
- * that do not exist. Getting it wrong is silent in the worst way: claude
+ * is the mount layout (`/workspace`, which is also the git root: every
+ * checkout is a clone of its own); under containerless nothing is mounted
+ * anywhere and the agent runs in the real host checkout, so that constant
+ * would name a directory that does not exist. Getting it wrong is silent in the worst way: claude
  * keys this map by directory, so an unmatched entry simply sits in the file
  * looking correct while the trust dialog opens on first launch anyway.
  *
@@ -106,7 +106,7 @@ async function readJson(claudeHome: ConfinedRoot, rel: string): Promise<Record<s
  * The checkout is the global one, so under a pod each dir is a mount target
  * on the worktree, and pre-creating it here is what keeps the pod's runtime
  * from creating it root-owned 0700 instead. It exists before the checkout
- * runs, which `addWorktree` is built to accept.
+ * runs, which `createCheckout` is built to accept.
  */
 export async function prepareModuleDirs(
   worktreeDirPath: string,

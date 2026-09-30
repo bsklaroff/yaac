@@ -424,8 +424,8 @@ flaws. Two structural facts frame all of them:
   separation can only come from *which paths get mounted*, never from
   permissions on a shared mount. Every "owner-key this dir" item below means
   mount-selection, and a shared-writable mount is a cross-user channel no
-  policy check sees. (No entry in the mount list `createWorktree` builds
-  sets `readOnly` today, though the contract field exists.)
+  policy check sees. (Of the mounts `createWorktree` builds, only the
+  attachments and the project's main clone are `readOnly`.)
 - **Read-all is unsafe until "read" is narrowed** (the three-way split
   above), because much of what looks like a read is either execution or a
   secret disclosure.
@@ -433,23 +433,19 @@ flaws. Two structural facts frame all of them:
 ### Preconditions — pre-existing bugs that make ownership meaningless until fixed
 
 This one is exploitable in the *current* single-user server too; ownership
-cannot be enforced on top of it. docs/plans/worktree-reference-clones.md
-delivers it. The rest of that list — exact worktree-id
+cannot be enforced on top of it. It is shipped for every project whose
+last linked checkout has been converted (docs/server-git.md). The rest of
+that list — exact worktree-id
 resolution, the `.cached-packages` mount, `cacheVolumes` key traversal and
 the ungated `POST /auth/fake` — has shipped.
 
-- **`/repo/.git` is mounted read-write, so a worktree can point the
-  server's git at other projects' files.** The server's git no longer runs
-  anything a pod wrote into `/repo/.git`: hooks, filters and fsmonitor
-  never reach it, and fetches use the project row's URL
-  (docs/server-git.md). What remains is links. A worktree can plant
-  symlinked directories, `objects/info/alternates` or a linked
-  `packed-refs`, and the server's git follows them. That lets it write ref
-  files and reflog lines outside the project, and read, or check out,
-  another project's repository. This matters more once tenants share a
-  server. Fix: mount `/repo/.git` read-only with only per-worktree
-  `worktrees/<id>` writable, or confine the server's git to the one
-  repository.
+- **The project's main clone was mounted read-write, so a worktree could
+  point the server's git at other projects' files.** Each worktree is now a
+  clone of its own, and pods mount the main clone read-only
+  (docs/server-git.md). What remains is the upgrade window: until a
+  project's last linked checkout from an older install is converted, a
+  legacy pod still holds the main clone read-write
+  (docs/legacy-compat-shims.md).
 
 ### Action-takeover chains (multi-user)
 
@@ -593,7 +589,7 @@ equivalents in `domain/skills/discover.ts`), writable by the agent:
 worktree A writes `~/.claude/skills/foo/SKILL.md` and every later worktree
 in the project — any owner — loads it into agent context, persisting past
 A's deletion. The *project* tier reads `origin/<branch>` via `ls-tree` from
-the shared clone, forgeable via the `/repo/.git` write hole above.
+the main clone, which no worktree can write once its project is converted.
 Owner-keying the tool homes fixes the personal tier for free; the UI should
 show skill provenance (which owner/worktree last wrote it) and treat
 writable-dir skills as untrusted by default. Title generation, by contrast,
@@ -659,8 +655,8 @@ processes, no new arrows:
    resolution, the audit's other preconditions, globally unique worktree
    ids, server I/O confined on sandbox-writable paths, immutable project
    ids for everything named outside the data dir, and main-registry write
-   grants have all shipped; the read-only `/repo/.git` is
-   docs/plans/worktree-reference-clones.md. None of it needs a
+   grants have all shipped; the read-only main clone holds once each
+   project's legacy linked checkouts are converted. None of it needs a
    `Principal`; all of it is required before any owner check is
    meaningful.
 1. **Identity without tokens — shipped** (see "Identity terminates in
