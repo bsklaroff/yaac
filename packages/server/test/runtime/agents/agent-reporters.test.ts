@@ -64,6 +64,14 @@ describe('ensureAgentReporters', () => {
     return (await fs.readFile(calls, 'utf8')).trim().split('\n')
   }
 
+  it('keeps its hooks when another create seeds claude settings at the same time', async () => {
+    await Promise.all([ensureAgentReporters(await roots()), seedClaudeSettings((await roots()).claude)])
+    const claudeSettings = path.join(homes.claudeDir, 'settings.json')
+    const settings = JSON.parse(await fs.readFile(claudeSettings, 'utf8')) as Record<string, unknown>
+    expect(settings.cleanupPeriodDays).toBe(36500)
+    expect(Object.keys(await hooksIn(claudeSettings))).toContain('SessionStart')
+  })
+
   it('puts each reporter where its tool loads it from, beside what is already there', async () => {
     const claudeSettings = path.join(homes.claudeDir, 'settings.json')
     await seedClaudeSettings((await roots()).claude)

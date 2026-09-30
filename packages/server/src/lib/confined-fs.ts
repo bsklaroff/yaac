@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { constants as C, existsSync, type Dirent, type Stats } from 'node:fs'
 import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { createKeyedMutex } from './keyed-mutex'
 
 /**
  * Server file I/O under a directory that less-trusted code can write: a
@@ -28,6 +29,9 @@ import path from 'node:path'
  *    links into a sandbox-mounted tool home, so one there was planted.
  */
 export type LinkPolicy = 'inside' | 'no-links'
+
+/** Serializes `ConfinedRoot.locked` per file, across every open root. */
+const fileMutex = createKeyedMutex()
 
 const PROC_FD = existsSync('/proc/self/fd')
 
@@ -85,6 +89,17 @@ export interface ConfinedRoot {
    *  rename, making its directories: a link at `rel` is replaced, never
    *  written through. */
   writeAtomic(rel: string, data: string | Buffer): Promise<void>
+  /**
+   * Run `task` while no other `locked` call for the same file runs in this
+   * process, whichever handle it came through. Wrap a read-modify-write of a
+   * file several creates update at once (a project's shared tool config),
+   * or one create's write silently drops another's.
+   *
+   * It only orders this process's own callers: a tool rewriting the file
+   * itself, or another server or CLI process, does not take it. It is not
+   * reentrant, so a task must not call `locked` on the same file again.
+   */
+  locked<T>(rel: string, task: () => Promise<T>): Promise<T>
   mkdirp(rel: string): Promise<void>
   /** Delete a file, a link (never its target) or a whole directory. */
   removeTree(rel: string): Promise<void>
@@ -325,6 +340,7 @@ export async function openRoot(
     contains,
     normalize,
     dir: (rel, opts = {}) => walk(segmentsOf(rel), opts.create ?? false),
+    locked: (rel, task) => fileMutex(path.join(real, ...segmentsOf(rel)), task),
     parent,
     open,
 

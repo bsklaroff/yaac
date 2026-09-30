@@ -1,5 +1,8 @@
-import { execFileSync } from 'node:child_process'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { execFileSync, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   buildAgentCmd,
   buildPromptPasteCmd,
@@ -277,14 +280,6 @@ describe('buildPromptPasteCmd', () => {
     expect(embeddedPrompt(buildPromptPasteCmd('yaac:claude', nasty, PATHS))).toBe(nasty)
   })
 
-  it('verifies the paste against the first line, capped at 40 columns', () => {
-    const prompt = `${'x'.repeat(60)} tail\nsecond line`
-    const cmd = buildPromptPasteCmd('yaac:claude', prompt, PATHS)
-    const probe = /probe="\$\(printf %s ([A-Za-z0-9+/=]+) \| base64 -d\)"/.exec(cmd)
-    expect(probe).not.toBeNull()
-    expect(Buffer.from(probe![1], 'base64').toString('utf8')).toBe('x'.repeat(40))
-  })
-
   it('never embeds the raw prompt, and stays single-quote-clean for the host shell', () => {
     const nasty = "it's $HOME; \"quoted\""
     const cmd = buildPromptPasteCmd('yaac:claude', nasty, PATHS)
@@ -301,18 +296,95 @@ describe('buildPromptPasteCmd', () => {
     expect(cmd).toContain(`send-keys -t yaac:${tool} Enter`)
   })
 
-  it('gates on the alternate screen, verify-pastes, then submits with a guard resend', () => {
-    const cmd = buildPromptPasteCmd('yaac:codex', 'hello', PATHS)
-    // In order: wait for alternate screen, paste until visible, Enter, then
-    // a delayed second Enter in case the TUI dropped the first.
-    expect(cmd).toMatch(
-      /while .*alternate_on.* sleep 0\.5; done; sleep 1; probe=.*; i=0; while .*capture-pane .* grep -qF -- "\$probe" && break; printf %s \S+ \| base64 -d \| .*load-buffer .*; .*paste-buffer -p .*; i=.*; sleep 2; done; .*send-keys .* Enter; sleep 2; .*send-keys .* Enter'$/,
-    )
+  describe('against a stub tmux', () => {
+    let bin: string
+
+    /**
+     * How the stub pane renders a paste:
+     * - `text`: verbatim, like a wide input box.
+     * - `claude`: tabs and CRs as spaces, wrapped at 7 columns, only the
+     *   last 6 rows visible, like claude's input box in a small window.
+     * - `marker`: a collapsed-paste placeholder, as pi and codex show a
+     *   long paste.
+     * - `none`: nothing, like a dialog that swallows the keys.
+     */
+    type Render = 'text' | 'claude' | 'marker' | 'none'
+
+    /** Run the script with `tmux` and `sleep` stubbed on PATH. Returns the
+     *  exit status and every tmux command that changed the pane. */
+    function runScript(render: Render, prompt = 'hello there'): { status: number; calls: string[] } {
+      const cmd = buildPromptPasteCmd('yaac:claude', prompt, PATHS)
+      fs.writeFileSync(path.join(bin, 'calls'), '')
+      fs.rmSync(path.join(bin, 'screen'), { force: true })
+      const res = spawnSync('sh', ['-c', cmd], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, STUB: bin, RENDER: render },
+      })
+      const calls = fs.readFileSync(path.join(bin, 'calls'), 'utf8').trim().split('\n')
+      return { status: res.status ?? -1, calls }
+    }
+
+    beforeEach(() => {
+      bin = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-paste-'))
+      fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\n', { mode: 0o755 })
+      fs.writeFileSync(path.join(bin, 'tmux'), [
+        '#!/bin/sh',
+        'shift 2',
+        'case "$1" in',
+        '  display) echo 1 ;;',
+        '  capture-pane) cat "$STUB/screen" 2>/dev/null ;;',
+        '  load-buffer) cat > "$STUB/buffer" ;;',
+        '  paste-buffer)',
+        '    echo paste >> "$STUB/calls"',
+        '    case "$RENDER" in',
+        '      text) cat "$STUB/buffer" > "$STUB/screen" ;;',
+        '      claude) tr "\\t\\r" "  " < "$STUB/buffer" | fold -w 7 | tail -n 6 > "$STUB/screen" ;;',
+        '      marker) echo "> [paste #1 +13 lines]" > "$STUB/screen" ;;',
+        '    esac ;;',
+        '  send-keys) echo "send-keys $4" >> "$STUB/calls" ;;',
+        'esac',
+        'exit 0',
+        '',
+      ].join('\n'), { mode: 0o755 })
+    })
+
+    afterEach(() => {
+      fs.rmSync(bin, { recursive: true, force: true })
+    })
+
+    const submitted = { status: 0, calls: ['paste', 'send-keys Enter', 'send-keys Enter'] }
+
+    it('submits once the paste shows in the pane, with a guard resend', () => {
+      expect(runScript('text')).toEqual(submitted)
+    })
+
+    it('recognizes the paste however the TUI wraps, scrolls or collapses it', () => {
+      // CRLF endings, wrapped lines, and a first line that scrolls out of
+      // view, so only the last-20 probe can match under `claude`.
+      const prompt = `Please\tfix the flaky login test todayxx\u{1F642} now\r\n${'more detail\r\n'.repeat(8)}thanks`
+      expect(runScript('claude', prompt)).toEqual(submitted)
+      expect(runScript('marker', prompt)).toEqual(submitted)
+    })
+
+    it('matches probes that hold a tab and an emoji at their edge', () => {
+      // 19 visible characters on each side of the emoji, so the first-20
+      // and last-20 probes both reach it; a UTF-16 slice would cut it in
+      // half in both.
+      expect(runScript('claude', 'Please\tfix the flakyyy\u{1F642} login test is red today')).toEqual(submitted)
+    })
+
+    it('never presses Enter on a pane that does not show the paste', () => {
+      // A startup dialog (claude's folder trust) swallows the paste, and
+      // Enter there would pick its preselected "No, exit".
+      const { status, calls } = runScript('none')
+      expect(status).toBe(1)
+      expect(calls).toEqual(Array<string>(10).fill('paste'))
+    })
   })
 
   it('degrades to a single blind paste for a whitespace-only prompt', () => {
     const cmd = buildPromptPasteCmd('yaac:claude', ' \n ', PATHS)
-    expect(cmd).not.toContain('probe=')
+    expect(cmd).not.toContain('head=')
     expect(cmd).toContain('paste-buffer -p -d -b yaac-prompt -t yaac:claude')
   })
 })

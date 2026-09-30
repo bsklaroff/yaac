@@ -19,24 +19,27 @@ interface ClaudeJsonState {
  *
  * `trustedDirs` must be the paths as the agent sees them (`/workspace` in a
  * pod, the real checkout under containerless). A wrong path fails silently:
- * the trust dialog just appears. Under containerless the map gains one entry
- * per workspace.
+ * the trust dialog just appears, with "No, exit" preselected. Under
+ * containerless the map gains one entry per workspace, and concurrent
+ * creates each add theirs, so the update holds the file's lock.
  */
 export async function seedClaudeJson(
   claudeHome: ConfinedRoot,
   trustedDirs: readonly string[],
 ): Promise<void> {
-  const state = await readJson(claudeHome, '.claude.json') as ClaudeJsonState
-  state.hasCompletedOnboarding = true
-  state.lastOnboardingVersion = CLAUDE_ONBOARDING_VERSION
-  const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
-  state.customApiKeyResponses = { approved: [...approved], rejected: state.customApiKeyResponses?.rejected ?? [] }
-  const projects = { ...state.projects }
-  for (const dir of trustedDirs) {
-    projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
-  }
-  state.projects = projects
-  await claudeHome.writeAtomic('.claude.json', JSON.stringify(state, null, 2) + '\n')
+  await claudeHome.locked('.claude.json', async () => {
+    const state = await readJson(claudeHome, '.claude.json') as ClaudeJsonState
+    state.hasCompletedOnboarding = true
+    state.lastOnboardingVersion = CLAUDE_ONBOARDING_VERSION
+    const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
+    state.customApiKeyResponses = { approved: [...approved], rejected: state.customApiKeyResponses?.rejected ?? [] }
+    const projects = { ...state.projects }
+    for (const dir of trustedDirs) {
+      projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
+    }
+    state.projects = projects
+    await claudeHome.writeAtomic('.claude.json', JSON.stringify(state, null, 2) + '\n')
+  })
 }
 
 /**
@@ -48,10 +51,12 @@ export async function seedClaudeJson(
  *   entirely.
  */
 export async function seedClaudeSettings(claudeHome: ConfinedRoot): Promise<void> {
-  const settings = await readJson(claudeHome, 'settings.json')
-  settings.skipDangerousModePermissionPrompt = true
-  settings.cleanupPeriodDays = 36500
-  await claudeHome.writeAtomic('settings.json', JSON.stringify(settings, null, 2) + '\n')
+  await claudeHome.locked('settings.json', async () => {
+    const settings = await readJson(claudeHome, 'settings.json')
+    settings.skipDangerousModePermissionPrompt = true
+    settings.cleanupPeriodDays = 36500
+    await claudeHome.writeAtomic('settings.json', JSON.stringify(settings, null, 2) + '\n')
+  })
 }
 
 /**
