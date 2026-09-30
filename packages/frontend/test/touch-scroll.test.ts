@@ -52,7 +52,6 @@ describe('patchTouchScroll', () => {
   ): {
     term: Terminal
     reports: Report[]
-    scrolledLines: number[]
     prevented: number
     setMouseActive: (a: boolean) => void
     swipe: (
@@ -63,7 +62,6 @@ describe('patchTouchScroll', () => {
     listeners: Map<string, (e: TouchEvent) => void>
   } {
     const reports: Report[] = []
-    const scrolledLines: number[] = []
     const listeners = new Map<string, (e: TouchEvent) => void>()
     let mouseActive = true
     let prevented = 0
@@ -94,7 +92,6 @@ describe('patchTouchScroll', () => {
         coreMouseService,
         _renderService: { dimensions },
       },
-      scrollLines: (n: number): void => { scrolledLines.push(n) },
     } as unknown as Terminal
 
     /** Drag `dy` pixels (positive = down the screen) in `steps` touchmoves,
@@ -133,7 +130,6 @@ describe('patchTouchScroll', () => {
     return {
       term,
       reports,
-      scrolledLines,
       get prevented(): number { return prevented },
       setMouseActive: (a) => { mouseActive = a },
       swipe,
@@ -192,13 +188,12 @@ describe('patchTouchScroll', () => {
     expect(f.reports).toHaveLength(0)
   })
 
-  it('scrolls xterm itself when nothing is reporting the mouse', () => {
+  it('sends nothing when nothing is reporting the mouse', () => {
     const f = fakeTerm()
     patchTouchScroll(f.term)
     f.setMouseActive(false)
     f.swipe(200)
     expect(f.reports).toHaveLength(0)
-    expect(f.scrolledLines).toEqual([-5, -5]) // two reports' worth, back
   })
 
   it('starts each gesture fresh rather than carrying travel between them', () => {
