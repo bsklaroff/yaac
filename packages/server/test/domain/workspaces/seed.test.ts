@@ -65,6 +65,16 @@ describe('seedClaudeJson', () => {
     expect(projects[second]).toEqual({ hasTrustDialogAccepted: true })
   })
 
+  it('keeps every root when creates seed at the same time', async () => {
+    // Two queued children launch together, each through its own handle on
+    // the shared home. A lost entry opens claude's trust dialog, whose
+    // preselected answer exits.
+    const roots = Array.from({ length: 5 }, (_, i) => path.join(dir, 'workspaces', `ws-${String(i)}`))
+    await Promise.all(roots.map(async (root) => seedClaudeJson(await openRoot(dir, 'no-links'), [root])))
+    const projects = (await read()).projects as Record<string, unknown>
+    for (const root of roots) expect(projects[root]).toEqual({ hasTrustDialogAccepted: true })
+  })
+
   it('preserves claude-code own keys when merging', async () => {
     await fs.writeFile(file, JSON.stringify({ oauthAccount: { uuid: 'x' }, theme: 'dark' }))
     await seedClaudeJson(home, ['/workspace', '/repo'])

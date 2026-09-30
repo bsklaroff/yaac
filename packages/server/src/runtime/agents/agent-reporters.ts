@@ -193,25 +193,28 @@ const MAX_SETTINGS_BYTES = 1024 * 1024
  * and codex's `hooks.json` share the shape). Other keys and user hooks are
  * kept, and a file already containing every entry is left untouched. A
  * malformed file, or anything that is not a regular file (e.g. a planted
- * link), is replaced; yaac re-seeds its entries on every create.
+ * link), is replaced; yaac re-seeds its entries on every create. Holds the
+ * file's lock, since `seedClaudeSettings` updates the same file.
  */
 async function mergeHooks(home: ConfinedRoot, rel: string, wanted: Hooks): Promise<void> {
-  let settings: { hooks?: Record<string, HookMatcher[] | undefined>; [key: string]: unknown } = {}
-  try {
-    const raw = await home.readFile(rel, { maxBytes: MAX_SETTINGS_BYTES })
-    if (raw !== null) settings = JSON.parse(raw.toString('utf8')) as typeof settings
-  } catch {
-    // Invalid or oversized: start fresh.
-  }
-  const hooks = { ...settings.hooks }
-  const missing = wanted.filter(([event, command]) =>
-    !(hooks[event]?.some((m) => m.hooks?.some((h) => h.command === command)) ?? false))
-  if (missing.length === 0) return
-  for (const [event, command] of missing) {
-    // 3s: codex clamps SessionEnd hooks to this and warns otherwise.
-    hooks[event] = [...hooks[event] ?? [], { matcher: '*', hooks: [{ type: 'command', command, timeout: 3 }] }]
-  }
-  await install(home, rel, JSON.stringify({ ...settings, hooks }, null, 2) + '\n')
+  await home.locked(rel, async () => {
+    let settings: { hooks?: Record<string, HookMatcher[] | undefined>; [key: string]: unknown } = {}
+    try {
+      const raw = await home.readFile(rel, { maxBytes: MAX_SETTINGS_BYTES })
+      if (raw !== null) settings = JSON.parse(raw.toString('utf8')) as typeof settings
+    } catch {
+      // Invalid or oversized: start fresh.
+    }
+    const hooks = { ...settings.hooks }
+    const missing = wanted.filter(([event, command]) =>
+      !(hooks[event]?.some((m) => m.hooks?.some((h) => h.command === command)) ?? false))
+    if (missing.length === 0) return
+    for (const [event, command] of missing) {
+      // 3s: codex clamps SessionEnd hooks to this and warns otherwise.
+      hooks[event] = [...hooks[event] ?? [], { matcher: '*', hooks: [{ type: 'command', command, timeout: 3 }] }]
+    }
+    await install(home, rel, JSON.stringify({ ...settings, hooks }, null, 2) + '\n')
+  })
 }
 
 /**

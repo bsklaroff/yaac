@@ -166,6 +166,30 @@ describe('openRoot', () => {
     contract(() => Promise.resolve(confinedFs))
   })
 
+  it('locks one file whichever way its root and path are spelled', async () => {
+    // Two creates open the same tool home separately, so the lock must key
+    // on the file itself, not on how a caller named it.
+    const link = path.join(tmp, 'root-link')
+    await fs.symlink(root, link)
+    const handles = [
+      await openRoot(root, 'inside'),
+      await openRoot(`${link}/`, 'inside'),
+      await openRoot(tmp, 'inside', { base: root }),
+    ]
+    const events: string[] = []
+    const task = (name: string) => async (): Promise<void> => {
+      events.push(`${name}+`)
+      await new Promise((r) => setTimeout(r, 5))
+      events.push(`${name}-`)
+    }
+    await Promise.all([
+      handles[0].locked('x.json', task('a')),
+      handles[1].locked('./x.json', task('b')),
+      handles[2].locked('x.json/', task('c')),
+    ])
+    expect(events).toEqual(['a+', 'a-', 'b+', 'b-', 'c+', 'c-'])
+  })
+
   describe('without /proc/self/fd', () => {
     const load = async (): Promise<ConfinedFs> => {
       vi.resetModules()

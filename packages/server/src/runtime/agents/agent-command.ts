@@ -300,10 +300,17 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
  * to resend it, so:
  *
  *  1. Wait for `#{alternate_on}`, the earliest tool-agnostic sign the TUI
- *     accepts input; give up waiting after 60s and paste anyway.
- *  2. Paste, then check `capture-pane` for the first 40 chars of the first
- *     line (the pane is 500 cols wide, so no wrapping), re-pasting until
- *     it appears.
+ *     accepts input; give up waiting after 60s and paste anyway, since some
+ *     TUIs (pi, codex) and claude's startup dialogs never set it.
+ *  2. Paste, then check `capture-pane` until the paste shows, re-pasting
+ *     if it doesn't. It counts as shown when the pane holds the prompt's
+ *     first or last 20 visible characters (an input box scrolls to its
+ *     last lines when the pane is small), or a TUI's collapsed-paste
+ *     marker such as pi's `[paste #1 +13 lines]`. Whitespace is dropped
+ *     on both sides, since TUIs wrap lines and render tabs as spaces. If
+ *     it never shows, stop without pressing Enter: the pane is showing
+ *     something other than an input box, such as claude's folder-trust
+ *     dialog, where Enter picks the preselected "No, exit".
  *  3. Send Enter separately, then again after a moment, since a TUI
  *     finishing startup can drop the first one; a repeat on an empty input
  *     does nothing.
@@ -330,20 +337,24 @@ function promptPasteScript(
   const TMUX = tmuxCmd(paths)
   const b64 = Buffer.from(prompt, 'utf8').toString('base64')
   const target = `-t ${paneTarget}`
-  // A whitespace-only prompt has nothing to match, so paste it once blind.
-  const probeLine = prompt.split('\n').find((l) => l.trim() !== '')?.slice(0, 40)
-  const probeB64 = probeLine === undefined
-    ? undefined
-    : Buffer.from(probeLine, 'utf8').toString('base64')
+  // By code point, so a probe never ends in half a surrogate pair. A
+  // whitespace-only prompt has nothing to match, so it is pasted once blind.
+  const visible = [...prompt].filter((c) => !/[\x00-\x20\x7f]/.test(c))
+  const probe = (chars: string[]): string => Buffer.from(chars.join(''), 'utf8').toString('base64')
   const paste = `printf %s ${b64} | base64 -d | ${TMUX} load-buffer -b yaac-prompt -; `
     + `${TMUX} paste-buffer -p -d -b yaac-prompt ${target}`
   return (
     `i=0; while [ $i -lt 120 ]; do [ "$(${TMUX} display -p ${target} "#{alternate_on}")" = "1" ] && break; i=$((i+1)); sleep 0.5; done; `
     + 'sleep 1; '
-    + (probeB64 === undefined
+    + (visible.length === 0
       ? `${paste}; `
-      : `probe="$(printf %s ${probeB64} | base64 -d)"; `
-        + `i=0; while [ $i -lt 10 ]; do ${TMUX} capture-pane ${target} -p | grep -qF -- "$probe" && break; `
+      : `head="$(printf %s ${probe(visible.slice(0, 20))} | base64 -d)"; `
+        + `last="$(printf %s ${probe(visible.slice(-20))} | base64 -d)"; `
+        + `shown() { p="$(${TMUX} capture-pane ${target} -p | tr -d "[:space:]")"; `
+        + 'case "$p" in *"$head"*|*"$last"*) return 0;; esac; '
+        + 'printf %s "$p" | grep -qE "\\[(paste#|PastedContent|Pasted~|Pastedtext#)"; }; '
+        + 'i=0; while ! shown; do '
+        + '[ $i -ge 10 ] && { echo "prompt never appeared in the pane; not submitting" >&2; exit 1; }; '
         + `${paste}; i=$((i+1)); sleep 2; done; `)
     + `${TMUX} send-keys ${target} Enter; sleep 2; ${TMUX} send-keys ${target} Enter`
   )
