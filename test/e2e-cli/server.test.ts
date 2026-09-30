@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
+  TEST_CLI_ENTRY,
   createYaacTestEnv,
   spawnYaacServer,
   runYaac,
@@ -208,10 +209,9 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
   })
 
   it('`server logs` prints the log the pod wrote into the server-local claim', async () => {
-    // The one verb that needs no cluster awareness at all: the server writes
-    // `server.log` under its server-local root, which on kind is the static
-    // PV into `<dataDir>/server-local` on this host — so the same command
-    // reads the same file either side of the cluster boundary.
+    // Read through the pod (`kubectl exec … tail`), not off this host: on a
+    // byo install the server-local claim is a volume this machine never
+    // sees, so every k8s install reads its log where it is mounted.
     const logs = await runYaac(testEnv.env, 'server', 'logs')
     expect(logs.exitCode, logs.stderr).toBe(0)
     // Bound on the pod interface, not a loopback: a pod's loopback has no
@@ -236,4 +236,32 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(two.exitCode).toBe(0)
     expect(two.stdout.split('\n').filter(Boolean)).toHaveLength(2)
   })
+
+  it('`server logs -f` keeps printing what the pod appends, until interrupted', async () => {
+    const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'server', 'logs', '-f'], {
+      env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    try {
+      let stdout = ''
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+      await waitFor(() => /\[server\] listening on 0\.0\.0\.0:/.test(stdout), 30_000)
+      // A request of our own, so there is a line the follow must pick up
+      // that was not in the file when it started.
+      const before = stdout.length
+      await fetch(`http://127.0.0.1:${String(server.lock.port)}/api/health`)
+      await waitFor(() => stdout.slice(before).includes('GET /api/health 200'), 20_000)
+    } finally {
+      child.kill('SIGINT')
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    }
+  })
 })
+
+async function waitFor(cond: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (cond()) return
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  throw new Error('waitFor timed out')
+}

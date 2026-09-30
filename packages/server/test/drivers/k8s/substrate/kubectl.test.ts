@@ -174,7 +174,7 @@ describe('kubectlGetJson', () => {
 
 describe('isKubectlAbsentError', () => {
   // The predicate exists for one caller with an unusual requirement:
-  // `--adopt-cni` treats "no FelixConfiguration" as a FACT meaning "Felix
+  // `--byo` treats "no FelixConfiguration" as a FACT meaning "Felix
   // runs its iptables defaults" and proceeds on it. So a failure
   // misclassified as absence licenses an eBPF cluster the gate exists to
   // refuse, and the failure mode is silent no-egress.

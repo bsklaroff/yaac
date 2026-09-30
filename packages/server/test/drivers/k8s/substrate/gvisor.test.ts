@@ -16,6 +16,7 @@ import {
 // Internals, for pins only: the release the installer downloads, the node
 // paths it writes, and the containerd wiring it appends.
 import {
+  CRI_IMAGES_KEY_V3,
   CRI_PLUGIN_KEY_V2,
   CRI_PLUGIN_KEY_V3,
   GVISOR_CONTAINERD_MARKER,
@@ -25,11 +26,13 @@ import {
   GVISOR_RELEASE_BASE,
   GVISOR_VERSION,
   NODE_BIN_DIR,
+  NODE_CONTAINERD_CERTS_DIR,
   NODE_CONTAINERD_CONFIG_PATH,
   NODE_CONTAINERD_DIR,
   NODE_GVISOR_CACHE_DIR,
   NODE_RUNSC_CONFIG_PATH,
   NODE_RUNSC_NESTED_CONFIG_PATH,
+  REGISTRY_CONFIG_MARKER,
 } from '#drivers/k8s/substrate/gvisor'
 import {
   NODE_SYSTEMD_CONF_DIR,
@@ -211,6 +214,7 @@ describe('gvisorInstallScript', () => {
       `grep -qE '^[[:space:]]*version[[:space:]]*=[[:space:]]*2([^0-9].*)?$' "$cfg"`)
     expect(script).toContain('cannot tell which CRI plugin key $cfg uses')
     const appended = [...script.matchAll(/printf '\\n%s' '([\s\S]*?)' >> "\$cfg"/g)].map((m) => m[1])
+      .filter((b) => b.includes(GVISOR_CONTAINERD_MARKER))
     expect(appended).toHaveLength(2)
     for (const key of [CRI_PLUGIN_KEY_V2, CRI_PLUGIN_KEY_V3]) {
       const block = appended.find((b) => b.includes(`plugins."${key}"`))!
@@ -369,6 +373,63 @@ describe('gvisorInstallScript', () => {
       expect(stdout).toBe('FIRST=wrote\nSECOND=same\nTHIRD=wrote\n')
       expect(await fs.readFile(target, 'utf8')).toBe('b')
       expect(await fs.readdir(dir)).toEqual(['f.toml'])
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('points containerd at certs.d when a node has no registry config, and refuses one it cannot', async () => {
+    // A stock node — kind's own image included — sets no config_path, and
+    // containerd then never reads the hosts.toml the registries' writers
+    // leave in certs.d: every yaac image pull would fail. Driven under a
+    // real sh over each shape a node's config can take.
+    const script = gvisorInstallScript()
+    const start = script.indexOf('  certs=')
+    const step = script.slice(start, script.indexOf('\n\n  if [ "$changed" = 1 ]', start))
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-registry-cfg-'))
+    const run = async (config: string): Promise<{ code: number; out: string; after: string }> => {
+      const cfg = path.join(dir, 'config.toml')
+      await fs.writeFile(cfg, config)
+      const program = `set -eu\ncfg='${cfg}'\nchanged=0\n${step}\necho "changed=$changed"`
+      const result = await runSh('sh', ['-c', program]).then(
+        (r) => ({ code: 0, out: r.stdout + r.stderr }),
+        (e: { code?: number; stdout?: string; stderr?: string }) =>
+          ({ code: e.code ?? 1, out: (e.stdout ?? '') + (e.stderr ?? '') }),
+      )
+      return { ...result, after: await fs.readFile(cfg, 'utf8') }
+    }
+    try {
+      // No registry table at all: the block is appended under the key the
+      // config's version speaks, and containerd restarts for it.
+      const v2 = await run(`version = 2\n[plugins."${CRI_PLUGIN_KEY_V2}".containerd]\n  snapshotter = "overlayfs"\n`)
+      expect(v2.out).toContain('changed=1')
+      expect(v2.after).toContain(`${REGISTRY_CONFIG_MARKER}`)
+      expect(v2.after).toContain(`[plugins."${CRI_PLUGIN_KEY_V2}".registry]\n  config_path = "${NODE_CONTAINERD_CERTS_DIR}"`)
+      const v3 = await run(`version = 3\n[plugins."${CRI_PLUGIN_KEY_V3}"]\n`)
+      expect(v3.after).toContain(`[plugins."${CRI_IMAGES_KEY_V3}".registry]`)
+
+      // Already pointing there (yaac's own kind config): left alone.
+      const set = await run(`version = 2\n[plugins."${CRI_PLUGIN_KEY_V2}".registry]\n  config_path = "${NODE_CONTAINERD_CERTS_DIR}"\n`)
+      expect(set.out).toContain('changed=0')
+      expect(set.after).not.toContain(REGISTRY_CONFIG_MARKER)
+      // A list naming it (EKS AL2023's shape), and a TOML literal string:
+      // both read hosts from certs.d, so both are left alone too.
+      for (const value of [`"${NODE_CONTAINERD_CERTS_DIR}:/etc/docker/certs.d"`, `'${NODE_CONTAINERD_CERTS_DIR}'`]) {
+        const listed = await run(`version = 2\n[plugins."${CRI_PLUGIN_KEY_V2}".registry]\n  config_path = ${value}\n`)
+        expect(listed.out).toContain('changed=0')
+      }
+
+      // Pointing elsewhere, or the deprecated mirrors containerd refuses
+      // config_path beside: the pass fails with the reason, touching nothing.
+      for (const value of ['"/etc/other"', `"/etc/other:${NODE_CONTAINERD_CERTS_DIR}.bak"`]) {
+        const other = await run(`version = 2\n[plugins."${CRI_PLUGIN_KEY_V2}".registry]\n  config_path = ${value}\n`)
+        expect(other.code).not.toBe(0)
+        expect(other.out).toContain('config_path other than')
+      }
+      const mirrors = await run(`version = 2\n[plugins."${CRI_PLUGIN_KEY_V2}".registry.mirrors."docker.io"]\n  endpoint = ["x"]\n`)
+      expect(mirrors.code).not.toBe(0)
+      expect(mirrors.out).toContain('deprecated mirrors/configs')
+      expect(mirrors.after).not.toContain(REGISTRY_CONFIG_MARKER)
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
     }

@@ -33,19 +33,14 @@ export { runClusterCheck } from './check'
 export { runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
 export { runClusterInstall } from './install'
+export { foreignClusterRefusal } from './cluster-identity'
 export {
+  clusterServerLogs,
   deployServerWorkload,
+  deployedInstallIdentity,
   restartClusterServer,
   serverDeploymentExists,
   startClusterServer,
   stopClusterServer,
 } from './server-deploy'
-export {
-  buildGlobalPvManifest,
-  buildGlobalPvcManifest,
-  buildServerLocalPvManifest,
-  buildServerLocalPvcManifest,
-  deleteStorageVolumes,
-  ensureStorageClaims,
-  storageVolumeName,
-} from './storage'
+export { deleteStorageVolumes, ensureStorageClaims, type StorageShape } from './storage'

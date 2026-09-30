@@ -36,9 +36,39 @@ const MAX_KIND_NODES = 5
 
 /** The flags these guards read — a structural subset of ClusterInstallOptions. */
 export interface ClusterInstallArgs {
-  adoptCni?: boolean
+  byo?: boolean
+  rwxStorageClass?: string
+  rwoStorageClass?: string
   tailnet?: boolean
   nodes?: number | string
+}
+
+/**
+ * The flag combinations `--byo` makes meaningless or incomplete: its
+ * storage classes belong to it alone, and it cannot install without the
+ * RWX one — there is no default NFS-family class to fall back on.
+ */
+function checkByoFlags(opts: ClusterInstallArgs): void {
+  if (!opts.byo) {
+    const stray = [
+      opts.rwxStorageClass !== undefined && '--rwx-storage-class',
+      opts.rwoStorageClass !== undefined && '--rwo-storage-class',
+    ].filter(Boolean)
+    if (stray.length > 0) {
+      throw new ClusterInstallError(
+        `${stray.join(' and ')} ${stray.length > 1 ? 'are' : 'is'} for --byo only: a kind install's `
+        + 'claims are static volumes into this machine\'s data dir, provisioned from no class.',
+      )
+    }
+    return
+  }
+  if (!opts.rwxStorageClass) {
+    throw new ClusterInstallError(
+      '--byo needs --rwx-storage-class <name>: the NFS-family StorageClass the shared '
+      + '`yaac-global` claim is provisioned from (csi-driver-nfs, EFS, or Azure Files over NFS). '
+      + 'A cluster\'s default class is a block class, which cannot be shared between nodes.',
+    )
+  }
 }
 
 /**
@@ -51,11 +81,12 @@ export interface ClusterInstallArgs {
  * the flags you first typed has to stay the ordinary thing to do.
  */
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
+  checkByoFlags(opts)
   if (opts.nodes === undefined) return 1
-  if (opts.adoptCni) {
+  if (opts.byo) {
     throw new ClusterInstallError(
-      '--nodes cannot be combined with --adopt-cni: adopt mode creates no cluster, so '
-      + 'there are no nodes for it to render. The adopted cluster brings its own.',
+      '--nodes cannot be combined with --byo: a byo install creates no cluster, so '
+      + 'there are no nodes for it to render. The cluster brings its own.',
     )
   }
   const count = typeof opts.nodes === 'string' ? Number(opts.nodes) : opts.nodes

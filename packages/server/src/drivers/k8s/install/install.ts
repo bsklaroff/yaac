@@ -15,6 +15,8 @@ import { spawn } from 'node:child_process'
 import { isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
 import {
+  LABEL_INSTALL_ID,
+  SERVER_APP_NAME,
   TAILSCALE_OPERATOR_NAMESPACE,
   ensurePriorityClasses,
   execFileAsync,
@@ -22,6 +24,7 @@ import {
   k8sNamespace,
   kubectlErrorSummary,
   nodeLocalNodePath,
+  processIdentity,
 } from '#drivers/k8s/substrate'
 import { registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
@@ -34,6 +37,15 @@ import {
   probeWorkloadVeths,
 } from './cni-adopt'
 import { formatCheckResult } from '@yaac/shared/checks'
+import { readServerConfig, recordInstall, type InstallRecord } from '@yaac/shared/server-config'
+import {
+  hostNodeArchitecture,
+  nodeArchitectureProblems,
+  nodeOsProblems,
+  type PlatformNode,
+} from './byo-gates'
+import { clusterRefusal, currentCluster, type CurrentCluster } from './cluster-identity'
+import { isNfsFamily } from './storage'
 import {
   NODE_KUBELET_FLAGS_ENV,
   NODE_KUBELET_HOUSEKEEPING_INTERVAL,
@@ -43,9 +55,12 @@ import {
 import type { CheckResult } from '@yaac/shared/types'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#drivers/k8s/container'
 import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
-import { deployServerWorkload } from './server-deploy'
+import { BYO_INSTALL_IDENTITY, deployServerWorkload } from './server-deploy'
 import { TAILNET_HOSTNAME, kindFronting, tailnetFronting } from './server-fronting'
-import { PACKAGE_ROOT, nodeLocalRoot } from '@yaac/shared/paths'
+// The install root as an identity string, compared with the one a live
+// server Deployment was installed from.
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
+import { PACKAGE_ROOT, getDataDir, nodeLocalRoot } from '@yaac/shared/paths'
 import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
 import { resolveServerPort } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
@@ -75,10 +90,14 @@ import { env } from '@yaac/shared/env'
  * here. Against a cluster that already exists the flag is a no-op with a
  * note — the node count is fixed when the cluster is created.
  *
- * `--adopt-cni` is the one mode that does not assume yaac owns the
- * cluster: it skips both the kind create and the Calico install, verifies
- * the CNI the cluster already runs (cni-adopt.ts), and then applies the
- * same in-cluster layers every other run converges.
+ * `--byo` (bring your own cluster) is the one mode that does not assume
+ * yaac owns the cluster: it creates nothing and installs no CNI, gates the
+ * cluster the kubeconfig points at on everything that would otherwise fail
+ * silently (the node pool, the CNI, the Tailscale operator, the storage
+ * classes, the install's identity), then applies the same in-cluster layers
+ * every other run converges, binds the claims from the named classes, and
+ * deploys the server behind the tailnet — at a fixed install uid, and
+ * without ever exec'ing into a node.
  *
  * Two kinds of state need re-applying on an existing cluster, and both are
  * unconditional here. The kind node fixups — the node container's pids
@@ -168,18 +187,21 @@ export async function ensureCalicoManifest(deps: ClusterInstallDeps): Promise<st
 
 export interface ClusterInstallOptions {
   /**
-   * Bring-your-own-CNI: install into the cluster the current kubeconfig
-   * points at, adopting the Calico it already runs instead of creating a
-   * cluster and installing one. Runs the verification gate in cni-adopt.ts
-   * in place of `installCalico`, and refuses the configurations that would
-   * otherwise fail silently.
+   * Bring your own cluster: install into the cluster the current kubeconfig
+   * points at instead of creating one (docs/cluster-setup.md "Bring your own
+   * cluster"). Implies the tailnet fronting.
    */
-  adoptCni?: boolean
+  byo?: boolean
+  /** `--byo`: the NFS-family class the shared `yaac-global` claim uses. */
+  rwxStorageClass?: string
+  /** `--byo`: the class `yaac-server-local` uses; default: the cluster's default. */
+  rwoStorageClass?: string
   /**
    * Publish the server on the machine's Tailscale tailnet through the
    * Tailscale Kubernetes operator, instead of at this machine's loopback.
    * The operator is a prerequisite the cluster owner installs; this refuses
-   * up front without it (`verifyTailnetOperator`).
+   * up front without it (`verifyTailnetOperator`). `--byo` implies it, so
+   * alongside `--byo` it changes nothing.
    */
   tailnet?: boolean
   /**
@@ -361,10 +383,10 @@ export function kindEnv(): NodeJS.ProcessEnv {
  * differs between a fresh machine and an upgrade, which is why there is one
  * verb rather than a mode flag.
  *
- * The finishing check is load-bearing for adoption specifically: its
+ * The finishing check is load-bearing for `--byo` specifically: its
  * `egress` gate is the positive NetworkPolicy probe the CNI verification
  * deliberately does not try to infer, so a `false` return there means "the
- * adopted policy engine is not enforcing" and the CLI exits non-zero.
+ * cluster's policy engine is not enforcing" and the CLI exits non-zero.
  */
 export async function runClusterInstall(
   opts: ClusterInstallOptions = {},
@@ -372,77 +394,75 @@ export async function runClusterInstall(
 ): Promise<boolean> {
 
   const nodeCount = resolveNodeCount(opts)
+  const recorded = await readServerConfig()
+  refuseByoSwitch(recorded, opts)
+  // Minted once, by the first run, and recorded before anything is made:
+  // a run that fails halfway has already stamped this id on what it made,
+  // so the next run recognizes it as its own.
+  const installId = recorded?.installId ?? crypto.randomUUID()
 
   const cluster = env.kindCluster
-  // Adopt mode creates no cluster, so kind is not part of its shopping
-  // list — the target may be any cluster the kubeconfig points at.
-  const kindVersion = await requireBinaries(deps, { requireKind: !opts.adoptCni })
+  // A byo install creates no cluster, so kind is not part of its shopping
+  // list — the target is whatever cluster the kubeconfig points at.
+  const kindVersion = await requireBinaries(deps, { requireKind: !opts.byo })
+
+  // The gates run FIRST — right after the shopping list, ahead of the
+  // podman bootstrap — so an install that cannot work costs the user
+  // nothing but the diagnosis: the cluster and this host are untouched.
+  const byoStorage = opts.byo ? await verifyByoCluster(deps, opts, installId) : undefined
 
   if (deps.platform === 'darwin') await ensurePodmanMachineSetup(deps)
   else await ensureRootfulPodmanReachable(deps)
 
-  if (!opts.adoptCni) await preflightKindProvider(deps, kindVersion)
-
-  if (opts.adoptCni) {
-    // The gates run FIRST, before anything is applied: an adoption that
-    // cannot work must cost the user nothing but the diagnosis.
-    if (opts.tailnet) await verifyTailnetOperator(deps)
-    await verifyAdoptedCni(deps)
+  if (opts.byo) {
     // Whatever this process cached about "the cluster" was learned from a
-    // different one — adopt mode is normally the first thing a fresh
-    // install runs against a cluster it has never seen.
+    // different one. No node fixups: they are node-CONTAINER state, and a
+    // byo install execs into no node — the node tuning rides the
+    // installer DaemonSet onto every node regardless.
     resetClusterCidrCache()
-    // The kind node fixups are node-CONTAINER state (the pids ceiling, the
-    // kubelet flag). An adopted cluster may still BE a kind cluster — that
-    // is the cheapest way to rehearse this path — so apply them where the
-    // nodes are podman containers and say so where they are not. The node
-    // tuning needs no such branch: the installer DaemonSet carries it.
-    const nodes = await kindNodes(deps, cluster)
-    if (nodes.length > 0) {
-      for (const node of nodes) await applyKindNodeFixups(deps, node)
-    } else {
-      deps.log(
-        `note: no kind cluster "${cluster}" on this host, so the kind node fixups `
-        + '(the node container\'s pids-limit and the kubelet housekeeping flag) are '
-        + 'skipped — they are settings of a node container, and these nodes are not '
-        + 'ones. The sysctls and DefaultTasksMax are applied by the gVisor installer '
-        + 'DaemonSet on every node.',
-      )
-    }
-  } else if ((await kindNodes(deps, cluster)).length === 0) {
-    await createKindCluster(deps, cluster, nodeCount)
-    // The node `/32`s and pod CIDRs of whatever cluster this process last
-    // looked at say nothing about the one just created. Rendering a policy
-    // for the wrong one fails closed on node addresses, and a stale
-    // pod-CIDR list makes netd's leading RETURNs miss, DNAT'ing pod-to-pod
-    // as world.
-    resetClusterCidrCache()
-    await installCalico(deps, cluster)
-    for (const node of await kindNodes(deps, cluster)) await applyKindNodeFixups(deps, node)
   } else {
-    if (opts.nodes !== undefined) {
-      deps.log(
-        `note: kind cluster "${cluster}" already exists, so --nodes is ignored — a `
-        + 'node count is fixed when the cluster is created. To change it: `yaac '
-        + 'cluster delete`, then install again (this loses running worktrees).',
-      )
+    await preflightKindProvider(deps, kindVersion)
+    if ((await kindNodes(deps, cluster)).length === 0) {
+      await createKindCluster(deps, cluster, nodeCount)
+      // The node `/32`s and pod CIDRs of whatever cluster this process last
+      // looked at say nothing about the one just created. Rendering a policy
+      // for the wrong one fails closed on node addresses, and a stale
+      // pod-CIDR list makes netd's leading RETURNs miss, DNAT'ing pod-to-pod
+      // as world.
+      resetClusterCidrCache()
+      await installCalico(deps, cluster)
+      for (const node of await kindNodes(deps, cluster)) await applyKindNodeFixups(deps, node)
+    } else {
+      if (opts.nodes !== undefined) {
+        deps.log(
+          `note: kind cluster "${cluster}" already exists, so --nodes is ignored — a `
+          + 'node count is fixed when the cluster is created. To change it: `yaac '
+          + 'cluster delete`, then install again (this loses running worktrees).',
+        )
+      }
+      deps.log(`Converging the existing kind cluster "${cluster}"...`)
+      // Re-applied every run: cheap, idempotent, and the one way a cluster
+      // created by an older yaac picks the pair up. Anything this process
+      // cached about "the node" must not be reused below either — a podman
+      // machine restart is the usual reason to be here, and the node's
+      // address may have moved under it.
+      resetClusterCidrCache()
+      for (const node of await kindNodes(deps, cluster)) {
+        await startStoppedKindNode(deps, node)
+        await applyKindNodeFixups(deps, node)
+      }
+      await waitForApiServer(deps, cluster)
     }
-    deps.log(`Converging the existing kind cluster "${cluster}"...`)
-    // Re-applied every run: cheap, idempotent, and the one way a cluster
-    // created by an older yaac picks the pair up. Anything this process
-    // cached about "the node" must not be reused below either — a podman
-    // machine restart is the usual reason to be here, and the node's
-    // address may have moved under it.
-    resetClusterCidrCache()
-    for (const node of await kindNodes(deps, cluster)) {
-      await startStoppedKindNode(deps, node)
-      await applyKindNodeFixups(deps, node)
-    }
-    await waitForApiServer(deps, cluster)
+    // Before any layer lands: the layers go to the kubeconfig's current
+    // context, so it has to be this machine's kind cluster.
+    const current = await verifyKindContext(deps, cluster)
+    await recordInstall({
+      driver: 'k8s', installId, clusterUid: current.uid, kubeContext: current.context, byo: undefined,
+    })
   }
   // Once there is a cluster to ask, and before any layer lands on it: an
   // operator that is not there costs the diagnosis and nothing else.
-  if (opts.tailnet && !opts.adoptCni) await verifyTailnetOperator(deps)
+  if (opts.tailnet && !opts.byo) await verifyTailnetOperator(deps)
 
   await installPriorityClasses(deps)
   await installRegistry(deps)
@@ -454,59 +474,20 @@ export async function runClusterInstall(
   await installGvisorRuntime(deps)
   await deployNetd(deps)
   await deployNpmCache(deps)
-  // Last, and only under adoption, because it needs netd on a node: netd is
-  // hostNetwork and ships iproute2, so it is the node's own view of the
-  // routing table.
-  if (opts.adoptCni) await verifyAdoptedVethSource(deps)
+  // Last of the CNI gates, and only on byo, because it needs netd on a
+  // node: netd is hostNetwork and ships iproute2, so it is the node's own
+  // view of the routing table.
+  if (opts.byo) await verifyAdoptedVethSource(deps)
   // Last of the workload steps: the server depends on every layer above it
   // (its images come from the registry, its dials go through the proxy and
   // netd), and it is the one that starts DOING things with them.
-  //
-  // Not under adoption. The kind fronting is a forwarder behind a kind
-  // `extraPortMapping` written at cluster-create time, which a cluster yaac
-  // did not create does not have — so the Deployment would come up, the
-  // published origin would never answer, and install would fail after 60s
-  // prescribing `yaac cluster delete` on someone else's cluster. The
-  // tailnet fronting is the one an adopted cluster needs, and selecting it
-  // alone is not an install: the storage, the uid and the architecture a
-  // foreign cluster needs come with it in the bring-your-own mode.
-  //
-  // Which leaves adoption with NO server it can run, now that a host
-  // process is the containerless driver by construction and not a k8s one
-  // (docs/server-in-cluster.md). That is a real gap, not a nuance, so this
-  // says the whole of it — including what `yaac server start` will do here
-  // instead — rather than leaving the operator to find out by watching
-  // their adopted cluster sit idle. Closing it is the bring-your-own-cluster
-  // install mode (docs/plans/cloud-k8s.md), which is where the server's
-  // fronting and TLS are designed.
-  if (opts.adoptCni) {
-    deps.log(
-      'note: no server was deployed. `--adopt-cni` means yaac did not create '
-      + 'this cluster, so it has no kind port mapping to publish a server '
-      + 'through — and a server outside the cluster is the CONTAINERLESS '
-      + 'driver, which runs worktrees as tmux sessions on this host rather '
-      + 'than on the cluster you just installed into. So `yaac server start` '
-      + 'here gives you a containerless install, not this cluster. Until the '
-      + 'bring-your-own-cluster mode exists, what this command installed is '
-      + 'the in-cluster layers and nothing that drives them'
-      + (opts.tailnet ? ' — `--tailnet` included; it fronts a server this mode does not deploy.' : '.'),
-    )
-  } else {
-    await deployServer(deps, opts)
-  }
+  await deployServer(deps, opts, installId, byoStorage)
 
   deps.log('\nVerifying with cluster check...')
   const { ok, results } = await deps.check()
   for (const r of results) deps.log(formatCheckResult(r))
   if (ok) {
-    // Under adoption the checks pass and the cluster still cannot run a
-    // session, because nothing drives it (see the note above). Saying
-    // "ready for yaac sessions" there would be the one lie this command
-    // tells.
-    deps.log(opts.adoptCni
-      ? '\nThe in-cluster layers are installed and healthy. No yaac server '
-        + 'runs against this cluster — see the note above.'
-      : '\nCluster is ready for yaac sessions.')
+    deps.log('\nCluster is ready for yaac sessions.')
     return true
   }
   deps.log('\nCluster is not ready — fix the failures above and re-run `yaac cluster install`.')
@@ -604,8 +585,8 @@ export function renderKindConfig(
  * machine gets one complete shopping list instead of failing serially.
  * Returns `kind version`'s output.
  *
- * `requireKind` is false in adopt mode: nothing is created there, and the
- * adopted cluster need not be a kind one at all. podman stays required
+ * `requireKind` is false under `--byo`: nothing is created there, and the
+ * cluster need not be a kind one at all. podman stays required
  * either way — it is the image build engine.
  */
 async function requireBinaries(
@@ -872,7 +853,7 @@ async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise
  * worktree-labeled pod, whose failure makes this command exit non-zero.
  */
 async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
-  deps.log('Verifying the CNI this cluster already runs (--adopt-cni)...')
+  deps.log('Verifying the CNI this cluster already runs...')
   const facts = await gatherCniFacts(deps.run)
   const { refusals, warnings, notes } = assessCniAdoption(facts)
   for (const note of notes) deps.log(`  recorded: ${note}`)
@@ -898,8 +879,8 @@ async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
  * operator, and saying "not installed" there would send the operator to
  * the wrong fix.
  */
-async function verifyTailnetOperator(deps: ClusterInstallDeps): Promise<void> {
-  deps.log('Verifying the Tailscale Kubernetes operator (--tailnet)...')
+async function verifyTailnetOperator(deps: ClusterInstallDeps, flag = '--tailnet'): Promise<void> {
+  deps.log(`Verifying the Tailscale Kubernetes operator (${flag})...`)
   const reads: Array<[string, string[]]> = [
     ['the ProxyClass CRD (proxyclasses.tailscale.com)', ['get', 'crd', 'proxyclasses.tailscale.com']],
     [
@@ -914,7 +895,7 @@ async function verifyTailnetOperator(deps: ClusterInstallDeps): Promise<void> {
     } catch (err) {
       if (isKubectlAbsentError(err)) {
         throw new ClusterInstallError(
-          `--tailnet needs the Tailscale Kubernetes operator, and ${what} is not in this cluster.\n`
+          `${flag} needs the Tailscale Kubernetes operator, and ${what} is not in this cluster.\n`
           + '    Install it (an OAuth client with the tag its proxies use — see '
           + 'https://tailscale.com/kb/1236/kubernetes-operator), then re-run:\n'
           + '      helm repo add tailscale https://pkgs.tailscale.com/helmcharts\n'
@@ -924,13 +905,215 @@ async function verifyTailnetOperator(deps: ClusterInstallDeps): Promise<void> {
         )
       }
       throw new ClusterInstallError(
-        '--tailnet needs the Tailscale Kubernetes operator, and whether it is installed could not '
+        `${flag} needs the Tailscale Kubernetes operator, and whether it is installed could not `
         + `be evaluated: reading ${what} failed (${kubectlErrorSummary(err)}).\n`
         + '    Fix the cluster access (kubeconfig, kubectl, apiserver) and re-run.',
       )
     }
   }
   deps.log('  Tailscale operator present: the server will be published on the tailnet.')
+}
+
+/**
+ * Every `--byo` gate, in order, before anything is applied or built: the
+ * node pool, the CNI, the Tailscale operator, the storage classes, the
+ * install's identity, the cluster and the environment. Each reads through
+ * `deps.run`, and each refuses — the cluster and this host are left
+ * untouched. Then the install is recorded, and the two classes the claims
+ * bind through are returned.
+ */
+async function verifyByoCluster(
+  deps: ClusterInstallDeps,
+  opts: ClusterInstallOptions,
+  installId: string,
+): Promise<{ rwx: string; rwo: string }> {
+  deps.log('Verifying the cluster the kubeconfig points at (--byo)...')
+  const nodes = (await readKubectlJson<{ items?: PlatformNode[] }>(
+    deps, ['get', 'nodes', '-o', 'json'], 'the cluster\'s nodes',
+  ))?.items ?? []
+  refuseIfAny('This cluster\'s nodes cannot run what yaac installs',
+    nodeArchitectureProblems(nodes, hostNodeArchitecture()))
+  refuseIfAny('This cluster\'s nodes cannot take the gVisor runtime', nodeOsProblems(nodes))
+  deps.log(`  ${String(nodes.length)} node(s): ${hostNodeArchitecture()}, containerd on a mutable OS.`)
+  await verifyAdoptedCni(deps)
+  await verifyTailnetOperator(deps, '--byo')
+  const storage = await verifyStorageClasses(deps, opts)
+  await verifyInstallIdentity(deps, installId)
+  const current = await currentCluster(deps.run)
+  const refusal = clusterRefusal((await readServerConfig()) ?? {}, current)
+  if (refusal) throw new ClusterInstallError(refusal)
+  if (!current.uid) {
+    throw new ClusterInstallError(
+      'Whether this cluster can take a byo install could not be evaluated: its kube-system '
+      + `namespace, which identifies the cluster, could not be read (${current.unreadable ?? 'no answer'}).\n`
+      + '    Fix the cluster access (kubeconfig, kubectl, apiserver) and re-run.',
+    )
+  }
+  if (env.useTor) {
+    throw new ClusterInstallError(
+      'YAAC_USE_TOR names a Tor listener on this machine, which a pod in a cluster yaac did '
+      + 'not create cannot reach. Unset it for a --byo install.',
+    )
+  }
+  await recordInstall({
+    driver: 'k8s', installId, clusterUid: current.uid, kubeContext: current.context, byo: true,
+  })
+  return storage
+}
+
+function refuseIfAny(heading: string, problems: string[]): void {
+  if (problems.length === 0) return
+  throw new ClusterInstallError(`${heading}:\n\n${problems.map((p) => `  - ${p}`).join('\n\n')}`)
+}
+
+/**
+ * A kubectl read as JSON: null when the object is provably absent, and a
+ * refusal naming what could not be read when the question itself failed —
+ * "not there" and "could not ask" send the operator to different fixes.
+ */
+async function readKubectlJson<T>(deps: ClusterInstallDeps, args: string[], what: string): Promise<T | null> {
+  try {
+    return JSON.parse((await deps.run('kubectl', args)).stdout) as T
+  } catch (err) {
+    if (isKubectlAbsentError(err)) return null
+    throw new ClusterInstallError(
+      `Whether this cluster can take a byo install could not be evaluated: reading ${what} `
+      + `failed (${kubectlErrorSummary(err)}).\n`
+      + '    Fix the cluster access (kubeconfig, kubectl, apiserver) and re-run.',
+    )
+  }
+}
+
+interface RawStorageClass {
+  metadata?: { name?: string; annotations?: Record<string, string> }
+  provisioner?: string
+  parameters?: Record<string, string>
+}
+
+/**
+ * The classes a byo install binds its claims through: the named RWX class
+ * exists and is NFS-family — the only shared storage the spike measured —
+ * the named RWO class exists, and the cluster has a default class, which
+ * the image registry and the npm cache provision through (and which the
+ * RWO claim uses when none is named). A missing default is refused here
+ * rather than discovered as a Pending registry claim.
+ */
+async function verifyStorageClasses(
+  deps: ClusterInstallDeps,
+  opts: ClusterInstallOptions,
+): Promise<{ rwx: string; rwo: string }> {
+  const classes = (await readKubectlJson<{ items?: RawStorageClass[] }>(
+    deps, ['get', 'storageclass', '-o', 'json'], 'the StorageClasses',
+  ))?.items ?? []
+  const named = new Map(classes.map((c) => [c.metadata?.name ?? '', c]))
+  const known = [...named.keys()].sort().join(', ') || 'none'
+  const isDefault = (c: RawStorageClass): boolean =>
+    c.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true'
+  const problems: string[] = []
+  const rwxName = opts.rwxStorageClass ?? ''
+  const rwx = named.get(rwxName)
+  if (!rwx) {
+    problems.push(`--rwx-storage-class: there is no StorageClass "${rwxName}" (this cluster has: ${known}).`)
+  } else if (!isNfsFamily(rwx.provisioner ?? '', rwx.parameters)) {
+    problems.push(`--rwx-storage-class: "${rwxName}" provisions through ${rwx.provisioner ?? 'nothing'}, `
+      + 'which is not NFS-family. The shared claim needs csi-driver-nfs (nfs.csi.k8s.io), EFS '
+      + '(efs.csi.aws.com) or Azure Files with protocol: nfs (file.csi.azure.com).')
+  }
+  if (opts.rwoStorageClass !== undefined && !named.has(opts.rwoStorageClass)) {
+    problems.push(`--rwo-storage-class: there is no StorageClass "${opts.rwoStorageClass}" (this cluster has: ${known}).`)
+  }
+  const fallback = classes.find(isDefault)?.metadata?.name
+  if (!fallback) {
+    problems.push('the cluster has no default StorageClass: the image registry and the npm cache '
+      + 'provision their volumes through it. Mark a block class default '
+      + '(`storageclass.kubernetes.io/is-default-class: "true"`).')
+  }
+  refuseIfAny('The storage classes cannot back this install', problems)
+  const rwo = opts.rwoStorageClass ?? fallback!
+  deps.log(`  storage: yaac-global through ${rwxName}, yaac-server-local through ${rwo}.`)
+  return { rwx: rwxName, rwo }
+}
+
+interface RawServerDeployment {
+  metadata?: { labels?: Record<string, string> }
+  spec?: { template?: { spec?: { containers?: Array<{ name?: string; env?: Array<{ name?: string; value?: string }> }> } } }
+}
+
+/**
+ * One data dir, one install, and one install per namespace. A server
+ * Deployment already in the namespace was stamped with its install's id,
+ * and installing over another install's would take over its claims — the
+ * fix is to install from that install's data dir, or into a namespace of
+ * this one's own. A data dir already recorded as the containerless driver
+ * is a different install altogether. Keyed on the records, never on
+ * whether tier folders exist on this machine: a byo install's classes may
+ * provision them anywhere.
+ */
+async function verifyInstallIdentity(deps: ClusterInstallDeps, installId: string): Promise<void> {
+  if ((await readServerConfig())?.driver === 'containerless') {
+    throw new ClusterInstallError(
+      `The data dir ${getDataDir()} is a containerless install, and one data dir is one install. `
+      + 'Point YAAC_DATA_DIR at a data dir of its own for this cluster.',
+    )
+  }
+  const dep = await readKubectlJson<RawServerDeployment>(
+    deps, ['get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(), '-o', 'json'],
+    `the ${SERVER_APP_NAME} Deployment`,
+  )
+  const owner = dep?.metadata?.labels?.[LABEL_INSTALL_ID]
+  if (dep && owner !== installId) {
+    const dataDir = dep.spec?.template?.spec?.containers
+      ?.find((c) => c.name === 'server')?.env?.find((e) => e.name === 'YAAC_DATA_DIR')?.value
+    throw new ClusterInstallError(
+      `Namespace ${k8sNamespace()} already runs the yaac server of another install (install id `
+      + `${owner ?? 'unset'}${dataDir ? `, installed from the data dir ${dataDir}` : ''}; `
+      + `this data dir's is ${installId}). Installing over it would take over its storage. Run `
+      + 'install from that install\'s data dir (its server.json names that id), or set '
+      + 'YAAC_K8S_NAMESPACE to a namespace of this install\'s own.',
+    )
+  }
+}
+
+/**
+ * A data dir is a kind install or a byo one for its whole life, and
+ * install must know which BEFORE it touches anything: plain `cluster
+ * install` on a byo data dir would otherwise go down the kind path —
+ * creating a kind cluster here, switching the current context to it, or
+ * converging kind-shaped layers onto the cloud cluster.
+ */
+function refuseByoSwitch(recorded: InstallRecord | null, opts: ClusterInstallOptions): void {
+  if (recorded?.driver !== 'k8s' || !!opts.byo === !!recorded.byo) return
+  throw new ClusterInstallError(recorded.byo
+    ? 'This data dir is a --byo install. Re-run with --byo and the storage classes it was '
+      + 'installed with (--rwx-storage-class, and --rwo-storage-class if it named one).'
+    : 'This data dir is a kind install, so --byo cannot install from it. Point YAAC_DATA_DIR at a '
+      + 'data dir of its own for the byo cluster.')
+}
+
+/**
+ * The kind path's cluster check: every layer goes to the kubeconfig's
+ * current context, so it must be this machine's kind cluster — by name,
+ * and by the apiserver kind itself reports for it, which a same-named
+ * context from another kubeconfig does not share. No recorded uid is
+ * compared: a kind cluster deleted and re-created is a new cluster, and
+ * the same install. Returns the cluster, to record.
+ */
+async function verifyKindContext(deps: ClusterInstallDeps, cluster: string): Promise<CurrentCluster> {
+  const expected = `kind-${cluster}`
+  const current = await currentCluster(deps.run)
+  const server = async (read: () => Promise<{ stdout: string }>): Promise<string | undefined> =>
+    /server:\s*(\S+)/.exec((await read().catch(() => ({ stdout: '' }))).stdout)?.[1]
+  const kindServer = await server(() => deps.run('kind', ['get', 'kubeconfig', '--name', cluster], { env: kindEnv() }))
+  const currentServer = await server(() => deps.run('kubectl', ['config', 'view', '--minify']))
+  if (current.context !== expected || !kindServer || kindServer !== currentServer) {
+    throw new ClusterInstallError(
+      `kubectl's current context is ${current.context ? `"${current.context}"` : 'unset'}`
+      + `${current.context === expected ? `, which does not point at the kind cluster "${cluster}" (${kindServer ?? 'unknown'})` : ''}`
+      + ': every layer would go to the wrong cluster. Point kubectl at this machine\'s kind cluster:\n'
+      + `  kind export kubeconfig --name ${cluster}`,
+    )
+  }
+  return current
 }
 
 /**
@@ -1180,7 +1363,23 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
  * writes the `server.json` every client on this machine resolves through,
  * so `yaac worktree list` talks to the pod without being told to.
  */
-async function deployServer(deps: ClusterInstallDeps, opts: ClusterInstallOptions): Promise<void> {
+async function deployServer(
+  deps: ClusterInstallDeps,
+  opts: ClusterInstallOptions,
+  installId: string,
+  byoStorage: { rwx: string; rwo: string } | undefined,
+): Promise<void> {
+  if (byoStorage) {
+    const origin = await deps.deployServer({
+      fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
+      identity: BYO_INSTALL_IDENTITY,
+      installId,
+      storage: { kind: 'classes', ...byoStorage },
+      log: deps.log,
+    })
+    deps.log(`The yaac server is serving at ${origin}`)
+    return
+  }
   const torHostAddr = env.useTor ? await hostAddrOnKindNetwork(deps) : undefined
   if (env.useTor && torHostAddr === undefined) {
     deps.log(
@@ -1191,7 +1390,13 @@ async function deployServer(deps: ClusterInstallDeps, opts: ClusterInstallOption
     )
   }
   const fronting = opts.tailnet ? tailnetFronting({ hostname: TAILNET_HOSTNAME }) : kindFronting()
-  const origin = await deps.deployServer({ fronting, torHostAddr, log: deps.log })
+  // The host's own uid on kind: the claims are hostPaths into this
+  // machine's data dir, and on macOS virtiofs makes the host uid a ceiling
+  // nothing in the cluster can raise (docs/server-in-cluster.md).
+  const identity = processIdentity()
+  const origin = await deps.deployServer({
+    fronting, identity, installId, storage: { kind: 'static' }, torHostAddr, log: deps.log,
+  })
   deps.log(`The yaac server is serving at ${origin}`)
 }
 

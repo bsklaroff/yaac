@@ -32,7 +32,7 @@ browse its files").
 
 Ownership needs nothing: the server already runs as the worktree's user. On
 k8s the server Deployment, every worktree pod and the proxy share
-`hostUidSecurityContext()`; macOS virtiofs writes as the host user anyway;
+`installSecurityContext()`, the install uid; macOS virtiofs writes as the host user anyway;
 under containerless they are the same process user.
 
 The cost is coupling to where the checkout lives: node-local checkouts

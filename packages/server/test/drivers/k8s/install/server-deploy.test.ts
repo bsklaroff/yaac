@@ -8,15 +8,26 @@
  * actually receive.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
 import os from 'node:os'
+import { PassThrough } from 'node:stream'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 import type * as registryModule from '#drivers/k8s/container/registry'
 import type * as runtimeModule from '#drivers/k8s/container/runtime'
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
+import type * as childProcessModule from 'node:child_process'
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
+
+// `server logs` streams through a `kubectl exec` child; nothing else in
+// this suite spawns one.
+const mockSpawn = vi.hoisted(() => vi.fn())
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof childProcessModule>()),
+  spawn: mockSpawn,
+}))
 
 const mockApply = vi.hoisted(() => vi.fn())
 const mockGetJson = vi.hoisted(() => vi.fn())
@@ -61,7 +72,9 @@ vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({
 }))
 
 import {
+  clusterServerLogs,
   deployServerWorkload,
+  deployedInstallIdentity,
   restartClusterServer,
   serverDeploymentExists,
   startClusterServer,
@@ -79,6 +92,7 @@ import {
   SERVER_FRONT_PORT,
   SERVER_POD_PORT,
   TAILSCALE_OPERATOR_NAMESPACE,
+  processIdentity,
 } from '#drivers/k8s/substrate'
 // Setup value: the real hash function, so the expected tag is derived the
 // way the code derives it rather than pasted as a literal.
@@ -173,7 +187,13 @@ function claimRead(args: string[]): unknown {
 function deploy(
   opts: Partial<Parameters<typeof deployServerWorkload>[0]> & { log: (m: string) => void },
 ): Promise<string> {
-  return deployServerWorkload({ fronting: kindFronting(), ...opts })
+  return deployServerWorkload({
+    fronting: kindFronting(),
+    identity: processIdentity(),
+    storage: { kind: 'static' },
+    installId: 'install-1',
+    ...opts,
+  })
 }
 
 function applied(kind: string): Manifest[] {
@@ -282,10 +302,10 @@ describe('deployServerWorkload', () => {
     // Trusted yaac code: plain runc, no sentry.
     expect(pod.runtimeClassName).toBeUndefined()
     // The uid every path it pre-creates for a worktree pod is owned by —
-    // this HOST's, not a pinned constant. The data dir is a hostPath this
-    // machine owns and virtiofs makes that uid a ceiling, so a pod running
-    // as anything else cannot write the directory it was just handed. Group
-    // 0 is what makes the image's own files writable at that uid.
+    // the one install decided, which on kind is this host's (the data dir
+    // is a hostPath this machine owns, and virtiofs makes that uid a
+    // ceiling). Group 0 is what makes the image's own files writable at
+    // that uid.
     expect(pod.securityContext).toMatchObject({
       runAsUser: process.getuid?.(),
       runAsGroup: process.getgid?.(),
@@ -332,6 +352,9 @@ describe('deployServerWorkload', () => {
     expect(await readServerConfig()).toMatchObject({
       url: origin, enabled: true, driver: 'k8s',
     })
+    // The Deployment carries whose it is, which a later install compares.
+    expect(applied('Deployment').find((d) => d.metadata?.name === SERVER_APP_NAME)?.metadata?.labels)
+      .toMatchObject({ 'yaac.install-id': 'install-1' })
   })
 
   it('hands the pod what it can no longer read off a host, and no host-side shim', async () => {
@@ -366,6 +389,16 @@ describe('deployServerWorkload', () => {
     // client dial Service DNS rather than forward to it.
     expect(env.YAAC_IN_CLUSTER).toBe('1')
     expect(env.YAAC_RELAY_ADDR).toContain('yaac-proxy.test-ns.svc.cluster.local:')
+  })
+
+  it('stamps the identity install decided, not the uid of the machine running it', async () => {
+    // A byo install run from a laptop: the laptop's uid means nothing to
+    // the cluster's NFS server, so install hands a fixed identity down and
+    // the Deployment is where it is recorded.
+    await deploy({ identity: { uid: 1000, gid: 1000 }, log: vi.fn() })
+    expect(deployedPodSpec().securityContext).toEqual({
+      runAsUser: 1000, runAsGroup: 1000, supplementalGroups: [0],
+    })
   })
 
   it('carries the remote-hosting posture the install shell was given', async () => {
@@ -728,6 +761,10 @@ describe('startClusterServer', () => {
     const calls = retried()
     expect(calls.some((c) => c.includes('scale') && c.includes('--replicas=1'))).toBe(true)
     expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
+    // A log reader left holding an attach-once claim would pin the server
+    // to its node, so it goes first.
+    expect(calls.findIndex((c) => c.includes('delete pod yaac-server-log-reader')))
+      .toBeLessThan(calls.findIndex((c) => c.includes('scale')))
   })
 
   it('waits on the port the cluster was created with, not this shell\'s default', async () => {
@@ -856,8 +893,154 @@ describe('restartClusterServer', () => {
   it('rolls the pod and waits for the published origin to answer again', async () => {
     await expect(restartClusterServer()).resolves.toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     const calls = retried()
-    expect(calls.some((c) => c.includes('rollout restart'))).toBe(true)
+    expect(calls.findIndex((c) => c.includes('delete pod yaac-server-log-reader')))
+      .toBeLessThan(calls.findIndex((c) => c.includes('rollout restart')))
+    expect(calls.findIndex((c) => c.includes('delete pod yaac-server-log-reader'))).toBeGreaterThanOrEqual(0)
     expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalled()
+  })
+})
+
+describe('deployedInstallIdentity', () => {
+  it('reads the identity back off the live Deployment, which is its record', async () => {
+    // What `cluster check` and the e2e harness run their pods at: on a byo
+    // install that is not the uid of the machine asking.
+    mockGetJson.mockResolvedValueOnce({
+      spec: { template: { spec: { securityContext: { runAsUser: 1234, runAsGroup: 1234 } } } },
+    })
+    await expect(deployedInstallIdentity(false)).resolves.toEqual({ uid: 1234, gid: 1234 })
+    expect(mockGetJson).toHaveBeenLastCalledWith(['get', 'deployment', SERVER_APP_NAME, '-n', 'test-ns'])
+  })
+
+  it('with no Deployment, is what install would deploy — never a guess past a failed read', async () => {
+    mockGetJson.mockResolvedValueOnce(null)
+    await expect(deployedInstallIdentity(false)).resolves.toEqual(processIdentity())
+    mockGetJson.mockResolvedValueOnce(null)
+    await expect(deployedInstallIdentity(true)).resolves.toEqual({ uid: 1000, gid: 1000 })
+    mockGetJson.mockRejectedValueOnce(new Error('Unable to connect to the server'))
+    await expect(deployedInstallIdentity(true)).rejects.toThrow(/Unable to connect/)
+  })
+})
+
+describe('clusterServerLogs', () => {
+  /** A kubectl child that prints `out` and exits with `code`. */
+  function fakeKubectl(out: string, code: number, err = ''): void {
+    mockSpawn.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: vi.fn(),
+      })
+      setImmediate(() => {
+        child.stdout.end(out)
+        child.stderr.end(err)
+        child.emit('close', code, null)
+      })
+      return child
+    })
+  }
+
+  /** The server pods the apiserver lists, and the Deployment it holds. */
+  function cluster(pods: Array<{ name: string; node?: string; running: boolean }>): void {
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'pods'
+        ? {
+          items: pods.map((p) => ({
+            metadata: { name: p.name },
+            spec: { nodeName: p.node },
+            status: { containerStatuses: [{ name: 'server', state: p.running ? { running: {} } : { waiting: {} } }] },
+          })),
+        }
+        : {
+          spec: { template: { spec: {
+            securityContext: { runAsUser: 1000, runAsGroup: 1000, supplementalGroups: [0] },
+            containers: [{ name: 'server', image: 'reg.local:5000/yaac-server:abc' }],
+          } } },
+        },
+    ))
+  }
+
+  let written: string[]
+  beforeEach(() => {
+    written = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      written.push(String(chunk))
+      return true
+    })
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('tails the log in the running server pod, whole by default; `-f` and `-n` go to tail', async () => {
+    cluster([{ name: 'yaac-server-abc', running: true }])
+    fakeKubectl('[server] listening on 0.0.0.0:7777\n', 0)
+    await clusterServerLogs()
+    expect(mockSpawn).toHaveBeenLastCalledWith('kubectl', [
+      'exec', 'yaac-server-abc', '-n', 'test-ns', '-c', 'server',
+      '--', 'tail', '-n', '+1', '/yaac/server-local/server.log',
+    ], expect.anything())
+    expect(written.join('')).toContain('listening on 0.0.0.0:7777')
+    expect(mockApply).not.toHaveBeenCalled()
+
+    fakeKubectl('', 0)
+    await clusterServerLogs({ follow: true, lines: 5 })
+    expect(mockSpawn.mock.lastCall?.[1]).toEqual(expect.arrayContaining(['-F', '-n', '5']))
+    fakeKubectl('', 0)
+    await clusterServerLogs({ lines: -3 })
+    expect(mockSpawn.mock.lastCall?.[1]).toEqual(expect.arrayContaining(['-n', '0']))
+  })
+
+  it('reads a down server\'s log through a read-only reader pod on its node, and removes it', async () => {
+    // Crash-looping: a pod, but no running container — when the log matters most.
+    cluster([{ name: 'yaac-server-abc', node: 'pool-2', running: false }])
+    fakeKubectl('[server] fatal: boom\n', 0)
+    await clusterServerLogs({ lines: 20 })
+
+    const reader = applied('Pod')[0] as unknown as {
+      metadata: { name: string }
+      spec: {
+        nodeName?: string; activeDeadlineSeconds: number; securityContext: unknown
+        containers: Array<{ image: string; volumeMounts: Array<{ mountPath: string; readOnly: boolean }> }>
+        volumes: Array<{ persistentVolumeClaim: { claimName: string; readOnly: boolean } }>
+      }
+    }
+    expect(reader.metadata.name).toBe('yaac-server-log-reader')
+    // Pinned where an attach-once volume already is; the server's own image
+    // and identity; the claim read-only; bounded if the CLI is killed hard.
+    expect(reader.spec.nodeName).toBe('pool-2')
+    expect(reader.spec.containers[0].image).toBe('reg.local:5000/yaac-server:abc')
+    expect(reader.spec.securityContext).toMatchObject({ runAsUser: 1000, runAsGroup: 1000 })
+    expect(reader.spec.volumes[0].persistentVolumeClaim).toEqual({ claimName: 'yaac-server-local', readOnly: true })
+    expect(reader.spec.containers[0].volumeMounts[0]).toEqual({ name: 'server-local', mountPath: '/yaac/server-local', readOnly: true })
+    expect(reader.spec.activeDeadlineSeconds).toBeGreaterThan(0)
+    expect((mockSpawn.mock.lastCall?.[1] as string[]).slice(0, 6)).toEqual(['exec', 'yaac-server-log-reader', '-n', 'test-ns', '-c', 'reader'])
+    expect(written.join('')).toContain('fatal: boom')
+    const deletes = (mockWithRetry.mock.calls as Array<[string[]]>).map(([a]) => a.join(' '))
+      .filter((a) => a.startsWith('delete pod yaac-server-log-reader'))
+    expect(deletes).toHaveLength(2)
+    // Exec'd only once Ready: kubectl exec does not wait for a pod named directly.
+    const calls = retried()
+    const ready = calls.findIndex((c) => c.startsWith('wait --for=condition=Ready pod/yaac-server-log-reader'))
+    expect(ready).toBeGreaterThan(calls.findIndex((c) => c.startsWith('delete pod yaac-server-log-reader')))
+
+    // Scaled to zero: no pod at all, so no node to pin to.
+    mockApply.mockClear()
+    cluster([])
+    fakeKubectl('', 1, 'error: unable to upgrade connection\n')
+    await expect(clusterServerLogs()).rejects.toThrow(/could not read the server log in pod yaac-server-log-reader: error: unable to upgrade/)
+    expect((applied('Pod')[0] as unknown as { spec: { nodeName?: string } }).spec.nodeName).toBeUndefined()
+    // ...and the reader is removed on failure too.
+    expect((mockWithRetry.mock.lastCall as [string[]])[0].slice(0, 3)).toEqual(['delete', 'pod', 'yaac-server-log-reader'])
+
+    // A reader that never starts is said to be the reader, not an exec error,
+    // and nothing is exec'd into it.
+    const execs = mockSpawn.mock.calls.length
+    const base = mockWithRetry.getMockImplementation()
+    mockWithRetry.mockImplementation((args: string[]) => args[0] === 'wait'
+      ? Promise.reject(new Error('timed out waiting for the condition'))
+      : ((base?.(args) as Promise<{ stdout: string; stderr: string }> | undefined) ?? Promise.resolve({ stdout: '', stderr: '' })))
+    await expect(clusterServerLogs()).rejects.toThrow(/log reader pod did not become Ready within 120s \(timed out/)
+    expect(mockSpawn.mock.calls.length).toBe(execs)
+    expect((mockWithRetry.mock.lastCall as [string[]])[0].slice(0, 3)).toEqual(['delete', 'pod', 'yaac-server-log-reader'])
+    mockWithRetry.mockImplementation(base ?? (() => Promise.resolve({ stdout: '', stderr: '' })))
   })
 })

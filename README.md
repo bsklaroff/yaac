@@ -268,12 +268,22 @@ yaac cluster <command>
                     node fixups, every built-in image, and the in-cluster layers.
                     Safe to re-run; never destructive
     --nodes <n>     Nodes to create (default 1; ignored if a cluster exists)
-    --adopt-cni     Install into a cluster whose CNI yaac did not install
+    --byo           Install into the cluster your kubeconfig points at instead
+                    of creating one (a cloud node pool); gated on its nodes,
+                    CNI, Tailscale operator and storage classes, and published
+                    on the tailnet
+    --rwx-storage-class <name>
+                    With --byo (required): the NFS-family class the shared
+                    claim is provisioned from
+    --rwo-storage-class <name>
+                    With --byo: the class the server's own claim is
+                    provisioned from (default: the cluster's default class)
     --tailnet       Publish the server on your Tailscale tailnet through the
                     Tailscale Kubernetes operator (must be installed) instead
-                    of at 127.0.0.1; the server then requires a credential
+                    of at 127.0.0.1; callers are identified by tailnet user
   delete [-y]       Delete the kind cluster (registry included), keeping
-                    on-disk worktrees and their checkouts (-y skips confirmation)
+                    on-disk worktrees and their checkouts (-y skips
+                    confirmation); refuses on a --byo install
 
 yaac project <command>
   list              List all projects

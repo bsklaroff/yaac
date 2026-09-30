@@ -475,7 +475,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           let workspaceId: string
           try {
             workspaceId = (await resolveWorktreeContainer(id, { requireRunning: true, exact: true })).worktreeId
-          } catch {
+          } catch (err) {
+            serverLog(`[server] forward tunnel to ${id.slice(0, 8)}:${String(port)} refused: `
+              + (err instanceof Error ? err.message : String(err)))
             fail('session not found or not running')
             return
           }

@@ -79,7 +79,7 @@ export const DEFAULT_VETH_PREFIX = 'cali'
 
 /**
  * The veth prefix netd is told to match on: the operator's configured
- * value, else Calico's. `--adopt-cni` verifies the result against the
+ * value, else Calico's. `--byo` verifies the result against the
  * node's real routing table, which is what turns a wrong value into a
  * refusal instead of a cluster whose worktrees silently have no egress.
  */
@@ -204,7 +204,7 @@ export interface NetdDaemonSetOptions {
   /**
    * Interface-name prefix this cluster's CNI gives every workload veth.
    * `cali` wherever Calico does the IPAM; an adopted CNI may differ (see
-   * cni-adopt.ts), and `--adopt-cni` verifies the value against a node's
+   * cni-adopt.ts), and `--byo` verifies the value against a node's
    * real routing table before any worktree depends on it.
    */
   vethPrefix: string

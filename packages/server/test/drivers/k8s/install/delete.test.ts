@@ -7,6 +7,8 @@ vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   execFileAsync: vi.fn(),
+  k8sNamespace: () => 'yaac',
+  dataDirHash: () => 'ddh16',
 }))
 
 const mockQuestion = vi.fn<(q: string) => Promise<string>>()
@@ -19,8 +21,10 @@ vi.mock('node:readline/promises', () => ({
   },
 }))
 
-import { runClusterDelete } from '#drivers/k8s/install'
+import { ClusterDeleteError, runClusterDelete } from '#drivers/k8s/install'
 import { execFileAsync } from '#drivers/k8s/substrate/kubectl'
+import { serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
+import fs from 'node:fs/promises'
 
 const mockRun = vi.mocked(execFileAsync)
 const logs: string[] = []
@@ -60,6 +64,34 @@ afterEach(() => {
 })
 
 describe('runClusterDelete', () => {
+  it('refuses on a byo install, printing the uninstall instead of deleting anything', async () => {
+    // The cluster is not yaac's to delete — and a kind cluster named like
+    // the install's could still exist on this host.
+    await writeServerConfig({
+      url: 'https://yaac.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'install-1', byo: true,
+    })
+    try {
+      const err = await runClusterDelete({ yes: true }).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterDeleteError)
+      const message = (err as Error).message
+      expect(message).toContain('the cluster is not yaac\'s to delete')
+      // Every namespace the install made, the registry's signing key included.
+      expect(message).toMatch(/kubectl delete namespace yaac yaac-registry-keys\n/)
+      expect(message).toMatch(/kubectl delete clusterrole,clusterrolebinding -l yaac\.install-namespace=yaac/)
+      // What every install on the cluster shares is said to be shared, the
+      // node labels the gVisor installer stamps included.
+      expect(message).toMatch(/only if no other yaac install uses this cluster[\s\S]*kubectl delete runtimeclass/)
+      expect(message).toContain('kubectl label nodes --all yaac.gvisor- yaac.gvisor-version-')
+      // The two Retain volumes outlive the uninstall, and how to remove them
+      // deliberately is said, not done — selected by the install id, which
+      // no other install's volumes carry.
+      expect(message).toContain('kubectl delete pv -l yaac.install-id=install-1')
+      expect(deleteCall()).toBeUndefined()
+    } finally {
+      await fs.rm(serverConfigPath(), { force: true })
+    }
+  })
+
   it('deletes the cluster on the --yes happy path', async () => {
     await runClusterDelete({ yes: true })
 

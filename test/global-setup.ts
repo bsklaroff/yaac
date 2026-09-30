@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import type { TestProject } from 'vitest/node'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs/promises'
 import { promisify } from 'node:util'
@@ -15,6 +16,8 @@ import { TEST_CLI_DIR } from '@yaac/test-utils/cli-bundle'
 import { buildTestServerImage, testServerImageTag } from '@yaac/test-utils/deployed-server'
 import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
 import { gcTestImages } from '@yaac/test-utils/test-images'
+import { requireKindByo } from '@yaac/test-utils/kind-byo'
+import { testBackend } from '@yaac/test-utils/kind-byo-layout'
 
 const execFileAsync = promisify(execFile)
 
@@ -125,7 +128,7 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
   // install's objects and break the developer's own cluster.
   try {
     const { stdout } = await execFileAsync('kubectl', [
-      'get', 'clusterrole,clusterrolebinding,pv', '-l', 'app in (yaac-netd,yaac-server)',
+      'get', 'clusterrole,clusterrolebinding,pv,storageclass', '-l', 'app in (yaac-netd,yaac-server)',
       '-o', "jsonpath={range .items[*]}{.kind}/{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
     ], { timeout: 10_000 })
     const leaked = stdout
@@ -151,10 +154,24 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
  * whether the image is up to date — no label inspection needed.
  * Test code computes the same hash to derive the expected tag.
  */
-export async function setup(): Promise<void> {
+export async function setup(project: TestProject): Promise<void> {
+  // vitest runs this in its main process, which the project's `env` never
+  // reaches — and e2e-byo's env IS its cluster (kind-byo's kubeconfig and
+  // data dir). Without it every step below would talk to whichever
+  // cluster this shell happens to point at.
+  if (project.name.startsWith('e2e-byo')) Object.assign(process.env, project.config.env)
+  // kind-byo is not something this setup can stand up: say so before
+  // paying for a build.
+  if (testBackend() === 'byo') await requireKindByo()
+
   // Before anything else, and before the podman gate below: every suite that
   // loads @yaac/test-utils/cli spawns dist/cli.js, podman or no podman.
   await buildCliBundle()
+  // byo-install-suite drives the kind-byo install itself, whose server
+  // built its own images at install: none of the prebuilts below is
+  // pulled by it, and pushing them all into kind-byo's registry costs more
+  // disk than the rest of the run.
+  if (project.name === 'e2e-byo-install') return
 
   // Skip when podman is unavailable — tests that need it will fail on their own.
   // Build images on the same rootful engine the cluster pulls from — otherwise

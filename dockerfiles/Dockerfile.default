@@ -52,10 +52,10 @@ RUN npx -y playwright-core@1.50.1 install chromium && \
 # The image is UID-AGNOSTIC (docs/arbitrary-uid-images.md). `yaac` is a fixed
 # uid 1000 whose PRIMARY GROUP IS 0, and every path it owns is group-writable
 # (`g=u`), so a pod running as ANY uid works as long as it carries a
-# supplementary group 0 — which every yaac pod does (hostUidSecurityContext).
-# The uid a pod runs as is still the install host's, because the data dir is a
-# hostPath and virtiofs makes that uid a ceiling; it is simply no longer baked
-# in, so one image serves every host.
+# supplementary group 0 — which every yaac pod does (installSecurityContext).
+# The uid a pod runs as is the install's — the host's on kind, where the data
+# dir is a hostPath and virtiofs makes that uid a ceiling, and a fixed 1000 on
+# a byo install; it is simply not baked in, so one image serves every install.
 #
 # Two consequences for anything added below or in a derived layer: `RUN` steps
 # that run as yaac need `umask 002` so what they create stays group-writable,

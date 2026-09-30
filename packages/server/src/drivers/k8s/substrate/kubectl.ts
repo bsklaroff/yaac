@@ -94,7 +94,7 @@ export function isNotFoundKubectlError(stderr: string): boolean {
  * shape of a Calico CRD on a provider-managed install.
  *
  * The distinction is load-bearing wherever absence is a FACT with meaning
- * rather than merely a failure: `--adopt-cni` reads "no FelixConfiguration"
+ * rather than merely a failure: `--byo` reads "no FelixConfiguration"
  * as "Felix runs its iptables defaults" and proceeds, so an RBAC denial or
  * a timeout that collapsed into absence would license exactly the eBPF
  * cluster the gate exists to refuse. Takes the whole error (not just

@@ -295,3 +295,28 @@ its startup sweep, `readRepoConfig`, the admin-dir removal in
 call) all go in one change, leaving `runGit` a plain `GIT_DIR` call with its
 pins. An install that carries a linked checkout past that change runs
 unhardened server git against a config its pods can write.
+
+## A `server.json` with no recorded cluster
+
+`clusterRefusal` (`drivers/k8s/install/cluster-identity.ts`) lets every
+host-side cluster verb through when this data dir's `server.json` records
+no `clusterUid`, rather than refusing because it cannot compare. Install is
+deliberately outside it: install is what records the field (the kind path
+re-records it on every run, and a first byo install has nothing to compare
+yet), so it stays exempt when this goes.
+
+**What it reads:** the `clusterUid` field of the CLIENT-LOCAL
+`server.json`, which `yaac cluster install` writes on both backends before
+it applies anything.
+
+**What breaks if it goes too early:** nothing silently. Removing it means
+refusing `yaac server start|stop|restart|logs` and `yaac cluster
+check` on a `server.json` that says `driver: "k8s"` but records no
+`clusterUid`, with "run `yaac cluster install`" as the fix. A k8s install
+whose file predates the field is then locked out of those verbs until its
+next install, which records the field and unlocks them; nothing is lost.
+
+**How to tell it is safe to remove:** when upgrading in place from a
+release before the first one that writes `clusterUid` (the release after
+0.0.8) is no longer supported. Every supported install has then run a
+`yaac cluster install` that wrote the field.

@@ -72,12 +72,13 @@ truncation, both of which group write covers.
 
 ## The runtime half
 
-`hostUidSecurityContext` (`#drivers/k8s/substrate`) stamps every yaac pod
-with `runAsUser`/`runAsGroup` from the host and **`supplementalGroups: [0]`**.
-The group is what picks up the image's grant; without it a pod on a host
-whose uid is not 1000 can write nothing in its own home. It is a
-supplementary group rather than `runAsGroup: 0` so that files the pod
-creates on a hostPath land in the host user's own group.
+`installSecurityContext` (`#drivers/k8s/substrate`) stamps every yaac pod
+with `runAsUser`/`runAsGroup` from the install uid (the host's on kind, a
+fixed 1000 on byo — docs/server-in-cluster.md "The uid everything runs as")
+and **`supplementalGroups: [0]`**. The group is what picks up the image's
+grant; without it a pod at a uid other than 1000 can write nothing in its
+own home. It is a supplementary group rather than `runAsGroup: 0` so that
+files the pod creates on a claim land in the install's own group.
 
 That leaves one thing the group cannot fix: **`getpwuid()` has no answer for
 the running uid.** The image's entry is `yaac:x:1000:0`, and a pod at 501 is

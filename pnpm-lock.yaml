@@ -514,6 +514,9 @@ importers:
       ws:
         specifier: 'catalog:'
         version: 8.21.0
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

@@ -29,7 +29,7 @@ import {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
   dataDirHash,
-  hostUidSecurityContext,
+  installSecurityContext,
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
@@ -37,7 +37,7 @@ import type { CredentialBundle } from '#drivers/contract'
 
 /**
  * Pod securityContext running the proxy as the host's own uid/gid — see
- * `hostUidSecurityContext`, which the server's Deployment shares.
+ * `installSecurityContext`, which the server's Deployment shares.
  *
  * The proxy mounts nothing from the host, so no path it touches is owned
  * by anyone in particular; it keeps the server's identity so that the two
@@ -51,7 +51,7 @@ import type { CredentialBundle } from '#drivers/contract'
  * kubelet manages.
  */
 export function proxyRunAsSecurityContext(): Record<string, unknown> {
-  const identity = hostUidSecurityContext()
+  const identity = installSecurityContext()
   return { securityContext: { ...identity, fsGroup: identity.runAsGroup } }
 }
 

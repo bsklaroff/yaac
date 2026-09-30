@@ -22,11 +22,13 @@
  * root variables. `YAAC_DATA_DIR` keeps naming the host's data dir, as an
  * identity string: `dataDirHash()`, every label and every row carry over.
  */
+import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   GLOBAL_CLAIM_NAME,
   LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_ID,
   LABEL_INSTALL_NAMESPACE,
   POD_GLOBAL_ROOT,
   POD_NODE_LOCAL_ROOT,
@@ -36,17 +38,19 @@ import {
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   SERVER_POD_PORT,
-  hostUidSecurityContext,
   SERVER_SA_NAME,
   dataDirHash,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  installSecurityContext,
   nodeLocalNodePath,
+  processIdentity,
   proxyServiceHost,
+  type InstallIdentity,
 } from '#drivers/k8s/substrate'
-import { ensureStorageClaims } from './storage'
+import { ensureStorageClaims, type StorageShape } from './storage'
 import {
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
@@ -64,10 +68,14 @@ import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 // as `YAAC_DATA_DIR` so its identity (`dataDirHash()`, every label) is the
 // host's; what it MOUNTS are the three tier roots.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { getDataDir, globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
+import { getDataDir, globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
 import { isLockLive, isSameHostLock } from '@yaac/shared/server-lock-file'
-import { IdentityRejectedError, probeServer, registerServer } from '@yaac/shared/server-config'
+import {
+  IdentityRejectedError,
+  probeServer,
+  registerServer,
+} from '@yaac/shared/server-config'
 import { env, testEnv } from '@yaac/shared/env'
 
 /**
@@ -403,7 +411,8 @@ export function torSocksUrlForPod(hostAddr?: string): string {
  */
 export function buildServerDeploymentManifest(
   imageRef: string,
-  envOpts: ServerEnvOptions = {},
+  identity: InstallIdentity,
+  envOpts: ServerEnvOptions & { installId?: string } = {},
 ): Record<string, unknown> {
   return {
     apiVersion: 'apps/v1',
@@ -411,7 +420,8 @@ export function buildServerDeploymentManifest(
     metadata: {
       name: SERVER_APP_NAME,
       namespace: k8sNamespace(),
-      labels: { app: SERVER_APP_NAME },
+      // The install id is the record of whose Deployment this is.
+      labels: { app: SERVER_APP_NAME, ...(envOpts.installId ? { [LABEL_INSTALL_ID]: envOpts.installId } : {}) },
     },
     spec: {
       replicas: 1,
@@ -424,13 +434,13 @@ export function buildServerDeploymentManifest(
           automountServiceAccountToken: true,
           enableServiceLinks: false,
           priorityClassName: PRIORITY_CLASS_INFRA,
-          // The identity every path the server pre-creates for a worktree
-          // pod is owned by, stamped from the installing host: on kind the
-          // claims are hostPaths this machine owns and no pod can write
-          // them as anything else. No `fsGroup`: the kubelet never manages
-          // a hostPath's ownership, and HOME is the image's own rootfs,
-          // writable through group 0.
-          securityContext: hostUidSecurityContext(),
+          // The install identity, which this is the record of: every path
+          // the server pre-creates for a worktree pod is owned by it, and
+          // host-side callers read it back from here
+          // (deployedInstallIdentity). No `fsGroup`: the claims' roots are
+          // made the install's once, at install, and HOME is the image's
+          // own rootfs, writable through group 0.
+          securityContext: installSecurityContext(identity),
           // A rolled server should not sit in the drain while every
           // watcher's connection times out; its shutdown path is bounded to
           // ~6s by design.
@@ -513,7 +523,8 @@ export function buildServerDeploymentManifest(
 export async function ensureServerDeployment(
   imageRef: string,
   fronting: ServerFronting,
-  envOpts: ServerEnvOptions = {},
+  identity: InstallIdentity,
+  envOpts: ServerEnvOptions & { installId?: string } = {},
 ): Promise<string> {
   await kubectlApply(buildServerServiceAccountManifest())
   await kubectlApply(buildServerClusterRoleManifest())
@@ -526,7 +537,7 @@ export async function ensureServerDeployment(
   const manifests = fronting.manifests()
   for (const manifest of manifests) await kubectlApply(manifest)
   const origin = await fronting.resolveOrigin()
-  await kubectlApply(buildServerDeploymentManifest(imageRef, {
+  await kubectlApply(buildServerDeploymentManifest(imageRef, identity, {
     ...envOpts,
     remoteHosting: fronting.remoteHosting(origin),
   }))
@@ -553,6 +564,48 @@ export async function scaleServerDeployment(replicas: number): Promise<void> {
   ], { timeout: 60_000 })
 }
 
+interface RawServerDeployment {
+  spec?: {
+    template?: {
+      spec?: {
+        securityContext?: { runAsUser?: unknown; runAsGroup?: unknown }
+        containers?: Array<{ name?: string; image?: string }>
+      }
+    }
+  }
+}
+
+/**
+ * The uid and gid a byo install's pods run as. A constant rather than
+ * the uid of the machine running install: an NFS server passes uids
+ * through raw, that machine means nothing to it, and ownership has to stay
+ * stable whichever machine re-installs (docs/server-in-cluster.md "The uid
+ * everything runs as").
+ */
+export const BYO_INSTALL_IDENTITY: InstallIdentity = { uid: 1000, gid: 1000 }
+
+/**
+ * The identity this install's pods run as, as the live server Deployment
+ * records it — the Deployment is the record, as the Ingress is for the
+ * fronting. For the host-side callers that are not install (`cluster
+ * check`'s probe pods, the e2e harness), which cannot derive it from their
+ * own uid: on a byo install the machine running the CLI is not the
+ * install's uid at all. With no Deployment to ask (an install that stopped
+ * before its server), it is what install would have deployed: the byo
+ * constant, or on kind this machine's own uid. A failed read throws rather
+ * than guessing.
+ */
+export async function deployedInstallIdentity(byo: boolean): Promise<InstallIdentity> {
+  const dep = await kubectlGetJson<RawServerDeployment>([
+    'get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
+  ])
+  const sc = dep?.spec?.template?.spec?.securityContext
+  if (typeof sc?.runAsUser === 'number' && typeof sc.runAsGroup === 'number') {
+    return { uid: sc.runAsUser, gid: sc.runAsGroup }
+  }
+  return byo ? BYO_INSTALL_IDENTITY : processIdentity()
+}
+
 /** Whether the cluster carries a server Deployment at all. */
 export async function serverDeploymentExists(): Promise<boolean> {
   const dep = await kubectlGetJson<{ metadata?: { name?: string } }>([
@@ -570,26 +623,44 @@ export async function serverDeploymentExists(): Promise<boolean> {
  * Returns the origin it published, which is what install prints.
  */
 export async function deployServerWorkload(
-  opts: ServerEnvOptions & { fronting: ServerFronting; log: (message: string) => void },
+  opts: ServerEnvOptions & {
+    fronting: ServerFronting
+    /** The uid and gid install decided this install's pods run as. */
+    identity: InstallIdentity
+    /** Who this install is (`server.json`'s `installId`). */
+    installId: string
+    /**
+     * What backs the two claims: kind's static pair into this machine's
+     * data dir, or the classes a byo install provisions them from.
+     */
+    storage: { kind: 'static' } | { kind: 'classes'; rwx: string; rwo: string }
+    log: (message: string) => void
+  },
 ): Promise<string> {
   await refuseIfHostServerRunning()
   if (await serverDeploymentExists()) {
     opts.log('Stopping the running server pod...')
     await stopClusterServer()
   }
-  await ensureStorageClaims({
-    globalHostPath: globalRoot(),
-    serverLocalHostPath: serverLocalRoot(),
-    nodeLocalHostPath: nodeLocalRoot(),
-    log: opts.log,
-  })
+  // The image first: the class path's binder pod runs it, and on a node-
+  // pinned RWO class that pod decides the node the server lands on, so the
+  // pull it pays is the server's own.
   opts.log('Building the server image (from the bundle)...')
   const imageRef = await ensureServerImage()
+  const shape: StorageShape = opts.storage.kind === 'static'
+    ? {
+      kind: 'static',
+      globalHostPath: globalRoot(),
+      serverLocalHostPath: serverLocalRoot(),
+      nodeLocalHostPath: nodeLocalRoot(),
+    }
+    : { ...opts.storage, identity: opts.identity, installId: opts.installId, binderImage: imageRef }
+  await ensureStorageClaims({ shape, log: opts.log })
   opts.log(`Deploying the yaac server (${imageRef})...`)
   // Pass the options straight through rather than re-listing the fields:
   // every `ServerEnvOptions` member is optional, so a hand-copied list lets
   // the next field added go missing from the Deployment with no compile error.
-  const origin = await ensureServerDeployment(imageRef, opts.fronting, opts)
+  const origin = await ensureServerDeployment(imageRef, opts.fronting, opts.identity, opts)
   await waitForPublishedServer(origin, opts.fronting)
   // Point every client on this machine at the published origin, and record
   // that this data dir IS a k8s install, so a later `yaac server start`
@@ -708,6 +779,7 @@ async function waitForInstalledServer(): Promise<string> {
  * does not deploy one.
  */
 export async function startClusterServer(): Promise<string> {
+  await deleteLogReader()
   await scaleServerDeployment(1)
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
@@ -744,6 +816,7 @@ export async function stopClusterServer(): Promise<void> {
  * the lease never has two holders.
  */
 export async function restartClusterServer(): Promise<string> {
+  await deleteLogReader()
   await kubectlWithRetry([
     'rollout', 'restart', `deployment/${SERVER_APP_NAME}`, '-n', k8sNamespace(),
   ], { timeout: 60_000 })
@@ -752,4 +825,157 @@ export async function restartClusterServer(): Promise<string> {
     '-n', k8sNamespace(), '--timeout=300s',
   ], { timeout: 310_000, maxAttempts: 2 })
   return waitForInstalledServer()
+}
+
+/**
+ * `yaac server logs` on a byo install: `tail` over the log the server
+ * writes into its server-local claim, which is a volume this machine never
+ * sees. (A kind install's claim is a hostPath into this machine's data
+ * dir, so its CLI reads the file directly, whatever state the pod is in.)
+ *
+ * Read in the server pod when its container is running. When it is not —
+ * crash-looping, still starting, or scaled to zero, which is exactly when
+ * the log is wanted — read through a short-lived reader pod that mounts the
+ * claim read-only: the claim is free then, and the reader is pinned to the
+ * server pod's node if there is one, where an attach-once volume already
+ * is. The flags are `tail`'s own: `-n +1` is the whole file, `-n N` its
+ * last N lines (a negative N clamped to none), `-F` follows it across the
+ * server's rotations.
+ *
+ * `tail`'s stderr is held back and printed only on a failure: in follow
+ * mode it narrates retries nobody asked for, and when the exec itself fails
+ * kubectl's message is the whole diagnosis.
+ */
+export async function clusterServerLogs(opts: { follow?: boolean; lines?: number } = {}): Promise<void> {
+  const pods = (await kubectlGetJson<{ items?: RawServerPod[] }>([
+    'get', 'pods', '-n', k8sNamespace(), '-l', `app=${SERVER_APP_NAME}`,
+  ]))?.items ?? []
+  const running = pods.find((p) => p.status?.containerStatuses
+    ?.some((c) => c.name === 'server' && c.state?.running))?.metadata?.name
+  if (running) {
+    await tailServerLog(running, 'server', opts)
+    return
+  }
+  await deleteLogReader(true)
+  await kubectlApply(await buildLogReaderManifest(pods.find((p) => p.spec?.nodeName)?.spec?.nodeName))
+  try {
+    // Ready before the exec: `kubectl exec` waits for a pod it picks out of
+    // a workload, never for one it is handed by name, so an exec into a
+    // reader still pulling or starting fails at once with "container not
+    // found".
+    await kubectlWithRetry([
+      'wait', '--for=condition=Ready', `pod/${LOG_READER_POD_NAME}`, '-n', k8sNamespace(),
+      `--timeout=${String(LOG_READER_START_S)}s`,
+    ], { timeout: (LOG_READER_START_S + 10) * 1000, maxAttempts: 1 }).catch((err: unknown) => {
+      throw new Error(
+        `the log reader pod did not become Ready within ${String(LOG_READER_START_S)}s `
+        + `(${err instanceof Error ? err.message : String(err)}). Inspect it with `
+        + `\`kubectl -n ${k8sNamespace()} describe pod ${LOG_READER_POD_NAME}\`.`,
+      )
+    })
+    await tailServerLog(LOG_READER_POD_NAME, 'reader', opts)
+  } finally {
+    await deleteLogReader().catch(() => { /* bounded by its own deadline */ })
+  }
+}
+
+interface RawServerPod {
+  metadata?: { name?: string }
+  spec?: { nodeName?: string }
+  status?: { containerStatuses?: Array<{ name?: string; state?: { running?: unknown } }> }
+}
+
+const LOG_READER_POD_NAME = 'yaac-server-log-reader'
+/** Long enough for the reader to schedule, attach its volume and pull. */
+const LOG_READER_START_S = 120
+
+/**
+ * Remove the log reader: after a read, before the next one (`wait`), and
+ * before a start or restart — a reader holding an attach-once claim on one
+ * node would otherwise keep a server scheduled onto another stuck
+ * `ContainerCreating` for as long as a `logs -f` runs, or its deadline.
+ */
+async function deleteLogReader(wait = false): Promise<void> {
+  await kubectlWithRetry([
+    'delete', 'pod', LOG_READER_POD_NAME, '-n', k8sNamespace(), '--ignore-not-found', `--wait=${String(wait)}`,
+  ])
+}
+/** A reader outlives a CLI killed hard by at most this long. */
+const LOG_READER_DEADLINE_S = 3600
+
+/**
+ * The reader: the server's own image and identity (both read off the
+ * Deployment), the server-local claim read-only at the server's own path,
+ * and nothing to do but wait to be exec'd into.
+ */
+async function buildLogReaderManifest(nodeName: string | undefined): Promise<Record<string, unknown>> {
+  const dep = await kubectlGetJson<RawServerDeployment>([
+    'get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
+  ])
+  const podSpec = dep?.spec?.template?.spec
+  const image = podSpec?.containers?.find((c) => c.name === 'server')?.image
+  if (!image) throw new Error(`the ${SERVER_APP_NAME} Deployment names no server image to read the log with`)
+  return {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name: LOG_READER_POD_NAME, namespace: k8sNamespace(), labels: { app: LOG_READER_POD_NAME } },
+    spec: {
+      restartPolicy: 'Never',
+      activeDeadlineSeconds: LOG_READER_DEADLINE_S,
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      ...(nodeName ? { nodeName } : {}),
+      securityContext: podSpec?.securityContext ?? {},
+      containers: [{
+        name: 'reader',
+        image,
+        imagePullPolicy: 'IfNotPresent',
+        command: ['sleep', String(LOG_READER_DEADLINE_S)],
+        securityContext: { allowPrivilegeEscalation: false },
+        volumeMounts: [{ name: 'server-local', mountPath: POD_SERVER_LOCAL_ROOT, readOnly: true }],
+      }],
+      volumes: [{
+        name: 'server-local',
+        persistentVolumeClaim: { claimName: SERVER_LOCAL_CLAIM_NAME, readOnly: true },
+      }],
+    },
+  }
+}
+
+async function tailServerLog(
+  pod: string,
+  container: string,
+  opts: { follow?: boolean; lines?: number },
+): Promise<void> {
+  const logFile = path.posix.join(POD_SERVER_LOCAL_ROOT, path.basename(serverLogPath()))
+  const args = [
+    'exec', pod, '-n', k8sNamespace(), '-c', container, '--',
+    'tail', ...(opts.follow ? ['-F'] : []),
+    '-n', opts.lines !== undefined ? String(Math.max(0, opts.lines)) : '+1',
+    logFile,
+  ]
+  const child = spawn('kubectl', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  child.stdout.pipe(process.stdout, { end: false })
+  let stderr = ''
+  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  await new Promise<void>((resolve, reject) => {
+    // Forward Ctrl-C so the exec dies with us instead of being orphaned.
+    const onSigint = (): void => { child.kill('SIGINT') }
+    process.on('SIGINT', onSigint)
+    child.on('error', (err) => {
+      process.off('SIGINT', onSigint)
+      reject(err)
+    })
+    child.on('close', (code, signal) => {
+      process.off('SIGINT', onSigint)
+      if (code === 0 || signal === 'SIGINT') {
+        resolve()
+        return
+      }
+      reject(new Error(
+        `could not read the server log in pod ${pod}: `
+        + `${stderr.trim() || `kubectl exited with ${signal ?? `code ${String(code)}`}`}`,
+      ))
+    })
+  })
 }

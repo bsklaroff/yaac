@@ -7,7 +7,7 @@ which verifies all of it (the command finishes by running it).
 ```sh
 yaac cluster install             # one node
 yaac cluster install --nodes 3   # one control-plane node + two workers
-yaac cluster install --adopt-cni # install into a cluster whose CNI is not ours
+yaac cluster install --byo --rwx-storage-class <nfs-class>  # a cluster yaac did not create
 ```
 
 One idempotent verb, safe to run at any time. It bootstraps the podman
@@ -38,16 +38,18 @@ cluster delete`, which is the one command that can lose running worktrees.
 `--nodes` therefore applies only to a cluster this run creates; against an
 existing one it is a no-op with a note.
 
-`--adopt-cni` installs into a cluster yaac did not create: it makes no
-cluster and installs no CNI, adopting the Calico that cluster already runs
-(see "Adopting a CNI yaac did not install").
+`--byo` installs into a cluster yaac did not create — a cloud node pool —
+with its storage provisioned from named classes and its server on the
+tailnet (see "Bring your own cluster").
 
-`--tailnet` publishes the server on the machine's Tailscale tailnet through
-the Tailscale Kubernetes operator instead of at `127.0.0.1` — the same
-fronting a bring-your-own cluster gets, usable on kind. The operator is a
+`--tailnet` publishes a kind install's server on the machine's Tailscale
+tailnet through the Tailscale Kubernetes operator instead of at
+`127.0.0.1` — the fronting a byo install always gets. The operator is a
 prerequisite (`helm upgrade --install tailscale-operator …`, printed by the
-refusal when it is missing), and the server then requires a credential
-(docs/server-in-cluster.md "Reachability", docs/remote-hosting.md).
+refusal when it is missing), and the server then identifies every caller by
+tailnet user (docs/server-in-cluster.md "Reachability",
+docs/remote-hosting.md). Alongside `--byo` it is accepted and changes
+nothing.
 
 ## Images are built here, and only here
 
@@ -400,48 +402,134 @@ for a single point of failure.
 `yaac cluster check` reports per-node readiness on a multi-node cluster
 (`runsc-nodes`, `registry-nodes`, `volume-nodes` — see "Verifying").
 
-## Adopting a CNI yaac did not install
+## Bring your own cluster
 
 ```sh
-yaac cluster install --adopt-cni
+yaac cluster install --byo --rwx-storage-class <nfs-class> [--rwo-storage-class <block-class>]
 ```
 
-Installs into the cluster the current kubeconfig points at, adopting the
-**Calico it already runs** — ours, a self-managed one, or a provider-managed
-one (GKE Dataplane V1, AKS `--network-policy calico`, Calico policy-only over
-the AWS VPC CNI on EKS). It creates no cluster, needs no `kind`, and skips
-the Calico install; everything else it applies is what the other modes apply
-(PriorityClasses, registry, builder guard, gVisor runtime, netd), so it is
-idempotent and re-runnable. It refuses `--nodes`: there are no nodes for it
-to render, since the adopted cluster brings its own.
+Installs into the cluster the current kubeconfig points at — a self-managed
+pool, or a managed one on a mutable node OS — using the same in-cluster
+layers and the same server Deployment as a kind install. It creates no
+cluster and needs no `kind`; it installs no CNI, adopting the Calico the
+cluster already runs; and it is idempotent and re-runnable like every other
+mode. What differs is only what install renders:
 
-**It does not deploy the server**, and says so. On kind the server is
-fronted by a forwarder behind a kind `extraPortMapping` written at
-cluster-create time (docs/server-in-cluster.md), which a cluster yaac did
-not create does not have; the fronting an adopted cluster needs is the
-tailnet one, and the install mode that selects it together with the rest
-of what a foreign cluster needs (storage classes, the node uid, the
-architecture) is the bring-your-own-cluster install
-(docs/plans/cloud-k8s.md). Until then adoption has **no server it can run**:
-a server outside the cluster is the containerless driver by construction,
-so `yaac server start` against an adopted install gives tmux worktrees on
-this host rather than pods on the cluster just installed into — which the
-install says out loud rather than leaving it to be noticed. `--tailnet`
-with `--adopt-cni` verifies the operator and changes nothing else.
+- **Storage** is provisioned from classes rather than static volumes:
+  `yaac-global` from `--rwx-storage-class`, which must be NFS-family
+  (csi-driver-nfs, EFS, Azure Files over NFS), and `yaac-server-local` from
+  `--rwo-storage-class` or the cluster's default class. Install re-adopts a
+  volume of its own that a namespace delete left `Released` — matched by
+  the random install id `server.json` records, never by the data-dir path
+  — claims each volume root for that id through a one-shot binder pod, and
+  pins both `Retain` (docs/server-in-cluster.md "Storage is two claims").
+  A class with a fixed `subDir` or base path hands every claim the same
+  directory, so it can host one install: a second is refused rather than
+  handed the first one's data.
+- **The uid** is a fixed 1000, not this machine's (docs/server-in-cluster.md
+  "The uid everything runs as").
+- **The fronting** is the Tailscale operator's TLS Ingress — `--byo` implies
+  `--tailnet`, since a cloud cluster has no loopback to publish at.
 
-There is no datapath change here — the netd redirect (docs/worktree-egress.md)
-works unmodified on any CNI whose pod egress traverses host netfilter and
-that leaves ClusterIP translation to kube-proxy. What changes is that four
-things the owned-cluster path guarantees by construction become things this
-mode **verifies**, and every one of them fails *silently* when the
-assumption is wrong. So each is a refusal, not a warning:
+**The gates**, in order, before anything is applied or built — ahead of the
+podman bootstrap, so a refusal leaves the cluster and this host untouched:
+
+| Gate | Refuses |
+|---|---|
+| Architecture | a node pool that mixes architectures, or one that is not this machine's — install builds every image here, for this machine's architecture, with no cross-build and no emulation |
+| Node OS and containerd | a runtime that is not containerd; an immutable OS (Bottlerocket, Container-Optimized OS, Talos, Flatcar); EKS Fargate and GKE Autopilot; k3s and RKE2, whose embedded containerd keeps its config in a template the gVisor installer does not write yet |
+| CNI | everything in "The CNI gate" below |
+| Operator | a cluster without the Tailscale operator or its `tailscale` IngressClass — with "could not ask" kept apart from absent |
+| Storage | an RWX class that does not exist or is not NFS-family, an RWO class that does not exist, and a cluster with no default class (the registry and the npm cache provision through it) |
+| Identity | a live `yaac-server` Deployment of another install (its `yaac.install-id` label is not this data dir's install id — installing over it would take over its storage), and a data dir recorded as the containerless driver |
+| Cluster | a current context whose cluster is not the one recorded (below) |
+| Environment | `YAAC_USE_TOR`, which names a listener on this machine no pod there can reach |
+
+`cluster check` repeats the architecture and node-OS gates on every run
+(`architecture`, `node-os`, fail-level on every backend), so a pool that
+later gains a foreign node is reported rather than failing to pull
+without explanation.
+
+**What `--byo` never does**: exec into a node — the kind node fixups (the
+pids ceiling, the kubelet housekeeping flag) are settings of a node
+container, the check's `node-fixups` gate skips on a byo install, and on a
+real pool the housekeeping interval is a pool setting; nor create host
+directories for the tiers, whose bytes are the classes'. The node tuning
+(sysctls, `DefaultTasksMax`) rides the gVisor installer DaemonSet onto
+every node regardless.
+
+**The installer is the node-OS gate's flavor table**, with one row: stock
+containerd, restarted through the node's systemd, reading registry hosts
+from `/etc/containerd/certs.d` — the directory both registries' hosts
+writers mount. kind's config patch sets that `config_path`; a stock node
+may not, so the installer ensures it on every pass: a config that already
+names `certs.d` is left alone, one with no registry table gets the block
+(marker-guarded, under the key its config version speaks), and one that
+names another directory — or still uses the deprecated `mirrors`, which
+containerd refuses beside `config_path` — fails the node's readiness with
+the reason.
+
+**The cluster is recorded.** Every cluster call uses the kubeconfig's
+current context, and anyone with a cloud install very likely has other
+contexts too. Install records the cluster it installed into in
+`server.json` (on every backend) as the uid of its `kube-system` namespace
+— a context's name is a local label that another kubeconfig can reuse for
+another cluster — with the context's name kept only for the hint. Each
+host-side verb that touches the cluster — `cluster install|check`,
+`server start|stop|restart|logs` — refuses when the current context's
+cluster is another one, or cannot be identified (reading `kube-system` is
+Forbidden under the namespace-scoped RBAC a shared work cluster hands out),
+before asking it anything, naming `kubectl config
+use-context <recorded>` where that would help. A refusal rather than
+pinning: nothing has to thread `--context` through the substrate. A kind
+install is checked the other way round, since its cluster may be deleted
+and re-created: the current context must be `kind-<cluster>` and point at
+the apiserver kind reports for it, and install then records that cluster.
+
+**A data dir is byo or not for its whole life.** Plain `yaac cluster
+install` on a byo data dir is refused before it runs anything — the kind
+path would create a kind cluster here and switch the current context to it
+— and `--byo` on a kind data dir likewise.
+
+**A dead NFS server hangs, rather than fails.** The shared claim is mounted
+`hard` unless its class says `soft` (Linux's default, and yaac leaves the
+choice to the class): while the server is gone, every I/O on the global
+tier blocks — the server pod's, every worktree's — and so does the
+kubelet's unmount, so those pods sit `Terminating` and the node usually
+needs a reboot (or cordon it and replace it) once the server is back or
+gone for good. `soft` turns the hang into an EIO after its retries, which
+a git checkout or a half-written file then has to survive; that is the
+trade the class owner makes. yaac does set `actimeo=1` on the volume,
+whatever the class says: a GETATTR per file per second of use — on EFS,
+billed latency — is what bounds how long a worktree can act on a file the
+server has already changed.
+
+**`yaac cluster delete` refuses on a byo install** — the cluster is not
+yaac's to delete — and prints the uninstall instead: the install's
+namespaces (the registry's signing key has one of its own) and the
+cluster-scoped objects labelled with them; then, marked as shared by every
+install on the cluster, the runtime objects and the `yaac.gvisor` node
+labels. The two `Retain` volumes survive that on purpose; it says how to
+remove them deliberately, selected by the install id.
+
+### The CNI gate
+
+The Calico a byo cluster runs may be self-managed or provider-managed (GKE
+Dataplane V1, AKS `--network-policy calico`, Calico policy-only over the AWS
+VPC CNI on EKS). There is no datapath change for it — the netd redirect
+(docs/worktree-egress.md) works unmodified on any CNI whose pod egress
+traverses host netfilter and that leaves ClusterIP translation to
+kube-proxy. What changes is that what the owned-cluster path guarantees by
+construction becomes something this mode **verifies**, and every one of
+them fails *silently* when the assumption is wrong. So each is a refusal,
+not a warning:
 
 | Verified | Why a refusal |
 |---|---|
 | calico-node present and fully rolled out | policy is the enforcement plane; a node without Felix is a node with no worktree egress lockdown. Absent Calico is also how a Cilium cluster reads, and no Cilium configuration survives the veth-peer redirect |
 | **not** the eBPF dataplane — `spec.bpfEnabled` on **any** FelixConfiguration, or `FELIX_BPFENABLED` on the container | eBPF host-routing short-circuits host netfilter exactly as Cilium does: the redirect chain exists, counts zero packets, and every worktree silently loses the internet |
 | kube-proxy running, and not replaced (`bpfKubeProxyIptablesCleanupEnabled`) | netd's Envoy dials the yaac proxy by ClusterIP from the host netns, and appending below `KUBE-SERVICES` is what keeps ClusterIP traffic out of the redirect |
-| a pod-CIDR set that is non-empty and wholly parseable | those CIDRs lead netd's chain as RETURNs; with none it would DNAT pod-to-pod 443/80 into the proxy, and a silently-dropped `YAAC_POD_CIDRS` entry narrows the set below what was configured. The per-apply path falls back to kind's default — adoption refuses instead |
+| a pod-CIDR set that is non-empty and wholly parseable | those CIDRs lead netd's chain as RETURNs; with none it would DNAT pod-to-pod 443/80 into the proxy, and a silently-dropped `YAAC_POD_CIDRS` entry narrows the set below what was configured. The per-apply path falls back to kind's default — `--byo` refuses instead |
 | `system-node-critical` exists | netd names it, and the apiserver rejects a pod naming a missing class: the DaemonSet then creates no pod and no node has a redirect |
 | workload host routes match the veth prefix, **on every node** | netd's only pod → veth source, read through each netd pod once it is up. A prefix matching nothing renders a chain with no per-pod rules — indistinguishable from a healthy netd |
 | every check was actually **evaluated** | a read that failed for any reason other than genuine absence is an unknown, not a fact. Absence is meaningful here (no FelixConfiguration means Felix's iptables defaults), so an RBAC-denied or timed-out read that collapsed into "absent" would wave an eBPF cluster through |
@@ -476,14 +564,14 @@ explicitly when that gate fails. **Do not start worktrees until a re-run
 passes.**
 
 **The veth check is re-run by every `yaac cluster check`**, not only at
-adoption. It has its own gate (`veth-source`) rather than living inside
+install. It has its own gate (`veth-source`) rather than living inside
 `datapath`, because `datapath` structurally cannot see it: netd's readiness
 is Envoy's config ack, which goes green with zero pod → veth mappings. A
-node pool added after adoption is the case that matters.
+node pool added after install is the case that matters.
 
 The namespaces yaac creates — the install namespace and the registry
 namespace — are labelled for the `privileged` Pod Security Standard. Inert
-on kind, load-bearing on an adopted cluster whose default is `baseline` or
+on kind, load-bearing on a byo cluster whose default is `baseline` or
 `restricted`: netd is `hostNetwork` with `NET_ADMIN`/`NET_RAW`, and the
 node-write pods hostPath-mount `certs.d`. PSS is namespace-scoped, so this
 relaxes nothing outside them.
@@ -521,6 +609,103 @@ Calico's kube-proxy pods are found under either `k8s-app=kube-proxy`
 Out of scope, deliberately: Cilium in any configuration, and installing
 policy for anyone else's workloads — every yaac policy selects only its own
 pods.
+
+## Running byo locally: kind-byo
+
+```sh
+pnpm kind-byo up     # stand up the stand-in cloud, then `yaac cluster install --byo` into it
+eval "$(pnpm -s kind-byo env)"   # drive it: its data dir, kubeconfig, kind cluster name, CA bundle
+pnpm kind-byo down   # delete the cluster; the data dir keeps the install's bytes
+```
+
+A repo tool, not a CLI mode: a second kind cluster set up to look like a
+cloud one, plus a real `yaac cluster install --byo` into it, run by the
+built CLI exactly as an operator runs the published one. Nothing in the CLI
+knows it exists, which is what makes it a test of the cloud path rather
+than a third backend. It is how the byo install runs end to end on one
+Linux machine, by hand or by the `e2e-byo` tier
+(docs/server-in-cluster.md "The e2e tiers run against this").
+
+| Piece | What | Why this one |
+|---|---|---|
+| Cluster | kind `yaac-byo`: a control-plane and two workers, `disableDefaultCNI`, none of yaac's kind-config patches, its own kubeconfig in the install's client-local dir | two worktree-eligible nodes, so every NFS number is cross-node; no containerd patch, so the installer's own `config_path` handling is what runs |
+| Node mounts | one extraMount on every node: kind-byo's data dir, at its own path | the backing store for both classes; nothing else of the host is visible to the nodes |
+| CNI | the pinned Calico manifest, applied by the script | the CNI gate's happy path, on a CNI yaac did not install |
+| RWX | nfs-ganesha on the control-plane node behind csi-driver-nfs, class `kind-byo-nfs` | the self-managed target's shape: an NFS server you run, provisioned by `nfs.csi.k8s.io` |
+| RWO | local-path-provisioner, `WaitForFirstConsumer`: the default class `kind-byo-local`, and `kind-byo-rwo`, which install is told to use for `yaac-server-local` | a block class like a provider's zonal disk — node-pinned, and the reason install's binder exists; named rather than defaulted, so a named class that went ignored would show |
+| Fronting | the Tailscale operator, its OAuth client from `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_CLIENT_SECRET`, every proxy defaulting to a ProxyClass that takes certificates from Let's Encrypt **staging** | `--byo` implies the tailnet; without the client, `up` says so and the install stops at its operator gate. Staging because production issues five certificates a week per name, and every rebuild of the Ingress is a new device asking again |
+| Node fixups | the script sets its node containers' pids ceiling itself | `--byo` never execs a node; the script made these containers, so their podman settings are its |
+
+**Its volumes land in its own data dir** (`KIND_BYO_DATA_DIR`, default
+`~/.yaac-byo`): ganesha exports the data dir, and every class provisions a
+directory per claim under it, `volumes/<namespace>/<claim>` — the NFS
+class through csi-driver-nfs's per-claim `subDir` template, the local-path
+classes through their pattern. So `yaac-global` lands at
+`<dataDir>/volumes/yaac/yaac-global` and `yaac-server-local` beside it,
+where their bytes can be read, backed up and removed, while the data dir's
+own `global/` and `server-local/` stay the installing CLI's, as a laptop's
+tiers are on a real cloud install — it writes its host log there, which a
+volume aliasing that folder would hand the binder as someone else's data.
+The classes are written as
+naively as an operator would (`reclaimPolicy: Delete`, no `actimeo`, no
+`mountPermissions`), so every one of install's storage steps is
+load-bearing here and `cluster check` fails if one regresses. It is a
+separate install with a data dir of its own, shares no directory with any
+other, and has no `node-local/` there: its node-local tier is the node
+containers' own disk, so deleting the cluster costs what a drained cloud
+node costs — cold caches.
+
+**A second cluster, not a second namespace.** Its NFS mounts are `hard`, so
+a wedged ganesha blocks every mount operation on its nodes, the kubelet's
+teardown included — which in a shared cluster would stall the kind install
+used every day. (It is also why `down` drains the workers before deleting
+the cluster: a node whose last unmount outlives ganesha waits on it
+forever, and its container never finishes stopping.) And the ordinary cluster carries everything a kind install
+set up (the containerd patch, the node fixups, the port mapping, the home
+mount), so a byo install landing there could not show it works without
+them. The recorded cluster keeps the two installs' commands off each
+other's.
+
+**Why ganesha rather than kernel nfsd.** A userspace server in an ordinary
+pod needs no server-side kernel module and leaves no host state behind; it
+restarts like any Deployment, which is how a real NFS server's restart is
+rehearsed. The NFS *client* still comes from the host kernel, loaded by the
+csi node plugin's mount, as on every backend. Its export is NFSv4 only,
+over the data dir, with `No_Root_Squash` (uids pass through raw, and the
+binder's chown is root's), `Graceless` (a restart does not stall clients
+through a grace period), a pinned `Filesystem_Id`, and the server's own
+metadata caching off — the data dir is also written from the host, behind
+ganesha's back, and client-side staleness is what `actimeo=1` bounds and
+what this cluster measures. Only nodes may mount: the export admits the
+node addresses (InternalIPs and Calico tunnel addresses), and a
+NetworkPolicy admits nothing else to 2049. The image
+(`yaac-kind-byo-ganesha:<contextHash>`, from `test/kind-byo/ganesha/`) is
+sideloaded, because it has to serve before install creates the registry.
+csi-driver-nfs, local-path-provisioner and the operator are pinned the way
+Calico is: a version constant and a committed sha256 per manifest
+(`test/kind-byo/pins.sha256`), cached client-local.
+
+**Its origin's certificate is a staging one** — the one way kind-byo
+differs from a cloud install. Production Let's Encrypt issues at most five
+certificates a week for one name, and each `down`/`up` or namespace delete
+is a new operator proxy device asking for the same name again; staging
+allows 30,000. The operator is told so through `PROXY_DEFAULT_CLASS`, not
+through yaac, and the clients trust Let's Encrypt's staging roots: `up`
+fetches them (pinned) into a bundle in the install's client-local dir, and
+`env` exports it as `NODE_EXTRA_CA_CERTS`. A browser will not trust that
+origin.
+
+**Linux only, on a real filesystem.** ganesha's VFS backend needs file
+handles that outlive the kernel's inode cache — ext4, xfs and btrfs give
+them; tmpfs, overlay and a macOS virtiofs share do not — so `up` refuses a
+data dir on anything else. A macOS host runs the kind tiers.
+
+**The install uid is 1000, the host's may not be.** Files under a kind-byo
+data dir are owned by uid 1000, as they would be on a cloud NFS server. On a
+host whose user is 1000 that is invisible; on one whose user is not, they
+are readable but not writable from the host — the honest consequence of
+running the cloud's uid decision locally, and why the `e2e-byo` tier
+refuses such a host.
 
 ## What survives a restart, and what heals itself
 
@@ -604,15 +789,16 @@ containment). Trusted yaac infra (proxy, registries, node-write pods) runs
 unsandboxed on runc: it only executes yaac-shipped code, and the sentries'
 CPU cost is what matters at fleet scale.
 
-Under gVisor there is no user namespace and no idmap, so hostPath files are
-presented at their real node-side uids (the gofer preserves them), and every
-writer of a shared path has to name the same number. That number is **the
-uid of the machine that ran the install**, because it is what pre-creates
-those paths: worktree checkouts, cache and config mounts are made host-side
-and land owned by whoever runs the server. Every yaac pod — the server, the
-worktrees, the proxy, the probes — is stamped with it, and on macOS it
-cannot be anything else, since virtiofs makes the host user's uid a ceiling
-(docs/server-in-cluster.md).
+Under gVisor there is no user namespace and no idmap, so files on the claims
+are presented at their real uids (the gofer preserves them), and every
+writer of a shared path has to name the same number: **the install uid**,
+which install decides and stamps on the server Deployment. On kind it is the
+uid of the machine that ran the install — on macOS it cannot be anything
+else, since virtiofs makes the host user's uid a ceiling. On a byo install
+it is a fixed 1000: an NFS server passes uids through raw, and a constant
+keeps ownership stable whichever machine re-installs. Every yaac pod — the
+server, the worktrees, the proxy, the probes — runs at it
+(docs/server-in-cluster.md "The uid everything runs as").
 
 The images know nothing about that number: they bake a fixed `yaac` user
 and run correctly at any uid, so one image set serves every host
@@ -625,8 +811,12 @@ not 1000. The README's "Custom images" section spells that out.
 
 `yaac cluster check` verifies kubectl, the cluster, the registry, the
 namespace, the two storage claims (`storage`: both Bound, both volumes
-`Retain`, and on kind each volume the data dir's own tier folder — a
-missing claim fails and points at install), the PriorityClasses and the
+`Retain`; on kind — a static volume, the empty class — each volume the
+data dir's own tier folder, on a byo install — a provisioned one, whatever
+its source: local-path hands out hostPath volumes too — each volume
+labelled with this install's id and the global one
+NFS-family and mounted with `actimeo` at most 1 — a missing claim fails
+and points at install), the PriorityClasses and the
 kind node fixups, asserts the RuntimeClasses exist, that at least one node
 carries the `yaac.gvisor` label they schedule on, and that a `gvisor`-class
 pod really runs inside the sentry, reads the node tuning back through the
@@ -634,13 +824,19 @@ installer's pod on every node (`node-tuning`, warn-level: a node whose
 installer pod is not Running is reported unverified, never passed), then
 runs an end-to-end probe pod — on the gvisor tier, like worktree pods —
 that mounts the `yaac-global` claim and exercises all of the wiring above,
-including a **write** at the worktree uid and a second nonce round-tripped
-while the pod runs, whose latency the pass detail reports. Two warn-level
-gates sit beside it: `storage-semantics` runs the POSIX probe in
+including a **write** at the worktree uid. Its other end is a *peer* pod —
+runc, at the install uid, the claim mounted whole, which is the server's
+footing — that writes the nonce the probe must read, checks the probe's
+write reached it, and times a second nonce round-tripped while both run.
+The two prefer different nodes, so on a multi-node cluster the round trip
+the pass detail reports is cross-node: the coherence number an NFS class is
+judged by. Nothing in the check touches this machine's copy of the data
+dir, so it runs the same against a cluster whose claims are not on this
+machine at all. `storage-semantics` runs the POSIX probe in
 `k8s/probes/fsprobe.py` (ownership, O_EXCL, atomic rename, hardlinks,
-locks, fsync, mmap, append, xattrs) against the claim from a sandboxed pod,
-naming any that fail — the same probes a cloud install's storage class is
-judged by. `npm-cache` has a
+locks, fsync, mmap, append, xattrs) against the claim from a sandboxed pod
+and fails naming any that fail — fail-level on every backend, since a
+worktree runs the same code on each. `npm-cache` has a
 worktree-labelled pod fetch a package through the npm cache's Service: a
 warn when the install has no cache or no ready cache pod (new worktrees
 then install from npmjs), a fail when a ready one does not serve, since
@@ -659,7 +855,7 @@ prefix presents only as worktrees with no egress.
 
 ### Which nodes count as worktree-eligible
 
-The node inventory line, the per-node sweep below, and `--adopt-cni`'s
+The node inventory line, the per-node sweep below, and `--byo`'s
 per-node kube-proxy coverage all narrow to the nodes a worktree could
 actually land on: Ready, uncordoned, and carrying no taint the worktree pod
 fails to tolerate. That last clause is real per-taint matching, not "carries

@@ -24,6 +24,7 @@ export { containerExec } from './exec'
 export {
   GVISOR_INSTALLER_READY_FILE,
   GVISOR_NODE_LABEL,
+  gvisorNodeLabels,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   buildRuntimeClassManifests,
@@ -62,9 +63,10 @@ export {
   PRE_STOP_GRACE_SECONDS,
   buildPodJobManifest,
   sentryTmpfsAnnotations,
-  hostUidSecurityContext,
+  installSecurityContext,
+  processIdentity,
 } from './pod-spec'
-export type { PodMount } from './pod-spec'
+export type { InstallIdentity, PodMount } from './pod-spec'
 export {
   PRIORITY_CLASS_BUILDER,
   PRIORITY_CLASS_INFRA,
@@ -75,6 +77,8 @@ export { waitForJobPodReady } from './pod-wait'
 export { PRIVILEGED_PSS_LABELS } from './pss'
 export {
   GLOBAL_CLAIM_NAME,
+  LABEL_CLAIM,
+  LABEL_INSTALL_ID,
   LABEL_INSTALL_NAMESPACE,
   POD_GLOBAL_ROOT,
   POD_NODE_LOCAL_ROOT,

@@ -4,7 +4,7 @@
  * The server Deployment is one manifest on every backend; what differs is
  * how its Service is reached from outside the cluster, and every such
  * difference is rendered here as a manifest set rather than branched on in
- * the driver (docs/plans/cloud-k8s.md "Two backends, one driver"). A
+ * the driver (docs/server-in-cluster.md "Reachability"). A
  * fronting answers the questions install asks in order: what to apply for
  * the origin to answer (and what the other fronting left behind), which
  * peers its ingress policy must admit, what origin it published, what the
